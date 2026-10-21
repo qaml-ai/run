@@ -274,6 +274,8 @@ type Session = {
   taps?: Set<(data: ClientEvent) => void>;
   /** Runs an abort reached after they began but before the agent had them: they end without running (see `markAborted`). */
   aborted?: Set<string>;
+  /** A resumed turn waiting for its durable backoff; an abort wakes it to settle immediately. */
+  resumeWait?: AbortController;
   /** The spawn_agent call writing its child's row: the next waits, so the running children's count holds (`childRow`). */
   spawning?: Promise<void>;
   /** A background child's share of the spend limit being worked out (childShare), one at a time. */
@@ -304,8 +306,8 @@ const STOPPED_NOTICE = { stopped: "aborted", message: "The agent was stopped: th
 const MODEL_RUNS = ["prompt", "continue"];
 /** A running run's active time is reported at least this often. */
 const ACTIVE_REPORT_MS = 60_000;
-/** Resumes of one run's turn before it fails as uncertain, so a turn that kills its node cannot loop. Hand-offs at a step boundary are not resumes. */
-export const MAX_RESUMES = 2;
+/** Resumes of one run's turn before it fails with resume_limit, so a turn that kills its node cannot loop. Hand-offs at a step boundary are not resumes. */
+export const MAX_RESUMES = 3;
 /**
  * How many times a run's start (its busy slot, its agent's process, its run events' setting) is tried when the
  * database refuses it for now or cannot be reached, or the node answers 503: the run stays queued meanwhile, its place
@@ -339,15 +341,15 @@ const resumable = (request: RequestRecord) => ["prompt", "continue", "resume"].i
 /**
  * What a load does with a request its journal left running (no process anywhere runs it now): a queued one (its params
  * kept: it never began, or it is configuration) runs; a model turn that began resumes from its transcript, up to
- * MAX_RESUMES times (a hand-off at a step boundary is not one); anything else that began has an unknown outcome, and
+ * the configured limit (default MAX_RESUMES), then ends `resume_limit` (a step-boundary hand-off does not count); anything else that began has an unknown outcome, and
  * ends `uncertain`. A run the agent was stopped in (`abortedAt`) is never resumed nor run: it ends `aborted`.
  */
-export function loadDecision(request: RequestRecord): "queued" | "resume" | "uncertain" | "aborted" {
+export function loadDecision(request: RequestRecord, maxResumes = MAX_RESUMES): "queued" | "resume" | "resume_limit" | "uncertain" | "aborted" {
   if (request.abortedAt !== undefined) return "aborted";
   if (request.params !== undefined) return "queued";
   // Counted when the resumed run begins (see `run`), so a load that fails, or hands the agent back, spends none.
   // A turn handed off at a step boundary lost nothing and is not a resume: it always goes on.
-  if (resumable(request) && (request.handedOff || (request.resumes ?? 0) < MAX_RESUMES)) return "resume";
+  if (resumable(request)) return request.handedOff || (request.resumes ?? 0) < maxResumes ? "resume" : "resume_limit";
   return "uncertain";
 }
 /** Event ids an owner reserves at a time (`reserveEvents`): one write per block, made when half of it is left. */
@@ -547,6 +549,7 @@ export interface ClientSessionOptions {
   maxWatchers?: number; maxTenantWatchers?: number; maxNodeWatchers?: number;
   /** How often nodes sweep for agents with work left (`resumeOrphans`): the unit of a failed load's backoff. */
   orphanSweepMs?: number;
+  maxResumes?: number;
   /** A tenant's own bound on its read-only subscribers on this node, instead of `maxTenantWatchers`; read at each subscribe. */
   watcherLimitFor?: (tenant: string) => number | undefined;
   /** Headers and the tenant index. */
@@ -875,11 +878,11 @@ export class ClientSessions {
     // transcript, a bounded number of times; anything else that began has an unknown outcome.
     const queued: RequestRecord[] = [];
     const resumed: RequestRecord[] = [];
-    const decisions = [...session.running.values()].map(request => ({ request, decision: loadDecision(request) }));
+    const decisions = [...session.running.values()].map(request => ({ request, decision: loadDecision(request, this.options.maxResumes) }));
     // A model turn that began ends here, with no host to end it (past its resumes, or stopped before its node was lost): the
     // turn it left open is settled in the transcript first, as the agent's next start would, so the run is never seen to
     // end before its turn has (a fork, a history page). A failed write fails the load, which leaves the run to the next.
-    if (decisions.some(({ request, decision }) => (decision === "aborted" || decision === "uncertain") && resumable(request)) && !decisions.some(({ decision }) => decision === "resume")) {
+    if (decisions.some(({ request, decision }) => (decision === "aborted" || decision === "uncertain" || decision === "resume_limit") && resumable(request)) && !decisions.some(({ decision }) => decision === "resume")) {
       await this.closeTurn(session);
     }
     for (const { request, decision } of decisions) {
@@ -890,13 +893,28 @@ export class ClientSessions {
         const { params: _params, ...rest } = request;
         this.upsertRequest(session, { ...rest, state: "completed", endedAt: Date.now(), outcome: { result: { error: "The run was aborted", code: "aborted" } }, ...(RUN_METHODS.includes(request.method) ? { announce: true as const } : {}) });
       }
+      else if (decision === "resume_limit") {
+        const resumes = request.resumes ?? 0;
+        this.upsertRequest(session, { ...request, state: "completed", endedAt: Date.now(), outcome: { result: { code: "resume_limit", error: `This turn exhausted its ${resumes} node-loss resumes and was not resumed again` } }, announce: true });
+        console.error(JSON.stringify({ type: "turn_resume_limit", agent: id, tenant: header.tenant, resumes }));
+      }
       else this.upsertRequest(session, { ...request, state: "completed", endedAt: Date.now(), outcome: { error: "The runtime restarted during this request", uncertain: true }, ...(RUN_METHODS.includes(request.method) ? { announce: true as const } : {}) });
     }
     await log.flush(true);
+    const ended = decisions.filter(({ decision }) => !["queued", "resume"].includes(decision)).map(({ request }) => session.requests.get(request.id)!);
+    if (!resumed.length) await this.resetResumes(session);
     if (claim && !this.options.ownership!.holds(claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
     if (this.closed) throw new HttpError(503, "This node is stopping; retry");
     this.sessions.set(id, session);
     this.loaded(session);
+    for (const record of ended) {
+      this.publish(session, { type: "response", id: record.id, outcome: record.outcome! });
+      if (RUN_METHODS.includes(record.method)) {
+        this.hook("runEnded", session, record);
+        if ((/^(?:spawn|msg)_/.test(record.id) && record.metadata?.[PARENT_KEYS.agent]) || record.id.startsWith("resume_")) void this.childEnded(id, visible(record)).catch(error => console.error(JSON.stringify({ type: "child_notice_failed", child: id, error: safeError(error) })));
+        if (session.header.run && record.id === runIdOf(id)) void this.runEnded(session);
+      }
+    }
     session.inherited = new Set([...resumed, ...queued].map(record => record.id));
     for (const record of resumed) { session.resuming.add(record.id); this.enqueue(session, record, undefined); }
     for (const record of queued.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))) this.enqueue(session, record, record.params);
@@ -1039,6 +1057,7 @@ export class ClientSessions {
     // A failed disk commit must never turn into a successful retry from memory. Retryable: the agent is given up, and
     // the next load goes on from what was stored.
     const text = errorText(error);
+    session.resumeWait?.abort();
     session.fault = new HttpError(503, text.startsWith(PERSISTENCE_FAILED) ? text : `${PERSISTENCE_FAILED}: ${text}`);
     this.endStreams(session, true);
     this.closeAttached(session);
@@ -2754,6 +2773,7 @@ export class ClientSessions {
   private markAborted(session: Session) {
     const run = this.runningRun(session);
     if (run) (session.aborted ??= new Set()).add(run.id);
+    session.resumeWait?.abort();
   }
 
   /**
@@ -3540,8 +3560,8 @@ export class ClientSessions {
 
   /**
    * A sweep's load of an agent with work left failed: the next is put off by the sweep's interval, doubling,
-   * at most an hour, never for good. A window counts once, however many nodes met it; a run of the work
-   * that begins starts the count over.
+   * at most an hour. A window counts once, however many nodes met it. Beginning a resumed run
+   * preserves the backoff; only ending a run or beginning new work resets it.
    */
   private async deferResume(id: string, error: unknown) {
     const now = Date.now();
@@ -3550,6 +3570,9 @@ export class ClientSessions {
       where id = $1 and (resume_after is null or resume_after <= $2) returning resume_failures`,
       [id, now, this.sweepMs, MAX_RESUME_DELAY_MS]).catch(() => ({ rows: [] as { resume_failures: number }[] }));
     if (rows[0]) console.error(JSON.stringify({ type: "agent_resume_failed", agent: id, failures: rows[0].resume_failures, error: safeError(error) }));
+  }
+  private resetResumes(session: Session) {
+    return underClaim(this.db, session.claim, sql => sql.query("update agents set turn_resumes = 0, resume_failures = 0, resume_after = null where id = $1 and (turn_resumes <> 0 or resume_failures <> 0 or resume_after is not null)", [session.header.id]));
   }
   private get sweepMs() { return this.options.orphanSweepMs || 30_000; }
 
@@ -4720,6 +4743,18 @@ export class ClientSessions {
       if (record.method === "configure") record = this.upsertRequest(session, { ...record, began: Date.now() });
       // The run's start, tried again on a transient refusal (`startStep`): nothing of the run has happened yet (no begin
       // recorded, no event, nothing billed), and it keeps its place, so the runs queued behind it wait.
+      // An acting request can load an orphan before the sweep's deadline too. It waits the same backoff.
+      if (session.resuming.has(record.id) && !record.handedOff) {
+        const row = (await this.db.query("select resume_after from agents where id = $1", [session.header.id])).rows[0];
+        const delay = Number(row?.resume_after ?? 0) - Date.now();
+        if (delay > 0) {
+          const wait = session.resumeWait = new AbortController();
+          try { await clock().sleep(delay, { signal: wait.signal }); }
+          catch (error) { if (!wait.signal.aborted) throw error; }
+          finally { session.resumeWait = undefined; }
+        }
+        if (this.closed || session.fault || session.leaving || session.requests.get(record.id)?.state !== "running") return;
+      }
       const started = await this.startStep(session, record, async () => {
         // Decided once per run, so it has both its events or neither: an endpoint made meanwhile gets the next run's.
         if (RUN_METHODS.includes(record.method)) session.announcing = await (this.options.runEvents?.(session.header.tenant) ?? false);
@@ -4750,8 +4785,7 @@ export class ClientSessions {
         if (this.draining || session.handedBack) return;
         // Cancelled while it waited to start (a stop): it never begins.
         if (session.requests.get(record.id)?.state !== "running") return;
-        // Work taken over runs: any put-off loads of it are over.
-        if (session.inherited?.delete(record.id)) void this.db.query("update agents set resume_failures = 0, resume_after = null where id = $1 and resume_failures > 0", [session.header.id]).catch(() => {});
+        session.inherited?.delete(record.id);
         // Durable before any side effect: after a crash this run is "began", never repeated. A notification's or message's
         // params are the runtime's, and kept: its next owner lands it (`resume`).
         const { params: queuedParams, handedOff, carried, ...rest } = session.requests.get(record.id)!;
@@ -4765,6 +4799,13 @@ export class ClientSessions {
         // own here: one that crashes before a tool call is simply run again.
         if (record.method === "execute") session.beginning = {};
         else await this.commit(session, true);
+        // The journal is authoritative for this run's count, including a crash between these writes.
+        // Mirror it on the agent row and reserve the next delay before any model request can run.
+        if (session.resuming.has(record.id) && !continued) {
+          await underClaim(this.db, session.claim, sql => sql.query(`update agents set turn_resumes = $2, resume_failures = resume_failures + 1,
+            resume_after = $3 + least($4 * power(2, least(resume_failures, 30))::bigint, $5) where id = $1`,
+            [session.header.id, record.resumes ?? 0, Date.now(), this.sweepMs, MAX_RESUME_DELAY_MS]));
+        } else if (!continued) await this.resetResumes(session);
         this.hook("runStarted", session, record);
         session.spans = record.trace?.sampled ? await this.spansFor(session, record) : undefined;
         if (session.announcing) {
@@ -4861,6 +4902,8 @@ export class ClientSessions {
       try { await this.commit(session, true); }
       catch { return; /* The fault is reported to every later request. */ }
       if (run) {
+        try { await this.resetResumes(session); }
+        catch (error) { this.fail(session, error, "journal"); return; }
         this.hook("runEnded", session, completed);
         // A background child's run: its ending goes to its parent now (a sweep delivers it should this node be lost first).
         if ((/^(?:spawn|msg)_/.test(completed.id) && completed.metadata?.[PARENT_KEYS.agent]) || completed.id.startsWith("resume_")) {
@@ -5708,6 +5751,7 @@ export class ClientSessions {
 
   /** Drop a session from memory and give up ownership so any node can serve it next. */
   private async unload(session: Session) {
+    session.resumeWait?.abort();
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);
     // A faulted session's records past its failed commit are dropped: the journal as stored is what its next load goes on from.
     await session.log.close(!!session.fault).catch(() => {});
@@ -5746,6 +5790,7 @@ export class ClientSessions {
 
   async close() {
     this.closed = true;
+    for (const session of this.sessions.values()) session.resumeWait?.abort();
     clearInterval(this.heartbeat);
     // A sweep stops after its batch; agents it claimed but did not reach are taken again once the lease lapses.
     await this.sweeping;

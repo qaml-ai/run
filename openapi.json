@@ -3230,7 +3230,7 @@
           },
           "resumes": {
             "type": "number",
-            "description": "Times a node resumed this run's turn after the node running it was lost (its calls in flight closed as of unknown outcome); at most 2"
+            "description": "Times a node resumed this run's turn after the node running it was lost (its calls in flight closed as of unknown outcome); default limit 3, configurable with AGENT_MAX_RESUMES"
           },
           "handoffs": {
             "type": "array",
@@ -8577,7 +8577,7 @@
           },
           "resumes": {
             "type": "number",
-            "description": "Times it was resumed after the node running it was lost (at most 2)"
+            "description": "Times it was resumed after the node running it was lost (default limit 3, configurable with AGENT_MAX_RESUMES)"
           },
           "handoffs": {
             "type": "array",

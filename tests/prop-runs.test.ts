@@ -41,7 +41,7 @@ test("load decision: a stopped run ends; queued work always runs; only a begun m
       // A hand-off at a step boundary lost nothing: it goes on whatever its count; any other resume is under the cap.
       assert.ok(request.handedOff || (request.resumes ?? 0) < MAX_RESUMES, "never past MAX_RESUMES");
     } else {
-      assert.equal(decision, "uncertain");
+      assert.equal(decision, turn ? "resume_limit" : "uncertain");
       // Uncertain is for what began and may have had effects (or is no run), never for a resumable turn under the cap.
       assert.ok(!turn || (!request.handedOff && (request.resumes ?? 0) >= MAX_RESUMES));
     }

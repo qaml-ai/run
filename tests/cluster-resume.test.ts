@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { randomBytes } from "node:crypto";
+import { listen } from "./runtime-server.ts";
 import { AgentRuntime, schema, tool } from "../clients/typescript.ts";
 import { cluster, fakeModel, jsExec, lookup, token, toolMessages, until } from "./cluster-helpers.ts";
 
@@ -91,29 +93,84 @@ test("a turn whose node died during a tool call continues with the outcome unkno
   assert.ok(toolMessages(model.bodies[1]).some((content: string) => /outcome is unknown/.test(content)), "the model was told the outcome is unknown");
 });
 
-test("a turn that keeps killing its node is resumed at most twice, then fails as uncertain", { timeout: 120_000 }, async t => {
+test("three node-loss resumes preserve growing backoff; the fourth loss fails and new work can run", { timeout: 120_000 }, async t => {
   const c = await cluster(t);
-  const model = await fakeModel(t, () => undefined);
-  let node = await c.start("a", model.env);
-  // Each restart comes back at the same address, as a replaced task on its host would.
+  const events: any[] = [];
+  const hookUrl = await listen(t, async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    events.push(JSON.parse(body));
+    res.writeHead(204).end();
+  });
+  let finish = false;
+  const model = await fakeModel(t, () => finish ? { role: "assistant", content: "new turn finished" } : undefined);
+  const env = { ...model.env, AGENT_ORPHAN_SWEEP_MS: "500", AGENT_LEASE_TTL_MS: "6000", AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_USAGE_WEBHOOK_RETRY_MS: "100", AGENT_SECRETS_KEY: randomBytes(32).toString("hex") };
+  let node = await c.start("a", env);
+  const registered = await fetch(`${node.url}/v1/webhooks`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ url: hookUrl, events: ["run.failed"] }) });
+  assert.equal(registered.status, 201);
+  await registered.body?.cancel();
   const port = Number(new URL(node.url).port);
   const created = await new AgentRuntime({ url: node.url, apiKey: token }).createAgent({ tools: {}, idempotencyKey: "doomed-agent" });
   await created.close();
   const client = await new AgentRuntime({ url: node.url, apiKey: token }).connectAgent(created.session, { tools: {} });
   t.after(() => client.close());
-  const run = client.prompt("hang", { idempotencyKey: "turn-3", timeoutMs: 100_000 });
+  const run = client.prompt("hang", { idempotencyKey: "poison", timeoutMs: 100_000 });
   run.catch(() => {});
-  for (let restart = 1; restart <= 3; restart++) {
-    await until(() => model.bodies.length === restart, `model call ${restart}`);
+  const row = async () => (await c.db.query("select turn_resumes, resume_failures, resume_after from agents where id = $1", [created.session.id])).rows[0];
+  let previousDelay = 0;
+  for (let loss = 1; loss <= 4; loss++) {
+    await until(() => model.bodies.length === loss, `model call ${loss}`);
+    const before = await row();
+    assert.equal(before.turn_resumes, loss - 1);
+    assert.equal(before.resume_failures, loss - 1);
+    const deadline = Number(before.resume_after ?? 0);
+    if (loss > 1) {
+      const remaining = deadline - Date.now();
+      assert.ok(remaining > previousDelay, `backoff grows: ${remaining} > ${previousDelay}`);
+      previousDelay = remaining;
+    }
     node.child.kill("SIGKILL");
     await once(node.child, "close");
-    // The same address takes the old heartbeat over, so the restarted node owns the agent at once.
-    node = await c.start(`a${restart}`, model.env, port);
+    node = await c.start(`a${loss}`, env, port);
+    if (loss < 4) {
+      await until(() => model.bodies.length === loss + 1, `resumed call ${loss}`);
+      assert.ok(Date.now() >= deadline, "even a client-triggered load waits for resume_after");
+    }
   }
-  await assert.rejects(run, /runtime restarted during this request/);
-  assert.equal(model.bodies.length, 3, "the first attempt and two resumes");
-  const state = await (await fetch(`${node.url}/clients/${created.session.id}/state`, { headers: { Authorization: `Bearer ${created.session.token}` } })).json() as any;
-  const request = state.requests.find((entry: any) => entry.id === "turn-3");
-  assert.equal(request.resumes, 2);
-  assert.equal(request.outcome.uncertain, true);
+  const result = await run;
+  assert.equal(result.code, "resume_limit");
+  assert.match(result.error!, /3 node-loss resumes/);
+  assert.equal(model.bodies.length, 4, "the first attempt and three resumes, with no fifth call");
+  await until(async () => (await row()).turn_resumes === 0, "terminal reset");
+  assert.equal((await row()).resume_failures, 0);
+  assert.equal((await row()).resume_after, null);
+  assert.ok(node.logs.some(entry => entry.type === "turn_resume_limit" && entry.agent === created.session.id && entry.tenant === "alice" && entry.resumes === 3));
+  finish = true;
+  const next = await client.prompt("fresh prompt", { idempotencyKey: "fresh" });
+  assert.equal(next.reply, "new turn finished");
+  await until(() => events.some(event => event.type === "run.failed" && event.data.code === "resume_limit" && event.data.requestId === "poison"), "delivered run.failed webhook with resume_limit");
+});
+
+test("a successful resumed turn resets the count and the next turn starts at zero", { timeout: 120_000 }, async t => {
+  const c = await cluster(t);
+  const model = await fakeModel(t, (_body, index) => index % 2 === 0 ? undefined : { role: "assistant", content: "done" });
+  const env = { ...model.env, AGENT_ORPHAN_SWEEP_MS: "100", AGENT_LEASE_TTL_MS: "6000" };
+  let node = await c.start("reset", env);
+  const port = Number(new URL(node.url).port);
+  const client = await new AgentRuntime({ url: node.url, apiKey: token }).createAgent({ tools: {} });
+  t.after(() => client.close());
+  for (let turn = 0; turn < 2; turn++) {
+    const run = client.prompt("go", { idempotencyKey: `turn-${turn}`, timeoutMs: 60_000 });
+    await until(() => model.bodies.length === turn * 2 + 1, "new turn's first call");
+    const before = (await c.db.query("select turn_resumes, resume_failures from agents where id = $1", [client.session.id])).rows[0];
+    assert.equal(before.turn_resumes, 0);
+    assert.equal(before.resume_failures, 0);
+    node.child.kill("SIGKILL");
+    await once(node.child, "close");
+    node = await c.start(`reset-${turn}`, env, port);
+    assert.equal((await run).reply, "done");
+    const record = await client.waitForRequest(`turn-${turn}`);
+    assert.equal(record.reply, "done");
+    await until(async () => (await c.db.query("select turn_resumes from agents where id = $1", [client.session.id])).rows[0].turn_resumes === 0, "successful end resets resumes");
+  }
 });

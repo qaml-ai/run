@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Hosting } from "./supervisor.ts";
-import { RUN_LIMITS } from "./client-sessions.ts";
+import { MAX_RESUMES, RUN_LIMITS } from "./client-sessions.ts";
 import { STREAM_TIMEOUTS } from "./model-stream.ts";
 import { TOOL_DEADLINES } from "./tool-servers.ts";
 import { codeCapacity } from "./codemode.ts";
@@ -52,6 +52,8 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   // it is handed off mid-step, its calls in flight closed as of unknown outcome.
   const retireMaxMs = Number(env.AGENT_RETIRE_MAX_MS ?? TOOL_DEADLINES.maxTotalMs);
   if (!Number.isInteger(retireMaxMs) || retireMaxMs < 0) throw new Error("AGENT_RETIRE_MAX_MS must be a non-negative integer");
+  // Node-loss resumes of one turn before its next loss ends it with resume_limit.
+  const maxResumes = positiveSetting("AGENT_MAX_RESUMES", MAX_RESUMES);
   // How often every node sweeps for agents with work no node is doing (0: never). Nodes also sweep at once when told
   // that work was left (a drain, a retirement, a dead peer found), so this is the backstop.
   const orphanMs = Number(env.AGENT_ORPHAN_SWEEP_MS ?? 10_000);
@@ -109,7 +111,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     publicUrlSet: !!env.AGENT_PUBLIC_URL,
     // Where browsers reach the runtime, as browser tokens say: AGENT_PUBLIC_URL unless set; empty for none.
     browserUrl: env.AGENT_BROWSER_URL?.replace(/\/+$/, ""),
-    maxAgents, memoryHighBytes, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, childSweepMs, wakesPerHour, hosting, ignored, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs,
+    maxAgents, memoryHighBytes, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, hosting, ignored, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs,
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,

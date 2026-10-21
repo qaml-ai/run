@@ -36,6 +36,7 @@ test("a metric line is CloudWatch EMF: namespace AgentRuntime, ServiceName in ev
 });
 
 test("model and run errors are sorted into a few classes", () => {
+  assert.equal(errorClass("This turn exhausted its 3 node-loss resumes and was not resumed again"), "resume_limit");
   assert.equal(errorClass("429 Too Many Requests"), "rate_limit");
   assert.equal(errorClass("Rate limit exceeded for model"), "rate_limit");
   assert.equal(errorClass("Overloaded"), "overloaded");

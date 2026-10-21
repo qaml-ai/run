@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { nodeConfig } from "../src/node-config.ts";
+import { loadDecision } from "../src/client-sessions.ts";
 
 // What used to be the process's settings are each node's own, from its environment, and its agent processes are told
 // its settings rather than inheriting the process's.
@@ -40,4 +41,17 @@ test("the legacy engine's settings are accepted and ignored: a node that still h
     const config = nodeConfig({ AGENT_ENGINE: engine, AGENT_PI_CANARY_AGENTS: "a,b", AGENT_PI_CANARY_TENANTS: "" });
     assert.deepEqual(config.ignored, ["AGENT_ENGINE", "AGENT_PI_CANARY_AGENTS", "AGENT_PI_CANARY_TENANTS"]);
   }
+});
+
+test("node-loss resume limit defaults to three and accepts only positive integers", () => {
+  assert.equal(nodeConfig({}).maxResumes, 3);
+  assert.equal(nodeConfig({ AGENT_MAX_RESUMES: "7" }).maxResumes, 7);
+  for (const value of ["0", "-1", "1.5", "NaN", ""]) assert.throws(() => nodeConfig({ AGENT_MAX_RESUMES: value }), /AGENT_MAX_RESUMES/);
+});
+
+test("the configured resume limit applies to the same run, while a clean handoff is not a resume", () => {
+  const request = { id: "run", fingerprint: "run", method: "prompt" as const, state: "running" as const, began: 1, resumes: 1 };
+  assert.equal(loadDecision(request, 1), "resume_limit");
+  assert.equal(loadDecision(request, 2), "resume");
+  assert.equal(loadDecision({ ...request, handedOff: { step: "model", boundaryWaitMs: 0 } }, 1), "resume");
 });
