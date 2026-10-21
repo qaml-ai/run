@@ -338,3 +338,14 @@ test("Pi adapter commits a streaming answer's progress about once a second, not 
   assert.ok(commits <= 3, `1.5 s of deltas commit progress ${commits} times`);
   await fake.agent.close();
 });
+
+test("Pi adapter fails a run whose generation faulted instead of ending it as answered", async t => {
+  let thrown = false;
+  const fake = await fixture([call("read")], { initialState: { model, tools: [tool("read")], messages: [] },
+    // Throws once, inside Pi's tool phase: the generation faults; the run loop's own check after it passes.
+    finishTurn: async () => { if (!thrown) { thrown = true; throw new Error("policy broke"); } } });
+  t.after(() => fake.agent.close());
+  await fake.agent.prompt(user("Read it"));
+  assert.equal(fake.agent.state.messages.at(-1)?.role, "toolResult", "no answer was made");
+  assert.equal(fake.agent.state.errorMessage, "policy broke");
+});
