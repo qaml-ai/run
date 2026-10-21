@@ -5544,7 +5544,7 @@ export class ClientSessions {
             failures = 0;
           } catch (error) {
             outcome = error instanceof NotOwner ? "skipped_loaded" : "error";
-            if (outcome === "error") { failures++; detail = { error: errorText(error) }; }
+            if (outcome === "error") { failures++; detail = { error: safeError(error) }; }
           }
           count(outcome);
           console.log(JSON.stringify({ type: "pi_sweep_agent", dryRun, agent: row.id, tenant: row.tenant, outcome, ...detail }));

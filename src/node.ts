@@ -1438,7 +1438,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       if (pass.skipped || pass.stopped || pass.seen < config.piSweep.limit) break;
       after = pass.last;
     }
-  })().catch(error => console.error(JSON.stringify({ type: "pi_sweep_failed", error: errorText(error) }))), config.piSweep.delayMs);
+  })().catch(error => console.error(JSON.stringify({ type: "pi_sweep_failed", error: safeError(error) }))), config.piSweep.delayMs);
   piSweepTimer?.unref();
   // Agents no node holds with work left (a dead owner's turn, runs a drain queued) are loaded by whichever node gets to them first,
   // so their runs resume even when no one reads them. A node sweeps as it starts too: in a deploy, its peers are retiring and do not.
