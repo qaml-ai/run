@@ -351,3 +351,58 @@ test("Pi shared storage reads a conversation's journal in one statement and comm
   await assert.rejects(storage.scanEntries({ conversationId: 99 as ConversationId }, 10, undefined, context), /Unknown conversation: 99/);
   await storage.close(context);
 });
+
+test("Pi shared commits check the claim in their lock statement: a takeover waits for a commit in flight, and a node that lost the lease writes nothing", async t => {
+  const { db } = await database;
+  const ownership = new Ownership(db, { node: `pi-storage-${randomUUID()}` });
+  await ownership.start();
+  t.after(() => ownership.close());
+  const acquired = await ownership.acquire(`pi-actor-${randomUUID()}`);
+  assert.ok("claim" in acquired);
+  const claim = acquired.claim;
+  const sessionId = randomUUID();
+  const statements: string[] = [];
+  const counted = new Proxy(db, { get(target, key) {
+    if (key === "connect") return async () => {
+      const client = await target.connect();
+      return new Proxy(client, { get(inner, name) {
+        if (name === "query") return (text: string, values?: unknown[]) => { statements.push(text); return inner.query(text, values as never); };
+        const value = Reflect.get(inner, name, inner); return typeof value === "function" ? value.bind(inner) : value;
+      } });
+    };
+    const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
+  } });
+  // A commit in flight holds the claim: its entry's commit effect waits here, inside the transaction.
+  let hold: PromiseWithResolvers<void> | undefined, entered: PromiseWithResolvers<void> | undefined;
+  const node = await PostgresPiStorage.open(counted, sessionId, claim, async () => { entered?.resolve(); await hold?.promise; });
+  const root = 1 as ConversationId;
+  await node.commit([{ type: "conversation", value: { id: root } }], context);
+  const [first, second, third] = await node.mintIds(3);
+  statements.length = 0;
+  await node.commit([{ type: "entry", value: { id: first as EntryId, conversationId: root, kind: "message" } }], context);
+  assert.equal(statements.length, 5, "begin, the claim and metadata lock in one statement, one check, one write, commit");
+
+  hold = Promise.withResolvers(); entered = Promise.withResolvers();
+  const inFlight = node.commit([{ type: "entry", value: { id: second as EntryId, conversationId: root, kind: "message" } }], context);
+  await entered.promise;
+  let takenOver = false;
+  const takeover = db.query("update actor_owners set epoch = epoch + 1 where actor = $1", [claim.actor]).then(() => { takenOver = true; });
+  await new Promise(resolve => setTimeout(resolve, 300));
+  const waited = !takenOver;
+  hold.resolve(); hold = undefined; entered = undefined;
+  await inFlight;
+  await takeover;
+  assert.ok(waited, "the takeover waits for the commit holding the claim");
+
+  // The lease is gone: the old node's next commit fails and writes nothing, though its IDs and metadata are in hand.
+  const before = (await db.query("select next_seq from pi_durable_metadata where session_id = $1", [sessionId])).rows[0].next_seq;
+  await assert.rejects(node.commit([{ type: "entry", value: { id: third as EntryId, conversationId: root, kind: "message" } }], context), LostClaim);
+  await assert.rejects(node.mintIds(5), LostClaim);
+  assert.equal((await db.query("select next_seq from pi_durable_metadata where session_id = $1", [sessionId])).rows[0].next_seq, before);
+  const ids = (await db.query("select id from pi_durable_entries where session_id = $1 order by id", [sessionId])).rows.map(row => Number(row.id));
+  assert.deepEqual(ids, [first, second], "the commit in flight landed; the stale node's did not");
+  const next = await PostgresPiStorage.open(db, sessionId, { ...claim, epoch: claim.epoch + 1 });
+  await next.commit([{ type: "entry", value: { id: third as EntryId, conversationId: root, kind: "message" } }], context);
+  await next.close(context);
+  await node.close(context);
+});

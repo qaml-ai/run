@@ -14,8 +14,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { validKey } from "../../shared/storage.ts";
-import { underClaim, type Claim } from "../ownership.ts";
-import { databaseRetryable, databaseUnavailable, type Db, type Sql } from "../db.ts";
+import { LostClaim, underClaim, type Claim } from "../ownership.ts";
+import { databaseRetryable, databaseUnavailable, transaction, type Db, type Sql } from "../db.ts";
 import { clock } from "../node-context.ts";
 
 import type { Context, JsonValue } from "@earendil-works/chord";
@@ -112,13 +112,28 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim, retryMs = 0)
         all: (text, ...params) => whileUnavailable(retryMs, () => pool.all(text, ...params)),
         run: (text, ...params) => whileUnavailable(retryMs, () => pool.run(text, ...params)),
         retryMs,
-        transaction: (work, advance) => underClaim(db, claim, async sql => {
-            // Serializes mutations by session, including separate handles on this node. Takeovers
-            // wait on underClaim's ownership lock before another owner can update this metadata. One statement locks
-            // and reads the row (a commit's also takes its sequence) and turns synchronous commit on for this transaction.
-            const metadata = (advance === undefined
-                ? await sql.query<MetadataRow>("select next_id, next_seq, set_config('synchronous_commit', 'on', true) from pi_durable_metadata where session_id = $1 for update", [sessionId])
-                : await sql.query<MetadataRow>("update pi_durable_metadata set next_id = greatest(next_id::bigint, $2::bigint)::text, next_seq = next_seq + 1 where session_id = $1 returning next_id, next_seq - 1 as next_seq, set_config('synchronous_commit', 'on', true)", [sessionId, advance.nextId])).rows[0];
+        transaction: (work, advance) => transaction(db, async sql => {
+            // Serializes mutations by session, including separate handles on this node. One statement checks the
+            // claim (its ownership row FOR SHARE, as underClaim does: a takeover waits until this commits, and a claim
+            // no longer current writes nothing), locks and reads the metadata row (a commit's also takes its
+            // sequence) and turns synchronous commit on for this transaction.
+            const lock = advance === undefined
+                ? "select next_id, next_seq, set_config('synchronous_commit', 'on', true) from pi_durable_metadata where session_id = $1 for update"
+                : "update pi_durable_metadata set next_id = greatest(next_id::bigint, $2::bigint)::text, next_seq = next_seq + 1 where session_id = $1 returning next_id, next_seq - 1 as next_seq, set_config('synchronous_commit', 'on', true)";
+            const params: unknown[] = advance === undefined ? [sessionId] : [sessionId, advance.nextId];
+            let metadata: MetadataRow | undefined;
+            if (!claim) metadata = (await sql.query<MetadataRow>(lock, params)).rows[0];
+            else {
+                const at = params.length;
+                // The claim's row is locked before the metadata's: `m` runs only when `owner` holds a row.
+                const row = (await sql.query<MetadataRow & { held: boolean; next_id: string | null }>(
+                    `with owner as materialized (select 1 from actor_owners where actor = $${at + 1} and session = $${at + 2} and epoch = $${at + 3} for share),
+                     m as (${lock.replace(" where session_id = $1", " where session_id = $1 and exists (select from owner)")})
+                     select exists (select from owner) as held, m.* from (select 1) one left join m on true`,
+                    [...params, claim.actor, claim.session, claim.epoch])).rows[0];
+                if (!row.held) throw new LostClaim(claim.actor);
+                metadata = row.next_id === null ? undefined : row;
+            }
             // No row (the session's first open creates it): set_config did not run, so turn synchronous commit on here.
             if (!metadata) await sql.query("set local synchronous_commit = on");
             return work(executor(sql), metadata);
