@@ -40,7 +40,7 @@ jobs:
     if: needs.changes.outputs.reuse != 'true'
     # Fail fast: each job here takes 1-4 minutes, so anything near this limit is hung.
     timeout-minutes: 15
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-8vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/node-dependencies
@@ -54,7 +54,7 @@ jobs:
     # Python starts a runtime and needs the sandbox executable; restore it without waiting for another builder.
     needs: changes
     if: needs.changes.outputs.tests == 'true'
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-8vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/v8-exec
@@ -88,7 +88,7 @@ jobs:
   test:
     # Bound a hung shard while allowing the flaky-file rerun (scripts/test-shard.ts).
     timeout-minutes: 15
-    # Duration-balanced files, five shards per mode; larger runners run eight files at once.
+    # Duration-balanced files, five shards per mode; 8-vCPU Blacksmith runners run eight files at once.
     # Drafts, forks and self-hosted runners retain twelve shards per mode and two-file concurrency.
     name: test (${{ matrix.hosting }} ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }})
     needs: changes
@@ -98,7 +98,7 @@ jobs:
       matrix:
         hosting: [process, inline]
         shard: ${{ fromJSON(needs.changes.outputs.shards) }}
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-8vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
     env:
       AGENT_HOSTING: ${{ matrix.hosting }}
     steps:
@@ -252,7 +252,7 @@ jobs:
     # Only a proven successful PR run of this exact main tree can replace these checks.
     if: needs.changes.outputs.reuse != 'true'
     timeout-minutes: 15
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-8vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/v8-exec
