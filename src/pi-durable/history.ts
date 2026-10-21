@@ -15,6 +15,9 @@ export type At = { entryId: number; index: number };
 /** The marker that starts a session's journal history: the host's history then, and where in the journal it stood. */
 export type HistoryBase = { t: "base"; total: number; through?: At; active: boolean; turnStart: number; awaiting: string[]; calls?: [string, number][] };
 
+/** How far back a read looks for an entry committed after a later one: more than either writer has in flight. */
+const REORDER_WINDOW = 32;
+
 const after = (a: At, b: At) => a.entryId > b.entryId || a.entryId === b.entryId && a.index > b.index;
 
 export class JournalHistory {
@@ -30,12 +33,24 @@ export class JournalHistory {
   private readonly base: HistoryBase;
   private readonly baseId: number;
   private lastId: number;
+  /** The entries applied within the last REORDER_WINDOW IDs: one committed after a later one is found among them. */
+  private applied = new Set<number>();
+  /** Where the history's entries begin: the base's cursor's entry, or past the base. */
+  private readonly startId: number;
   private readonly storage: Pick<Storage, "scanEntries" | "entry">;
 
   private constructor(storage: Pick<Storage, "scanEntries" | "entry">, base: HistoryBase, baseId: number) {
     this.storage = storage; this.base = base; this.baseId = baseId; this.lastId = baseId;
+    this.startId = base.through ? base.through.entryId : baseId + 1;
     this.total = base.total; this.active = base.active; this.turnStart = base.turnStart; this.awaiting = [...base.awaiting];
     this.calls = new Map(base.calls ?? []);
+  }
+
+  /** Back to the base, every entry since to be read again. */
+  private reset() {
+    this.lastId = this.baseId; this.applied.clear(); this.cursors = [];
+    this.total = this.base.total; this.active = this.base.active; this.turnStart = this.base.turnStart; this.awaiting = [...this.base.awaiting];
+    this.calls = new Map(this.base.calls ?? []);
   }
 
   /** The session's base marker, read back from the journal's end to its host generation's start; undefined if none. */
@@ -57,25 +72,46 @@ export class JournalHistory {
     if (!base) return undefined;
     const history = new JournalHistory(storage, base.data as unknown as HistoryBase, base.id);
     // Native messages the base did not count yet (between its cursor and the base itself) come first.
-    if (history.base.through) await history.read(history.base.through.entryId, true);
-    else await history.read(base.id, false);
+    await history.read(history.startId);
     return history;
   }
 
-  /** Take in what the journal committed since the last read. */
-  refresh() { return this.read(this.lastId, false); }
+  /**
+   * Take in what the journal committed since the last read. Pi and the host take entry IDs from one sequence but
+   * commit on their own, so an entry can land after one with a later ID that a read already took in: the recent IDs
+   * are read again, and one not taken in yet means reading the history again from its base, in ID order (a retraction
+   * or skip applies to what precedes it).
+   */
+  async refresh() {
+    const late = (await this.entries(Math.max(this.startId, this.lastId - REORDER_WINDOW + 1))).some(entry => entry.id < this.lastId && !this.applied.has(entry.id));
+    if (late) { this.reset(); await this.read(this.startId); return; }
+    await this.read(this.lastId + 1);
+  }
 
-  private async read(from: number, inclusive: boolean) {
+  private async entries(from: number) {
+    const items: EntryRecord[] = [];
     let cursor: Cursor | undefined;
     do {
-      const page = await this.storage.scanEntries({ conversationId, order: "ascending", minEntryId: (inclusive ? from : from + 1) as EntryId }, 256, cursor, context);
+      const page = await this.storage.scanEntries({ conversationId, order: "ascending", minEntryId: from as EntryId, maxEntryId: this.lastId as EntryId }, 256, cursor, context);
+      items.push(...page.items);
+      cursor = page.next;
+    } while (cursor !== undefined);
+    return items;
+  }
+
+  private async read(from: number) {
+    let cursor: Cursor | undefined;
+    do {
+      const page = await this.storage.scanEntries({ conversationId, order: "ascending", minEntryId: from as EntryId }, 256, cursor, context);
       for (const entry of page.items) this.apply(entry);
       cursor = page.next;
     } while (cursor !== undefined);
+    for (const id of this.applied) if (id <= this.lastId - REORDER_WINDOW) this.applied.delete(id);
   }
 
   private apply(entry: EntryRecord) {
     this.lastId = Math.max(this.lastId, entry.id);
+    this.applied.add(entry.id);
     if (entry.kind === MARKER_KIND) {
       // Markers count from the base on; those before it are in its counts.
       if (entry.id <= this.baseId) return;

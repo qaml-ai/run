@@ -84,3 +84,19 @@ test("journal history: refresh takes in what was committed since, and an answer 
   assert.equal(history.total, 1);
   assert.equal(history.callIndex("ask"), 0, "the base's calls are known");
 });
+
+test("journal history: an entry committed after one with a later ID is still taken in, in ID order", async () => {
+  const storage = await journal([base(0)]);
+  const history = (await JournalHistory.open(storage))!;
+  // The host takes an ID for its retraction's marker, then Pi commits a later-numbered entry first.
+  const failed = await storage.mintId<EntryId>(), retraction = await storage.mintId<EntryId>(), next = await storage.mintId<EntryId>();
+  await storage.commit([{ type: "entry", value: { id: failed, conversationId, kind: "pi.assistant", model: [{ ...fauxAssistantMessage(""), stopReason: "error" }] as never } }], BACKGROUND_CONTEXT);
+  await storage.commit([{ type: "entry", value: { id: next, conversationId, kind: "pi.assistant", model: [reply("next")] as never } }], BACKGROUND_CONTEXT);
+  await history.refresh();
+  assert.equal(history.total, 2, "the failure and the next response, so far");
+  await storage.commit([{ type: "entry", value: { id: retraction, conversationId, kind: MARKER_KIND, data: { t: "retract", index: 0 } as never } }], BACKGROUND_CONTEXT);
+  await history.refresh();
+  assert.equal(history.total, 1, "the retraction took back the failure, which precedes it");
+  assert.equal((await history.messagesFrom(0))!.length, 1);
+  assert.equal(((await history.messagesFrom(0))![0] as { stopReason: string }).stopReason, "stop");
+});
