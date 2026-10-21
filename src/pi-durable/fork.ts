@@ -21,6 +21,16 @@ export interface JournalForkCut {
   model: Message[];
 }
 
+/** The journal's retained context cannot reconstruct this point; do not fall back to the host's fork. */
+export class ForkBeforeHead extends Error {
+  readonly status = 400;
+  readonly code = "FORK_POINT_INVALID";
+  constructor() {
+    super("This fork point is before the newest context checkpoint or compaction; fork at a later message");
+    this.name = "ForkBeforeHead";
+  }
+}
+
 const refused = (status: number, code: string, message: string) => Object.assign(new Error(message), { status, code });
 const callsOf = (message: AgentMessage) => message.role === "assistant" ? message.content.flatMap(part => part.type === "toolCall" ? [part.id] : []) : [];
 const textOf = (message: Message) => typeof message.content === "string" ? message.content
@@ -58,12 +68,17 @@ export function forkCount(history: Pick<JournalHistory, "total" | "active" | "tu
 }
 
 /**
- * Pi's model context as of journal cursor `at`: the newest head marker at or before it (a compaction's summary, or a
+ * Pi's retained model context through journal cursor `at`: the newest head marker (a compaction's summary, or a
  * context checkpoint), then the entries from its head through `at` (each entry's messages as its newest edit leaves
  * them; later head markers' own messages left out), settled as Pi settles them (`piOrdered`).
  */
 export async function contextAt(storage: Pick<Storage, "scanEntries" | "findLatestHeadMarker">, at: At): Promise<Message[]> {
-  const head = await storage.findLatestHeadMarker(conversationId, at.entryId as EntryId, context);
+  const head = await storage.findLatestHeadMarker(conversationId, undefined, context);
+  if (head && at.entryId < (head.head ?? head.id)) {
+    throw new ForkBeforeHead();
+  }
+  // A compaction marker can follow the first message it keeps. That retained range already belongs to its
+  // context: older checkpoints may have been reclaimed, even when the cut precedes the marker's own ID.
   const entries: EntryRecord[] = [];
   let cursor: Cursor | undefined;
   do {

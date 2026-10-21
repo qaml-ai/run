@@ -11,6 +11,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - [Self-hosting](self-host.md): the image, Docker Compose, storage, networking
 - [Persistence](persistence.md): transcripts, history chunks, journals, retries, idle unload, limits per node and tenant
 - [Backups and restore](backup-restore.md): what is kept and for how long, the restore drill, restoring production
+- [Journal checkpoint reclaim](journal-reclaim.md): size and remove superseded context copies in idle sessions
 - [Pi durable sessions](pi-durable.md): the execution engine, importing legacy sessions, storage, recovery and billing
 - [Billing](billing.md): prepaid credit, the ledger, storage metering, Stripe, which keys a tenant's calls use
 - [Tenants](tenants.md): admin tenants and `infra/tenant.sh`: tokens, keys, agent and spend limits, other limits

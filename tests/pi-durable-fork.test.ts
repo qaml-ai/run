@@ -96,3 +96,33 @@ test("a journal fork cut keeps the history to the cut and starts its host transc
   assert.deepEqual(roles(cut.model), ["user", "user", "assistant"]);
   assert.equal(await journalForkCut(storage, history, messages.slice(1), "r2"), undefined, "a history that is not the journal's whole is not cut here");
 });
+
+test("forks before the newest head are refused even before reclaim; a compaction's retained head is valid", async () => {
+  const { storage, at } = await journal([
+    { kind: "camel.legacy.context", model: [system], self: true },
+    { kind: "pi.user", model: [user("old")] },
+    { kind: "pi.assistant", model: [reply("old answer")] },
+    { kind: "pi.user", model: [user("kept")] },
+    { kind: "pi.compaction", model: [summary("old summary")], headOf: 3 },
+    { kind: "pi.assistant", model: [reply("after")] },
+  ]);
+  await assert.rejects(contextAt(storage, at(2)), { code: "FORK_POINT_INVALID", status: 400 });
+  const atHead = await contextAt(storage, at(3));
+  assert.deepEqual(roles(atHead), ["user", "user"]);
+  assert.equal((atHead[1] as { content: string }).content, "kept");
+  assert.deepEqual(contextSummary(atHead), { summary: "old summary", kept: 1, at: 5 });
+  assert.deepEqual(roles(await contextAt(storage, at(5))), ["user", "user", "assistant"]);
+});
+
+test("forks before a newer checkpoint are refused, while its head and later entries work", async () => {
+  const { storage, at } = await journal([
+    { kind: "camel.legacy.context", model: [system], self: true },
+    { kind: "pi.user", model: [user("old")] },
+    { kind: "camel.legacy.context", model: [system], self: true },
+    { kind: "camel.context.message", model: [user("kept")] },
+  ]);
+  await assert.rejects(contextAt(storage, at(1)), error =>
+    (error as { code?: string }).code === "FORK_POINT_INVALID" && /fork at a later message/.test((error as Error).message));
+  assert.deepEqual(roles(await contextAt(storage, at(2))), ["system"]);
+  assert.deepEqual(roles(await contextAt(storage, at(3))), ["system", "user"]);
+});
