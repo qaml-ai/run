@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
  * time so far, by their seconds in tests/timings.json, so every shard gets the same files on
  * every runner and together they run each file once. A file the table does not know counts
  * as DEFAULT_SECONDS. `test-shard.ts --plan 6` prints every shard, for six shards a mode
- * (larger hosted runners; the default is twelve; `--plan 12 10` for ten inline).
+ * (the default is five, as CI runs; `--plan 5 6` for six inline).
  *
  * Every shard also records each file's wall time as CI runs it (TEST_CONCURRENCY files at once) in
  * test-timings/<hosting>-<index>of<count>.json (scripts/test-timings-reporter.ts), kept as the run's
@@ -79,7 +79,7 @@ if (process.argv[2] === "--update") {
     Object.fromEntries(Object.entries(seconds).filter(([file]) => filesFor(hosting).includes(file)).sort(([a], [b]) => a.localeCompare(b)))]));
   writeFileSync(timingsFile, `${JSON.stringify(sorted, null, 2)}\n`);
 } else if (process.argv[2] === "--plan") {
-  const counts: Record<string, number> = { process: Number(process.argv[3] ?? 12), inline: Number(process.argv[4] ?? process.argv[3] ?? 12) };
+  const counts: Record<string, number> = { process: Number(process.argv[3] ?? 5), inline: Number(process.argv[4] ?? process.argv[3] ?? 5) };
   for (const [hosting, seconds] of Object.entries(JSON.parse(readFileSync(timingsFile, "utf8")) as Record<string, Record<string, number>>)) {
     const count = counts[hosting];
     for (let index = 1; index <= count; index++) {

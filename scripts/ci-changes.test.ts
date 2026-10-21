@@ -11,12 +11,12 @@ const head = "b".repeat(40);
 const commit = "c".repeat(40);
 const tree = "d".repeat(40);
 
-type Options = { event?: string; paths?: string[]; apiFailure?: boolean; success?: boolean; artifact?: boolean; sameTree?: boolean; sameHead?: boolean; expired?: boolean; fork?: boolean; wrongWorkflow?: boolean; greenGate?: boolean; olderRun?: boolean; secondPage?: boolean };
+type Options = { event?: string; paths?: string[]; apiFailure?: boolean; success?: boolean; artifact?: boolean; sameTree?: boolean; sameHead?: boolean; expired?: boolean; fork?: boolean; wrongWorkflow?: boolean; greenGate?: boolean; olderRun?: boolean; secondPage?: boolean; draft?: boolean };
 
 function changes(options: Options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ci-changes-"));
   try {
-    writeFileSync(join(dir, "event.json"), JSON.stringify({ pull_request: { base: { sha }, head: { sha: head } } }));
+    writeFileSync(join(dir, "event.json"), JSON.stringify({ pull_request: { base: { sha }, head: { sha: head }, draft: options.draft ?? false } }));
     writeFileSync(join(dir, "git"), `#!/usr/bin/env bash
 case "$1" in
   fetch) exit 0 ;;
@@ -84,4 +84,12 @@ test("PR images follow all Dockerfile and build inputs, including removed paths"
     assert.match(changes({ event: "pull_request", paths }), /image=false\n$/, paths.join(","));
   }
   assert.match(changes({ event: "pull_request", paths: [] }), /image=true\n$/);
+});
+
+test("drafts run only the fast checks and the test files their change names", () => {
+  assert.equal(changes({ event: "pull_request", draft: true, paths: ["README.md"] }), "tests=false\nreuse=false\nimage=false\n");
+  const quick = changes({ event: "pull_request", draft: true, paths: ["src/model.ts", "tests/limits.test.ts", "Dockerfile", "src/nonexistent-module.ts", "docs/model.ts"] });
+  assert.match(quick, /^tests=false\nreuse=false\nimage=false\nquick=tests\/limits\.test\.ts( tests\/model[-.][^ ]*\.test\.ts)+\n$/);
+  assert.ok(quick.includes(" tests/model-errors.test.ts "), "src/model.ts names tests/model-*.test.ts");
+  assert.equal(changes({ event: "pull_request", draft: false, paths: ["src/model.ts"] }), "tests=true\nreuse=false\nimage=true\n");
 });
