@@ -86,7 +86,9 @@ do; the operator's mode chooses within it, is read before every agent, and start
   `--restart` starts both passes again now. Migrated agents are never candidates again.
 - **Never two owners:** an agent hosted or being loaded anywhere is skipped (`skipped_hosted`).
   Opening takes the agent's ownership claim as any load does, so a node that took it in between keeps
-  it. One with runs open (`skipped_pending_runs`) is left to the orphan sweep, which loads it.
+  it. One with runs open (`skipped_pending_runs`) is left to the orphan sweep, which loads it. One its
+  owner holds but never started (a watcher's or an upsert's load) is imported by the owner's own
+  sweep in place, and stays loaded (`loadedHere`); every other node skips it.
 - **Import only:** the sweep's start imports the session and stops its host at once. It recovers no
   turn and writes no configuration change: the next open does that, as for any session on Pi. It
   asks no model, bills nothing, sends no webhook and warms no tool search (whose embeddings its

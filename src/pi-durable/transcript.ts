@@ -7,6 +7,7 @@ import type { JsonObject, Storage, StorageWrite, DocumentId, DocumentContent, En
 import type { AppendLog } from "../../shared/append-log.ts";
 import { Transcript, type TranscriptRecord, type TranscriptSnapshot } from "../transcript.ts";
 import { durableEntryMessages } from "./agent.ts";
+import { JournalHistory, type HistoryBase } from "./history.ts";
 import { LEGACY_CONVERSATION_ID as conversationId, HOST_ARCHIVE_KIND as ARCHIVE, HOST_BOOTSTRAP_KIND as BOOTSTRAP, readMigrationRecords, contextWrites, importLegacyTranscript, LegacyMigrationDeferred } from "./migration.ts";
 
 const ADDRESS = { kind: "camel.host.snapshot", scope: { kind: "session" as const } };
@@ -18,6 +19,7 @@ export const MARKER_KIND = "camel.history.marker";
 /** Whether this process dual-writes (AGENT_PI_DUAL_WRITE=1; off unless set): a node's setting, as its agents' processes get it. */
 let dualWrite = false;
 export function setDualWrite(on: boolean) { dualWrite = on; }
+export const dualWriting = () => dualWrite;
 const json = (value: unknown) => JSON.parse(JSON.stringify(value));
 type State = { enabled: boolean; generation: number; snapshot: TranscriptSnapshot };
 /**
@@ -342,6 +344,20 @@ export class NativeTranscript extends Transcript {
       }
       cursor = page.next;
     } while (cursor);
+  }
+  /**
+   * Start the session's journal history (pi-durable/history.ts) where the host's stands now, once: a base marker with
+   * its history's length, where it stands in the journal, and its turn. A session that has one keeps it. On the commit
+   * line, so no record lands between what it counts and the marker; under the owner's claim, as every write.
+   */
+  writeBase(): Promise<boolean> {
+    return this.enqueue(async () => {
+      if (await JournalHistory.findBase(this.storage)) return false;
+      const base: HistoryBase = { t: "base", total: this.total, ...(this.piCursor ? { through: this.piCursor } : {}), active: this.active, turnStart: this.turnStart, awaiting: [...this.awaiting], calls: [...this.calls] };
+      try { await this.storage.commit([{ type: "entry", value: { id: await this.storage.mintId<EntryId>(), conversationId, kind: MARKER_KIND, data: json(base) } }], context); }
+      catch (error) { this.failed = error; throw error; }
+      return true;
+    });
   }
   override replace(messages: Parameters<Transcript["replace"]>[0], active = this.active,
     compaction?: Parameters<Transcript["replace"]>[2]) {

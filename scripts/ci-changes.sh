@@ -4,6 +4,7 @@ set -euo pipefail
 
 tests=true
 reuse=false
+image=true
 if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
   base=$(jq -r '.pull_request.base.sha' "$GITHUB_EVENT_PATH")
   head=$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")
@@ -17,28 +18,55 @@ sys.exit(0 if paths and all(map(allowed, paths)) else 1)
 '; then
     tests=false
   fi
-elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
-  # Only squash merges of a single PR qualify. Never use a green run from an older PR head.
-  prs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls")
-  matches=$(jq --arg sha "$GITHUB_SHA" '[.[] | select(.merged_at != null and .merge_commit_sha == $sha and .base.ref == "main")]' <<< "$prs")
-  if [ "$(jq length <<< "$matches")" = 1 ]; then
-    head=$(jq -r '.[0].head.sha' <<< "$matches")
-    number=$(jq -r '.[0].number' <<< "$matches")
-    run=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" -f event=pull_request -f head_sha="$head" -f per_page=1)
-    id=$(jq -r --arg repo "$GITHUB_REPOSITORY" '.workflow_runs[0] | select(.conclusion == "success" and .head_repository.full_name == $repo) | .id' <<< "$run")
-    if [ -n "$id" ]; then
-      dir=$(mktemp -d)
-      gh run download "$id" --repo "$GITHUB_REPOSITORY" --name tested-merge --dir "$dir"
-      commit=$(jq -r --arg head "$head" --argjson number "$number" 'select(.head == $head and .pr == $number) | .commit' "$dir/merge.json")
-      if [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
-        git fetch --no-tags origin "$commit"
-        if [ "$(git rev-parse "$commit^2")" = "$head" ] && [ "$(git rev-parse "$commit^{tree}")" = "$(git rev-parse 'HEAD^{tree}')" ]; then
-          tests=false
-          reuse=true
-          echo "::notice::Reusing successful PR #$number CI run $id: merge tree equals main"
-        fi
-      fi
-    fi
+  # Keep this list aligned with Dockerfile COPYs, the console build, and image smoke tests.
+  # Diff with renames disabled so deletions/renames of inputs still trigger a build.
+  if git diff --no-renames --name-only -z "$base...$head" | python3 -c '
+import sys
+paths = [p for p in sys.stdin.buffer.read().decode().split("\0") if p]
+inputs = ("src/", "shared/", "sandbox/", "migrations/", "console/", "docs/", "packages/cli/", "packages/registry/public/r/", ".github/actions/")
+files = {"Dockerfile", ".dockerignore", "package.json", "package-lock.json", ".npmrc", "clients/history-formats.ts", ".github/workflows/ci.yml", "scripts/ci-changes.sh", "scripts/backfill-pins.ts", "scripts/verify-gc.ts", "scripts/check-storage.ts", "scripts/voice-check.ts", "tests/image-isolation.ts", "tests/v8-exec.test.ts"}
+sys.exit(0 if paths and not any(p in files or p.startswith(inputs) for p in paths) else 1)
+'; then
+    image=false
   fi
+elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+  # Index by immutable tree, not PR head: a rerun, rebase, or a different PR can
+  # have tested the same tree. The artifact is only a candidate; verify its run
+  # and the aggregate check before trusting its recorded checkout tree.
+  tree=$(git rev-parse 'HEAD^{tree}')
+  dir=$(mktemp -d)
+  trap 'rm -rf "$dir"' EXIT
+  page=1
+  while :; do
+    artifacts=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=tested-tree-$tree&per_page=100&page=$page")
+    while read -r artifact; do
+      [ -n "$artifact" ] || continue
+      id=$(jq -r '.workflow_run.id' <<< "$artifact")
+      run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id")
+      if ! jq -e --arg repo "$GITHUB_REPOSITORY" '
+        .event == "pull_request" and .conclusion == "success" and
+        .path == ".github/workflows/ci.yml" and .head_repository.full_name == $repo
+      ' <<< "$run" >/dev/null; then continue; fi
+      # Use the current attempt only; a failed rerun cannot borrow an old green gate.
+      attempt=$(jq -r '.run_attempt' <<< "$run")
+      jobs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$id/attempts/$attempt/jobs?per_page=100")
+      if ! jq -se 'any(.[].jobs[]; .name == "CI success" and .conclusion == "success")' <<< "$jobs" >/dev/null; then continue; fi
+      artifact_id=$(jq -r '.id' <<< "$artifact")
+      gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$dir/artifact.zip"
+      unzip -p "$dir/artifact.zip" merge.json > "$dir/merge.json"
+      head=$(jq -r '.head_sha' <<< "$run")
+      if jq -e --arg tree "$tree" --arg head "$head" '
+        .tree == $tree and .head == $head and
+        (.commit | test("^[0-9a-f]{40}$")) and (.pr | type == "number")
+      ' "$dir/merge.json" >/dev/null; then
+        tests=false
+        reuse=true
+        echo "::notice::Reusing successful PR CI run $id: tested tree $tree equals main"
+        break
+      fi
+    done < <(jq -c '.artifacts[] | select(.expired == false)' <<< "$artifacts")
+    if [ "$reuse" = true ] || [ "$(jq '.artifacts | length' <<< "$artifacts")" -lt 100 ]; then break; fi
+    page=$((page + 1))
+  done
 fi
-printf 'tests=%s\nreuse=%s\n' "$tests" "$reuse" >> "$GITHUB_OUTPUT"
+printf 'tests=%s\nreuse=%s\nimage=%s\n' "$tests" "$reuse" "$image" >> "$GITHUB_OUTPUT"

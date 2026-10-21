@@ -236,6 +236,8 @@ export const WebhookEvents = {
   "voice.session.started": envelope("voice.session.started", z.object(voiceFacts), "A voice session connected and is listening (once per session)"),
   "voice.session.ended": envelope("voice.session.ended", z.object({
     ...voiceFacts, reason: z.enum(VOICE_END_REASONS).openapi({ description: "requested: DELETE; empty: no one else in the call for emptySeconds; idle: no speech for idleMinutes; max_duration: maxMinutes passed; budget: the account's or the end user's credit ran out (limit); kicked: the bot was disconnected from the channel and no new credentials came; credentials: Discord stopped taking the session's credentials; error: the connection failed" }),
+    detail: z.string().optional().openapi({ description: "Failure classification, for example realtime_failed, realtime_credit_failed, media_crashed or realtime_unavailable. Omitted on normal endings" }),
+    error: z.string().max(300).optional().openapi({ description: "Privacy-safe provider error summary: classification and message length only, never raw provider text, credentials or user content" }),
     limit: z.enum(["tenant", "end_user"]).optional().openapi({ description: "With reason budget: whose credit ran out" }),
     endUserReason: creditReason.optional().openapi({ description: "With limit end_user: why, one of the credit reasons a run's end_user_credit has (balance, daily_limit, bucket_limit)" }),
     bucket: creditBucket.optional().openapi({ description: "With limit end_user: the bucket refused" }),

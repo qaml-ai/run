@@ -277,3 +277,63 @@ resource "aws_cloudwatch_metric_alarm" "database_memory" {
   alarm_actions       = local.alarm_topics
   ok_actions          = local.alarm_topics
 }
+
+# The dual read (AGENT_PI_DUAL_READ=log) found an agent whose host transcript and Pi journal disagree beyond what is
+# expected while the host writes them both: a bug to explain before reads move to the journal.
+resource "aws_cloudwatch_log_metric_filter" "dual_read_mismatches" {
+  name           = "${var.name}-dual-read-mismatches"
+  log_group_name = aws_cloudwatch_log_group.runtime.name
+  pattern        = "{ $.type = \"host_transcript_dual_read_mismatch\" }"
+
+  metric_transformation {
+    namespace     = "AgentRuntime/Logs"
+    name          = "DualReadMismatches"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "dual_read_mismatches" {
+  alarm_name          = "${var.name}-dual-read-mismatches"
+  alarm_description   = "An agent's host transcript and Pi journal disagree (host_transcript_dual_read_mismatch in /ecs/${var.name}): a projection bug, which holds back moving history reads to the journal"
+  namespace           = "AgentRuntime/Logs"
+  metric_name         = "DualReadMismatches"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}
+
+# An agent reading its history from Pi's journal (AGENT_PI_HISTORY_SOURCE_TENANTS) was given a value the journal and its
+# host transcript disagree on: the host's was served, and the difference is a bug to explain before the host transcript goes.
+resource "aws_cloudwatch_log_metric_filter" "history_source_mismatches" {
+  name           = "${var.name}-history-source-mismatches"
+  log_group_name = aws_cloudwatch_log_group.runtime.name
+  pattern        = "{ $.type = \"history_source_mismatch\" }"
+
+  metric_transformation {
+    namespace     = "AgentRuntime/Logs"
+    name          = "HistorySourceMismatches"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "history_source_mismatches" {
+  alarm_name          = "${var.name}-history-source-mismatches"
+  alarm_description   = "An agent reading its history from Pi's journal got a value its host transcript disagrees with (history_source_mismatch in /ecs/${var.name}); the host's was served"
+  namespace           = "AgentRuntime/Logs"
+  metric_name         = "HistorySourceMismatches"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_topics
+  ok_actions          = local.alarm_topics
+}

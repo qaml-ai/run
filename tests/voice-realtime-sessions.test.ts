@@ -69,7 +69,9 @@ test("a session stored before realtime brains (no realtime settings) ends when t
   assert.equal(ended.endReason, "error");
   assert.equal(b.voice.size, 0);
   assert.equal(cluster.realtime.connections.length, 1, "no brain was made for it");
-  assert.equal((await cluster.events("voice.session.ended")).at(-1)?.data.reason, "error");
+  const event = (await cluster.events("voice.session.ended")).at(-1)!;
+  assert.equal(event.data.reason, "error");
+  assert.equal(event.data.detail, "brain_removed");
 });
 
 test("a realtime session: the call's audio reaches the model with who speaks, its answer plays, and each is billed and sent as events", async t => {
@@ -403,18 +405,57 @@ test("ElevenLabs connection minutes settle speech usage and the end-user ledger 
   media.handlers.ready();
   const model = await until(() => realtime.connections[0], "model after hold");
   assert.equal(Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count), 1);
-  model.events.meter?.(0.1, 0);
+  // Fixed provider durations, independent of playback and machine wall-clock time.
+  const beforeResponseSeconds = 0.1, onCloseSeconds = 0.05;
+  model.events.meter?.(beforeResponseSeconds, 0);
   await model.answer("elevenlabs_1", { ms: 80 });
-  model.events.meter?.(0.05, 0);
+  model.events.meter?.(onCloseSeconds, 0);
   await a.voice.end("alice", created.id);
+  const expected = Math.round(realtimeCost("elevenlabs/gemini-2.5-flash-lite", NO_USAGE, beforeResponseSeconds + onCloseSeconds) * 1e6);
+  // Response settlement releases its hold before the close settlement creates and
+  // settles the next one. Zero holds can be transient (only 3333 of 5000 posted).
+  // Wait for the final durable ledger amount, not that intermediate empty state.
+  const entries = await until(async () => {
+    const entries = (await credits.ledger("alice", "ada")).entries.filter(entry => entry.kind === "usage");
+    return entries.reduce((sum, entry) => sum + entry.raw, 0) === expected ? entries : undefined;
+  }, "response and close usage settled");
   await until(async () => Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count) === 0, "holds released");
-  const expected = Math.round(realtimeCost("elevenlabs/gemini-2.5-flash-lite", NO_USAGE, 0.15) * 1e6);
   const speech = cluster.usage.filter(entry => entry.usage.kind === "speech").map(entry => entry.usage);
   assert.ok(speech.length > 0);
   assert.ok(speech.every(entry => entry.provider === "elevenlabs" && entry.model === "gemini-2.5-flash-lite" && entry.platform && entry.identity?.subject === "ada"));
   assert.equal(Math.round(speech.reduce((sum, entry) => sum + entry.usage.cost.total, 0) * 1e6), expected);
-  const entries = (await credits.ledger("alice", "ada")).entries.filter(entry => entry.kind === "usage");
   assert.equal(entries.reduce((sum, entry) => sum + entry.raw, 0), expected);
   assert.ok(entries.every(entry => entry.bucket === "bot:7"));
   await until(async () => Math.round((await a.voice.get("alice", created.id)).costUsd * 1e6) === expected, "session cost");
+});
+
+test("a mid-call realtime failure includes its classification and a privacy-safe provider error in the ended webhook", async t => {
+  const cluster = await realtimeCluster(t);
+  const a = await cluster.node("http://a");
+  const created = await a.voice.create("alice", { discord: discordGrant() });
+  const connection = await until(() => cluster.fake.open()[0], "connection");
+  connection.handlers.ready();
+  await until(async () => (await a.voice.get("alice", created.id)).state === "live", "live");
+  const model = await until(() => cluster.realtime.connections[0], "model");
+  const logs: unknown[][] = [];
+  t.mock.method(console, "log", (...args: unknown[]) => { logs.push(args); });
+  const raw = "401 voice refused: sk-secret-fixture-key user said private transcript";
+  model.events.closed("error", raw, { retryable: false });
+  const ended = await until(async () => (await cluster.events("voice.session.ended"))[0], "ended webhook");
+  assert.equal(ended.data.reason, "error");
+  assert.equal(ended.data.detail, "realtime_failed");
+  assert.equal(ended.data.error, `auth (${raw.length} chars)`);
+  assert.doesNotMatch(JSON.stringify(ended.data), /sk-secret|private transcript|voice refused/);
+  assert.doesNotMatch(JSON.stringify(logs), /sk-secret|private transcript|voice refused/);
+});
+
+test("a normal session ended webhook omits failure detail and error", async t => {
+  const cluster = await realtimeCluster(t);
+  const a = await cluster.node("http://a");
+  const created = await a.voice.create("alice", { discord: discordGrant() });
+  await a.voice.end("alice", created.id);
+  const ended = await until(async () => (await cluster.events("voice.session.ended"))[0], "ended webhook");
+  assert.equal(ended.data.reason, "requested");
+  assert.equal(Object.hasOwn(ended.data, "detail"), false);
+  assert.equal(Object.hasOwn(ended.data, "error"), false);
 });

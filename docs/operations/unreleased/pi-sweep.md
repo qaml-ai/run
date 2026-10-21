@@ -10,6 +10,12 @@ fleet within seconds without a deploy. Progress is in `pi_sweep_agent`, `pi_swee
 `pi_sweep_backoff` and `pi_sweep_pass_done` log lines. The admin health page gains an "Agents on the
 legacy engine" count.
 
+Candidates and the sweep's `remaining` count include canary rollbacks whose current host
+snapshot has `enabled: false`, as well as agents with no host snapshot. The query uses the
+document address index and latest base revision index (one row each); snapshot-only deltas
+do not change `enabled`. The import-only start adopts a disabled transcript into a new enabled
+generation, so subsequent passes leave it alone.
+
 The sweep's start only imports: the host imports the session and stops, recovering no turn and
 writing no configuration change (its next open does), warming no tool search, and listing tool
 sources only for a transcript with no leading system message. A dry run's lines carry `system`,
@@ -20,6 +26,9 @@ A large pass, off by default (`infra/pi-sweep.sh large on`), imports the session
 by reference once the on pass has finished: one at a time across the fleet, only while a node's
 container memory is under `AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES` (Terraform: 35% of the task),
 `AGENT_PI_SWEEP_LARGE_PACE_MS` (30 s) apart (migration 082).
+
+An agent a node holds but never started (a watcher's or an upsert's load) is imported by that node's
+own sweep, in place, instead of being skipped as held on every pass.
 
 The sweep's latency gate reads this node's last 10 minutes of turns and needs 5 of them (was 5
 minutes and 10), so small nodes in a large fleet have one. `turn_metrics` gains

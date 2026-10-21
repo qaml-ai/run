@@ -7,12 +7,15 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import type pg from "pg";
 import { fauxAssistantMessage, type Api, type Model } from "@earendil-works/pi-ai";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { memoryStorage } from "../shared/storage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { Ownership } from "../src/ownership.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { MIGRATION_MAX_BYTES } from "../src/pi-durable/migration.ts";
+import { PostgresPiStorage } from "../src/pi-durable/storage.ts";
+import { NativeTranscript } from "../src/pi-durable/transcript.ts";
 import { effectiveMode, PiSweep, PiSweepControl, piSweepGate, type PiSweepCandidate, type PiSweepMode, type PiSweepResult } from "../src/pi-sweep.ts";
 import type { TranscriptRecord } from "../src/transcript.ts";
 import { testDatabase } from "./database.ts";
@@ -114,10 +117,10 @@ async function everything(db: pg.Pool) {
 }
 
 /** A sweep over `sessions` that records each agent's outcome, never waiting for memory or pace. */
-function sweeper(db: pg.Pool, sessions: ClientSessions, setting: PiSweepMode, each?: (id: string, result: PiSweepResult) => void) {
+function sweeper(db: pg.Pool, sessions: ClientSessions, setting: PiSweepMode, each?: (id: string, result: PiSweepResult) => void, node?: string) {
   const outcomes: Record<string, number> = {};
   const sweep = new PiSweep({
-    db, setting, paceMs: 0, largePaceMs: 0, repassMs: 60 * 60_000, pollMs: 20, backoffMs: [20, 40], busy: async () => undefined,
+    db, setting, node, paceMs: 0, largePaceMs: 0, repassMs: 60 * 60_000, pollMs: 20, backoffMs: [20, 40], busy: async () => undefined,
     sweep: async (candidate, dryRun, large) => {
       const result = await sessions.piSweepAgent(candidate, dryRun, large);
       outcomes[result.outcome] = (outcomes[result.outcome] ?? 0) + 1;
@@ -129,6 +132,65 @@ function sweeper(db: pg.Pool, sessions: ClientSessions, setting: PiSweepMode, ea
 }
 
 const finished = (db: pg.Pool, mode: "dry_run" | "on") => until(async () => (await db.query(`select ${mode}_finished_at from pi_sweep`)).rows[0][`${mode}_finished_at`] !== null, `the ${mode} pass`, 60_000);
+
+test("the sweep counts and adopts a disabled host transcript, then leaves it enabled on a second pass", { timeout: 120_000 }, async t => {
+  const { model, state } = await fixtureModel(t);
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
+  const [id] = await legacyAgents(t, db, storage, model, ["rolled-back"]);
+  const pi = await node(t, db, storage, "pi");
+  const candidate = { id, tenant: "default", pendingRuns: false, owned: false };
+  assert.equal((await pi.sessions.piSweepAgent(candidate, false)).outcome, "migrated");
+
+  const durable = await PostgresPiStorage.open(db, id);
+  t.after(() => durable.close(BACKGROUND_CONTEXT));
+  const document = (await durable.findDocument({ kind: "camel.host.snapshot", scope: { kind: "session" } }, "current", BACKGROUND_CONTEXT))!;
+  const original = (await durable.document(document.id, "current", BACKGROUND_CONTEXT))!;
+  // The old engine's disable wrote a base and marker together. A later snapshot-only delta must not hide enabled.
+  await durable.commit([
+    { type: "entry", value: { id: await durable.mintId(), conversationId: 1 as never, kind: "camel.host.disabled" } },
+    { type: "document.change", id: document.id, content: { kind: "base", version: 1, value: { ...original.value, enabled: false } } },
+  ], BACKGROUND_CONTEXT);
+  await durable.commit([{ type: "document.change", id: document.id,
+    content: { kind: "delta", version: 1, ops: [["s", ["snapshot", "active"], false]] } }], BACKGROUND_CONTEXT);
+  assert.equal(await NativeTranscript.open(durable), undefined);
+
+  const control = new PiSweepControl(db, "on");
+  const { sweep, outcomes, reset } = sweeper(db, pi.sessions, "on");
+  t.after(() => sweep.stop());
+  assert.equal((await control.status()).remaining, 1);
+  assert.equal(await sweep.remaining(), 1);
+  const before = await everything(db);
+  sweep.start();
+  await finished(db, "dry_run");
+  assert.deepEqual(outcomes, { would_migrate: 1 });
+  assert.deepEqual(await everything(db), before, "the dry run leaves the disabled transcript untouched");
+
+  reset();
+  await control.set("on");
+  await finished(db, "on");
+  assert.deepEqual(outcomes, { adopted: 1 }, "importOnly adopts the existing disabled document");
+  const adopted = (await durable.document(document.id, "current", BACKGROUND_CONTEXT))!;
+  assert.equal(adopted.value.enabled, true);
+  assert.notEqual(adopted.value.generation, original.value.generation);
+  assert.equal((await NativeTranscript.open(durable))!.total, 2, "legacy history is retained");
+  assert.equal((await control.status()).remaining, 0);
+  assert.equal(await sweep.remaining(), 0);
+
+  // Enabled bases also stay enabled when the latest revision is a snapshot-only delta.
+  await durable.commit([{ type: "document.change", id: document.id,
+    content: { kind: "delta", version: 1, ops: [["s", ["snapshot", "active"], false]] } }], BACKGROUND_CONTEXT);
+  reset();
+  const enabled = await everything(db);
+  await control.set("on", true);
+  await finished(db, "on");
+  await sweep.stop();
+  assert.deepEqual(outcomes, {});
+  assert.deepEqual(await everything(db), enabled, "a second pass writes nothing");
+  assert.equal((await control.status()).remaining, 0);
+  assert.equal(pi.supervisor.agents.size, 0);
+  assert.equal(state.calls, 0, "adoption asks no model");
+});
 
 test("the sweep's dry run reports and writes nothing; on, it imports the idle agents once, and a second pass finds only those it left", { timeout: 180_000 }, async t => {
   const { model, state } = await fixtureModel(t);
@@ -346,6 +408,58 @@ test("the large pass takes one agent at a time across nodes, and only below its 
   await until(async () => (await control.status()).large.finishedAt, "the large pass");
   assert.equal(most, 1, "one at a time across the fleet");
   assert.deepEqual([...taken].sort(), taken.map((_, i) => `client_${i}`), "each once");
+});
+
+test("an agent its owner holds but never started is imported by the owner's sweep, in place; other nodes leave it", { timeout: 120_000 }, async t => {
+  const { model, state } = await fixtureModel(t);
+  const { db } = await testDatabase();
+  const storage = memoryStorage(postgresTail(db));
+  const [watched, asked] = await legacyAgents(t, db, storage, model, ["watched", "asked"], [], ["watched", "asked"]);
+  const a = await node(t, db, storage, "a");
+  const b = await node(t, db, storage, "b");
+  // Loaded on A, as a watcher's or an upsert's load does, and never started.
+  const load = (id: string) => (a.sessions as unknown as { load(id: string): Promise<unknown> }).load(id);
+  await load(watched);
+  await load(asked);
+  assert.equal(a.supervisor.agents.size, 0);
+  const control = new PiSweepControl(db, "on");
+  await control.set("on");
+
+  // B leaves both: A holds them.
+  const onB = sweeper(db, b.sessions, "on", undefined, "http://b");
+  t.after(() => onB.sweep.stop());
+  onB.sweep.start();
+  await finished(db, "on");
+  await onB.sweep.stop();
+  assert.deepEqual(onB.outcomes, { skipped_hosted: 2 });
+  assert.equal(await count(db, NATIVE), 0);
+
+  // A imports `watched` where it is, and keeps it loaded, not started.
+  const results: Record<string, PiSweepResult> = {};
+  const onA = sweeper(db, a.sessions, "on", (id, result) => { results[id] = result; }, "http://a");
+  t.after(() => onA.sweep.stop());
+  // A request for `asked` comes while A's sweep imports it: it waits, then runs.
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const start = a.supervisor.start.bind(a.supervisor);
+  a.supervisor.start = (async (...args: Parameters<typeof start>) => { if (args[0] === asked) { await held; a.supervisor.start = start; } return start(...args); }) as typeof start;
+  await control.set("on", true);
+  onA.sweep.start();
+  await until(() => (a.sessions.sessions.get(asked) as { sweeping?: boolean } | undefined)?.sweeping, "the sweep's start of the asked agent");
+  const prompted = prompt(a.sessions, asked, "while-importing");
+  await new Promise(resolve => setTimeout(resolve, 50));
+  release();
+  await prompted;
+  await finished(db, "on");
+  await onA.sweep.stop();
+  assert.deepEqual(results[watched], { outcome: "migrated", detail: { system: true, loadedHere: true } });
+  assert.deepEqual(results[asked], { outcome: "migrated", detail: { system: true, loadedHere: true } });
+  assert.equal(await count(db, NATIVE), 2);
+  assert.ok(a.sessions.sessions.has(watched), "it stays loaded for whoever holds it");
+  assert.ok(!a.supervisor.agents.has(watched), "and is not started");
+  assert.ok(a.supervisor.agents.has(asked), "the request's start serves it");
+  assert.equal(state.calls, 1, "only the request asked the model");
+  assert.equal((await control.status()).remaining, 0);
 });
 
 test("turning the operator's mode off stops every node's sweep before its next agent; on again, it goes on from its cursor", { timeout: 60_000 }, async t => {

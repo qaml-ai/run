@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { END_USER_CREDIT, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
-import { NativeTranscript } from "./pi-durable/transcript.ts";
+import { dualWriting, NativeTranscript } from "./pi-durable/transcript.ts";
 import { mkdir } from "node:fs/promises";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { convertToLlm } from "./pi-harness/messages.ts";
@@ -35,6 +35,9 @@ import { usageMissing } from "./platform-pricing.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
 import { DurableAgent, type DurableAgentOptions } from "./pi-durable/agent.ts";
 import { checkDualRead } from "./pi-durable/dual-read.ts";
+import { JournalHistory } from "./pi-durable/history.ts";
+import { metricLine } from "./metrics.ts";
+import { always } from "./assert.ts";
 import { LEGACY_CONVERSATION_ID, legacyImportShape, LegacyMigrationDeferred, loadLegacyMigration, readMigrationRecords, type LegacyImportShape } from "./pi-durable/migration.ts";
 import { reconcilePiTranscript } from "./pi-durable/projection.ts";
 
@@ -101,11 +104,23 @@ export interface HostIO {
    * `log` reports mismatches, `throw` also fails the request on an unexpected one (tests, the simulation).
    */
   piDualRead?: "log" | "throw";
+  /**
+   * Tenants whose agents read their history from Pi's journal (AGENT_PI_HISTORY_SOURCE_TENANTS; `*`: every tenant), on
+   * nodes that dual-write it: plans/host-transcript-removal.md, phase 2. The host transcript is still written, and
+   * served wherever the journal disagrees.
+   */
+  historySourceTenants?: string[];
   /** Tenants whose agents' system sections are native Pi sections (AGENT_NATIVE_SECTIONS_TENANTS; `*`: every tenant). */
   nativeSectionsTenants?: string[];
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number>; read(from: number): Promise<Backlog> };
 }
+
+/** A history value the journal does not hold (`served`). */
+const NOT_HELD = Symbol("not held");
+
+/** The least time between an agent's dual reads in `log` mode, past its load's. */
+export const DUAL_READ_INTERVAL_MS = 10 * 60_000;
 
 /** Tools a lost node's open call to is made again on resume, not closed as unknown: each is keyed by its call (multi-agent.ts). */
 export const RERUN = ["delegate", "spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"];
@@ -145,8 +160,12 @@ export function createAgentHost(hostIO: HostIO) {
   const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
   const io: HostIO = { ...hostIO, emit: event => { turns.event(event); hostIO.emit(event); } };
   let transcript: Transcript;
+  /** The agent's history as its journal gives it, where reads have moved there (`historyFromJournal`). */
+  let piHistory: JournalHistory | undefined;
   /** The agent's Pi storage, once loaded: the dual read reads it. */
   let journal: PiStorage | undefined;
+  /** When the dual read last ran for this agent (`DUAL_READ_INTERVAL_MS`). */
+  let lastDualRead = 0;
   /** The last system prompt hash logged for this agent (`systemPromptHash`). */
   let lastPromptHash: string | undefined;
   let busy = false;
@@ -353,6 +372,34 @@ export function createAgentHost(hostIO: HostIO) {
     lastPromptHash = hash;
   }
 
+  /** Whether the agent reads its history from Pi's journal: its tenant is listed, and the journal is dual-written. */
+  const historyFromJournal = () => dualWriting() && !!io.historySourceTenants && (io.historySourceTenants.includes("*") || io.historySourceTenants.includes(config.tenant ?? ""));
+
+  /**
+   * A history value as the journal gives it, where the agent reads from there: the host transcript's when they differ,
+   * which is logged (history_source_mismatch, with values and hashes only) for the cutover to explain.
+   */
+  async function served<T>(field: string, host: T, journalValue: (history: JournalHistory) => T | typeof NOT_HELD | Promise<T | typeof NOT_HELD>): Promise<T> {
+    if (!piHistory || transcript.failed !== undefined) return host;
+    await piHistory.refresh();
+    const value = await journalValue(piHistory);
+    // What the journal does not hold (messages before its base the history index lacks yet): the host's, not a mismatch.
+    if (value === NOT_HELD) return host;
+    const same = JSON.stringify(value) === JSON.stringify(host);
+    const summary = (item: unknown) => typeof item === "number" || typeof item === "boolean" || item === undefined ? item
+      : createHash("sha256").update(JSON.stringify(item)).digest("hex").slice(0, 16);
+    console.log(metricLine(same ? "history_source" : "history_source_mismatch", {
+      dimensions: { Outcome: same ? "match" : "mismatch" }, rollups: [[], ["Outcome"]],
+      metrics: { HistorySourceReads: 1, HistorySourceMismatches: same ? 0 : 1 },
+      properties: { agent: config.id, field, ...(same ? {} : { host: summary(host), journal: summary(value) }) },
+    }));
+    // The simulation records each: a value the journal gives otherwise is a violation of the run. Tests (the dual read in
+    // `throw`) fail on it.
+    always(same, "a history value the journal gives is the host transcript's");
+    if (!same && io.piDualRead === "throw") throw new Error(`History from the journal: ${field} is ${JSON.stringify(summary(value))}, the host's ${JSON.stringify(summary(host))}`);
+    return same ? value : host;
+  }
+
   /** Whether the agent's system sections are native Pi sections: its tenant is in AGENT_NATIVE_SECTIONS_TENANTS (or `*`). */
   const nativeSections = () => !!io.nativeSectionsTenants && (io.nativeSectionsTenants.includes("*") || io.nativeSectionsTenants.includes(config.tenant ?? ""));
 
@@ -374,8 +421,8 @@ export function createAgentHost(hostIO: HostIO) {
    * Where the model made a call: the history index of the assistant message carrying it. With the call's id it names
    * the call for good (providers may number calls per response, so ids repeat across turns), the same on a retry or resume.
    */
-  function made(toolCallId: string): { messageIndex?: number } {
-    const messageIndex = transcript.calls.get(toolCallId);
+  async function made(toolCallId: string): Promise<{ messageIndex?: number }> {
+    const messageIndex = await served("callIndex", transcript.calls.get(toolCallId), history => history.callIndex(toolCallId));
     return messageIndex === undefined ? {} : { messageIndex };
   }
 
@@ -417,7 +464,7 @@ export function createAgentHost(hostIO: HostIO) {
     if (!forcing.last || signal.aborted || stopped || last?.role !== "assistant" || last.stopReason !== "error" || isRetryableAssistantError(last) || isContextOverflow(last, config.model.contextWindow)) return;
     forcing = { left: 0, reminding: false, last: false };
     await transcript.retract();
-    io.emit({ type: "message_retracted", index: transcript.total });
+    io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
     agent!.state.messages = agent!.state.messages.slice(0, -1);
     await agent!.continue();
   }
@@ -458,7 +505,7 @@ export function createAgentHost(hostIO: HostIO) {
       definitions: config.tools.filter(tool => tool.exposure !== "direct"),
       call: async (name, args) => {
         signal.throwIfAborted();
-        const value = await io.tool(name, args, toolCallId ? { toolCallId, innerCallId: `${toolCallId}:${++calls}`, ...made(toolCallId) } : undefined);
+        const value = await io.tool(name, args, toolCallId ? { toolCallId, innerCallId: `${toolCallId}:${++calls}`, ...await made(toolCallId) } : undefined);
         // MCP tools answer with content; code gets their data.
         return config.tools.find(tool => tool.name === name)?.resultFormat === "content" ? scriptValue(value) : value;
       },
@@ -479,7 +526,7 @@ export function createAgentHost(hostIO: HostIO) {
     const readable = config.fileTools !== false || config.codeMode !== false;
     const mount = readable ? scratchMount(config.mounts) : undefined;
     // Named by the message that made the call too: providers may give calls in different turns the same id.
-    const at = made(toolCallId).messageIndex;
+    const at = (await made(toolCallId)).messageIndex;
     const path = mount && `${mount.path}/tool-results/${at !== undefined ? `${at}-` : ""}${toolCallId.replace(/[^A-Za-z0-9_.-]/g, "_")}.txt`;
     const whole = Buffer.from(text, "utf8");
     const saved = path ? await io.fs("writeFile", { path, text: whole.length > FILE_LIMITS.scriptFileBytes ? whole.subarray(0, FILE_LIMITS.scriptFileBytes).toString("utf8") : text }).then(() => true, () => false) : false;
@@ -502,7 +549,7 @@ export function createAgentHost(hostIO: HostIO) {
         },
         execute: async (toolCallId, args, signal) => {
           signal?.throwIfAborted();
-          const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId, ...made(toolCallId) });
+          const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId, ...await made(toolCallId) });
           signal?.throwIfAborted();
           // The call waits on a person (inputs.ts): it stays open, with no result, and the turn suspends after this step.
           if (value?.inputRequired) {
@@ -719,7 +766,7 @@ export function createAgentHost(hostIO: HostIO) {
     if (output || stopped || signal.aborted || last?.role !== "assistant" || last.stopReason !== "stop" || !agent!.state.tools.some(tool => tool.name === OUTPUT_TOOL)) return;
     if (transcript.total <= transcript.turnStart + 1) return;
     await transcript.retract();
-    io.emit({ type: "message_retracted", index: transcript.total });
+    io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
     const reminder: SystemMessage = { role: "system", content: "", sections: { [OUTPUT]: `${OUTPUT_INSTRUCTIONS}\n${OUTPUT_REMINDER}` }, timestamp: Date.now() };
     await declare(reminder, agent!.state.messages[0] as SystemMessage);
     agent!.state.messages = [...agent!.state.messages.slice(0, -1), reminder];
@@ -755,14 +802,14 @@ export function createAgentHost(hostIO: HostIO) {
       // A node leaving asks again elsewhere: the failed attempt is taken back, and the turn handed off at that boundary.
       if (await handingOff()) {
         await transcript.retract();
-        io.emit({ type: "message_retracted", index: transcript.total });
+        io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
         agent!.state.messages = agent!.state.messages.slice(0, -1);
         return;
       }
       io.emit({ type: "auto_retry_start", attempt, maxAttempts: policy.maxAttempts, delayMs, errorMessage: last.errorMessage ?? "Unknown error", failure: modelFailure(last, failureContext()) });
       // The failed attempt is not history: drop it from the log and the live state, and say so on the stream.
       await transcript.retract();
-      io.emit({ type: "message_retracted", index: transcript.total });
+      io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
       agent!.state.messages = agent!.state.messages.slice(0, -1);
       try { await clock().sleep(delayMs, { signal }); }
       catch { return; }
@@ -950,7 +997,7 @@ export function createAgentHost(hostIO: HostIO) {
           const refused = transcript.context.at(-1) as AssistantMessage | undefined;
           if (reason === "overflow" && refused?.role === "assistant" && refused.stopReason === "error" && isContextOverflow(refused) && transcript.total > transcript.turnStart) {
             await transcript.retract();
-            io.emit({ type: "message_retracted", index: transcript.total });
+            io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
           }
           const cut = transcript.total - keptMessages;
           if (cut < transcript.offset || cut > transcript.total) throw new Error("Native compaction is outside the host working set");
@@ -993,6 +1040,14 @@ export function createAgentHost(hostIO: HostIO) {
       // A configuration changed elsewhere (another node, or while this agent was stopped) applies from here.
       await declareConfiguration();
       void index();
+      // Reads move to the journal from here: its history starts where the host's stands now, once per session.
+      if (historyFromJournal() && transcript instanceof NativeTranscript && journal) {
+        await transcript.writeBase();
+        piHistory = await JournalHistory.open(journal);
+        // A session that already had its base: the turn it holds is the host's too.
+        await served("turn", { active: transcript.active, turnStart: transcript.turnStart, awaiting: [...transcript.awaiting].sort() },
+          history => ({ active: history.active, turnStart: history.turnStart, awaiting: [...history.awaiting].sort() }));
+      }
       return { pid: process.pid, ...(migration ? { migration } : {}), recovered, messages: transcript.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? endedTurn() : {}) };
     }
     // An import-only host (the Pi sweep's) has no agent: it answers its status and indexes its history as it is stopped.
@@ -1028,7 +1083,9 @@ export function createAgentHost(hostIO: HostIO) {
     if (method === "historyTail") {
       const backlog = transcript.backlog;
       // Part of it left to the log: the page reads the log instead.
-      return backlog && backlog.kept === backlog.from ? { from: backlog.from, messages: backlog.messages, turns: backlog.turns } : null;
+      if (!backlog || backlog.kept !== backlog.from) return null;
+      const messages = await served("tail", backlog.messages, async history => await history.messagesFrom(backlog.from) ?? NOT_HELD);
+      return { from: backlog.from, messages, turns: backlog.turns };
     }
     if (method === "steer") {
       const messages = await fittedImages(userMessages(params));
@@ -1090,7 +1147,7 @@ export function createAgentHost(hostIO: HostIO) {
       if (method === "continue" && transcript.awaiting.length) throw new Error("The agent is waiting for input: answer it, or send a new prompt");
       await transcript.setActive(true);
       // Where the run's messages start in the agent's history, so a client can line up its stream with history pages.
-      io.emit({ type: "turn_opened", index: transcript.total });
+      io.emit({ type: "turn_opened", index: await served("total", transcript.total, history => history.total) });
       steerable = true;
       if (method === "resume") {
         const settled = await settle(params.calls ?? [], active.signal);
@@ -1307,7 +1364,13 @@ export function createAgentHost(hostIO: HostIO) {
   async function handled(method: string, params: any): Promise<any> {
     try {
       const result = await handle(method, params);
-      if (io.piDualRead && journal && transcript?.failed === undefined && ["init", "prompt", "execute", "continue", "resume"].includes(method)) {
+      // Each request's history length, as the journal gives it where the agent reads from there.
+      if (piHistory && typeof result?.messages === "number") result.messages = await served("total", result.messages, history => history.total);
+      // In `log` (production), a check reads the session's journal since its host generation began: at load, then at
+      // most every DUAL_READ_INTERVAL_MS per agent. `throw` (tests, the simulation) checks after every run.
+      if (io.piDualRead && journal && transcript?.failed === undefined && ["init", "prompt", "execute", "continue", "resume"].includes(method) &&
+        (io.piDualRead === "throw" || method === "init" || clock().now() - lastDualRead >= DUAL_READ_INTERVAL_MS)) {
+        lastDualRead = clock().now();
         await checkDualRead(io.piDualRead, config.id, journal, transcript.awaiting, transcript.active);
       }
       return result;

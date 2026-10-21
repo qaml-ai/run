@@ -39,7 +39,7 @@ async function setup(t: Context) {
     { name: "delegate", description: "A sub-agent", parameters: { type: "object" }, exposure: "direct" },
   ];
   /** A host over the transcript file, as a node starting the agent: `call` answers its tools. */
-  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[]; tenant?: string; nativeSectionsTenants?: string[] } = {}) {
+  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[]; tenant?: string; nativeSectionsTenants?: string[]; piDualRead?: "log" | "throw" } = {}) {
     const events: any[] = [];
     const log = fileAppendLog<TranscriptRecord>(path);
     const opened = await openPiStorage({ sessionId: "agent", directory });
@@ -54,7 +54,9 @@ async function setup(t: Context) {
       file: async () => { throw new Error("no files"); },
       modelAuth: async () => { throw new Error("no per-call credentials"); },
       fs: async () => { throw new Error("no files"); },
-      piDualRead: "throw",
+      piDualRead: options.piDualRead ?? "throw",
+      // Every agent reads its history from the journal (phase 2), and fails on a value the host's transcript disagrees with.
+      historySourceTenants: ["*"],
       ...(options.nativeSectionsTenants ? { nativeSectionsTenants: options.nativeSectionsTenants } : {}),
     };
     const host = createAgentHost(io);
@@ -341,4 +343,41 @@ test("native sections are per tenant: a conversation of a listed tenant is re-ke
   await second.host.handle("prompt", { text: "four" });
   assert.deepEqual(keys.slice(2), [["application", "environment"], ["application", "environment"]], "re-keyed as it loads");
   assert.deepEqual(new Set(prompts).size, 1, "the model is sent the same prompt text throughout");
+});
+
+test("in log mode an agent's dual read runs at its load, then at most every ten minutes, not after every run", async t => {
+  const fake = await setup(t);
+  const logged = t.mock.method(console, "log", () => {});
+  const checks = () => logged.mock.calls.filter(call => /"type":"host_transcript_dual_read(_mismatch)?"/.test(String(call.arguments[0]))).length;
+  const { host } = await fake.start({ piDualRead: "log" });
+  assert.equal(checks(), 1, "at load");
+  fake.respond(answer("One."), answer("Two."));
+  await host.handle("prompt", { text: "one" });
+  await host.handle("prompt", { text: "two" });
+  assert.equal(checks(), 1, "runs within ten minutes of the last check read nothing");
+});
+
+test("a session's journal history starts once: its base is written at its first load reading from the journal, and kept after", async t => {
+  const fake = await setup(t);
+  const bases = async () => {
+    const reader = (await openPiJournalReader({ sessionId: "agent", directory: fake.path.replace(/\/transcript\.jsonl$/, "") }))!;
+    try {
+      let count = 0;
+      for (let cursor; ;) {
+        const page = await reader.scanEntries({ conversationId: 1 as never, order: "ascending" }, 256, cursor, BACKGROUND_CONTEXT);
+        count += page.items.filter(entry => entry.kind === "camel.history.marker" && (entry.data as { t?: string }).t === "base").length;
+        if (!(cursor = page.next)) break;
+      }
+      return count;
+    } finally { await reader.close(BACKGROUND_CONTEXT); }
+  };
+  const first = await fake.start();
+  fake.respond(answer("One."));
+  await first.host.handle("prompt", { text: "one" });
+  assert.equal(await bases(), 1);
+  await first.host.dispose(0);
+  const second = await fake.start();
+  fake.respond(answer("Two."));
+  assert.equal((await second.host.handle("prompt", { text: "two" })).messages, 4);
+  assert.equal(await bases(), 1, "a later load keeps the base");
 });

@@ -302,7 +302,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     db,
     // Pi's journal rides out a failover as the log tail does: for as long as the node's lease lasts.
     piRetryMs: leaseTtlMs,
-    agentEnv: config.agentEnv, historyBacklogBytes: config.historyBacklogBytes, ...(config.piDualRead ? { piDualRead: config.piDualRead } : {}), ...(config.nativeSectionsTenants.length ? { nativeSectionsTenants: config.nativeSectionsTenants } : {}), modelOutbound: outbound,
+    agentEnv: config.agentEnv, historyBacklogBytes: config.historyBacklogBytes, ...(config.piDualRead ? { piDualRead: config.piDualRead } : {}), ...(config.nativeSectionsTenants.length ? { nativeSectionsTenants: config.nativeSectionsTenants } : {}), ...(config.historySourceTenants.length ? { historySourceTenants: config.historySourceTenants } : {}), modelOutbound: outbound,
   });
   const model = configuredModel(env);
   // Where people are sent (the public URL), other names served in full (an earlier domain), and the issuer tokens name.
@@ -1439,7 +1439,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // default; the operator's mode chooses within it). An agent only while this node has memory and database connections to
   // spare, has room, and is not leaving: live traffic comes first.
   const piSweep = new PiSweep({
-    db, setting: config.piSweep.mode, paceMs: config.piSweep.paceMs, repassMs: config.piSweep.repassMs,
+    db, setting: config.piSweep.mode, node: ownership.node, paceMs: config.piSweep.paceMs, repassMs: config.piSweep.repassMs,
     largePaceMs: config.piSweep.largePaceMs,
     sweep: (candidate, dryRun, large) => clients.piSweepAgent(candidate, dryRun, large),
     busy: large => piSweepGate({

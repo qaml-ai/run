@@ -9,6 +9,7 @@ const RANK: Record<PiSweepMode, number> = { off: 0, "dry-run": 1, on: 2 };
 export const PI_SWEEP_MODES = Object.keys(RANK) as PiSweepMode[];
 
 /** An agent the sweep takes next, as the database saw it then. */
+/** `owned`: a live node other than this one holds it. */
 export interface PiSweepCandidate { id: string; tenant: string; pendingRuns: boolean; owned: boolean }
 /** What came of one agent: `outcome` (migrated, would_migrate, skipped_<why>, ...) and ids or sizes. */
 export interface PiSweepResult { outcome: string; detail?: Record<string, unknown> }
@@ -17,6 +18,8 @@ export interface PiSweepOptions {
   db: Db;
   /** The node's AGENT_PI_SWEEP: the most the operator's mode may do here. */
   setting: PiSweepMode;
+  /** This node's name in ownership: agents it holds are its own sweep's to import, not skipped as held elsewhere. */
+  node?: string;
   /** One agent: open it so it is imported (or, dry, say what that would find; `large`, even too large to copy). ClientSessions.piSweepAgent. */
   sweep(candidate: PiSweepCandidate, dryRun: boolean, large: boolean): Promise<PiSweepResult>;
   /** Why this node should not take an agent now (short of memory, its pool waiting, full, leaving), or undefined; `large`, with the large pass's memory limit. */
@@ -186,8 +189,9 @@ export class PiSweep {
       const cursor = finished !== null ? "" : control[`${column}_cursor`];
       const row = (await sql.query<{ id: string; tenant: string; pending_runs: boolean; owned: boolean }>(`
         select a.id, a.tenant, a.pending_runs,
-          exists (select 1 from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now() where o.actor = a.id) as owned
-        from agents a where ${LEGACY} and a.id > $2 order by a.id limit 1`, [now, cursor])).rows[0];
+          exists (select 1 from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now()
+            where o.actor = a.id and ($3::text is null or o.node <> $3)) as owned
+        from agents a where ${LEGACY} and a.id > $2 order by a.id limit 1`, [now, cursor, this.options.node ?? null])).rows[0];
       if (!row) {
         await sql.query(`update pi_sweep set ${column}_cursor = '', ${column}_finished_at = $1, updated_at = $1 where id`, [now]);
         return { state: "finished" as const, mode, pass };
@@ -199,9 +203,19 @@ export class PiSweep {
   }
 }
 
-/** Kept agents with no Pi host document: what the sweep walks. `$1` is now. Pi stores document kinds as JSON text. */
+/**
+ * Kept agents with no enabled Pi host document, including canary rollbacks. `$1` is now.
+ * Pi stores document kinds as JSON text. NativeTranscript writes enabled in each base; its deltas only change
+ * snapshot fields. The address index selects the current document and the (session_id, document_id, kind, seq desc)
+ * index finds its latest base, each with limit 1, without replaying deltas. A missing base is not a disabled document.
+ */
 const LEGACY = `not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at > $1)
-  and not exists (select 1 from pi_durable_documents d where d.session_id = a.id and d.kind = '"camel.host.snapshot"')`;
+  and coalesce((select coalesce((select r.content::jsonb ->> 'enabled' from pi_durable_document_revisions r
+        where r.session_id = d.session_id and r.document_id = d.id and r.kind = 'base'
+        order by r.seq desc limit 1), 'true')
+    from pi_durable_documents d where d.session_id = a.id and d.kind = '"camel.host.snapshot"'
+      and d.scope_kind = 'session' and d.owner_id = 0 and d.family = 0 and d.key_value = '""' and d.retired_at is null
+    order by d.created_at desc limit 1), 'false') = 'false'`;
 
 /** What a node runs: the operator's mode, but no more than its own setting allows. */
 export function effectiveMode(setting: PiSweepMode, operator: PiSweepMode): PiSweepMode {
