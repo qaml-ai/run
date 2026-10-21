@@ -3,8 +3,8 @@ import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMe
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, LiveDoc, createRegistry,
-  type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage,
+  GenerationTask, Harness, InboxDoc, LiveDoc, createRegistry,
+  type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage, type TaskId,
 } from "@earendil-works/pi-durable";
 
 export interface DurableCursor { entryId: number; index: number }
@@ -99,6 +99,8 @@ export class DurableAgent {
   private dirty = true;
   private pending = new Set<string>();
   private steering: AgentMessage[] = [];
+  /** A run's input beyond its first message: placed with it, before the run's first model request. */
+  private batch: AgentMessage[] = [];
   private followups: AgentMessage[] = [];
   private inputRefs = new Map<string, AgentMessage[]>();
   private originalInputs = new Map<number, { native: Message; message: AgentMessage }>();
@@ -142,6 +144,7 @@ export class DurableAgent {
     const task = { definition: { ...original, phases: { ...original.phases,
       prepare: async (...args: Parameters<typeof original.phases.prepare>) => {
         const [record, runtime, taskContext] = args;
+        await agent.placeQueued(record.id, runtime, taskContext);
         const view = await runtime.context(runtime.conversationId, taskContext);
         const sections = getCurrentSystemMessage(view.messages)?.sections ??
           getCurrentSystemMessage(agent.messages)?.sections ?? {};
@@ -500,6 +503,37 @@ export class DurableAgent {
       throw error;
     }
   }
+  /**
+   * Before a model request, as the legacy loop polls its steering queue: the run's remaining input and the queued steers
+   * enter the context now, rather than at Pi's next boundary (after the response). They are submitted as Pi queues busy
+   * input, then placed as Pi's boundary places them: an entry each, the submission placed and made one of the run's inputs.
+   */
+  private async placeQueued(taskId: TaskId, runtime: Parameters<typeof GenerationTask.definition.phases.prepare>[1],
+    taskContext: Parameters<typeof GenerationTask.definition.phases.prepare>[2]) {
+    const messages = [...this.batch.splice(0), ...this.steering.splice(0, this.steeringMode === "all" ? this.steering.length : 1)];
+    if (!messages.length) return;
+    const ids = new Set<number>();
+    for (const message of messages) {
+      const submission = await this.submitMessage(message, "steer");
+      if (submission !== undefined) ids.add(submission.id);
+    }
+    if (!ids.size) return;
+    await runtime.commit(async tx => {
+      const live = await tx.doc(LiveDoc, runtime.conversationId);
+      if (live.run?.taskId !== taskId) return undefined;
+      const items = (await tx.doc(InboxDoc, runtime.conversationId)).items;
+      for (let index = 0; index < items.length;) {
+        const item = items[index];
+        if (item.mode !== "steer" || !ids.has(item.id)) { index++; continue; }
+        const entry = await tx.appendEntry(runtime.conversationId, { ...(item.entry ?? { kind: "pi.user" }),
+          model: [{ role: "user", content: item.content, timestamp: runtime.now() }] } as never);
+        tx.placeSubmission(item.id, entry.id);
+        live.run.inputs.push(item.id);
+        items.splice(index, 1);
+      }
+      return undefined;
+    }, taskContext);
+  }
   private async submitQueues(which: "steer" | "followUp") {
     const queue = which === "steer" ? this.steering : this.followups;
     const mode = which === "steer" ? this.steeringMode : this.followUpMode;
@@ -527,8 +561,11 @@ export class DurableAgent {
       // Brand-new sessions have no native cursor. Start at the context marker,
       // rather than scanning a potentially huge imported archive at agent_end.
       start ??= await latestDurableCursor(this.options.durable.storage, this.conversation.id);
-      if (messages.length) for (const message of messages) await this.submitMessage(message);
-      else {
+      if (messages.length) {
+        // The rest of the input goes in before the first model request (`placeQueued`), as one prompt.
+        this.batch = messages.slice(1);
+        await this.submitMessage(messages[0]);
+      } else {
         const live = await this.harness.snapshot(LiveDoc, this.conversation.id, context);
         if (!live?.run) {
           await this.conversation.commit(async tx => {
@@ -552,6 +589,8 @@ export class DurableAgent {
         await this.submitQueues(this.steering.length ? "steer" : "followUp");
       }
     } finally {
+      // Input of a run aborted before its first request is withdrawn, as Pi withdraws queued input on abort.
+      this.batch = [];
       await this.flushEvents();
       const added = await this.recoverMessages(start);
       await this.emit({ type: "agent_end", messages: added.map(item => item.message) });
