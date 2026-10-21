@@ -155,9 +155,8 @@ test("a host's import writes its archive and context once, in one commit with it
   const reopened = (await NativeTranscript.open(storage))!;
   assert.deepEqual(reopened.snapshot(), transcript.snapshot());
 
-  // A node on the release before (a rolling deploy, a rollback) reads the same whole history, and finds the journal's
-  // latest message where it looks for one: the message the host wrote, which is in Pi's journal too (dual write).
+  // A node on the release before (a rolling deploy, a rollback) reads the same whole history, and finds Pi's context
+  // checkpoint where it looks for one.
   assert.deepEqual(historyOf((await previous.nativeTranscriptRecords(storage))!), history);
-  assert.deepEqual(await previous.latestDurableCursor(storage, 1 as any), transcript.piCursor);
-  assert.ok(transcript.piCursor!.entryId > metadata.contextEntryId);
+  assert.deepEqual(await previous.latestDurableCursor(storage, 1 as any), { entryId: metadata.contextEntryId, index: -1 });
 });

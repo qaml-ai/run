@@ -132,6 +132,8 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     // Compare each agent's host transcript with Pi's journal after its loads and runs (AGENT_PI_DUAL_READ: log, or throw
     // in tests and the simulation; unset: off). See plans/host-transcript-removal.md.
     piDualRead: piDualRead(env.AGENT_PI_DUAL_READ),
+    // Write what the host writes itself into Pi's journal too: native entries and markers (AGENT_PI_DUAL_WRITE=1).
+    piDualWrite: env.AGENT_PI_DUAL_WRITE === "1",
     // What its agent processes are told of these settings.
     agentEnv: agentProcessEnv(env),
     systemPrompt: env.AGENT_SYSTEM_PROMPT,

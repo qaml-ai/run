@@ -14,6 +14,10 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
 import { openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts";
 import { nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
+import { setDualWrite } from "../src/pi-durable/transcript.ts";
+
+// The agent host as nodes run it with AGENT_PI_DUAL_WRITE=1 (plans/host-transcript-removal.md, phase 1).
+setDualWrite(true);
 
 /**
  * The agent host on its own, without a supervisor or processes: a faux model, its Pi storage, and crashes simulated by

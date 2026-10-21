@@ -15,6 +15,9 @@ const RECORD = "camel.host.record", DISABLED = "camel.host.disabled";
 export const HOST_MESSAGE_KIND = "camel.message", HOST_USER_KIND = "camel.user";
 /** Phase 1's markers: `retract` (with the index it took back), `turn` (with the history's length), `awaiting`, and `pi` (a skip). */
 export const MARKER_KIND = "camel.history.marker";
+/** Whether this process dual-writes (AGENT_PI_DUAL_WRITE=1; off unless set): a node's setting, as its agents' processes get it. */
+let dualWrite = false;
+export function setDualWrite(on: boolean) { dualWrite = on; }
 const json = (value: unknown) => JSON.parse(JSON.stringify(value));
 type State = { enabled: boolean; generation: number; snapshot: TranscriptSnapshot };
 /**
@@ -296,7 +299,7 @@ export class NativeTranscript extends Transcript {
           // in the same commit, so Pi's journal alone gives the history. A message the host writes (a repair, an input's
           // answer, a message that lands without a turn) is a native entry, which its record refers to; a retraction, a
           // turn's start or end, calls left waiting and journal messages skipped are markers.
-          if (record.t === "message" && !record.pi) {
+          if (dualWrite && record.t === "message" && !record.pi) {
             const id = await this.storage.mintId<EntryId>(), message = record.message;
             // An answer to a call that waited on a person replaces Pi's input-required placeholder in its context.
             const placeholder = message.role === "toolResult" ? await this.placeholder(message.toolCallId) : undefined;
@@ -304,7 +307,7 @@ export class NativeTranscript extends Transcript {
               ? { kind: HOST_USER_KIND, data: json({ message }), model: json([{ role: "user", content: message.content, timestamp: message.timestamp }]) }
               : { kind: HOST_MESSAGE_KIND, model: json([message]), ...(placeholder ? { edits: [{ target: placeholder, action: "omit" as const }] } : {}) }) } });
             record = { ...record, pi: { entryId: id, index: 0 } };
-          } else if (record.t !== "message" && record.t !== "reset" && record.t !== "compaction" && record.t !== "system") {
+          } else if (dualWrite && record.t !== "message" && record.t !== "reset" && record.t !== "compaction" && record.t !== "system") {
             writes.push({ type: "entry", value: { id: await this.storage.mintId<EntryId>(), conversationId, kind: MARKER_KIND,
               data: json(record.t === "retract" ? { t: "retract", index: this.total - 1 } : record.t === "turn" ? { ...record, total: this.total }
                 : record.t === "pi" ? { ...record, ...(this.piCursor ? { after: this.piCursor } : {}) } : record) } });

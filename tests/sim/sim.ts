@@ -168,7 +168,7 @@ export class Sim {
       AGENT_SESSION_SECRET: "simulation-session-secret-of-32-characters", AGENT_SECRETS_KEY: "0".repeat(64),
       AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: "http://model.sim/v1",
       // Every agent's host transcript is checked against Pi's journal after each load and run (plans/host-transcript-removal.md).
-      AGENT_PI_DUAL_READ: "throw",
+      AGENT_PI_DUAL_READ: "throw", AGENT_PI_DUAL_WRITE: "1",
       ...this.nodeEnv, ...env,
     });
     // Each start of a node is a new process: its own randomness and clock, which a crash ends.

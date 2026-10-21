@@ -15,6 +15,10 @@ import { openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts
 import { loadLegacyMigration } from "../src/pi-durable/migration.ts";
 import { recoverDurableMessages } from "../src/pi-durable/agent.ts";
 import type { ToolDefinition } from "../src/protocol.ts";
+import { setDualWrite } from "../src/pi-durable/transcript.ts";
+
+// The agent host as nodes run it with AGENT_PI_DUAL_WRITE=1 (plans/host-transcript-removal.md, phase 1).
+setDualWrite(true);
 
 const context = BACKGROUND_CONTEXT;
 const user = (content: string, requestId?: string) => ({ role: "user", content, timestamp: 1, ...(requestId ? { requestId } : {}) }) as AgentMessage;
