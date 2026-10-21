@@ -15,7 +15,6 @@ import { Telemetry, TELEMETRY_CHANNEL } from "./telemetry.ts";
 import { expireIdempotencyKeys } from "./idempotency.ts";
 import { DOCS_SITE, loadDocs, loadRegistry, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
-import { PiSweep, PiSweepControl, piSweepGate } from "./pi-sweep.ts";
 import { modelHeadersInput, resolveModel, sessionConfig } from "./session-config.ts";
 import { ClientSessions, ORPHANS_CHANNEL, runSessionOf, spendInput, type RunSettings, type SessionHooks } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
@@ -69,7 +68,7 @@ import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 import { cgroupMemory } from "./process-memory.ts";
-import { recentFirstRequestP95, recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
+import { recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
 import { runtimeSecrets, managedDiscordSecrets } from "./secrets.ts";
 import { checkSandbox, type CodeExecutor } from "./codemode.ts";
 import { V8Exec } from "./v8-exec.ts";
@@ -1273,7 +1272,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     },
     runPrecheck: async tenant => { await rateLimits.runsLeft(tenant); const refused = await busyAgents.check(tenant); if (refused) throw refused; },
     createRun: (tenant, params, key, run) => createAgent(tenant, params, key, undefined, undefined, run) as Promise<{ id: string; existing?: boolean }>,
-    piSweep: new PiSweepControl(db, config.piSweep.mode),
     billingAdmins: config.billingAdmins }));
   if (journey) app.route("/", journeyApp(journey, consoleAuth, c => requestClient(c).key));
   // The query goes along: a link from the operator's site says in it where the visitor came from (src/journey.ts).
@@ -1435,23 +1433,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // writes created) is recorded either way, so turning it on later loses nothing.
   const storageGc = new StorageGc({ db, storage, volumes, graceMs: config.gc.graceMs, intervalMs: config.gc.intervalMs, dryRun: config.gc.dryRun });
   if (config.gc.enabled) storageGc.start(config.gc.pollMs);
-  // Retained agents still on the legacy engine, opened one at a time so they migrate to Pi (AGENT_PI_SWEEP, off by
-  // default; the operator's mode chooses within it). An agent only while this node has memory and database connections to
-  // spare, has room, and is not leaving: live traffic comes first.
-  const piSweep = new PiSweep({
-    db, setting: config.piSweep.mode, node: ownership.node, paceMs: config.piSweep.paceMs, repassMs: config.piSweep.repassMs,
-    largePaceMs: config.piSweep.largePaceMs,
-    sweep: (candidate, dryRun, large) => clients.piSweepAgent(candidate, dryRun, large),
-    busy: large => piSweepGate({
-      leaving: retiringSince !== undefined || clients.draining, dbWaiting: db.waitingCount, memoryHigh: supervisor.memoryHigh, full: supervisor.full,
-      firstRequestP95: recentFirstRequestP95(), maxFirstRequestMs: config.piSweep.maxFirstRequestMs,
-      // The large pass's lower limit leaves room for a log read whole.
-      maxMemoryBytes: large ? config.piSweep.largeMaxMemoryBytes ?? config.piSweep.maxMemoryBytes : config.piSweep.maxMemoryBytes,
-      memoryBytes: async () => (await deps.readCgroupMemory?.() as { cgroupMemoryBytes?: number } | undefined)?.cgroupMemoryBytes ?? process.memoryUsage.rss(),
-    }),
-  });
-  const piSweepTimer = config.piSweep.mode === "off" ? undefined : setTimeout(() => piSweep.start(), config.piSweep.delayMs);
-  piSweepTimer?.unref();
   // Agents no node holds with work left (a dead owner's turn, runs a drain queued) are loaded by whichever node gets to them first,
   // so their runs resume even when no one reads them. A node sweeps as it starts too: in a deploy, its peers are retiring and do not.
   const orphanTimer = orphanMs ? setInterval(() => void clients.resumeSoon(), orphanMs) : undefined;
@@ -1569,9 +1550,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     clearInterval(loadTimer);
     clearInterval(sweepTimer);
     clearInterval(purgeTimer);
-    clearTimeout(piSweepTimer);
-    // Not waited for: the agent in hand, if any, ends with the node (its load or start refused, or released with the rest).
-    void piSweep.stop();
     clearInterval(orphanTimer);
     clearInterval(childTimer);
     clearInterval(billingTimer);

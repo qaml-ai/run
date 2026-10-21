@@ -86,9 +86,9 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   const wakesPerHour = positiveSetting("AGENT_WAKES_PER_HOUR", MULTI_AGENT_LIMITS.wakesPerHour);
   const hosting = (env.AGENT_HOSTING ?? "process") as Hosting;
   if (!["process", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process or inline");
-  // Settings of the legacy engine, which is gone: every agent runs on Pi durable. Still accepted, so a deployment that
-  // sets them starts; the node says once that it ignores them.
-  const ignored = ["AGENT_ENGINE", "AGENT_PI_CANARY_AGENTS", "AGENT_PI_CANARY_TENANTS"].filter(name => env[name] !== undefined);
+  // Settings of the legacy engine and of the sweep that moved its agents to Pi, which are gone: every agent runs on Pi
+  // durable. Still accepted, so a deployment that sets them starts; the node says once that it ignores them.
+  const ignored = ["AGENT_ENGINE", "AGENT_PI_CANARY_AGENTS", "AGENT_PI_CANARY_TENANTS", "AGENT_PI_SWEEP"].filter(name => env[name] !== undefined);
   const toolTimeoutMs = Number(env.AGENT_TOOL_TIMEOUT_MS ?? 15_000);
   if (!Number.isInteger(toolTimeoutMs) || toolTimeoutMs < 1 || toolTimeoutMs > 15 * 60_000) throw new Error("AGENT_TOOL_TIMEOUT_MS must be an integer between 1 and 900000");
   // The most one run of a self-serve tenant's agents may take, whatever its agent sets (runLimits): model responses, and
@@ -207,7 +207,6 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     verifyKeys: env.AGENT_VERIFY_KEYS !== "false",
     billingAdmins: (env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean),
     purgeMs, billingMs, reconcileDays,
-    piSweep: piSweepSettings(env),
     gc: {
       enabled: env.AGENT_GC_ENABLED === "true", dryRun: env.AGENT_GC_DRY_RUN === "true", pollMs: Number(env.AGENT_GC_POLL_MS ?? 60_000),
       graceMs: Number(env.AGENT_GC_GRACE_MS ?? 24 * 60 * 60_000), intervalMs: Number(env.AGENT_GC_INTERVAL_MS ?? 6 * 60 * 60_000),
@@ -216,31 +215,3 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   };
 }
 
-/**
- * The Pi migration sweep (src/pi-sweep.ts): AGENT_PI_SWEEP is the most it may do on this node (off by default, which
- * runs nothing); the operator's mode (PUT /v1/operations/pi-sweep) chooses within that. It takes no agent while the
- * node's container memory is past AGENT_PI_SWEEP_MAX_MEMORY_BYTES (or its resident memory past AGENT_MEMORY_HIGH_BYTES), nor
- * while its turns' p95 TimeToFirstRequestMs over 10 minutes is past AGENT_PI_SWEEP_MAX_FIRST_REQUEST_MS (0: no limit),
- * waits AGENT_PI_SWEEP_PACE_MS between agents, AGENT_PI_SWEEP_DELAY_MS after the node starts, and
- * AGENT_PI_SWEEP_REPASS_MS after a pass reaches the end before the next. Its large pass (sessions too large to copy;
- * the operator turns it on) takes an agent only under AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES (else the sweep's limit),
- * AGENT_PI_SWEEP_LARGE_PACE_MS apart.
- */
-function piSweepSettings(env: Record<string, string | undefined>) {
-  const mode = env.AGENT_PI_SWEEP ?? "off";
-  if (!["off", "dry-run", "on"].includes(mode)) throw new Error("AGENT_PI_SWEEP must be off, dry-run or on");
-  const number = (name: string, fallback: number, min: number) => {
-    const value = Number(env[name] ?? fallback);
-    if (!Number.isSafeInteger(value) || value < min) throw new Error(`${name} must be an integer of at least ${min}`);
-    return value;
-  };
-  const maxMemoryBytes = env.AGENT_PI_SWEEP_MAX_MEMORY_BYTES ? number("AGENT_PI_SWEEP_MAX_MEMORY_BYTES", 0, 1) : undefined;
-  const largeMaxMemoryBytes = env.AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES ? number("AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES", 0, 1) : undefined;
-  return {
-    mode: mode as "off" | "dry-run" | "on", maxMemoryBytes, largeMaxMemoryBytes,
-    largePaceMs: number("AGENT_PI_SWEEP_LARGE_PACE_MS", 30_000, 0),
-    maxFirstRequestMs: number("AGENT_PI_SWEEP_MAX_FIRST_REQUEST_MS", 8_000, 0),
-    paceMs: number("AGENT_PI_SWEEP_PACE_MS", 1_000, 0), delayMs: number("AGENT_PI_SWEEP_DELAY_MS", 120_000, 0),
-    repassMs: number("AGENT_PI_SWEEP_REPASS_MS", 6 * 60 * 60_000, 0),
-  };
-}

@@ -11,12 +11,12 @@ import {
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { errorText, IDENTITY_KEY, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
+import { errorText, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
-import { Transcript, readTranscriptLog, type Backlog, type TranscriptRecord, type TranscriptSnapshot } from "./transcript.ts";
+import { Transcript, readTranscriptLog, type Backlog, type TranscriptRecord } from "./transcript.ts";
 import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
@@ -38,7 +38,8 @@ import { checkDualRead } from "./pi-durable/dual-read.ts";
 import { JournalHistory } from "./pi-durable/history.ts";
 import { metricLine, safeError } from "./metrics.ts";
 import { always } from "./assert.ts";
-import { LEGACY_CONVERSATION_ID, legacyImportShape, LegacyMigrationDeferred, loadLegacyMigration, readMigrationRecords, type LegacyImportShape } from "./pi-durable/migration.ts";
+import { SESSION_CONVERSATION_ID } from "./pi-durable/seed.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { reconcilePiTranscript } from "./pi-durable/projection.ts";
 
 /** How often an agent reads back from its log what its history backlog could not hold (see `index`). */
@@ -76,8 +77,6 @@ export interface HostIO {
   runLimit(): Promise<RunStop | undefined>;
   /** The agent's transcript, which its supervisor writes. */
   transcript: AppendLog<TranscriptRecord>;
-  /** Process hosting reduces the log on its owner before crossing IPC; inline hosting replays it here. */
-  loadTranscript?(indexed: number | null, bound?: number): Promise<TranscriptSnapshot>;
   /** Native Pi storage stays on the supervisor under the session's ownership claim. */
   piStorage?(): Promise<PiStorage | undefined>;
   /** `tools.search`, answered by the supervisor (which holds the rerankers); without it, code searches here. */
@@ -155,7 +154,6 @@ export function createAgentHost(hostIO: HostIO) {
   let agent: DurableAgent | undefined;
   let config: AgentConfig;
   /** How this start found the session: on Pi already, or imported from its legacy transcript now (and what that import took). */
-  let migration: { state: "existing" } | { state: "migrated" | "adopted"; from?: LegacyImportShape; archive?: "legacy-log" } | undefined;
   // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
   const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
   const io: HostIO = { ...hostIO, emit: event => { turns.event(event); hostIO.emit(event); } };
@@ -834,43 +832,29 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
-   * The session's host transcript on Pi. A session not on Pi yet is read from its legacy log once and imported as it
-   * stands, a turn its old node left running or waiting on a person included: the recovery that follows treats it as it
-   * treats any session on Pi, and nothing writes the legacy log after the import. `tools` make the leading system
-   * message an import starts Pi's context with.
+   * The session's host transcript on Pi. A new agent's (no Pi storage yet, nothing in its legacy log) is seeded here, its
+   * Pi context starting from the leading system message `tools` make; a fork's was seeded as it was made. A session
+   * whose history is still only in the legacy format (never imported, or rolled back to the legacy engine by an earlier
+   * release) is refused, loudly: this release imports nothing, and starting it empty would lose its history.
    */
-  async function open(storage: PiStorage, indexed: number | undefined, tools: Tool[]): Promise<Transcript> {
+  async function open(storage: PiStorage, indexed: number | undefined, tools: Tool[]): Promise<NativeTranscript> {
     const native = await NativeTranscript.open(storage, indexed, io.historyBacklogBytes, io.transcript);
-    const migrated = await loadLegacyMigration(storage);
     if (native) {
-      migration = { state: "existing" };
       // The native journal commits before its host record. Each copied message carries its cursor in that same
       // record, so a torn append is safe to copy again after reopen.
-      if (migrated) await reconcilePiTranscript(native, storage, migrated.conversationId);
+      await reconcilePiTranscript(native, storage, SESSION_CONVERSATION_ID);
       return native;
     }
-    const legacy = new Transcript(io.transcript, indexed, io.historyBacklogBytes);
-    if (io.loadTranscript) legacy.restore(await io.loadTranscript(indexed ?? null, io.historyBacklogBytes));
-    else await legacy.load();
-    // Imported by a release that started no host generation with it, or rolled back to the legacy engine since
-    // (camel.host.disabled): the native messages its log lacks are copied to it first, then the whole log is adopted.
-    if (migrated) await reconcilePiTranscript(legacy, storage, migrated.conversationId);
-    const leadingSystem = legacy.system ?? leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
-    const working = [leadingSystem, ...legacy.view()];
-    const from = legacyImportShape(legacy, working);
-    if (!migrated) {
-      // One commit imports the session and starts the host's generation on it; Pi's context starts as the host's
-      // working set, checkpointed once. A log too large to copy is never read whole: it stays the archive.
-      const records = await readMigrationRecords(legacy.log).catch(error => { if (error instanceof LegacyMigrationDeferred) return undefined; throw error; });
-      const imported = await NativeTranscript.importLegacy(storage, legacy, { sessionId: config.id,
-        ...records ? { records } : {}, leadingSystem, working, indexed, bound: io.historyBacklogBytes });
-      if (imported.transcript) {
-        migration = { state: "migrated", ...from ? { from } : {}, ...records ? {} : { archive: "legacy-log" } };
-        return imported.transcript;
-      }
+    const legacy = await storage.conversation(SESSION_CONVERSATION_ID, BACKGROUND_CONTEXT) ? "not_on_pi"
+      : (await io.transcript.readBounded?.(0))?.length === 0 ? undefined : "legacy_log";
+    if (legacy) {
+      console.error(JSON.stringify({ type: "legacy_session_not_imported", agent: config.id, tenant: config.tenant, reason: legacy }));
+      throw new Error(`${NOT_MIGRATED}: this agent's history is in the legacy format (${legacy === "not_on_pi" ? "its Pi host generation is missing or disabled" : "only its legacy transcript holds it"}), which this release no longer imports. An operator must import it (docs/operations/pi-durable.md); nothing was changed`);
     }
-    migration = { state: "adopted", ...from ? { from } : {} };
-    return NativeTranscript.adopt(storage, legacy, indexed, io.historyBacklogBytes, working);
+    const leadingSystem = leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
+    const seeded = await NativeTranscript.seed(storage, { sessionId: config.id, records: [], leadingSystem, working: [leadingSystem], indexed, bound: io.historyBacklogBytes });
+    if (!seeded) throw new Error("The agent's Pi storage was seeded meanwhile, without its host generation");
+    return seeded;
   }
 
   async function handle(method: string, params: any): Promise<any> {
@@ -883,15 +867,11 @@ export function createAgentHost(hostIO: HostIO) {
       const indexed = io.history ? await io.history.indexed().catch(() => null) : null;
       const piStorage = await io.piStorage?.();
       if (!piStorage) throw new Error("The agent's Pi durable storage is not open");
-      // Tools first: an import starts Pi's context with the leading system message they make.
+      // Tools first: a new agent's Pi context starts with the leading system message they make.
       jsExec = codeTool();
       const tools = [...config.codeMode === false ? [] : [jsExec], ...directAgentTools(config.tools)];
       journal = piStorage;
       transcript = await open(piStorage, indexed ?? undefined, tools.map(toToolDeclaration));
-      // Each legacy session is imported once, as it is first loaded: what its imports took, for operators to follow.
-      if (migration?.state !== "existing") console.log(JSON.stringify({ type: "legacy_session_imported", agent: config.id, tenant: config.tenant, ...migration }));
-      // The Pi sweep's start: the import was all it wanted. The next open recovers and configures as for any session on Pi.
-      if (config.importOnly) return { pid: process.pid, ...(migration ? { migration } : {}), recovered: false, messages: transcript.total };
       transcript.pin = () => agent ? leading() : undefined;
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
@@ -993,7 +973,7 @@ export function createAgentHost(hostIO: HostIO) {
         toolExecution: "parallel",
       };
       agent = await DurableAgent.create({ ...agentOptions, durable: {
-        storage: piStorage, conversationId: LEGACY_CONVERSATION_ID, cursor: transcript.piCursor, written: () => transcript.piCursor,
+        storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: transcript.piCursor, written: () => transcript.piCursor,
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when the
         // transcript fails one. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
         onStorageFailure: error => { transcript.failed ??= error; },
@@ -1066,13 +1046,10 @@ export function createAgentHost(hostIO: HostIO) {
         await served("turn", { active: transcript.active, turnStart: transcript.turnStart, awaiting: [...transcript.awaiting].sort() },
           history => ({ active: history.active, turnStart: history.turnStart, awaiting: [...history.awaiting].sort() }));
       }
-      return { pid: process.pid, ...(migration ? { migration } : {}), recovered, messages: transcript.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? endedTurn() : {}) };
+      return { pid: process.pid, recovered, messages: transcript.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? endedTurn() : {}) };
     }
-    // An import-only host (the Pi sweep's) has no agent: it answers its status and indexes its history as it is stopped.
-    if (!agent && config?.importOnly && method === "status") return { pid: process.pid, ...(migration ? { migration } : {}), busy, messages: transcript.total };
-    if (!agent && config?.importOnly && method === "historyFlush") { await index(true); return null; }
     if (!agent) throw new Error("Agent is not initialized");
-    if (method === "status") return { pid: process.pid, ...(migration ? { migration } : {}), busy, messages: transcript.total, contextMessages: transcript.context.length, compacted: !!transcript.compaction };
+    if (method === "status") return { pid: process.pid, busy, messages: transcript.total, contextMessages: transcript.context.length, compacted: !!transcript.compaction };
     if (method === "configure") {
       if (busy) throw new Error("Agent is busy");
       if (params.systemPrompt !== undefined) config.systemPrompt = params.systemPrompt ?? undefined;

@@ -15,7 +15,7 @@ import type { SystemMessage } from "@earendil-works/pi-ai";
 import { APPLICATION, applicationInstructions } from "../src/system-prompt.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
 import { openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts";
-import { nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
+import { NativeTranscript, nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
 import { JournalHistory } from "../src/pi-durable/history.ts";
 import { setDualWrite } from "../src/pi-durable/transcript.ts";
 
@@ -24,8 +24,7 @@ setDualWrite(true);
 
 /**
  * The agent host on its own, without a supervisor or processes: a faux model, its Pi storage, and crashes simulated by
- * stopping a host mid-turn and loading the agent in a new host. A turn a node on the legacy engine lost is written as
- * that node left it, in the legacy transcript file: the next host imports it as it stands, then recovers it.
+ * stopping a host mid-turn, or seeding the history a lost node left, and loading the agent in a new host.
  */
 type Context = { after(fn: () => unknown): void };
 
@@ -67,14 +66,15 @@ async function setup(t: Context) {
     t.after(async () => { await host.dispose(0); await opened.close(BACKGROUND_CONTEXT); });
     return { host, init, events, log };
   }
-  /** Leave the transcript as a node lost mid-turn would: a turn opened and `messages` written, nothing after. */
-  async function crashedTurn(messages: AgentMessage[], before: AgentMessage[] = []) {
-    const transcript = new Transcript(fileAppendLog<TranscriptRecord>(path));
-    await transcript.load();
-    if (before.length) { await transcript.setActive(true); await transcript.append(before); await transcript.setActive(false); }
-    await transcript.setActive(true);
-    await transcript.append(messages);
-    await transcript.log.close();
+  /** Leave the agent as a node lost mid-turn would: a turn opened and `messages` written, nothing after (`records`, its whole history so far). */
+  async function crashedTurn(messages: AgentMessage[], before: AgentMessage[] = [], after: TranscriptRecord[] = []) {
+    const records: TranscriptRecord[] = [];
+    const message = (message: AgentMessage): TranscriptRecord => ({ t: "message", message });
+    if (before.length) records.push({ t: "turn", active: true }, ...before.map(message), { t: "turn", active: false });
+    records.push({ t: "turn", active: true }, ...messages.map(message), ...after);
+    const storage = await openPiStorage({ sessionId: "agent", directory });
+    try { assert.ok(await NativeTranscript.seed(storage, { sessionId: "agent", records })); }
+    finally { await storage.close(BACKGROUND_CONTEXT); }
   }
   /** The agent's records: Pi's, once a host has the agent (imported or new), else the legacy file a lost node left. */
   const records = async () => {
@@ -84,7 +84,7 @@ async function setup(t: Context) {
   };
   const history = async () => { const transcript = new Transcript(undefined as never); for (const record of await records()) transcript.apply(record); return transcript; };
   const respond = (...steps: FauxResponseStep[]) => faux.setResponses(steps);
-  return { faux, start, crashedTurn, history, records, respond, path };
+  return { faux, start, crashedTurn, history, records, respond, path, directory };
 }
 
 const user = (text: string) => ({ role: "user", content: text, timestamp: 1 }) as AgentMessage;
@@ -152,11 +152,7 @@ test("repair: a turn lost while a call waited on a person keeps that call open a
   const fake = await setup(t);
   // One call suspended for input, the other still running when the node was lost.
   const calls = answer([fauxToolCall("approve", {}, { id: "ask" }), fauxToolCall("lookup", {}, { id: "run" })], "toolUse");
-  const transcript = new Transcript(fileAppendLog<TranscriptRecord>(fake.path));
-  await transcript.setActive(true);
-  await transcript.append([user("do it"), calls]);
-  await transcript.await(["ask"]);
-  await transcript.log.close();
+  await fake.crashedTurn([user("do it"), calls], [], [{ t: "awaiting", calls: ["ask"] }]);
   const { init } = await fake.start({ resume: true });
   assert.deepEqual(init.resume, { finished: { messages: 3, error: null, stopped: "input_required" } });
   const after = await fake.history();
@@ -294,10 +290,11 @@ test("a conversation a later release re-keyed to the application section keeps t
   // As the release that renames the section leaves a conversation: its instructions under `application`.
   const instructions = applicationInstructions();
   const leading = { role: "system", content: "Runtime rules.", sections: { [APPLICATION]: instructions }, timestamp: 0 } as SystemMessage;
-  await fileAppendLog<TranscriptRecord>(fake.path).rewrite(() => [
+  const storage = await openPiStorage({ sessionId: "agent", directory: fake.directory });
+  try { assert.ok(await NativeTranscript.seed(storage, { sessionId: "agent", records: [
     { t: "system", message: leading, leading: true }, { t: "turn", active: true },
     { t: "message", message: user("earlier") }, { t: "message", message: answer("Earlier answer.") }, { t: "turn", active: false },
-  ]);
+  ] })); } finally { await storage.close(BACKGROUND_CONTEXT); }
   const { host } = await fake.start();
   let seen: AgentMessage[] = [];
   fake.respond(context => { seen = context.messages as AgentMessage[]; return answer("Done."); });

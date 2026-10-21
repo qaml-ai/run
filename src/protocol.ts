@@ -63,6 +63,8 @@ export interface ToolBridge {
 /** The `apiKey` of an agent whose model is on its tenant's own endpoint: each call gets a fresh identity token instead (`ToolBridge.modelAuth`). */
 /** How an error says the agent's storage failed a write: nothing more is written until a reload reads what it holds. */
 export const PERSISTENCE_FAILED = "Session persistence failed";
+/** A host refused an agent whose history is still only in the legacy format, which no release imports any more. */
+export const NOT_MIGRATED = "AGENT_NOT_MIGRATED";
 export const IDENTITY_KEY = "agent-runtime:identity-token";
 /** The `apiKey` of an agent with a key scope: each call reads the scope's current entry (`ToolBridge.modelAuth`), so a rotated key applies at once. */
 export const SCOPE_KEY = "agent-runtime:key-scope";
@@ -110,12 +112,6 @@ export interface AgentConfig {
   streamTimeouts?: { firstTokenMs?: number; idleMs?: number };
   /** A run that began elsewhere will resume: leave an interrupted turn open to continue it. */
   resume?: boolean;
-  /**
-   * Only import the session to Pi (the Pi sweep): init opens the transcript, which imports a legacy session, and stops
-   * there. It recovers no turn, writes no configuration change and makes no agent; the host answers only status and
-   * history requests, and is stopped next.
-   */
-  importOnly?: boolean;
   /** The agent's tenant, set by the runtime, for its metric lines. */
   tenant?: string;
   /** The tenant's js_exec limits, set by the runtime (never the agent's configuration): CPU per execution, the longest timeoutMs, and the engine. */

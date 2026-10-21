@@ -2,14 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeContext, type Api, type Model } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { contextTokens, explicitKeyStream } from "../src/compaction.ts";
-import { readTranscript } from "../src/transcript.ts";
+import { historyOf, type TranscriptRecord } from "../src/transcript.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
@@ -132,16 +132,18 @@ test("a message whose request the history already holds is not taken again, even
   assert.equal(history.filter((message: any) => message.requestId === "steer-1").length, 1, "recorded once");
 });
 
-test("a transcript written by pi 0.80.6 loads, replays its tool history and summary, and keeps compacting", async t => {
+test("a history pi 0.80.6 wrote loads, replays its tool history and summary, and keeps compacting", async t => {
   const fake = await provider(t);
   const root = await mkdtemp(join(tmpdir(), "compaction-legacy-"));
   const directory = join(root, "agents", "legacy");
   await mkdir(directory, { recursive: true });
   // Recorded by the runtime on pi 0.80.6: an image prompt, tool calls with thinking, and two compactions.
-  await copyFile(new URL("./fixtures/pi-0.80.6-transcript.jsonl", import.meta.url), join(directory, "transcript.jsonl"));
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined });
   t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
-  const before = await readTranscript(directory);
+  // Its records are in Pi now, as the archive its import (or a fork of it) seeded.
+  const records = (await readFile(new URL("./fixtures/pi-0.80.6-transcript.jsonl", import.meta.url), "utf8")).trim().split("\n").map(line => JSON.parse(line) as TranscriptRecord);
+  await supervisor.seed("legacy", records);
+  const before = historyOf(records);
   assert.equal(before.length, 20);
   const inspect = { definitions: [{ name: "inspect", description: "Inspect", parameters: { type: "object" }, exposure: "direct" as const }], async call() { return "inspected"; } };
   // Compactions between runs report to the bridge, as no run's stream carries them.
@@ -162,17 +164,19 @@ test("a transcript written by pi 0.80.6 loads, replays its tool history and summ
   assert.deepEqual((await supervisor.request("legacy", "history")).messages.slice(0, 20), before);
 });
 
-test("a transcript written by pi 0.87.1 loads on pi 1.0, replays its summary, tool history and system change, and keeps compacting", async t => {
+test("a history pi 0.87.1 wrote loads on pi 1.0, replays its summary, tool history and system change, and keeps compacting", async t => {
   const fake = await provider(t);
   const root = await mkdtemp(join(tmpdir(), "compaction-087-"));
   const directory = join(root, "agents", "legacy");
   await mkdir(directory, { recursive: true });
   // Recorded by the runtime on pi 0.87.1 (long turns shortened): an import with a compactionSummary, an image prompt,
   // tool calls with thinking, a failed tool call, a prompt change, and a compaction that folded the change in.
-  await copyFile(new URL("./fixtures/pi-0.87.1-transcript.jsonl", import.meta.url), join(directory, "transcript.jsonl"));
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined });
   t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
-  const before = await readTranscript(directory);
+  // Its records are in Pi now, as the archive its import (or a fork of it) seeded.
+  const records = (await readFile(new URL("./fixtures/pi-0.87.1-transcript.jsonl", import.meta.url), "utf8")).trim().split("\n").map(line => JSON.parse(line) as TranscriptRecord);
+  await supervisor.seed("legacy", records);
+  const before = historyOf(records);
   assert.equal(before.length, 26);
   assert.deepEqual(before.filter(message => message.role === "toolResult" && message.isError).map(message => (message as { toolName: string }).toolName), ["fails"]);
   const definitions = ["inspect", "fails"].map(name => ({ name, description: name, parameters: { type: "object" }, exposure: "direct" as const }));

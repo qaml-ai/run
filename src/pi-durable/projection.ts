@@ -3,7 +3,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ConversationId, Cursor, EntryId, Storage } from "@earendil-works/pi-durable";
 import { Transcript, type PiMessageCursor, type TranscriptRecord } from "../transcript.ts";
 import { durableEntryMessages, recoverDurableMessages } from "./agent.ts";
-import { LEGACY_MIGRATION_KIND } from "./migration.ts";
+import { SEED_MARKER_KIND } from "./seed.ts";
 
 export type PiJournal = Pick<Storage, "scanEntries">;
 const after = (item: PiMessageCursor, cursor?: PiMessageCursor) => !cursor || item.entryId > cursor.entryId || item.entryId === cursor.entryId && item.index > cursor.index;
@@ -12,7 +12,7 @@ const after = (item: PiMessageCursor, cursor?: PiMessageCursor) => !cursor || it
 async function recoveryCursor(storage: PiJournal, conversationId: ConversationId, cursor?: PiMessageCursor): Promise<PiMessageCursor | undefined> {
   if (cursor) return cursor;
   const marker = (await storage.scanEntries({ conversationId, order: "ascending" }, 1, undefined, context)).items[0];
-  if (marker?.kind !== LEGACY_MIGRATION_KIND) return undefined;
+  if (marker?.kind !== SEED_MARKER_KIND) return undefined;
   const metadata = marker.data as { contextEntryId?: number } | undefined;
   if (!Number.isSafeInteger(metadata?.contextEntryId) || metadata!.contextEntryId! < 1) throw new Error("Malformed Pi migration context cursor");
   return { entryId: metadata!.contextEntryId!, index: -1 };
