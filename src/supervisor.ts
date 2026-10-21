@@ -445,7 +445,13 @@ export class AgentSupervisor {
    * The messages an agent's history index lacks, from its journal (pi-durable/history.ts) where its tenant reads
    * history from there (`historySourceTenants`), without its process; undefined where the journal does not hold them.
    */
-  private async journalBacklog(id: string, from: number): Promise<{ messages: AgentMessage[]; turns: number[] } | undefined> {
+  /** Whether agents of `tenant` read their history from Pi's journal (`historySourceTenants`, on a node that dual-writes it). */
+  readsJournal(tenant: string) {
+    const tenants = this.options.historySourceTenants;
+    return dualWriting() && !!tenants?.length && (tenants.includes("*") || tenants.includes(tenant));
+  }
+
+  async journalBacklog(id: string, from: number): Promise<{ messages: AgentMessage[]; turns: number[] } | undefined> {
     if (!await hasPiStorage(this.piLocation(id))) return undefined;
     // Read only: opening the storage writes nothing that is not there already, and nothing here commits.
     const storage = await openPiStorage(this.piLocation(id));
@@ -458,8 +464,7 @@ export class AgentSupervisor {
 
   async backlog(id: string, from: number, tenant?: string) {
     const host = await this.hostBacklog(id, from);
-    const tenants = this.options.historySourceTenants;
-    if (tenant === undefined || !dualWriting() || !tenants?.length || !(tenants.includes("*") || tenants.includes(tenant))) return host;
+    if (tenant === undefined || !this.readsJournal(tenant)) return host;
     const journal = await this.journalBacklog(id, from).catch(error => {
       console.error(JSON.stringify({ type: "history_source_unavailable", agent: id, field: "backlog", error: safeError(error) }));
       return undefined;

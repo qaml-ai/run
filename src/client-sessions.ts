@@ -49,6 +49,7 @@ import { GENERATE_IMAGE, generateImage, type Imager } from "./images.ts";
 import type { Outbound } from "./outbound.ts";
 import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
+import { servedHistory } from "./pi-durable/history.ts";
 import { HistoryIndex, type HistoryPage } from "./history-pages.ts";
 import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
@@ -3543,9 +3544,24 @@ export class ClientSessions {
   async agentHistory(id: string, tenant: string) {
     if (!await this.owns(id, tenant)) return undefined;
     // An agent no node has loaded is read from storage, not loaded for it (see `unloaded`).
-    if (this.unloaded(id)) return { messages: await this.supervisor.history(id) };
+    if (this.unloaded(id)) return { messages: await this.unloadedHistory(id, tenant) };
     const session = await this.load(id);
     return session && this.history(session);
+  }
+
+  /**
+   * An unloaded agent's full history: from its log, or, where its tenant reads history from Pi's journal, its index's
+   * chunks and the journal after them (the log's where they differ, which is logged, or where the journal lacks some).
+   */
+  private async unloadedHistory(id: string, tenant: string) {
+    const host = await this.supervisor.history(id);
+    if (!this.supervisor.readsJournal(tenant)) return host;
+    const journal = await (async () => {
+      const indexed = (await this.historyIndex.indexed(id)) ?? 0;
+      const tail = await this.supervisor.journalBacklog(id, indexed);
+      return tail && [...await this.historyIndex.messages(id, indexed), ...tail.messages];
+    })().catch(error => { console.error(JSON.stringify({ type: "history_source_unavailable", agent: id, field: "history", error: safeError(error) })); return undefined; });
+    return servedHistory(id, "history", host, journal);
   }
 
   /**
