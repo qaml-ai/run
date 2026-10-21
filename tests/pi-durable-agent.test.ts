@@ -8,6 +8,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { randomUUID } from "node:crypto";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { testDatabase } from "./database.ts";
+import { IMAGE_PAST_BUDGET } from "../src/files.ts";
 import { forkCut, Transcript, type TranscriptRecord } from "../src/transcript.ts";
 
 const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false, input: ["text"],
@@ -280,4 +281,31 @@ test("Pi adapter checks the host's context in again after a reload settles an in
   assert.equal(await checkpoints(), before + 1, "the settled run's native results are replaced by the host's working set");
   assert.equal(second.requests.length, 1);
   await second.agent.close();
+});
+
+test("Pi adapter checkpoints a message replaced in place under the same role and time (an image past its budget)", async () => {
+  const { db } = await testDatabase(), sessionId = randomUUID();
+  const fake = await fixture([answer("seen"), answer("again")], { initialState: { model, tools: [], messages: [{ role: "system", content: "Be brief.", timestamp: 0 } as AgentMessage] } },
+    await openPiStorage({ sessionId, directory: "unused", db }));
+  const image = { type: "image", data: Buffer.alloc(64, 1).toString("base64"), mimeType: "image/png" } as const;
+  await fake.agent.prompt({ role: "user", content: [{ type: "text", text: "look" }, image], timestamp: 5 } as AgentMessage);
+  const reader = await openPiStorage({ sessionId, directory: "unused", db });
+  const checkpoints = async () => {
+    let count = 0, cursor;
+    do {
+      const page = await reader.scanEntries({ conversationId: fake.agent.conversationId }, 256, cursor, BACKGROUND_CONTEXT);
+      count += page.items.filter(entry => entry.kind === "camel.legacy.context").length;
+      cursor = page.next;
+    } while (cursor !== undefined);
+    return count;
+  };
+  const before = await checkpoints();
+  // A new object with the same role and timestamp; only its content differs.
+  fake.agent.state.messages = fake.agent.state.messages.map(message => message.role === "user" ?
+    { ...message, content: [{ type: "text", text: "look" }, { type: "text", text: IMAGE_PAST_BUDGET }] } as AgentMessage : message);
+  await fake.agent.prompt(user("and now?"));
+  assert.equal(await checkpoints(), before + 1);
+  const sent = JSON.stringify(fake.requests[1].messages);
+  assert.ok(sent.includes(IMAGE_PAST_BUDGET) && !sent.includes(image.data), "the next request carries the placeholder, not the image");
+  await fake.agent.close();
 });
