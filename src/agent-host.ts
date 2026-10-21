@@ -1,17 +1,18 @@
+import { createHash } from "node:crypto";
 import { END_USER_CREDIT, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
 import { NativeTranscript } from "./pi-durable/transcript.ts";
 import { mkdir } from "node:fs/promises";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { convertToLlm } from "./pi-harness/messages.ts";
 import {
-  getCurrentSystemMessage, getCurrentTools, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
+  getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
   type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall, type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
 import { errorText, IDENTITY_KEY, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
-import { applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
+import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
@@ -144,6 +145,8 @@ export function createAgentHost(hostIO: HostIO) {
   let transcript: Transcript;
   /** The agent's Pi storage, once loaded: the dual read reads it. */
   let journal: PiStorage | undefined;
+  /** The last system prompt hash logged for this agent (`systemPromptHash`). */
+  let lastPromptHash: string | undefined;
   let busy = false;
   let active: AbortController | undefined;
   /** Why the current run ended early: a spend limit, tool calls waiting on a person's input, or a hand-off (its node is leaving). */
@@ -286,8 +289,10 @@ export function createAgentHost(hostIO: HostIO) {
     }
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
     const current = getCurrentSystemMessage(messages)?.sections ?? {};
+    // A conversation a later release re-keyed holds its instructions under that key, which it keeps.
+    const instructions = APPLICATION in current ? APPLICATION : INSTRUCTIONS;
     const wanted = {
-      [INSTRUCTIONS]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
+      [instructions]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
       [OUTPUT]: tools.some(tool => tool.name === OUTPUT_TOOL) ? OUTPUT_INSTRUCTIONS : null,
     };
     const sections = Object.fromEntries(Object.entries(wanted).filter(([name, text]) => (current[name] ?? null) !== text));
@@ -324,6 +329,19 @@ export function createAgentHost(hostIO: HostIO) {
       await transcript.push(message);
       io.emit({ type: "message_end", message });
     }
+  }
+
+  /**
+   * Temporary, for the instructions section's canary (#339): the hash of the system prompt the model is sent, as one
+   * leading prompt (what every model in the catalog gets), logged when it differs from this agent's last one here. A
+   * change that is not a configuration change shows a release changed the prompt. Hashes only, never the text.
+   */
+  function systemPromptHash(messages: Message[]) {
+    const system = getCurrentSystemMessage(messages);
+    const hash = system ? createHash("sha256").update(getSystemMessageText(system)).digest("hex").slice(0, 16) : "none";
+    if (hash === lastPromptHash) return;
+    console.log(JSON.stringify({ type: "system_prompt_hash", agent: config.id, hash, previous: lastPromptHash ?? null, sections: Object.keys(system?.sections ?? {}) }));
+    lastPromptHash = hash;
   }
 
   /** Whether each model call asks the supervisor for its credentials. */
@@ -864,6 +882,7 @@ export function createAgentHost(hostIO: HostIO) {
         // A structured run's request may force final_output (`outputChoice`).
         // The agent's maxOutputTokens and temperature go on each of its own calls (not compaction's summaries), as far as the call takes them.
         streamFn: (model, context, options) => {
+          systemPromptHash(context.messages as Message[]);
           const toolChoice = outputChoice(model);
           const settings = callSettings(model, config, options?.reasoning);
           return stream(model, context, { ...options, ...settings, ...(toolChoice === undefined ? {} : { toolChoice }), ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options);

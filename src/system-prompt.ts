@@ -57,6 +57,11 @@ export const bare = (config: Pick<AgentConfig, "codeMode" | "tools">) => config.
 
 /** The system prompt section holding the application's instructions; a later system message replaces it. */
 export const INSTRUCTIONS = "instructions";
+/**
+ * The key a later release gives that section (Pi reserves `instructions` for a conversation's own instructions). A
+ * conversation that release re-keyed keeps it here too, so rolling back never declares the instructions twice.
+ */
+export const APPLICATION = "application";
 /** The section summarizing the agent's environment, generated from its configuration. */
 export const ENVIRONMENT = "environment";
 /** The tool a run that asks for structured output (a prompt's `output.schema`) answers with. */
