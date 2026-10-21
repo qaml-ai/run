@@ -194,3 +194,26 @@ test("Pi shared mintId reserves IDs in blocks, and a later holder never reuses o
   await first.close(context);
   await next.close(context);
 });
+
+test("Pi shared document reads take no transaction or metadata lock, and one commit checks its documents in one read", async () => {
+  const { db } = await database;
+  const sessionId = randomUUID();
+  const storage = await PostgresPiStorage.open(db, sessionId);
+  const id = await storage.mintId<any>();
+  const address = { kind: "probe", scope: { kind: "session" as const } };
+  await storage.commit([{ type: "document.create", record: { id, ...address }, content: { kind: "base", version: 1, value: { n: 0 } } }], context);
+  for (let n = 1; n <= 3; n++) await storage.commit([{ type: "document.change", id, content: { kind: "delta", version: 1, ops: [["s", ["n"], n]] } }], context);
+  // A writer holds the session's metadata lock: a read neither waits for it nor sees its uncommitted change.
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    await client.query("select next_id from pi_durable_metadata where session_id = $1 for update", [sessionId]);
+    const read = await Promise.race([storage.document(id, "current", context), new Promise(resolve => setTimeout(() => resolve("blocked"), 2_000))]);
+    assert.deepEqual(read, { record: { id, ...address, createdAt: 1 }, version: 1, value: { n: 3 }, deltasSinceBase: 3 });
+  } finally { await client.query("rollback"); client.release(); }
+  await assert.rejects(storage.commit([{ type: "document.change", id, content: { kind: "delta", version: 2, ops: [] } }], context), /version transition requires a base/);
+  await assert.rejects(storage.commit([{ type: "document.create", record: { id: await storage.mintId<any>(), ...address }, content: { kind: "base", version: 1, value: {} } }], context), /already has a current incarnation/);
+  await storage.commit([{ type: "document.retire", id }], context);
+  assert.equal(await storage.document(id, "current", context), undefined);
+  await storage.close(context);
+});
