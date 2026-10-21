@@ -20,7 +20,7 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     cursor?: DurableCursor;
     contextWindow?: number;
     summaryStream?: AgentOptions["streamFn"];
-    onSummary?: (message: AssistantMessage, background: boolean) => void | Promise<void>;
+    onSummary?: (message: AssistantMessage) => void | Promise<void>;
     beforeCompaction?: (state: { background: boolean; reason: "threshold" | "overflow" | "manual" }) => boolean | Promise<boolean>;
     onCompactionStart?: (state: { background: boolean; reason: "threshold" | "overflow" | "manual" }) => void | Promise<void>;
     onCompaction?: (state: { summary: string; keptMessages: number; at: number; reason: "threshold" | "overflow"; background: boolean }) => void | Promise<void>;
@@ -332,27 +332,13 @@ export class DurableAgent {
         return original.phases.tools(...args);
       },
     } } };
-    // Keep the task's ownership on summary usage too: a background response may arrive after the run ended.
-    const nativeCompaction = CompactionTask.definition;
-    const compactionTask = { definition: { ...nativeCompaction, phases: { ...nativeCompaction.phases,
-      summarize: async (...args: Parameters<typeof nativeCompaction.phases.summarize>) => {
-        const [record, runtime, taskContext] = args;
-        const scoped = new Proxy(runtime, { get(target, key) {
-          if (key === "models") return { ...target.models,
-            completeSimple: (model: unknown, view: { messages: Message[] }, options: unknown) => models.completeSimple(model, view, options, record.background) };
-          const value = Reflect.get(target, key, target);
-          return typeof value === "function" ? value.bind(target) : value;
-        } });
-        return nativeCompaction.phases.summarize(record, scoped, taskContext);
-      },
-    } } };
     const registry: RegistryReader = {
       subscribe: listener => agent.registry.subscribe(listener),
       snapshot: () => {
         const snapshot = agent.registry.snapshot();
         return new Proxy(snapshot, { get(target, key) {
-          if (key === "task") return (name: string) => name === original.name ? task : name === nativeCompaction.name ? compactionTask : target.task(name);
-          if (key === "tasks") return () => target.tasks().map(item => item.definition.name === original.name ? task : item.definition.name === nativeCompaction.name ? compactionTask : item);
+          if (key === "task") return (name: string) => name === original.name ? task : target.task(name);
+          if (key === "tasks") return () => target.tasks().map(item => item.definition.name === original.name ? task : item);
           const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
         } }) as RegistrySnapshot;
       },
@@ -362,7 +348,7 @@ export class DurableAgent {
     const models = {
       getModel: () => ({ ...agent.state.model, contextWindow: window() }),
       streamSimple: (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => agent.stream(streamOptions, view.messages),
-      completeSimple: async (_model: unknown, view: { messages: Message[] }, streamOptions: unknown, background = false) => {
+      completeSimple: async (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => {
         await agent.flushEvents();
         const apiKey = await options.getApiKey?.(agent.state.model.provider);
         const summarize = async (messages: Message[]) => {
@@ -372,7 +358,7 @@ export class DurableAgent {
           await agent.conversation.commit(tx => tx.appendEntry(agent.conversation.id, {
             kind: "camel.compaction.usage", data: { message: result } as never,
           }), context);
-          await options.durable.onSummary?.(result, background);
+          await options.durable.onSummary?.(result);
           return result;
         };
         // Pi asks for one summary of the whole prefix. One larger than the window (an imported history, a model whose
@@ -481,20 +467,10 @@ export class DurableAgent {
       summary = summary.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length);
     }
     const reason = (entry.data as { reason?: string } | undefined)?.reason === "overflow" ? "overflow" : "threshold";
-    // A background summary is placed by a write submission, possibly by a later generation at its boundary.
-    // Its entry's byTaskId therefore need not be the summarizer. Resolve the durable compaction outcome instead.
-    let background = false, cursor;
-    outer: do {
-      const page = await this.options.durable.storage.scanTasks({ conversationId: this.conversation.id, kind: "pi.compaction", order: "descending" }, 32, cursor, context);
-      for (const task of page.items) {
-        if (task.state.status !== "terminal" || task.state.outcome.status !== "completed") continue;
-        const result = task.state.outcome.result as { entryId?: number; submissionId?: number };
-        const placed = result.submissionId === undefined ? result.entryId :
-          (await this.options.durable.storage.submission(result.submissionId as never, context))?.entry;
-        if (placed === entry.id) { background = task.background; break outer; }
-      }
-      cursor = page.next;
-    } while (cursor !== undefined);
+    // A blocking summary is appended by its own compaction task. A background one is placed by a write submission: in
+    // its task's commit when the conversation is idle, else by the generation at its next boundary (or by no task).
+    const by = entry.byTaskId === undefined ? undefined : await this.options.durable.storage.task(entry.byTaskId, context);
+    const background = by?.kind === CompactionTask.definition.name ? by.background : (entry.data as { reason?: string } | undefined)?.reason !== "manual";
     // Native compaction may cut away the entry that declared the system sections. Keep that
     // declaration for the adapter's next preparation, just as the host retains its leading prompt.
     const system = getCurrentSystemMessage(this.messages);

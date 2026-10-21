@@ -910,8 +910,11 @@ export function createAgentHost(hostIO: HostIO) {
         // schema, temperature or max-output settings.
         summaryStream,
         get contextWindow() { return compactionModel().contextWindow; },
-        onSummary: (message, background) => io.emit({ type: "compaction_usage", provider: message.provider,
-          model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true, ...(background ? { background: true } : {}) }),
+        // A summary made while no run is open (a background one that outlasted its run) reaches the supervisor as
+        // background work, which bills it itself: no run's stream is there to carry it. One made during a run is
+        // counted with that run, as its durable usage receipt is.
+        onSummary: message => io.emit({ type: "compaction_usage", provider: message.provider,
+          model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true, ...(active ? {} : { background: true }) }),
         // Like the legacy background compactor, do not spend on speculative summaries past the cap.
         // An unavailable limit leaves the existing model-attempt credit gate authoritative.
         beforeCompaction: async ({ background }) => !background || (await io.runLimit().catch(() => undefined))?.stopped !== "spend_limit",

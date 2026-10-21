@@ -631,7 +631,10 @@ for (const duringTool of [false, true]) test(`native background summary lands ${
   assert.equal(entries.items.filter(entry => entry.kind === "camel.compaction.usage").length, 1);
   const compactionAttempts = f.attempts.filter(event => event.type === "begin" && event.kind === "compaction");
   assert.equal(compactionAttempts.length, 1, "background requests use compaction billing attempts");
-  assert.equal(f.events.filter(event => event.type === "compaction_usage" && event.background === true).length, 1);
+  // Usage goes where something carries it: the open run's stream, or the supervisor's background billing between runs.
+  const usage = f.events.filter(event => event.type === "compaction_usage");
+  assert.equal(usage.length, 1);
+  assert.equal(usage[0].background, duringTool ? undefined : true);
   assert.ok(f.attempts.some(event => event.type === "finish" && event.id === compactionAttempts[0].id && event.completed), "the background billing attempt settles");
   await f.host.handle("prompt", { text: "AFTER" });
   const sent = text(fake.chat().at(-1)!);
