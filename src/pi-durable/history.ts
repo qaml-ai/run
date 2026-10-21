@@ -16,7 +16,7 @@ export type At = { entryId: number; index: number };
 export type HistoryBase = { t: "base"; total: number; through?: At; active: boolean; turnStart: number; awaiting: string[]; calls?: [string, number][] };
 
 /** How far back a read looks for an entry committed after a later one: more than either writer has in flight. */
-const REORDER_WINDOW = 32;
+const REORDER_WINDOW = 128;
 
 const after = (a: At, b: At) => a.entryId > b.entryId || a.entryId === b.entryId && a.index > b.index;
 
