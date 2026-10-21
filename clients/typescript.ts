@@ -921,6 +921,18 @@ export function privateHost(hostname: string): boolean {
   return !host.includes(".") && !host.startsWith("[");
 }
 
+/**
+ * Whether this runtime's fetch is undici 8.4 to 8.7, as Node 26.3.1 to 26.5.0 bundle. It speaks HTTP/2 where the server
+ * offers it, as run.camelai.com does, and once a request on a connection finishes while an earlier one is still open, it
+ * sends nothing more on that connection (undici 8.8 fixed it). An agent's event stream stays open, so every later call
+ * (tool call replies, status, delete) hangs until its timeout (qaml-ai/run#351).
+ */
+export function stallingFetch(undici = (globalThis as { process?: { versions?: Record<string, string | undefined> } }).process?.versions?.undici): boolean {
+  const [major, minor] = (undici ?? "").split(".").map(Number);
+  return major === 8 && minor >= 4 && minor < 8;
+}
+let warnedStalling = false;
+
 class Transport {
   readonly base: string;
   readonly fetcher: typeof globalThis.fetch;
@@ -930,6 +942,10 @@ class Transport {
     if (url.protocol !== "https:" && !(url.protocol === "http:" && privateHost(url.hostname))) throw new Error("Remote runtimes require https://; http:// only on a private network (localhost, a single-label or .internal name, a private IP)");
     this.base = url.origin;
     const fetcher = options.fetch;
+    if (!fetcher && !warnedStalling && stallingFetch()) {
+      warnedStalling = true;
+      console.warn(`@camelai/run: this Node's fetch (undici ${(globalThis as any).process.versions.undici}) stops sending requests on an HTTP/2 connection that holds an agent's event stream, so tool replies and later calls time out. Upgrade Node to 26.5.1 or later, or use Node 24 LTS (qaml-ai/run#351).`);
+    }
     this.fetcher = fetcher ? (input, init) => fetcher(input, init) : globalThis.fetch.bind(globalThis);
   }
   async json(path: string, token: string, method = "GET", body?: unknown, retry = true, headers: Record<string, string> = {}, timeoutMs = 10_000, signal?: AbortSignal): Promise<any> {
