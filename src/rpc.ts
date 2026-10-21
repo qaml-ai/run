@@ -62,6 +62,7 @@ export function agentProcessEnv(env: NodeJS.ProcessEnv): Record<string, string> 
     ...(env.AGENT_HISTORY_BACKLOG_BYTES ? { AGENT_HISTORY_BACKLOG_BYTES: env.AGENT_HISTORY_BACKLOG_BYTES } : {}),
     ...(env.AGENT_PI_DUAL_READ ? { AGENT_PI_DUAL_READ: env.AGENT_PI_DUAL_READ } : {}),
     ...(env.AGENT_PI_DUAL_WRITE ? { AGENT_PI_DUAL_WRITE: env.AGENT_PI_DUAL_WRITE } : {}),
+    ...(env.AGENT_NATIVE_SECTIONS_TENANTS ? { AGENT_NATIVE_SECTIONS_TENANTS: env.AGENT_NATIVE_SECTIONS_TENANTS } : {}),
     ...(env.AGENT_SERVICE_NAME ? { AGENT_SERVICE_NAME: env.AGENT_SERVICE_NAME } : {}),
   };
 }

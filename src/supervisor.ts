@@ -3,7 +3,7 @@ import { NativeTranscript, nativeTranscriptRecords, nativeUnrecorded } from "./p
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
-import { childProcess, type Rpc } from "./rpc.ts";
+import { agentProcessEnv, childProcess, type Rpc } from "./rpc.ts";
 import type { AgentConfig, CallContext, ToolBridge } from "./protocol.ts";
 import type { RequestMethod } from "../shared/client-protocol.ts";
 import type { ChildProcess } from "node:child_process";
@@ -62,6 +62,8 @@ export type SupervisorOptions = {
   historyBacklogBytes?: number;
   /** The host transcript's dual read for inline agents (agent processes get it in `agentEnv`): AGENT_PI_DUAL_READ. */
   piDualRead?: "log" | "throw";
+  /** Tenants whose inline agents' system sections are native Pi sections (agent processes get it in `agentEnv`). */
+  nativeSectionsTenants?: string[];
   /** Shared Pi records use the same database and ownership claim as the session. */
   db?: Db;
 };
@@ -300,7 +302,8 @@ export class AgentSupervisor {
   }
 
   private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>, durable?: PiStorage) {
-    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, this.options.agentEnv);
+    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, this.options.nativeSectionsTenants?.length && !this.options.agentEnv?.AGENT_NATIVE_SECTIONS_TENANTS
+      ? { ...this.options.agentEnv ?? agentProcessEnv(process.env), AGENT_NATIVE_SECTIONS_TENANTS: this.options.nativeSectionsTenants.join(",") } : this.options.agentEnv);
     const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), transcript, durable, slots: new Map() };
     this.agents.set(id, handle);
     this.starting.delete(id);
@@ -479,6 +482,7 @@ export class AgentSupervisor {
       ...(this.options.codeExecutor ? { codeExecutor: this.options.codeExecutor } : {}),
       ...(this.options.historyBacklogBytes ? { historyBacklogBytes: this.options.historyBacklogBytes } : {}),
       ...(this.options.piDualRead ? { piDualRead: this.options.piDualRead } : {}),
+      ...(this.options.nativeSectionsTenants?.length ? { nativeSectionsTenants: this.options.nativeSectionsTenants } : {}),
       ...(this.options.modelOutbound ? { modelOutbound: this.options.modelOutbound } : {}),
       lease: async () => { await handle.bridge.lease?.(); },
       history: {

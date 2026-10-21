@@ -58,8 +58,10 @@ export const bare = (config: Pick<AgentConfig, "codeMode" | "tools">) => config.
 /** The system prompt section holding the application's instructions; a later system message replaces it. */
 export const INSTRUCTIONS = "instructions";
 /**
- * The key a later release gives that section (Pi reserves `instructions` for a conversation's own instructions). A
- * conversation that release re-keyed keeps it here too, so rolling back never declares the instructions twice.
+ * Its key where the host's sections are native Pi sections (AGENT_NATIVE_SECTIONS_TENANTS): Pi reserves `instructions`
+ * for a conversation's own instructions. A conversation still under the old key has its sections declared again under
+ * this one, in the same order, so the prompt the model sees stays the same text (declareConfiguration, agent-host.ts);
+ * one already under it keeps it.
  */
 export const APPLICATION = "application";
 /** The section summarizing the agent's environment, generated from its configuration. */
@@ -123,12 +125,12 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
  * summary of the environment as named sections. Rendered, they are joined by blank lines. Without
  * js_exec (codeMode: false) the runtime's text covers only the tools the agent has, if any.
  */
-export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "mounts" | "model" | "tools" | "fileTools" | "codeMode" | "codeLimits">, tools: Tool[]): SystemMessage {
+export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "mounts" | "model" | "tools" | "fileTools" | "codeMode" | "codeLimits">, tools: Tool[], instructions = INSTRUCTIONS): SystemMessage {
   const environment = environmentSummary(config);
   return {
     role: "system", content: config.codeMode !== false ? runtimeInstructions : bare(config) ? bareInstructions : directInstructions, timestamp: 0,
     sections: {
-      [INSTRUCTIONS]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), ...environment !== null ? { [ENVIRONMENT]: environment } : {},
+      [instructions]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), ...environment !== null ? { [ENVIRONMENT]: environment } : {},
       ...(tools.some(tool => tool.name === OUTPUT_TOOL) ? { [OUTPUT]: OUTPUT_INSTRUCTIONS } : {}),
     },
     ...(tools.length ? { toolsAdded: tools } : {}),

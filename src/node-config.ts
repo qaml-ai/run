@@ -29,6 +29,18 @@ export function piDualRead(value: string | undefined): "log" | "throw" | undefin
   return value;
 }
 
+/**
+ * AGENT_NATIVE_SECTIONS_TENANTS: `*` (every tenant) or comma-separated tenant ids; unset or empty, none. Checked at start,
+ * so a misspelled id fails the node rather than gating no one.
+ */
+export function nativeSectionsTenants(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  if (value.trim() === "*") return ["*"];
+  const tenants = value.split(",").map(item => item.trim());
+  if (tenants.some(tenant => !/^[a-z0-9][a-z0-9-]{0,39}$/.test(tenant))) throw new Error("AGENT_NATIVE_SECTIONS_TENANTS must be * or comma-separated tenant ids");
+  return [...new Set(tenants)];
+}
+
 /** A comma-separated setting's items, trimmed; none when unset. */
 const list = (value: string | undefined) => (value ?? "").split(",").map(item => item.trim()).filter(Boolean);
 
@@ -134,6 +146,8 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     piDualRead: piDualRead(env.AGENT_PI_DUAL_READ),
     // Write what the host writes itself into Pi's journal too: native entries and markers (AGENT_PI_DUAL_WRITE=1).
     piDualWrite: env.AGENT_PI_DUAL_WRITE === "1",
+    // Tenants whose agents' system sections are native Pi sections, `*` for every tenant (AGENT_NATIVE_SECTIONS_TENANTS).
+    nativeSectionsTenants: nativeSectionsTenants(env.AGENT_NATIVE_SECTIONS_TENANTS),
     // What its agent processes are told of these settings.
     agentEnv: agentProcessEnv(env),
     systemPrompt: env.AGENT_SYSTEM_PROMPT,

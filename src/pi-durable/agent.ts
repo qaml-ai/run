@@ -5,7 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, InboxDoc, LiveDoc, StorageRequestError, createRegistry,
+  GenerationTask, Harness, InboxDoc, LiveDoc, StorageRequestError, createRegistry, section,
   type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage, type TaskId,
 } from "@earendil-works/pi-durable";
 
@@ -18,6 +18,12 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     cursor?: DurableCursor;
     /** The latest journal message the host wrote or recorded itself: a run's new messages are the ones after it. */
     written?: () => DurableCursor | undefined;
+    /**
+     * Render the host's system sections as native Pi sections (the `camel` extension's `section()`), rather than give
+     * them to Pi's generation in place of its agent's. A host section named `instructions` (Pi's own) is then left out:
+     * hosts declare it again under a key of their own.
+     */
+    nativeSections?: boolean;
     contextWindow?: number;
     summaryStream?: AgentOptions["streamFn"];
     onSummary?: (message: AssistantMessage) => void | Promise<void>;
@@ -212,7 +218,9 @@ export class DurableAgent {
   private harness!: Harness;
   private conversation!: Conversation;
   private registry = createRegistry();
-  private messages: AgentMessage[];
+  private _messages: AgentMessage[] = [];
+  /** The system section keys the native `camel` extension renders, in order: reinstalled when they change. */
+  private sectionKeys?: string;
   private tools: AgentTool[];
   private controller?: AbortController;
   private running?: Promise<void>;
@@ -242,6 +250,23 @@ export class DurableAgent {
   private closing?: Promise<void>;
   steeringMode: "all" | "one-at-a-time";
   followUpMode: "all" | "one-at-a-time";
+
+  private get messages() { return this._messages; }
+  /** The working set; a change of its system section keys reinstalls the `camel` extension's sections. */
+  private set messages(value: AgentMessage[]) {
+    this._messages = value;
+    if (this.sectionKeys !== undefined && JSON.stringify(Object.keys(this.sections())) !== this.sectionKeys) this.installTools();
+  }
+  /**
+   * The host's system sections as its working set holds them: hosts write their own system messages. Pi renders the
+   * section `instructions` itself, from a conversation's instructions, so a host's own section of that name (an older
+   * one, which the host declares again under a key of its own) is not rendered here.
+   */
+  private sections(): Record<string, string> {
+    if (!this.options.durable.nativeSections) return {};
+    return Object.fromEntries(Object.entries(getCurrentSystemMessage(this._messages)?.sections ?? {})
+      .filter((entry): entry is [string, string] => entry[1] !== null && entry[0] !== "instructions"));
+  }
 
   private constructor(options: DurableAgentOptions) {
     this.options = options;
@@ -275,13 +300,12 @@ export class DurableAgent {
       prepare: async (...args: Parameters<typeof original.phases.prepare>) => {
         const [record, runtime, taskContext] = args;
         await agent.placeQueued(record.id, runtime, taskContext);
-        const view = await runtime.context(runtime.conversationId, taskContext);
-        const sections = getCurrentSystemMessage(view.messages)?.sections ??
+        // Without native sections, Camel's sections are given to Pi as its agent's: an empty native section registry
+        // would remove application instructions and duplicate the checkpoint's tools.
+        const sections = agent.options.durable.nativeSections ? undefined : getCurrentSystemMessage((await runtime.context(runtime.conversationId, taskContext)).messages)?.sections ??
           getCurrentSystemMessage(agent.messages)?.sections ?? {};
-        // Camel owns these sections. An empty native section registry would
-        // remove application instructions and duplicate the checkpoint's tools.
         const prepared = new Proxy(runtime, { get(target, key) {
-          if (key === "agent") return async (ctx: typeof taskContext) => ({ ...await target.agent(ctx),
+          if (key === "agent" && sections) return async (ctx: typeof taskContext) => ({ ...await target.agent(ctx),
             sections: Object.entries(sections).filter(([, value]) => value !== null).map(([key, value]) =>
               ({ key, tag: false, render: async () => value! })),
           });
@@ -582,8 +606,17 @@ export class DurableAgent {
     return nativeMessages.map(message => message.role === "user" ? originals.get(JSON.stringify(message))?.shift() ?? message : message) as AgentMessage[];
   }
 
+  /**
+   * The `camel` extension: the host's tools, and its system sections as native sections. Pi plans the system entries
+   * of each request from the sections its extensions render, and sets a shown section none renders to null. Each
+   * renders what the context shows for it, or, where the context shows none (the baseline after a compaction), the
+   * working set's: the host, not Pi, decides what they say.
+   */
   private installTools() {
-    this.registry.install({ name: "camel", tools: this.tools.map(tool => ({ ...tool, replay: tool.replay === "safe" ? "safe" : "unsafe",
+    const keys = Object.keys(this.sections());
+    this.sectionKeys = JSON.stringify(keys);
+    this.registry.install({ name: "camel", sections: keys.map(key => section(key, input =>
+      Object.keys(input.shown).length ? input.shown[key] : this.sections()[key], { tag: false })), tools: this.tools.map(tool => ({ ...tool, replay: tool.replay === "safe" ? "safe" : "unsafe",
       structuredOutputSchema: tool.outputSchema,
       // Camel already bounds tool output; a second truncation changes persisted replies.
       outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
