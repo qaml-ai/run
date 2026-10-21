@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boundedContext, interruptedTurnRepairs, recoverInterruptedTurn, validateInitialMessages, validateUserMessages } from "../src/history.ts";
+import { interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "../src/history.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SystemMessage } from "@earendil-works/pi-ai";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -9,24 +9,12 @@ import { join } from "node:path";
 import { fileAppendLog } from "../shared/append-log.ts";
 import { readTranscriptLog, Transcript, type TranscriptRecord } from "../src/transcript.ts";
 
-test("context bounds discard whole older turns without mutating durable history", () => {
-  const messages = [
-    { role: "user", content: "x".repeat(5000), timestamp: 1 },
-    { role: "assistant", content: [{ type: "toolCall", id: "a", name: "read", arguments: {} }] },
-    { role: "toolResult", toolCallId: "a", toolName: "read", content: [{ type: "text", text: "old result" }], timestamp: 2 },
-    { role: "user", content: "Latest instruction", timestamp: 3 },
-  ] as AgentMessage[];
-  assert.deepEqual(boundedContext(messages, 1024), messages.slice(3));
-  assert.equal(messages.length, 4);
-  assert.throws(() => boundedContext(messages.slice(0, 3), 1024), /current turn exceeds/);
-});
-
 test("interrupted-turn recovery preserves settled native results and marks only missing tool ids unknown", () => {
   const messages = [
     { role: "assistant", content: [{ type: "toolCall", id: "a", name: "read", arguments: {} }, { type: "toolCall", id: "b", name: "write", arguments: {} }] },
     { role: "toolResult", toolCallId: "a", toolName: "read", content: [{ type: "text", text: "verified" }], timestamp: 2 },
   ] as AgentMessage[];
-  const recovered = recoverInterruptedTurn(messages);
+  const recovered = [...messages, ...interruptedTurnRepairs(messages)];
   assert.equal(recovered.filter((m: AgentMessage) => m.role === "toolResult").length, 2);
   assert.equal(recovered[1], messages[1]);
   assert.equal(recovered[2].role, "toolResult");
