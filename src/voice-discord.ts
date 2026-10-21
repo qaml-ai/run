@@ -46,7 +46,7 @@ import { recordDaveRoster, safeError } from "./metrics.ts";
 const CREDENTIALS = new Set([4004, 4006, 4009, 4011]);
 /** Close codes that mean the bot is out of the call: disconnected, kicked, moved, or the call ended. */
 const KICKED = new Set([4014, 4022]);
-/** Reconnects without reaching ready again before the connection gives up (`lost`, `error`). */
+/** Reconnects without reaching ready again before the connection asks for new credentials (`lost`, `credentials`). */
 const MAX_REJOINS = 5;
 
 /** How long a group member may go unnamed by the voice gateway before it counts as a stranger. */
@@ -204,7 +204,9 @@ export class DiscordVoice implements VoiceConnection {
         this.roster.check();
       }
       if (to.status === VoiceConnectionStatus.Signalling && from.status !== VoiceConnectionStatus.Signalling && from.status !== VoiceConnectionStatus.Disconnected) {
-        if (++this.rejoins > MAX_REJOINS) this.fail("error", "reconnects kept failing");
+        // The voice server keeps refusing these credentials' endpoint (Discord's 521/522 for one that is down): the app
+        // asks Discord again (OP 4), whose answer may be another voice server; without new ones in time the session ends.
+        if (++this.rejoins > MAX_REJOINS) this.fail("credentials", "reconnects kept failing");
       }
       // The close code of each voice gateway socket the library opens, which its own states keep only for 4014.
       const networking = "networking" in to ? to.networking : undefined;

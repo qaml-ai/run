@@ -82,6 +82,28 @@ test("a dropped voice socket is resumed with the same credentials; a kick or ref
   assert.equal(seen.lost[1].reason, "credentials");
 });
 
+test("a voice server that keeps refusing reconnects asks for new credentials, and new ones reconnect", async t => {
+  const voice = await fakeDiscordVoice(t);
+  const grant = discordGrant({ endpoint: voice.endpoint });
+  const { connection, seen } = connect(grant);
+  t.after(() => connection.close());
+  await until(() => seen.ready === 1, "ready");
+
+  // Discord's voice server behind Cloudflare goes down (521 at each upgrade): the library rejoins the same endpoint
+  // until MAX_REJOINS, then the app is asked for new credentials rather than the session failing.
+  voice.down();
+  voice.close(4020);
+  await until(() => seen.lost.length === 1, "the rejoins giving up", 30_000);
+  assert.deepEqual(seen.lost[0], { reason: "credentials", detail: "reconnects kept failing" });
+
+  // The app's OP 4 answer (another voice server, here the same one back up): identified with it, and ready again.
+  voice.down(false);
+  const identified = voice.identifies.length;
+  connection.update({ ...grant, sessionId: "rejoined", token: "rejoined-token" });
+  await until(() => seen.ready === 2 && voice.identifies.length === identified + 1, "ready again", 30_000);
+  assert.equal(voice.identifies.at(-1)!.token, "rejoined-token");
+});
+
 test("a handoff drops the voice socket, so the next node identifies with the same credentials; ending closes it, which ends Discord's voice session", async t => {
   const voice = await fakeDiscordVoice(t);
   const grant = discordGrant({ endpoint: voice.endpoint });
