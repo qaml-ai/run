@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { EntryId, StorageWrite } from "@earendil-works/pi-durable";
 import type { Db } from "../src/db.ts";
-import { reclaimCheckpoints, reclaimSession, type ReclaimSession } from "../src/pi-durable/reclaim.ts";
+import { HOST_TRANSCRIPT, reclaimCheckpoints, reclaimHostTranscripts, reclaimSession, type ReclaimSession } from "../src/pi-durable/reclaim.ts";
 import { PostgresPiStorage } from "../src/pi-durable/storage.ts";
 import { contextAt } from "../src/pi-durable/fork.ts";
 import { testDatabase } from "./database.ts";
@@ -200,4 +200,68 @@ test("stage 1 bounds a run by session limit and resumes across completed session
   assert.equal((await reclaimCheckpoints(fresh.db, { apply: true, limit: 2 }, row => events.push(row))).sessions, 1);
   assert.equal(events.at(-1)!.session, "c");
   assert.equal((await reclaimCheckpoints(fresh.db, { apply: true }, () => {})).rows, 0);
+});
+
+/**
+ * A session as a release before the host transcript's removal wrote it, then as its first load without it retired it
+ * (`retired`): host records, archive blocks (an import's from before #322 too), the snapshot document, the base marker
+ * and its document; and how much of its history the index holds (`indexed`).
+ */
+async function hostTranscriptSession(options: { retired: boolean; indexed: number }) {
+  const { db } = await database;
+  const session = randomUUID();
+  await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ($1, 'test', '{}', 1, 'test', 'test', 'test')", [session]);
+  await db.query("insert into agent_history_index (agent, indexed) values ($1, $2)", [session, options.indexed]);
+  const storage = await PostgresPiStorage.open(db, session);
+  const entry = (id: number, kind: string, data?: Record<string, unknown>) => ({ type: "entry" as const, value: { id: id as EntryId, conversationId: 1 as never, kind, ...(data ? { data: data as never } : {}) } });
+  const writes: StorageWrite[] = [{ type: "conversation", value: { id: 1 as never } },
+    entry(2, "camel.legacy.migration"), entry(3, "camel.legacy.record", { records: ["host content"] }), entry(4, "camel.host.bootstrap"),
+    entry(5, "camel.host.archive", { records: ["host content"] }), entry(6, "camel.host.record", { record: { t: "turn", active: false } }),
+    entry(7, "camel.user", { message: "kept" }),
+    { type: "document.create", record: { id: 8 as never, kind: "camel.host.snapshot", scope: { kind: "session" } }, content: { version: 1, kind: "base", value: { enabled: !options.retired, snapshot: { total: 3 } } } },
+    entry(9, "camel.history.marker", { t: "base", total: 3, active: false, turnStart: 3, awaiting: [] }),
+    { type: "document.create", record: { id: 10 as never, kind: "camel.history.base", scope: { kind: "session" } }, content: { version: 1, kind: "base", value: { entry: 9 } } },
+  ];
+  if (options.retired) writes.push(entry(11, "camel.host.disabled", { retired: "journal" }));
+  await storage.commit(writes, context);
+  await storage.close(context);
+  return { db, session };
+}
+const kinds = async (db: Db, session: string) => (await db.query("select (record::jsonb)->>'kind' as kind from pi_durable_entries where session_id = $1 order by id", [session])).rows.map(row => row.kind);
+const documents = async (db: Db, session: string) => (await db.query("select kind from pi_durable_documents where session_id = $1 order by id", [session])).rows.map(row => row.kind);
+
+test("stage 2 removes a retired host transcript's records, archive and snapshot document once its index holds the history before the journal's base", async () => {
+  const { db, session } = await hostTranscriptSession({ retired: true, indexed: 3 });
+  const before = await kinds(db, session);
+  const dry = await reclaimSession(db, session, false, HOST_TRANSCRIPT);
+  assert.equal(dry.rows, 4, "three entries and the snapshot document");
+  assert.deepEqual(await kinds(db, session), before, "a dry run writes nothing");
+  const ids = (await db.query("select count(*)::int as n from pi_durable_record_ids where session_id = $1", [session])).rows[0].n;
+  const events: ReclaimSession[] = [];
+  const applied = await reclaimHostTranscripts(db, { apply: true, session }, row => events.push(row));
+  assert.deepEqual([applied.rows, applied.bytes], [dry.rows, dry.bytes]);
+  assert.deepEqual(await kinds(db, session), ["camel.legacy.migration", "camel.host.bootstrap", "camel.user", "camel.history.marker", "camel.host.disabled"]);
+  assert.deepEqual(await documents(db, session), ['"camel.history.base"']);
+  assert.equal((await db.query("select count(*)::int as n from pi_durable_document_revisions where session_id = $1 and document_id = 8", [session])).rows[0].n, 0);
+  assert.equal((await db.query("select count(*)::int as n from pi_durable_record_ids where session_id = $1", [session])).rows[0].n, ids, "IDs stay reserved");
+  assert.equal((await reclaimHostTranscripts(db, { apply: true, session }, () => {})).sessions, 0, "a repeat run finds nothing");
+});
+
+test("stage 2 leaves a host transcript not retired yet, or one whose history index lacks history before the base", async () => {
+  for (const options of [{ retired: false, indexed: 3 }, { retired: true, indexed: 2 }]) {
+    const { db, session } = await hostTranscriptSession(options);
+    const before = await kinds(db, session);
+    assert.equal((await reclaimHostTranscripts(db, { apply: true, session }, () => {})).sessions, 0, JSON.stringify(options));
+    assert.deepEqual(await kinds(db, session), before);
+    assert.ok((await documents(db, session)).includes('"camel.host.snapshot"'));
+  }
+});
+
+test("stage 2 skips a session with a live owner, as stage 1 does", async () => {
+  const { db, session } = await hostTranscriptSession({ retired: true, indexed: 3 });
+  const node = randomUUID(), lease = randomUUID();
+  await db.query("insert into runtime_nodes (node, session, expires_at, draining) values ($1, $2, now() + interval '1 hour', false)", [node, lease]);
+  await db.query("insert into actor_owners (actor, node, session, epoch) values ($1, $2, $3, 1)", [session, node, lease]);
+  assert.equal((await reclaimSession(db, session, true, HOST_TRANSCRIPT)).skipped_reason, "live_owner");
+  assert.ok((await kinds(db, session)).includes("camel.host.record"));
 });

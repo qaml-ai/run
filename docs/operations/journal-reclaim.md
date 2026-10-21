@@ -49,3 +49,25 @@ Never removed: native messages (`pi.user`, `pi.assistant`, `pi.tool-result`, `ca
 markers including the base (`camel.history.marker`), compactions (`pi.compaction`, `camel.compaction.usage`), the
 seed marker (`camel.legacy.migration`), `camel.host.bootstrap`, or any `pi_durable_record_ids` row. Reserved IDs
 remain reserved forever. Stage 2 data, including host records, archives, documents and revisions, is untouched.
+
+## Stage 2: retired host transcripts
+
+Once sessions run on the release without the host transcript, its first load of each retires that session's host
+transcript (see [Pi durable sessions](pi-durable.md)). Stage 2 removes what the retirement left unread: its
+`camel.host.record` entries, its archive (`camel.host.archive`, and `camel.legacy.record` from imports before #322),
+and its `camel.host.snapshot` document with every revision. It runs the same way as stage 1, with `--stage
+host-transcript` (dry run by default, idle sessions only, one transaction each, the same skips and locks):
+
+```sh
+node --experimental-strip-types scripts/ops/reclaim-checkpoints.ts --stage host-transcript --dry-run
+node --experimental-strip-types scripts/ops/reclaim-checkpoints.ts --stage host-transcript --apply --limit 5
+node --experimental-strip-types scripts/ops/reclaim-checkpoints.ts --stage host-transcript --apply
+```
+
+Only a session whose retirement is recorded (a `camel.host.disabled` entry with `retired: "journal"`) and whose history
+index holds every message before what its journal holds (`agent_history_index.indexed` at least its newest base
+marker's `total`, less the running turn's messages the marker keeps) is selected: nothing reads its host records any
+more. Sessions not loaded since that release keep their host transcript until they are, and a later run picks them up.
+The generation marker (`camel.host.bootstrap`), the `camel.host.disabled` entry, the base marker and its document, and
+every `pi_durable_record_ids` row stay, so a release from #374 on still refuses such a session as newer. Do not run
+stage 2 while a rollback below the host transcript's removal is still possible.

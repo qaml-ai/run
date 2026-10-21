@@ -1,9 +1,12 @@
-/** Stage 1 journal reclaim. Uses the usual AGENT_DATABASE_* operator settings; never loads record content. */
+/**
+ * Journal reclaim: stage 1 (superseded checkpoints, the default) or, with `--stage host-transcript`, stage 2 (retired host
+ * transcripts). Uses the usual AGENT_DATABASE_* operator settings; never loads record content.
+ */
 import { databaseFromEnvironment } from "../../src/db.ts";
-import { reclaimCheckpoints, type ReclaimOptions } from "../../src/pi-durable/reclaim.ts";
+import { reclaimCheckpoints, reclaimHostTranscripts, type ReclaimOptions } from "../../src/pi-durable/reclaim.ts";
 
 const options: ReclaimOptions = {};
-let mode: string | undefined;
+let mode: string | undefined, stage = "checkpoints";
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -18,8 +21,12 @@ for (let i = 0; i < args.length; i++) {
     const value = args[++i];
     if (!value || value.startsWith("--")) throw new Error("--session requires an ID");
     options.session = value;
+  } else if (arg === "--stage") {
+    const value = args[++i];
+    if (value !== "checkpoints" && value !== "host-transcript") throw new Error("--stage is checkpoints or host-transcript");
+    stage = value;
   } else throw new Error(`Unknown option: ${arg}`);
 }
 const db = await databaseFromEnvironment();
-try { console.log(JSON.stringify(await reclaimCheckpoints(db, options))); }
+try { console.log(JSON.stringify(await (stage === "host-transcript" ? reclaimHostTranscripts : reclaimCheckpoints)(db, options))); }
 finally { await db.end(); }
