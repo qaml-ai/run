@@ -55,7 +55,11 @@ ${APPLICATION_FOLLOWS}`;
 /** Whether an agent has no tools at all: no js_exec (codeMode: false) and none of any source, so its prompt carries no runtime rules for them. */
 export const bare = (config: Pick<AgentConfig, "codeMode" | "tools">) => config.codeMode === false && !config.tools.length;
 
-/** The system prompt section holding the application's instructions; a later system message replaces it. */
+/**
+ * The section that held the application's instructions in Camel's own system messages. Pi now renders them, as the
+ * conversation's instructions (the prompt's last section, under this same key); a conversation whose system messages
+ * still hold Camel's has it removed (declareConfiguration, agent-host.ts).
+ */
 export const INSTRUCTIONS = "instructions";
 /** The section summarizing the agent's environment, generated from its configuration. */
 export const ENVIRONMENT = "environment";
@@ -123,7 +127,7 @@ export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | 
   return {
     role: "system", content: config.codeMode !== false ? runtimeInstructions : bare(config) ? bareInstructions : directInstructions, timestamp: 0,
     sections: {
-      [INSTRUCTIONS]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), ...environment !== null ? { [ENVIRONMENT]: environment } : {},
+      ...environment !== null ? { [ENVIRONMENT]: environment } : {},
       ...(tools.some(tool => tool.name === OUTPUT_TOOL) ? { [OUTPUT]: OUTPUT_INSTRUCTIONS } : {}),
     },
     ...(tools.length ? { toolsAdded: tools } : {}),

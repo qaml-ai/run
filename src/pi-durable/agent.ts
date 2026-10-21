@@ -5,7 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, InboxDoc, LiveDoc, StorageRequestError, createRegistry,
+  GenerationTask, Harness, InboxDoc, LiveDoc, StorageRequestError, createRegistry, section,
   type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage, type TaskId,
 } from "@earendil-works/pi-durable";
 
@@ -16,6 +16,8 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     storage: Storage;
     conversationId?: ConversationId | number;
     cursor?: DurableCursor;
+    /** The conversation's instructions, which Pi renders as the prompt's last section (`instructions`); read at each run. */
+    instructions?: () => string | undefined;
     contextWindow?: number;
     summaryStream?: AgentOptions["streamFn"];
     onSummary?: (message: AssistantMessage) => void | Promise<void>;
@@ -210,7 +212,9 @@ export class DurableAgent {
   private harness!: Harness;
   private conversation!: Conversation;
   private registry = createRegistry();
-  private messages: AgentMessage[];
+  private _messages: AgentMessage[] = [];
+  /** The system section keys the native `camel` extension renders, in order: reinstalled when they change. */
+  private sectionKeys?: string;
   private tools: AgentTool[];
   private controller?: AbortController;
   private running?: Promise<void>;
@@ -240,6 +244,22 @@ export class DurableAgent {
   private closing?: Promise<void>;
   steeringMode: "all" | "one-at-a-time";
   followUpMode: "all" | "one-at-a-time";
+
+  private get messages() { return this._messages; }
+  /** The working set; a change of its system section keys reinstalls the `camel` extension's sections. */
+  private set messages(value: AgentMessage[]) {
+    this._messages = value;
+    if (this.sectionKeys !== undefined && JSON.stringify(Object.keys(this.sections())) !== this.sectionKeys) this.installTools();
+  }
+  /**
+   * The host's system sections as its working set holds them: hosts write their own system messages. Pi renders the
+   * section `instructions` itself, from a conversation's instructions, so a host's own section of that name (an older
+   * one, which the host declares again under a key of its own) is not rendered here.
+   */
+  private sections(): Record<string, string> {
+    return Object.fromEntries(Object.entries(getCurrentSystemMessage(this._messages)?.sections ?? {})
+      .filter((entry): entry is [string, string] => entry[1] !== null && entry[0] !== "instructions"));
+  }
 
   private constructor(options: DurableAgentOptions) {
     this.options = options;
@@ -273,16 +293,7 @@ export class DurableAgent {
       prepare: async (...args: Parameters<typeof original.phases.prepare>) => {
         const [record, runtime, taskContext] = args;
         await agent.placeQueued(record.id, runtime, taskContext);
-        const view = await runtime.context(runtime.conversationId, taskContext);
-        const sections = getCurrentSystemMessage(view.messages)?.sections ??
-          getCurrentSystemMessage(agent.messages)?.sections ?? {};
-        // Camel owns these sections. An empty native section registry would
-        // remove application instructions and duplicate the checkpoint's tools.
         const prepared = new Proxy(runtime, { get(target, key) {
-          if (key === "agent") return async (ctx: typeof taskContext) => ({ ...await target.agent(ctx),
-            sections: Object.entries(sections).filter(([, value]) => value !== null).map(([key, value]) =>
-              ({ key, tag: false, render: async () => value! })),
-          });
           if (key === "context") return async (...params: Parameters<typeof runtime.context>) => {
             const current = await target.context(...params);
             return current.head?.kind === "camel.legacy.context" ? { ...current, head: undefined } : current;
@@ -437,23 +448,17 @@ export class DurableAgent {
     }
     const head = await options.durable.storage.findLatestHeadMarker(agent.conversation.id, undefined, context);
     if (head?.kind === "pi.compaction") {
-      await agent.adoptCompaction(head, false);
+      await agent.adoptCompaction(head);
       agent.messages = [...(await agent.conversation.context(context)).messages] as AgentMessage[];
     }
     agent._latestCursor = options.durable.cursor ?? await latestDurableCursor(options.durable.storage, agent.conversation.id);
     return agent;
   }
 
-  /**
-   * Tell the host of a compaction: its summary, and how many of the host's messages it keeps. Live, the host has taken
-   * in the messages up to the compaction entry and none after it (their events queue behind this one), so the count is
-   * of the context as the compaction left it: entries committed since (inputs a boundary placed with the summary, a
-   * later turn) are not counted. On load the host already holds every message, and the current context counts them.
-   */
-  private async adoptCompaction(entry: EntryRecord, live = true) {
-    const view = await this.conversation.context(context, live ? { at: entry.id } : undefined);
+  private async adoptCompaction(entry: EntryRecord) {
+    const view = await this.conversation.context(context);
     const retained = new Set(view.entries.map(entry => entry.id));
-    for (const id of this.originalInputs.keys()) if (id < entry.id && !retained.has(id as never)) this.originalInputs.delete(id);
+    for (const id of this.originalInputs.keys()) if (!retained.has(id as never)) this.originalInputs.delete(id);
     const keptMessages = view.contributions.reduce((count, messages, index) => count +
       (view.entries[index].id === view.head?.id ? 0 : messages.filter(message => message.role !== "system").length), 0);
     let summary = (entry.model ?? []).map(message => typeof message.content === "string" ? message.content :
@@ -580,8 +585,17 @@ export class DurableAgent {
     return nativeMessages.map(message => message.role === "user" ? originals.get(JSON.stringify(message))?.shift() ?? message : message) as AgentMessage[];
   }
 
+  /**
+   * The `camel` extension: the host's tools, and its system sections as native sections. Pi plans the system entries
+   * of each request from the sections its extensions render, and sets a shown section none renders to null. Each
+   * renders what the context shows for it, or, where the context shows none (the baseline after a compaction), the
+   * working set's: the host, not Pi, decides what they say.
+   */
   private installTools() {
-    this.registry.install({ name: "camel", tools: this.tools.map(tool => ({ ...tool, replay: tool.replay === "safe" ? "safe" : "unsafe",
+    const keys = Object.keys(this.sections());
+    this.sectionKeys = JSON.stringify(keys);
+    this.registry.install({ name: "camel", sections: keys.map(key => section(key, input =>
+      Object.keys(input.shown).length ? input.shown[key] : this.sections()[key], { tag: false })), tools: this.tools.map(tool => ({ ...tool, replay: tool.replay === "safe" ? "safe" : "unsafe",
       structuredOutputSchema: tool.outputSchema,
       // Camel already bounds tool output; a second truncation changes persisted replies.
       outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
@@ -620,7 +634,7 @@ export class DurableAgent {
 
   async syncContext() {
     await this.conversation.configure({ model: { provider: this.state.model.provider, modelId: this.state.model.id },
-      thinkingLevel: this.state.thinkingLevel, instructions: null }, context);
+      thinkingLevel: this.state.thinkingLevel, instructions: this.options.durable.instructions?.() ?? null }, context);
     if (!this.dirty) return;
     await this.checkpointContext(this.messages);
     this.dirty = false;

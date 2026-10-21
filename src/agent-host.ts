@@ -279,7 +279,8 @@ export function createAgentHost(hostIO: HostIO) {
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
     const current = getCurrentSystemMessage(messages)?.sections ?? {};
     const wanted = {
-      [INSTRUCTIONS]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
+      // Pi renders the application's instructions (the conversation's instructions); Camel's own section is removed.
+      ...(INSTRUCTIONS in current ? { [INSTRUCTIONS]: null } : {}), [ENVIRONMENT]: environmentSummary(config),
       [OUTPUT]: tools.some(tool => tool.name === OUTPUT_TOOL) ? OUTPUT_INSTRUCTIONS : null,
     };
     const sections = Object.fromEntries(Object.entries(wanted).filter(([name, text]) => (current[name] ?? null) !== text));
@@ -900,6 +901,7 @@ export function createAgentHost(hostIO: HostIO) {
         // Summaries share credential/network gates but not the run's output
         // schema, temperature or max-output settings.
         summaryStream,
+        instructions: () => applicationInstructions(config.systemPrompt, config.systemPromptAppend),
         get contextWindow() { return compactionModel().contextWindow; },
         onSummary: message => io.emit({ type: "compaction_usage", provider: message.provider,
           model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
