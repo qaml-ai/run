@@ -104,6 +104,8 @@ export async function dualReadHistory(storage: Pick<Storage, "scanEntries">, awa
       break;
     }
   }
+  // A call the host answered itself (an approval's result, a repair) is answered, though the journal has no native result.
+  for (const item of host) if (!item.pi && item.message.role === "toolResult") answered.add(item.message.toolCallId);
   const waiting = [...placeholders.keys()].filter(id => !answered.has(id)).sort();
   // A call the host holds open whose assistant message is its own (an import's) has no native placeholder.
   const nativeCalls = new Set(native.flatMap(item => item.message.role === "assistant" ? item.message.content.flatMap(part => part.type === "toolCall" ? [part.id] : []) : []));
