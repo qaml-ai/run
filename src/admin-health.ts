@@ -3,6 +3,7 @@ import {
   type AdminAccountName, type AdminCompare, type AdminUsageKind, type AdminWindow,
 } from "./admin-accounts.ts";
 import type { Db } from "./db.ts";
+import { ON_PI } from "./pi-sweep.ts";
 
 /** A UTC day of what the platform paid providers (USD, on its own keys, with OpenRouter's funding cost), by what it was for. */
 export type AdminSpendDay = { date: string } & Record<AdminUsageKind, number>;
@@ -110,7 +111,7 @@ export async function adminHealth(db: Db, options: { days: number | string; now?
         (select count(*) from telemetry_exporters where last_error_at is not null and last_error_at > coalesce(last_export_at, 0)) as telemetry_failing,
         (select count(*) from voice_sessions where state <> 'ended') as voice_live,
         (select count(*) from agents a where not a.revoked and a.purged_at is null
-          and not exists (select 1 from pi_durable_documents d where d.session_id = a.id and d.kind = '"camel.host.snapshot"')) as legacy_agents`,
+          and not ${ON_PI}) as legacy_agents`,
       [now - 10 * MINUTE, now - 60 * MINUTE, now - 7 * DAY_MS]),
   ]));
 
