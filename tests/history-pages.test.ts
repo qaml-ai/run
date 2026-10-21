@@ -12,44 +12,22 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { boundaries, chunksOf, HistoryIndex } from "../src/history-pages.ts";
 import { fileStorage } from "../shared/storage.ts";
 import { testDatabase } from "./database.ts";
-import { Transcript, type TranscriptRecord } from "../src/transcript.ts";
-import type { AppendLog } from "../shared/append-log.ts";
 import { AgentRuntime } from "../clients/typescript.ts";
 import { lastUser, OPERATOR, OTHER_OPERATOR, runtime, sleep, toolCall, until } from "./runtime-server.ts";
 
 const user = (text: string) => ({ role: "user", content: [{ type: "text", text }], timestamp: 0 }) as AgentMessage;
 const assistant = (text: string) => ({ role: "assistant", content: [{ type: "text", text }], stopReason: "stop", timestamp: 0 }) as unknown as AgentMessage;
-const memoryLog = (records: TranscriptRecord[]): AppendLog<TranscriptRecord> => ({
-  read: async () => records, append: record => { records.push(record); }, flush: async () => {}, rewrite: async () => {}, appendedSinceRewrite: 0, close: async () => {},
-});
-
 const indexedOf = async (r: { db: any }, agent: string) => (await r.db.query("select indexed from agent_history_index where agent = $1", [agent])).rows[0]?.indexed as number | undefined;
 
-test("a transcript keeps what the history index lacks, retractions included, and chunks it at turn starts", async () => {
-  const log = memoryLog([
-    { t: "turn", active: true }, { t: "message", message: user("a") }, { t: "message", message: assistant("A") }, { t: "turn", active: false },
-    { t: "turn", active: true }, { t: "message", message: user("b") }, { t: "message", message: assistant("error") }, { t: "retract" }, { t: "message", message: assistant("B") }, { t: "turn", active: false },
-    // A resumed run starts without a user message: no turn begins there.
-    { t: "turn", active: true }, { t: "message", message: user("c") }, { t: "turn", active: false }, { t: "turn", active: true }, { t: "message", message: assistant("C") }, { t: "turn", active: false },
-  ]);
-  const transcript = new Transcript(log, 2);
-  await transcript.load();
-  const backlog = transcript.backlog!;
-  assert.equal(backlog.from, 2);
-  assert.deepEqual(backlog.messages.map(message => (message as any).content[0].text), ["b", "B", "c", "C"]);
+test("what the history index lacks is chunked at turn starts, under its bound; one turn larger than it is split between messages", () => {
+  const messages = [user("b"), assistant("B"), user("c"), assistant("C")];
+  // A resumed run starts without a user message: no turn begins there.
+  const backlog = { from: 2, messages, sizes: messages.map(message => JSON.stringify(message).length), turns: [2, 4, 5] };
   assert.deepEqual(boundaries(backlog.from, backlog.messages, backlog.turns), [2, 4]);
   assert.deepEqual(chunksOf(backlog).map(chunk => [chunk.start, chunk.messages.length, chunk.turns]), [[2, 4, [2, 4]]]);
-  transcript.indexed(4);
-  assert.deepEqual([backlog.from, backlog.messages.length, backlog.turns], [4, 2, [4, 5]]);
-
-  // Chunks end at the latest turn start that keeps them under the bound; one turn larger than it is split between messages.
   const big = "x".repeat(400_000);
-  const sized = new Transcript(memoryLog([
-    { t: "turn", active: true }, { t: "message", message: user(big) }, { t: "message", message: assistant(big) }, { t: "turn", active: false },
-    { t: "turn", active: true }, { t: "message", message: user(big) }, { t: "message", message: assistant(big) }, { t: "message", message: assistant(big) }, { t: "message", message: assistant(big) }, { t: "turn", active: false },
-  ]), 0);
-  await sized.load();
-  assert.deepEqual(chunksOf(sized.backlog!).map(chunk => [chunk.start, chunk.messages.length, chunk.turns]), [[0, 2, [0]], [2, 2, [2]], [4, 2, []]]);
+  const sized = [user(big), assistant(big), user(big), assistant(big), assistant(big), assistant(big)];
+  assert.deepEqual(chunksOf({ from: 0, messages: sized, sizes: sized.map(message => JSON.stringify(message).length), turns: [0, 2] }).map(chunk => [chunk.start, chunk.messages.length, chunk.turns]), [[0, 2, [0]], [2, 2, [2]], [4, 2, []]]);
 });
 
 test("history comes in pages of whole turns, newest first, from chunks rather than the log", async t => {
@@ -90,12 +68,9 @@ test("history comes in pages of whole turns, newest first, from chunks rather th
   await check();
   assert.equal((await r.db.query("select count(*)::int as count from agent_history_chunks where agent = $1", [agent])).rows[0].count, 0, "nothing is written per turn");
 
-  // The agent indexes its settled turns as it stops; then pages come from chunks alone, and the log is not read.
+  // The agent indexes its settled turns as it stops; then pages come from chunks, and its journal holds nothing past them.
   await until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to stop", 20_000);
   await until(async () => (await r.db.query("select indexed from agent_history_index where agent = $1", [agent])).rows[0]?.indexed === 16, "the stopping agent to index its turns");
-  // Without its log (a legacy agent's transcript, a Pi agent's journal entries), pages still come.
-  await rm(join(r.root, "sessions", agent, "transcript.jsonl"), { force: true });
-  await r.db.query("delete from pi_durable_entries where session_id = $1", [agent]);
   await check();
 
   // The SDK pages the same way, with the agent's own token.
@@ -109,7 +84,7 @@ test("history comes in pages of whole turns, newest first, from chunks rather th
   assert.equal((await r.call(`/v1/agents/${agent}/history?limit=3`, { token: OTHER_OPERATOR })).status, 404);
 });
 
-test("the newest page has the running turn; an index behind reads the rest from the log; purging removes its chunks", async t => {
+test("the newest page has the running turn; an index behind reads the rest from the journal; purging removes its chunks", async t => {
   const r = await runtime(t, body => {
     if (body.messages.at(-1).role === "tool") return { content: "finished", delayMs: lastUser(body) === "slow" ? 1500 : 0 };
     return lastUser(body) === "slow" ? toolCall("js_exec", { code: "return 2" }) : { content: `reply ${lastUser(body)}` };
@@ -117,8 +92,8 @@ test("the newest page has the running turn; an index behind reads the rest from 
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   await r.prompt(agent, "first");
   await r.prompt(agent, "second");
-  // An index behind what the agent's runs reported (its stop could not write the last chunks) reads the rest from the log;
-  // the agent's next start indexes it.
+  // An index behind what the agent's runs reported (its stop could not write the last chunks) reads the rest from the
+  // journal; the agent's next start indexes it.
   await until(async () => (await r.db.query("select indexed from agent_history_index where agent = $1", [agent])).rows[0]?.indexed === 4, "the stopping agent to index its turns", 20_000);
   await r.db.query("delete from agent_history_chunks where agent = $1", [agent]);
   await r.db.query("update agent_history_index set indexed = 0 where agent = $1", [agent]);
@@ -162,19 +137,6 @@ test("a chunk a failed writer left in Storage is never served under another writ
   assert.equal(await index.write(agent, undefined, { start: 0, messages: [user("fresh"), assistant("fresh")], turns: [0] }), 2);
   const page = await index.page(agent, { limit: 10 });
   assert.deepEqual(page.entries.map(entry => (entry.message as any).content[0].text), ["fresh", "fresh"]);
-});
-
-test("a transcript's backlog past its bound leaves what it holds to the log, and keeps the rest", async () => {
-  const records: TranscriptRecord[] = [];
-  for (let turn = 0; turn < 12; turn++) records.push({ t: "turn", active: true }, { t: "message", message: user(`q${turn}`) }, { t: "message", message: assistant("x".repeat(1_000_000)) }, { t: "turn", active: false });
-  const transcript = new Transcript(memoryLog(records), 0);
-  await transcript.load();
-  const backlog = transcript.backlog!;
-  assert.equal(backlog.from, 0, "the index still has to reach back to where it ends");
-  assert.ok(backlog.kept > 0 && backlog.kept < 24 && backlog.bytes <= 8_000_000, "memory holds only what came after");
-  assert.equal(backlog.kept + backlog.messages.length, 24);
-  transcript.indexed(backlog.kept + 1);
-  assert.deepEqual([backlog.from, backlog.kept, backlog.kept + backlog.messages.length], [backlog.kept, backlog.kept, 24]);
 });
 
 test("stopping many agents waits once for their history, not once per agent", async t => {
@@ -230,14 +192,13 @@ test("a deleted agent's history is never written again, so a purge leaves nothin
   assert.deepEqual(await readdir(join(root, "sessions", agent, "history")).catch(() => []), []);
 });
 
-test("more unindexed history than a backlog holds is still paged, and indexed from the log rather than given up", { timeout: 120_000 }, async t => {
-  // A backlog bound of 100 KB, as 8 MB is in production: 10 turns of 30 KB pass it three times over.
-  const r = await runtime(t, body => ({ content: `${lastUser(body)} ${"x".repeat(30_000)}` }), { AGENT_IDLE_MS: "1000", AGENT_HISTORY_BACKLOG_BYTES: "100000" });
+test("an index far behind is paged from the journal, and caught up from it at the agent's next start", { timeout: 120_000 }, async t => {
+  const r = await runtime(t, body => ({ content: `${lastUser(body)} ${"x".repeat(30_000)}` }), { AGENT_IDLE_MS: "1000" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const stopped = () => until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to stop", 30_000);
   for (let turn = 0; turn < 10; turn++) await r.prompt(agent, `q${turn}`);
   await stopped();
-  // As if its stops wrote none of it: 10 turns make 300 KB unindexed, past what a backlog holds.
+  // As if its stops wrote none of it: 10 turns make 300 KB unindexed.
   await until(async () => await indexedOf(r, agent) === 20, "the stopping agent to index its turns", 30_000);
   await r.db.query("delete from agent_history_chunks where agent = $1", [agent]);
   await r.db.query("update agent_history_index set indexed = 0 where agent = $1", [agent]);
@@ -245,7 +206,7 @@ test("more unindexed history than a backlog holds is still paged, and indexed fr
   assert.equal(page.total, 20);
   assert.deepEqual(page.entries.map((entry: any) => entry.index), [16, 17, 18, 19]);
 
-  // An index that lags that far behind is caught up by the agent's next start, from its log.
+  // An index that lags that far behind is caught up by the agent's next start, from its journal.
   await r.prompt(agent, "again");
   await until(async () => await indexedOf(r, agent) === 22, "the lagging index to catch up as the agent runs and stops", 30_000);
   const whole = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
@@ -259,7 +220,7 @@ test("more unindexed history than a backlog holds is still paged, and indexed fr
   assert.deepEqual(paged.map(entry => head(entry.message)), whole.map(head), "every page of about 4 MB, together, is the whole history");
 });
 
-test("an agent without an index row pages from its log, and gets one at its next start, indexed from its log", async t => {
+test("an agent without an index row pages from its journal, and gets one at its next start, indexed from its journal", async t => {
   const r = await runtime(t, body => ({ content: `reply ${lastUser(body)}` }), { AGENT_IDLE_MS: "1000" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   await r.prompt(agent, "one");
@@ -270,21 +231,9 @@ test("an agent without an index row pages from its log, and gets one at its next
   await r.db.query("delete from agent_history_index where agent = $1", [agent]);
   await r.db.query("update agents set header = (header::jsonb - 'history')::json where id = $1", [agent]);
   await sleep(2500);
-  // Until then, unloaded, its pages come from its log.
+  // Until then, unloaded, its pages come from its journal.
   assert.deepEqual((await r.call(`/v1/agents/${agent}/history?limit=2`)).json.entries.map((entry: any) => entry.index), [0, 1]);
   await r.prompt(agent, "two");
   await until(async () => await indexedOf(r, agent) === 4, "the agent to be indexed after all", 20_000);
   assert.deepEqual((await r.call(`/v1/agents/${agent}/history?limit=1&before=2`)).json.entries.map((entry: any) => entry.index), [0, 1]);
-});
-
-test("a transcript knows which message made each tool call, over its whole log, compacted part included", async () => {
-  const call = (id: string) => ({ role: "assistant", content: [{ type: "toolCall", id, name: "t", arguments: {} }], stopReason: "toolUse" });
-  const transcript = new Transcript(memoryLog([
-    { t: "message", message: user("a") }, { t: "message", message: call("call_0") }, { t: "message", message: user("b") }, { t: "message", message: call("call_0") },
-    { t: "compaction", cut: 3, summary: "s", tokensBefore: 1 } as any, { t: "message", message: call("call_9") }, { t: "retract" },
-  ]));
-  await transcript.load();
-  assert.equal(transcript.context.length, 1, "the working set is only the latest call");
-  assert.equal(transcript.calls.get("call_0"), 3, "the latest message to make a call with the id");
-  assert.equal(transcript.calls.get("call_9"), undefined, "a retracted call is forgotten");
 });

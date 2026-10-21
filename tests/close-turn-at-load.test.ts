@@ -6,20 +6,21 @@ import { tmpdir } from "node:os";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { fixture } from "./client-fixture.ts";
-import { forkCut, recordedMessages, Transcript, transcriptPath, type TranscriptRecord } from "../src/transcript.ts";
-import { fileAppendLog } from "../shared/append-log.ts";
 import { fileStorage } from "../shared/storage.ts";
 import { MAX_RESUMES } from "../src/client-sessions.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
 import { interruptedTurnRepairs } from "../src/history.ts";
-import { hasPiStorage, openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts";
-import { NativeTranscript, nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
+import { openPiStorage } from "../src/pi-durable/storage.ts";
+import { HostJournal } from "../src/pi-durable/host-journal.ts";
+import { JournalHistory } from "../src/pi-durable/history.ts";
+import { journalForkCut } from "../src/pi-durable/fork.ts";
+import { seedJournal } from "../src/pi-durable/seed.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
 /**
  * A run that ends with no host to end it (past its resumes or stopped before its node was lost, at a load; or resumed
- * where its agent then fails to start) settles the turn it left open in the transcript before it is seen to end, as
+ * where its agent then fails to start) settles the turn it left open in its journal before it is seen to end, as
  * the agent's next start would: a fork or history page in between holds it whole.
  */
 
@@ -32,16 +33,9 @@ async function lostTurn(t: Parameters<typeof fixture>[0], run: Partial<RequestRe
   // The node running the turn is lost: its host and session are gone, and what it left is what the logs hold.
   await fx.sessions.close();
   await fx.supervisor.close();
-  // The open turn, in the store the agent's engine keeps it in: Pi's host records, or the legacy transcript log.
+  // The open turn, in the agent's journal.
   const location = { sessionId: id, directory: join(fx.root, "agents", id) };
-  const native = await hasPiStorage(location) ? await openPiStorage(location) : undefined;
-  const transcript = native ? (await NativeTranscript.open(native))! : new Transcript(fileAppendLog<TranscriptRecord>(transcriptPath(join(fx.root, "agents", id))));
-  if (!native) await transcript.load();
-  await transcript.setActive(true);
-  await transcript.append([user("research it"), fauxAssistantMessage([fauxToolCall("lookup", {}, { id: "look" }), fauxToolCall("approve", {}, { id: "ask" })], { stopReason: "toolUse" })]);
-  if (options.awaiting) await transcript.await(["ask"]);
-  if (native) await native.close(BACKGROUND_CONTEXT);
-  else await transcript.log.close();
+  await openTurn(location, options.awaiting);
   const journal = fileStorage(join(fx.root, "sessions")).log<unknown>(`${id}.journal`);
   const now = Date.now();
   journal.append({ t: "request", record: { id: "turn-1", fingerprint: "fixture", method: "prompt", state: "running", startedAt: now, began: now, ...run } });
@@ -53,32 +47,43 @@ async function lostTurn(t: Parameters<typeof fixture>[0], run: Partial<RequestRe
     const response = await fetch(`${fx.url}/clients/${id}/requests/turn-1`, { headers: { Authorization: `Bearer ${agent.session.token}` } });
     return response.json() as Promise<RequestRecord>;
   };
-  const records = async () => {
-    const reader = native ? await openPiJournalReader(location) : undefined;
-    if (!reader) return fileAppendLog<TranscriptRecord>(transcriptPath(join(fx.root, "agents", id))).read();
-    try { return (await nativeTranscriptRecords(reader))!; } finally { await reader.close(BACKGROUND_CONTEXT); }
-  };
+  const records = () => turnState(location);
   return { fx, id, read, records };
 }
 
-/** The transcript's state and messages as the records give them. */
-function replayed(records: TranscriptRecord[]) {
-  const transcript = new Transcript(undefined as never);
-  for (const record of records) transcript.apply(record);
-  return transcript;
+/** Open a turn in the agent's journal at `location`, as a node lost mid-turn left it (`awaiting`: one call waits on a person). */
+async function openTurn(location: { sessionId: string; directory: string }, awaiting = false) {
+  const storage = await openPiStorage(location);
+  try {
+    // A session no host ever started: its journal is seeded as a start's.
+    await seedJournal({ storage, sessionId: location.sessionId, model: [{ role: "system", content: "Rules.", timestamp: 0 }] }).catch(() => undefined);
+    const journal = (await HostJournal.open(storage))!;
+    await journal.setActive(true);
+    await journal.append([user("research it"), fauxAssistantMessage([fauxToolCall("lookup", {}, { id: "look" }), fauxToolCall("approve", {}, { id: "ask" })], { stopReason: "toolUse" })]);
+    if (awaiting) await journal.await(["ask"]);
+  } finally { await storage.close(BACKGROUND_CONTEXT); }
 }
 
-function assertSettled(records: TranscriptRecord[], awaiting = false) {
-  const transcript = replayed(records);
-  assert.equal(transcript.active, false, "the turn is settled");
-  const results = transcript.context.filter(message => message.role === "toolResult") as { toolCallId: string; content: { text: string }[] }[];
+/** The agent's turn and history, as its journal gives them, and a fork of it without a point. */
+async function turnState(location: { sessionId: string; directory: string }) {
+  const storage = await openPiStorage(location);
+  try {
+    const history = (await JournalHistory.open(storage))!;
+    const messages = (await history.messagesFrom(0))!;
+    return { active: history.active, awaiting: history.awaiting, context: messages, fork: await journalForkCut(storage, history, messages) };
+  } finally { await storage.close(BACKGROUND_CONTEXT); }
+}
+type TurnState = Awaited<ReturnType<typeof turnState>>;
+
+function assertSettled(state: TurnState, awaiting = false) {
+  assert.equal(state.active, false, "the turn is settled");
+  const results = state.context.filter(message => message.role === "toolResult") as { toolCallId: string; content: { text: string }[] }[];
   // Calls still open are answered as unknown; one waiting on a person stays open, and the turn stays suspended on it.
   assert.deepEqual(results.map(result => result.toolCallId), awaiting ? ["look"] : ["look", "ask"]);
   for (const result of results) assert.match(result.content[0].text, /outcome is unknown/);
-  assert.deepEqual(transcript.awaiting, awaiting ? ["ask"] : []);
+  assert.deepEqual(state.awaiting, awaiting ? ["ask"] : []);
   // A fork without a point holds the turn's prompt, unless the turn still waits on a person (it has not ended).
-  const cut = forkCut(records);
-  assert.equal(recordedMessages(cut.records).some(message => JSON.stringify(message).includes("research it")), !awaiting);
+  assert.equal(state.fork.messages.some(message => JSON.stringify(message).includes("research it")), !awaiting);
 }
 
 test("a run past its resumes fails with resume_limit at a load only once the turn it left open is settled", async t => {
@@ -87,8 +92,7 @@ test("a run past its resumes fails with resume_limit at a load only once the tur
   assert.equal(ended.state, "completed", JSON.stringify(ended));
   assert.equal((ended.outcome?.result as { code?: string })?.code, "resume_limit");
   assertSettled(await records());
-  const transcript = replayed(await records());
-  assert.match(JSON.stringify(transcript.context.at(-1)), /Runtime notice/, "closed with the notice a restart leaves, so a continue does not resubmit it");
+  assert.match(JSON.stringify((await records()).context.at(-1)), /Runtime notice/, "closed with the notice a restart leaves, so a continue does not resubmit it");
 });
 
 test("a run stopped before its node was lost ends aborted at a load only once the turn it left open is settled", async t => {
@@ -122,24 +126,19 @@ test("a resumed run whose agent fails to start ends only once the turn it left o
   assertSettled(await records());
 });
 
-/** A supervisor over a fresh directory, and an agent's transcript there holding a lost turn (`awaiting`: one call waits on a person). */
+/** A supervisor over a fresh directory, and an agent's journal there holding a lost turn (`awaiting`: one call waits on a person). */
 async function lostTranscript(t: { after(fn: () => unknown): void }, awaiting: boolean) {
   const root = await mkdtemp(join(tmpdir(), "close-turn-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const supervisor = new AgentSupervisor(root);
   const id = "agent";
-  const path = transcriptPath(join(root, id));
   await mkdir(join(root, id), { recursive: true });
-  const transcript = new Transcript(fileAppendLog<TranscriptRecord>(path));
-  await transcript.load();
-  await transcript.setActive(true);
-  await transcript.append([user("research it"), fauxAssistantMessage([fauxToolCall("lookup", {}, { id: "look" }), fauxToolCall("approve", {}, { id: "ask" })], { stopReason: "toolUse" })]);
-  if (awaiting) await transcript.await(["ask"]);
-  await transcript.log.close();
-  return { supervisor, id, records: () => fileAppendLog<TranscriptRecord>(path).read() };
+  const location = { sessionId: id, directory: join(root, id) };
+  await openTurn(location, awaiting);
+  return { supervisor, id, records: () => turnState(location) };
 }
 
-const notices = (records: TranscriptRecord[]) => replayed(records).context.filter(message => message.role === "user" && JSON.stringify(message).includes("Runtime notice")).length;
+const notices = (state: TurnState) => state.context.filter(message => message.role === "user" && JSON.stringify(message).includes("Runtime notice")).length;
 
 for (const awaiting of [false, true]) {
   const kind = awaiting ? "a turn waiting on a person" : "a lost turn";

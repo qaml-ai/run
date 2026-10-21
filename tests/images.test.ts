@@ -14,9 +14,8 @@ import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import { journalMessages } from "./fixtures/journal-history.ts";
 import { createAgentHost, type HostIO } from "../src/agent-host.ts";
-import type { TranscriptRecord } from "../src/transcript.ts";
-import { fileAppendLog } from "../shared/append-log.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { OPERATOR, runtime, until } from "./runtime-server.ts";
@@ -152,15 +151,14 @@ test("a thread with over 20 images, one of them 2,400 px, gets a request where e
   assert.deepEqual(images(server.model.bodies.at(-1)).map(sha), shown.map(sha));
 });
 
-test("inline images enter the transcript scaled down: a user message's, and an MCP tool's result", async t => {
+test("inline images enter the journal scaled down: a user message's, and an MCP tool's result", async t => {
   const directory = await mkdtemp(join(tmpdir(), "agent-images-"));
   const faux = registerFauxProvider({ tokensPerSecond: 1_000_000 });
   t.after(async () => { faux.unregister(); await rm(directory, { recursive: true, force: true }); });
-  const path = join(directory, "transcript.jsonl");
   const screenshot = (await picture(2560, 1440)).toString("base64");
   const storage = await openPiStorage({ sessionId: "agent", directory });
   const io: HostIO = {
-    emit: () => {}, cancelTools: async () => null, runLimit: async () => undefined, transcript: fileAppendLog<TranscriptRecord>(path), piStorage: async () => storage,
+    emit: () => {}, cancelTools: async () => null, runLimit: async () => undefined, legacyLog: { read: async () => [], empty: async () => true }, piStorage: async () => storage,
     tool: async () => ({ content: [{ type: "text", text: "the page" }, { type: "image", data: screenshot, mimeType: "image/png" }] }),
     file: async () => { throw new Error("no files"); }, modelAuth: async () => { throw new Error("no per-call credentials"); }, fs: async () => { throw new Error("no files"); },
   };
@@ -175,7 +173,7 @@ test("inline images enter the transcript scaled down: a user message's, and an M
   const photo = (await picture(4000, 3000, "jpeg")).toString("base64");
   const run = await host.handle("prompt", { message: { role: "user", content: [{ type: "text", text: "look" }, { type: "image", data: photo, mimeType: "image/jpeg" }], timestamp: 1 } });
   assert.equal(run.error, null);
-  const stored = (await host.handle("history", {})).messages as AgentMessage[];
+  const stored = await journalMessages({ sessionId: "agent", directory });
   const image = (message: AgentMessage) => ((message as { content: any[] }).content.find(part => part.type === "image"));
   const user = image(stored.find(message => message.role === "user")!);
   assert.deepEqual([user.mimeType, ...sides(Buffer.from(user.data, "base64"))], ["image/jpeg", 1568, 1176]);

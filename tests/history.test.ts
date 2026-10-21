@@ -1,13 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "../src/history.ts";
+import { interruptedTurnRepairs, step, validateInitialMessages, validateUserMessages } from "../src/history.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SystemMessage } from "@earendil-works/pi-ai";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileAppendLog } from "../shared/append-log.ts";
-import { readTranscriptLog, Transcript, type TranscriptRecord } from "../src/transcript.ts";
+import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { HostJournal } from "../src/pi-durable/host-journal.ts";
+import { seedJournal } from "../src/pi-durable/seed.ts";
 
 test("interrupted-turn recovery preserves settled native results and marks only missing tool ids unknown", () => {
   const messages = [
@@ -30,102 +29,48 @@ test("scoped callers can submit user text and images but never assistant or tool
   assert.throws(() => validateUserMessages([{ role: "user", content: [{ type: "toolCall", id: "x", name: "y", arguments: {} }], timestamp: 1 }] as any), /text and images/);
 });
 
-test("system messages keep their place in the transcript across reloads, retractions and compaction, and never enter history", async t => {
-  const root = await mkdtemp(join(tmpdir(), "transcript-system-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const log = () => fileAppendLog<TranscriptRecord>(join(root, "transcript.jsonl"));
+/** A new session's journal, as a host seeds it, and its HostJournal. */
+async function journal() {
+  const storage = new MemoryStorage();
+  await seedJournal({ storage, sessionId: "test", model: [{ role: "system", content: "base", timestamp: 0 }] });
+  return { storage, journal: (await HostJournal.open(storage))! };
+}
+
+test("system messages keep their place in Pi's context across retractions and reloads, and never enter history", async t => {
+  const { storage, journal: host } = await journal();
+  t.after(() => storage.close(context));
   const user = (text: string) => ({ role: "user", content: text, timestamp: 1 }) as AgentMessage;
-  const system = (fields: Partial<SystemMessage>) => ({ role: "system", content: "", timestamp: 2, ...fields }) as SystemMessage;
-  const loaded = async () => { const transcript = new Transcript(log()); await transcript.load(); return transcript; };
-  const leading = system({ content: "base", sections: { instructions: "old" } });
-  const change = system({ sections: { instructions: "new" } });
-
-  const transcript = await loaded();
-  await transcript.append([user("u0"), user("u1")]);
-  // The first change pins the leading message before it, in the same commit.
-  await transcript.declareSystem(change, leading);
-  await transcript.push(user("u2"));
-  await transcript.push(user("failed"));
-  await transcript.retract();
-  assert.deepEqual(transcript.view(), [user("u0"), user("u1"), change, user("u2")]);
-  const reloaded = await loaded();
-  assert.deepEqual(reloaded.view(), transcript.view());
-  assert.deepEqual(reloaded.system, leading);
-  assert.deepEqual(await readTranscriptLog(log()), [user("u0"), user("u1"), user("u2")]);
-
-  // A change at the end stays at the end when the message before it is retracted.
-  await transcript.push(user("u3"));
-  const late = system({ sections: { instructions: "newer" } });
-  await transcript.declareSystem(late, leading);
-  await transcript.retract();
-  assert.deepEqual(transcript.view().at(-1), late);
-
-  // Compaction folds changes before its cut into the leading message and keeps later ones.
-  const folded = system({ content: "base", sections: { instructions: "new" } });
-  assert.deepEqual(await transcript.compact({ summary: "S", cut: 2, tokensBefore: 10, at: 3 }, undefined, () => folded), [change]);
-  assert.deepEqual(transcript.view().slice(1), [user("u2"), late]);
-  assert.deepEqual(transcript.system, folded);
-  const after = await loaded();
-  assert.deepEqual(after.view(), transcript.view());
-  assert.deepEqual(after.system, folded);
-});
-
-test("calls awaiting human input stay open across a reload, and leave the wait once answered or released", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "awaiting-"));
+  const change = { role: "system", content: "", timestamp: 2, sections: { instructions: "new" } } as SystemMessage;
+  await host.append([user("u0"), user("u1")]);
+  await host.system(change);
+  await host.push(user("u2"));
+  await host.push(user("failed"));
+  await host.retract();
+  assert.deepEqual(await host.history.messagesFrom(0), [user("u0"), user("u1"), user("u2")]);
+  const reloaded = (await HostJournal.open(storage))!;
+  assert.deepEqual(await reloaded.history.messagesFrom(0), [user("u0"), user("u1"), user("u2")]);
+  // In Pi's context, where it was declared.
+  const harness = await Harness.open(storage, { registry: createRegistry(), models: { getModel: () => undefined } as never }, context);
   try {
-    const path = join(directory, "transcript.jsonl");
-    const transcript = new Transcript(fileAppendLog<TranscriptRecord>(path));
-    await transcript.append([
-      { role: "user", content: "go", timestamp: 1 },
-      { role: "assistant", content: [{ type: "toolCall", id: "ask", name: "ask_user", arguments: {} }, { type: "toolCall", id: "other", name: "read", arguments: {} }, { type: "toolCall", id: "approve", name: "delete", arguments: {} }] } as AgentMessage,
-    ]);
-    await transcript.await(["ask"]);
-    await transcript.await(["approve"]);
-    const reloaded = new Transcript(fileAppendLog<TranscriptRecord>(path));
-    await reloaded.load();
-    assert.deepEqual(reloaded.awaiting, ["ask", "approve"]);
-    assert.deepEqual(interruptedTurnRepairs(reloaded.context, false, reloaded.awaiting).map(message => (message as { toolCallId: string }).toolCallId), ["other"], "only the call nobody waits on is closed as unknown");
-    await reloaded.await(["approve"], true);
-    await reloaded.push({ role: "toolResult", toolCallId: "ask", toolName: "ask_user", content: [{ type: "text", text: "{}" }], isError: false, timestamp: 2 } as AgentMessage);
-    assert.deepEqual(reloaded.awaiting, []);
-  } finally { await rm(directory, { recursive: true, force: true }); }
+    const view = await (await harness.root(context)).context(context);
+    assert.deepEqual(view.messages.map(message => message.role === "system" ? `system:${JSON.stringify((message as SystemMessage).sections ?? message.content)}` : (message as { content: string }).content),
+      ["system:\"base\"", "u0", "u1", "system:{\"instructions\":\"new\"}", "u2"]);
+  } finally { await harness.close(context); }
 });
 
-test("streamed transcript initialization transfers only reduced state while preserving compacted request and call identity", async t => {
-  const root = await mkdtemp(join(tmpdir(), "transcript-snapshot-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const log = fileAppendLog<TranscriptRecord>(join(root, "transcript.jsonl"));
-  const source = new Transcript(log);
-  await source.append([
-    { role: "user", content: "old ".repeat(100_000), timestamp: 1, requestId: "taken" } as AgentMessage,
-    { role: "assistant", content: [{ type: "toolCall", id: "old-call", name: "read", arguments: {} }], timestamp: 2 } as AgentMessage,
-    { role: "toolResult", toolCallId: "old-call", toolName: "read", content: [{ type: "text", text: "old result" }], timestamp: 3 } as AgentMessage,
+test("calls awaiting human input stay open across a reload, and leave the wait once answered or released", async t => {
+  const { storage, journal: host } = await journal();
+  t.after(() => storage.close(context));
+  await host.append([
+    { role: "user", content: "go", timestamp: 1 },
+    { role: "assistant", content: [{ type: "toolCall", id: "ask", name: "ask_user", arguments: {} }, { type: "toolCall", id: "other", name: "read", arguments: {} }, { type: "toolCall", id: "approve", name: "delete", arguments: {} }] } as AgentMessage,
   ]);
-  await source.compact({ summary: "old summary", cut: 3, tokensBefore: 100_000, at: 4 }, undefined, () => undefined);
-  await source.setActive(true);
-  await source.append([
-    { role: "user", content: "new", timestamp: 5 },
-    { role: "assistant", content: [{ type: "toolCall", id: "waiting", name: "ask", arguments: {} }], timestamp: 6 } as AgentMessage,
-  ]);
-  await source.await(["waiting"]);
-  const reloaded = new Transcript({ ...log, read: async () => { throw new Error("must not materialize the log"); } }, 3);
-  await reloaded.load();
-  const snapshot = JSON.parse(JSON.stringify(reloaded.snapshot())); // JSON IPC, not structured clone
-  assert.ok(JSON.stringify(snapshot).length < 2000, "the archived message body never crosses IPC");
-  const restored = new Transcript(log, 3);
-  restored.restore(snapshot);
-  assert.deepEqual(restored.view(), source.view());
-  assert.equal(restored.total, 5);
-  assert.equal(restored.active, true);
-  assert.equal(restored.turnStart, 3);
-  assert.deepEqual(restored.awaiting, ["waiting"]);
-  assert.ok(restored.requests.has("taken"));
-  assert.equal(restored.calls.get("old-call"), 1);
-  assert.equal(restored.calls.get("waiting"), 4);
-  assert.equal(restored.backlog!.from, 3);
-  assert.equal(restored.backlog!.messages.length, 2);
-  await restored.push({ role: "toolResult", toolCallId: "waiting", toolName: "ask", content: [{ type: "text", text: "answer" }], timestamp: 7 } as AgentMessage);
-  assert.equal(restored.total, 6);
-  assert.deepEqual(restored.awaiting, []);
-  await log.close();
+  await host.await(["ask"]);
+  await host.await(["approve"]);
+  const reloaded = (await HostJournal.open(storage))!;
+  assert.deepEqual(reloaded.awaiting, ["ask", "approve"]);
+  assert.deepEqual(interruptedTurnRepairs(await reloaded.since(step), false, reloaded.awaiting).map(message => (message as { toolCallId: string }).toolCallId), ["other"], "only the call nobody waits on is closed as unknown");
+  await reloaded.await(["approve"], true);
+  await reloaded.push({ role: "toolResult", toolCallId: "ask", toolName: "ask_user", content: [{ type: "text", text: "{}" }], isError: false, timestamp: 2 } as AgentMessage);
+  assert.deepEqual(reloaded.awaiting, []);
 });

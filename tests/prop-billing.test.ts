@@ -15,7 +15,7 @@ import { memoryStorage, type Storage } from "../shared/storage.ts";
 import type { AppendLog, CommitEffect } from "../shared/append-log.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import type { Claim } from "../src/ownership.ts";
-import type { TranscriptRecord } from "../src/transcript.ts";
+import type { TranscriptRecord } from "./fixtures/host-transcript.ts";
 import type { AgentSupervisor } from "../src/supervisor.ts";
 import { testDatabase } from "./database.ts";
 import { check, fc } from "./prop-helpers.ts";
@@ -23,8 +23,8 @@ import { check, fc } from "./prop-helpers.ts";
 /**
  * I4 (billing equals service) and I5 (spend limits hold), at the unit level: the pricing arithmetic, the ledger
  * (`postLedger`, `accrueUsage`) on real Postgres against a model of balances, usage flushes under lost commits, and an
- * agent's spend counter, committed with its transcript (`ClientSessions.spendEffect`), under failed commits and
- * takeovers (hypothesis H3).
+ * agent's spend counter, committed with its history (`ClientSessions.spendWrite`, which each journal entry's commit
+ * carries), under failed commits and takeovers (hypothesis H3).
  */
 
 // --- Pricing arithmetic (pure) ---------------------------------------------------------------------------------------
@@ -262,7 +262,6 @@ test("usage flushes: a commit that fails, or whose answer is lost, is retried an
 type SpendLimit = { usd: number; spent: number; setAt: number };
 type SpendSession = { header: { id: string; tenant: string }; claim?: Claim; spend?: SpendLimit | null; unwritten?: number };
 type SpendInternals = {
-  spendEffect(session: SpendSession, record: TranscriptRecord): CommitEffect | undefined;
   spendWrite(session: SpendSession, cost: number): CommitEffect | undefined;
   counted(session: SpendSession, cost: number): void;
   spent(session: SpendSession, cost: number): void;
@@ -312,9 +311,9 @@ function failingCommits(pool: pg.Pool, faults: CommitFault[]): Db {
 const response = (id: number, usd: number): TranscriptRecord => ({ t: "message", message: { role: "assistant", content: [], api: "anthropic-messages", provider: "anthropic", model: "m", stopReason: "stop", timestamp: id, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: usd } } } as never });
 
 /**
- * One agent's transcript and spend across owners. Each owner holds a claim (its `actor_owners` epoch) and appends to
- * the agent's transcript (a segment log over a Postgres tail, as on S3), each record with what commits with it
- * (`spendEffect`, as `AgentSupervisor` appends it), and counts in memory what its runs see (`counted`, `spent`).
+ * One agent's history and spend across owners. Each owner holds a claim (its `actor_owners` epoch) and appends to the
+ * agent's history (a segment log over a Postgres tail), each record with what commits with it (`spendWrite`, as its
+ * journal entry's commit carries it), and counts in memory what its runs see (`counted`, `spent`).
  */
 async function spendAgent() {
   const agent = `agent-${run()}`;
@@ -339,7 +338,8 @@ async function spendAgent() {
         const record = response(++ids, usd);
         const pending = session.unwritten ?? 0;
         carried.set(ids, usd + pending);
-        const effect = node.spendEffect(session, record);
+        // What a response's journal entry commits with it (`ClientSessions.entryEffect`): its cost, and what was counted since.
+        const effect = node.spendWrite(session, usd);
         log.append(record, effect);
         // A record with nothing to commit with it is one statement, not a transaction: no fault reaches it.
         if (effect) faults.push(fault);

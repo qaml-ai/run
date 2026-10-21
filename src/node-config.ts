@@ -6,7 +6,6 @@ import { STREAM_TIMEOUTS } from "./model-stream.ts";
 import { TOOL_DEADLINES } from "./tool-servers.ts";
 import { codeCapacity } from "./codemode.ts";
 import { v8Settings } from "./v8-exec.ts";
-import { BACKLOG_BYTES } from "./transcript.ts";
 import { agentProcessEnv } from "./rpc.ts";
 import { MULTI_AGENT_LIMITS } from "./multi-agent.ts";
 
@@ -21,13 +20,6 @@ import { MULTI_AGENT_LIMITS } from "./multi-agent.ts";
  * metric lines (src/metrics.ts), which server.ts sets for the process.
  */
 export type NodeConfig = ReturnType<typeof nodeConfig>;
-
-/** AGENT_PI_DUAL_READ: `log`, `throw`, or off (unset). */
-export function piDualRead(value: string | undefined): "log" | "throw" | undefined {
-  if (!value) return undefined;
-  if (value !== "log" && value !== "throw") throw new Error("AGENT_PI_DUAL_READ must be log or throw");
-  return value;
-}
 
 /**
  * A tenant allow-list setting: `*` (every tenant) or comma-separated tenant ids; unset or empty, none. Checked at start,
@@ -88,7 +80,9 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   if (!["process", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process or inline");
   // Settings of the legacy engine and of the sweep that moved its agents to Pi, which are gone: every agent runs on Pi
   // durable. Still accepted, so a deployment that sets them starts; the node says once that it ignores them.
-  const ignored = ["AGENT_ENGINE", "AGENT_PI_CANARY_AGENTS", "AGENT_PI_CANARY_TENANTS", "AGENT_PI_SWEEP"].filter(name => env[name] !== undefined);
+  // Settings of what was removed: the legacy engine, and the host transcript (every agent's history is its Pi journal).
+  const ignored = ["AGENT_ENGINE", "AGENT_PI_CANARY_AGENTS", "AGENT_PI_CANARY_TENANTS", "AGENT_PI_SWEEP", "AGENT_HISTORY_BACKLOG_BYTES",
+    "AGENT_PI_DUAL_READ", "AGENT_PI_DUAL_WRITE", "AGENT_PI_HISTORY_SOURCE_TENANTS"].filter(name => env[name] !== undefined);
   const toolTimeoutMs = Number(env.AGENT_TOOL_TIMEOUT_MS ?? 15_000);
   if (!Number.isInteger(toolTimeoutMs) || toolTimeoutMs < 1 || toolTimeoutMs > 15 * 60_000) throw new Error("AGENT_TOOL_TIMEOUT_MS must be an integer between 1 and 900000");
   // The most one run of a self-serve tenant's agents may take, whatever its agent sets (runLimits): model responses, and
@@ -141,18 +135,8 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     v8: v8Settings(env),
     codeCapacity: codeCapacity(env),
     sandboxRequired: env.AGENT_SANDBOX_REQUIRED === "1",
-    // The most of an agent's history its host keeps in memory (AGENT_HISTORY_BACKLOG_BYTES).
-    historyBacklogBytes: Number(env.AGENT_HISTORY_BACKLOG_BYTES) || BACKLOG_BYTES,
-    // Compare each agent's host transcript with Pi's journal after its loads and runs (AGENT_PI_DUAL_READ: log, or throw
-    // in tests and the simulation; unset: off). See plans/host-transcript-removal.md.
-    piDualRead: piDualRead(env.AGENT_PI_DUAL_READ),
-    // Write what the host writes itself into Pi's journal too: native entries and markers (AGENT_PI_DUAL_WRITE=1).
-    piDualWrite: env.AGENT_PI_DUAL_WRITE === "1",
     // Tenants whose agents' system sections are native Pi sections, `*` for every tenant (AGENT_NATIVE_SECTIONS_TENANTS).
     nativeSectionsTenants: nativeSectionsTenants(env.AGENT_NATIVE_SECTIONS_TENANTS),
-    // Tenants whose agents read their history from Pi's journal, `*` for every tenant, where it is dual-written
-    // (AGENT_PI_HISTORY_SOURCE_TENANTS; plans/host-transcript-removal.md, phase 2).
-    historySourceTenants: tenantList("AGENT_PI_HISTORY_SOURCE_TENANTS", env.AGENT_PI_HISTORY_SOURCE_TENANTS),
     // What its agent processes are told of these settings.
     agentEnv: agentProcessEnv(env),
     systemPrompt: env.AGENT_SYSTEM_PROMPT,

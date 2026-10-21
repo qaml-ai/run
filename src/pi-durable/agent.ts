@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -16,8 +15,15 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     storage: Storage;
     conversationId?: ConversationId | number;
     cursor?: DurableCursor;
-    /** The latest journal message the host wrote or recorded itself: a run's new messages are the ones after it. */
+    /** The latest journal message the host wrote itself: a run's new messages are the ones after it. */
     written?: () => DurableCursor | undefined;
+    /**
+     * The host's system message as its configuration makes it, for the sections of a request whose context shows none
+     * yet (the first after a compaction, before Pi writes its baseline), and the fixed part of the recent context kept.
+     */
+    leading?: () => AgentMessage | undefined;
+    /** What a request sends of Pi's context (a turn that sees no history: from its own first message). */
+    view?: (messages: AgentMessage[]) => AgentMessage[];
     /**
      * Render the host's system sections as native Pi sections (the `camel` extension's `section()`), rather than give
      * them to Pi's generation in place of its agent's. A host section named `instructions` (Pi's own) is then left out:
@@ -39,22 +45,6 @@ type Listener = (event: AgentEvent & { durable?: DurableCursor }, signal: AbortS
 const context = BACKGROUND_CONTEXT;
 const nativeKinds = new Set(["pi.user", "pi.assistant", "pi.tool-result", "camel.user", "camel.message"]);
 
-/** Each message's content digest, kept with the message: a host's working set is mostly the same objects run to run. */
-const digests = new WeakMap<object, string>();
-const digest = (message: AgentMessage) => {
-  let value = digests.get(message);
-  if (value === undefined) digests.set(message, value = createHash("sha256").update(JSON.stringify(message)).digest("base64"));
-  return value;
-};
-
-/**
- * Whether two working contexts hold the same messages: the same objects, or messages whose whole content is equal.
- * Each message is serialized on its own, so the check never holds more than one message's JSON at a time.
- */
-function sameMessages(left: readonly AgentMessage[], right: readonly AgentMessage[]) {
-  return left.length === right.length && left.every((message, index) => message === right[index] || digest(message) === digest(right[index]));
-}
-
 /** Pi 1.3.0's context derivation (harness/context.js, not exported): what it leaves out, and a missing result's text. */
 const EXCLUDED_STOP_REASONS = new Set(["aborted", "error", "deferred"]);
 const MISSING_RESULT_TEXT = "Tool result unavailable: history ends before this call completed.";
@@ -62,8 +52,7 @@ const MISSING_RESULT_TEXT = "Tool result unavailable: history ends before this c
 /**
  * A context as Pi derives it from a checkpoint of `messages`: failed, aborted and deferred responses left out, and each
  * assistant's tool results right after it in call order (a missing one given Pi's own placeholder, an unmatched one
- * dropped). Two working sets with the same Pi context need no new checkpoint: an imported legacy context Pi orders
- * differently, or a failed response the host keeps, would otherwise rewrite the whole context on every run.
+ * dropped).
  */
 export function piOrdered(messages: readonly AgentMessage[]): AgentMessage[] {
   const kept = messages.filter(message => message.role !== "assistant" || !EXCLUDED_STOP_REASONS.has(message.stopReason));
@@ -86,10 +75,7 @@ export function piOrdered(messages: readonly AgentMessage[]): AgentMessage[] {
   return ordered;
 }
 
-/** Whether two working sets give Pi the same context: the same messages, or the same once Pi orders them (`piOrdered`). */
-const samePiContext = (left: readonly AgentMessage[], right: readonly AgentMessage[]) => sameMessages(left, right) || sameMessages(piOrdered(left), piOrdered(right));
-
-/** The native WAL is authoritative; an old transcript is a cursor-addressed projection. */
+/** The messages a journal entry adds to the agent's history: its native messages, as the host's history holds them. */
 export function durableEntryMessages(entry: EntryRecord): DurableMessage[] {
   if (!nativeKinds.has(entry.kind)) return [];
   const original = entry.kind === "camel.user" ? (entry.data as { message?: AgentMessage } | undefined)?.message : undefined;
@@ -226,7 +212,6 @@ export class DurableAgent {
   private running?: Promise<void>;
   private events = Promise.resolve();
   private eventError?: unknown;
-  private dirty = true;
   private pending = new Set<string>();
   private steering: AgentMessage[] = [];
   /** A run's input beyond its first message: placed with it, before the run's first model request. */
@@ -252,7 +237,7 @@ export class DurableAgent {
   followUpMode: "all" | "one-at-a-time";
 
   private get messages() { return this._messages; }
-  /** The working set; a change of its system section keys reinstalls the `camel` extension's sections. */
+  /** Pi's context as the agent last read it, with the run's messages since; a change of its system section keys reinstalls the `camel` extension's sections. */
   private set messages(value: AgentMessage[]) {
     this._messages = value;
     if (this.sectionKeys !== undefined && JSON.stringify(Object.keys(this.sections())) !== this.sectionKeys) this.installTools();
@@ -270,17 +255,16 @@ export class DurableAgent {
 
   private constructor(options: DurableAgentOptions) {
     this.options = options;
-    this.messages = [...options.initialState?.messages ?? []];
     this.tools = [...options.initialState?.tools ?? []];
     this.steeringMode = options.steeringMode ?? "one-at-a-time";
     this.followUpMode = options.followUpMode ?? "one-at-a-time";
     const self = this;
     this.state = {
       model: options.initialState!.model!, thinkingLevel: options.initialState?.thinkingLevel ?? "off",
+      // Pi's context: the host changes it through the journal (its own entries, edits and system messages), not here.
       get messages() { return self.messages; },
-      // Hosts reassign the working set after every run; only a real change is checkpointed into Pi's context.
-      set messages(value) { if (!samePiContext(value, self.messages)) self.dirty = true; self.messages = [...value]; },
-      get tools() { return self.tools; }, set tools(value) { self.tools = [...value]; self.installTools(); self.dirty = true; },
+      set messages(_value) { throw new Error("Pi's context changes through its journal: replaceContext, or the host's own entries"); },
+      get tools() { return self.tools; }, set tools(value) { self.tools = [...value]; self.installTools(); },
       get systemPrompt() { const system = self.messages.findLast(message => message.role === "system"); return system ? getSystemMessageText(system) : ""; },
       get isStreaming() { return self.controller !== undefined; },
       get streamingMessage() { return self.streamingMessage; }, get pendingToolCalls() { return self.pending; },
@@ -303,7 +287,7 @@ export class DurableAgent {
         // Without native sections, Camel's sections are given to Pi as its agent's: an empty native section registry
         // would remove application instructions and duplicate the checkpoint's tools.
         const sections = agent.options.durable.nativeSections ? undefined : getCurrentSystemMessage((await runtime.context(runtime.conversationId, taskContext)).messages)?.sections ??
-          getCurrentSystemMessage(agent.messages)?.sections ?? {};
+          getCurrentSystemMessage(agent.messages)?.sections ?? agent.leading()?.sections ?? {};
         const prepared = new Proxy(runtime, { get(target, key) {
           if (key === "agent" && sections) return async (ctx: typeof taskContext) => ({ ...await target.agent(ctx),
             sections: Object.entries(sections).filter(([, value]) => value !== null).map(([key, value]) =>
@@ -408,7 +392,7 @@ export class DurableAgent {
         // for that quarter too).
         get keepRecentTokens() {
           const limit = window(), reserve = Math.min(16_384, Math.floor(limit * 0.15));
-          const system = agent.messages.findLast(message => message.role === "system");
+          const system = agent.messages.findLast(message => message.role === "system") ?? agent.leading();
           const fixed = system ? Math.ceil(JSON.stringify(system).length / 4) : 0;
           return Math.max(1_000, Math.min(20_000, Math.floor(limit * 0.25), limit - reserve - fixed - Math.floor(limit / 4)));
         }, backgroundTokens: 0 },
@@ -449,35 +433,19 @@ export class DurableAgent {
         for (const item of items) agent.queueEvent(() => agent.committedMessage(item));
       }
     });
-    {
-      const view = await agent.conversation.context(context);
-      for (const entry of view.entries) if (entry.kind === "camel.user" && entry.model?.[0]?.role === "user") {
-        const original = (entry.data as { message?: AgentMessage } | undefined)?.message;
-        if (original) agent.originalInputs.set(entry.id, { native: entry.model[0], message: original });
-      }
-      // A reload whose Pi context already is the host's working set writes no checkpoint: rewriting the whole context
-      // on every load cost a full copy of it in memory and in the journal. An imported context is still split once
-      // into per-message entries, so Pi can choose a compaction cut inside it.
-      const whole = view.head?.kind === "camel.legacy.context" && (view.head.model?.length ?? 0) > 1;
-      agent.dirty = whole || !samePiContext(agent.originals(view.messages as Message[]) as AgentMessage[], contextMessages(agent.messages) as AgentMessage[]);
-    }
-    const head = await options.durable.storage.findLatestHeadMarker(agent.conversation.id, undefined, context);
-    if (head?.kind === "pi.compaction") {
-      await agent.adoptCompaction(head, false);
-      agent.messages = [...(await agent.conversation.context(context)).messages] as AgentMessage[];
-    }
+    await agent.reload();
     agent._latestCursor = options.durable.cursor ?? await latestDurableCursor(options.durable.storage, agent.conversation.id);
     return agent;
   }
 
   /**
-   * Tell the host of a compaction: its summary, and how many of the host's messages it keeps. Live, the host has taken
-   * in the messages up to the compaction entry and none after it (their events queue behind this one), so the count is
-   * of the context as the compaction left it: entries committed since (inputs a boundary placed with the summary, a
-   * later turn) are not counted. On load the host already holds every message, and the current context counts them.
+   * Tell the host of a compaction: its summary, and how many history messages it keeps. The host has taken in the
+   * messages up to the compaction entry and none after it (their events queue behind this one), so the count is of the
+   * context as the compaction left it: entries committed since (inputs a boundary placed with the summary, a later
+   * turn) are not counted.
    */
-  private async adoptCompaction(entry: EntryRecord, live = true) {
-    const view = await this.conversation.context(context, live ? { at: entry.id } : undefined);
+  private async adoptCompaction(entry: EntryRecord) {
+    const view = await this.conversation.context(context, { at: entry.id });
     const retained = new Set(view.entries.map(entry => entry.id));
     for (const id of this.originalInputs.keys()) if (id < entry.id && !retained.has(id as never)) this.originalInputs.delete(id);
     // Counted as the host's history holds them: never a waiting tool's input-required placeholder (durableEntryMessages).
@@ -494,6 +462,21 @@ export class DurableAgent {
   }
 
   get signal() { return this.controller?.signal; }
+  /** The host's system message as its configuration makes it (`DurableAgentOptions.durable.leading`). */
+  private leading() { return this.options.durable.leading?.() as (AgentMessage & { role: "system" }) | undefined; }
+
+  /**
+   * Read Pi's context again: what a run starts from, after the host wrote to the journal (its own messages, a
+   * retraction's edit, a system message) or Pi settled an interrupted run.
+   */
+  async reload() {
+    const view = await this.conversation.context(context);
+    for (const entry of view.entries) if (entry.kind === "camel.user" && entry.model?.[0]?.role === "user" && !this.originalInputs.has(entry.id)) {
+      const original = (entry.data as { message?: AgentMessage } | undefined)?.message;
+      if (original) this.originalInputs.set(entry.id, { native: entry.model[0], message: original });
+    }
+    this.messages = this.originals(view.messages as Message[]);
+  }
   get latestCursor() { return this._latestCursor; }
   get conversationId() { return this.conversation.id; }
   subscribe(listener: Listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
@@ -552,6 +535,8 @@ export class DurableAgent {
       if (nativeMessages) messages = this.originals(nativeMessages);
       // Pi's working context already excludes archived bodies.
       this.messages = [...messages];
+      // A turn that sees no history sends only what the host's view of it keeps.
+      if (this.options.durable.view) messages = this.options.durable.view(messages);
       const prepared = await this.options.prepareRequest?.({ context: { messages, tools: this.tools }, model: this.state.model,
         thinkingLevel: this.state.thinkingLevel }, signal);
       if (prepared?.context) messages = prepared.context.messages;
@@ -644,33 +629,29 @@ export class DurableAgent {
 
   /** Abort handlers settle unknown work; opening itself never dispatches a task. */
   async discardInterruptedRun() {
-    const before = [...this.messages], cursor = this._latestCursor;
     const listeners = [...this.listeners]; this.listeners.clear();
     await this.conversation.abort(context);
     await this.flushEvents();
-    // Settling an interrupted run commits native messages the host's working set does not take: check it in again.
-    if (this.messages.length !== before.length || this._latestCursor !== cursor) this.dirty = true;
-    this.messages = before; this.lastTurn = undefined; this.lastTurnResults = []; this.errorMessage = undefined;
+    this.lastTurn = undefined; this.lastTurnResults = []; this.errorMessage = undefined;
     for (const listener of listeners) this.listeners.add(listener);
+    await this.reload();
     return this._latestCursor;
   }
 
   async syncContext() {
     await this.conversation.configure({ model: { provider: this.state.model.provider, modelId: this.state.model.id },
       thinkingLevel: this.state.thinkingLevel, instructions: null }, context);
-    if (!this.dirty) return;
-    // A host that writes its own messages into the journal (NativeTranscript's dual write) changed Pi's context as it
-    // changed its working set: then there is nothing to check in.
-    const view = await this.conversation.context(context);
-    for (const entry of view.entries) if (entry.kind === "camel.user" && entry.model?.[0]?.role === "user" && !this.originalInputs.has(entry.id)) {
-      const original = (entry.data as { message?: AgentMessage } | undefined)?.message;
-      if (original) this.originalInputs.set(entry.id, { native: entry.model[0], message: original });
-    }
-    if (view.head?.kind !== "camel.legacy.context" || (view.head.model?.length ?? 0) <= 1) {
-      if (samePiContext(this.originals(view.messages as Message[]) as AgentMessage[], contextMessages(this.messages) as AgentMessage[])) { this.dirty = false; return; }
-    }
-    await this.checkpointContext(this.messages);
-    this.dirty = false;
+    await this.reload();
+  }
+
+  /**
+   * Replace Pi's context with `messages` from here on (a checkpoint: a head entry with the first message, then one entry
+   * per message, so Pi can choose a compaction cut between them): an agent with no history yet whose configuration
+   * changes rebuilds its leading system message, the provider's cached prefix.
+   */
+  async replaceContext(messages: AgentMessage[]) {
+    await this.checkpointContext(messages);
+    this.messages = [...messages];
   }
 
   private async checkpointContext(messages: AgentMessage[]) {
@@ -716,7 +697,6 @@ export class DurableAgent {
     })();
     return this.closing;
   }
-  reset() { this.clearAllQueues(); this.state.messages = this.messages.filter(message => message.role === "system"); }
 
   private async submitMessage(message: AgentMessage, whenBusy: "steer" | "followUp" = "steer") {
     if (message.role !== "user") {

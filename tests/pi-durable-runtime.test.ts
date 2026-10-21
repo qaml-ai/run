@@ -6,13 +6,15 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
+import { AgentSupervisor, transcriptPath, type Hosting } from "../src/supervisor.ts";
 import { fileAppendLog } from "../shared/append-log.ts";
-import { SEED_MAX_BYTES } from "../src/pi-durable/seed.ts";
-import { historyOf, transcriptPath, type TranscriptRecord } from "../src/transcript.ts";
 import { openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { retireHost, rollBack } from "./fixtures/pi-rollback.ts";
+import { rollBack } from "./fixtures/pi-rollback.ts";
+import { copyFingerprint, historyOf, hostTranscriptSession, SEED_MAX_BYTES, setDualWrite, type TranscriptRecord } from "./fixtures/host-transcript.ts";
+
+// Sessions a release before the host transcript's removal seeded, as nodes ran it then.
+setDualWrite(true);
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
 for (const hosting of ["inline", "process"] as Hosting[]) test(`a session whose history is still only in the legacy format is refused, loudly, and nothing is written; a new agent is seeded (${hosting})`, { timeout: 60_000 }, async t => {
@@ -43,8 +45,7 @@ for (const hosting of ["inline", "process"] as Hosting[]) test(`a session whose 
   await log.close();
 
   // Rolled back to the legacy engine by an earlier release: refused, its journal as it was.
-  assert.ok(await start("rolled-back"));
-  await supervisors.at(-1)!.close();
+  await hostTranscriptSession({ sessionId: "rolled-back", directory: join(root, "rolled-back") }, turn);
   const storage = await openPiStorage({ sessionId: "rolled-back", directory: join(root, "rolled-back") });
   await rollBack(storage, fileAppendLog<TranscriptRecord>(transcriptPath(join(root, "rolled-back"))));
   await storage.close(BACKGROUND_CONTEXT);
@@ -52,23 +53,18 @@ for (const hosting of ["inline", "process"] as Hosting[]) test(`a session whose 
   await assert.rejects(start("rolled-back"), /AGENT_NOT_MIGRATED: .*missing or disabled/);
   assert.deepEqual(await kinds("rolled-back"), before);
 
-  // Retired by a later release, which reads its history from Pi's journal alone: refused as newer, its journal as it was.
-  assert.ok(await start("retired"));
-  await supervisors.at(-1)!.close();
-  const retired = await openPiStorage({ sessionId: "retired", directory: join(root, "retired") });
-  await retireHost(retired);
-  await retired.close(BACKGROUND_CONTEXT);
-  const kept = await kinds("retired");
-  await assert.rejects(start("retired"), /AGENT_NOT_MIGRATED: this agent's history format is newer than this runtime/);
-  assert.deepEqual(await kinds("retired"), kept);
+  // Its host transcript written by the release before: retired as it starts, and its history kept.
+  await hostTranscriptSession({ sessionId: "earlier", directory: join(root, "earlier") }, turn);
+  assert.equal((await start("earlier")).messages, 2);
+  assert.deepEqual(await supervisors.at(-1)!.history("earlier"), historyOf(turn));
 
-  // A new agent: seeded with the marker every release reads first, its generation and context.
+  // A new agent: seeded with the marker every release reads first, its journal history's base and its context.
   assert.ok(await start("new"));
-  assert.deepEqual(await kinds("new"), ["camel.legacy.migration", "camel.host.bootstrap", "camel.legacy.context"]);
+  assert.deepEqual(await kinds("new"), ["camel.legacy.migration", "camel.history.marker", "camel.legacy.context"]);
 });
 
 
-for (const hosting of ["inline", "process"] as Hosting[]) test(`a fork too large to copy keeps its records in its legacy log, which its history reads first (${hosting})`, async t => {
+for (const hosting of ["inline", "process"] as Hosting[]) test(`a fork the release before kept in its legacy log (too large to copy) is retired with its history whole, read from there first (${hosting})`, async t => {
   const root = await mkdtemp(join(tmpdir(), "pi-size-limit-"));
   const id = "large-session", directory = join(root, id);
   const log = fileAppendLog<TranscriptRecord>(transcriptPath(directory));
@@ -76,7 +72,8 @@ for (const hosting of ["inline", "process"] as Hosting[]) test(`a fork too large
     { t: "message", message: { role: "user", content: "x".repeat(SEED_MAX_BYTES), timestamp: 1, requestId: "old" } as any },
     { t: "compaction", summary: "Earlier history", cut: 1, tokensBefore: 100, at: 2 },
   ];
-  await new AgentSupervisor(root, { hosting }).seed(id, records);
+  assert.equal(copyFingerprint(records), undefined, "past the copy budget");
+  await hostTranscriptSession({ sessionId: id, directory }, records, { legacy: log });
   const server = createServer(async (request, response) => {
     for await (const _ of request) { /* drain request */ }
     response.writeHead(200, { "content-type": "text/event-stream" });
@@ -106,7 +103,7 @@ for (const hosting of ["inline", "process"] as Hosting[]) test(`a fork too large
   const first = await open();
   assert.equal((await first.supervisor.request(id, "prompt", { text: "duplicate", requestId: "old" })).taken, true);
   assert.equal((await first.supervisor.request(id, "prompt", { text: "new", requestId: "new" })).reply, "on Pi");
-  const history = await first.supervisor.request(id, "history");
+  const history = { messages: (await first.supervisor.history(id)) as any[] };
   assert.deepEqual(history.messages.slice(0, 1), original);
   assert.deepEqual(history.messages.slice(1).map((message: any) => message.role), ["user", "assistant"]);
   await first.supervisor.close();
@@ -126,6 +123,6 @@ for (const hosting of ["inline", "process"] as Hosting[]) test(`a fork too large
   supervisors.push(cold);
   assert.deepEqual(await cold.history(id), history.messages);
   const second = await open();
-  assert.deepEqual((await second.supervisor.request(id, "history")).messages, history.messages);
+  assert.deepEqual(((await second.supervisor.history(id)) as any[]), history.messages);
   assert.equal((await second.supervisor.request(id, "prompt", { text: "duplicate", requestId: "new" })).taken, true);
 });

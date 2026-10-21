@@ -4,7 +4,6 @@ import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileAppendLog } from "../shared/append-log.ts";
-import { Transcript, readTranscript, type TranscriptRecord } from "../src/transcript.ts";
 
 async function directory(t: { after: (fn: () => Promise<void>) => void }) {
   const root = await mkdtemp(join(tmpdir(), "append-log-test-"));
@@ -111,24 +110,6 @@ test("rewrite folds the log from a snapshot taken inside the write sequence", as
   assert.equal(log.appendedSinceRewrite, 1);
   assert.deepEqual(await fileAppendLog(path).read(), [{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }]);
 });
-
-test("transcript appends one record per message", async t => {
-  const root = await directory(t);
-  const transcript = new Transcript(fileAppendLog<TranscriptRecord>(join(root, "transcript.jsonl")));
-  await transcript.load();
-  await transcript.setActive(true);
-  await transcript.push({ role: "user", content: "first", timestamp: 1 });
-  assert.equal(transcript.active, true);
-  assert.equal(transcript.total, 1);
-  await transcript.setActive(false);
-  await transcript.push({ role: "user", content: "next", timestamp: 2 });
-  await transcript.push({ role: "assistant", content: [], stopReason: "error", errorMessage: "503", timestamp: 3 } as any);
-  await transcript.retract();
-  const lines = (await readFile(join(root, "transcript.jsonl"), "utf8")).trim().split("\n");
-  assert.deepEqual(lines.map(line => JSON.parse(line).t), ["turn", "message", "turn", "message", "message", "retract"]);
-  assert.deepEqual((await readTranscript(root)).map(m => (m as { content: unknown }).content), ["first", "next"]);
-});
-
 
 test("bounded file reads reject oversized input and retain torn-tail semantics", async t => {
   const path = join(await directory(t), "bounded.jsonl");

@@ -5,19 +5,21 @@ import {
 import type { Db } from "./db.ts";
 
 /**
- * Whether agent `a` runs on Pi: it has an enabled Pi host document. A canary rollback left it disabled. Pi stores
- * document kinds as JSON text. NativeTranscript writes enabled in each base, as the value's first key; its deltas only
- * change snapshot fields. The address index selects the current document and the (session_id, document_id, kind, seq
- * desc) index finds its latest base, each with limit 1, without replaying deltas. Only the base's first characters are
- * read: parsing it whole (the host's context) for every agent would make each count read every session's context. A
- * missing base is not a disabled document.
+ * Whether agent `a` runs on Pi: its journal history has a base document (every session this release seeded or retired
+ * the host transcript of), or it has an enabled Pi host document (a session not loaded since; a canary rollback left one
+ * disabled). Pi stores document kinds as JSON text. The host transcript wrote enabled in each base, as the value's first
+ * key; its deltas only change snapshot fields. The address index selects the current document and the (session_id,
+ * document_id, kind, seq desc) index finds its latest base, each with limit 1, without replaying deltas. Only the base's
+ * first characters are read: parsing it whole (the host's context) for every agent would make each count read every
+ * session's context. A missing base is not a disabled document.
  */
-export const ON_PI = `coalesce((select coalesce((select left(r.content, 256) not like '%"enabled":false%' from pi_durable_document_revisions r
+export const ON_PI = `(exists (select 1 from pi_durable_documents b where b.session_id = a.id and b.kind = '"camel.history.base"' and b.retired_at is null)
+  or coalesce((select coalesce((select left(r.content, 256) not like '%"enabled":false%' from pi_durable_document_revisions r
         where r.session_id = d.session_id and r.document_id = d.id and r.kind = 'base'
         order by r.seq desc limit 1), true)
     from pi_durable_documents d where d.session_id = a.id and d.kind = '"camel.host.snapshot"'
       and d.scope_kind = 'session' and d.owner_id = 0 and d.family = 0 and d.key_value = '""' and d.retired_at is null
-    order by d.created_at desc limit 1), false)`;
+    order by d.created_at desc limit 1), false))`;
 
 /** A UTC day of what the platform paid providers (USD, on its own keys, with OpenRouter's funding cost), by what it was for. */
 export type AdminSpendDay = { date: string } & Record<AdminUsageKind, number>;

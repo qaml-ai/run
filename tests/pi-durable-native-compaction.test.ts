@@ -18,8 +18,10 @@ test("native compaction owns cuts, bounds retained context and preserves full hi
   let generations = 0, summaries = 0, compactions = 0, tools = 0;
   let contextWindow = 32768;
   const requests: any[] = [];
+  // The host's system message, as its configuration makes it: Pi's context has none yet.
+  const leading = { role: "system", content: "", sections: { application: "Keep the customer instructions intact." }, timestamp: 1 } as const;
   const agent = await DurableAgent.create({
-    initialState: { model: { ...model, contextWindow: 32768 }, messages: [{ role: "system", content: "", sections: { application: "Keep the customer instructions intact." }, timestamp: 1 }], tools: [{ name: "read", label: "Read", description: "Read", parameters: { type: "object", properties: {} },
+    initialState: { model: { ...model, contextWindow: 32768 }, messages: [], tools: [{ name: "read", label: "Read", description: "Read", parameters: { type: "object", properties: {} },
       execute: async () => { tools++; return { content: [{ type: "text", text: "payload ".repeat(1000) }], details: null }; } }] },
     streamFn: (_model, view) => {
       requests.push(structuredClone(view));
@@ -29,7 +31,7 @@ test("native compaction owns cuts, bounds retained context and preserves full hi
       contextWindow = 8192;
       return stream({ ...fauxAssistantMessage(content, { stopReason: typeof content === "string" ? "stop" : "toolUse" }), provider: model.provider, model: model.id });
     },
-    durable: { storage, get contextWindow() { return contextWindow; },
+    durable: { storage, leading: () => leading as never, get contextWindow() { return contextWindow; },
       summaryStream: () => { summaries++; return stream({ ...fauxAssistantMessage("Retain the task identifier and continue reading."), provider: model.provider, model: model.id }); },
       onCompaction: state => { compactions++; assert.ok(state.keptMessages < 20); assert.ok(state.summary.length); },
     },
@@ -102,35 +104,4 @@ test("a compaction's kept messages are counted as it left them, whatever was com
   (agent as any).options.durable.onCompaction = (state: { keptMessages: number }) => { counted.push(state.keptMessages); };
   await (agent as any).adoptCompaction(compaction);
   assert.deepEqual(counted, [kept.at(-1)]);
-});
-
-test("a compaction's kept messages leave out input-required placeholders, which the host's history never holds", async t => {
-  const storage = new MemoryStorage();
-  let generations = 0;
-  const agent = await DurableAgent.create({
-    initialState: { model, messages: [], tools: [{ name: "read", label: "Read", description: "Read", parameters: { type: "object", properties: {} },
-      execute: async () => ({ content: [{ type: "text", text: "payload ".repeat(1000) }], details: null }) }] },
-    streamFn: () => {
-      const content = generations < 12 ? [fauxToolCall("read", {}, { id: `read-${generations}` })] : "Finished";
-      generations++;
-      return stream({ ...fauxAssistantMessage(content, { stopReason: typeof content === "string" ? "stop" : "toolUse" }), provider: model.provider, model: model.id });
-    },
-    durable: { storage, summaryStream: () => stream({ ...fauxAssistantMessage("Summary."), provider: model.provider, model: model.id }) },
-  });
-  t.after(() => agent.close());
-  await agent.prompt({ role: "user", content: "Read all records", timestamp: 1 } as any);
-  const page = await storage.scanEntries({ conversationId: agent.conversationId }, 1000, undefined, BACKGROUND_CONTEXT);
-  const compaction = page.items.findLast(entry => entry.kind === "pi.compaction")!;
-  assert.ok(compaction, "the run compacted");
-  const counted: number[] = [];
-  (agent as any).options.durable.onCompaction = (state: { keptMessages: number }) => { counted.push(state.keptMessages); };
-  // As a load adopts it: the current context.
-  await (agent as any).adoptCompaction(compaction, false);
-  // A call that waits on a person: Pi's context holds its placeholder result, the host's history does not.
-  await (agent as any).conversation.commit(async (tx: any) => {
-    await tx.appendEntry(agent.conversationId, { kind: "pi.assistant", model: [{ ...fauxAssistantMessage([fauxToolCall("ask", {}, { id: "ask-1" })], { stopReason: "toolUse" }), provider: model.provider, model: model.id }] });
-    await tx.appendEntry(agent.conversationId, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "ask-1", toolName: "ask", content: [{ type: "text", text: "Waiting." }], details: { inputRequired: true }, isError: false, timestamp: 3 }] });
-  }, BACKGROUND_CONTEXT);
-  await (agent as any).adoptCompaction(compaction, false);
-  assert.deepEqual(counted, [counted[0], counted[0]! + 1], "the call's assistant message counts; its placeholder does not");
 });

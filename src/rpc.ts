@@ -51,7 +51,7 @@ export class Rpc {
 /**
  * What an agent process is told of its node's settings, from the node's environment: its PATH, where agent-launcher
  * starts confined processes (when it started this one), the outbound policy (outbound.ts: the agent calls endpoints
- * tenants give for their models), the history backlog's bound (transcript.ts, which tests lower) and the dimension of the
+ * tenants give for their models), the tenants whose system sections are native Pi sections, and the dimension of the
  * metric lines it writes (metrics.ts). No provider keys, supervisor token, NODE_OPTIONS or preload hooks.
  */
 export function agentProcessEnv(env: NodeJS.ProcessEnv): Record<string, string> {
@@ -59,11 +59,7 @@ export function agentProcessEnv(env: NodeJS.ProcessEnv): Record<string, string> 
     PATH: env.PATH ?? "/usr/bin:/bin",
     ...(env.AGENT_SANDBOX_DIR ? { AGENT_SANDBOX_DIR: env.AGENT_SANDBOX_DIR } : {}),
     ...Object.fromEntries(OUTBOUND_ENV.filter(name => env[name] !== undefined).map(name => [name, env[name]!])),
-    ...(env.AGENT_HISTORY_BACKLOG_BYTES ? { AGENT_HISTORY_BACKLOG_BYTES: env.AGENT_HISTORY_BACKLOG_BYTES } : {}),
-    ...(env.AGENT_PI_DUAL_READ ? { AGENT_PI_DUAL_READ: env.AGENT_PI_DUAL_READ } : {}),
-    ...(env.AGENT_PI_DUAL_WRITE ? { AGENT_PI_DUAL_WRITE: env.AGENT_PI_DUAL_WRITE } : {}),
     ...(env.AGENT_NATIVE_SECTIONS_TENANTS ? { AGENT_NATIVE_SECTIONS_TENANTS: env.AGENT_NATIVE_SECTIONS_TENANTS } : {}),
-    ...(env.AGENT_PI_HISTORY_SOURCE_TENANTS ? { AGENT_PI_HISTORY_SOURCE_TENANTS: env.AGENT_PI_HISTORY_SOURCE_TENANTS } : {}),
     ...(env.AGENT_SERVICE_NAME ? { AGENT_SERVICE_NAME: env.AGENT_SERVICE_NAME } : {}),
   };
 }

@@ -8,8 +8,6 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { randomUUID } from "node:crypto";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { testDatabase } from "./database.ts";
-import { IMAGE_PAST_BUDGET } from "../src/files.ts";
-import { forkCut, Transcript, type TranscriptRecord } from "../src/transcript.ts";
 
 const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false, input: ["text"],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 1000 } as any;
@@ -40,30 +38,6 @@ async function fixture(responses: AssistantMessage[], options: Partial<AgentOpti
 
 const tool = (name: string, execute: AgentTool["execute"] = async () => ({ content: [{ type: "text", text: "found" }], details: { saved: true } })): AgentTool => ({
   name, label: name, description: name, parameters: { type: "object", properties: {} }, execute,
-});
-
-test("fork cuts never copy a source journal cursor into the new session's native ID domain", () => {
-  const input = { ...user("source request"), requestId: "source-request" } as AgentMessage;
-  const records: TranscriptRecord[] = [
-    { t: "turn", active: true },
-    { t: "message", message: input, pi: { entryId: 1_000_000, index: 0 } },
-    { t: "message", message: answer("source response"), pi: { entryId: 1_000_001, index: 0 } },
-    { t: "turn", active: false },
-    { t: "pi", cursor: { entryId: 1_000_002, index: 0 } },
-  ];
-  for (const at of [undefined, 1, "source-request"]) {
-    const cut = forkCut(records, at);
-    const fork = new Transcript(undefined as never);
-    for (const record of cut.records) {
-      assert.notEqual(record.t, "pi");
-      if (record.t === "message") assert.equal(record.pi, undefined);
-      fork.apply(record);
-    }
-    assert.equal(cut.through, 1);
-    assert.equal(fork.piCursor, undefined);
-    assert.deepEqual(fork.context, [input, records[2].t === "message" ? records[2].message : undefined]);
-  }
-  assert.equal(records[1].t === "message" && records[1].pi?.entryId, 1_000_000, "the source transcript remains unchanged");
 });
 
 test("Pi adapter executes native durable generations/tools and projects cursor-addressed original input", async t => {
@@ -149,7 +123,7 @@ test("Pi adapter streams an input-required placeholder but excludes it from reco
 test("Pi adapter continuation uses a replaced context without exposing context markers as new history", async t => {
   const fake = await fixture([answer("Done")]);
   t.after(() => fake.agent.close());
-  fake.agent.state.messages = [user("continue this history")];
+  await fake.agent.replaceContext([user("continue this history")]);
   await fake.agent.continue();
   assert.equal(fake.requests.length, 1);
   assert.equal(fake.requests[0].messages[0].content, "continue this history");
@@ -201,7 +175,7 @@ test("Pi adapter close seals writes and returns even when a tool ignores cancell
   await assert.rejects(fake.agent.prompt("New"), /closed/);
 });
 
-test("Pi adapter checkpoints the host's context only when it changes, not after every run or reload", async () => {
+test("Pi adapter's context is Pi's own: runs and reloads write no checkpoint, and a reload settling an interrupted run sends its result", async () => {
   const { db } = await testDatabase(), sessionId = randomUUID();
   const open = () => openPiStorage({ sessionId, directory: "unused", db });
   const checkpoints = async (conversationId: any) => {
@@ -214,100 +188,27 @@ test("Pi adapter checkpoints the host's context only when it changes, not after 
     } while (cursor !== undefined);
     return count;
   };
-  const system = { role: "system", content: "Be brief.", timestamp: 0 } as AgentMessage;
-  const first = await fixture([answer("one"), answer("two")], { initialState: { model, tools: [], messages: [system] } }, await open());
-  await first.agent.prompt(user("first"));
-  const id = first.agent.conversationId;
-  assert.equal(await checkpoints(id), 1, "a new conversation takes the host's system message once");
-  // Hosts reassign an equal working set (fresh copies) after every run.
-  first.agent.state.messages = structuredClone(first.agent.state.messages);
-  await first.agent.prompt(user("second"));
-  assert.equal(await checkpoints(id), 1);
-  const kept = structuredClone(first.agent.state.messages);
-  await first.agent.close();
-
-  const reopened = await fixture([answer("three"), answer("four")], { initialState: { model, tools: [], messages: kept } }, await open());
-  await reopened.agent.prompt(user("third"));
-  assert.equal(await checkpoints(id), 1, "a reload whose Pi context matches the host's writes none");
-  const text = (message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text).join("");
-  assert.deepEqual(reopened.requests[0].messages.map(text), ["Be brief.", "first", "one", "second", "two", "third"]);
-  // A host-side change still reaches Pi's context.
-  reopened.agent.state.messages = [...reopened.agent.state.messages, { ...user("landed without a model call"), timestamp: 99 }];
-  await reopened.agent.prompt(user("fourth"));
-  assert.equal(await checkpoints(id), 2);
-  assert.deepEqual(reopened.requests[1].messages.map(text).slice(-3), ["three", "landed without a model call", "fourth"]);
-  // So does a message whose content changed under the same role, time and position (a stub, a placeholder).
-  const messages = reopened.agent.state.messages, at = messages.findIndex(message => text(message) === "landed without a model call");
-  reopened.agent.state.messages = messages.map((message, index) => index === at ? { ...message, content: "[archived]" } as AgentMessage : message);
-  const more = await fixture([answer("five")], { initialState: { model, tools: [], messages: reopened.agent.state.messages } }, await open());
-  await reopened.agent.close();
-  await more.agent.prompt(user("fifth"));
-  assert.equal(await checkpoints(id), 3);
-  assert.ok(more.requests[0].messages.map(text).includes("[archived]"));
-  assert.ok(!more.requests[0].messages.map(text).includes("landed without a model call"));
-  await more.agent.close();
-});
-
-test("Pi adapter checks the host's context in again after a reload settles an interrupted run", async () => {
-  const { db } = await testDatabase(), sessionId = randomUUID();
-  const open = () => openPiStorage({ sessionId, directory: "unused", db });
+  const text = (message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("");
   const system = { role: "system", content: "Be brief.", timestamp: 0 } as AgentMessage;
   let started!: () => void;
   const running = new Promise<void>(resolve => { started = resolve; });
   const hang = tool("hang", () => { started(); return new Promise(() => {}); });
-  const first = await fixture([call("hang")], { initialState: { model, tools: [hang], messages: [system] } }, await open());
-  void first.agent.prompt(user("start")).catch(() => {});
+  const first = await fixture([answer("one"), call("hang")], { initialState: { model, tools: [hang], messages: [] } }, await open());
+  await first.agent.replaceContext([system]);
+  const id = first.agent.conversationId;
+  await first.agent.prompt(user("first"));
+  assert.equal(await checkpoints(id), 1, "the host's leading system message, once");
+  void first.agent.prompt(user("second")).catch(() => {});
   await running;
-  // The node is lost mid-tool: another one opens the session with a working set equal to Pi's context, which closes
-  // the open call as missing until a run is settled.
-  const assistant = first.agent.state.messages.at(-1) as AssistantMessage;
-  const kept = [...first.agent.state.messages, { role: "toolResult", toolCallId: "call-0", toolName: "hang",
-    content: [{ type: "text", text: "Tool result unavailable: history ends before this call completed." }], isError: true, details: { reason: "missing_result" }, timestamp: assistant.timestamp } as AgentMessage];
-  const second = await fixture([answer("recovered")], { initialState: { model, tools: [hang], messages: kept } }, await open());
-  const checkpoints = async () => {
-    const storage = await open();
-    let count = 0, cursor;
-    do {
-      const page = await storage.scanEntries({ conversationId: second.agent.conversationId }, 256, cursor, BACKGROUND_CONTEXT);
-      count += page.items.filter(entry => entry.kind === "camel.legacy.context").length;
-      cursor = page.next;
-    } while (cursor !== undefined);
-    return count;
-  };
-  assert.equal((second.agent as any).dirty, false, "opening alone finds Pi's context equal to the host's");
-  const before = await checkpoints();
+  // The node is lost mid-tool: another one opens the session, and Pi settles the call it left open.
+  const second = await fixture([answer("recovered")], { initialState: { model, tools: [hang], messages: [] } }, await open());
   await second.agent.discardInterruptedRun();
   await second.agent.prompt(user("again"));
-  assert.equal(await checkpoints(), before + 1, "the settled run's native results are replaced by the host's working set");
-  assert.equal(second.requests.length, 1);
+  assert.equal(await checkpoints(id), 1, "nothing is checked in again");
+  assert.equal(text(second.requests[0].messages[0]), "Be brief.");
+  assert.deepEqual(second.requests[0].messages.filter((message: any) => message.role === "user").map(text), ["first", "second", "again"]);
+  assert.equal(second.requests[0].messages.filter((message: any) => message.role === "toolResult").length, 1, "the lost call has a result");
   await second.agent.close();
-});
-
-test("Pi adapter checkpoints a message replaced in place under the same role and time (an image past its budget)", async () => {
-  const { db } = await testDatabase(), sessionId = randomUUID();
-  const fake = await fixture([answer("seen"), answer("again")], { initialState: { model, tools: [], messages: [{ role: "system", content: "Be brief.", timestamp: 0 } as AgentMessage] } },
-    await openPiStorage({ sessionId, directory: "unused", db }));
-  const image = { type: "image", data: Buffer.alloc(64, 1).toString("base64"), mimeType: "image/png" } as const;
-  await fake.agent.prompt({ role: "user", content: [{ type: "text", text: "look" }, image], timestamp: 5 } as AgentMessage);
-  const reader = await openPiStorage({ sessionId, directory: "unused", db });
-  const checkpoints = async () => {
-    let count = 0, cursor;
-    do {
-      const page = await reader.scanEntries({ conversationId: fake.agent.conversationId }, 256, cursor, BACKGROUND_CONTEXT);
-      count += page.items.filter(entry => entry.kind === "camel.legacy.context").length;
-      cursor = page.next;
-    } while (cursor !== undefined);
-    return count;
-  };
-  const before = await checkpoints();
-  // A new object with the same role and timestamp; only its content differs.
-  fake.agent.state.messages = fake.agent.state.messages.map(message => message.role === "user" ?
-    { ...message, content: [{ type: "text", text: "look" }, { type: "text", text: IMAGE_PAST_BUDGET }] } as AgentMessage : message);
-  await fake.agent.prompt(user("and now?"));
-  assert.equal(await checkpoints(), before + 1);
-  const sent = JSON.stringify(fake.requests[1].messages);
-  assert.ok(sent.includes(IMAGE_PAST_BUDGET) && !sent.includes(image.data), "the next request carries the placeholder, not the image");
-  await fake.agent.close();
 });
 
 test("Pi adapter commits a streaming answer's progress about once a second, not on every delta", async () => {

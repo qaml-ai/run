@@ -1,23 +1,20 @@
 import { createHash } from "node:crypto";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Message, SystemMessage } from "@earendil-works/pi-ai";
-import type { ConversationId, EntryId, Storage, StorageWrite } from "@earendil-works/pi-durable";
-import type { AppendLog } from "../../shared/append-log.ts";
-import { convertToLlm } from "../pi-harness/messages.ts";
-import { Transcript, type TranscriptRecord, type TranscriptSnapshot } from "../transcript.ts";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { Message } from "@earendil-works/pi-ai";
+import type { ConversationId, DocumentId, EntryId, Storage, StorageWrite } from "@earendil-works/pi-durable";
+import { baseWrites, HOST_MESSAGE_KIND, HOST_USER_KIND, MARKER_KIND } from "./history.ts";
 
 /**
- * The layout a session's Pi storage starts with, in one commit: a marker first, then the host generation, its archive
- * (the records the session starts with: none for a new agent, its source's for a fork), its context checkpoint, the
- * request IDs those records hold, and the host document (`NativeTranscript.seed`). Every session in production starts
- * this way, imported ones included (they were seeded from their legacy transcript, which no release reads to import
- * any more). Releases before #326 refuse a root whose first entry is not the marker, so the marker stays.
+ * The marker every session's Pi storage starts with (`seedJournal`): releases before #326 refuse a root whose first entry
+ * is not it, so it stays. Sessions seeded before the host transcript's removal follow it with their host generation
+ * (`HOST_BOOTSTRAP_KIND`), its archive and the host document; those since, with their journal history's base.
  */
 export const SEED_MARKER_KIND = "camel.legacy.migration";
 /** An archive block of the first seeds, before the host generation took its archive. */
 export const SEED_RECORD_KIND = "camel.legacy.record";
-/** The host's generation marker and archive blocks (NativeTranscript). */
+/** The host transcript's generation marker and archive blocks, in sessions seeded before its removal (retired-host.ts). */
 export const HOST_BOOTSTRAP_KIND = "camel.host.bootstrap", HOST_ARCHIVE_KIND = "camel.host.archive";
 export const CONTEXT_HEAD_KIND = "camel.legacy.context";
 /** One message of a context checkpoint after its head entry: Pi can choose a compaction cut between them. */
@@ -25,24 +22,6 @@ export const CONTEXT_MESSAGE_KIND = "camel.context.message";
 /** Each Camel session has its own fenced Pi storage, so it uses Pi's reserved root. */
 export const SESSION_CONVERSATION_ID = 1 as ConversationId;
 const VERSION = 1;
-const ARCHIVE_BLOCK_RECORDS = 128;
-/** What a seed copies at most. A fork's larger source keeps its archive in the fork's legacy log (`reference`). */
-export const SEED_MAX_BYTES = 64 * 1024 * 1024;
-export const SEED_MAX_RECORDS = 200_000;
-
-/** The records' fingerprint, or undefined past the copy budget: each record is serialized once, on its own. */
-export function copyFingerprint(records: readonly TranscriptRecord[]): string | undefined {
-  if (records.length > SEED_MAX_RECORDS) return undefined;
-  const hash = createHash("sha256");
-  let bytes = 0;
-  for (const record of records) {
-    const text = JSON.stringify(record);
-    bytes += Buffer.byteLength(text) + 1;
-    if (bytes > SEED_MAX_BYTES) return undefined;
-    hash.update(text).update("\n");
-  }
-  return hash.digest("hex");
-}
 
 export interface SeedMetadata {
   version: 1;
@@ -55,9 +34,9 @@ export interface SeedMetadata {
   importedAt: number;
   markerId: EntryId;
   contextEntryId: EntryId;
-  /** The host generation the seed starts (seeds before #322 have none: their host adopted them in its own). */
+  /** The host generation the seed started (seeds before #322 and since the host transcript's removal have none). */
   generationId?: EntryId;
-  /** "legacy-log": the records were too large to copy, so they stay in the session's legacy log, which the generation's history reads first. */
+  /** "legacy-log": the records were too large to copy, so they stayed in the session's legacy log (seeds before the host transcript's removal). */
   archive?: "legacy-log";
 }
 
@@ -72,13 +51,6 @@ export class SeedConflict extends Error {
 const json = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
 const payload = (value: unknown): JsonValue => json(value) as JsonValue;
-
-/** `records` applied to a transcript that writes nothing: it refers to their own message objects. */
-export function reducedTranscript(records: readonly TranscriptRecord[]) {
-  const transcript = new Transcript({ read: async () => [...records] } as AppendLog<TranscriptRecord>);
-  for (const record of records) transcript.apply(record);
-  return transcript;
-}
 
 /**
  * A context checkpoint as Pi entries: a head with the first message, then one entry per message, so the first run
@@ -108,46 +80,43 @@ export async function loadSeedMarker(storage: Storage, context: Context = BACKGR
 const lines = new WeakMap<Storage, Promise<unknown>>();
 
 /**
- * Seed `storage` with `source`, the records the session starts with, under the session's claim: the marker, the host
- * generation and its archive (copied, or with `reference` left in the session's legacy log), the context checkpoint
- * (`model`, else `source`'s context), the source's request IDs as terminal submissions (so a retried one is never run
- * again), and the writes `host` returns (its document), in one commit: a failed commit leaves nothing. Seeding the same
- * source again finds it seeded (`existing`).
+ * Start a session's journal (a new agent's, an import's, a fork's) in one commit, under the session's claim: the seed
+ * marker, the history's base (`before`: how many messages come before it, which the history index holds: a fork's),
+ * the history the session starts with as native entries, each turn marked (`messages`: an import's), the context
+ * checkpoint Pi starts from (`model`: its head, before the history's message `headAt`, so Pi's context is the head and
+ * the messages after it, which are not copied), and the request IDs of that history as terminal submissions (so a
+ * retried one is never run again): a failed commit leaves nothing. Seeding the same source again finds it seeded
+ * (`existing`).
  */
-export async function seedStorage(options: {
+export async function seedJournal(options: {
   storage: Storage;
   sessionId: string;
-  source: Transcript;
-  records: readonly TranscriptRecord[];
-  reference?: boolean;
-  leadingSystem?: SystemMessage;
-  model?: Message[];
-  host: (generation: { generationId: EntryId; contextEntryId: EntryId }) => Promise<StorageWrite[]>;
+  model: Message[];
+  before?: { total: number; calls?: [string, number][] };
+  messages?: AgentMessage[];
+  /** Where the checkpoint goes among `messages` (an import's summary at its cut); 0 by default. */
+  headAt?: number;
+  /** Requests whose messages the history holds before its base. */
+  requests?: string[];
   context?: Context;
   now?: number;
 }): Promise<SeedMetadata & { status: "seeded" | "existing" }> {
-  const { storage, sessionId, source, records, leadingSystem, context = BACKGROUND_CONTEXT, now = Date.now() } = options;
+  const { storage, sessionId, model, context = BACKGROUND_CONTEXT, now = Date.now() } = options;
   if (!sessionId) throw new TypeError("A seed needs the session's public ID");
-  const fingerprint = options.reference ? `legacy-log:${source.total}` : copyFingerprint(records);
-  if (fingerprint === undefined) throw new RangeError("The records are past the copy budget: seed them by reference");
+  const messages = options.messages ?? [], before = options.before?.total ?? 0;
+  const headAt = Math.min(options.headAt ?? 0, messages.length);
+  const fingerprint = createHash("sha256").update(JSON.stringify({ before, messages, model, headAt })).digest("hex");
+  const requests = [...new Set([...options.requests ?? [], ...messages.flatMap(message => message.role === "user" && (message as { requestId?: string }).requestId ? [(message as { requestId?: string }).requestId!] : [])])];
   const run = (lines.get(storage) ?? Promise.resolve()).catch(() => {}).then(async () => {
     const previous = await loadSeedMarker(storage, context);
     if (previous) {
       if (previous.sessionId !== sessionId || previous.fingerprint !== fingerprint) throw new SeedConflict("storage belongs to another session or source");
       return { ...previous, status: "existing" as const };
     }
-    const snapshot = source.snapshot();
-    // Native entry IDs are scoped to their storage: a fork's archive keeps its source's cursors as evidence, and the
-    // new storage starts a projection domain of its own.
-    delete snapshot.piCursor;
-    if (!snapshot.system && leadingSystem) snapshot.system = leadingSystem;
-    const model = options.model ?? [...(snapshot.system ? [snapshot.system] : []), ...convertToLlm(source.view())];
-    const archived = options.reference ? [] : records;
-    const blockCount = Math.ceil(archived.length / ARCHIVE_BLOCK_RECORDS);
-    // Postgres reserves the complete monotonic range under the claim in one transaction. Native SQLite mints from its
-    // in-memory allocator. Both retain the storage's global ID-ownership checks in the final atomic commit.
+    // Where turns begin in the history written here: at a user message after anything else.
+    const turns = messages.flatMap((message, index) => message.role === "user" && messages[index - 1]?.role !== "user" ? [index] : []);
     const contextIds = Math.max(1, model.length);
-    const count = 2 + blockCount + contextIds + snapshot.requests.length;
+    const count = 3 + messages.length + 2 * turns.length + contextIds + requests.length;
     const bulk = storage as Storage & { mintIds?(count: number): Promise<number[]> };
     const ids = bulk.mintIds ? await bulk.mintIds(count) : await (async () => {
       const ids: number[] = [];
@@ -158,30 +127,40 @@ export async function seedStorage(options: {
       throw new SeedConflict("storage returned an invalid ID reservation");
     }
     let nextId = 0;
-    const markerId = ids[nextId++] as EntryId, generationId = ids[nextId++] as EntryId;
-    const contextEntryId = ids[2 + blockCount] as EntryId;
+    const markerId = ids[nextId++] as EntryId, baseId = ids[nextId++] as EntryId, documentId = ids[nextId++] as DocumentId;
+    const body: StorageWrite[] = [];
+    let contextEntryId = 0 as EntryId;
+    const checkpoint = () => {
+      contextEntryId = ids[nextId] as EntryId;
+      body.push(...contextWrites(ids.slice(nextId, nextId += contextIds), SESSION_CONVERSATION_ID, model, payload({ fingerprint })));
+    };
+    for (const [index, message] of messages.entries()) {
+      if (index === headAt) checkpoint();
+      if (turns.includes(index)) {
+        if (index) body.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: SESSION_CONVERSATION_ID, kind: MARKER_KIND, data: { t: "turn", active: false, total: before + index } } });
+        body.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: SESSION_CONVERSATION_ID, kind: MARKER_KIND, data: { t: "turn", active: true, total: before + index } } });
+      }
+      body.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: SESSION_CONVERSATION_ID, ...(message.role === "user"
+        ? { kind: HOST_USER_KIND, data: payload({ message }), model: payload([{ role: "user", content: message.content, timestamp: message.timestamp }]) as never }
+        : { kind: HOST_MESSAGE_KIND, model: payload([message]) as never }) } });
+    }
+    if (headAt === messages.length) checkpoint();
+    if (turns.length) body.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: SESSION_CONVERSATION_ID, kind: MARKER_KIND, data: { t: "turn", active: false, total: before + messages.length } } });
     const metadata: SeedMetadata = {
       version: VERSION, sessionId, fingerprint, conversationId: SESSION_CONVERSATION_ID,
-      recordCount: archived.length, historyCount: source.total, contextCount: model.length,
-      importedAt: now, markerId, contextEntryId, generationId, ...(options.reference ? { archive: "legacy-log" as const } : {}),
+      recordCount: 0, historyCount: before + messages.length, contextCount: model.length,
+      importedAt: now, markerId, contextEntryId,
     };
     const writes: StorageWrite[] = [
       { type: "conversation", value: { id: SESSION_CONVERSATION_ID } },
       { type: "entry", value: { id: markerId, conversationId: SESSION_CONVERSATION_ID, kind: SEED_MARKER_KIND, data: payload(metadata) } },
-      { type: "entry", value: { id: generationId, conversationId: SESSION_CONVERSATION_ID, kind: HOST_BOOTSTRAP_KIND, ...(options.reference ? { data: { archive: "legacy-log" } } : {}) } },
+      ...baseWrites(baseId, { t: "base", total: before, active: false, turnStart: before, awaiting: [], ...(options.before?.calls?.length ? { calls: options.before.calls } : {}) }, { id: documentId, create: true }),
+      ...body,
     ];
-    for (let index = 0; index < archived.length; index += ARCHIVE_BLOCK_RECORDS) {
-      // Blocks refer to the source's records: storage serializes them as it writes, so the archive is never copied.
-      writes.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: SESSION_CONVERSATION_ID, kind: HOST_ARCHIVE_KIND,
-        data: { index, records: archived.slice(index, index + ARCHIVE_BLOCK_RECORDS) } as unknown as JsonValue } });
-    }
-    const { context: _context, ...state } = snapshot;
-    writes.push(...contextWrites(ids.slice(nextId, nextId += contextIds), SESSION_CONVERSATION_ID, model, payload({ fingerprint, state })));
-    for (const requestId of snapshot.requests) writes.push({
+    for (const requestId of requests) writes.push({
       type: "submission",
       value: { id: ids[nextId++] as never, conversationId: SESSION_CONVERSATION_ID, requestId, type: "input", status: "unanswered", reason: "legacy_import", detail: "Request already recorded in the history this session started with." },
     });
-    writes.push(...await options.host({ generationId, contextEntryId }));
     await storage.commit(writes, context);
     // The commit is atomic: reading back its marker confirms it landed.
     const landed = await loadSeedMarker(storage, context);

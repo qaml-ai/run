@@ -158,7 +158,7 @@ test("an agent process that stops answering is killed, and its turn is closed on
   assert.throws(() => process.kill(handle.child.pid, 0), { code: "ESRCH" });
   const restarted = await supervisor.start("frozen", { model, apiKey: "fixture" }, bridge);
   assert.equal(restarted.recovered, true);
-  assert.match((await supervisor.request("frozen", "history")).messages.at(-1).content, /interrupted by a restart/);
+  assert.match(((await supervisor.history("frozen")) as any[]).at(-1).content, /interrupted by a restart/);
   assert.equal((await supervisor.request("frozen", "prompt", { text: "Carry on" })).error, null);
 });
 

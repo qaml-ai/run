@@ -1,6 +1,9 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { validFileRef } from "./files.ts";
-import type { CompactionState, Transcript } from "./transcript.ts";
+import type { HostJournal } from "./pi-durable/host-journal.ts";
+
+/** An imported compaction: `summary` replaces every message before absolute index `cut`. */
+export interface CompactionState { summary: string; cut: number; tokensBefore: number; at: number }
 
 const HISTORY_BYTES = 16 * 1024 * 1024;
 const invalid = (message: string) => new Error(`INVALID_HISTORY: ${message}`);
@@ -62,9 +65,9 @@ function complete(message: any, now: number) {
 }
 
 /**
- * Imported history as the transcript keeps it: its messages without compaction summaries, and the last
- * summary as the compaction it stands for, cut where it sat. The model then sees that summary and what
- * follows it; history still has every message.
+ * Imported history as the agent keeps it: its messages without compaction summaries, and the last summary as the
+ * compaction it stands for, cut where it sat. The model then sees that summary and what follows it; history still has
+ * every message.
  */
 export function importedHistory(initial: AgentMessage[]): { messages: AgentMessage[]; compaction?: CompactionState } {
   const messages: AgentMessage[] = [];
@@ -117,20 +120,23 @@ export function interruptedTurnRepairs(messages: AgentMessage[], close = true, a
   return repairs;
 }
 
+/** A step's start: its calls are the latest assistant message's, and a user message closes any before it. */
+export const step = (message: AgentMessage) => message.role === "assistant" || message.role === "user";
+
 /**
- * Settle a turn the transcript holds open that nothing will continue: its open calls are answered as unknown (never made
+ * Settle a turn the journal holds open that nothing will continue: its open calls are answered as unknown (never made
  * again), and it is marked ended, durably. A turn suspended on a person's input keeps those calls open and stays
  * suspended; any other gets a runtime notice, so a later continue does not resubmit it. Whether there was one to settle.
  */
-export async function closeInterruptedTurn(transcript: Transcript): Promise<boolean> {
+export async function closeInterruptedTurn(journal: HostJournal): Promise<boolean> {
   let closed = false;
   // One commit, its records worked out as of every earlier one: a turn closed already is left alone, and a call that has
   // a result (one an earlier close gave it, too) is never answered again.
-  await transcript.commit(() => {
-    if (!transcript.active) return [];
+  await journal.commit(async () => {
+    if (!journal.active) return [];
     closed = true;
-    const awaiting = transcript.awaiting;
-    return [...interruptedTurnRepairs(transcript.context, !awaiting.length, awaiting).map(message => ({ t: "message" as const, message })), { t: "turn" as const, active: false }];
+    const awaiting = journal.awaiting;
+    return [...interruptedTurnRepairs(await journal.since(step), !awaiting.length, awaiting).map(message => ({ t: "message" as const, message })), { t: "turn" as const, active: false }];
   });
   return closed;
 }

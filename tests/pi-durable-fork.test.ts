@@ -4,10 +4,9 @@ import { MemoryStorage, type EntryId, type StorageWrite } from "@earendil-works/
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { contextAt, contextSummary, forkCount, journalForkCut } from "../src/pi-durable/fork.ts";
-import { JournalHistory } from "../src/pi-durable/history.ts";
+import { contextAt, forkCount, journalForkCut } from "../src/pi-durable/fork.ts";
+import { JournalHistory, MARKER_KIND } from "../src/pi-durable/history.ts";
 import { HOST_BOOTSTRAP_KIND, SESSION_CONVERSATION_ID as conversationId } from "../src/pi-durable/seed.ts";
-import { MARKER_KIND } from "../src/pi-durable/transcript.ts";
 import { COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../src/pi-harness/messages.ts";
 
 const user = (text: string, requestId?: string) => ({ role: "user", content: text, timestamp: 1, ...(requestId ? { requestId } : {}) }) as AgentMessage;
@@ -75,10 +74,10 @@ test("context at a cut after a compaction: its summary leads, then what it kept"
   ]);
   const model = await contextAt(storage, at(5));
   assert.deepEqual(roles(model), ["user", "user", "assistant"]);
-  assert.deepEqual(contextSummary(model), { summary: "We talked about old things.", kept: 2, at: 5 });
+  assert.match(JSON.stringify(model[0]), /We talked about old things/);
 });
 
-test("a journal fork cut keeps the history to the cut and starts its host transcript from Pi's context", async () => {
+test("a journal fork cut keeps the history to the cut, and its model starts from Pi's context there", async () => {
   const { storage } = await journal([
     { kind: MARKER_KIND, data: { t: "base", total: 0, active: false, turnStart: 0, awaiting: [] } },
     { kind: "camel.legacy.context", model: [system], self: true },
@@ -90,11 +89,14 @@ test("a journal fork cut keeps the history to the cut and starts its host transc
   ]);
   const history = (await JournalHistory.open(storage))!;
   const messages = (await history.messagesFrom(0))!;
-  const cut = (await journalForkCut(storage, history, messages, "r2"))!;
+  const cut = await journalForkCut(storage, history, messages, "r2");
   assert.equal(cut.through, 3);
-  assert.deepEqual(cut.records, [{ t: "reset", messages, compaction: { summary: "One was asked and answered.", cut: 2, tokensBefore: 0, at: 5 } }]);
+  assert.deepEqual(cut.messages, messages);
+  assert.deepEqual(cut.turns, [], "where its turns began, as the journal marks them (this one marks none)");
   assert.deepEqual(roles(cut.model), ["user", "user", "assistant"]);
-  assert.equal(await journalForkCut(storage, history, messages.slice(1), "r2"), undefined, "a history that is not the journal's whole is not cut here");
+  await assert.rejects(journalForkCut(storage, history, messages.slice(1), "r2"), /has 3 messages, its journal 4/, "a history that is not the journal's whole is not cut");
+  // Before the compaction's retained head: refused, as reclaim may have removed what it would start from.
+  await assert.rejects(journalForkCut(storage, history, messages, 1), { code: "FORK_POINT_INVALID" });
 });
 
 test("forks before the newest head are refused even before reclaim; a compaction's retained head is valid", async () => {
@@ -110,7 +112,7 @@ test("forks before the newest head are refused even before reclaim; a compaction
   const atHead = await contextAt(storage, at(3));
   assert.deepEqual(roles(atHead), ["user", "user"]);
   assert.equal((atHead[1] as { content: string }).content, "kept");
-  assert.deepEqual(contextSummary(atHead), { summary: "old summary", kept: 1, at: 5 });
+  assert.match(JSON.stringify(atHead[0]), /old summary/);
   assert.deepEqual(roles(await contextAt(storage, at(5))), ["user", "user", "assistant"]);
 });
 

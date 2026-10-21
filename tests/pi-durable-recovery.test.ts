@@ -1,4 +1,3 @@
-import { NativeTranscript, nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -9,14 +8,13 @@ import { fauxAssistantMessage, fauxToolCall, type AssistantMessage, type FauxRes
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAgentHost, type HostIO } from "../src/agent-host.ts";
-import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
-import { Transcript, historyOf, readTranscript, type TranscriptRecord } from "../src/transcript.ts";
-import { openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts";
+import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { recoverDurableMessages } from "../src/pi-durable/agent.ts";
 import type { ToolDefinition } from "../src/protocol.ts";
-import { setDualWrite } from "../src/pi-durable/transcript.ts";
+import { historyOf, hostTranscriptSession, setDualWrite, type TranscriptRecord } from "./fixtures/host-transcript.ts";
+import { journalMessages } from "./fixtures/journal-history.ts";
 
-// The agent host as nodes run it with AGENT_PI_DUAL_WRITE=1 (plans/host-transcript-removal.md, phase 1).
+// Sessions a release before the host transcript's removal seeded, as nodes ran it then (AGENT_PI_DUAL_WRITE=1).
 setDualWrite(true);
 
 const context = BACKGROUND_CONTEXT;
@@ -25,16 +23,13 @@ const answer = (content: Parameters<typeof fauxAssistantMessage>[0], stopReason:
 const text = (message: AgentMessage) => message.role === "assistant" ? message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n") : "";
 type TestContext = { after(fn: () => unknown): void };
 
-/** Start the agent's Pi storage with `records`, as a fork's seed does (`NativeTranscript.seed`). */
+/** The agent's Pi storage with `records`, as a release before the host transcript's removal seeded a fork's: its first load retires it. */
 async function seeded(directory: string, records: TranscriptRecord[]) {
-  const storage = await openPiStorage({ sessionId: "public-session", directory });
-  try { assert.ok(await NativeTranscript.seed(storage, { sessionId: "public-session", records })); }
-  finally { await storage.close(context); }
+  await hostTranscriptSession({ sessionId: "public-session", directory }, records);
 }
 
 async function fixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), "pi-durable-recovery-"));
-  const path = join(directory, "transcript.jsonl");
   const faux = registerFauxProvider({ tokensPerSecond: 1_000_000 });
   const calls: string[] = [];
   let asked = 0;
@@ -45,15 +40,14 @@ async function fixture(t: TestContext) {
     asked++;
     return typeof step === "function" ? (step as (...args: any[]) => any)(...args) : step;
   }));
-  async function start(options: { resume?: boolean; log?: AppendLog<TranscriptRecord>; inputRequired?: boolean; fault?: "flush" | "torn" } = {}) {
+  async function start(options: { resume?: boolean; inputRequired?: boolean; fault?: "flush" | "torn" } = {}) {
     const storage = await openPiStorage({ sessionId: "public-session", directory });
     stores.push(storage);
     if (options.fault) {
       const commit = storage.commit.bind(storage);
-      let finalId: number | undefined;
       storage.commit = async (writes, context) => {
-        for (const write of writes) if (write.type === "entry" && write.value.model?.some(message => text(message) === "durable final answer")) finalId = write.value.id;
-        const target = writes.some(write => write.type === "entry" && write.value.kind === "camel.host.record" && (write.value.data as any)?.pi?.entryId === finalId && finalId !== undefined);
+        // The host's write of the turn's end, after Pi committed its final answer.
+        const target = writes.some(write => write.type === "entry" && write.value.kind === "camel.history.marker" && (write.value.data as any)?.t === "turn" && (write.value.data as any)?.active === false);
         if (target) {
           if (options.fault === "torn") await commit(writes, context); // committed, acknowledgement lost
           throw new Error("projection disk unavailable");
@@ -61,14 +55,13 @@ async function fixture(t: TestContext) {
         return commit(writes, context);
       };
     }
-    const log = options.log ?? fileAppendLog<TranscriptRecord>(path);
     const events: any[] = [];
     const io: HostIO = {
       emit: event => events.push(event),
       tool: async name => { calls.push(name); return options.inputRequired ? { inputRequired: true, content: [{ type: "text", text: "Approval required" }] } : { value: "saved-value" }; },
       cancelTools: async () => null,
       runLimit: async () => undefined,
-      transcript: log,
+      legacyLog: { read: async () => [], empty: async () => true },
       piStorage: async () => storage,
       file: async () => { throw new Error("unexpected file read"); },
       modelAuth: async () => { throw new Error("unexpected credential lookup"); },
@@ -78,7 +71,7 @@ async function fixture(t: TestContext) {
     hosts.push(host);
     const init = await host.handle("init", { id: "public-session", directory, resume: options.resume,
       model: faux.getModel(), apiKey: "fixture", tools, codeMode: false });
-    return { host, init, log, storage, events };
+    return { host, init, storage, events };
   }
   t.after(async () => {
     for (const host of hosts.reverse()) await host.dispose(0).catch(() => {});
@@ -86,29 +79,25 @@ async function fixture(t: TestContext) {
     faux.unregister();
     await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
   });
-  return { directory, path, calls, start, responses, asked: () => asked, history: async () => {
-    const reader = await openPiJournalReader({ sessionId: "public-session", directory });
-    try { const records = reader ? await nativeTranscriptRecords(reader) : undefined; return records ? historyOf(records) : readTranscript(directory); }
-    finally { await reader?.close(context); }
-  } };
+  return { directory, calls, start, responses, asked: () => asked, history: () => journalMessages({ sessionId: "public-session", directory }) };
 }
 
 {
   for (const mode of ["flush", "torn"] as const) {
-    test(`native WAL recovers a ${mode} history projection once on restart, preserving request and tool identity`, { timeout: 20_000 }, async t => {
+    test(`a turn whose end the journal lost (${mode}) recovers once on restart, preserving request and tool identity`, { timeout: 20_000 }, async t => {
       const f = await fixture(t);
       f.responses(answer(fauxToolCall("lookup", { key: "saved" }, { id: "lookup-once" }), "toolUse"), answer("durable final answer"));
       const first = await f.start({ fault: mode });
       await assert.rejects(first.host.handle("prompt", { text: "look it up", requestId: "request-once" }), /Session persistence failed:.*projection disk unavailable/);
       assert.deepEqual(f.calls, ["lookup"]);
       assert.equal(f.asked(), 2);
-      assert.doesNotMatch(await readFile(f.path, "utf8").catch(() => ""), /durable final answer/, "normal native work never appends the legacy transcript");
       const native = await recoverDurableMessages(first.storage, 1);
       assert.equal(native.filter(item => text(item.message) === "durable final answer").length, 1, "the answer already exists in the authoritative native WAL");
       await first.host.dispose(0).catch(() => {});
 
       const second = await f.start({ resume: true });
-      assert.equal(second.init.resume?.finished?.reply, "durable final answer");
+      // Lost before it was written, the turn is still open: it is finished with its answer. Written, it ended with it.
+      assert.equal((second.init.resume?.finished ?? second.init.ended?.finished)?.reply, "durable final answer");
       const history = await f.history();
       assert.deepEqual(history.map(message => message.role), ["user", "assistant", "toolResult", "assistant"]);
       assert.equal(history.filter(message => (message as any).requestId === "request-once").length, 1);
@@ -118,12 +107,10 @@ async function fixture(t: TestContext) {
       assert.equal(f.asked(), 2, "recovering a committed final response never asks the model again");
       assert.deepEqual(await second.host.handle("prompt", { text: "look it up", requestId: "request-once" }), { messages: 4, error: null, taken: true });
       assert.equal(f.asked(), 2);
-      const repairedText = await readFile(f.path, "utf8").catch(() => "");
-      assert.doesNotMatch(repairedText, /"text":"torn/);
       await second.host.dispose(0);
 
       const third = await f.start({ resume: true });
-      assert.deepEqual(await f.history(), history, "a second restart cannot project the native response twice");
+      assert.deepEqual(await f.history(), history, "a second restart cannot count the native response twice");
       assert.equal(f.asked(), 2);
       assert.deepEqual(f.calls, ["lookup"]);
       assert.equal(third.init.messages, 4);
@@ -134,7 +121,7 @@ async function fixture(t: TestContext) {
   }
 }
 
-test("a seeded context Pi orders its own way is checkpointed once, not on every run", { timeout: 20_000 }, async t => {
+test("a seeded context Pi orders its own way is never checkpointed again: runs append to Pi's context", { timeout: 20_000 }, async t => {
   const f = await fixture(t);
   // Results in completion order, not call order, and a failed response kept visible: Pi orders and leaves out these itself.
   const calls = answer([fauxToolCall("lookup", { key: "a" }, { id: "a" }), fauxToolCall("lookup", { key: "b" }, { id: "b" })], "toolUse");
@@ -155,12 +142,8 @@ test("a seeded context Pi orders its own way is checkpointed once, not on every 
   };
   assert.equal(await checkpoints(), 1, "the seed's");
   const prompt = async (text: string) => { f.responses(answer(`reply ${text}`)); assert.equal((await host.handle("prompt", { text })).reply, `reply ${text}`); };
-  // The first run checks the context in with the host's leading system message, which a fork's seed may lack.
-  await prompt("one");
-  const after = await checkpoints();
-  assert.ok(after <= 2);
-  for (const text of ["two", "three", "four"]) await prompt(text);
-  assert.equal(await checkpoints(), after, "later runs append to Pi's context; none rewrites it");
+  for (const text of ["one", "two", "three", "four"]) await prompt(text);
+  assert.equal(await checkpoints(), 1, "runs append to Pi's context; none rewrites it");
   const history = await f.history();
   assert.deepEqual(history.slice(0, before.length), before, "the history is whole, in the order it was seeded");
   assert.equal(history.length, before.length + 8);
@@ -204,7 +187,7 @@ test("a native human wait survives reopen and accepts its answer without project
   assert.deepEqual(await f.history(), before);
 });
 
-test("an answer to a waiting call is written into Pi's journal with its host record, so the next run checks no context in again", { timeout: 20_000 }, async t => {
+test("an answer to a waiting call is written into Pi's journal, so the next run checks no context in again", { timeout: 20_000 }, async t => {
   const f = await fixture(t);
   f.responses(answer(fauxToolCall("lookup", { key: "saved" }, { id: "dual-written-call" }), "toolUse"));
   const host = await f.start({ inputRequired: true });

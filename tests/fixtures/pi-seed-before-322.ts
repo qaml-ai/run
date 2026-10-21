@@ -7,8 +7,8 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
 import type { EntryId, Storage, StorageWrite } from "@earendil-works/pi-durable";
 import { convertToLlm } from "../../src/pi-harness/messages.ts";
-import { contextWrites, copyFingerprint, reducedTranscript, SEED_MARKER_KIND, SEED_RECORD_KIND, SESSION_CONVERSATION_ID as conversationId, type SeedMetadata } from "../../src/pi-durable/seed.ts";
-import type { TranscriptRecord } from "../../src/transcript.ts";
+import { contextWrites, SEED_MARKER_KIND, SEED_RECORD_KIND, SESSION_CONVERSATION_ID as conversationId, type SeedMetadata } from "../../src/pi-durable/seed.ts";
+import { copyFingerprint, reducedTranscript, type TranscriptRecord } from "./host-transcript.ts";
 
 export async function seedWithoutGeneration(storage: Storage, sessionId: string, records: TranscriptRecord[]): Promise<SeedMetadata> {
   const source = reducedTranscript(records);
