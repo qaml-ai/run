@@ -5431,6 +5431,12 @@
       "Schedule": {
         "type": "object",
         "properties": {
+          "calendar": {
+            "$ref": "#/components/schemas/CalendarSchedule"
+          },
+          "email": {
+            "$ref": "#/components/schemas/ScheduleEmail"
+          },
           "id": {
             "type": "string"
           },
@@ -5483,9 +5489,75 @@
           "createdAt"
         ]
       },
+      "CalendarSchedule": {
+        "type": "object",
+        "properties": {
+          "time": {
+            "type": "string",
+            "description": "Local HH:MM"
+          },
+          "timeZone": {
+            "type": "string",
+            "description": "IANA time zone, e.g. America/Chicago"
+          },
+          "daysOfWeek": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 6
+            },
+            "description": "Sunday 0 to Saturday 6; default every day"
+          }
+        },
+        "required": [
+          "time",
+          "timeZone"
+        ]
+      },
+      "ScheduleEmail": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "format": "email"
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "text",
+              "markdown",
+              "html"
+            ],
+            "description": "Reply format; defaults to markdown. HTML is sent as supplied, with a generated plain-text alternative."
+          }
+        },
+        "required": [
+          "to",
+          "subject"
+        ]
+      },
       "ScheduleInput": {
         "type": "object",
         "properties": {
+          "calendar": {
+            "$ref": "#/components/schemas/CalendarSchedule"
+          },
+          "email": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ScheduleEmail"
+              },
+              {
+                "description": "Email the successful run's final reply. Owner-configured only; failed runs are not sent."
+              }
+            ]
+          },
           "text": {
             "type": "string",
             "description": "Prompt to deliver; give exactly one of text or code"
@@ -14187,6 +14259,87 @@
                   "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/Input"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/schedule-deliveries": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The latest 100 scheduled email deliveries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string"
+                      },
+                      "email": {
+                        "type": "object",
+                        "additionalProperties": {}
+                      },
+                      "createdAt": {
+                        "type": "number"
+                      },
+                      "sentAt": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "messageId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "state",
+                      "email",
+                      "createdAt",
+                      "sentAt",
+                      "messageId",
+                      "error"
+                    ]
                   }
                 }
               }

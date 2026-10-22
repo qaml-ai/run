@@ -148,7 +148,7 @@ const OAUTH_ROUTES = [
   /^GET \/v1\/(?:me|models|providers|inputs|usage|billing|billing\/ledger)$/,
   /^(?:GET|POST) \/v1\/agents$/,
   /^(?:GET|DELETE) \/v1\/agents\/[^/]+$/,
-  /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|state|uploads\/[^/]+\/[^/]+)$/,
+  /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|schedule-deliveries|state|uploads\/[^/]+\/[^/]+)$/,
   /^(?:GET|POST|PATCH|DELETE) \/v1\/definitions(?:\/[^/]+(?:\/agents)?)?$/,
   /^POST \/v1\/(?:transcriptions|images|speech)$/,
   /^(?:POST \/v1\/runs|(?:GET|DELETE) \/v1\/runs\/[^/]+|GET \/v1\/runs\/[^/]+\/(?:events|messages)|POST \/v1\/runs\/[^/]+\/abort)$/,
@@ -760,6 +760,10 @@ export function api(context: ApiContext) {
   route(createRoute({ method: "get", path: "/v1/inputs", request: { query: inputState }, responses: { 200: reply("The tenant's human inputs across its agents, newest first: what waits on someone", z.array(schema.Input)) } }),
     async c => json(c, 200, await clients.inbox(c.var.principal.tenant, c.req.query("state"))));
 
+  route(createRoute({ method: "get", path: "/v1/agents/{id}/schedule-deliveries", request: { params: agentId }, responses: { 200: reply("The latest 100 scheduled email deliveries", z.array(z.object({ id: z.string(), state: z.string(), email: z.record(z.string(), z.unknown()), createdAt: z.number(), sentAt: z.number().nullable(), messageId: z.string().nullable(), error: z.string().nullable() }))) } }), async c => {
+    const { rows } = await accounts.db.query('select id,state,email,created_at as "createdAt",sent_at as "sentAt",message_id as "messageId",error from schedule_deliveries where tenant=$1 and agent=$2 order by created_at desc limit 100', [c.var.principal.tenant,c.req.param("id")]);
+    return json(c,200,rows);
+  });
   const scheduler = () => {
     if (!context.scheduler) throw new HttpError(404, "Unknown agent route");
     return context.scheduler;

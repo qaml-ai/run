@@ -716,7 +716,9 @@ export interface AgentFile { path: string; version: number; size: number; update
  * cannot change, like a spend limit's 402): `failures` counts the occurrences given up in a row and `lastError` says
  * why the latest attempt failed, until a delivery succeeds.
  */
-export interface Schedule { id: string; agent: string; text?: string; code?: string; history?: "none"; dueAt: number; everySeconds?: number; createdAt: number; failures?: number; lastError?: string; lastErrorAt?: number }
+export interface CalendarSchedule { time: string; timeZone: string; daysOfWeek?: number[] }
+export interface ScheduleEmail { to: string; subject: string; format?: "text" | "markdown" | "html" }
+export interface Schedule { calendar?: CalendarSchedule; email?: ScheduleEmail; id: string; agent: string; text?: string; code?: string; history?: "none"; dueAt: number; everySeconds?: number; createdAt: number; failures?: number; lastError?: string; lastErrorAt?: number }
 /**
  * A steered message as the runtime took it (`steerMessage`, `agent.steer`): `accepted`, the running turn reads it after
  * its current step; `taken`, it has read it already, in the turn `steeredInto` names; `queued`, no turn was running, so it
@@ -2501,7 +2503,7 @@ export class AgentClient {
    * code against your tools. `everySeconds` (at least 60) repeats it. `history: "none"` wakes it with only the system
    * prompt and the text, not its history, as a prompt's `history` does.
    */
-  schedule(input: { text?: string; code?: string; history?: "full" | "none"; at?: string | Date; inSeconds?: number; everySeconds?: number }): Promise<Schedule> {
+  schedule(input: { text?: string; code?: string; history?: "full" | "none"; at?: string | Date; inSeconds?: number; everySeconds?: number; calendar?: CalendarSchedule; email?: ScheduleEmail }): Promise<Schedule> {
     return this.http("/schedules", "POST", { ...input, ...(input.at instanceof Date ? { at: input.at.toISOString() } : {}) }, false);
   }
   schedules(): Promise<Schedule[]> { return this.http("/schedules"); }

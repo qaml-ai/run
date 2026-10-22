@@ -14,7 +14,7 @@ export interface OutgoingMail {
   cc?: string;
   replyTo?: string;
   subject: string;
-  html: string;
+  html?: string;
   text: string;
   headers?: { Name: string; Value: string }[];
   /** SES message tags, for correlating provider feedback. */
@@ -40,7 +40,7 @@ export class MailTransport {
       ConfigurationSetName: this.options.configurationSet,
       EmailTags: mail.tags,
       Content: { Simple: { Subject: { Data: mail.subject, Charset: "UTF-8" }, Headers: mail.headers, Body: {
-        Html: { Data: mail.html, Charset: "UTF-8" }, Text: { Data: mail.text, Charset: "UTF-8" },
+        ...(mail.html !== undefined ? { Html: { Data: mail.html, Charset: "UTF-8" } } : {}), Text: { Data: mail.text, Charset: "UTF-8" },
       } } },
     }), { abortSignal: signal });
     return { messageId: result.MessageId };

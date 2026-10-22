@@ -43,6 +43,8 @@ import { OAuth } from "./oauth.ts";
 import { hostedMcp } from "./hosted-mcp.ts";
 import { agentMcp } from "./agent-mcp.ts";
 import { api } from "./api.ts";
+import { ScheduleMailer } from "./schedule-mailer.ts";
+import { calendarPrompt } from "./calendar.ts";
 import { Scheduler } from "./scheduler.ts";
 import { Channels } from "./channels.ts";
 import { Definitions, MAX_DEFINITIONS, sources, validTtl } from "./definitions.ts";
@@ -984,16 +986,28 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     void db.query("select pg_notify($1, $2)", [ORPHANS_CHANNEL, node]).catch(() => {});
   });
   // Wake-ups are delivered as prompts with ids derived from the schedule, so repeats are no-ops.
+  const scheduleMailConfig = accountMailSettings?.provider === "ses" ? { from: accountMailSettings.from, displayName: "camelRun Reports", region: accountMailSettings.region, configurationSet: accountMailSettings.configurationSet } : undefined;
+  // Reuse existing verified identities and billing recipients; do not expose an arbitrary email relay.
+  const canScheduleEmail = async (tenant: string, to: string) => {
+    const email = to.toLowerCase();
+    const allowed = tenants.has(tenant) || !!(await db.query(`select 1 from tenants where id=$1 and lower(google_email)=$2
+      union all select 1 from tenant_passwords where tenant=$1 and lower(email)=$2
+      union all select 1 from billing_recipients where tenant=$1 and email=$2 and status='verified' limit 1`, [tenant, email])).rowCount;
+    if (!allowed) return false;
+    return !(await db.query("select 1 from billing_email_suppressions where email_hash=$1", [createHash("sha256").update(email).digest("hex")])).rowCount;
+  };
   const scheduler = new Scheduler({
-    db, node,
+    db, node, emailEnabled: !!scheduleMailConfig, canEmail: canScheduleEmail,
     deliver: async (schedule, requestId) => {
       // Schedules run unattended: without the application, its tools' calls fail as not connected.
-      const request = schedule.code !== undefined ? { method: "execute", params: { code: schedule.code, allowDisconnected: true } } : { method: "prompt", params: { text: schedule.text!, ...(schedule.history ? { history: schedule.history } : {}), allowDisconnected: true } };
+      const request = schedule.code !== undefined ? { method: "execute", params: { code: schedule.code, allowDisconnected: true } } : { method: "prompt", params: { text: schedule.calendar ? calendarPrompt(schedule.text!, schedule.calendar, schedule.dueAt) : schedule.text!, ...(schedule.history ? { history: schedule.history } : {}), allowDisconnected: true } };
       await submitAnywhere(schedule.agent, schedule.tenant, { id: requestId, ...request });
     },
     also: now => clients.expireInputs(now),
   });
   scheduler.start(config.schedulerIntervalMs);
+  const scheduleMailer = scheduleMailConfig ? new ScheduleMailer({ db, mail: scheduleMailConfig, canEmail: canScheduleEmail, request: (agent, tenant, id, signal) => requestAnywhere(agent, tenant, id, 0, signal) }) : undefined;
+  scheduleMailer?.start(config.schedulerIntervalMs);
   // Email channels, when the runtime has a domain SES receives for: mail arrives through SNS at one shared route.
   const emailOptions: EmailOptions | undefined = config.email && { db, ...config.email };
   const managedDiscordConfig = await deps.managedDiscord?.();
@@ -1568,6 +1582,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     closing = true;
     for (const res of answering) endSocket(res);
     scheduler.stop();
+    await scheduleMailer?.stop();
     channels.stop();
     await voice?.stop();
     await voiceHost?.close();
