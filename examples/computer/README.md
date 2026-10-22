@@ -3,7 +3,7 @@
 This example gives a camelRun agent a private remote Linux environment. It can
 install packages, write programs, run subprocesses and keep a web server alive
 between turns. The model loop and history stay in camelRun; commands execute at
-Modal, Daytona or boat.dev. The provider key stays in this adapter process.
+Modal, Daytona, boat.dev or E2B. The provider key stays in this adapter process.
 
 This is an **attached-tool integration example**, not a hosted camelRun computer
 service. Run the adapter while testing. There is no native `computer` option in
@@ -64,7 +64,7 @@ into the sandbox; boat also disables its account's default environment injection
 Run offline boundary tests with:
 
 ```sh
-python3 examples/computer/test_tools.py
+python3 -m unittest discover -s examples/computer -p 'test_*.py'
 ```
 
 ## Live verification
@@ -98,3 +98,80 @@ additional opt-in environment with its own lifecycle.
 Provider references: [Modal sandboxes](https://modal.com/docs/guide/sandboxes),
 [Daytona SDK](https://www.daytona.io/docs/en/python-sdk/sync/daytona/),
 [boat Python SDK](https://docs.boat.dev/sdks/python).
+
+## E2B and Browserbase
+
+Install `e2b==2.59.0`, set `E2B_API_KEY`, then run the same agent with
+`--provider e2b`. E2B uses a secure sandbox with a provider-enforced lease.
+Nonzero shell exits are returned as command results so the agent can inspect them.
+
+Browserbase provides a browser capability, not a shell or Linux filesystem.
+Install `browserbase==1.21.0` and `playwright==1.48.0`, set
+`BROWSERBASE_API_KEY` (optionally `BROWSERBASE_PROJECT_ID`), and run:
+
+```sh
+.venv-computer/bin/python examples/computer/agent.py \
+  --provider browserbase --evidence /tmp/browserbase-computer.json
+```
+
+No local browser download is needed: Playwright connects to the remote browser.
+The agent gets navigation, visible-page reading, click, fill and page-JavaScript
+operations. Its two-turn test creates page state on example.com, then clicks a
+button in the same browser to update that state. An independent check verifies
+the stored counter. The session is released in `finally`, with a 15-minute
+provider timeout as a fallback. Connection credentials stay out of model tools.
+This example does not yet send screenshots to the model or enable persistent
+Browserbase contexts across separate runs.
+
+## Bring your own computer through Cloudflare Tunnel
+
+On a machine with Python 3.11+, Docker, and `cloudflared` installed, run:
+
+```sh
+python3 examples/computer/tunnel_server.py --tunnel \
+  --connection-file /tmp/camelrun-computer-connection.json
+```
+
+This starts one disposable Linux container and a temporary Cloudflare Tunnel.
+The HTTP server binds only to loopback. Every request requires a random bearer
+credential, separate from the tunnel address, and only one client can claim the
+session. The connection file is mode 0600 and contains both values. Transfer it
+privately to the adapter machine; never paste its contents into an agent prompt,
+commit it, or share it with another tenant. On the adapter machine:
+
+```sh
+export CAMELRUN_COMPUTER_CONNECTION=/path/to/private-connection.json
+.venv-computer/bin/python examples/computer/agent.py \
+  --provider tunnel --evidence /tmp/tunnel-computer.json
+```
+
+The adapter runs the same Linux workload through HTTPS. Closing it removes the
+container, ends the tunnel, and deletes the original connection file. Ctrl-C or
+lease expiry on the host also cleans up. Any transferred copy remains yours to
+delete. A forced kill or host crash can leave a stopped container; use the printed
+computer ID with `docker rm -f` to remove it. The container's main process has a
+15-minute lifetime even if the runner dies, but no external reaper is installed.
+
+A tunnel transports requests; it does not grant access by itself. The runner
+checks authentication before reading a request body and binds requests to a
+single claim. It limits command duration, output, connection concurrency and
+session command count. It never mounts host directories, the Docker socket, or
+host credentials into the container, and it drops Linux capabilities. It requires
+Docker: there is no fallback that runs model commands directly on your host.
+Containers still share the Docker host's kernel; use a dedicated VM for stronger
+isolation. Internet access from the container is enabled for package installs.
+
+For an existing named tunnel, configure it to forward to a fixed loopback port,
+then run `--port 8788 --url https://computer.example.com` instead of `--tunnel`.
+Keep the bearer authentication enabled even with Cloudflare Access. This example
+does not automate named-tunnel provisioning, Cloudflare Access service tokens,
+account pairing, device lists, reconnects, or unattended background services.
+Temporary tunnels are intended for testing. A connection does not survive a
+runner restart; command receipts and claims are process-local.
+
+This follows the separation of transport and application authorization described
+in [T3 Connect](https://github.com/pingdotgg/t3code/blob/main/docs/internals/t3-connect.md),
+with a smaller single-session protocol rather than T3's identity relay.
+See [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/get-started/),
+[E2B](https://docs.e2b.dev/), and
+[Browserbase Playwright](https://docs.browserbase.com/welcome/quickstarts/playwright).

@@ -96,8 +96,9 @@ Pass `tools` to `upsert` and this process serves them to the agent:
 
 For an agent that needs Linux commands, package installation and a server that
 stays running between turns, see the [computer example](../../examples/computer/README.md).
-It attaches a private Modal, Daytona or boat environment through the same tool
-interface. This is an integration example: camelRun does not yet provision or
+It attaches a private Modal, Daytona, boat or E2B environment through the same
+tool interface. It also includes Browserbase browser tools and an authenticated
+Cloudflare Tunnel runner for a disposable container on your own computer. This is an integration example: camelRun does not yet provision or
 bill these computers itself, and the adapter process must remain connected.
 
 ```ts

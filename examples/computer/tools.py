@@ -21,6 +21,10 @@ class ComputerTools:
         self.agent_id = agent_id
 
     async def execute(self, command, timeout, context):
+        return await self.perform(command, timeout, context,
+                                  lambda: asyncio.to_thread(self.computer.execute, command, min(timeout, max(1, int(self.computer.expires_at - time.monotonic())))))
+
+    async def perform(self, command, timeout, context, action):
         if not context.identity or context.identity.agent != self.agent_id:
             raise PermissionError("This computer belongs to a different agent")
         if not isinstance(command, str) or not 1 <= len(command) <= 32_000:
@@ -41,11 +45,12 @@ class ComputerTools:
             # Record uncertainty before dispatch; never silently replay a write after an error.
             self.results[key] = (command, {"error": "Previous attempt has an unknown outcome; inspect state before retrying."})
             try:
-                result = await asyncio.to_thread(self.computer.execute, command, min(timeout, remaining))
-                value = asdict(result)
-                value["truncated"] = any(len(value[field]) > 24_000 for field in ("stdout", "stderr"))
+                result = await action()
+                value = asdict(result) if not isinstance(result, dict) else result
+                value["truncated"] = any(len(value.get(field, "")) > 24_000 for field in ("stdout", "stderr"))
                 for field in ("stdout", "stderr"):
-                    value[field] = value[field][:24_000]
+                    if field in value:
+                        value[field] = value[field][:24_000]
                 self.results[key] = (command, value)
                 return value
             except Exception as error:

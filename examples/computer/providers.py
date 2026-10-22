@@ -98,14 +98,82 @@ class BoatComputer:
             self.client.__exit__(None, None, None)
 
 
-PROVIDERS = {"modal": ModalComputer, "daytona": DaytonaComputer, "boat": BoatComputer}
+class E2BComputer:
+    provider = "e2b"
+
+    def __init__(self, lifetime: int):
+        from e2b import Sandbox
+        self.sandbox = Sandbox.create(timeout=lifetime, secure=True, envs={})
+        self.id = self.sandbox.sandbox_id
+
+    def execute(self, command: str, timeout: int) -> CommandResult:
+        from e2b import CommandExitException
+        try:
+            result = self.sandbox.commands.run(command, timeout=timeout)
+        except CommandExitException as result:
+            return CommandResult(result.exit_code, result.stdout, result.stderr)
+        return CommandResult(result.exit_code, result.stdout, result.stderr)
+
+    def close(self):
+        self.sandbox.kill()
+
+
+class TunnelComputer:
+    """Connect to one explicitly started BYOC session; never execute on this host."""
+    provider = "tunnel"
+
+    def __init__(self, lifetime: int):
+        import json
+        from pathlib import Path
+        from urllib.parse import urlsplit
+        import httpx
+        connection = json.loads(Path(os.environ["CAMELRUN_COMPUTER_CONNECTION"]).read_text())
+        url = connection["url"]
+        parsed = urlsplit(url)
+        if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
+            raise ValueError("Connection URL must be an origin without credentials")
+        if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost", "::1")):
+            raise ValueError("Remote computers require HTTPS")
+        self.client = httpx.Client(base_url=url, headers={"Authorization": "Bearer " + connection["token"]},
+                                   follow_redirects=False, trust_env=False, timeout=10)
+        import uuid
+        self.claim = uuid.uuid4().hex
+        try:
+            response = self.client.post("/claim", json={"claim": self.claim})
+            response.raise_for_status()
+            info = response.json()
+            self.id = info["id"]
+            self.expires_at = time.monotonic() + min(lifetime, info["seconds_remaining"])
+        except BaseException:
+            self.client.close()
+            raise
+
+    def execute(self, command: str, timeout: int) -> CommandResult:
+        import uuid
+        response = self.client.post("/exec", json={"claim": self.claim, "key": uuid.uuid4().hex,
+                                    "command": command, "timeout": timeout}, timeout=timeout + 15)
+        response.raise_for_status()
+        result = response.json()
+        return CommandResult(result["exit_code"], result["stdout"], result["stderr"])
+
+    def close(self):
+        try:
+            response = self.client.post("/close", json={"claim": self.claim}, timeout=30)
+            response.raise_for_status()
+        finally:
+            self.client.close()
+
+
+PROVIDERS = {"modal": ModalComputer, "daytona": DaytonaComputer, "boat": BoatComputer,
+             "e2b": E2BComputer, "tunnel": TunnelComputer}
 
 
 def create_computer(provider: str, lifetime: int = 900):
     if provider not in PROVIDERS:
-        raise ValueError("provider must be modal, daytona, or boat")
+        raise ValueError("Unknown Linux computer provider")
     if not 60 <= lifetime <= 900:
         raise ValueError("computer lifetime must be 60–900 seconds")
     computer = PROVIDERS[provider](lifetime)
-    computer.expires_at = time.monotonic() + lifetime
+    if not hasattr(computer, "expires_at"):
+        computer.expires_at = time.monotonic() + lifetime
     return computer
