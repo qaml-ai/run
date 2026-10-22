@@ -14,6 +14,8 @@ import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusPanel } from "@/components/brand";
 import { ConfirmButton, CopyButton, EmptyState, ErrorAlert, LearnMore, PageHeader } from "@/components/common";
+import { MoveMenu, WorkspaceTag } from "@/components/workspace-ui";
+import { moveToWorkspace, useWorkspaceDirectory } from "@/lib/workspace";
 import { FileBrowser, FileCard } from "@/components/files";
 import { api, formatBytes, formatTime, putFile, useApi, type AgentDetail, type FileRef, type Mount, type RequestRecord, type RunFiles, type ToolSource } from "@/lib/api";
 import { Link, navigate } from "@/lib/router";
@@ -339,19 +341,25 @@ export function AgentPage({ id }: { id: string }) {
   const agent = useApi<AgentDetail>(`/v1/agents/${id}`, 5_000);
   const history = useApi<{ messages: Message[] }>(`/v1/agents/${id}/history`, agent.data?.running ? 3_000 : undefined);
   const [error, setError] = useState<string>();
+  const directory = useWorkspaceDirectory();
   /** The fork dialog, open: from the last finished turn, or from a message. */
   const [forking, setForking] = useState<{ atMessage?: number }>();
   if (agent.error?.status === 404) return <StatusPanel code="404" label="Not found" detail="This agent does not exist or belongs to another tenant."
     action={<Button variant="outline" asChild><Link to="agents"><ArrowLeft />Agents</Link></Button>} />;
   if (!agent.data) return <><ErrorAlert error={agent.error} /><Skeleton className="h-64 w-full" /></>;
   const data = agent.data;
+  const workspaceId = directory.workspaceOf("agent", id);
   return (
     <>
       <Link to="agents" className="text-muted-foreground hover:text-foreground mb-3 inline-flex items-center gap-1 text-sm"><ArrowLeft className="size-4" />Agents</Link>
       <PageHeader
         title={data.name} docs="events"
-        description={<span className="inline-flex flex-wrap items-center gap-2"><AgentStatus agent={data} /><span className="font-mono text-xs">{data.model}</span><span>· {data.type}</span>{data.definition && <Link to="definitions" className="underline">· definition revision {data.definition.revision}</Link>}{data.forkedFrom && <Link to={`agents/${data.forkedFrom.agentId}`} className="underline">· forked from {data.forkedFrom.agentId}{data.forkedFrom.atMessage !== null ? ` at message ${data.forkedFrom.atMessage}` : ""}</Link>}{data.parentAgentId && <Link to={`agents/${data.parentAgentId}`} className="underline">· sub-agent of {data.parentAgentId}</Link>}</span>}
+        description={<span className="inline-flex flex-wrap items-center gap-2"><AgentStatus agent={data} /><span className="font-mono text-xs">{data.model}</span><span>· {data.type}</span>{data.definition && <Link to="definitions" className="underline">· definition revision {data.definition.revision}</Link>}{data.forkedFrom && <Link to={`agents/${data.forkedFrom.agentId}`} className="underline">· forked from {data.forkedFrom.agentId}{data.forkedFrom.atMessage !== null ? ` at message ${data.forkedFrom.atMessage}` : ""}</Link>}{data.parentAgentId && <Link to={`agents/${data.parentAgentId}`} className="underline">· sub-agent of {data.parentAgentId}</Link>}{!!directory.workspaces?.length && directory.loaded && <span className="inline-flex items-center gap-1">· <WorkspaceTag directory={directory} id={workspaceId} /></span>}</span>}
         actions={<>
+          {!!directory.workspaces?.length && directory.loaded && <MoveMenu directory={directory} current={workspaceId} align="end"
+            onMove={async target => { setError(undefined); try { await moveToWorkspace("agent", [id], target); } catch (caught) { setError((caught as Error).message); } }}>
+            <Button variant="outline" size="sm">Move…</Button>
+          </MoveMenu>}
           <Button variant="outline" size="sm" onClick={() => setForking({})}><GitFork />Fork</Button>
           <ConfirmButton label="Abort" icon={<Square />} title="Abort the running turn?" description="The current model turn stops. Tool calls already started in your application may still complete." confirm="Abort"
             onConfirm={async () => { try { await api(`/v1/agents/${id}/abort`, { body: {} }); await agent.reload(); } catch (caught) { setError((caught as Error).message); } }} />

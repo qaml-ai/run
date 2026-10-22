@@ -12,6 +12,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
 import { api, formatTime, useApi, type Channel, type Definition, type ManagedDiscordConfig } from "@/lib/api";
 import { DefinitionDialog } from "./definitions";
+import { WorkspaceTag } from "@/components/workspace-ui";
+import { useWorkspaceDirectory } from "@/lib/workspace";
 import { ManagedDiscord } from "./discord-managed";
 import { Link } from "@/lib/router";
 
@@ -385,6 +387,9 @@ export function ChannelsPage() {
   const [editing, setEditing] = useState<Channel | "new" | "own-discord">();
   const [error, setError] = useState<string>();
   const ownChannels = channels.data?.filter(channel => channel.type !== "discord-managed");
+  // Channels are account-wide; the workspace their conversations' agents join comes from the channel's definition.
+  const directory = useWorkspaceDirectory();
+  const grouped = !!directory.workspaces?.length && directory.loaded;
   return (
     <>
       <PageHeader title="Channels" docs="channels" description="Let people talk to agents from messaging apps, and start agents from GitHub and webhooks. Each conversation (a chat, a pull request, a key) gets its own agent, made from the channel's definition."
@@ -397,13 +402,14 @@ export function ChannelsPage() {
       ) : (
         <div className="bg-card border">
           <Table>
-            <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Bot or address</TableHead><TableHead>Access</TableHead><TableHead className="hidden lg:table-cell">Created</TableHead><TableHead /></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Bot or address</TableHead><TableHead>Access</TableHead>{grouped && <TableHead className="hidden md:table-cell" title="The workspace this channel's agents join, through its definition">Agents join</TableHead>}<TableHead className="hidden lg:table-cell">Created</TableHead><TableHead /></TableRow></TableHeader>
             <TableBody>
               {ownChannels.map(channel => (
                 <TableRow key={channel.id}>
                   <TableCell className="font-medium">{channel.name}<div className="text-muted-foreground text-xs">{channel.type}</div></TableCell>
                   <TableCell className="font-mono text-xs">{channel.type === "email" ? channel.settings?.address : channel.account.username ? `@${channel.account.username}` : channel.account.id ?? "—"}</TableCell>
                   <TableCell>{channel.access.public ? <Badge>Public</Badge> : <Badge variant="outline">{channel.access.allow.length} allowed</Badge>}</TableCell>
+                  {grouped && <TableCell className="hidden md:table-cell">{channel.definition ? <WorkspaceTag directory={directory} id={directory.workspaceOf("definition", channel.definition)} /> : <span className="text-muted-foreground text-sm">Unassigned</span>}</TableCell>}
                   <TableCell className="text-muted-foreground hidden text-xs lg:table-cell">{formatTime(channel.createdAt)}</TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <Button size="xs" variant="outline" className="mr-2" disabled={!definitions.data?.some(d => d.id === channel.definition)} onClick={() => setModelDefinition(definitions.data?.find(d => d.id === channel.definition))}>Model &amp; prompt</Button>
