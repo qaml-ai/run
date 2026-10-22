@@ -470,7 +470,11 @@ const InlineMcpServerInput = z.looseObject({
     .openapi({ description: "Each request carries a JWT the runtime signs, naming the tenant, agent, subject, context and actor (no definition); verify it against /.well-known/jwks.json. The only auth an agent's own server takes" }),
 }).openapi("InlineMcpServerInput", { description: "An MCP server of the agent's (or run's) own, as a definition's is, but with no credentials: no headers and no bearer token (a 400 says to use a definition, which seals them once). Not listed when saved: a server that cannot be listed shows in a run's sourceErrors" });
 
+const workspaceId = z.string().nullable().optional().openapi({ description: "Workspace for spend attribution. New agents inherit their definition workspace when omitted. null leaves them unassigned. Later moves keep earlier usage in its original workspace." });
+export const Workspace = z.object({ id: z.string(), name: z.string(), archived: z.boolean(), createdAt: z.number(), updatedAt: z.number() }).openapi("Workspace");
+
 export const AgentInput = z.object({
+  workspaceId,
   mcp: z.object({ tools: z.array(z.unknown()) }).optional().openapi({ description: "The application's attached MCP server: its tools/list, whose tools the agent calls back through the application's connection. The SDKs send it" }),
   definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel, maxOutputTokens, temperature, fileTools, codeMode and runLimits given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
   name: z.string().optional(),
@@ -582,6 +586,7 @@ const RunInputPart = z.union([
   z.strictObject({ type: z.literal("file"), url: z.string().openapi({ description: "An https URL the runtime fetches the file from (public addresses only; at most 64 MiB)" }), name: z.string().optional(), contentType: z.string().optional(), transcribe: TRANSCRIBE }),
 ]).openapi("RunInputPart");
 export const RunInput = z.strictObject({
+  workspaceId,
   input: z.union([z.string(), z.array(RunInputPart).min(1)]).openapi({ description: "What the run is asked: text, or parts (text and files, inline or by URL). Files are saved in a workspace volume the run gets for them; audio is transcribed for the model" }),
   definition: z.string().optional().openapi({ description: "Take the configuration from this definition (its key or id; GET /v1/definitions): model, system prompt, thinking level, tool sources. Fields given here override it, as for an agent" }),
   model: z.string().optional().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
@@ -889,6 +894,7 @@ export const Images = z.object({
 export const Usage = z.object({
   since: z.number(),
   totals: Totals,
+  workspaces: z.array(Totals.extend({ id: z.string().nullable(), name: z.string() })).openapi({ description: "Model and tool spend by workspace; null is Unassigned, including usage from before workspace assignment" }),
   days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction", "transcription", "image", "speech"]).openapi({ description: "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: speech made, by POST /v1/speech or voice sessions (responses counts speeches)" }) })),
 }).openapi("Usage");
 

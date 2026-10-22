@@ -1,3 +1,4 @@
+import { Workspaces, applyWorkspaceUsage } from "../src/workspaces.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -17,6 +18,9 @@ test("a deletion interrupted at any step continues where it stopped, and never w
   await accounts.tenants.reload();
   await db.query("insert into tenants (id, github, github_id, created_at) values ('dave', 'Dave', 77, 1)");
   const { token } = await accounts.createToken("dave", "script");
+  const workspaces = new Workspaces(db), workspace = await workspaces.create("dave", "Research");
+  await workspaces.assign("dave", "agent", "client_a", workspace.id);
+  await applyWorkspaceUsage(db, [{ tenant: "dave", agent: "client_a", timestamp: Date.now(), day: new Date().toISOString().slice(0, 10), model: "x/y", responses: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.1, platformResponses: 0, platformCost: 0 }]);
   await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ('client_a', 'dave', '{}', 1, 'a', 'general', 'x/y'), ('client_b', 'dave', '{}', 1, 'b', 'general', 'x/y')");
   await db.query("insert into definitions (id, tenant, name, revision, spec, created_at, updated_at) values ('def_1', 'dave', 'd', 1, '{}', 1, 1)");
   await db.query("insert into credit_ledger (tenant, kind, amount, idempotency_key, created_at) values ('dave', 'grant', 5000000, 'grant:github:77', 1)");
@@ -67,7 +71,7 @@ test("a deletion interrupted at any step continues where it stopped, and never w
   const status = (await deletions.status("dave"))!;
   assert.equal(status.state, "deleted");
 
-  for (const table of ["api_tokens", "definitions"]) assert.equal((await db.query(`select count(*)::int as n from ${table}`)).rows[0].n, 0, table);
+  for (const table of ["api_tokens", "definitions", "workspace_usage", "workspace_assignments", "workspaces"]) assert.equal((await db.query(`select count(*)::int as n from ${table}`)).rows[0].n, 0, table);
   assert.equal((await db.query("select count(*)::int as n from tenants")).rows[0].n, 0);
   assert.equal(await storage.readBlob("chunks/dave/ab/abc"), undefined);
   assert.ok(await storage.readBlob("chunks/other/ab/abc"), "another tenant's files stay");

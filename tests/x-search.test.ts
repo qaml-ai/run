@@ -129,11 +129,13 @@ test("X search works in agents and stateless runs, uses tenant keys first and bi
   const def = await r.call("/v1/definitions", { token: own, body: { name: "Research", builtins: ["x_search"] } });
   assert.equal(def.status, 201);
   assert.equal(def.json.warnings, undefined);
-  const made = await r.call("/v1/agents", { token: own, body: { definition: def.json.id, codeMode: false } });
+  const workspace = (await r.call("/v1/workspaces", { token: own, body: { name: "Research" } })).json.id;
+  const made = await r.call("/v1/agents", { token: own, body: { definition: def.json.id, workspaceId: workspace, codeMode: false } });
   await r.prompt(made.json.id, "Research it", own);
   assert.equal(f.calls.at(-1)?.key, "Bearer own-xai-key");
   const ownUsage = (await r.call("/v1/usage", { token: own })).json.days.find((u: any) => u.model === "xai/x_search");
   assert.deepEqual([ownUsage.cost, ownUsage.platformCost, ownUsage.input, ownUsage.cacheRead], [0.25, 0, 80, 20]);
+  assert.equal((await r.call(`/v1/usage?workspaceId=${workspace}`, { token: own })).json.totals.cost, 0.25);
   assert.equal((await r.call("/v1/billing/adjustments", { token: ops, body: { tenant: "payg", amount: 1_000_000, reason: "test" } })).status, 201);
   const paid = await r.call("/v1/agents", { token: payg, body: { builtins: ["x_search"], codeMode: false } });
   await r.prompt(paid.json.id, "Research it", payg);

@@ -5,18 +5,23 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorAlert, PageHeader, Stats } from "@/components/common";
-import { formatCost, formatNumber, useApi, type Usage } from "@/lib/api";
+import { formatCost, formatNumber, useApi, type Usage, type Workspace } from "@/lib/api";
 import { Link } from "@/lib/router";
 
 export function UsagePage() {
   const [days, setDays] = useState("30");
-  const usage = useApi<Usage>(`/v1/usage?days=${days}`);
+  const [workspaceId, setWorkspaceId] = useState(new URLSearchParams(location.search).get("workspaceId") ?? "all");
+  const workspaces = useApi<Workspace[]>("/v1/workspaces");
+  const usage = useApi<Usage>(`/v1/usage?days=${days}${workspaceId === "all" ? "" : `&workspaceId=${encodeURIComponent(workspaceId)}`}`);
   const totals = usage.data?.totals;
   return (
     <>
       <PageHeader title="Usage" docs="pricing" description="Model and tool usage from your agents. Model costs use provider reports when available and otherwise list-price estimates. Billing includes applicable provider credit funding costs."
         actions={
-          <Select value={days} onValueChange={setDays}>
+          <div className="flex gap-2"><Select value={workspaceId} onValueChange={setWorkspaceId}>
+            <SelectTrigger className="w-48" aria-label="Workspace"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="all">All workspaces</SelectItem><SelectItem value="unassigned">Unassigned</SelectItem>{workspaces.data?.map(workspace => <SelectItem key={workspace.id} value={workspace.id}>{workspace.name}{workspace.archived ? " (archived)" : ""}</SelectItem>)}</SelectContent>
+          </Select><Select value={days} onValueChange={setDays}>
             <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="1">Last 24 hours</SelectItem>
@@ -24,7 +29,7 @@ export function UsagePage() {
               <SelectItem value="30">Last 30 days</SelectItem>
               <SelectItem value="90">Last 90 days</SelectItem>
             </SelectContent>
-          </Select>
+          </Select></div>
         } />
       <ErrorAlert error={usage.error} />
       {!usage.data ? <Skeleton className="h-64 w-full" /> : (
@@ -35,6 +40,13 @@ export function UsagePage() {
             { label: "Output tokens", value: formatNumber(totals!.output) },
             { label: "Usage cost", value: formatCost(totals!.cost) },
           ]} />
+          {workspaceId === "all" && !!usage.data.workspaces?.length && <div className="mb-6 border bg-card"><Table>
+            <TableHeader><TableRow><TableHead>Workspace</TableHead><TableHead className="text-right">Responses</TableHead><TableHead className="text-right">Cost</TableHead></TableRow></TableHeader>
+            <TableBody>{usage.data.workspaces.map(row => <TableRow key={row.id ?? "unassigned"}>
+              <TableCell><button className="hover:underline" onClick={() => setWorkspaceId(row.id ?? "unassigned")}>{row.name}</button></TableCell>
+              <TableCell className="text-right font-mono">{formatNumber(row.responses)}</TableCell><TableCell className="text-right font-mono">{formatCost(row.cost)}</TableCell>
+            </TableRow>)}</TableBody>
+          </Table></div>}
           {usage.data.days.length === 0 ? <EmptyState icon={<BarChart3 />} title="No usage in this period" action={<Button size="sm" variant="outline" asChild><Link to="start">Run an agent</Link></Button>}>Each model response your agents make shows here, with its tokens and cost.</EmptyState> : (
             <div className="bg-card border">
               <Table>

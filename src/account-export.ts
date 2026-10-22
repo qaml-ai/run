@@ -41,6 +41,9 @@ const README = `This archive holds everything camelRun stores for your account, 
 account.json               your account: its id and the identity you sign in with
 agents/<id>/agent.json     each agent's configuration and schedules
 agents/<id>/history/*.json each agent's history, a page of whole turns per file, named by its first message's index
+workspaces.json            workspaces, including archived ones
+workspace-assignments.json workspace assignment history
+workspace-usage.json       daily model and tool usage attributed to each workspace
 definitions.json           your agent definitions (secrets left out)
 channels.json              your channels (credentials masked)
 webhooks.json              your webhook endpoints (signing secrets left out)
@@ -74,6 +77,11 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
   yield* zip.file("README.txt", README);
   const email = (await accounts.db.query("select email from tenant_passwords where tenant = $1", [tenant])).rows[0]?.email ?? null;
   yield* zip.file("account.json", json({ tenant, login: await accounts.identity(tenant) ?? null, email, createdAt: created === undefined ? null : Number(created), exportedAt: new Date().toISOString() }));
+
+  yield* zip.file("workspaces.json", json((await accounts.db.query("select id, name, archived, created_at, updated_at from workspaces where tenant = $1 order by created_at, id", [tenant])).rows));
+  yield* zip.file("workspace-assignments.json", json((await accounts.db.query("select kind, resource, workspace, assigned_at from workspace_assignments where tenant = $1 order by sequence", [tenant])).rows));
+
+  yield* zip.file("workspace-usage.json", json((await accounts.db.query("select workspace, day, model, responses, input, output, cache_read, cache_write, cost, platform_responses, platform_cost from workspace_usage where tenant = $1 order by day, workspace, model", [tenant])).rows));
 
   for (let after = ""; ;) {
     const { rows } = await accounts.db.query(`

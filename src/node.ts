@@ -1,3 +1,4 @@
+import { Workspaces } from "./workspaces.ts";
 import { anthropicFederationFromEnvironment } from "./anthropic-federation.ts";
 import { ModelAttempts } from "./model-attempts.ts";
 import { bucketInput, EndUserCredits } from "./end-user-credits.ts";
@@ -491,11 +492,24 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
    * Provision an agent for `tenant` (POST /v1/agents), recording how long each step took (`create_timing`). `parent` is the run
    * that made it with a delegate call: the runtime's own, never a caller's.
    */
+  const workspaces = new Workspaces(db);
+
   async function createAgent(tenant: string, params: any, key?: string, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }, admit?: (unchanged: boolean) => Promise<unknown>, run?: RunSettings & { ttlMs: number }) {
     const steps = new Steps();
     const made: { agent?: string; upsert: boolean } = { upsert: false };
     try {
+      const requestedWorkspace = params?.workspaceId;
+      if (requestedWorkspace !== undefined) await workspaces.validate(tenant, requestedWorkspace);
       const result = await provisionAgent(tenant, params, key, steps, made, parent, admit, run);
+      if (requestedWorkspace !== undefined) {
+        await workspaces.assign(tenant, "agent", result.id, requestedWorkspace, !!run);
+      } else if (!made.upsert && (parent || params?.definition)) {
+        // New agents snapshot their definition's or parent's group; an upsert without workspaceId leaves it alone.
+        const header = parent ? undefined : (await db.query("select header from agents where tenant = $1 and id = $2", [tenant, result.id])).rows[0]?.header;
+        const inherited = parent ? await workspaces.current(tenant, "agent", parent.agentId)
+          : header?.definition ? await workspaces.current(tenant, "definition", header.definition.id) : undefined;
+        if (inherited?.workspace) await workspaces.assign(tenant, "agent", result.id, inherited.workspace, true, true);
+      }
       recordCreate(steps, { tenant, ...made });
       return result;
     } catch (error) {

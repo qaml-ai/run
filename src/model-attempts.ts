@@ -1,3 +1,4 @@
+import { applyWorkspaceUsage } from "./workspaces.ts";
 import { createHash } from "node:crypto";
 import { Accounts, applyUsageRows, type Totals } from "./accounts.ts";
 import { postLedger } from "./billing.ts";
@@ -225,6 +226,7 @@ export class ModelAttempts {
         await sql.query("update model_attempts set end_user_raw=$2, end_user_allowance=$3, end_user_paid=$4, end_user_written_off=$5 where id=$1", [id, posted.raw, posted.allowance, posted.paid, posted.writtenOff]);
       }
       await applyUsageRows(sql, [{ tenant, day: quote.day, model: quote.model, ...delta }]);
+      await applyWorkspaceUsage(sql, [{ tenant, agent, timestamp: Number(row.started_at), day: quote.day, model: quote.model, ...delta }]);
       if (adjustment) {
         await postLedger(sql, [{ tenant, kind: "usage", amount: -adjustment, key: `model-attempt:${id}:${revision}`, metadata: { attempt: id, revision, reconciled, estimated: !final || !!estimate, tokens: Math.round((quote.totals.cost-previous.cost)*1e6), funding: adjustment-Math.round((quote.totals.cost-previous.cost)*1e6) } }]);
         // Correct the original minute, not the recovery worker's current hour. Old minutes cannot affect a current cap.

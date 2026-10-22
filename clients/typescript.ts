@@ -375,6 +375,8 @@ export interface InputDetail {
 export interface InputAnswer { action: "accept" | "decline" | "cancel"; content?: unknown; from?: Sender; actor?: string }
 export type { ThinkingLevel };
 export interface CreateAgentOptions extends AgentOptions {
+  /** Account workspace for spend attribution; null leaves it unassigned. */
+  workspaceId?: string | null;
   idempotencyKey?: string;
   /**
    * Make the agent from a definition (GET /v1/definitions): it supplies the model, system
@@ -1016,7 +1018,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
@@ -1780,6 +1782,7 @@ export interface RunRequest {
   /** js_exec. Default: on for a run with tools, off for a tool-less one. */
   codeMode?: boolean;
   output?: { schema: Record<string, unknown> };
+  workspaceId?: string | null;
   keyScope?: string; modelHeaders?: Record<string, string>;
   /** The run's budget (USD). */
   spendLimit?: { usd: number };

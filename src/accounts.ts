@@ -1,3 +1,4 @@
+import { applyWorkspaceUsage, type AttributedUsage } from "./workspaces.ts";
 import type { AnthropicFederation } from "./anthropic-federation.ts";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { transaction, type Db, type Sql } from "./db.ts";
@@ -40,8 +41,8 @@ type Charge = { platformCost: number; fundingCost: number; activeMs: number; too
  * `charges` is what prepaid tenants pay for it (`Charge`), and `events` its model responses for
  * tenants' webhooks (`usage.recorded`, webhooks.ts), which the same transaction adds to their outbox.
  */
-type Batch = { id: string; usage: Map<string, Totals>; charges: Map<string, Charge>; events: WebhookEvent[] };
-const batch = (): Batch => ({ id: randomUUID(), usage: new Map(), charges: new Map(), events: [] });
+type Batch = { id: string; usage: Map<string, Totals>; charges: Map<string, Charge>; events: WebhookEvent[]; attributed: AttributedUsage[] };
+const batch = (): Batch => ({ id: randomUUID(), usage: new Map(), charges: new Map(), events: [], attributed: [] });
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const validTenant = (id: string) => /^[a-z0-9][a-z0-9-]{0,39}$/.test(id);
@@ -436,11 +437,13 @@ export class Accounts {
     const credits = typeof usage.providerCreditCost === "number" && Number.isFinite(usage.providerCreditCost) && usage.providerCreditCost >= 0
       ? Math.min(cost, usage.providerCreditCost) : cost;
     const fundedCost = cost + credits * (multiplier - 1);
-    add(totals, {
+    const increment: Totals = {
       // A request for images counts the images it made.
       responses: message.kind === "image" ? message.images ?? 1 : 1, input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0, cost,
       platformResponses: message.platform ? 1 : 0, platformCost: message.platform ? fundedCost : 0,
-    });
+    };
+    add(totals, increment);
+    if (agent) target.attributed.push({ tenant, agent, timestamp: message.timestamp ?? Date.now(), day, model: JSON.parse(key)[2], ...increment });
     target.usage.set(key, totals);
     if (message.platform) {
       const charge = this.charge(tenant, target);
@@ -562,7 +565,7 @@ export class Accounts {
     }
   }
 
-  private async apply({ id, usage, charges, events }: Batch, existing?: Sql) {
+  private async apply({ id, usage, charges, events, attributed }: Batch, existing?: Sql) {
     const rows = [...usage].map(([key, totals]) => {
       const [tenant, day, model] = JSON.parse(key);
       return { tenant, day, model, ...totals };
@@ -585,6 +588,7 @@ export class Accounts {
     const commit = async (sql: Sql) => {
       if (!(await sql.query("insert into usage_flushes (id) values ($1) on conflict (id) do nothing returning id", [id])).rowCount) return;
       await applyUsageRows(sql, rows);
+      await applyWorkspaceUsage(sql, attributed);
       await accrueUsage(sql, billed);
       // Only tenants with an endpoint that selects usage keep their events.
       await enqueueEvents(sql, events);
@@ -632,19 +636,43 @@ export class Accounts {
   }
 
   /** Usage since `since`, summed per UTC day and model. */
-  async usage(tenant: string, since: number) {
+  async usage(tenant: string, since: number, workspace?: string) {
     await this.flushUsage();
-    const { rows } = await this.db.query(`
-      select to_char(day, 'YYYY-MM-DD') as day, model, responses, input, output, cache_read, cache_write, cost, platform_responses, platform_cost
-      from usage where tenant = $1 and day >= $2::date order by day, model`, [tenant, new Date(since).toISOString().slice(0, 10)]);
+    // One statement sees account and workspace totals at the same snapshot while other nodes flush usage.
+    const { rows: combined } = await this.db.query(`
+      select null::text as workspace, null::text as name, to_char(day, 'YYYY-MM-DD') as day, model, responses, input, output, cache_read, cache_write, cost, platform_responses, platform_cost
+      from usage where tenant = $1 and day >= $2::date
+      union all
+      select u.workspace, w.name, to_char(u.day, 'YYYY-MM-DD') as day, u.model, u.responses, u.input, u.output, u.cache_read, u.cache_write, u.cost, u.platform_responses, u.platform_cost
+      from workspace_usage u join workspaces w on w.tenant = u.tenant and w.id = u.workspace
+      where u.tenant = $1 and u.day >= $2::date
+      order by day, model`, [tenant, new Date(since).toISOString().slice(0, 10)]);
+    const rows = combined.filter(row => row.workspace === null), attributed = combined.filter(row => row.workspace !== null);
+    const columns = ["responses", "input", "output", "cache_read", "cache_write", "cost", "platform_responses", "platform_cost"];
+    const remaining = new Map(rows.map(row => [JSON.stringify([row.day, row.model]), { ...row, name: "Unassigned" }]));
+    for (const row of attributed) {
+      const rest = remaining.get(JSON.stringify([row.day, row.model]));
+      if (rest) for (const column of columns) rest[column] -= row[column];
+    }
+    const unassigned = [...remaining.values()].map(row => {
+      for (const column of columns) if (Math.abs(row[column]) < 1e-12) row[column] = 0;
+      return row;
+    });
+    const grouped = new Map<string | null, any>();
+    for (const row of [...attributed, ...unassigned]) {
+      const value = grouped.get(row.workspace) ?? { id: row.workspace, name: row.name, ...zero() };
+      add(value, { responses: row.responses, input: row.input, output: row.output, cacheRead: row.cache_read, cacheWrite: row.cache_write, cost: row.cost, platformResponses: row.platform_responses, platformCost: row.platform_cost });
+      grouped.set(row.workspace, value);
+    }
+    const selected = workspace === undefined ? rows : workspace === "unassigned" ? unassigned : attributed.filter(row => row.workspace === workspace);
     const totals = zero();
-    const days = rows.map(row => {
+    const days = selected.map(row => {
       const value = { responses: row.responses, input: row.input, output: row.output, cacheRead: row.cache_read, cacheWrite: row.cache_write, cost: row.cost, platformResponses: row.platform_responses, platformCost: row.platform_cost };
       add(totals, value);
       const kind = row.model.startsWith(COMPACTION) ? "compaction" : row.model.startsWith(TRANSCRIPTION) ? "transcription" : row.model.startsWith(IMAGE) ? "image" : row.model.startsWith(SPEECH) ? "speech" : "turn";
       return { day: row.day, model: kind === "turn" ? row.model : row.model.slice(row.model.indexOf(":") + 1), kind, ...value };
     });
-    return { since, totals, days };
+    return { since, totals, days, workspaces: [...grouped.values()] };
   }
 }
 
