@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { Accounts, Sealed } from "./accounts.ts";
-import type { UsageRecord } from "./client-sessions.ts";
+import type { UsageRecord } from "./client-sessions/state.ts";
 import type { Db, Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
 import type { Outbound } from "./outbound.ts";

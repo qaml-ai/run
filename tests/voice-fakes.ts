@@ -6,7 +6,7 @@ import { Opus } from "../src/opus.ts";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { Ownership } from "../src/ownership.ts";
-import type { UsageRecord } from "../src/client-sessions.ts";
+import type { UsageRecord } from "../src/client-sessions/state.ts";
 import type { AudioHeader } from "../src/audio-header.ts";
 import { Transcriber, type Transcript } from "../src/transcription.ts";
 import { VoiceSessions, type VoiceConnection, type VoiceCredentials, type VoiceHandlers, type VoiceSessionsOptions, type VoiceTransport } from "../src/voice-sessions.ts";

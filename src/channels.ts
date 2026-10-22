@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import type { Accounts, Sealed } from "./accounts.ts";
-import type { AgentRef, SessionHooks } from "./client-sessions.ts";
+import type { AgentRef, SessionHooks } from "./client-sessions/state.ts";
 import type { ToolDefinition } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
 import { safeError } from "./metrics.ts";

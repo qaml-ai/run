@@ -1,5 +1,5 @@
 import type { Outbound } from "./outbound.ts";
-import type { UsageRecord } from "./client-sessions.ts";
+import type { UsageRecord } from "./client-sessions/state.ts";
 import { MICROS } from "./pricing.ts";
 import { safeError } from "./metrics.ts";
 

@@ -1,4 +1,4 @@
-import type { UsageRecord } from "./client-sessions.ts";
+import type { UsageRecord } from "./client-sessions/state.ts";
 import type { AgentIdentity } from "./identity.ts";
 import { HttpError } from "./http.ts";
 import { safeError } from "./metrics.ts";

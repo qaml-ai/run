@@ -2,7 +2,7 @@ import type { AnthropicFederation } from "./anthropic-federation.ts";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { transaction, type Db, type Sql } from "./db.ts";
 import type { Tenants } from "./tenants.ts";
-import type { UsageRecord } from "./client-sessions.ts";
+import type { UsageRecord } from "./client-sessions/state.ts";
 import { accrueUsage, Billing, type UsageCharge } from "./billing.ts";
 import { activeCharge, MICROS, type Pricing } from "./pricing.ts";
 import type { Stripe } from "./stripe.ts";

@@ -1,121 +1,65 @@
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { END_USER_CREDIT, type AttemptAck, type ModelAttemptHook } from "./model-attempt.ts";
-import { bucketInput, creditError, DEFAULT_BUCKET, MICROS, type CreditHold, type EndUserCredits } from "./end-user-credits.ts";
-import { durableEntryMessages } from "./pi-durable/agent.ts";
+import { END_USER_CREDIT } from "./model-attempt.ts";
+import { bucketInput } from "./end-user-credits.ts";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import type { HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import type { AgentConfig, Credentials, RunLimits, RunStop, ToolDefinition } from "./protocol.ts";
+import type { AgentConfig, Credentials, ToolDefinition } from "./protocol.ts";
 import { errorText, NOT_MIGRATED, PERSISTENCE_FAILED, scratchMount } from "./protocol.ts";
-import { enqueueEvents, usageCost, webhookEvent, type WebhookEvent } from "./webhooks.ts";
+import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
-import { platformUsage, usageMissing } from "./platform-pricing.ts";
 import { withCatalogPrices } from "./pi-catalog.ts";
-import { configurationRefusal, configurationUpdate, runLimitsInput, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
+import { configurationRefusal, configurationUpdate, runLimitsInput } from "./session-config.ts";
 import { outputInput, validateDefinitions } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
 import { convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import { canonical } from "../shared/durable-json.ts";
-import type { AppendLog, CommitEffect } from "../shared/append-log.ts";
+import type { CommitEffect } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
 import { FRAME_BYTES, outcomeEnding, type ClientEvent, type Outcome, type RequestMethod, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
-import { scheduleInput, type Scheduler } from "./scheduler.ts";
+import { scheduleInput } from "./scheduler.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson } from "./http.ts";
 import { rateLimitHeaders, type RateLimitState } from "./rate-limits.ts";
-import { VolumeService, type Mount } from "./volumes.ts";
+import { VolumeService } from "./volumes.ts";
 import { databaseRetryable, databaseUnavailable, transaction, type Db, type Sql } from "./db.ts";
-import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
-import type { BusyAgents } from "./busy-agents.ts";
+import { LostClaim, underClaim, type Claim } from "./ownership.ts";
 import { deleteTail } from "./log-tail.ts";
 import { OVERRIDES, type DefinitionRef } from "./definitions.ts";
-import { mcpServerView, type McpServerSpec, type Sources, type ToolSources } from "./tool-sources.ts";
+import { mcpServerView, type McpServerSpec, type Sources } from "./tool-sources.ts";
 import { builtinsInput } from "./builtins.ts";
-import { callParams, contentResult, type McpResult } from "./mcp-results.ts";
-import { CallToolResultSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import { AttachedServer } from "./attached.ts";
-import { actorInput, type AgentIdentity, type TokenClaims } from "./identity.ts";
+import { contentResult, type McpResult } from "./mcp-results.ts";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { actorInput, type AgentIdentity } from "./identity.ts";
 import { metadataInput, senderInput } from "./sender.ts";
-import { callMeta, compose, jsonResult, TOOL_DEADLINES, timedOut, toolCallKey, ToolFailure, type RunToolCall, type ToolCallCode, type ToolError, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
-import { searchTools, type Reranker, type SearchQuery } from "./tool-search.ts";
-import { CodeGate, DEFAULT_CODE_CAPACITY, type CodeLimits } from "./codemode.ts";
-import { AUDIO_LIMITS, CODE_LIMITS, TOOL_FILE_LIMITS } from "./limits.ts";
-import { ToolFiles } from "./tool-files.ts";
-import { declaredType, essence, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileLinks, type FileRef } from "./files.ts";
-import { checkedAudio, type Transcriber } from "./transcription.ts";
-import { GENERATE_IMAGE, generateImage, type Imager } from "./images.ts";
-import type { Outbound } from "./outbound.ts";
+import { compose, jsonResult, timedOut, toolCallKey, ToolFailure, type ToolCallCode, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
+import { searchTools, type SearchQuery } from "./tool-search.ts";
+import { CodeGate, DEFAULT_CODE_CAPACITY } from "./codemode.ts";
+import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileRef } from "./files.ts";
 import { fileRef } from "./inspect.ts";
-import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
-import { chunksOf, HistoryIndex, type Backlog, type HistoryPage } from "./history-pages.ts";
-import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
-import { recordBillingFailure, recordHandoff, recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
-import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } from "./telemetry.ts";
-import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "./otlp.ts";
-import { agentMessage, agentsTools, childNotice, childStatus, definitionId, delegateSettings, limitsOnly, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SEND_MESSAGE, startsChildren, SUBAGENT_EVENTS, type AgentTarget, type ChildNotice, type DelegateSettings } from "./multi-agent.ts";
+import { resolve as resolveMount, type ToolContext } from "./volume-tools.ts";
+import { chunksOf, HistoryIndex, type HistoryPage } from "./history-pages.ts";
+import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type InputRow, type Responder } from "./inputs.ts";
+import { recordBillingFailure, recordHandoff, recordStart, safeError, Steps } from "./metrics.ts";
+import { inputSpans } from "./telemetry.ts";
+import { newSpanId } from "./otlp.ts";
+import { agentMessage, agentsTools, childNotice, definitionId, delegateSettings, limitsOnly, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SEND_MESSAGE, startsChildren, type AgentTarget, type ChildNotice, type DelegateSettings } from "./multi-agent.ts";
 import { clock, random } from "./node-context.ts";
 import { always, reachable, sometimes } from "./assert.ts";
+import * as events from "./client-sessions/events.ts";
+import * as spend from "./client-sessions/spend.ts";
+import { dollars } from "./client-sessions/spend.ts";
+import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type Child, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type HistoryTail, type Session, type Carried, type ClientSessionOptions, type DefinitionConfig, type UsageRecord, type AgentRef, RUN_METHODS, MODEL_RUNS, visible, runningRun } from "./client-sessions/state.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
   owner: string;
   constructor(owner: string) { super(503, `This agent is served by another node; retry`); this.owner = owner; }
 }
-type SessionConfig = Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">;
-/** Rarely-changing session identity and configuration (a row in `agents`); rewritten only when it changes. */
-interface SessionHeader {
-  /** `expiresAt` null: the agent lives until it is deleted. `idleTtlMs`: it moves on with each run (`stillUsed`). */
-  version: 3; id: string; digest: string; expiresAt: number | null; revoked: boolean; idleTtlMs?: number;
-  /** Owning tenant. */
-  tenant: string;
-  /** How many times its token was rotated (`rotateToken`): from the first, the token is derived from this, not its key. */
-  tokenRotation?: number;
-  metadata?: AgentMetadata; definitions: ToolDefinition[]; provisionHash: string; config: SessionConfig;
-  /** Volumes the agent's file tools can reach; absent on sessions created before volumes existed. */
-  mounts?: Mount[];
-  /** A purged agent's tombstone keeps only its id, revoked (see `purge`): its other fields are gone, and nothing loads it again. */
-  purged?: true;
-  /** The definition and revision the agent was made from, or last had applied. */
-  definition?: DefinitionRef;
-  /** That revision's server-side tool sources, their secrets sealed under the definition. */
-  sources?: Sources;
-  /** Configuration the agent set itself (model, thinkingLevel), which applying its definition leaves. */
-  overrides?: string[];
-  /** Who the agent acts for, and context for its tool servers: set at creation by the tenant, never by the agent. */
-  identity?: AgentIdentity;
-  /** The key scope its model calls take keys from first (key-scopes.ts); set by the tenant, never by the agent. */
-  keyScope?: string;
-  /** The bucket of its end user's credit its runs spend from, unless a run names its own (end-user-credits.ts); set by the tenant, never by the agent. */
-  bucket?: string;
-  /**
-   * The bucket the tenant's latest run of it named (a prompt's `bucket`): the one its runs that name none (a schedule's,
-   * a sub-agent's notice, a channel's or a voice session's message) spend from, where it has no `bucket` of its own.
-   */
-  runBucket?: string;
-  /** The key it was made with (an upsert's, or a create's Idempotency-Key), shown in listings; none for one made without. */
-  key?: string;
-  /** sha256 of the application's tools as it last declared them (its tools/list as JSON): its ready event tells it, so it reconfigures only on a change. */
-  toolsHash?: string;
-  /** The agent it was forked from, and the index of the last message of that agent's history it began with (null: none). */
-  forkedFrom?: ForkedFrom;
-  /** A child its parent's delegate call made (multi-agent.ts): the parent agent, its run and call, and how deep in the chain it is. */
-  parent?: { agentId: string; runId: string; toolCallId: string; depth: number };
-  /**
-   * A stateless run's single-use session (POST /v1/runs): hidden from the agents list, its one prompt's request is the run.
-   * Once the run ends its data is kept `retentionMs`, then purged as an expired agent's is. `fingerprint`: the request
-   * that made it, so its Idempotency-Key with another request is refused.
-   */
-  run?: RunSettings;
-}
-export type RunSettings = { retentionMs: number; fingerprint: string };
-/** A stateless run's id (`run_<hex>`) for its session's (`client_<hex>`), and back: one hex, so routing finds its owner. */
-export const runIdOf = (sessionId: string) => `run_${sessionId.slice("client_".length)}`;
-export const runSessionOf = (runId: string) => /^run_[a-f0-9]{40}$/.test(runId) ? `client_${runId.slice("run_".length)}` : undefined;
-export type ForkedFrom = { agentId: string; atMessage: number | null };
+
 /**
  * An agent's own sources (one without a definition) once a configuration gives builtins, delegate or mcpServers: what it
  * leaves out stays, the delegate settings go with their builtin (delegateSettings), and its MCP servers are checked by
@@ -131,168 +75,12 @@ function ownSources(current: Sources | undefined, given: { builtins?: unknown; d
   const next: Sources = { ...rest, ...(builtins.length ? { builtins } : {}), ...(delegate ? { delegate } : {}), ...(mcpServers.length ? { mcpServers } : {}) };
   return Object.keys(next).length ? next : undefined;
 }
-/** A child a delegate call of the running run is waiting on: the agent, its request, and whether the runtime made it (a named agent it did not). */
-type Child = { agent: string; requestId: string; made: boolean; done?: boolean };
-/**
- * Upserts of request records, appended as their state changes, and ended runs whose webhook event (`run.completed` or
- * `run.failed`) is written (`announced`). Journals from before tool calls were MCP also hold call records, which are skipped.
- */
-type JournalRecord = { t: "request"; record: RequestRecord } | { t: "announced"; ids: string[] };
-/** What a run's model responses (compaction summaries included) used, for its end's webhook event. */
-type RunUsage = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number };
-type ClientEnv = { Bindings: HttpBindings & { operatorTenant?: string }; Variables: { session: Session } };
-type BufferedEvent = { id: number; bytes: number; data: ClientEvent };
-/** What a running agent's history index lacks (its transcript's backlog). */
-type HistoryTail = Pick<Backlog, "from" | "messages" | "turns">;
-type Session = {
-  header: SessionHeader;
-  /** Revision of the stored header this node last read or wrote; writes are conditional on it. */
-  revision?: number;
-  /** The header write in flight (`writeHeader`): the next waits for it, so two never race on one revision. */
-  headerWrite?: Promise<void>;
-  claim?: Claim;
-  requests: Map<string, RequestRecord>;
-  /** The requests still running, so nothing scans every retained record. */
-  running: Map<string, RequestRecord>;
-  /** The version of each file the agent last read or wrote with its file tools (volume-tools.ts `seen`), on this node. */
-  seen?: Map<string, number>;
-  log: AppendLog<JournalRecord>;
-  /** Streamed events live only in memory; durable state is recovered through /state. */
-  cursor: number; events: BufferedEvent[]; eventBytes: number;
-  /**
-   * The highest event id reserved for this owner (`reserveEvents`), and the next block's reservation while it is made.
-   * Events past the reservation wait in `held`, in order, until it is extended.
-   */
-  reserved: number; reserving?: Promise<void>; held?: ClientEvent[];
-  /** The application's connection: its event stream, which carries its attached MCP server. */
-  response?: ServerResponse; starting?: Promise<unknown>;
-  /** Read-only subscribers (`/events?watch=1`): each gets every event, and none replaces another or the application's connection. */
-  watchers: Set<ServerResponse>;
-  /** Long polls waiting for the next event. */
-  polls: Set<() => void>;
-  /** Runs this node took over at load (queued by a drain, or a turn a dead node left): handed back, not failed, if it has no room (`handBack`). */
-  inherited?: Set<string>;
-  /** Its row says it has work open (`pending_runs`), as this node last wrote it. */
-  pending?: boolean;
-  /** It holds a busy slot (BusyAgents) on this node; `admitting` runs are being accepted, and `busyStep` orders taking and giving it up. */
-  busy?: boolean; admitting?: number; busyStep?: Promise<unknown>;
-  /** Requests taken whose record is not durable yet, by id: a retry of one waits for it (see `submit`). */
-  accepting?: Map<string, Promise<void>>;
-  /** Requests whose files are being saved and transcribed, by id: a retry with the same arguments waits for the same work, so audio is transcribed (and billed) once. */
-  attaching?: Map<string, { fingerprint: string; files: Promise<(FileRef & { cost?: number })[]> }>;
-  /** Given back for a node with room to take: nothing more runs here. */
-  handedBack?: true;
-  /** Being given up because this node is leaving (`park`, `handOffAll`): nothing more runs here, and a run cut off here stays open. */
-  leaving?: true;
-  /** What the running turn is doing: calling the model, or running the tool calls of its latest response (from its events). */
-  step?: "model" | "tool";
-  /** When this node began leaving while the turn ran, and what the turn was doing then: its hand-off's `boundaryWaitMs` and step kind. */
-  handoffFrom?: { at: number; step: "model" | "tool" };
-  /** The assistant message streaming now, as its latest message_update carried it. */
-  partial?: unknown;
-  /** What each running run's model responses used so far, for its end's webhook event. */
-  usage?: Map<string, RunUsage>;
-  /** Model runs' own spend limits (a prompt's `spendLimit`), in USD, by request id, while they run. */
-  runLimits?: Map<string, number>;
-  /** Model runs' own run limits (a prompt's `runLimits`: model responses and seconds), by request id, while they run. */
-  runCaps?: Map<string, RunLimits>;
-  /** Writing the latest run's `run.started` event, which the event of its end waits for. */
-  started?: Promise<void>;
-  /** Whether the run in progress has its webhook events written: its tenant had an endpoint for them as it began. */
-  announcing?: boolean;
-  /** Tool sources that could not be listed when the agent's tools were built, for each run's outcome. */
-  sourceErrors?: { kind: string; source: string; message: string }[];
-  /** The running run's tool calls that did not complete, for its outcome. */
-  toolErrors?: ToolError[];
-  /** The running run's tool calls (the first OUTPUT_TOOL_CALLS), for its outcome. */
-  toolCalls?: RunToolCall[];
-  /** The model run in progress (prompt, continue, resume) and what its events have finished, for snapshots. */
-  turn?: { requestId: string; start?: number; messages: unknown[]; count: number; bytes: number; truncated?: boolean };
-  /** The application's attached MCP server, over the connection `response` is. */
-  attached?: AttachedServer;
-  /** Connections another replaced, kept open until the calls they have answer (see `retire`). */
-  retiring?: Set<AttachedServer>;
-  /** Tool calls to the application in flight: the agent is busy until they settle. */
-  inflight: number;
-  /** Which tool server answers each of the running agent's tools. */
-  route?: Map<string, ToolServer>;
-  /** The servers the running agent's tools were built from, and what each listed then. */
-  servers?: ToolServer[];
-  /** The mounts the running agent started with, which its prompt describes: when they change, its next run starts it again. */
-  hosted?: Mount[];
-  /** The tools its code reaches (not direct-only), which `tools.search` ranks. */
-  searchable?: ToolDefinition[];
-  /** Runs (prompt, execute, continue) execute one at a time, in the order accepted. */
-  runs: Promise<void>;
-  /** Runs that began on a lost node, queued here to resume their turn. */
-  resuming: Set<string>;
-  /** Runs marked completed whose outcome is not yet durable and published: still in flight. */
-  settling: number;
-  /** An execution began and its record may not be durable yet: `beforeEffect` makes it so, once. */
-  beginning?: { durable?: Promise<void> };
-  /** How the agent process found the interrupted turn when it started. */
-  handoff?: { continue: true } | { finished: unknown };
-  /** The journal's last turn, ended before this load (agent-host `endedTurn`): for a resumed run that never recorded its end. */
-  ended?: { requests: string[]; calls: string[]; finished: unknown };
-  fault?: Error;
-  /** A header write failed with the database unreachable, so the stored revision is unknown. */
-  unsettled?: boolean;
-  lastActive: number;
-  /** Whether the agent's current model key is the platform's, not the tenant's own. */
-  platformKey?: boolean;
-  /** Whether the tenant pays for responses on the platform's keys (prepaid): they are priced from the catalog (`billable`). */
-  catalogPriced?: boolean;
-  /** Whether a run of it falling back to the default bucket was said (`bucketOf`), since it was loaded. */
-  defaultBucketSaid?: boolean;
-  /** Its spend limit and what it has spent since it was set (`agent_spend_limits`); null when it has none, undefined until read. */
-  spend?: SpendLimit | null;
-  /** Spend counted that no journal entry has carried yet (`spent`), for the next to write (`entryEffect`). */
-  unwritten?: number;
-  /** Since when a run's active time has not been reported (`onActive`). */
-  activeSince?: number;
-  /** What the running run wrote and handed over with present_file, for its outcome. */
-  outputs?: { files: Map<string, WrittenFile>; presented: (FileRef & { caption?: string })[] };
-  /** In a `resume` run, how each answered call is run again, by tool call id. */
-  retries?: Map<string, RetryPlan>;
-  /** A channel's conversation: someone there answers the agent's inputs. */
-  channel?: boolean;
-  /** The running run's spans, when its trace is exported (telemetry.ts). */
-  spans?: RunSpans;
-  /** A compaction between runs, when its tenant exports telemetry. */
-  background?: Promise<BackgroundSpans | undefined>;
-  /** Where each of the running agent's tools comes from, for its tool calls' spans. */
-  toolSources?: Map<string, ToolSource>;
-  /** The children the running run's calls started, by call id, which its tool calls name (an abort finds them by their rows: `stopDelegates`). */
-  children?: Map<string, Child>;
-  /** A stop waiting for the delegate children it aborted to end (`stopDelegates`): a run ending meanwhile waits too, so its usage counts them. */
-  stoppingChildren?: Promise<void>;
-  /** The running run's delegate calls in flight, and those waiting for one to finish (its `maxParallel`). */
-  delegating?: { active: number; waiting: (() => void)[] };
-  /** What each running run's children spent, which its own spend limit counts. */
-  childSpend?: Map<string, number>;
-  /** What each running run's generate_image calls spent, which its own spend limit counts. */
-  imageSpend?: Map<string, number>;
-  /** What each running run's children in flight may still spend, held for them (`delegate`), and how many hold it. */
-  childHeld?: Map<string, { usd: number; holders: number }>;
-  /** Listeners on this agent's stream on this node: a parent relaying its child's events to its own (`subagent_event`). */
-  taps?: Set<(data: ClientEvent) => void>;
-  /** Runs an abort reached after they began but before the agent had them: they end without running (see `markAborted`). */
-  aborted?: Set<string>;
-  /** A resumed turn waiting for its durable backoff; an abort wakes it to settle immediately. */
-  resumeWait?: AbortController;
-  /** The spawn_agent call writing its child's row: the next waits, so the running children's count holds (`childRow`). */
-  spawning?: Promise<void>;
-  /** A background child's share of the spend limit being worked out (childShare), one at a time. */
-  sharing?: Promise<void>;
-  /** The send_message calls of each running run, by request id: at most MULTI_AGENT_LIMITS.messagesPerRun. */
-  messagesSent?: Map<string, Set<string>>;
-};
+
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value);
 const validSessionId = (value: string) => /^client_[a-f0-9]{40}$/.test(value);
 const has = (object: object, key: string) => Object.hasOwn(object, key);
-/** `resume` continues a turn that waited on human input; the runtime makes it when the last input settles. */
-const RUN_METHODS = ["prompt", "execute", "continue", "resume"];
+
 /** How far past its time limit a run may get before it is aborted, and twice this before its agent is stopped (`overrun`). */
 const RUN_OVERRUN_MS = 60_000;
 /**
@@ -306,8 +94,7 @@ const CANCELLABLE = ["prompt", "continue", "execute"];
 const CANCELLED = "Cancelled: the agent was stopped before this run began";
 /** A sub-agent's notification an abort reached before its turn: it lands without one (`stop`). */
 const STOPPED_NOTICE = { stopped: "aborted", message: "The agent was stopped: this notification is in its history, but no turn ran" };
-/** Runs that call the model; code executions do not, so spend limits leave them alone. */
-const MODEL_RUNS = ["prompt", "continue"];
+
 /** A running run's active time is reported at least this often. */
 const ACTIVE_REPORT_MS = 60_000;
 /** Resumes of one run's turn before it fails with resume_limit, so a turn that kills its node cannot loop. Hand-offs at a step boundary are not resumes. */
@@ -323,8 +110,7 @@ const RUN_START_BACKOFF_MS = 5_000;
 const transientStart = (error: unknown) => databaseRetryable(error) || databaseUnavailable(error) || (error as { status?: number }).status === 503;
 /** A run's latest hand-offs its record keeps (`handoffs`): one per deploy or drain it outlived. */
 const MAX_HANDOFFS_KEPT = 20;
-/** What a run handed off at a step boundary had gathered for its outcome, which its next owner takes over (`takeOver`). */
-type Carried = { usage?: RunUsage; childSpend?: number; imageSpend?: number; spendLimit?: number; runLimits?: RunLimits; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };
+
 /** Notified, as `<node> <agent>`, when a node gives up an agent with runs open, or ends a dead peer's heartbeat: nodes sweep at once. */
 export const ORPHANS_CHANNEL = "agent_runtime_orphans";
 /**
@@ -356,24 +142,7 @@ export function loadDecision(request: RequestRecord, maxResumes = MAX_RESUMES): 
   if (resumable(request)) return request.handedOff || (request.resumes ?? 0) < maxResumes ? "resume" : "resume_limit";
   return "uncertain";
 }
-/** Event ids an owner reserves at a time (`reserveEvents`): one write per block, made when half of it is left. */
-export const EVENT_BLOCK = 10_000;
-/**
- * An agent's stored event cursor (the `agents` row): where its last owner stopped (`last`; `clean` when nothing was
- * published after it), and the highest id any owner reserved (`reserved`). Every id published was reserved first.
- */
-export type StoredCursor = { last?: number; clean: boolean; reserved?: number };
-/**
- * The event cursor a load starts from, given the agent's stored one: where its last owner stopped cleanly, else above
- * every id reserved, so above any id an earlier owner can have published, whatever its clock said. Ids stay
- * microseconds of `now` (ms, this node's clock) where that is higher, which bounds nothing.
- */
-export function startingCursor(stored: StoredCursor | undefined, now: number) {
-  if (stored?.clean && stored.last !== undefined) return stored.last;
-  return Math.max(now * 1000, Math.max(stored?.last ?? 0, stored?.reserved ?? 0) + 1);
-}
-const storedCursor = (row: { last_cursor: number | null; cursor_clean: boolean; reserved_cursor: number | null }): StoredCursor =>
-  ({ clean: row.cursor_clean, ...row.last_cursor === null ? {} : { last: Number(row.last_cursor) }, ...row.reserved_cursor === null ? {} : { reserved: Number(row.reserved_cursor) } });
+
 /** Requests an agent may have accepted but not finished, queued runs included. */
 const MAX_OPEN_REQUESTS = 32;
 const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "steer", "configure"];
@@ -392,30 +161,16 @@ export const resumeId = (suspension: string) => `resume_${hash(suspension).slice
 /** Settled records kept for idempotent retries once the journal is folded. */
 const RETAINED_SETTLED = 256;
 const FOLD_AFTER_RECORDS = 2048;
-const MAX_BUFFERED_EVENTS = 512;
-/** Read-only subscribers (watchers and waiting polls) one agent's stream may have at once, by default; and a tenant's and a node's. */
-const MAX_WATCHERS = 32;
-const MAX_TENANT_WATCHERS = 1024;
-const MAX_NODE_WATCHERS = 4096;
+
 /** The longest a load of an agent with work left is put off (see `defer`). */
 const MAX_RESUME_DELAY_MS = 60 * 60_000;
 /** How often an idle watcher's agent is checked for an owner elsewhere, should its load's notice be missed. */
 const IDLE_CHECK_MS = 20_000;
-/** A long poll waits at most this long for an event. */
-const MAX_POLL_WAIT_MS = 25_000;
+
 /** Files written in one run that its outcome lists. */
 const OUTPUT_FILES = 100;
 const OUTPUT_TOOL_CALLS = 100;
-/** How long a tool call waits for an application to reconnect before failing as not run. */
-const RECONNECT_GRACE_MS = 3_000;
-/**
- * What the model (and the run's toolErrors) hears of a call whose server disconnected after it was sent: in words it
- * can pass on to a person, never the transport's ("MCP error -32000: Connection closed").
- */
-const CONNECTION_LOST = "The server running this tool disconnected during the call (it restarted or lost its connection), so the call may or may not have " +
-  "taken effect. Check whether it did before trying it again; if you cannot check, tell the user it is unknown whether it went through.";
-/** How long a replaced connection stays open for the tool calls it has to answer. */
-const DRAIN_MS = 30_000;
+
 /**
  * How long a node holds a child's row while it delivers the child's ending, before another may: two sweeps. A node lost
  * mid-delivery delays the notification by that much; one slower than it is joined by another node's delivery, which the
@@ -429,72 +184,11 @@ const CHILD_START_GRACE_MS = 120_000;
 /** How long a stop waits for the delegate children it aborted to end (`stopDelegates`) before it answers without them. */
 const STOP_CHILDREN_MS = 10_000;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-/** The most a snapshot's finished messages take; beyond it, a subscriber reads the turn from history. */
-const TURN_SNAPSHOT_BYTES = 1_000_000;
-/**
- * A message_update as its delta: Pi's event without the message it updates, which it carries on every
- * token (as `message`, as the delta's `partial`, and as done's `message` or error's `error`, which
- * message_end carries next). A client folds the message from its message_start and the deltas since;
- * a toolcall_start names its call (`id`, `name`), which only the message did.
- */
+
 /** A finished run's reply text, if it has one. */
 function replyText(record: RequestRecord) {
   const reply = (record.outcome?.result as { reply?: unknown } | undefined)?.reply;
   return typeof reply === "string" ? reply : "";
-}
-function deltaOf(event: any) {
-  const { partial, message: _done, error: _error, ...delta } = event.assistantMessageEvent ?? {};
-  // A tool call's id and name are only in the message at its start: they come along, as fields of their own.
-  if (delta.type === "toolcall_start") {
-    const call = partial?.content?.[delta.contentIndex];
-    if (call?.type === "toolCall") Object.assign(delta, { id: call.id, name: call.name });
-  }
-  return { type: "message_update", assistantMessageEvent: delta };
-}
-/** Tool progress published per call at most this often. */
-const PROGRESS_MS = 250;
-/**
- * `publish` at most once per PROGRESS_MS, trailing: an update within the window replaces the one
- * waiting, which is published when the window ends. `onFlush` gets a function publishing the
- * waiting one now (before the call's result), after which nothing more is published.
- */
-function throttled<T>(publish: (value: T) => void, onFlush: (flush: () => void) => void) {
-  let last = 0, waiting: { value: T } | undefined, timer: ReturnType<typeof setTimeout> | undefined, done = false;
-  const release = () => { timer = undefined; if (waiting) { const { value } = waiting; waiting = undefined; last = Date.now(); publish(value); } };
-  onFlush(() => { clearTimeout(timer); release(); done = true; });
-  return (value: T) => {
-    if (done) return;
-    const wait = last + PROGRESS_MS - Date.now();
-    if (wait <= 0 && !timer) { last = Date.now(); publish(value); return; }
-    waiting = { value };
-    timer ??= setTimeout(release, Math.max(0, wait));
-  };
-}
-/**
- * Who reads a stream other than its tenant or its agent's own application: a browser token's holder,
- * who sees each frame as `show` makes it (undefined: not at all), until `until` (ms), when it ends.
- */
-export type StreamReader = { show(data: ClientEvent | TurnSnapshot): unknown; until: number };
-const readers = new WeakMap<ServerResponse, StreamReader>();
-/** Streams that asked for the agent's children's events (`?subagents=1`); the others never get them. */
-const subagentReaders = new WeakSet<ServerResponse>();
-const isSubagent = (data: ClientEvent | TurnSnapshot) => data.type === "event" && SUBAGENT_EVENTS.includes(data.event?.type);
-/** Whether a request's client has gone: its connection closed before the response was written. */
-const gone = (c: Context<ClientEnv>) => c.env.incoming.destroyed || c.env.outgoing.destroyed || !!c.env.outgoing.socket?.destroyed;
-/**
- * Why the runtime closes an event stream on purpose: its node is leaving (`drain`: a deploy, a scale-in) or the agent is
- * served elsewhere now (`moved`). The stream's last frame says so (`reconnectFrame`), so the subscriber reconnects at
- * once, with Last-Event-ID, instead of backing off as after a failure.
- */
-export type ReconnectReason = "drain" | "moved";
-/** The last frame of a stream closed on purpose: no `id` (it is no event, and moves no cursor), and `retry: 0` for EventSource. */
-export const reconnectFrame = (reason: ReconnectReason) => `event: reconnect\nretry: 0\ndata: ${JSON.stringify({ type: "reconnect", reason, retryMs: 0 })}\n\n`;
-
-/** Write an SSE frame, cutting off a subscriber that does not keep up. */
-function send(res: ServerResponse, frame: string) {
-  if (res.destroyed) return;
-  if (res.writableLength + Buffer.byteLength(frame) > 2 * FRAME_BYTES) res.destroy();
-  else res.write(frame);
 }
 
 /**
@@ -514,224 +208,6 @@ const validNotice = (value: any) => !!value && typeof value === "object" && valu
 const scopeAfter = (header: SessionHeader, update: { keyScope?: unknown }) => Object.hasOwn(update, "keyScope") ? update.keyScope as string | null : header.keyScope;
 
 /**
- * A request as callers see it: queued parameters stay internal, and an ended one's error, early stop and `status` are on
- * top. `state` says only whether it ended; `status` how, as the SDKs' runs say it: completed, input_required or failed.
- */
-const visible = ({ params: _params, announce: _announce, handedOff: _handedOff, carried: _carried, notice: _notice, landOnly: _landOnly, ...record }: RequestRecord): RequestRecord => {
-  if (record.state !== "completed") return record;
-  const ending = outcomeEnding(record.outcome);
-  const status = ending.error !== undefined || ending.stopped === "spend_limit" || ending.stopped === "turn_limit" || ending.stopped === "agent_loop_limit" ? "failed" : ending.stopped === "input_required" ? "input_required" : "completed";
-  return { ...record, ...ending, status };
-};
-
-/**
- * How a limit's refusal of a run (a 402 of `runLimit`) ends it, said as a stop at that limit mid-run is: so a run refused
- * as it left the queue, one stopped between steps and a notification's turn refused as it landed all carry the same
- * `code` and fields. End-user credit: `end_user_credit`, with why (`reason`), whose (`endUser`) and which `bucket`; the
- * agent's or the tenant's spend limit, or the tenant's spent credit: `spend_limit`, with which (`limit`). Undefined: not
- * a limit's refusal.
- */
-export function refusalStop(error: unknown): (Omit<RunStop, "message" | "stopped"> & { stopped: "spend_limit"; code: string }) | undefined {
-  if (!(error instanceof HttpError) || error.status !== 402) return undefined;
-  if (error.code === "END_USER_CREDIT") {
-    const { reason, bucket, endUser } = error.details ?? {};
-    return { stopped: "spend_limit", code: END_USER_CREDIT, limit: "end_user", ...(typeof reason === "string" ? { reason } : {}), ...(typeof bucket === "string" ? { bucket } : {}), ...(typeof endUser === "string" ? { endUser } : {}) };
-  }
-  const limit = (error as { stopLimit?: RunStop["limit"] }).stopLimit;
-  if (error.code === "SPEND_LIMIT") return { stopped: "spend_limit", code: "spend_limit", ...(limit ? { limit } : {}) };
-  if (error.code === "INSUFFICIENT_CREDIT") return { stopped: "spend_limit", code: "spend_limit", limit: "credit" };
-  return undefined;
-}
-
-export interface ClientSessionOptions {
-  secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
-  /** Event ids reserved at a time (default EVENT_BLOCK); tests set fewer, to reserve often. */
-  eventBlock?: number;
-  /** Said after a run's `model_key_missing` error: where else this runtime takes keys (a self-host's environment). */
-  modelKeyHint?: string;
-  /** The most a snapshot takes, one frame (default FRAME_BYTES); tests make it small. */
-  snapshotBytes?: number;
-  /** Read-only subscribers (watchers and waiting polls) one agent's event stream may have at once (default 32), a tenant's agents on this node (1024), and this node (4096). */
-  maxWatchers?: number; maxTenantWatchers?: number; maxNodeWatchers?: number;
-  /** How often nodes sweep for agents with work left (`resumeOrphans`): the unit of a failed load's backoff. */
-  orphanSweepMs?: number;
-  maxResumes?: number;
-  /** A tenant's own bound on its read-only subscribers on this node, instead of `maxTenantWatchers`; read at each subscribe. */
-  watcherLimitFor?: (tenant: string) => number | undefined;
-  /** Headers and the tenant index. */
-  db: Db;
-  /** Single-host shorthand for `storage: fileStorage(root)`, where journals are kept. */
-  root?: string;
-  storage?: Storage;
-  /** Key prefix for journals within `storage`. */
-  prefix?: string;
-  /** With ownership, each agent is served by one node at a time. */
-  ownership?: Ownership;
-  /**
-   * The provider key an agent uses, resolved per tenant at process start; never persisted. `platform` keys are not the tenant's own.
-   * With a key scope, or on the tenant's own provider, it is `SCOPE_KEY`, and each call resolves through `scopedKey`.
-   */
-  apiKeyFor?: (tenant: string, provider: string, keyScope?: string) => Promise<ProviderKey | string | undefined> | ProviderKey | string | undefined;
-  /**
-   * One model call's credentials for an agent with a key scope, or on the tenant's own provider: the scope's entry, else
-   * the provider's own, else the tenant's key, else (prepaid) the platform's.
-   */
-  /** Whether `tenant` pays for responses on the platform's keys, priced from the catalog; an unbilled tenant's are as reported. */
-  catalogPriced?: (tenant: string) => Promise<boolean>;
-  scopedKey?: (tenant: string, keyScope: string | undefined, provider: string) => Promise<(Credentials & { platform: boolean }) | undefined>;
-  /** The tenant's own model endpoints (tenants file), which its agents' models may name. */
-  modelEndpoints?: (tenant: string) => ModelEndpoints;
-  /** The tenant's own OpenAI-compatible providers (model-providers.ts), which its agents' models may name. */
-  /** The custom providers an agent of `tenant` in `keyScope` resolves models from (the scope's, then the tenant's). */
-  customProviders?: (tenant: string, keyScope?: string | null) => Promise<CustomProviders>;
-  /** An identity token for `audience` (the runtime's signer), for model calls to a tenant's own endpoint. */
-  modelToken?: (audience: string, claims: TokenClaims) => Promise<string>;
-  /** At most this many hosted agents per tenant at once on this node, for a tenant `agentLimitFor` gives none (default: no per-tenant limit). */
-  maxAgentsPerTenant?: number;
-  /** A tenant's own limit, overriding `maxAgentsPerTenant`; read at each start, so changes apply to the next one. */
-  agentLimitFor?: (tenant: string) => Promise<number | undefined> | number | undefined;
-  /** Busy agents per tenant across the fleet: a run takes a slot, and a tenant at its limit gets 429 BUSY_AGENT_LIMIT. */
-  busyAgents?: BusyAgents;
-  /** Stop an agent's process, and unload its session, after this long without activity. */
-  idleMs?: number;
-  retry?: AgentConfig["retry"];
-  /** How long a model request may go quiet before it fails as stalled (model-stream.ts); an agent's runLimits may set its own. */
-  streamTimeouts?: AgentConfig["streamTimeouts"];
-  /** How far past its time limit a run may get before it is aborted (twice this: its agent stopped); RUN_OVERRUN_MS by default. */
-  runOverrunMs?: number;
-  /** Durable wake-ups for agents (`/clients/:id/schedules`). */
-  scheduler?: Scheduler;
-  /**
-   * Why a tenant may not spend more on models (a reached monthly cap). Checked when a model run is
-   * accepted (402), when it starts, and after each model response in a turn that would continue.
-   */
-  spendLimit?: (tenant: string) => Promise<Refusal | undefined>;
-  /**
-   * The most one run of a tenant's agents may take, whatever its agent asks (`runLimits`): model responses (compaction
-   * summaries count) and seconds from when it began; Infinity for no limit. Default 1,000 responses and 2 hours (`RUN_LIMITS`).
-   */
-  runLimitsFor?: (tenant: string) => Promise<Required<Pick<RunLimits, "maxResponses" | "maxSeconds">>>;
-  /** A tenant's js_exec limits: CPU per execution, the longest timeoutMs, and executions at once on this node. Default `CODE_LIMITS`. */
-  codeLimitsFor?: (tenant: string) => Promise<CodeLimits>;
-  /** js_exec executions this node runs at once for tenants with a concurrency limit, together (AGENT_CODE_WORKERS_MAX, default 16). */
-  codeCapacity?: number;
-  /** Why a tenant may not start any run, code executions included (spent prepaid credit). Checked when a run is accepted and when it starts. */
-  creditLimit?: (tenant: string) => Promise<Refusal | undefined>;
-  /**
-   * Count a run the tenant starts against its rate limit; throws (429) past it. Checked when a run is accepted, not for
-   * retries. Where the tenant then stands (X-RateLimit-* on the answer), when a limit applies.
-   */
-  runRate?: (tenant: string) => Promise<RateLimitState | undefined | void>;
-  /** Durable accounting acknowledgment before each provider dispatch and terminal response (and its end user's hold, as it streams). */
-  modelAttempt?: (tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: Parameters<ModelAttemptHook>[0]) => Promise<boolean | AttemptAck>;
-  /**
-   * The tenant's own users' credit (end-user-credits.ts): runs of an agent with a subject spend their end user's, in the
-   * run's bucket. Its model calls hold and settle through `modelAttempt`; audio and images hold here; runs are refused
-   * (402 END_USER_CREDIT) and turns stopped at a step boundary when the end user has nothing left.
-   */
-  endUsers?: EndUserCredits;
-  /** Called with each finished assistant message that reports token usage, and each compaction summary's. */
-  onUsage?: (tenant: string, agentId: string, message: UsageRecord) => void;
-  /** Whether the tenant has a webhook endpoint for run events; without it, runs write none. */
-  runEvents?: (tenant: string) => Promise<boolean>;
-  /** Called with time an agent spent in runs (model calls and tool execution), at least every minute while one runs. */
-  onActive?: (tenant: string, agentId: string, ms: number) => void;
-  hooks?: SessionHooks;
-  /** Volumes: new agents get mounts (a workspace by default) and file tools over them. */
-  volumes?: VolumeService;
-  /** Transcribes audio attached to messages (transcription.ts); without it, audio is attached as any file is. */
-  transcriber?: Transcriber;
-  /** Makes images for the generate_image builtin (images.ts); without it, the builtin has no tool. */
-  imager?: Imager;
-  /** Fetches files attached by URL ({url}): the public internet only. Without it, files cannot be attached by URL. */
-  outbound?: Outbound;
-  /** Signs links to the agent's files (`POST /clients/:id/links`, `present_file`). */
-  links?: FileLinks;
-  /** A definition's current configuration, to apply to an agent made from it (`configure` with `definition`). */
-  definitionFor?: (tenant: string, id: string) => Promise<DefinitionConfig>;
-  /** Tools the runtime calls itself (MCP servers), from the agent's definition. */
-  sources?: ToolSources;
-  /** Stages that order `tools.search` results by meaning, fused with keyword ranking (AGENT_TOOL_SEARCH). */
-  rerankers?: Reranker[];
-  /** Human input (questions, approvals, setup steps) that suspended turns wait on; without it, tools cannot ask. */
-  inputs?: Inputs;
-  /** Trace export: runs of a tenant that has it set record their spans here. */
-  tracing?: Tracing;
-  /** Submit a request to an agent on whichever node serves it (resuming a suspension that expired). */
-  submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
-  /**
-   * Make an agent for the delegate builtin, as POST /v1/agents does with `params` and `key`, linked to the run that made it
-   * (`parent`). Without it, agents cannot delegate.
-   */
-  createAgent?: (tenant: string, params: Record<string, unknown>, key: string, parent: NonNullable<SessionHeader["parent"]>) => Promise<{ id: string }>;
-  /** Delete a tenant's agent on whichever node serves it: a deleted parent's children the runtime made. */
-  deleteAgent?: (agent: string, tenant: string) => Promise<unknown>;
-  /** One of an agent's requests on whichever node serves it, once it settles or `waitMs` passes (see `awaitRequest`). */
-  requestAnywhere?: (agent: string, tenant: string, requestId: string, waitMs: number, signal?: AbortSignal) => Promise<RequestRecord | undefined>;
-  /** How often to sweep for children's endings not delivered (`sweepChildren`); MULTI_AGENT_LIMITS.sweepMs by default. */
-  childSweepMs?: number;
-  /** Turns sub-agent notifications may start per chain root and hour; MULTI_AGENT_LIMITS.wakesPerHour by default. */
-  wakesPerHour?: number;
-}
-/** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
-export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "codeMode" | "runLimits" | "maxOutputTokens" | "temperature" | "dataCollection">; sources?: Sources; description?: string };
-/** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
-/**
- * A model response's usage, a web tool's call (`searches`: web searches, `renders`: pages web_fetch had
- * rendered), tool search's ranking by meaning (`toolSearch`: `toolSearches` searches, none for
- * embedding a catalog ahead of them), audio transcribed (kind `transcription`: `audioSeconds` of it), or
- * images made (kind `image`: `images` of them, their tokens in `usage`), with its cost in `usage.cost.total`.
- */
-export type UsageRecord = {
-  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription" | "image" | "speech"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
-  transcriptions?: number; audioSeconds?: number; images?: number; speeches?: number;
-  /** Already persisted beside a Pi journal response. */
-  durableReceipt?: boolean;
-  /** For a model response: the run it was in, who acted in it, whom the agent acts for, and its key scope (for usage webhooks). */
-  requestId?: string; actor?: string; identity?: AgentIdentity; keyScope?: string;
-};
-/** Why runs are refused: a message (402), or an error with its own status. */
-export type Refusal = string | HttpError;
-/** An agent's spend limit (USD), what it has spent since, and when it was set. */
-type SpendLimit = { usd: number; spent: number; setAt: number };
-/** `spendLimit` as given: `{usd}`, or null to remove it. */
-export function spendInput(value: unknown): number | null {
-  if (value === null) return null;
-  const usd = (value as { usd?: unknown } | undefined)?.usd;
-  if (!value || typeof value !== "object" || Object.keys(value).some(key => key !== "usd") || typeof usd !== "number" || !Number.isFinite(usd) || usd < 0 || usd > 1_000_000) {
-    throw new HttpError(400, "spendLimit must be {usd} with usd a number from 0 to 1000000, or null");
-  }
-  return usd;
-}
-/** How long an end user's charge for a tool call (`endUserCharge`) is retried through a database outage. */
-const END_USER_CHARGE_RETRY_MS = 5 * 60_000;
-const dollars = (usd: number) => `$${Number(usd.toFixed(6))}`;
-/** The runtime's default maximums for one run, which an agent's own `runLimits` may lower (ClientSessionsOptions.runLimitsFor). */
-export const RUN_LIMITS: Readonly<Required<Pick<RunLimits, "maxResponses" | "maxSeconds">>> = Object.freeze({ maxResponses: 1_000, maxSeconds: 2 * 3_600 });
-const duration = (seconds: number) => {
-  const [count, unit] = seconds % 3_600 === 0 ? [seconds / 3_600, "hour"] : seconds % 60 === 0 ? [seconds / 60, "minute"] : [seconds, "second"];
-  return `${count} ${unit}${count === 1 ? "" : "s"}`;
-};
-/** A model response's cost as the runtime counts it. */
-const responseCost = (usage: any) => usageCost(usage).usd;
-/** A model response that is billed, and counted against spend limits: one the provider completed, with usage. */
-const billed = (message: any) => message?.role === "assistant" && !!message.usage && (message.stopReason !== "error" || !!message.usage.billingAttemptId);
-/** A provider key and whether it is the platform's rather than the tenant's own. */
-export type ProviderKey = { key: string; platform: boolean };
-/** An agent, and this node's claim on it: hooks write what the agent owns under it. */
-export type AgentRef = { id: string; tenant: string; claim?: Claim };
-/** Runtime features layered on agents (channels): they observe runs and may answer tools themselves. */
-export interface SessionHooks {
-  runStarted?(agent: AgentRef, record: RequestRecord): void;
-  /** After the run's outcome is durable, on the node that ran it. */
-  runEnded?(agent: AgentRef, record: RequestRecord): void;
-  /** Tools the feature answers for the agent (a channel's send_message); they take precedence over all others. */
-  server?(agent: AgentRef): Promise<ToolServer | undefined>;
-  /** Where a run's turn came from, passed to every tool it calls (as `_meta` to MCP servers). */
-  origin?(agent: AgentRef, requestId?: string): Promise<Record<string, unknown> | undefined>;
-}
-
-/**
  * SSE carries streamed events; POST mutations use persistent request/call IDs.
  * Sessions load lazily and unload when idle, so only active agents use memory.
  */
@@ -749,6 +225,8 @@ export class ClientSessions {
   readonly historyIndex: HistoryIndex;
   /** Turns to run js_exec on this node, shared fairly among tenants. */
   readonly codeGate: CodeGate;
+  private readonly eventContext: events.EventContext;
+  private readonly spendContext: spend.SpendContext;
   private closed = false;
   /** Set while the node drains or retires: runs that have not begun stay queued for the next owner. */
   draining = false;
@@ -768,8 +246,22 @@ export class ClientSessions {
     this.supervisor = supervisor;
     this.options = options;
     this.db = options.db;
+    this.eventContext = {
+      options, db: this.db, sessions: this.sessions, idle: this.idle,
+      state: { watching: 0, tenantWatching: new Map(), watches: new WeakMap() },
+      isClosed: () => this.closed, isLoading: id => this.loading.has(id), load: id => this.load(id),
+      publish: (session, data) => this.publish(session, data), replay: (session, raw, snapshot) => this.replay(session, raw, snapshot),
+      idleCursor: id => this.idleCursor(id),
+    };
     this.storage = options.storage ?? fileStorage(options.root!);
     this.historyIndex = new HistoryIndex(this.db, this.storage);
+    this.spendContext = {
+      options, db: this.db, supervisor, sessions: this.sessions, historyIndex: this.historyIndex,
+      apiKey: (session, provider, keyScope) => this.apiKey(session, provider, keyScope),
+      counted: (session, cost) => this.counted(session, cost), spent: (session, cost) => this.spent(session, cost),
+      agentSpendLimit: session => this.agentSpendLimit(session), toolContext: session => this.toolContext(session),
+      spendOf: session => this.spendOf(session), spendWrite: (session, cost) => this.spendWrite(session, cost),
+    };
     this.codeGate = new CodeGate(options.codeCapacity ?? DEFAULT_CODE_CAPACITY);
     this.heartbeat = setInterval(() => this.tick(), Math.min(5000, Math.max(50, Math.floor((options.idleMs ?? 5 * 60_000) / 2))));
     this.heartbeat.unref();
@@ -889,7 +381,7 @@ export class ClientSessions {
     // turn it left open is settled in its journal first, as the agent's next start would, so the run is never seen to
     // end before its turn has (a fork, a history page). A failed write fails the load, which leaves the run to the next.
     if (decisions.some(({ request, decision }) => (decision === "aborted" || decision === "uncertain" || decision === "resume_limit") && resumable(request)) && !decisions.some(({ decision }) => decision === "resume")) {
-      await this.closeTurn(session);
+      await spend.closeTurn(this.spendContext, session);
     }
     for (const { request, decision } of decisions) {
       if (decision === "queued") queued.push(request);
@@ -912,7 +404,7 @@ export class ClientSessions {
     if (claim && !this.options.ownership!.holds(claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
     if (this.closed) throw new HttpError(503, "This node is stopping; retry");
     this.sessions.set(id, session);
-    this.loaded(session);
+    events.loaded(this.eventContext, session);
     for (const record of ended) {
       this.publish(session, { type: "response", id: record.id, outcome: record.outcome! });
       if (RUN_METHODS.includes(record.method)) {
@@ -974,7 +466,7 @@ export class ClientSessions {
   private countBilling(session: Session, record: RequestRecord) {
     const failure = record.outcome?.result as { error?: unknown; stopped?: string; modelError?: { errorClass?: string } } | undefined;
     if (failure?.modelError?.errorClass !== "billing" || !failure.error || failure.stopped) return;
-    const keyOwner = this.endpoint(session) ? "endpoint" : session.platformKey ? "platform" : "tenant";
+    const keyOwner = spend.endpoint(this.spendContext, session) ? "endpoint" : session.platformKey ? "platform" : "tenant";
     recordBillingFailure({ tenant: session.header.tenant, keyOwner, provider: session.header.config.model.provider });
   }
 
@@ -1065,8 +557,8 @@ export class ClientSessions {
     const text = errorText(error);
     session.resumeWait?.abort();
     session.fault = new HttpError(503, text.startsWith(PERSISTENCE_FAILED) ? text : `${PERSISTENCE_FAILED}: ${text}`);
-    this.endStreams(session, true);
-    this.closeAttached(session);
+    events.endStreams(session, true);
+    events.closeAttached(session);
     if (store) this.releaseFaulted(session, store, error);
   }
 
@@ -1108,15 +600,15 @@ export class ClientSessions {
     // Past the ids reserved, events wait for the next block, and any after them with them, so they keep their order.
     if (session.held || session.cursor >= session.reserved) {
       (session.held ??= []).push(data);
-      this.reserveEvents(session);
+      events.reserveEvents(this.eventContext, session);
       return;
     }
-    if (data.type === "event" && (session.spans || this.options.tracing)) this.traceEvent(session, data.requestId, data.event);
-    const nested = isSubagent(data);
+    if (data.type === "event" && (session.spans || this.options.tracing)) events.traceEvent(this.eventContext, session, data.requestId, data.event);
+    const nested = events.isSubagent(data);
     // A message_update is its delta alone; the runtime keeps the latest message it updates, for snapshots.
     if (data.type === "event") {
       const inner = data.event;
-      if (inner?.type === "message_update") { session.partial = inner.message; data = { ...data, event: deltaOf(inner) }; }
+      if (inner?.type === "message_update") { session.partial = inner.message; data = { ...data, event: events.deltaOf(inner) }; }
       else if (inner?.type === "message_start" && inner.message?.role === "assistant") session.partial = inner.message;
       else if (inner?.type === "message_end") session.partial = undefined;
     }
@@ -1132,89 +624,28 @@ export class ClientSessions {
       text = JSON.stringify(data);
     }
     const event: BufferedEvent = { id: ++session.cursor, bytes: Buffer.byteLength(text), data };
-    if (session.reserved - session.cursor <= this.eventBlock / 2) this.reserveEvents(session);
+    if (session.reserved - session.cursor <= this.eventBlock / 2) events.reserveEvents(this.eventContext, session);
     session.events.push(event);
     session.eventBytes += event.bytes;
     session.lastActive = Date.now();
     const limit = this.options.eventBytes ?? 2 * 1024 * 1024;
-    while (session.events.length > 1 && (session.events.length > MAX_BUFFERED_EVENTS || session.eventBytes > limit)) session.eventBytes -= session.events.shift()!.bytes;
-    this.follow(session, sent, text, oversized);
+    while (session.events.length > 1 && (session.events.length > events.MAX_BUFFERED_EVENTS || session.eventBytes > limit)) session.eventBytes -= session.events.shift()!.bytes;
+    events.follow(session, sent, text, oversized);
     const frame = `id: ${event.id}\ndata: ${text}\n\n`;
-    for (const res of this.streams(session)) {
-      if (nested && !subagentReaders.has(res)) continue;
-      const reader = readers.get(res);
-      if (!reader) { send(res, frame); continue; }
+    for (const res of events.streams(session)) {
+      if (nested && !events.subagentReaders.has(res)) continue;
+      const reader = events.readers.get(res);
+      if (!reader) { events.send(res, frame); continue; }
       const shown = reader.show(data);
-      if (shown !== undefined) send(res, shown === data ? frame : `id: ${event.id}\ndata: ${JSON.stringify(shown)}\n\n`);
+      if (shown !== undefined) events.send(res, shown === data ? frame : `id: ${event.id}\ndata: ${JSON.stringify(shown)}\n\n`);
     }
     for (const wake of [...session.polls]) wake();
     for (const tap of session.taps ?? []) tap(sent);
   }
 
-  /** Keep the running turn as its events fold, for snapshots: the messages its run finished, from the run's start to its response. */
-  private follow(session: Session, data: ClientEvent, text: string, oversized: boolean) {
-    const turn = session.turn;
-    if (!turn) return;
-    if (data.type === "response" && data.id === turn.requestId) { session.turn = undefined; session.partial = undefined; return; }
-    if (data.type !== "event" || data.requestId !== turn.requestId) return;
-    const type = data.event?.type;
-    if (type === "turn_opened") turn.start ??= data.event.index;
-    // A response taken back (a retry, or a compaction on overflow) gives up its place, as it does for a subscriber folding the stream.
-    if (type === "message_retracted" && turn.count) {
-      turn.count--;
-      if (!turn.truncated) turn.messages.pop();
-    }
-    if (type !== "message_end") return;
-    // How many messages the run finished, whether or not the snapshot can carry them.
-    turn.count++;
-    turn.bytes += oversized ? FRAME_BYTES : text.length;
-    // A snapshot is one frame: a turn too large for one is read from history instead.
-    if (turn.truncated || turn.bytes > TURN_SNAPSHOT_BYTES) { turn.truncated = true; turn.messages = []; }
-    else turn.messages.push(data.event.message);
-  }
-
-  /** The running turn as of the latest event, for a subscriber that asked for one and has nothing to replay from. */
-  private turnSnapshot(session: Session): TurnSnapshot {
-    const turn = session.turn;
-    const snapshot: TurnSnapshot = { type: "snapshot", cursor: session.cursor, requestId: turn?.requestId ?? null, turn: turn ? {
-      start: turn.start ?? null, count: turn.count, messages: turn.messages, partial: session.partial ?? null, ...(turn.truncated ? { truncated: true as const } : {}),
-    } : null };
-    // Too large for one frame: the finished messages go first (they are in history), then the streaming message.
-    const frame = this.options.snapshotBytes ?? FRAME_BYTES;
-    if (snapshot.turn && Buffer.byteLength(JSON.stringify(snapshot)) > frame) snapshot.turn = { ...snapshot.turn, messages: [], truncated: true };
-    if (snapshot.turn && Buffer.byteLength(JSON.stringify(snapshot)) > frame) snapshot.turn = { ...snapshot.turn, partial: null };
-    return snapshot;
-  }
-
-  /**
-   * Take a read-only subscriber's place (a watcher's, or a waiting poll's), within the agent's, its tenant's and
-   * this node's bounds (429 past them); the function returned gives it back, once.
-   */
-  private hold(tenant: string, subscribers: number) {
-    const reject = (scope: "agent" | "tenant" | "node") => {
-      recordWatchRefused(scope, tenant);
-      return new HttpError(429, `This ${scope} has too many event stream subscribers; retry later`);
-    };
-    if (subscribers >= (this.options.maxWatchers ?? MAX_WATCHERS)) throw reject("agent");
-    if ((this.tenantWatching.get(tenant) ?? 0) >= (this.options.watcherLimitFor?.(tenant) ?? this.options.maxTenantWatchers ?? MAX_TENANT_WATCHERS)) throw reject("tenant");
-    if (this.watching >= (this.options.maxNodeWatchers ?? MAX_NODE_WATCHERS)) throw reject("node");
-    this.watching++;
-    this.tenantWatching.set(tenant, (this.tenantWatching.get(tenant) ?? 0) + 1);
-    let held = true;
-    return () => {
-      if (!held) return;
-      held = false;
-      this.watching--;
-      const left = this.tenantWatching.get(tenant)! - 1;
-      if (left) this.tenantWatching.set(tenant, left); else this.tenantWatching.delete(tenant);
-    };
-  }
-  private watching = 0;
   /** Event stream subscribers held on this node (a metric: node_load). */
-  get watchers() { return this.watching; }
-  private readonly tenantWatching = new Map<string, number>();
-  /** Each watcher's agent, and its place (given back when it closes) and token expiry. */
-  private readonly watches = new WeakMap<ServerResponse, { agent: string; release: () => void; expiry?: ReturnType<typeof setTimeout> }>();
+  get watchers() { return this.eventContext.state.watching; }
+
   /**
    * Watchers and waiting polls of agents no node has loaded: they hold a socket and a place, and no
    * session, claim or journal read. The agent's next load takes them up (here) or ends them (elsewhere,
@@ -1222,20 +653,7 @@ export class ClientSessions {
    */
   private readonly idle = new Map<string, { tenant: string; watchers: Set<ServerResponse>; polls: Set<() => void>; checked: number }>();
 
-  /** A watcher closed: out of its agent's session or idle entry, and its place given back. */
-  private unwatch(res: ServerResponse) {
-    const watch = this.watches.get(res);
-    if (!watch) return;
-    this.watches.delete(res);
-    this.sessions.get(watch.agent)?.watchers.delete(res);
-    const entry = this.idle.get(watch.agent);
-    entry?.watchers.delete(res);
-    if (entry && !entry.watchers.size && !entry.polls.size) this.idle.delete(watch.agent);
-    clearTimeout(watch.expiry);
-    watch.release();
-  }
-
-  private get eventBlock() { return this.options.eventBlock ?? EVENT_BLOCK; }
+  private get eventBlock() { return this.options.eventBlock ?? events.EVENT_BLOCK; }
 
   /**
    * The cursor a loaded session starts from (`startingCursor`): where its last owner stopped cleanly
@@ -1246,32 +664,10 @@ export class ClientSessions {
   private async startCursor(id: string, claim: Claim | undefined): Promise<{ cursor: number; reserved: number }> {
     return underClaim(this.db, claim, async sql => {
       const row = (await sql.query("select last_cursor, cursor_clean, reserved_cursor from agents where id = $1 for update", [id])).rows[0];
-      const cursor = startingCursor(row && storedCursor(row), Date.now());
+      const cursor = events.startingCursor(row && events.storedCursor(row), Date.now());
       const reserved = Math.max(cursor + this.eventBlock, Number(row?.reserved_cursor ?? 0));
       await sql.query("update agents set cursor_clean = false, reserved_cursor = $2 where id = $1", [id, reserved]);
       return { cursor, reserved };
-    });
-  }
-
-  /**
-   * Reserve the next block of event ids, under the claim: the next owner starts above it. Begun when half
-   * the reserved ids are left, so events wait on it (`held`) only when a block runs out first. A node that
-   * lost the claim reserves nothing more, so it publishes no id past what it reserved.
-   */
-  private reserveEvents(session: Session) {
-    if (session.reserving || session.fault || this.closed) return;
-    const id = session.header.id, through = session.cursor + this.eventBlock;
-    session.reserving = underClaim(this.db, session.claim, sql => sql.query("update agents set reserved_cursor = greatest(coalesce(reserved_cursor, 0), $2) where id = $1", [id, through])).then(() => {
-      session.reserving = undefined;
-      session.reserved = Math.max(session.reserved, through);
-      const held = session.held ?? [];
-      session.held = undefined;
-      for (const data of held) this.publish(session, data);
-    }, error => {
-      session.reserving = undefined;
-      if (error instanceof LostClaim) return;
-      console.error(JSON.stringify({ type: "event_reserve_failed", agent: id, error: safeError(error) }));
-      if (session.held) setTimeout(() => this.reserveEvents(session), 1_000).unref();
     });
   }
 
@@ -1294,126 +690,13 @@ export class ClientSessions {
     return again?.cursor_clean && again.last_cursor !== null ? Number(again.last_cursor) : undefined;
   }
 
-  /** A session loaded here: it takes up its idle watchers and polls, and other nodes end theirs (they reconnect here). */
-  private loaded(session: Session) {
-    const id = session.header.id;
-    const entry = this.idle.get(id);
-    if (entry) {
-      this.idle.delete(id);
-      for (const res of entry.watchers) session.watchers.add(res);
-      for (const wake of [...entry.polls]) wake();
-    }
-    const node = this.options.ownership?.node;
-    if (node) void this.db.query("select pg_notify('agent_runtime_loaded', $1)", [`${node} ${id}`]).catch(() => {});
-  }
-
   /** Another node loaded an agent (or this one is leaving): end the idle watchers and polls this node holds for it, so they reconnect to it. */
-  loadedElsewhere(id: string, reason: ReconnectReason = "moved") {
+  loadedElsewhere(id: string, reason: events.ReconnectReason = "moved") {
     const entry = this.idle.get(id);
     if (!entry) return;
     this.idle.delete(id);
-    for (const res of entry.watchers) if (!res.destroyed) res.end(reconnectFrame(reason));
+    for (const res of entry.watchers) if (!res.destroyed) res.end(events.reconnectFrame(reason));
     for (const wake of [...entry.polls]) wake();
-  }
-
-  /**
-   * A watcher or poll of an agent: on its session when loaded here (or loading), else registered idle,
-   * without loading it. `header` is the agent's, already authorized.
-   */
-  private async watchAgent(c: Context<ClientEnv>, header: SessionHeader, kind: "watch" | "poll", reader?: StreamReader): Promise<Response> {
-    const id = header.id;
-    const live = async () => {
-      const session = await this.load(id);
-      if (!session) throw new HttpError(404, "Unknown agent");
-      if (session.fault) throw session.fault;
-      return kind === "poll" ? this.poll(c, session, reader) : this.subscribe(c, session, "watch", reader);
-    };
-    if (this.sessions.has(id) || this.loading.has(id) || this.closed) return live();
-    const cursor = await this.idleCursor(id);
-    // Loaded meanwhile, here or on another node (whose stream this one does not have): take the loaded path, or retry there.
-    if (this.sessions.has(id) || this.loading.has(id)) return live();
-    if (cursor === undefined) throw new HttpError(503, "This agent is being loaded; retry");
-    if (gone(c)) return RESPONSE_ALREADY_SENT;
-    const raw = c.req.header("last-event-id") ?? "0";
-    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) throw new HttpError(400, "Invalid event cursor");
-    const after = Number(raw);
-    const asked = c.req.query("snapshot") === "1";
-    // Nothing runs, and nothing happened after `cursor`: a subscriber at it (or new) is caught up; any other missed events.
-    const gap = after !== 0 && after !== cursor;
-    if (gap && !asked) throw new HttpError(409, "REPLAY_GAP: recover from session state");
-    const snapshot: TurnSnapshot | undefined = asked && (after === 0 || gap) ? { type: "snapshot", cursor, requestId: null, turn: null } : undefined;
-    const shown = (data: TurnSnapshot) => reader ? reader.show(data) : data;
-    // Its place first: an entry is made only for a subscriber that has one.
-    const existing = this.idle.get(id);
-    const release = this.hold(header.tenant, existing ? existing.watchers.size + existing.polls.size : 0);
-    const idle = existing ?? { tenant: header.tenant, watchers: new Set<ServerResponse>(), polls: new Set<() => void>(), checked: Date.now() };
-    if (!existing) this.idle.set(id, idle);
-    if (kind === "poll") {
-      const wait = Number(c.req.query("wait") ?? 0);
-      if (!snapshot && Number.isFinite(wait) && wait > 0) {
-        await new Promise<void>(resolve => {
-          const done = () => { clearTimeout(timer); idle.polls.delete(done); c.env.outgoing.off("close", done); resolve(); };
-          const timer = setTimeout(done, Math.max(0, Math.min(wait * 1000, MAX_POLL_WAIT_MS, reader ? reader.until - Date.now() : Infinity)));
-          idle.polls.add(done);
-          c.env.outgoing.once("close", done);
-        });
-      }
-      release();
-      if (!idle.watchers.size && !idle.polls.size && this.idle.get(id) === idle) this.idle.delete(id);
-      return json(c, 200, { cursor, events: snapshot ? [{ id: cursor, data: shown(snapshot) }] : [] });
-    }
-    const res = c.env.outgoing;
-    const expiry = reader && Number.isFinite(reader.until) ? setTimeout(() => res.end(), Math.max(0, reader.until - Date.now())) : undefined;
-    expiry?.unref();
-    if (reader) readers.set(res, reader);
-    idle.watchers.add(res);
-    this.watches.set(res, { agent: id, release, expiry });
-    res.on("close", () => this.unwatch(res));
-    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
-    res.write(`event: ready\ndata: ${JSON.stringify({ version: 5, agentId: id, watch: true })}\n\n`);
-    if (snapshot) send(res, `id: ${cursor}\ndata: ${JSON.stringify(shown(snapshot))}\n\n`);
-    return RESPONSE_ALREADY_SENT;
-  }
-
-  /** Every open event stream of the agent: the application's connection and its watchers. */
-  private streams(session: Session) {
-    return session.response ? [session.response, ...session.watchers] : [...session.watchers];
-  }
-
-  /**
-   * Close every event stream (`destroy`: cut off, not ended cleanly), and answer waiting polls, so subscribers reconnect.
-   * Closed on purpose (`reconnect`), each stream's last frame tells its subscriber to reconnect at once.
-   */
-  private endStreams(session: Session, destroy = false, reconnect?: ReconnectReason) {
-    for (const res of this.streams(session)) if (destroy) res.destroy(); else if (!res.destroyed) res.end(reconnect ? reconnectFrame(reconnect) : undefined);
-    for (const wake of [...session.polls]) wake();
-  }
-
-  /**
-   * The application's connection is replaced (a takeover, or a new process while the old one drains): it takes no new
-   * calls, and stays open, up to DRAIN_MS, until the calls it has are answered, so a deploy loses none. Then it hears
-   * it was replaced, and closes.
-   */
-  private retire(session: Session) {
-    const res = session.response, attached = session.attached;
-    session.response = undefined;
-    session.attached = undefined;
-    const replaced = () => { if (res && !res.destroyed) res.end(`event: closed\ndata: ${JSON.stringify({ reason: "replaced" })}\n\n`); };
-    if (!attached || attached.res !== res) { replaced(); void attached?.close(); return; }
-    attached.draining = true;
-    (session.retiring ??= new Set()).add(attached);
-    void attached.settled(DRAIN_MS).then(() => {
-      session.retiring?.delete(attached);
-      replaced();
-      void attached.close();
-    });
-  }
-
-  /** Close the application's connection and those still draining: their calls in flight end as unknown. */
-  private closeAttached(session: Session) {
-    for (const attached of [...session.retiring ?? []]) void attached.close();
-    session.retiring?.clear();
-    void session.attached?.close();
   }
 
   /**
@@ -1430,109 +713,9 @@ export class ClientSessions {
     if (!Number.isSafeInteger(cursor)) throw new HttpError(400, "Invalid event cursor");
     const first = session.events[0]?.id ?? session.cursor + 1;
     const gap = cursor > session.cursor || cursor < first - 1;
-    if (snapshot && (cursor === 0 || gap)) return { cursor: session.cursor, snapshot: this.turnSnapshot(session), events: [] };
+    if (snapshot && (cursor === 0 || gap)) return { cursor: session.cursor, snapshot: events.turnSnapshot(this.eventContext, session), events: [] };
     if (cursor !== 0 && gap) throw new HttpError(409, "REPLAY_GAP: recover from session state");
     return { cursor, events: session.events.filter(event => event.id > cursor) };
-  }
-
-  /**
-   * Open an event stream: the application's (`attach`), which carries its attached MCP server and
-   * replaces the connection before it, or a read-only watcher, which never replaces another and is
-   * never replaced. Every stream gets every event from its own cursor on (see `replay`).
-   */
-  private async subscribe(c: Context<ClientEnv>, session: Session, mode: "attach" | "watch", reader?: StreamReader) {
-    // One application serves an agent's tools at a time: another is refused, unless it takes over (or names the connection
-    // it held, reconnecting). A connection that serves no tools (it never answered MCP's initialize) holds nothing, nor
-    // does one that no longer answers a ping (a half-open socket the server has not seen close).
-    const held = mode === "attach" && session.attached?.accepting && session.attached.initialized ? session.attached : undefined;
-    if (held && c.req.query("takeover") !== "true" && c.req.header("x-agent-connection") !== held.id && await held.answers()) {
-      throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools; reconnect with ?takeover=true to replace it");
-    }
-    // Gone while the request was authorized and its agent loaded: its close has fired already, so nothing
-    // registered from here would ever be released. (No await follows, so it cannot close unseen after this.)
-    if (gone(c)) return RESPONSE_ALREADY_SENT;
-    // A watcher gets a snapshot where it cannot replay, unless it opts out (snapshot=0). The application's connection
-    // asks for one (the SDKs do): relays that read its events as they come, and not snapshots, rely on the 409.
-    const asked = mode === "watch" ? c.req.query("snapshot") !== "0" : c.req.query("snapshot") === "1";
-    const { snapshot, events } = this.replay(session, c.req.header("last-event-id"), asked);
-    const release = mode === "watch" ? this.hold(session.header.tenant, session.watchers.size + session.polls.size) : undefined;
-    const res = c.env.outgoing;
-    if (c.req.query("subagents") === "1") subagentReaders.add(res);
-    let ready: Record<string, unknown> = { version: 5, agentId: session.header.id };
-    // A reader's stream ends as its token expires: it reconnects with a fresh one, so access changes apply within a token's life.
-    const expiry = reader && Number.isFinite(reader.until) ? setTimeout(() => res.end(), Math.max(0, reader.until - Date.now())) : undefined;
-    expiry?.unref();
-    if (reader) readers.set(res, reader);
-    if (mode === "watch") {
-      session.watchers.add(res);
-      this.watches.set(res, { agent: session.header.id, release: release!, expiry });
-      res.on("close", () => this.unwatch(res));
-      ready = { ...ready, watch: true };
-    } else {
-      this.retire(session);
-      session.response = res;
-      res.on("close", () => { if (session.response === res) session.response = undefined; });
-    }
-    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
-    if (mode === "attach") {
-      // Each connection is a new MCP session with the application's attached server; `connection` names it.
-      const attached = new AttachedServer(res);
-      ready = { ...ready, connection: attached.id, ...(session.header.toolsHash ? { toolsHash: session.header.toolsHash } : {}) };
-      session.attached = attached;
-    }
-    res.write(`event: ready\ndata: ${JSON.stringify(ready)}\n\n`);
-    if (snapshot) send(res, `id: ${snapshot.cursor}\ndata: ${JSON.stringify(reader ? reader.show(snapshot) : snapshot)}\n\n`);
-    for (const event of events) {
-      if (res.destroyed) break;
-      if (isSubagent(event.data) && !subagentReaders.has(res)) continue;
-      const shown = reader ? reader.show(event.data) : event.data;
-      if (shown !== undefined) send(res, `id: ${event.id}\ndata: ${JSON.stringify(shown)}\n\n`);
-    }
-    // A stateless run's stream ends with the run: with its response, replayed or, past what is buffered, as it ended.
-    const ended = mode === "watch" && session.header.run ? session.requests.get(runIdOf(session.header.id)) : undefined;
-    if (ended?.state === "completed") {
-      if (!events.some(event => event.data.type === "response" && event.data.id === ended.id)) send(res, `id: ${session.cursor}\ndata: ${JSON.stringify({ type: "response", id: ended.id, outcome: ended.outcome })}\n\n`);
-      res.end();
-    }
-    return RESPONSE_ALREADY_SENT;
-  }
-
-  /**
-   * One read of the stream for clients that cannot hold it open: the buffered events after the
-   * cursor, as JSON, and the cursor to poll from next. With `wait` (seconds, at most 25) and nothing
-   * buffered yet, it answers when the next event arrives or the wait ends. With `snapshot=1`, as for
-   * a stream: a snapshot where there is nothing to replay from.
-   */
-  private async poll(c: Context<ClientEnv>, session: Session, reader?: StreamReader) {
-    if (gone(c)) return RESPONSE_ALREADY_SENT;
-    const raw = c.req.header("last-event-id");
-    // As a watcher: a snapshot by default, where there is nothing to replay from; snapshot=0 opts out.
-    const asked = c.req.query("snapshot") !== "0";
-    const wait = Number(c.req.query("wait") ?? 0);
-    if (!Number.isFinite(wait) || wait < 0) throw new HttpError(400, "wait is a number of seconds");
-    let read = this.replay(session, raw, asked);
-    if (!read.snapshot && !read.events.length && wait > 0 && !this.closed && !session.fault) {
-      // A waiting poll holds a subscriber's place, as a watcher does.
-      const release = this.hold(session.header.tenant, session.watchers.size + session.polls.size);
-      await new Promise<void>(resolve => {
-        const done = () => { clearTimeout(timer); session.polls.delete(done); c.env.outgoing.off("close", done); release(); resolve(); };
-        const timer = setTimeout(done, Math.max(0, Math.min(wait * 1000, MAX_POLL_WAIT_MS, reader ? reader.until - Date.now() : Infinity)));
-        session.polls.add(done);
-        c.env.outgoing.once("close", done);
-      });
-      read = this.replay(session, raw, asked);
-    }
-    const { cursor, snapshot, events } = read;
-    const shown = (data: ClientEvent | TurnSnapshot) => reader ? reader.show(data) : data;
-    const nested = c.req.query("subagents") === "1";
-    return json(c, 200, {
-      cursor: events.at(-1)?.id ?? (cursor || session.cursor),
-      events: [...snapshot ? [{ id: snapshot.cursor, data: shown(snapshot) }] : [], ...events.flatMap(({ id, data }) => {
-        if (isSubagent(data) && !nested) return [];
-        const visible = shown(data);
-        return visible === undefined ? [] : [{ id, data: visible }];
-      })],
-    });
   }
 
   private busy(session: Session) {
@@ -1631,24 +814,24 @@ export class ClientSessions {
       // Its tool servers are listed (remote MCP servers connected to) before its host starts.
       session.hosted = session.header.mounts ?? [];
       const definitions = await steps.time("tools", this.toolset(session));
-      const { cpuMs, maxTimeoutMs } = await this.codeLimits(session.header.tenant);
+      const { cpuMs, maxTimeoutMs } = await spend.codeLimits(this.spendContext, session.header.tenant);
       // Lost or given up while it got ready (its node fenced, or is leaving): it starts nothing. A host started now would
       // serve an owner that is gone, and whoever loads the agent next would find it and take it for theirs, still starting.
       if (session.fault || session.leaving) throw session.fault ?? new Error("Agent stopped");
       const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, model: withCatalogPrices(session.header.config.model), apiKey, mounts: VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
         definitions,
-        codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await this.codeLimits(session.header.tenant)).concurrent, signal),
+        codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await spend.codeLimits(this.spendContext, session.header.tenant)).concurrent, signal),
         runLimit: async () => {
           // Which limit stopped it: the run's, the agent's, or the tenant's (its monthly cap, a message; its credit, a 402).
           const agentLimit = await this.agentSpendLimit(session);
-          const runLimit = agentLimit === undefined ? this.runSpendLimit(session) : undefined;
+          const runLimit = agentLimit === undefined ? spend.runSpendLimit(session) : undefined;
           const tenantLimit = agentLimit === undefined && runLimit === undefined ? await this.options.spendLimit?.(session.header.tenant) : undefined;
           const limited = agentLimit ?? runLimit ?? tenantLimit;
           if (limited) return { stopped: "spend_limit" as const, message: typeof limited === "string" ? limited : limited.message, limit: agentLimit ? "agent" as const : runLimit ? "run" as const : typeof tenantLimit === "string" ? "tenant" as const : "credit" as const };
-          const turn = await this.turnLimit(session);
+          const turn = await spend.turnLimit(this.spendContext, session);
           if (turn) return { stopped: "turn_limit" as const, message: turn };
           // Its end user has nothing left for its next model request: stopped here, rather than refused at the request.
-          const payer = this.modelPayer(session, this.runningRun(session));
+          const payer = spend.modelPayer(this.spendContext, session, runningRun(session));
           const broke = payer && await this.options.endUsers?.refusal(session.header.tenant, payer.id, payer.bucket);
           if (broke) return { stopped: "spend_limit" as const, message: broke.message, limit: "end_user" as const, code: END_USER_CREDIT, reason: broke.reason, bucket: broke.bucket, endUser: broke.endUser };
           // This node is leaving: the turn stops at this step boundary, and its next owner continues it (`park`).
@@ -1659,10 +842,10 @@ export class ClientSessions {
         modelAuth: () => this.modelAuth(session),
         modelAttempt: async event => {
           if (event.type === "begin" && session.header.revoked) return Promise.reject(new Error("Session revoked"));
-          const run = this.runningRun(session);
+          const run = runningRun(session);
           const { identity, keyScope } = session.header;
           // Who pays is the runtime's to say, never the host's: the agent's subject, from its run's bucket.
-          const payer = event.type === "begin" ? this.modelPayer(session, run) : undefined;
+          const payer = event.type === "begin" ? spend.modelPayer(this.spendContext, session, run) : undefined;
           const { endUser: _given, ...asked } = event as Extract<typeof event, { type: "begin" }>;
           const scoped = event.type === "begin" ? { ...asked, ...(payer ? { endUser: payer } : {}), context: { ...(run ? { requestId: run.id, actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) } } : event;
           const tracked = await this.options.modelAttempt?.(session.header.tenant, session.header.id, !!session.platformKey, !!session.catalogPriced, scoped) ?? false;
@@ -1677,7 +860,7 @@ export class ClientSessions {
         search: async query => { await this.leased(session); return this.searchTools(session, query); },
         lease: () => this.leased(session),
         background: event => this.backgroundEvent(session, event),
-        committing: entry => this.entryEffect(session, entry),
+        committing: entry => spend.entryEffect(this.spendContext, session, entry),
         history: {
           // One whose create failed before writing its row begins it now, and is indexed from its log.
           indexed: async () => (await this.historyIndex.indexed(id)) ?? (await this.historyIndex.begin(id), 0),
@@ -1685,7 +868,7 @@ export class ClientSessions {
         },
       }, session.claim));
       // Init can recover native responses through committing without emitting their old message_end events.
-      await this.refreshSpend(session);
+      await spend.refreshSpend(this.spendContext, session);
       // Bootstrap history has been imported into the journal; keep only one authority.
       if (session.header.config.initialMessages !== undefined) {
         delete session.header.config.initialMessages;
@@ -1727,13 +910,13 @@ export class ClientSessions {
     const view = (kind: ToolSourceView["kind"], server: ToolServer, extra: Partial<ToolSourceView> = {}): ToolServer =>
       ({ ...server, sources: async () => [{ kind, name: kind, status: "listed", ...extra, tools: await server.tools() }] });
     const multiAgent = this.multiAgentServer(session, sources);
-    const images = this.imageServer(session, sources);
+    const images = spend.imageServer(this.spendContext, session, sources);
     const definition = header.definition;
     // An agent with no tools at all (no js_exec, file tools or tools of any source) has nothing to present a file from: no present_file either.
     const bare = codeMode === false && fileTools === false && !tools.length && !feature && !multiAgent && !images && !sources;
     return [
       ...feature ? [view("channel", feature)] : [],
-      { tools: () => defaultExposure(tools), call: call => this.callAttached(session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
+      { tools: () => defaultExposure(tools), call: call => events.callAttached(this.eventContext, session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
       ...volumes && header.mounts?.length && !bare ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(this.toolContext(session), name, args, signal)))] : [],
       ...multiAgent ? [multiAgent] : [],
       ...images ? [images] : [],
@@ -1844,7 +1027,7 @@ export class ClientSessions {
     // A server's progress reaches the event stream as an update of the model's tool call (js_exec's, for a call from code),
     // at most one per PROGRESS_MS: the latest of a burst is published at its window's end, and before the call's result.
     let progressed: (() => void) | undefined;
-    const onProgress = call.toolCallId ? throttled(({ progress, total, message }: Progress) => this.publish(session, { type: "event", requestId: request?.id ?? "", event: {
+    const onProgress = call.toolCallId ? events.throttled(({ progress, total, message }: Progress) => this.publish(session, { type: "event", requestId: request?.id ?? "", event: {
       type: "tool_execution_update", toolCallId: call.toolCallId, toolName: call.innerCallId ? "js_exec" : call.name,
       partialResult: { content: [{ type: "text", text: message ?? `${progress}${total !== undefined ? `/${total}` : ""}` }], details: { type: "progress", tool: call.name, ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), progress, ...(total !== undefined ? { total } : {}), ...(message !== undefined ? { message } : {}) } },
     } }), flush => { progressed = flush; }) : undefined;
@@ -1885,7 +1068,7 @@ export class ClientSessions {
       if (call.signal.aborted || (error instanceof McpError && error.code === -32042)) throw error;
       const failure = error instanceof ToolFailure ? error
         : error instanceof McpError && error.code === ErrorCode.RequestTimeout ? new ToolFailure("timeout", `${error.message}. Its outcome is unknown: it may or may not have taken effect.`, true)
-        : error instanceof McpError && error.code === ErrorCode.ConnectionClosed ? new ToolFailure("connection_lost", CONNECTION_LOST, true)
+        : error instanceof McpError && error.code === ErrorCode.ConnectionClosed ? new ToolFailure("connection_lost", events.CONNECTION_LOST, true)
         : /^Could not connect to MCP server|MCP server .* (?:failed|refused|answered)/.test(errorText(error)) ? new ToolFailure("source_unavailable", errorText(error))
         : new ToolFailure("failed", errorText(error));
       (session.toolErrors ??= []).push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}),
@@ -1922,43 +1105,6 @@ export class ClientSessions {
     };
   }
 
-  /**
-   * The generate_image tool of an agent whose sources enable it, answered here rather than by a tool source: its image is
-   * billed like a model response, with the run's facts, and counts against the agent's spend limit and the run's.
-   */
-  private imageServer(session: Session, sources: Sources | undefined): ToolServer | undefined {
-    const { imager, volumes } = this.options;
-    if (!imager || !sources?.builtins?.includes("generate_image")) return undefined;
-    // What the run's calls may still save to the workspace, as for any tool's outputs.
-    let saving = { id: undefined as string | undefined, left: TOOL_FILE_LIMITS.runBytes };
-    return {
-      returnsFiles: true,
-      tools: () => [GENERATE_IMAGE],
-      sources: async () => [{ kind: "builtin", name: "generate_image", status: "listed", tools: [GENERATE_IMAGE] }],
-      call: async call => {
-        if (call.name !== "generate_image") throw new Error(`Unknown tool ${call.name}`);
-        const { header } = session;
-        const mounts = header.mounts ?? [];
-        if (!volumes || !mounts.length) throw new Error("generate_image needs a workspace to save the image in, and this agent has none");
-        const run = this.runningRun(session);
-        if (call.run !== saving.id) saving = { id: call.run, left: TOOL_FILE_LIMITS.runBytes };
-        const files = new ToolFiles({ volumes, tenant: header.tenant, agent: header.id, mounts, tool: "generate_image", run: saving, onWrite: this.toolContext(session).onWrite });
-        const budget = run ? await this.budgetLeft(session, run.id) : undefined;
-        const { identity, keyScope } = header;
-        return generateImage(imager, {
-          tenant: header.tenant, ...(keyScope ? { keyScope } : {}), ...(budget !== undefined ? { budget } : {}), files,
-          hold: usd => this.endUserHold(session, run, usd, "image"),
-          record: usage => {
-            const cost = usage.usage.cost.total as number;
-            this.options.onUsage?.(header.tenant, header.id, { ...usage, ...(run ? { requestId: run.id } : {}), ...(run?.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
-            this.spent(session, cost);
-            if (run && cost > 0) (session.imageSpend ??= new Map()).set(run.id, (session.imageSpend.get(run.id) ?? 0) + cost);
-          },
-        }, call.args, call.signal);
-      },
-    };
-  }
-
   /** What each definition target is for, as its definition describes it, for the tools' descriptions. */
   private async targetDescriptions(tenant: string, targets: AgentTarget[]) {
     const found = new Map<string, string>();
@@ -1968,11 +1114,6 @@ export class ClientSessions {
       if (description) found.set(id, description);
     }));
     return (target: AgentTarget) => target.definition !== undefined ? found.get(definitionId(tenant, target.definition)) : undefined;
-  }
-
-  /** The agent's run that has begun: the one its tool calls are made in. */
-  private runningRun(session: Session) {
-    return [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began);
   }
 
   /**
@@ -1988,7 +1129,7 @@ export class ClientSessions {
   private async delegate(session: Session, settings: DelegateSettings, call: ToolCall): Promise<McpResult> {
     const { header } = session;
     const tenant = header.tenant;
-    const run = this.runningRun(session);
+    const run = runningRun(session);
     const { createAgent, submit } = this.options;
     if (!createAgent || !submit) throw new Error("Delegation is not enabled on this runtime");
     if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("delegate is called directly, not from js_exec");
@@ -2025,7 +1166,7 @@ export class ClientSessions {
       untap = this.relay(session, run.id, at);
       if (!record) {
         try {
-          const budget = await this.holdBudget(session, run.id);
+          const budget = await spend.holdBudget(this.spendContext, session, run.id);
           held = budget;
           if (budget !== undefined && budget <= 0) throw new Error("This run has no budget left for a sub-agent: its spend limit is reached");
           record = await submit(agent, tenant, { id: requestId, method: "prompt", params: this.childPrompt(session, run, call, { agent, requestId, depth, maxDepth, chain, task, output, budget }) });
@@ -2060,7 +1201,7 @@ export class ClientSessions {
     } finally {
       untap?.();
       // What the child spent is in `childSpend` by now: its hold goes.
-      if (held !== undefined) this.releaseBudget(session, run.id, held);
+      if (held !== undefined) spend.releaseBudget(session, run.id, held);
       this.releaseDelegation(session);
     }
   }
@@ -2130,7 +1271,7 @@ export class ClientSessions {
       ...header.identity?.subject !== undefined ? { subject: header.identity.subject } : {}, ...header.identity?.context ? { context: header.identity.context } : {},
       ...header.keyScope ? { keyScope: header.keyScope } : {},
       // Its parent's end user pays for it, from the bucket the parent's run spends.
-      bucket: this.bucketOf(session, run),
+      bucket: spend.bucketOf(this.spendContext, session, run),
     }, key, { agentId: header.id, runId: run.id, toolCallId, depth })).id;
   }
 
@@ -2161,7 +1302,7 @@ export class ClientSessions {
   private async spawnAgent(session: Session, settings: DelegateSettings, call: ToolCall): Promise<McpResult> {
     const { header } = session;
     const tenant = header.tenant;
-    const run = this.runningRun(session);
+    const run = runningRun(session);
     if (!this.options.createAgent || !this.options.submit) throw new Error("Sub-agents are not enabled on this runtime");
     if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("spawn_agent is called directly, not from js_exec");
     const { target, instructions, task, output } = this.childTarget(settings, call.args, "start");
@@ -2206,7 +1347,7 @@ export class ClientSessions {
     if (!record) {
       try {
         if (child.make) agent = await child.make(depth);
-        const budget = await this.childShare(session, requestId, settings?.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
+        const budget = await spend.childShare(this.spendContext, session, requestId, settings?.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel);
         if (budget !== undefined && budget <= 0) throw new Error("This agent has no budget left for a sub-agent: its spend limit is reached");
         this.relayChild(session, run.id, at);
         record = await submit(agent, tenant, { id: requestId, method: "prompt", params: this.childPrompt(session, run, call, { agent, requestId, depth, maxDepth, chain, task, output, budget }) });
@@ -2228,7 +1369,7 @@ export class ClientSessions {
    */
   private async toolSpawn(session: Session, call: ToolCall, directive: unknown): Promise<McpResult> {
     const { header } = session;
-    const run = this.runningRun(session);
+    const run = runningRun(session);
     if (!this.options.submit) throw new Error("Sub-agents are not enabled on this runtime");
     if (session.toolSources?.get(call.name) !== "served") throw new Error(`${call.name} asked to start a sub-agent (camelrun/spawn), which only a tool server with auth "runtime" may`);
     if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error(`${call.name} starts a sub-agent: call it directly, not from js_exec`);
@@ -2312,7 +1453,7 @@ export class ClientSessions {
    * and its notification is never sent.
    */
   private async waitAgents(session: Session, call: ToolCall): Promise<McpResult> {
-    const run = this.runningRun(session);
+    const run = runningRun(session);
     if (!run || call.innerCallId) throw new Error("wait_agent is called directly, not from js_exec");
     const { agents: names, timeoutMs } = call.args as { agents?: unknown; timeoutMs?: unknown };
     if (names !== undefined && (!Array.isArray(names) || names.some(name => typeof name !== "string"))) throw new Error("agents is a list of names or agentIds");
@@ -2569,7 +1710,7 @@ export class ClientSessions {
   private async sendMessage(session: Session, settings: DelegateSettings | undefined, call: ToolCall): Promise<McpResult> {
     const { header } = session;
     const tenant = header.tenant;
-    const run = this.runningRun(session);
+    const run = runningRun(session);
     const { submit } = this.options;
     if (!submit) throw new Error("Sub-agents are not enabled on this runtime");
     if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("send_message is called directly, not from js_exec");
@@ -2694,13 +1835,13 @@ export class ClientSessions {
     // Stopped before it ran (`stop`): it lands without a turn, which counts no wake.
     const stopped = session.requests.get(record.id)?.landOnly;
     if (stopped) return { params: { ...params, landOnly: stopped } };
-    const refused = await this.runLimit(session, "prompt");
+    const refused = await spend.runLimit(this.spendContext, session, "prompt");
     const cap = this.options.wakesPerHour ?? MULTI_AGENT_LIMITS.wakesPerHour;
     const hour = Math.floor(now / 3_600_000);
     const turns = refused ? 0 : Number((fresh
       ? await this.db.query("insert into agent_wakes (root, hour, turns) values ($1, $2, 1) on conflict (root, hour) do update set turns = agent_wakes.turns + 1 returning turns", [notice.root, hour])
       : await this.db.query("select turns from agent_wakes where root = $1 and hour = $2", [notice.root, hour])).rows[0]?.turns ?? 0);
-    const refusal = refused ? { message: refused.message, ...refusalStop(refused) ?? { stopped: "spend_limit" } }
+    const refusal = refused ? { message: refused.message, ...spend.refusalStop(refused) ?? { stopped: "spend_limit" } }
       : turns > cap ? { stopped: "agent_loop_limit", message: `This agent's chain has had ${cap} turns started by sub-agent notifications and messages this hour, its limit (AGENT_WAKES_PER_HOUR): the message is in its history, but no turn ran. Send a message to go on` } : undefined;
     if (!refusal) return { params };
     if (refusal.stopped === "agent_loop_limit") sometimes(true, "a notification reached its chain's wake cap");
@@ -2725,28 +1866,6 @@ export class ClientSessions {
     }
     if (tries > 1) reachable("a notification's landing met a transient refusal and was tried again");
     return result;
-  }
-
-  /**
-   * The spend limit a delegate call's child gets, held for it until it ends (`releaseBudget`): an even share of what the
-   * run may still spend that no other child in flight holds, split among this run's calls in flight that hold none yet.
-   * So parallel children together never get more than the parent has left. Undefined when the run has no limit.
-   */
-  private async holdBudget(session: Session, runId: string) {
-    const left = await this.budgetLeft(session, runId);
-    if (left === undefined) return undefined;
-    const held = (session.childHeld ??= new Map()).get(runId) ?? { usd: 0, holders: 0 };
-    const sharing = Math.max(1, (session.delegating?.active ?? 1) - held.holders);
-    const share = Math.max(0, left - held.usd) / sharing;
-    session.childHeld.set(runId, { usd: held.usd + share, holders: held.holders + 1 });
-    return share;
-  }
-
-  private releaseBudget(session: Session, runId: string, usd: number) {
-    const held = session.childHeld?.get(runId);
-    if (!held) return;
-    if (held.holders <= 1) session.childHeld!.delete(runId);
-    else session.childHeld!.set(runId, { usd: Math.max(0, held.usd - usd), holders: held.holders - 1 });
   }
 
   /**
@@ -2791,37 +1910,6 @@ export class ClientSessions {
     return rows[0]?.id;
   }
 
-  /**
-   * A background child's spend limit, held for it on its row while it runs: an even share of what the agent may still
-   * spend that no running child holds, among the slots `maxParallel` leaves, so children started together share it rather
-   * than each getting all of it. It is the agent's own limit, not its run's: the run may end before the child does.
-   * Undefined when the agent has no spend limit.
-   */
-  private async childShare(session: Session, requestId: string, maxParallel: number) {
-    // One share at a time per agent: children started in one response each see the shares taken before theirs.
-    const previous = session.sharing ?? Promise.resolve();
-    let release!: () => void;
-    session.sharing = new Promise<void>(resolve => { release = resolve; });
-    await previous;
-    try {
-      const spend = await this.spendOf(session);
-      if (!spend) return undefined;
-      const { rows: [held] } = await this.db.query(`select coalesce(sum(budget), 0) as usd, count(*) as n from agent_children
-        where parent = $1 and state = 'running' and ended_at is null and kind = 'spawn' and budget is not null and id <> $2`, [session.header.id, requestId]);
-      const share = Math.max(0, spend.usd - spend.spent - Number(held.usd)) / Math.max(1, maxParallel - Number(held.n));
-      await this.db.query("update agent_children set budget = $2 where id = $1", [requestId, share]);
-      return share;
-    } finally { release(); }
-  }
-
-  /** What the running run may still spend, within its own spend limit and its agent's; undefined when neither has one. */
-  private async budgetLeft(session: Session, runId: string) {
-    const spend = await this.spendOf(session);
-    const own = session.runLimits?.get(runId);
-    const left = Math.min(spend ? spend.usd - spend.spent : Infinity, own !== undefined ? own - (session.usage?.get(runId)?.costUsd ?? 0) - (session.childSpend?.get(runId) ?? 0) - (session.imageSpend?.get(runId) ?? 0) : Infinity);
-    return Number.isFinite(left) ? Math.max(0, left) : undefined;
-  }
-
   /** An agent's request, here or on the node serving it (see `awaitRequest`). */
   private requestOf(agent: string, tenant: string, requestId: string, waitMs: number, signal?: AbortSignal) {
     return this.options.requestAnywhere ? this.options.requestAnywhere(agent, tenant, requestId, waitMs, signal) : this.awaitRequest(agent, tenant, requestId, waitMs, signal);
@@ -2832,7 +1920,7 @@ export class ClientSessions {
     for (let delay = 250; ;) {
       signal.throwIfAborted();
       let record: RequestRecord | undefined;
-      try { record = await this.requestOf(agent, tenant, requestId, MAX_POLL_WAIT_MS, signal); }
+      try { record = await this.requestOf(agent, tenant, requestId, events.MAX_POLL_WAIT_MS, signal); }
       catch (error) {
         signal.throwIfAborted();
         const status = (error as HttpError).status;
@@ -2863,7 +1951,7 @@ export class ClientSessions {
 
   /** Mark the run that has begun as aborted, so it does not start if the agent does not have it yet (see `execute`). */
   private markAborted(session: Session) {
-    const run = this.runningRun(session);
+    const run = runningRun(session);
     if (run) (session.aborted ??= new Set()).add(run.id);
     session.resumeWait?.abort();
   }
@@ -2879,7 +1967,7 @@ export class ClientSessions {
     const id = session.header.id;
     const announcing = queued === "cancel" && await (this.options.runEvents?.(session.header.tenant) ?? false);
     const now = Date.now();
-    const run = this.runningRun(session);
+    const run = runningRun(session);
     if (run && run.abortedAt === undefined) this.upsertRequest(session, { ...run, abortedAt: now });
     const cancelled: RequestRecord[] = [];
     let kept = false;
@@ -2990,7 +2078,7 @@ export class ClientSessions {
     await this.roomFor(id);
     const session = await this.load(id);
     if (!session) throw new HttpError(404, "Unknown agent");
-    const until = Date.now() + Math.min(waitMs, MAX_POLL_WAIT_MS);
+    const until = Date.now() + Math.min(waitMs, events.MAX_POLL_WAIT_MS);
     for (;;) {
       const record = session.requests.get(requestId);
       if (!record) return undefined;
@@ -3353,8 +2441,8 @@ export class ClientSessions {
     session.header.tokenRotation = rotation;
     session.header.digest = hash(token);
     await this.writeHeader(session);
-    this.retire(session);
-    this.endStreams(session);
+    events.retire(session);
+    events.endStreams(session);
     console.log(JSON.stringify({ type: "agent_token_rotated", agent: id, tenant, rotation }));
     return { id, token, expiresAt: session.header.expiresAt };
   }
@@ -3578,28 +2666,7 @@ export class ClientSessions {
   async requestFor(c: Context, id: string, tenant: string, requestId: string) {
     const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
     if (!session) throw new HttpError(404, "Agent not found");
-    return this.settled(c as Context<ClientEnv>, session, requestId);
-  }
-
-  /** A request as its record says, waiting first (`?wait=<seconds>`, at most 25) while it runs. */
-  private async settled(c: Context<ClientEnv>, session: Session, requestId: string) {
-    const wait = Number(c.req.query("wait") ?? 0);
-    if (!Number.isFinite(wait) || wait < 0) throw new HttpError(400, "wait is a number of seconds");
-    const until = Date.now() + Math.min(wait * 1000, MAX_POLL_WAIT_MS);
-    for (;;) {
-      const record = session.requests.get(requestId);
-      if (!record) throw new HttpError(404, "Unknown request");
-      // Settled, out of time, or the session is no longer here to wake it: as it is now (the caller asks again).
-      if (record.state === "completed" || Date.now() >= until || this.closed || session.fault || this.sessions.get(session.header.id) !== session || gone(c)) return json(c, 200, visible(record));
-      // A waiting request holds a subscriber's place, as a waiting events poll does.
-      const release = this.hold(session.header.tenant, session.watchers.size + session.polls.size);
-      await new Promise<void>(resolve => {
-        const done = () => { clearTimeout(timer); session.polls.delete(done); c.env.outgoing.off("close", done); release(); resolve(); };
-        const timer = setTimeout(done, until - Date.now());
-        session.polls.add(done);
-        c.env.outgoing.once("close", done);
-      });
-    }
+    return events.settled(this.eventContext, c as Context<ClientEnv>, session, requestId);
   }
 
   /**
@@ -3607,10 +2674,10 @@ export class ClientSessions {
    * what `/clients/:id/events?watch=1` gives a holder of the agent's token, for a server that keeps
    * no per-agent tokens. `c.env.outgoing` is the raw response the stream is written to.
    */
-  async watchFor(c: Context, id: string, tenant: string, reader?: StreamReader) {
+  async watchFor(c: Context, id: string, tenant: string, reader?: events.StreamReader) {
     const header = (await this.owns(id, tenant)) ? this.sessions.get(id)?.header ?? (await this.readHeader(id))?.value : undefined;
     if (!header || header.purged) throw new HttpError(404, "Unknown agent");
-    return this.watchAgent(c as Context<ClientEnv>, header, c.req.query("poll") === "1" ? "poll" : "watch", reader);
+    return events.watchAgent(this.eventContext, c as Context<ClientEnv>, header, c.req.query("poll") === "1" ? "poll" : "watch", reader);
   }
 
   /** A tenant's stateless run's session header (`id`: the session's), or 404. */
@@ -3655,7 +2722,7 @@ export class ClientSessions {
         return RESPONSE_ALREADY_SENT;
       }
     }
-    return this.watchAgent(c as Context<ClientEnv>, header, "watch");
+    return events.watchAgent(this.eventContext, c as Context<ClientEnv>, header, "watch");
   }
 
   /**
@@ -3754,8 +2821,8 @@ export class ClientSessions {
   private async handBack(session: Session) {
     if (session.handedBack) return;
     session.handedBack = true;
-    this.idleWatchers(session);
-    if (session.response && !session.response.destroyed) session.response.end(reconnectFrame("moved"));
+    events.idleWatchers(this.eventContext, session);
+    if (session.response && !session.response.destroyed) session.response.end(events.reconnectFrame("moved"));
     await this.db.query("update agents set resume_after = $2 where id = $1", [session.header.id, Date.now() + this.sweepMs]).catch(() => {});
     await this.unload(session);
   }
@@ -3953,7 +3020,7 @@ export class ClientSessions {
       if (header.revoked || expired(header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
       // A watcher or a poll does not load the agent (see `watchAgent`).
       if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/events` && (c.req.query("watch") === "1" || c.req.query("poll") === "1")) {
-        return this.watchAgent(c, header, c.req.query("poll") === "1" ? "poll" : "watch");
+        return events.watchAgent(this.eventContext, c, header, c.req.query("poll") === "1" ? "poll" : "watch");
       }
       await this.roomFor(header.id);
       const session = await this.load(header.id);
@@ -3975,7 +3042,7 @@ export class ClientSessions {
       return json(c, 200, { stopped: true });
     });
     // SSE is written straight to the socket: backpressure and replacement need the raw response.
-    app.get(`${agent}/events`, c => this.subscribe(c, c.var.session, "attach"));
+    app.get(`${agent}/events`, c => events.subscribe(this.eventContext, c, c.var.session, "attach"));
     app.get(`${agent}/schedules`, async c => json(c, 200, await this.scheduler().list(c.var.session.header.id)));
     app.post(`${agent}/schedules`, async c => {
       const scheduler = this.scheduler();
@@ -4033,7 +3100,7 @@ export class ClientSessions {
       for (const [name, value] of Object.entries(rateLimitHeaders(rate))) c.header(name, value);
       return json(c, status, record);
     });
-    app.get(`${agent}/requests/:request`, c => this.settled(c, c.var.session, c.req.param("request")));
+    app.get(`${agent}/requests/:request`, c => events.settled(this.eventContext, c, c.var.session, c.req.param("request")));
     // The application's JSON-RPC messages to the runtime, on the connection it names.
     app.post(`${agent}/mcp`, async c => {
       // The current connection's, or a replaced one's still answering the calls it has.
@@ -4082,7 +3149,7 @@ export class ClientSessions {
     const applying = body.method === "configure" && body.params.definition !== undefined;
     // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
     for (const key of ["keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "dataCollection", "builtins", "delegate", "mcpServers", "mounts", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
-    const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spendInput(body.params.spendLimit) : undefined;
+    const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spend.spendInput(body.params.spendLimit) : undefined;
     // Which of its end user's buckets the agent's runs spend from: the tenant's to say, applied at once, as a spend limit is.
     const agentBucket = body.method === "configure" && Object.hasOwn(body.params, "bucket") ? body.params.bucket === null ? null : bucketInput(body.params.bucket) : undefined;
     // A run's own bucket, likewise the tenant's alone: an agent's token choosing one could spend another bucket's allowance.
@@ -4151,7 +3218,7 @@ export class ClientSessions {
     if (params.images !== undefined) throw new HttpError(400, "Attach images as files: files: [{ name, data (base64), contentType }]");
     if (params.whileRunning !== undefined && (body.method !== "prompt" || !["queue", "steer"].includes(params.whileRunning))) throw new HttpError(400, "whileRunning is queue or steer, for a prompt");
     // A run's own budget: it only ever lowers what the run may spend, so whoever may run the agent may set it.
-    if (params.spendLimit !== undefined && (!MODEL_RUNS.includes(body.method) || spendInput(params.spendLimit) === null)) throw new HttpError(400, "spendLimit is {usd}, for a model run (prompt, continue)");
+    if (params.spendLimit !== undefined && (!MODEL_RUNS.includes(body.method) || spend.spendInput(params.spendLimit) === null)) throw new HttpError(400, "spendLimit is {usd}, for a model run (prompt, continue)");
     // Its own run limits likewise only lower what the agent's allow.
     if (params.runLimits !== undefined && MODEL_RUNS.includes(body.method) && (!params.runLimits || typeof params.runLimits !== "object" || Object.keys(params.runLimits).some(key => key !== "maxResponses" && key !== "maxSeconds") || runLimitsInput(params.runLimits) === null)) throw new HttpError(400, "runLimits is {maxResponses?, maxSeconds?}, for a model run (prompt, continue)");
     // An output schema shapes the turn a prompt starts: a steer joins one already running.
@@ -4184,14 +3251,14 @@ export class ClientSessions {
     const steerable = params.notice?.metadata?.kind === "message" && params.notice.metadata.to === "child";
     if (notice && (!trusted || body.method !== "prompt" || (params.whileRunning !== undefined && !steerable) || !validNotice(params.notice))) throw new HttpError(400, "Invalid request");
     const rate = isRun && body.method !== "resume" && !notice ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
-    const limited = body.method === "resume" || notice ? undefined : await this.runLimit(session, body.method, bucket);
+    const limited = body.method === "resume" || notice ? undefined : await spend.runLimit(this.spendContext, session, body.method, bucket);
     if (limited) throw limited;
     // The bucket the tenant names for a run is the one the runs the runtime starts for the agent after it spend from.
     if (bucket && body.method !== "resume" && session.header.runBucket !== bucket) {
       session.header.runBucket = bucket;
       await this.writeHeader(session);
     }
-    const trace = isRun ? await this.traceFor(session, traceparent, body.method === "resume" ? session.requests.get(params.suspension)?.trace : undefined) : undefined;
+    const trace = isRun ? await events.traceFor(this.eventContext, session, traceparent, body.method === "resume" ? session.requests.get(params.suspension)?.trace : undefined) : undefined;
     // A run makes its agent busy: it takes one of the tenant's busy slots across the fleet (429 at the limit), held
     // until the agent has no run open. A resume continues a turn already accepted. Until the request is taken, the
     // slot is kept for it (`admitting`) even if the agent's other runs end meanwhile.
@@ -4204,7 +3271,7 @@ export class ClientSessions {
     try {
       // A run of an agent whose tools its application answers needs that application connected: refused now, rather
       // than a turn whose calls cannot run. An application reconnecting (a process restarting) has a moment to arrive.
-      if (["prompt", "continue", "execute"].includes(body.method) && !allowDisconnected && session.header.definitions.length && !await this.applicationConnected(session)) {
+      if (["prompt", "continue", "execute"].includes(body.method) && !allowDisconnected && session.header.definitions.length && !await events.applicationConnected(this.eventContext, session)) {
         if (existing()) return taken(existing()!);
         throw new HttpError(409, "APPLICATION_NOT_CONNECTED: this agent's tools are answered by its application, and none is connected. Connect it: upsert the agent with its tools in a process that stays up (TypeScript agents.upsert(key, { tools }), Python agents.upsert(key, tools=[…]); lower down, connectAgent or connect_agent), or send allowDisconnected: true (allow_disconnected=True) to run anyway");
       }
@@ -4222,7 +3289,7 @@ export class ClientSessions {
         if (work && work.fingerprint !== fingerprint) throw new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
         if (!work) {
           const budget = params.spendLimit?.usd as number | undefined;
-          work = { fingerprint, files: this.attach(session, body.id, params.files).then(files => this.transcribeAttached(session, body.id, files, { actor, budget, bucket })) };
+          work = { fingerprint, files: this.attach(session, body.id, params.files).then(files => spend.transcribeAttached(this.spendContext, session, body.id, files, { actor, budget, bucket })) };
           attaching.set(body.id, work);
           const done = () => { if (attaching.get(body.id) === work) attaching.delete(body.id); };
           work.files.then(done, done);
@@ -4274,49 +3341,6 @@ export class ClientSessions {
     } finally {
       if (admitting) { session.admitting!--; this.releaseBusy(session); }
     }
-  }
-
-  /**
-   * A run's place in a trace, if its tenant exports telemetry: a `resume` continues the run it resumes; another run
-   * continues the caller's `traceparent` (sampled as the caller decided), or starts a trace sampled at the tenant's rate.
-   */
-  private async traceFor(session: Session, traceparent: unknown, continues?: RequestRecord["trace"]): Promise<RequestRecord["trace"]> {
-    const settings = await this.options.tracing?.settings(session.header.tenant).catch(() => undefined);
-    if (!settings) return undefined;
-    if (continues) return { traceId: continues.traceId, spanId: newSpanId(), parentSpanId: continues.spanId, sampled: continues.sampled };
-    const parent = parseTraceparent(traceparent);
-    const traceId = parent?.traceId ?? newTraceId();
-    return { traceId, spanId: newSpanId(), ...(parent ? { parentSpanId: parent.spanId } : {}), sampled: parent ? parent.sampled : sampledAt(traceId, settings.sampleRate) };
-  }
-
-  /** The spans of a run whose trace is sampled, while its tenant exports telemetry. */
-  private async spansFor(session: Session, record: RequestRecord): Promise<RunSpans | undefined> {
-    const tracing = this.options.tracing;
-    const settings = record.trace?.sampled ? await tracing?.settings(session.header.tenant).catch(() => undefined) : undefined;
-    if (!tracing || !settings || !record.trace) return undefined;
-    const { tenant, id, metadata } = session.header;
-    return new RunSpans({
-      tenant, agent: { id, ...(metadata?.name ? { name: metadata.name } : {}) }, request: record, trace: record.trace, content: settings.content,
-      model: () => session.header.config.model, toolSource: name => session.toolSources?.get(name) ?? "runtime",
-      record: span => tracing.record(tenant, span),
-    });
-  }
-
-  /** An event, to the spans of the run it belongs to, or of the compaction between runs it is part of. */
-  private traceEvent(session: Session, requestId: string, event: any) {
-    const at = Date.now();
-    if (event?.background === true) {
-      if (event.type === "compaction_start") session.background = this.options.tracing?.settings(session.header.tenant).then(settings => {
-        if (!settings || random().float() >= settings.sampleRate) return undefined;
-        const tracing = this.options.tracing!, tenant = session.header.tenant;
-        return new BackgroundSpans({ tenant, agentId: session.header.id, content: settings.content, model: () => session.header.config.model, record: span => tracing.record(tenant, span) });
-      }, () => undefined);
-      void session.background?.then(spans => spans?.event(event, at));
-      if (event.type === "compaction_end") session.background = undefined;
-      return;
-    }
-    const spans = session.spans;
-    if (spans && (requestId === spans.requestId || requestId === "")) spans.event(event, at);
   }
 
   /**
@@ -4483,70 +3507,6 @@ export class ClientSessions {
     return { body: body(), ...(contentType ? { contentType } : {}) };
   }
 
-  /**
-   * A message's attached audio, transcribed (`transcriber`): each file it asks to (`transcribe: true`), and by default each
-   * whose content type is audio/*. Files are checked (format, length, the message's limits) and their cost weighed against
-   * the run's own budget and the agent's spend limit before any is sent; each transcription is billed like a model
-   * response, with the run's facts, and counts against the agent's spend limit. A file asked for that cannot be
-   * transcribed refuses the message; one transcribed by default is attached without a transcript instead, with why
-   * (`untranscribed`), so a voice note from a channel still reaches the agent. A spend limit refuses either way. Files
-   * come back with their transcript and (`cost`) what it cost, for the run's budget; the rest as they were.
-   */
-  private async transcribeAttached(session: Session, requestId: string, files: (FileRef & { transcribe?: boolean })[], run: { actor?: string; budget?: number; bucket?: string }): Promise<(FileRef & { cost?: number })[]> {
-    const plain = files.map(({ transcribe: _transcribe, ...file }) => file as FileRef & { cost?: number });
-    let chosen = files.flatMap((file, index) => file.transcribe ?? essence(file.contentType).startsWith("audio/") ? [index] : []);
-    if (!chosen.length) return plain;
-    /** A file that cannot be transcribed: the message is refused if it asked, else the file goes without. */
-    const failed = (index: number, error: unknown) => {
-      if (files[index].transcribe || errorStatus(error, 500) === 402) throw error;
-      plain[index] = { ...plain[index], untranscribed: errorText(error).slice(0, 300) };
-    };
-    const transcriber = this.options.transcriber;
-    if (!transcriber) {
-      for (const index of chosen) failed(index, new HttpError(400, "Transcription is not enabled on this runtime"));
-      return plain;
-    }
-    const tenant = session.header.tenant;
-    const audio: { index: number; bytes: Uint8Array; header: ReturnType<typeof checkedAudio> }[] = [];
-    let seconds = 0;
-    for (const [position, index] of chosen.entries()) {
-      const file = plain[index];
-      try {
-        if (position >= AUDIO_LIMITS.files) throw new HttpError(413, `At most ${AUDIO_LIMITS.files} audio files are transcribed for a message`, "AUDIO_TOO_LONG");
-        if (file.size > AUDIO_LIMITS.fileBytes) checkedAudio(new Uint8Array(file.size), file.path);
-        const bytes = await this.options.volumes!.readRange(tenant, file, 0, file.size);
-        const header = checkedAudio(bytes, file.path);
-        if (seconds + header.seconds > AUDIO_LIMITS.messageSeconds) throw new HttpError(413, `At most ${AUDIO_LIMITS.messageSeconds} seconds of audio are transcribed for a message`, "AUDIO_TOO_LONG");
-        seconds += header.seconds;
-        audio.push({ index, bytes, header });
-      } catch (error) { failed(index, error); }
-    }
-    const spend = await this.spendOf(session);
-    const left = spend ? spend.usd - spend.spent : Infinity;
-    const budget = Math.min(run.budget ?? Infinity, left);
-    const estimate = audio.reduce((total, { header }) => total + transcriber.cost(header.seconds), 0);
-    if (estimate > budget) throw new HttpError(402, `Transcribing this message's audio costs about $${estimate.toFixed(4)}, more than the $${Math.max(0, budget).toFixed(4)} left of ${budget === left ? "this agent's" : "this run's"} spend limit`, "SPEND_LIMIT");
-    const { identity, keyScope } = session.header;
-    const facts = { requestId, ...(run.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
-    // Its end user's credit holds the estimate before any audio is sent, and pays what the transcripts cost.
-    const held = audio.length ? await this.endUserHold(session, { id: requestId, ...(run.bucket ? { bucket: run.bucket } : {}) } as RequestRecord, estimate, "transcription") : undefined;
-    let total = 0;
-    const done = await Promise.allSettled(audio.map(async ({ index, bytes, header }) => {
-      try {
-        const { transcript, usage } = await transcriber.transcribe({ tenant, ...(keyScope ? { keyScope } : {}) }, { bytes, header }, {}, AbortSignal.timeout(AUDIO_LIMITS.timeoutMs + 10_000));
-        const cost = usage.usage.cost.total as number;
-        this.options.onUsage?.(tenant, session.header.id, { ...usage, ...facts });
-        this.spent(session, cost);
-        total += cost;
-        plain[index] = { ...plain[index], transcript, cost };
-      } catch (error) { failed(index, error); }
-    }));
-    await held?.settle(total);
-    const refused = done.find(result => result.status === "rejected");
-    if (refused) throw (refused as PromiseRejectedResult).reason;
-    return plain;
-  }
-
   /** js_exec's `fs`: the file tools over the agent's mounts, durable before any effect like any other tool call. */
   private async fsCall(session: Session, op: string, args: Record<string, unknown>, signal: AbortSignal) {
     if (!this.options.volumes || !session.header.mounts?.length) throw new Error("This agent has no volumes mounted");
@@ -4561,9 +3521,9 @@ export class ClientSessions {
    */
   private async modelAuth(session: Session): Promise<Credentials> {
     const { header } = session;
-    const endpoint = this.endpoint(session);
+    const endpoint = spend.endpoint(this.spendContext, session);
     if (endpoint && this.options.modelToken) {
-      const run = this.runningRun(session), actor = run?.actor, lineage = this.lineage(session, run);
+      const run = runningRun(session), actor = run?.actor, lineage = this.lineage(session, run);
       return { identity: true, apiKey: await this.options.modelToken(endpoint.baseUrl, {
         tenant: header.tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}), ...lineage,
       }) };
@@ -4576,13 +3536,6 @@ export class ClientSessions {
     const { platform, ...credentials } = resolved;
     session.platformKey = platform;
     return credentials;
-  }
-
-  /** The tenant's own endpoint the agent's model is on, if it is. */
-  private endpoint(session: Session) {
-    const endpoints = this.options.modelEndpoints?.(session.header.tenant);
-    const { provider } = session.header.config.model;
-    return endpoints && Object.hasOwn(endpoints, provider) ? endpoints[provider] : undefined;
   }
 
   /** A referenced file's bytes for the agent's model request, as base64 (only sizes a model can be shown). */
@@ -4602,45 +3555,12 @@ export class ClientSessions {
     const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
     if (!session) throw new HttpError(404, "Unknown agent");
     if (session.fault) throw session.fault;
-    const text = this.runText(session, body.id, signal);
+    const text = events.runText(this.eventContext, session, body.id, signal);
     session.lastActive = Date.now();
     let record: RequestRecord;
     try { ({ record } = await this.accept(session, body, true)); } catch (error) { text.close(); throw error; }
     if (record.state === "completed") { text.close(); const reply = replyText(record); if (reply) yield reply; return; }
     yield* text.chunks();
-  }
-
-  /** A tap on a run's text deltas from now on: `chunks` yields them until the response (or the agent leaves, or `signal`). */
-  private runText(session: Session, requestId: string, signal: AbortSignal) {
-    const queue: string[] = [];
-    let done = false, wake: (() => void) | undefined;
-    const tap = (data: ClientEvent) => {
-      if (data.type === "response" && data.id === requestId) done = true;
-      else if (data.type === "event" && data.requestId === requestId && data.event?.type === "message_update") {
-        const update = data.event.assistantMessageEvent;
-        if (update?.type === "text_delta" && typeof update.delta === "string") queue.push(update.delta);
-      } else return;
-      wake?.();
-    };
-    (session.taps ??= new Set()).add(tap);
-    const stop = () => { done = true; wake?.(); };
-    signal.addEventListener("abort", stop, { once: true });
-    const close = () => { session.taps?.delete(tap); signal.removeEventListener("abort", stop); };
-    const self = this;
-    return {
-      close,
-      async *chunks() {
-        try {
-          for (;;) {
-            while (queue.length) yield queue.shift()!;
-            if (done || self.sessions.get(session.header.id) !== session) return;
-            // Woken by the next delta or the response, or after a second to see whether the agent left this node.
-            await new Promise<void>(resolve => { wake = resolve; setTimeout(resolve, 1_000).unref(); });
-            wake = undefined;
-          }
-        } finally { close(); }
-      },
-    };
   }
 
   /** Submit a request to a tenant's agent on the tenant's behalf (REST API and console); `rate` hears where a run left the tenant's rate limit. */
@@ -4756,19 +3676,19 @@ export class ClientSessions {
       ? event => {
           // Failed calls report zero usage; count only responses the provider completed.
           // Responses through the tenant's own endpoint count under it: `chiridion/openrouter/<model>`.
-          const via = this.endpoint(session) ? `${session.header.config.model.provider}/` : "";
+          const via = spend.endpoint(this.spendContext, session) ? `${session.header.config.model.provider}/` : "";
           const { identity, keyScope } = session.header;
           const run = { requestId: record.id, ...(record.actor ? { actor: record.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
-          if (billed(event?.type === "message_end" ? event.message : undefined)) {
-            const usage = this.responseUsage(session, event.message);
+          if (spend.billed(event?.type === "message_end" ? event.message : undefined)) {
+            const usage = spend.responseUsage(this.spendContext, session, event.message);
             this.options.onUsage?.(session.header.tenant, id, { ...event.message, usage, ...run, provider: via + event.message.provider, platform: !!session.platformKey,
               ...(event.durable && this.supervisor.options.db ? { durableReceipt: true } : {}) });
             // Its spend was written with its journal entry (`entryEffect`).
-            this.counted(session, responseCost(usage));
-            this.tally(session, record.id, usage);
+            this.counted(session, spend.responseCost(usage));
+            spend.tally(session, record.id, usage);
           }
           if (event?.type === "compaction_usage" && event.usage) {
-            this.tally(session, record.id, this.compactionUsage(session, event, run));
+            spend.tally(session, record.id, spend.compactionUsage(this.spendContext, session, event, run));
           }
           // A prompt steered into this turn has been taken: the model has it now, and its request completes (`steerTaken`).
           const taken = event?.type === "message_end" && event.message?.role === "user" ? event.message.requestId : undefined;
@@ -4923,7 +3843,7 @@ export class ClientSessions {
         // A run queued behind the one that reached the cap never begins; a resumed turn is stopped by the host.
         // A child's notification is never refused: at a limit it lands without a turn (`landNotice`).
         if (!session.resuming.has(record.id) && (params as { notice?: unknown } | undefined)?.notice === undefined) {
-          const limited = await this.runLimit(session, record.method, record.bucket);
+          const limited = await spend.runLimit(this.spendContext, session, record.method, record.bucket);
           if (limited) throw limited;
         }
         try {
@@ -4968,7 +3888,7 @@ export class ClientSessions {
             [session.header.id, record.resumes ?? 0, Date.now(), this.sweepMs, MAX_RESUME_DELAY_MS]));
         } else if (!continued) await this.resetResumes(session);
         this.hook("runStarted", session, record);
-        session.spans = record.trace?.sampled ? await this.spansFor(session, record) : undefined;
+        session.spans = record.trace?.sampled ? await events.spansFor(this.eventContext, session, record) : undefined;
         if (session.announcing) {
           session.started = enqueueEvents(this.db, [this.runEvent(session, record)])
             .catch(error => console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: safeError(error) })));
@@ -5022,14 +3942,14 @@ export class ClientSessions {
     }
     catch (error) {
       // A limit that refused the run as it left the queue: its result is coded as a stop at that limit mid-run is.
-      const stop = refusalStop(error);
+      const stop = spend.refusalStop(error);
       value = stop ? { result: { error: errorText(error), ...stop } } : { error: errorText(error) };
       // Its host's journal failed a write: only a reload knows what it holds, so the agent is given up as a fault of
       // the session's own would, and the turn goes on from storage, not from this host's memory.
       if (errorText(error).startsWith(PERSISTENCE_FAILED)) this.fail(session, error, "transcript");
     }
     if (RUN_METHODS.includes(record.method)) session.outputs = undefined;
-    this.reportActive(session, false);
+    spend.reportActive(this.spendContext, session, false);
     session.beginning = undefined;
     // Cut off here as this node leaves (`handOffAll`): the run stays open for the next owner.
     if (this.closed || session.fault || session.leaving || session.requests.get(record.id)?.state !== "running") return;
@@ -5044,7 +3964,7 @@ export class ClientSessions {
     // A model turn that began and ends with no host (a resumed one whose agent failed to start, or one whose agent is gone):
     // the turn it left open is settled first, as at a load. A failed write gives the session up, and the run to the next load.
     if (resumable(record) && !this.supervisor.agents.has(session.header.id)) {
-      try { await this.closeTurn(session); }
+      try { await spend.closeTurn(this.spendContext, session); }
       catch (error) { this.fail(session, error, "transcript"); return; }
       if (this.closed || session.fault || session.leaving || session.requests.get(record.id)?.state !== "running") return;
     }
@@ -5083,7 +4003,7 @@ export class ClientSessions {
       if (run && session.header.run && record.id === runIdOf(session.header.id)) void this.runEnded(session);
       if (run && completed.trace?.sampled) {
         // A run that never began (refused at a limit, or failed starting) has a span too.
-        const spans = session.spans?.requestId === record.id ? session.spans : await this.spansFor(session, completed);
+        const spans = session.spans?.requestId === record.id ? session.spans : await events.spansFor(this.eventContext, session, completed);
         if (session.spans === spans) session.spans = undefined;
         spans?.end(value, completed);
       }
@@ -5097,20 +4017,11 @@ export class ClientSessions {
    * session expires at the bound it was made with.
    */
   private async runEnded(session: Session) {
-    this.endStreams(session);
+    events.endStreams(session);
     session.header.expiresAt = Date.now() + session.header.run!.retentionMs;
     try { await this.writeHeader(session); }
     catch (error) { console.error(JSON.stringify({ type: "run_retention_failed", agent: session.header.id, error: safeError(error) })); }
     await this.supervisor.stop(session.header.id).catch(() => {});
-  }
-
-  /** Count a model response's usage toward the webhook event of its run's end. */
-  private tally(session: Session, requestId: string, usage: any) {
-    const total = (session.usage ??= new Map()).get(requestId) ?? { responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 };
-    session.usage.set(requestId, {
-      responses: total.responses + 1, input: total.input + (usage.input ?? 0), output: total.output + (usage.output ?? 0),
-      cacheRead: total.cacheRead + (usage.cacheRead ?? 0), cacheWrite: total.cacheWrite + (usage.cacheWrite ?? 0), costUsd: total.costUsd + responseCost(usage),
-    });
   }
 
   /**
@@ -5135,124 +4046,7 @@ export class ClientSessions {
     })().catch(() => { /* The fault is reported to every later request. */ });
   }
 
-  /** A connected ChatGPT subscription needs no end-user credit to start or continue model calls. */
-  private modelPayer(session: Session, run: RequestRecord | undefined): { id: string; bucket: string } | undefined {
-    return session.header.config.model.api === "openai-codex-responses" ? undefined : this.payer(session, run);
-  }
-
-  /**
-   * Who pays for the agent's work, and from which bucket: its subject (an end user of the tenant's), from the running
-   * run's own bucket, else the agent's, else the default. Undefined for an agent with no subject: its tenant pays.
-   */
-  private payer(session: Session, run: RequestRecord | undefined): { id: string; bucket: string } | undefined {
-    const id = session.header.identity?.subject;
-    return id === undefined || !this.options.endUsers ? undefined : { id, bucket: this.bucketOf(session, run) };
-  }
-
-  /**
-   * The bucket a run of the agent spends from: its own, else the agent's, else the one the tenant's latest run of it named
-   * (`runBucket`), so a run the runtime starts (a schedule's, a sub-agent's notice, a channel's or a voice session's
-   * message) spends where the agent's do. Only with none of them the default, said once per load for a tenant that meters.
-   */
-  private bucketOf(session: Session, run: Pick<RequestRecord, "bucket"> | undefined): string {
-    const bucket = run?.bucket ?? session.header.bucket ?? session.header.runBucket;
-    if (bucket !== undefined) return bucket;
-    if (!session.defaultBucketSaid && session.header.identity?.subject !== undefined && this.options.endUsers) {
-      session.defaultBucketSaid = true;
-      const { tenant, id: agent } = session.header;
-      // A metered agent's run named no bucket, nor did the agent or any run of it.
-      void this.options.endUsers.enabled(tenant).then(metered => {
-        if (metered) console.warn(JSON.stringify({ type: "end_user_default_bucket", tenant, agent }));
-      }, () => {});
-    }
-    return DEFAULT_BUCKET;
-  }
-
-  /**
-   * Hold `usd` of its end user's credit for work of the agent's that is not a model call (audio to transcribe, an image),
-   * before it is sent: a refusal is a 402 END_USER_CREDIT. Settle it with what the work cost, or release it if none was
-   * done. Undefined when nobody's credit is metered.
-   */
-  private async endUserHold(session: Session, run: RequestRecord | undefined, usd: number, call: string): Promise<CreditHold | undefined> {
-    const payer = this.payer(session, run);
-    return payer && this.options.endUsers?.hold(session.header.tenant, payer.id, payer.bucket, usd, call, { agent: session.header.id, ...(run ? { requestId: run.id } : {}) });
-  }
-
-  /**
-   * Charge the agent's end user for a call it made that held nothing beforehand (a web search, a page rendered, a tool
-   * search's ranking), as the call is recorded. Never throws. A charge the database refuses (a failover) is retried
-   * under the same key, which posts it once, for up to END_USER_CHARGE_RETRY_MS; one that still fails is logged.
-   */
-  endUserCharge(agent: string, usage: UsageRecord) {
-    const session = this.sessions.get(agent), endUsers = this.options.endUsers;
-    const payer = session && this.payer(session, this.runningRun(session));
-    const usd = Number(usage.usage?.cost?.total ?? 0);
-    if (!session || !payer || !endUsers || !(usd > 0)) return;
-    const call = usage.searches ? "web_search" : usage.renders ? "web_fetch" : usage.toolSearch ? "tool_search" : "tool";
-    const tenant = session.header.tenant, raw = Math.round(usd * MICROS), key = `charge:${randomUUID()}`;
-    const metadata = { call, agent, ...(usage.provider ? { provider: usage.provider } : {}) };
-    void (async () => {
-      for (let delay = 1000, until = Date.now() + END_USER_CHARGE_RETRY_MS; ; delay = Math.min(delay * 2, 30_000)) {
-        try { return await endUsers.charge(tenant, payer.id, payer.bucket, raw, key, metadata); }
-        catch (error) {
-          if (Date.now() + delay > until) { console.error(JSON.stringify({ type: "end_user_charge_failed", tenant, agent, raw, error: safeError(error) })); return; }
-          await new Promise(resolve => setTimeout(resolve, delay).unref?.());
-        }
-      }
-    })();
-  }
-
-  /** The agent's spend limit, read once per load; its owner keeps it current. */
-  private async spendOf(session: Session) {
-    if (session.spend === undefined) {
-      const row = (await this.db.query("select usd, spent, set_at from agent_spend_limits where agent = $1", [session.header.id])).rows[0];
-      session.spend ??= row ? { usd: Number(row.usd), spent: Number(row.spent), setAt: Number(row.set_at) } : null;
-    }
-    return session.spend;
-  }
-
-  /** Close a stopped turn through the same spend transaction as its host's transcript writes. */
-  private async closeTurn(session: Session) {
-    await this.spendOf(session);
-    // A load can settle the old turn before ensureStarted initializes the pricing of recovered responses.
-    if (session.spend && (session.platformKey === undefined || session.catalogPriced === undefined) && await this.supervisor.hasDurableHistory(session.header.id)) {
-      const [{ platform }, priced] = await Promise.all([
-        this.apiKey(session, session.header.config.model.provider, session.header.keyScope),
-        this.options.catalogPriced?.(session.header.tenant),
-      ]);
-      session.platformKey = platform;
-      session.catalogPriced = !!priced;
-    }
-    const id = session.header.id;
-    const closed = await this.supervisor.closeTurn(id, session.claim, { committing: entry => this.entryEffect(session, entry),
-      index: { indexed: async () => (await this.historyIndex.indexed(id)) ?? (await this.historyIndex.begin(id), 0), write: chunk => this.historyIndex.write(id, session.claim, chunk) } });
-    // Recovered messages have no live message_end event to count them in memory. Read the committed ledger instead;
-    // a retry or a second close finds the same native cursor and cannot charge the response twice.
-    await this.refreshSpend(session);
-    return closed;
-  }
-
-  private async refreshSpend(session: Session) {
-    if (!session.spend) return;
-    session.spend = undefined;
-    const spend = await this.spendOf(session);
-    if (spend) spend.spent += session.unwritten ?? 0;
-  }
-
-  /**
-   * A response's usage as it is billed: on a platform key of a tenant that pays for it, priced from the runtime's catalog,
-   * never from the agent's stored model; one that reported no usage, or was cut short, is charged an estimate (the
-   * host's input estimate and `chars` streamed, at two a token), and logged. An unbilled tenant's (an admin tenant's) is
-   * as the provider reported it, as its usage events say.
-   */
-  private billable(session: Session, usage: any, provider: string, model: string, estimate?: { chars: number; completed: boolean }, quiet = false) {
-    if (!session.platformKey || !session.catalogPriced) return usage;
-    const priced = platformUsage(usage, provider, model, estimate && { ...estimate, inputTokens: usage?.estimatedInputTokens });
-    if (!quiet && (priced.estimated || !priced.known)) {
-      console.log(JSON.stringify({ type: "platform_usage_untrusted", tenant: session.header.tenant, agent: session.header.id, provider, model, estimated: priced.estimated, known: priced.known, aborted: !!estimate && !estimate.completed, reportedOutputTokens: usage?.output ?? 0, billedOutputTokens: priced.usage.output ?? 0, usd: priced.usage.cost.total }));
-    }
-    return priced.usage;
-  }
+  endUserCharge(agent: string, usage: UsageRecord) { spend.endUserCharge(this.spendContext, agent, usage); }
 
   /** Give the agent a budget of `usd` from now (null: none). A new value starts counting from zero. */
   private async setSpendLimit(session: Session, usd: number | null) {
@@ -5262,38 +4056,6 @@ export class ClientSessions {
     session.spend = usd === null ? null : { usd, spent: 0, setAt };
     // What the replaced limit had counted is dropped with it.
     session.unwritten = 0;
-  }
-
-  /**
-   * A compaction summary's usage, billed like a response: to the tenant (`onUsage`, kind compaction) and against the
-   * agent's spend limit. One made in the background belongs to no run (`run` has no requestId). Returns the usage billed.
-   */
-  private compactionUsage(session: Session, event: any, run: Record<string, unknown>) {
-    const usage = this.billable(session, event.usage, event.provider, event.model, usageMissing(event.usage) ? { chars: Number(event.chars) || 0, completed: true } : undefined);
-    // Responses through the tenant's own endpoint count under it: `chiridion/openrouter/<model>`.
-    const via = this.endpoint(session) ? `${session.header.config.model.provider}/` : "";
-    this.options.onUsage?.(session.header.tenant, session.header.id, { ...event, usage, ...run, provider: via + event.provider, kind: "compaction", platform: !!session.platformKey,
-      ...(event.durable && this.supervisor.options.db ? { durableReceipt: true } : {}) });
-    if (event.durable && this.supervisor.options.db) this.counted(session, responseCost(usage));
-    else this.spent(session, responseCost(usage));
-    return usage;
-  }
-
-  /** Events of a compaction made between runs: billed here, as no run's stream carries them, and shown on the agent's stream. */
-  private backgroundEvent(session: Session, event: any) {
-    if (event?.type === "compaction_usage" && event.usage) {
-      const { identity, keyScope } = session.header;
-      this.compactionUsage(session, event, { ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
-    }
-    this.publish(session, { type: "event", requestId: "", event });
-  }
-
-  /** A billed model response's usage, as `billable` prices it. `quiet`: logged already, or to be. */
-  private responseUsage(session: Session, message: any, quiet = false) {
-    // Cut short, or its usage never came: billed at the estimate of what it streamed.
-    const aborted = message.stopReason === "aborted";
-    const estimate = aborted || usageMissing(message.usage) ? { chars: message.content?.length ? JSON.stringify(message.content).length : 0, completed: !aborted } : undefined;
-    return this.billable(session, message.usage, message.provider, message.model, estimate, quiet);
   }
 
   /** Count spend against the agent's spend limit, if it has one, in this owner's count. */
@@ -5311,42 +4073,29 @@ export class ClientSessions {
     session.unwritten = (session.unwritten ?? 0) + cost;
   }
 
-  /**
-   * What a transcript record commits (`ToolBridge.committing`): a model response's cost, and spend counted since that no
-   * record carries, added to the agent's spend in the transaction that writes the record, under the claim. So spend is
-   * never lost apart from the history it paid for: a new owner reads what the history it loads cost. Only the owner
-   * writes, and an increment for a limit replaced since (`set_at`) is dropped: a new limit counts from zero.
-   */
-  private nativeUsageEffect(session: Session, entry: import("@earendil-works/pi-durable").EntryRecord): CommitEffect | undefined {
-    const summary = entry.kind === "camel.compaction.usage" ? (entry.data as any)?.message : undefined;
-    const message = summary ?? durableEntryMessages(entry).find(item => billed(item.message))?.message;
-    if (!message || !billed(message)) return undefined;
-    const usage = this.responseUsage(session, message, true);
-    const via = this.endpoint(session) ? `${session.header.config.model.provider}/` : "";
-    const request = [...session.running.values()].find(record => RUN_METHODS.includes(record.method));
-    const { identity, keyScope } = session.header;
-    const payload: UsageRecord = { usage, provider: via + (message as any).provider, model: (message as any).model,
-      timestamp: message.timestamp, platform: !!session.platformKey, kind: summary ? "compaction" : "turn",
-      ...(request ? { requestId: request.id, ...(request.actor ? { actor: request.actor } : {}) } : {}),
-      ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) };
-    const spend = this.spendWrite(session, responseCost(usage));
-    // The current runtime already charges tracked attempts durably, including end-user holds.
-    if (usage.billingAttemptId) return spend;
-    return async sql => {
-      if (!sql) { await spend?.(); return; }
-      const inserted = await sql.query(`insert into pi_usage_receipts (session_id, entry_id, tenant, message)
-        values ($1, $2, $3, $4::jsonb) on conflict do nothing returning entry_id`,
-        [session.header.id, entry.id, session.header.tenant, JSON.stringify(payload)]);
-      if (inserted.rowCount) await spend?.(sql);
-    };
+  /** Why the agent may not spend more on models: it has reached its own spend limit. */
+  private async agentSpendLimit(session: Session): Promise<string | undefined> {
+    const spend = await this.spendOf(session);
+    if (!spend || spend.spent < spend.usd) return undefined;
+    return `This agent has reached its spend limit of ${dollars(spend.usd)} (${dollars(spend.spent)} spent since it was set); raise it with PATCH /v1/agents/${session.header.id}/configuration {"spendLimit": {"usd": …}}`;
   }
 
-  /**
-   * What commits with a journal entry (`ToolBridge.committing`): a model response's usage and cost (`nativeUsageEffect`),
-   * and, with any other entry, the spend counted since that no entry carried yet.
-   */
-  private entryEffect(session: Session, entry: import("@earendil-works/pi-durable").EntryRecord): CommitEffect | undefined {
-    return this.nativeUsageEffect(session, entry) ?? this.spendWrite(session, 0);
+  /** The agent's spend limit, read once per load; its owner keeps it current. */
+  private async spendOf(session: Session) {
+    if (session.spend === undefined) {
+      const row = (await this.db.query("select usd, spent, set_at from agent_spend_limits where agent = $1", [session.header.id])).rows[0];
+      session.spend ??= row ? { usd: Number(row.usd), spent: Number(row.spent), setAt: Number(row.set_at) } : null;
+    }
+    return session.spend;
+  }
+
+  /** Events of a compaction made between runs: billed here, as no run's stream carries them, and shown on the agent's stream. */
+  private backgroundEvent(session: Session, event: any) {
+    if (event?.type === "compaction_usage" && event.usage) {
+      const { identity, keyScope } = session.header;
+      spend.compactionUsage(this.spendContext, session, event, { ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
+    }
+    this.publish(session, { type: "event", requestId: "", event });
   }
 
   /** The write of `cost` to the agent's spend, with the spend counted that no record carried yet; undefined when there is none. */
@@ -5361,44 +4110,6 @@ export class ClientSessions {
     return sql => sql ? write(sql) : underClaim(this.db, session.claim, write);
   }
 
-  /** The tenant's js_exec limits. */
-  private async codeLimits(tenant: string): Promise<CodeLimits> {
-    return await this.options.codeLimitsFor?.(tenant) ?? { cpuMs: CODE_LIMITS.cpuMs, maxTimeoutMs: CODE_LIMITS.maxTimeoutMs, concurrent: CODE_LIMITS.concurrent };
-  }
-
-  /** Why the agent may not spend more on models: it has reached its own spend limit. */
-  private async agentSpendLimit(session: Session): Promise<string | undefined> {
-    const spend = await this.spendOf(session);
-    if (!spend || spend.spent < spend.usd) return undefined;
-    return `This agent has reached its spend limit of ${dollars(spend.usd)} (${dollars(spend.spent)} spent since it was set); raise it with PATCH /v1/agents/${session.header.id}/configuration {"spendLimit": {"usd": …}}`;
-  }
-
-  /** Why the running run may not spend more: it has spent its own limit (`runLimits`). */
-  private runSpendLimit(session: Session): string | undefined {
-    for (const [id, usd] of session.runLimits ?? []) {
-      const spent = (session.usage?.get(id)?.costUsd ?? 0) + (session.childSpend?.get(id) ?? 0) + (session.imageSpend?.get(id) ?? 0);
-      if (session.running.has(id) && spent >= usd) return `This run has reached its spend limit of ${dollars(usd)} (${dollars(spent)} spent)`;
-    }
-    return undefined;
-  }
-
-  /**
-   * Why the running run may not make another model request: it has made as many responses, or run as long, as the
-   * agent's `runLimits` allow, within the runtime's. Counted on this node: a turn resumed after its node was lost
-   * counts again from its resume.
-   */
-  private async turnLimit(session: Session): Promise<string | undefined> {
-    const run = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began);
-    if (!run) return undefined;
-    const most = await this.options.runLimitsFor?.(session.header.tenant) ?? RUN_LIMITS, own = session.header.config.runLimits ?? {}, its = session.runCaps?.get(run.id) ?? {};
-    const maxResponses = Math.min(own.maxResponses ?? most.maxResponses, its.maxResponses ?? most.maxResponses, most.maxResponses);
-    const maxSeconds = await this.maxSeconds(session, run.id);
-    const responses = session.usage?.get(run.id)?.responses ?? 0;
-    if (responses >= maxResponses) return `This run stopped at its limit of ${maxResponses} model responses. Send another message to continue`;
-    if (Date.now() - run.began! >= maxSeconds * 1000) return `This run stopped at its time limit of ${duration(maxSeconds)}. Send another message to continue`;
-    return undefined;
-  }
-
   /**
    * An agent with an idle lifetime (`idleTtlSeconds`) lives that long from its latest run: its expiry moves on as a run
    * is sent. It is written only once half the lifetime has passed since it last moved, so busy agents do not write it
@@ -5409,32 +4120,6 @@ export class ClientSessions {
     if (!idleTtlMs || expiresAt === null || expiresAt - Date.now() > idleTtlMs / 2) return;
     session.header.expiresAt = Date.now() + idleTtlMs;
     await this.writeHeader(session);
-  }
-
-  /** Why a run may not start: a model run's spend limit (a monthly cap or spent credit), or for any run, spent credit. */
-  private async runLimit(session: Session, method: string, bucket?: string): Promise<HttpError | undefined> {
-    const tenant = session.header.tenant;
-    const refused = (refusal: Refusal | undefined, code: string, limit?: RunStop["limit"]) => typeof refusal === "string" ? Object.assign(new HttpError(402, refusal, code), { stopLimit: limit }) : refusal;
-    if (MODEL_RUNS.includes(method)) {
-      const agent = await this.agentSpendLimit(session);
-      const limited = agent ? refused(agent, "SPEND_LIMIT", "agent") : refused(await this.options.spendLimit?.(tenant), "SPEND_LIMIT", "tenant");
-      if (limited) return limited;
-      // Its end user has nothing left in the run's bucket.
-      const payer = this.modelPayer(session, bucket ? { bucket } as RequestRecord : undefined);
-      const broke = payer && await this.options.endUsers?.refusal(tenant, payer.id, payer.bucket);
-      return broke ? creditError(broke) : undefined;
-    }
-    if (RUN_METHODS.includes(method)) return refused(await this.options.creditLimit?.(tenant), "INSUFFICIENT_CREDIT");
-    return undefined;
-  }
-
-  /** Report the running run's active time so far; `running` keeps counting from now. */
-  private reportActive(session: Session, running: boolean, now = Date.now()) {
-    if (session.activeSince === undefined) return;
-    const ms = now - session.activeSince;
-    session.activeSince = running ? now : undefined;
-    try { this.options.onActive?.(session.header.tenant, session.header.id, ms); }
-    catch (error) { console.error(JSON.stringify({ type: "active_report_failed", error: errorText(error) })); }
   }
 
   /** Make a pending execution's start durable before anything outside its sandbox acts for it. */
@@ -5460,12 +4145,6 @@ export class ClientSessions {
   }
 
   /**
-   * Call a tool on the application's attached server, as on any MCP server. With no application
-   * connected (after a short wait for one reconnecting) the call fails without running; a call the
-   * connection or deadline cut short has an unknown outcome. After a crash, the turn's transcript
-   * says the same: a tool call without a result is closed as unknown, never sent again.
-   */
-  /**
    * A `tools.search` query over the agent's code-mode tools; a rerank stage that fails is logged and
    * left out. Ranking by meaning is platform usage at what its providers charged: the tenant pays
    * the runtime, never with its own keys, so which provider serves it stays the runtime's choice.
@@ -5482,56 +4161,6 @@ export class ClientSessions {
     const usage: UsageRecord = { provider: "runtime", model: "tool_search", usage: { cost: { total: usd } }, platform: true, toolSearch: true, toolSearches: searches };
     this.options.onUsage?.(session.header.tenant, session.header.id, usage);
     this.endUserCharge(session.header.id, usage);
-  }
-
-  private async callAttached(session: Session, { name, args, signal, toolCallId, innerCallId, idempotencyKey, origin, actor, onProgress, approval, inputResponses, requestState, elicit, lineage }: ToolCall): Promise<McpResult> {
-    const attached = await this.attachedServer(session, signal);
-    if (!attached) throw new ToolFailure("not_connected", "No application is connected to answer this tool call; it did not run");
-    // The tool's own deadline, else the runtime's; each progress notification restarts it, up to TOOL_DEADLINES.maxTotalMs.
-    const timeout = session.header.definitions.find(tool => tool.name === name)?.timeoutMs ?? this.options.toolTimeoutMs ?? TOOL_DEADLINES.attachedMs;
-    // Who the call is for, as an identity token would say (the same claims): the connection is the
-    // application's own, so it needs no signature, and a tool reads it the same way either way.
-    const header = session.header;
-    const identity = {
-      tenant: header.tenant, agent: header.id, sub: header.identity?.subject ?? header.id,
-      ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity?.context ? { ctx: header.identity.context } : {}),
-      ...(actor ? { act: actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}),
-      ...(lineage ? { par: lineage.parent, root: lineage.root } : {}),
-    };
-    const _meta = {
-      "agent-runtime/callId": randomUUID(), "agent-runtime/identity": identity, ...callMeta({ toolCallId, innerCallId, idempotencyKey, origin, actor }),
-      ...(approval ? { "agent-runtime/approval": approval } : {}),
-    };
-    session.inflight++;
-    try {
-      return await attached.track(() => attached.client.request({ method: "tools/call", params: callParams(name, args, _meta, { inputResponses, requestState, elicit }) } as never, CallToolResultSchema,
-        { signal, timeout, maxTotalTimeout: Math.max(timeout, TOOL_DEADLINES.maxTotalMs), resetTimeoutOnProgress: true, onprogress: progress => onProgress?.(progress) })) as McpResult;
-    } catch (error) {
-      if (!signal.aborted && error instanceof McpError && error.code === ErrorCode.RequestTimeout) throw timedOut(timeout);
-      if (!signal.aborted && error instanceof McpError && error.code === ErrorCode.ConnectionClosed) {
-        throw new ToolFailure("connection_lost", CONNECTION_LOST, true);
-      }
-      throw error;
-    } finally { session.inflight--; }
-  }
-
-  /** Whether an application serves the agent's tools, waiting briefly for one that is reconnecting. */
-  private async applicationConnected(session: Session) {
-    for (const until = Date.now() + RECONNECT_GRACE_MS; ;) {
-      if (session.attached?.accepting && session.attached.initialized) return true;
-      if (Date.now() >= until || this.closed || session.fault) return false;
-      await sleep(50);
-    }
-  }
-
-  /** The attached server once its MCP session is up, waiting briefly for an application that is reconnecting. */
-  private async attachedServer(session: Session, signal: AbortSignal) {
-    for (const until = Date.now() + RECONNECT_GRACE_MS; ;) {
-      const attached = session.attached;
-      if (attached?.accepting && await attached.ready.then(() => true, () => false) && attached.accepting) return attached;
-      if (Date.now() >= until || signal.aborted || this.closed || session.fault) return undefined;
-      await sleep(50);
-    }
   }
 
   remove(id: string): Promise<void> {
@@ -5566,7 +4195,7 @@ export class ClientSessions {
       if (!settled) console.error(JSON.stringify({ type: "agent_delete_settle_timeout", tenant: session.header.tenant, agent: id }));
     } finally { clearTimeout(timer); }
     await this.interrupt(session, "Session revoked");
-    this.endStreams(session);
+    events.endStreams(session);
     await this.releaseVolumes(session.header, session.claim);
   }
 
@@ -5606,7 +4235,7 @@ export class ClientSessions {
     if (ended?.state === "completed") spans!.end(ended.outcome, ended);
     else spans?.abandon(reason);
     // Tool calls in flight end as unknown: the connection they were on is closed.
-    this.closeAttached(session);
+    events.closeAttached(session);
     await this.commit(session, true);
   }
 
@@ -5802,7 +4431,7 @@ export class ClientSessions {
       try { await this.interrupt(session, "The runtime stopped during this request", true); }
       catch { /* Already faulted; the next load recovers conservatively from storage. */ }
       await this.unload(session);
-      this.endStreams(session, false, "drain");
+      events.endStreams(session, false, "drain");
     })().finally(() => this.leavingWork.delete(work));
     this.leavingWork.add(work);
     return work;
@@ -5831,7 +4460,7 @@ export class ClientSessions {
         if (this.working(session) || session.inflight) continue;
         await this.supervisor.stop(session.header.id, { flush: false }).catch(() => {});
         await this.unload(session);
-        this.endStreams(session, false, "drain");
+        events.endStreams(session, false, "drain");
       }
       // Idle watchers reconnect to a node that stays.
       for (const id of [...this.idle.keys()]) this.loadedElsewhere(id, "drain");
@@ -5849,22 +4478,22 @@ export class ClientSessions {
         void this.remove(id).then(() => this.supervisor.stop(id)).catch(() => {});
         continue;
       }
-      for (const res of this.streams(session)) send(res, ": heartbeat\n\n");
+      for (const res of events.streams(session)) events.send(res, ": heartbeat\n\n");
       // A replaced connection still answering its calls is kept alive too, or its client would think the stream dead.
-      for (const attached of session.retiring ?? []) send(attached.res, ": heartbeat\n\n");
-      if (session.activeSince !== undefined && now - session.activeSince >= ACTIVE_REPORT_MS) this.reportActive(session, true, now);
+      for (const attached of session.retiring ?? []) events.send(attached.res, ": heartbeat\n\n");
+      if (session.activeSince !== undefined && now - session.activeSince >= ACTIVE_REPORT_MS) spend.reportActive(this.spendContext, session, true, now);
       void this.overrun(session, now).catch(() => {});
       if (this.busy(session) || now - session.lastActive < idleMs) continue;
       if (this.supervisor.agents.has(id)) void this.supervisor.stop(id).catch(() => {});
       else if (!session.response && !session.fault) {
         // Nothing is running and no application is connected: everything needed later is in storage. Its watchers
         // stay, idle (see `idle`); its polls answer, and poll again idle.
-        this.idleWatchers(session);
+        events.idleWatchers(this.eventContext, session);
         void this.unload(session);
       }
     }
     for (const [id, entry] of this.idle) {
-      for (const res of entry.watchers) send(res, ": heartbeat\n\n");
+      for (const res of entry.watchers) events.send(res, ": heartbeat\n\n");
       // Should a load's notice be missed (the listening connection was down), who owns the agent says it too.
       const ownership = this.options.ownership;
       if (!ownership || now - entry.checked < IDLE_CHECK_MS) continue;
@@ -5884,36 +4513,14 @@ export class ClientSessions {
     if (!run || now - run.began! < overrunMs) return;
     // The run's own limit (the agent's runLimits, within the runtime's), as `turnLimit` counts it: not only the runtime's,
     // which an admin tenant does not have at all.
-    const maxSeconds = await this.maxSeconds(session, run.id);
+    const maxSeconds = await spend.maxSeconds(this.spendContext, session, run.id);
     const over = now - run.began! - maxSeconds * 1000;
     const id = session.header.id;
     if (!(over >= overrunMs) || !this.supervisor.agents.has(id) || !session.running.has(run.id)) return;
     console.error(JSON.stringify({ type: "run_overrun", agent: id, request: run.id, maxSeconds, overMs: over }));
     // The abort ends the model request or tool call in flight at once (model-stream.ts), and the run as its time limit's.
-    if (over < 2 * overrunMs) await this.supervisor.request(id, "abort", { stopped: "turn_limit", message: `This run stopped at its time limit of ${duration(maxSeconds)}. Send another message to continue` });
+    if (over < 2 * overrunMs) await this.supervisor.request(id, "abort", { stopped: "turn_limit", message: `This run stopped at its time limit of ${spend.duration(maxSeconds)}. Send another message to continue` });
     else await this.supervisor.stop(id, { flush: false });
-  }
-
-  /**
-   * The most seconds a run of the agent may take: the least of its own runLimits' maxSeconds, the run's own (a prompt's
-   * runLimits), and the runtime's maximum for its tenant.
-   */
-  private async maxSeconds(session: Session, run?: string) {
-    const most = await this.options.runLimitsFor?.(session.header.tenant) ?? RUN_LIMITS;
-    const its = run === undefined ? undefined : session.runCaps?.get(run)?.maxSeconds;
-    return Math.min(session.header.config.runLimits?.maxSeconds ?? most.maxSeconds, its ?? most.maxSeconds, most.maxSeconds);
-  }
-
-  /** A session unloading keeps its watchers, idle, and answers its polls. */
-  private idleWatchers(session: Session) {
-    const id = session.header.id;
-    if (session.watchers.size) {
-      let entry = this.idle.get(id);
-      if (!entry) { entry = { tenant: session.header.tenant, watchers: new Set(), polls: new Set(), checked: Date.now() }; this.idle.set(id, entry); }
-      for (const res of session.watchers) entry.watchers.add(res);
-      session.watchers.clear();
-    }
-    for (const wake of [...session.polls]) wake();
   }
 
   /** Drop a session from memory and give up ownership so any node can serve it next. */
@@ -5949,7 +4556,7 @@ export class ClientSessions {
     session.spans?.abandon("This node lost ownership of the agent");
     session.spans = undefined;
     this.fail(session, new Error("This node lost ownership of the agent"));
-    this.endStreams(session, true);
+    events.endStreams(session, true);
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);
     // Its claim is gone, so it could write no chunk: its next owner's start catches up.
     await this.supervisor.stop(session.header.id, { flush: false }).catch(() => {});
@@ -5972,7 +4579,7 @@ export class ClientSessions {
       catch { /* Already faulted; the next load recovers conservatively from storage. */ }
       await this.unload(session);
       // Closed after release, so the client's reconnect finds the next owner rather than this node.
-      this.endStreams(session, false, "drain");
+      events.endStreams(session, false, "drain");
     }
     for (const id of [...this.idle.keys()]) this.loadedElsewhere(id, "drain");
   }
