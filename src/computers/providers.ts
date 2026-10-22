@@ -42,7 +42,8 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
       async close(ref) {
         try {
           const sb = await client.sandboxes.fromId(ref.id); await sb.terminate();
-          for (const until = Date.now() + 30000; Date.now() < until;) { if (await sb.poll() !== null) return; await new Promise(r => setTimeout(r, 1000)); }
+          // Modal can take over 30 seconds to publish termination to poll().
+          for (const until = Date.now() + 90000; Date.now() < until;) { if (await sb.poll() !== null) return; await new Promise(r => setTimeout(r, 1000)); }
           throw new Error("Computer cleanup not confirmed");
         } catch (error) { if (!(error instanceof ModalNotFoundError)) throw error; }
       },
