@@ -14,7 +14,7 @@ import { GetHelp } from "@/components/get-help";
 import { SignedInAs } from "@/components/signed-in-as";
 import { setHelpTenant } from "@/lib/help-context";
 import { api, useApi, type Me, type Billing, type AgentSummary, type Workspace } from "@/lib/api";
-import { groupOf, redirectFor, TABS } from "@/lib/nav";
+import { documentTitle, groupOf, redirectFor, TABS } from "@/lib/nav";
 import { homeIsGetStarted, navProgress, startFrom, useOnboarding } from "@/lib/onboarding";
 import { Link, navigate, usePath, useSearch } from "@/lib/router";
 import { reportPages } from "@/lib/journey";
@@ -107,6 +107,9 @@ function Console({ me }: { me: Me }) {
   const onboarding = useOnboarding(starting ? 5_000 : undefined);
   const progress = navProgress(onboarding, starting ? startFrom(location.search) : undefined);
   useWebMcp(me.tenant);
+  // The tab says where you are, and in which workspace.
+  const title = documentTitle(section, new URLSearchParams(search).get("ws") || undefined, workspaces.data, home);
+  useEffect(() => { document.title = title; }, [title]);
   if (redirect || (!section && !agents.data && !agents.error && !startFrom(location.search))) return <div className="text-muted-foreground flex h-dvh items-center justify-center"><Loader2 className="animate-spin" /></div>;
   const page = starting ? <GetStartedPage billing={billing.data} onboarding={onboarding} />
     : section === "agents" && rest[0] ? <AgentPage id={rest[0]} />

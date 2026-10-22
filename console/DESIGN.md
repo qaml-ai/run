@@ -66,12 +66,15 @@ offscreen and in hidden tabs, and paint a still frame under reduced motion.
 
 ## Structure
 
-- The nav has two groups (`web/lib/nav.ts`). The workspace switcher sits above the pages it scopes: Overview (home once
-  an account has an agent; Get started before), Agents,
-  Definitions, Usage and Workspaces (Workspace settings when one is selected). It scopes only what the server scopes,
-  and is hidden for an account with no workspaces. Below it, **Account** holds what is account-wide and never changes
-  with it: Channels, Volumes, API keys, Models & keys, Billing and Settings (Telemetry and Account as link tabs).
-  Then Docs and Get help. Get started shows its progress at the top until a path is done, then moves beside Docs.
+- The nav has two groups (`web/lib/nav.ts`). The workspace switcher (`components/workspace-switcher.tsx`, a menu)
+  sits above the pages it scopes: Overview, Agents, Definitions, Usage and Workspaces (Workspace settings when one is
+  selected). It scopes only what the server scopes (agents, definitions and their spend), and is hidden for an
+  account with no workspaces. Below it, **Account** holds what is account-wide and never changes with it: Channels,
+  Volumes, API keys, Models & keys, Billing and Settings (Telemetry and Account as link tabs). Then Docs and Get
+  help. Get started shows its progress at the top until a path is done, then moves beside Docs.
+- Home (`/console/`) is Get started for an account with no agents (or a `?start=` deep link), and Overview after.
+- The tab's title names the page and, on a scoped page, its workspace (`documentTitle`): "Usage · Support bot ·
+  camelRun".
 - The selected workspace is `?ws=` (a workspace id or `unassigned`; absent is all) on scoped pages. Links between
   scoped pages carry it (`web/lib/router.tsx`), account pages drop it, and the browser remembers it for the way back.
   Pages read it with `useWorkspace()` (`web/lib/workspace.ts`). Every old URL keeps working; `redirectFor` replaces
@@ -79,10 +82,15 @@ offscreen and in hidden tabs, and paint a still frame under reduced motion.
 - Scoped lists filter by it and say so above their title (`ScopeCrumb`); a workspace is shown with `WorkspaceTag`
   and changed with `MoveMenu` (`components/workspace-ui.tsx`), never a native select. An account with no workspaces
   sees no workspace column, selection or crumb.
-- Charts are allowed on Overview and Usage only: plain SVG bars in `--chart-3` inside `border bg-card` frames, each bar
-  titled with its value, never a hue (signal blue stays status). Failures show their class and time, never their text.
-- Workspaces wear the gray ramp (`--chart-3`, `--chart-2`, `--chart-4`, then hatched), never a hue: signal blue keeps
-  meaning "live".
+- Charts are allowed on Overview and Usage only (`components/charts.tsx`): plain SVG bars inside `border bg-card`
+  frames, one per UTC day, each titled with its day and spend. Several series stack, bottom first, with a legend.
+- Workspaces wear the gray ramp (`--chart-3`, `--chart-2`, `--chart-4`, then hatched) in swatches, charts and share
+  bars; Unassigned is an outline; all workspaces a dashed outline. Never a hue: signal blue keeps meaning "live".
+- Failures show their class and time (`model error`, `2h ago`), never their text: that is on the agent's Requests tab.
+- Lists that can grow are paged on the server (Agents: 50 a page, by cursor) or in the page (Usage's By day: 25 rows);
+  only the page in view is polled. A page's range and tab live in its URL (`?days=`, `?tab=`).
+- Section tabs are underlined (`TabsList variant="line"`, or link tabs where each has its own URL); pill tabs are for
+  choosing between code samples.
 - Every page header links its docs page (`PageHeader`'s `docs`, `LearnMore`) on the docs site people read
   (`web/lib/docs.ts`). An empty list says what the thing is and gives the one action to take (`EmptyState`'s `action`).
 - Get started's checklists tick from the account's real state through existing endpoints (`web/lib/onboarding.ts`);

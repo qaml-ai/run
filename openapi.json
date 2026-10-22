@@ -5882,6 +5882,36 @@
             },
             "description": "Model and tool spend by workspace; null is Unassigned, including usage from before workspace assignment"
           },
+          "workspaceDays": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "day": {
+                  "type": "string"
+                },
+                "workspace": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "responses": {
+                  "type": "number"
+                },
+                "cost": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "day",
+                "workspace",
+                "responses",
+                "cost"
+              ]
+            },
+            "description": "Without workspaceId: each workspace's responses and spend by UTC day (null is Unassigned), for a chart by workspace"
+          },
           "days": {
             "type": "array",
             "items": {

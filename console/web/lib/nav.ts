@@ -54,4 +54,14 @@ export function redirectFor(path: string, search: string): string | undefined {
   return undefined;
 }
 
+/**
+ * The browser tab's title: the page's place, the workspace a scoped page shows (`ws`: its name, or "Unassigned"), then
+ * camelRun. `section` is the page's first path segment.
+ */
+export function documentTitle(section: string, ws: string | undefined, workspaces: { id: string; name: string }[] | undefined, home = false) {
+  const place = home ? START.label : (groupOf(section) ?? groupOf("agents"))!.label;
+  const scope = !home && isScoped(section) && ws ? (ws === "unassigned" ? "Unassigned" : workspaces?.find(workspace => workspace.id === ws)?.name) : undefined;
+  return [place, scope, "camelRun"].filter(Boolean).join(" · ");
+}
+
 const withQuery = (path: string, query: URLSearchParams) => query.toString() ? `${path}?${query}` : path;

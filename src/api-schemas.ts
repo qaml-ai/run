@@ -907,6 +907,7 @@ export const Usage = z.object({
   since: z.number(),
   totals: Totals,
   workspaces: z.array(Totals.extend({ id: z.string().nullable(), name: z.string() })).openapi({ description: "Model and tool spend by workspace; null is Unassigned, including usage from before workspace assignment" }),
+  workspaceDays: z.array(z.object({ day: z.string(), workspace: z.string().nullable(), responses: z.number(), cost: z.number() })).optional().openapi({ description: "Without workspaceId: each workspace's responses and spend by UTC day (null is Unassigned), for a chart by workspace" }),
   days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction", "transcription", "image", "speech"]).openapi({ description: "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: speech made, by POST /v1/speech or voice sessions (responses counts speeches)" }) })),
 }).openapi("Usage");
 

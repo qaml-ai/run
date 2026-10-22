@@ -9,7 +9,7 @@ which can also deploy the manifests in your repository.
 
 ```sh
 npm install -g @camelai/camelrun   # Node 22+; or npx @camelai/camelrun <command>
-camelrun login                     # paste an API key from the console's API tokens page
+camelrun login                     # paste an API key from the console's API keys page
 ```
 
 `login` checks the key and saves it to `~/.config/camelrun/credentials.json`
@@ -227,7 +227,7 @@ channels, provider keys and endpoints, volumes and the account export are all
 `403` to them; use an API token or the console for those. Refresh tokens last 30
 days and rotate on each use. A refresh token presented again within 10 seconds of its
 rotation (a retry, or refreshes racing) gets the same new tokens; later, it revokes its grant.
-The console's API tokens page lists connected apps under **Connected apps**,
+The console's API keys page lists connected apps under **Connected apps**,
 where you revoke them (or `GET /v1/oauth/grants`, `DELETE
 /v1/oauth/grants/{id}`). Any API token also works, as `Authorization: Bearer`.
 Revoking an API token or a grant answers with `left`: the webhooks and trace

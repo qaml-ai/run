@@ -7,43 +7,16 @@ import { ErrorAlert, PageHeader, Stats } from "@/components/common";
 import { ScopeCrumb, scopeName } from "@/components/workspace-ui";
 import { formatAgo, formatCost, formatNumber, formatTime, useApi, useApiPage, type AgentSummary, type Billing, type Usage } from "@/lib/api";
 import { Link } from "@/lib/router";
+import { changeLabel, summarizeUsage } from "@/lib/usage";
+import { DailyBars } from "@/components/charts";
 import { cn } from "@/lib/utils";
 import { useWorkspace, useWorkspaceDirectory } from "@/lib/workspace";
 
 const DAYS = 30;
-/** A UTC day (YYYY-MM-DD), `back` days before `now`'s: usage is kept by UTC day. */
-export const utcDay = (now: number, back = 0) => new Date(now - back * 86_400_000).toISOString().slice(0, 10);
-
-/**
- * The selection's last 30 days against the 30 before, from one 60-day usage read: spend, each day's spend (oldest
- * first, a zero for a day without any), spend by model or tool, and today's responses.
- */
+/** The last 30 days of a 60-day usage read (`summarizeUsage`), with its spend as `spend`. */
 export function summarize(usage: Usage, now = Date.now()) {
-  const first = utcDay(now, DAYS - 1), priorFirst = utcDay(now, 2 * DAYS - 1), today = utcDay(now);
-  const daily = new Map(Array.from({ length: DAYS }, (_, at) => [utcDay(now, DAYS - 1 - at), 0]));
-  const models = new Map<string, number>();
-  let spend = 0, prior = 0, responsesToday = 0;
-  for (const row of usage.days ?? []) {
-    if (row.day >= first) {
-      spend += row.cost;
-      daily.set(row.day, (daily.get(row.day) ?? 0) + row.cost);
-      const label = row.kind === "turn" ? row.model : `${row.kind} · ${row.model}`;
-      models.set(label, (models.get(label) ?? 0) + row.cost);
-    } else if (row.day >= priorFirst) prior += row.cost;
-    if (row.day === today) responsesToday += row.responses;
-  }
-  return {
-    spend, prior, responsesToday,
-    daily: [...daily].map(([day, cost]) => ({ day, cost })),
-    models: [...models].map(([model, cost]) => ({ model, cost })).filter(row => row.cost > 0).sort((a, b) => b.cost - a.cost),
-  };
-}
-
-/** "↑ 12% vs prior 30 days", or nothing to compare with. */
-function change(spend: number, prior: number) {
-  if (prior <= 0) return spend > 0 ? "no spend the 30 days before" : undefined;
-  const percent = Math.round(((spend - prior) / prior) * 100);
-  return `${percent > 0 ? "↑" : percent < 0 ? "↓" : "±"} ${Math.abs(percent)}% vs prior 30 days`;
+  const summary = summarizeUsage(usage, DAYS, now);
+  return { ...summary, spend: summary.totals.cost };
 }
 
 /**
@@ -78,7 +51,7 @@ export function OverviewPage({ billing }: { billing?: Billing }) {
       <ErrorAlert error={usage.error ?? agents.error ?? running.error ?? failing.error} />
       <Stats items={[
         { label: `Spend · ${DAYS} days`, value: summary ? formatCost(summary.spend) : "…",
-          extra: summary && <p className="text-muted-foreground mt-1 text-xs">{[scope && accountSpend ? `${Math.round((summary.spend / accountSpend) * 100)}% of account` : undefined, change(summary.spend, summary.prior)].filter(Boolean).join(" · ")}</p> },
+          extra: summary && <p className="text-muted-foreground mt-1 text-xs">{[scope && accountSpend ? `${Math.round((summary.spend / accountSpend) * 100)}% of account` : undefined, changeLabel(summary.spend, summary.prior, DAYS)].filter(Boolean).join(" · ")}</p> },
         { label: "Running now", value: running.items ? more(running, running.items.length) : "…",
           extra: <p className="text-muted-foreground mt-1 text-xs">{agents.items ? `of ${more(agents, agents.items.length)} agents` : ""}{busy ? ` · ${busy.limit} busy at most` : ""}</p> },
         { label: "Responses today", value: summary ? formatNumber(summary.responsesToday) : "…",
@@ -89,7 +62,7 @@ export function OverviewPage({ billing }: { billing?: Billing }) {
 
       <div className="mb-5 grid gap-5 lg:grid-cols-[1.4fr_1fr]">
         <Panel title="Daily spend" action={<Link to="usage" className="inline-flex items-center gap-1 text-sm underline underline-offset-4">Usage<ArrowRight className="size-3.5" /></Link>}>
-          {!summary ? <Skeleton className="h-44 w-full" /> : <DailySpend daily={summary.daily} />}
+          {!summary ? <Skeleton className="h-44 w-full" /> : summary.spend <= 0 ? <p className="text-muted-foreground text-sm">No spend in the last {DAYS} days.</p> : <DailyBars days={summary.days} series={[{ label: "Spend", look: { kind: "ramp", index: 0 }, values: summary.daily.map(row => row.cost) }]} />}
         </Panel>
         <Panel title="By model and tool">
           {!summary ? <Skeleton className="h-44 w-full" /> : summary.models.length === 0 ? <p className="text-muted-foreground text-sm">No spend in the last {DAYS} days.</p> : (
@@ -142,23 +115,5 @@ function Panel({ title, action, children, flush }: { title: string; action?: Rea
       <div className="flex items-center justify-between gap-3 border-b px-4 py-3"><h2 className="text-sm font-semibold">{title}</h2>{action}</div>
       <div className={flush ? "" : "p-4"}>{children}</div>
     </section>
-  );
-}
-
-/** Plain bars, one per UTC day, scaled to the largest; each has its date and spend for a screen reader and a hover. */
-function DailySpend({ daily }: { daily: { day: string; cost: number }[] }) {
-  const max = Math.max(...daily.map(row => row.cost), 0);
-  const width = 560, height = 160, step = width / daily.length;
-  return (
-    <figure>
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="h-40 w-full" role="img" aria-label={`Daily spend, ${daily[0].day} to ${daily.at(-1)!.day}`}>
-        <line x1="0" x2={width} y1={height - 0.5} y2={height - 0.5} stroke="var(--border)" />
-        {daily.map((row, at) => {
-          const barHeight = max > 0 ? Math.max(row.cost > 0 ? 2 : 0, (row.cost / max) * (height - 4)) : 0;
-          return <rect key={row.day} x={at * step + step * 0.15} width={step * 0.7} y={height - barHeight} height={barHeight} fill="var(--chart-3)"><title>{`${row.day}: ${formatCost(row.cost)}`}</title></rect>;
-        })}
-      </svg>
-      <figcaption className="text-muted-foreground mt-1.5 flex justify-between font-mono text-xs"><span>{daily[0].day}</span><span>{daily.at(-1)!.day}</span></figcaption>
-    </figure>
   );
 }

@@ -231,12 +231,39 @@ it("shows the workspace a channel's agents join, through its definition", async 
   await waitFor(() => expect(within(row).getByText("Trading Desk")).toBeTruthy());
 });
 
-it("filters usage when a workspace total is selected", async () => {
+it("keeps Usage's range and tab in the URL, and pages By day", async () => {
+  const day = (back: number) => new Date(Date.now() - back * 86_400_000).toISOString().slice(0, 10);
   const paths: string[] = [];
-  const fetch = globalThis.fetch;
-  vi.stubGlobal("fetch", vi.fn(async (path: string, init?: RequestInit) => { paths.push(path); return fetch(path, init); }));
+  vi.stubGlobal("fetch", vi.fn(async (path: string) => {
+    paths.push(path);
+    if (path === "/v1/workspaces") return json(state.workspaces);
+    if (path === "/v1/workspace-memberships") return json(state.memberships);
+    const rows = Array.from({ length: 6 }, (_, back) => ["a/one", "b/two", "c/three", "d/four", "e/five"].map(model => ({ day: day(back), model, kind: "turn", responses: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.5, platformCost: 0 }))).flat();
+    return json({ since: 0, totals: totals(15), days: rows, workspaceDays: rows.map(row => ({ day: row.day, workspace: "ws_desk", responses: 1, cost: 0.5 })) });
+  }));
   go("/console/usage");
   render(<UsagePage />);
-  fireEvent.click(await screen.findByRole("button", { name: "Trading Desk" }));
-  await waitFor(() => expect(paths).toContain("/v1/usage?days=30&workspaceId=ws_desk"));
+  // All workspaces: the chart stacks by workspace, and By workspace is the first tab.
+  expect(await screen.findByRole("region", { name: "Daily spend by workspace" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "By workspace", selected: true })).toBeTruthy();
+  const desk = screen.getAllByText("Trading Desk", { selector: "span" }).map(span => span.closest("tr")).find(Boolean)!;
+  expect(within(desk).getByText("$15.00")).toBeTruthy();
+  fireEvent.click(within(desk).getByRole("button", { name: /Open/ }));
+  await waitFor(() => expect(paths).toContain("/v1/usage?days=60&workspaceId=ws_desk"));
+  go("/console/usage");
+
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "By day" }));
+  await waitFor(() => expect(new URLSearchParams(location.search).get("tab")).toBe("day"));
+  // 30 rows: 25 a page.
+  await screen.findByText("Page 1 of 2");
+  expect(screen.getAllByRole("row").length).toBe(26);
+  // Paging and tabs never read again.
+  const reads = paths.length;
+  fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+  expect(screen.getByText("Page 2 of 2")).toBeTruthy();
+  expect(paths.length).toBe(reads);
+  // A range from the URL: twice it read, for the comparison.
+  go("/console/usage?days=7&tab=model");
+  await waitFor(() => expect(paths).toContain("/v1/usage?days=14"));
+  expect(screen.getByRole("tab", { name: "By model", selected: true })).toBeTruthy();
 });
