@@ -1,7 +1,8 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Hosting } from "./supervisor.ts";
-import { MAX_RESUMES, RUN_LIMITS } from "./client-sessions.ts";
+import { MAX_RESUMES } from "./client-sessions.ts";
+import { RUN_LIMITS } from "./client-sessions/spend.ts";
 import { STREAM_TIMEOUTS } from "./model-stream.ts";
 import { TOOL_DEADLINES } from "./tool-servers.ts";
 import { codeCapacity } from "./codemode.ts";

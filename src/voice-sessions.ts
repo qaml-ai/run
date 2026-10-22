@@ -9,7 +9,7 @@ import { metricLine, safeError, writeMetricLine } from "./metrics.ts";
 import { underClaim, type Claim, type Ownership } from "./ownership.ts";
 import { checkedAudio, languageInput, type Transcribed, type Transcriber } from "./transcription.ts";
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
-import type { UsageRecord } from "./client-sessions.ts";
+import type { UsageRecord } from "./client-sessions/state.ts";
 import { oggOpus, type Cut } from "./voice-audio.ts";
 import { inlineMedia, type Media, type MediaFactory, type MediaOptions } from "./voice/media.ts";
 import { DEFAULT_VOICE } from "./speech.ts";

@@ -1,5 +1,5 @@
 import type { Outbound } from "./outbound.ts";
-import type { UsageRecord } from "./client-sessions.ts";
+import type { UsageRecord } from "./client-sessions/state.ts";
 import { audioHeader, AUDIO_FORMATS, type AudioFormat, type AudioHeader } from "./audio-header.ts";
 import { HttpError } from "./http.ts";
 import type { AgentIdentity } from "./identity.ts";

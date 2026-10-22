@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Outbound } from "./outbound.ts";
-import type { UsageRecord } from "./client-sessions.ts";
+import type { UsageRecord } from "./client-sessions/state.ts";
 import { HttpError } from "./http.ts";
 import type { AgentIdentity } from "./identity.ts";
 import { imageHeader } from "./image-header.ts";

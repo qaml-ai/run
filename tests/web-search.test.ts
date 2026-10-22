@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { braveSearch, exaSearch, firecrawlSearch, parallelSearch, searchProvidersFromEnvironment, WebSearch, withinBudget, type SearchProviderId } from "../src/web-search.ts";
 import { builtinDefinitions } from "../src/builtins.ts";
-import type { UsageRecord } from "../src/client-sessions.ts";
+import type { UsageRecord } from "../src/client-sessions/state.ts";
 import { Outbound } from "../src/outbound.ts";
 import { micros } from "../src/pricing.ts";
 import { free, listen, runtime, sleep, toolCall, toolResults, until, type T } from "./runtime-server.ts";

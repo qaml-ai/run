@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import type { UsageRecord } from "../src/client-sessions.ts";
+import type { UsageRecord } from "../src/client-sessions/state.ts";
 import { Outbound } from "../src/outbound.ts";
 import { isShell, WebRender } from "../src/web-render.ts";
 import { free, listen, runtime, toolCall, toolResults, until, type T } from "./runtime-server.ts";
