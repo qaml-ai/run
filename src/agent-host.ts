@@ -728,19 +728,20 @@ export function createAgentHost(hostIO: HostIO) {
       if (isContextOverflow(last, config.model.contextWindow)) return;
       // Cut by this node's stale lease: made again at once, as its gate allows, and not counted as a provider failure.
       const interrupted = last.errorMessage === MODEL_INTERRUPTED;
-      // What the API reports as `retryable` (model-errors.ts): a tenant's own endpoint has retried already, so its errors
-      // (a credit gate's 402, say) end the turn; a stream that went quiet is retried like any.
-      if (!retriesModelError(last, failureContext())) {
-        if (omitImages || !isImageRejection(last.errorMessage)) return;
+      // A provider that cannot read an image in the history refuses every request carrying it, whether it calls that
+      // retryable or not: asked once more without images, outside the retry budget; what that ask gets is handled as any.
+      if (!omitImages && isImageRejection(last.errorMessage)) {
         omitImages = true;
         console.log(JSON.stringify({ type: "image_rejected", agent: config.id }));
         await journal.retract();
         io.emit({ type: "message_retracted", index: journal.total });
         await agent!.continue();
-        // This fallback gets one try, independently of the transient retry budget.
-        if ((agent!.state.messages.at(-1) as AssistantMessage | undefined)?.stopReason === "error") return;
+        attempt--;
         continue;
       }
+      // What the API reports as `retryable` (model-errors.ts): a tenant's own endpoint has retried already, so its errors
+      // (a credit gate's 402, say) end the turn; a stream that went quiet is retried like any.
+      if (!retriesModelError(last, failureContext())) return;
       if (!interrupted && attempt > policy.maxAttempts) {
         io.emit({ type: "auto_retry_end", success: false, attempt: attempt - 1, finalError: last.errorMessage, failure: modelFailure(last, failureContext()) });
         return;
