@@ -33,7 +33,8 @@ import { BillingUnsubscribePage } from "@/pages/billing-unsubscribe";
 import { BillingPage } from "@/pages/billing";
 import { GetStartedPage } from "@/pages/start";
 import { VolumePage, VolumesPage } from "@/pages/volumes";
-import { WORKSPACES_CHANGED, WorkspacesPage } from "@/pages/workspaces";
+import { WorkspaceSettingsPage, WorkspacesPage } from "@/pages/workspaces";
+import { WORKSPACES_CHANGED } from "@/lib/workspace";
 import { SignIn } from "@/pages/sign-in";
 import { EmailLinkPage } from "@/pages/email-link";
 import "@fontsource-variable/figtree";
@@ -108,7 +109,7 @@ function Console({ me }: { me: Me }) {
   const page = starting ? <GetStartedPage billing={billing.data} onboarding={onboarding} />
     : section === "agents" && rest[0] ? <AgentPage id={rest[0]} />
     : section === "volumes" ? (rest[0] ? <VolumePage id={rest[0]} /> : <VolumesPage />)
-    : section === "workspaces" ? <WorkspacesPage />
+    : section === "workspaces" ? (rest[0] ? <WorkspaceSettingsPage id={rest[0]} /> : <WorkspacesPage />)
     : section === "definitions" ? <DefinitionsPage />
     : section === "channels" ? <ChannelsPage />
     : section === "models" ? <ModelsPage me={me} />

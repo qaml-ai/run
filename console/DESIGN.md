@@ -75,6 +75,9 @@ offscreen and in hidden tabs, and paint a still frame under reduced motion.
   scoped pages carry it (`web/lib/router.tsx`), account pages drop it, and the browser remembers it for the way back.
   Pages read it with `useWorkspace()` (`web/lib/workspace.ts`). Every old URL keeps working; `redirectFor` replaces
   the ones whose page moved.
+- Scoped lists filter by it and say so above their title (`ScopeCrumb`); a workspace is shown with `WorkspaceTag`
+  and changed with `MoveMenu` (`components/workspace-ui.tsx`), never a native select. An account with no workspaces
+  sees no workspace column, selection or crumb.
 - Workspaces wear the gray ramp (`--chart-3`, `--chart-2`, `--chart-4`, then hatched), never a hue: signal blue keeps
   meaning "live".
 - Every page header links its docs page (`PageHeader`'s `docs`, `LearnMore`) on the docs site people read

@@ -1,4 +1,5 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
+import { api, useApi, type Workspace, type WorkspaceMembership } from "@/lib/api";
 import { isScoped } from "@/lib/nav";
 import { currentWorkspace, navigate, rememberWorkspace, usePath, useSearch } from "@/lib/router";
 
@@ -39,4 +40,54 @@ export function useWorkspace() {
   }, [scoped, ws, search, section, id, path]);
 
   return { ws, scoped, setWorkspace, forgetWorkspace };
+}
+
+/** Dispatched on window after workspaces or assignments change, so every view of them (the switcher, lists) reloads. */
+export const WORKSPACES_CHANGED = "console:workspaces-changed";
+export type WorkspaceKind = "agent" | "definition";
+
+/**
+ * The account's workspaces and who is in them, joined on the client (the list endpoints don't carry a workspace yet).
+ * `workspaceOf` is a resource's workspace id, or null when unassigned; `inScope` answers for the switcher's selection.
+ */
+export function useWorkspaceDirectory() {
+  const workspaces = useApi<Workspace[]>("/v1/workspaces");
+  const memberships = useApi<WorkspaceMembership[]>("/v1/workspace-memberships");
+  const { reload: reloadWorkspaces } = workspaces, { reload: reloadMemberships } = memberships;
+  useEffect(() => {
+    const reload = () => { void reloadWorkspaces(); void reloadMemberships(); };
+    addEventListener(WORKSPACES_CHANGED, reload);
+    return () => removeEventListener(WORKSPACES_CHANGED, reload);
+  }, [reloadWorkspaces, reloadMemberships]);
+  // Anything but a list (an older runtime without workspaces) reads as none.
+  const list = workspaces.data && (Array.isArray(workspaces.data) ? workspaces.data : []);
+  const members = memberships.data && (Array.isArray(memberships.data) ? memberships.data : []);
+  const assigned = useMemo(() => new Map(members?.map(member => [`${member.kind}:${member.id}`, member.workspaceId])), [members]);
+  const workspaceOf = useCallback((kind: WorkspaceKind, id: string) => assigned.get(`${kind}:${id}`) ?? null, [assigned]);
+  const inScope = useCallback((kind: WorkspaceKind, id: string, ws: string | undefined) =>
+    ws === undefined || (ws === UNASSIGNED ? workspaceOf(kind, id) === null : workspaceOf(kind, id) === ws), [workspaceOf]);
+  return {
+    workspaces: list, loaded: !!list && !!members, error: workspaces.error ?? memberships.error,
+    workspaceOf, inScope,
+    find: (id: string | null | undefined) => id ? list?.find(workspace => workspace.id === id) : undefined,
+    /** Where a workspace sits on the swatch ramp: its place in the account's list. */
+    index: (id: string) => list?.findIndex(workspace => workspace.id === id) ?? -1,
+  };
+}
+export type WorkspaceDirectory = ReturnType<typeof useWorkspaceDirectory>;
+
+/** Assign resources to a workspace (null: unassign), a few at a time; earlier spend keeps its attribution. Tells every view after. */
+export async function moveToWorkspace(kind: WorkspaceKind, ids: string[], workspaceId: string | null) {
+  try {
+    for (let at = 0; at < ids.length; at += 6) {
+      await Promise.all(ids.slice(at, at + 6).map(id => api(`/v1/workspace-memberships/${kind}/${id}`, { method: "PUT", body: { workspaceId } })));
+    }
+  } finally {
+    dispatchEvent(new Event(WORKSPACES_CHANGED));
+  }
+}
+
+/** Create, rename, archive or restore a workspace, and tell every view. */
+export async function changeWorkspaces<T>(action: () => Promise<T>): Promise<T> {
+  try { return await action(); } finally { dispatchEvent(new Event(WORKSPACES_CHANGED)); }
 }

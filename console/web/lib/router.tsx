@@ -47,6 +47,8 @@ function useLocationPart<T>(read: () => T) {
   const [value, setValue] = useState(read);
   useEffect(() => {
     const update = () => setValue(read());
+    // The URL can change between render and here (a redirect in a layout effect): catch up.
+    update();
     addEventListener("popstate", update);
     return () => removeEventListener("popstate", update);
   }, []);

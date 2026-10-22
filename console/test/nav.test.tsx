@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConsoleNav } from "../web/components/console-nav";
 import type { Workspace } from "../web/lib/api";
 import { ACCOUNT_NAV, groupOf, redirectFor, TABS, WORKSPACE_NAV } from "../web/lib/nav";
-import { navigate } from "../web/lib/router";
+import { navigate, usePath } from "../web/lib/router";
+import { useLayoutEffect } from "react";
 import { UsagePage } from "../web/pages/usage";
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
@@ -127,4 +128,15 @@ it("filters Usage by the selected workspace, and its filter moves the switcher's
   await waitFor(() => expect(paths).toContain("/v1/usage?days=30"));
   fireEvent.click(await screen.findByRole("button", { name: "Trading Desk" }));
   expect(location.search).toBe("?ws=ws_desk");
+});
+
+it("follows a redirect made before the location listeners attach", async () => {
+  go("/console/settings");
+  function Probe() {
+    const path = usePath();
+    useLayoutEffect(() => { const target = redirectFor(path, location.search); if (target) navigate(target, { replace: true }); }, [path]);
+    return <p>at {path}</p>;
+  }
+  render(<Probe />);
+  expect(await screen.findByText("at telemetry")).toBeTruthy();
 });

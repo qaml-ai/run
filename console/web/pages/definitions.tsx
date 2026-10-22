@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { FileCog, Loader2, Plus } from "lucide-react";
+import { ChevronDown, FileCog, Loader2, Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,6 +10,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmButton, EmptyState, ErrorAlert, PageHeader, WarningsAlert } from "@/components/common";
+import { MoveMenu, ScopeCrumb, scopeName, WorkspaceTag } from "@/components/workspace-ui";
+import { moveToWorkspace, UNASSIGNED, useWorkspace, useWorkspaceDirectory } from "@/lib/workspace";
 import { api, formatTime, useApi, type Definition, type ApplyResult, type Model, type RequestRecord } from "@/lib/api";
 
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -209,21 +211,43 @@ export function DefinitionsPage() {
   const definitions = useApi<Definition[]>("/v1/definitions");
   const [editing, setEditing] = useState<Definition | "new">();
   const [error, setError] = useState<string>();
+  const { ws, setWorkspace } = useWorkspace();
+  const directory = useWorkspaceDirectory();
+  const grouped = !!directory.workspaces?.length;
+  const shown = definitions.data?.filter(definition => !grouped || directory.inScope("definition", definition.id, ws));
+  const move = async (id: string, workspaceId: string | null) => {
+    setError(undefined);
+    try { await moveToWorkspace("definition", [id], workspaceId); } catch (caught) { setError((caught as Error).message); }
+  };
+  // A definition made while a workspace is selected joins it, so the agents made from it do too.
+  const target = ws && ws !== UNASSIGNED && !directory.find(ws)?.archived ? directory.find(ws)?.id : undefined;
   return (
     <>
+      <ScopeCrumb directory={directory} />
       <PageHeader title="Definitions" docs="definitions" description="Reusable agent configurations: model, prompt and tools. Agents and channels are made from them."
         actions={<Button size="sm" onClick={() => setEditing("new")}><Plus />New definition</Button>} />
       <ErrorAlert error={definitions.error ?? error} />
-      {!definitions.data ? <Skeleton className="h-32 w-full" /> : definitions.data.length === 0 ? (
+      {!definitions.data || !shown || (definitions.data.length > 0 && !directory.loaded && !directory.error) ? <Skeleton className="h-32 w-full" /> : definitions.data.length === 0 ? (
         <EmptyState icon={<FileCog />} title="No definitions" action={<Button size="sm" onClick={() => setEditing("new")}><Plus />New definition</Button>}>A definition is a reusable model, prompt and tools. Your app makes agents from it, and channels answer with it; change it once, and every agent made from it follows.</EmptyState>
+      ) : shown.length === 0 ? (
+        <EmptyState icon={<FileCog />} title={ws === UNASSIGNED ? "Every definition is in a workspace" : `No definitions in ${scopeName(directory, ws) ?? "this workspace"} yet`}
+          action={<><Button size="sm" onClick={() => setEditing("new")}><Plus />New definition</Button><Button size="sm" variant="outline" onClick={() => setWorkspace(undefined)}>Show all workspaces</Button></>}>
+          Agents made from a workspace's definitions (by your code or by a channel) join that workspace.</EmptyState>
       ) : (
         <div className="bg-card border">
           <Table>
-            <TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Model</TableHead><TableHead>Revision</TableHead><TableHead className="hidden lg:table-cell">Updated</TableHead><TableHead /></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>Name</TableHead>{grouped && <TableHead>Workspace</TableHead>}<TableHead>Model</TableHead><TableHead>Revision</TableHead><TableHead className="hidden lg:table-cell">Updated</TableHead><TableHead /></TableRow></TableHeader>
             <TableBody>
-              {definitions.data.map(definition => (
+              {shown.map(definition => (
                 <TableRow key={definition.id}>
                   <TableCell className="font-medium">{definition.name}<div className="text-muted-foreground font-mono text-xs">{definition.id}</div></TableCell>
+                  {grouped && <TableCell>
+                    <MoveMenu directory={directory} current={directory.workspaceOf("definition", definition.id)} onMove={workspaceId => void move(definition.id, workspaceId)}>
+                      <button type="button" aria-label={`Workspace for ${definition.name}`} className="hover:bg-accent focus-visible:ring-ring -mx-1.5 inline-flex max-w-full items-center gap-1 px-1.5 py-0.5 outline-none focus-visible:ring-2">
+                        <WorkspaceTag directory={directory} id={directory.workspaceOf("definition", definition.id)} /><ChevronDown className="text-muted-foreground size-3.5 shrink-0" />
+                      </button>
+                    </MoveMenu>
+                  </TableCell>}
                   <TableCell className="font-mono text-xs">{definition.model ?? <span className="text-muted-foreground">default</span>}</TableCell>
                   <TableCell><Badge variant="outline">{definition.revision}</Badge></TableCell>
                   <TableCell className="text-muted-foreground hidden text-xs lg:table-cell">{formatTime(definition.updatedAt)}</TableCell>
@@ -238,7 +262,7 @@ export function DefinitionsPage() {
           </Table>
         </div>
       )}
-      {editing && <DefinitionDialog definition={editing === "new" ? undefined : editing} onClose={() => setEditing(undefined)} onSaved={() => void definitions.reload()} />}
+      {editing && <DefinitionDialog definition={editing === "new" ? undefined : editing} onClose={() => setEditing(undefined)} onSaved={saved => { void definitions.reload(); if (editing === "new" && saved && target) void move(saved.id, target); }} />}
     </>
   );
 }
