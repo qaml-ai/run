@@ -31,9 +31,10 @@ const shell = (active: string, workspaces: Workspace[] | undefined = WORKSPACES)
 
 describe("nav groups", () => {
   it("puts what workspaces scope above the Account group, and keeps every page reachable", () => {
-    expect(WORKSPACE_NAV.map(item => item.label)).toEqual(["Agents", "Definitions", "Usage", "Workspaces"]);
+    expect(WORKSPACE_NAV.map(item => item.label)).toEqual(["Overview", "Agents", "Definitions", "Usage", "Workspaces"]);
     expect(ACCOUNT_NAV.map(item => item.label)).toEqual(["Channels", "Volumes", "API keys", "Models & keys", "Billing", "Settings"]);
-    expect(groupOf("")?.label).toBe("Agents");
+    expect(groupOf("")?.label).toBe("Overview");
+    expect(groupOf("agents")?.label).toBe("Agents");
     expect(groupOf("account")?.label).toBe("Settings");
     expect(groupOf("telemetry")?.label).toBe("Settings");
     expect(groupOf("quickstart")?.label).toBe("Get started");
@@ -46,6 +47,7 @@ describe("nav groups", () => {
       expect(redirectFor(path, "")).toBeUndefined();
     }
     expect(redirectFor("settings", "")).toBe("telemetry");
+    expect(redirectFor("overview", "?ws=ws_desk")).toBe("?ws=ws_desk");
     expect(redirectFor("usage", "?workspaceId=ws_desk")).toBe("usage?ws=ws_desk");
     expect(redirectFor("usage", "?workspaceId=all")).toBe("usage");
     expect(redirectFor("workspaces/ws_desk", "")).toBe("workspaces/ws_desk?ws=ws_desk");
@@ -66,6 +68,7 @@ describe("workspace switcher", () => {
     go("/console/agents?ws=ws_desk");
     shell("agents");
     expect(screen.getByRole("button", { name: /Trading Desk/ })).toBeTruthy();
+    expect(href("Overview")).toBe("/console/?ws=ws_desk");
     expect(href("Agents")).toBe("/console/agents?ws=ws_desk");
     expect(href("Usage")).toBe("/console/usage?ws=ws_desk");
     expect(href("Workspace settings")).toBe("/console/workspaces/ws_desk?ws=ws_desk");
