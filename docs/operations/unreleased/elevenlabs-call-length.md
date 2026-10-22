@@ -4,4 +4,4 @@
   duration exceeded") is replaced by a fresh one, briefed with what was said, instead of ending the voice session with
   `error`. Calls on ElevenLabs voices longer than 10 minutes used to end. The runtime creates a new agent per
   credential (`camelRun realtime voice v3`) on first use; the earlier `v2` agents are no longer used and can be deleted
-  from the ElevenLabs account. See [the realtime brain](../guides/voice-calls.md#the-realtime-brain).
+  from the ElevenLabs account. See `docs/guides/voice-calls.md` for the realtime brain.

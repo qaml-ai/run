@@ -325,7 +325,16 @@ test("ElevenLabs lost connections settle once and reconnect behind a renewed hol
 
 test("ElevenLabs max call duration starts a fresh conversation, briefed, and the call goes on; other normal closes end it", async t => {
   const fake = await fakeElevenLabs(t);
-  const state = testBrain({ reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true, provider: elevenlabsAgents({ baseUrl: fake.base }) });
+  const provider = elevenlabsAgents({ baseUrl: fake.base });
+  const closes: { detail: string | undefined; retryable: boolean | undefined }[] = [];
+  const connect = provider.connect.bind(provider);
+  provider.connect = (config, credentials, events) => connect(config, credentials, {
+    ...events, closed: (reason, detail, options) => {
+      closes.push({ detail, retryable: options?.retryable });
+      events.closed(reason, detail, options);
+    },
+  });
+  const state = testBrain({ reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true, provider });
   t.after(() => state.brain.close());
   await until(() => state.logs.some(log => log.type === "voice_realtime_ready"), "first connection");
   fake.send({ type: "agent_response", agent_response_event: { agent_response: "Welcome to the lounge" } });
@@ -336,12 +345,23 @@ test("ElevenLabs max call duration starts a fresh conversation, briefed, and the
   await until(() => state.logs.filter(log => log.type === "voice_realtime_ready").length === 2, "fresh conversation ready");
   const lost = state.logs.find(log => log.type === "voice_realtime_lost")!;
   assert.equal(lost.fields?.retrying, true);
-  assert.match(String(lost.fields?.detail), /1000: Max call duration exceeded/);
+  assert.equal(closes[0].retryable, true);
+  assert.match(closes[0].detail!, /1000: Max call duration exceeded/);
+  assert.equal(lost.fields?.detail, safeError(closes[0].detail), "logs keep only the privacy-safe classification");
   await until(() => fake.seen.events.some(e => e.type === "contextual_update" && String(e.text).startsWith("[Earlier in this call]")), "briefing");
   assert.match(fake.seen.events.find(e => e.type === "contextual_update" && String(e.text).startsWith("[Earlier in this call]")).text, /You: Welcome to the lounge/);
 
+  fake.send({ type: "agent_response", agent_response_event: { agent_response: "The call continues" } });
+  fake.send(audio());
+  fake.send({ type: "agent_response_complete", agent_response_complete_event: { event_id: 1 } });
+  await until(() => state.spoke.filter(event => event.type === "ended").length === 2, "replacement answer played");
+  const ended = state.spoke.filter(event => event.type === "ended");
+  assert.ok(ended.every(event => event.reason === "done" && event.seconds > 0));
+
   fake.connections[1].close(1000, "Conversation ended");
   await until(() => state.logs.filter(log => log.type === "voice_realtime_lost").length === 2, "second close");
+  assert.equal(closes[1].retryable, false);
+  assert.match(closes[1].detail!, /1000: Conversation ended/);
   assert.equal(state.logs.filter(log => log.type === "voice_realtime_lost")[1].fields?.retrying, false);
   assert.equal(fake.connections.length, 2);
 });
