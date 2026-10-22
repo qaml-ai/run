@@ -236,7 +236,10 @@ Creation uses the first session's resolved voice, rather than requiring Jessica 
 The [create schema](https://elevenlabs.io/docs/api-reference/agents/create) and
 [published OpenAPI](https://api.elevenlabs.io/openapi.json) accept client tools with `parameters` and `expects_response`,
 `pre_tool_speech: force/off`, `gemini-2.5-flash-lite`, Flash v2.5 with `pcm_24000`, the configured client events,
-and `turn_timeout: 7` / `silence_end_call_timeout: -1` (reviewed 2026-10-19).
+and `turn_timeout: 7` / `silence_end_call_timeout: -1` (reviewed 2026-10-19). Conversations last up to
+30 minutes (`conversation.max_duration_seconds: 1800`; ElevenLabs' default is 10). When one reaches it, ElevenLabs
+closes it (1000, "Max call duration exceeded") and the call goes on in a fresh conversation, briefed with what was said,
+as after a dropped connection; other 1000 and 1008 closes end the session.
 Failures identify the stage and HTTP status, retaining provider error codes/messages and validation field paths;
 keys, tokens and URLs are redacted before the detail is capped at 300 characters. HTTP 4xx failures are terminal;
 network and HTTP 5xx failures use the bounded reconnect budget.
