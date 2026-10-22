@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { PNG } from "./file-fixtures.ts";
 import assert from "node:assert/strict";
 import { AgentRuntime } from "../clients/typescript.ts";
 import { resolveModel } from "../src/session-config.ts";
@@ -6,7 +7,6 @@ import { listen, OPERATOR, OTHER_OPERATOR, runtime, until } from "./runtime-serv
 
 /** The fake servers listen on this host, over http: reachable only where the operator allows it. */
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
-const PNG = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000", "hex");
 
 type Turn = { text?: string; tool?: { name: string; args: unknown }; usage?: { prompt_tokens: number; completion_tokens: number } };
 /**

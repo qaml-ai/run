@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
 import sharp from "sharp";
 import { FILE_LIMITS } from "../src/limits.ts";
-import { fitImage } from "../src/inspect.ts";
-import { imageHeader } from "../src/image-header.ts";
+import { fitImage, inspect } from "../src/inspect.ts";
+import { imageHeader, imageIntact, IMAGE_DAMAGED } from "../src/image-header.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,7 +82,7 @@ test("an image that cannot be scaled down is omitted with its size and why, neve
   const corrupt = Buffer.concat([real.subarray(0, 600), Buffer.alloc(20_000, 0x55)]);
   const broken = await fitImage(corrupt);
   assert.ok("omitted" in broken);
-  assert.match(broken.omitted, /^2400×1800 px, could not be resized/);
+  assert.equal(broken.omitted, IMAGE_DAMAGED);
   // A decompression bomb past the pixel cap is refused from its header, before decoding.
   const bomb = await fitImage(bombPng(20_000, 20_000, 1));
   assert.deepEqual(bomb, { omitted: "20000×20000 px, too many pixels to scale down" });
@@ -117,7 +117,7 @@ test("a thread with over 20 images, one of them 2,400 px, gets a request where e
   // History as an earlier runtime stored it, before images were scaled down: 21 inline images, one too large for a request of many.
   const user = (text: string, images: string[]) => ({ role: "user", content: [{ type: "text", text }, ...images.map(data => ({ type: "image", data, mimeType: "image/png" }))], timestamp: 1 });
   const assistant = (text: string) => ({ role: "assistant", content: [{ type: "text", text }], api: "openai-completions", provider: "openrouter", model: "openai/gpt-4o-mini", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 });
-  const corrupt = Buffer.concat([big.subarray(0, 100), Buffer.alloc(1000, 1)]).toString("base64");
+  const corrupt = big.subarray(0, 24).toString("base64");
   const initialMessages = [
     user("screens", [...Array.from({ length: 19 }, () => fine), big.toString("base64")]), assistant("ok"),
     user("one more, and a broken one", [fine, corrupt]), assistant("ok"),
@@ -137,11 +137,12 @@ test("a thread with over 20 images, one of them 2,400 px, gets a request where e
   for (const image of shown) assert.ok(Math.max(...sides(image)) <= 1568, `an image of ${sides(image).join("×")} px`);
   assert.equal(shown.filter((image: Buffer) => sides(image)[0] === 1568).length, 2, "the inline one and the attached file, scaled down");
   const texts = JSON.stringify(request.messages);
-  assert.ok(texts.includes("[image omitted: 2400×1800 px, could not be resized"), "the broken image is a placeholder");
+  assert.ok(texts.includes(`[image omitted: ${IMAGE_DAMAGED}]`), "the broken image is a placeholder");
 
   // The stored history is as it was: the request healed, not the transcript. The attached file is the original too.
   const history = (await server.call(`/v1/agents/${agent}/history`)).json.messages;
   assert.equal(history[0].content[20].data, big.toString("base64"));
+  assert.equal(history[2].content[2].data, corrupt, "the damaged image remains in the journal");
   const volume = (await server.call(`/v1/agents/${agent}/mounts`)).json[0].volumeId;
   const download = Buffer.from(await (await fetch(`${server.base}/v1/volumes/${volume}/files/uploads/turn-1/shot.png`, { headers: auth })).arrayBuffer());
   assert.equal(sha(download), sha(big));
@@ -218,4 +219,87 @@ test("an image whose scaling failed for now (its parse job crashed) is tried aga
   await server.prompt(agent, "Again");
   const images = shown().filter((part: any) => part.type === "image_url").map((part: any) => sides(Buffer.from(part.image_url.url.split(",")[1], "base64")));
   assert.deepEqual(images, [[1568, 1176]], "the next request scales it");
+});
+
+
+test("image containers must be complete, with PNG signatures and checksums checked without decoding", async () => {
+  for (const format of ["png", "jpeg", "gif", "webp"] as const) {
+    const data = await picture(4, 3, format), mimeType = `image/${format}`;
+    assert.equal(imageIntact(data, mimeType), true, format);
+    for (let end = 0; end < Math.min(data.length, 14); end++) assert.equal(imageIntact(data.subarray(0, end), mimeType), false, `${format} at ${end}`);
+  }
+  const png = await picture(4, 3);
+  const badCrc = Buffer.from(png); badCrc[29] ^= 1;
+  const badSignature = Buffer.from(png); badSignature[4] = 0;
+  const jpeg = await picture(4, 3, "jpeg");
+  const gif = await picture(4, 3, "gif");
+  for (const [data, mimeType] of [[png.subarray(0, 24), "image/png"], [badCrc, "image/png"], [badSignature, "image/png"], [jpeg.subarray(0, -2), "image/jpeg"], [gif.subarray(0, -1), "image/gif"]] as const) {
+    assert.equal(imageIntact(data, mimeType), false);
+    assert.deepEqual(await fitImage(data), { omitted: IMAGE_DAMAGED });
+    assert.deepEqual(await inspect(data), { media: { kind: "none", reason: IMAGE_DAMAGED } });
+  }
+  assert.equal(imageHeader(badSignature), undefined);
+  assert.equal(imageIntact(Buffer.concat([png, Buffer.from("trailing")]), "image/png"), true);
+  assert.equal(imageIntact(Buffer.concat([jpeg, Buffer.alloc(10)]), "image/jpeg"), true);
+  assert.equal(imageIntact(Buffer.concat([gif, Buffer.alloc(10)]), "image/gif"), true);
+});
+
+test("a provider rejecting intact images gets one request without images, for the rest of the turn only", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "agent-image-retry-"));
+  const faux = registerFauxProvider({ tokensPerSecond: 1_000_000 });
+  t.after(async () => { faux.unregister(); await rm(directory, { recursive: true, force: true }); });
+  const storage = await openPiStorage({ sessionId: "agent", directory });
+  const events: any[] = [];
+  const png = (await picture(4, 3)).toString("base64");
+  const io: HostIO = {
+    emit: event => { events.push(event); }, cancelTools: async () => null, runLimit: async () => undefined,
+    legacyLog: { read: async () => [], empty: async () => true }, piStorage: async () => storage,
+    tool: async () => ({ content: [{ type: "image", data: png, mimeType: "image/png" }] }),
+    file: async ref => ref.path === "/broken.png" ? Buffer.from(png, "base64").subarray(0, 24).toString("base64") : png, modelAuth: async () => { throw new Error("no per-call credentials"); }, fs: async () => { throw new Error("no files"); },
+  };
+  const host = createAgentHost(io);
+  t.after(async () => { await host.dispose(0); await storage.close(BACKGROUND_CONTEXT); });
+  await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", initialMessages: [{ role: "user", content: [{ type: "text", text: "look" }, { type: "image", data: png, mimeType: "image/png" }], timestamp: 1 }], tools: [{ name: "picture", description: "An image", parameters: { type: "object" }, exposure: "direct", resultFormat: "content" }] });
+  const requests: any[] = [];
+  const reject = (context: any) => {
+    requests.push(context.messages);
+    if (JSON.stringify(context.messages).includes('"type":"image"')) return fauxAssistantMessage("", { stopReason: "error", errorMessage: "Failed to load image: cannot identify image file" });
+    return fauxAssistantMessage("Seen.");
+  };
+  faux.setResponses([reject, context => {
+    requests.push(context.messages);
+    return fauxAssistantMessage(fauxToolCall("picture", {}, { id: "call_1" }), { stopReason: "toolUse" });
+  }, reject, reject, reject]);
+  const file = { type: "file", path: "/image.png", volume: "vol", version: 1, size: Buffer.from(png, "base64").length, contentType: "image/png", chunks: ["a".repeat(64)], media: { kind: "image", mimeType: "image/png", width: 4, height: 3 } };
+  const run = await host.handle("prompt", { text: "look at both", files: [file] });
+  assert.equal(run.error, null);
+  assert.equal(requests.length, 3, "one fallback, then the tool result's request");
+  for (const request of requests.slice(1)) {
+    assert.ok(!JSON.stringify(request).includes('"type":"image"'));
+    assert.ok(JSON.stringify(request).includes(`[image omitted: ${IMAGE_DAMAGED}]`));
+    assert.ok(JSON.stringify(request).includes("/image.png"));
+  }
+  assert.equal(events.filter(event => event.type === "message_retracted").length, 1);
+  const stored = await journalMessages({ sessionId: "agent", directory });
+  assert.ok(JSON.stringify(stored).includes(png));
+  assert.ok(!JSON.stringify(stored).includes("Failed to load image"));
+  assert.equal((await host.handle("prompt", { text: "again" })).error, null);
+  assert.equal(requests.length, 5, "the next turn tries images again, then falls back once");
+  // Even a second provider image error is terminal after the single fallback.
+  faux.setResponses([reject, context => {
+    requests.push(context.messages);
+    return fauxAssistantMessage("", { stopReason: "error", errorMessage: "invalid image" });
+  }]);
+  const failed = await host.handle("prompt", { text: "still rejected" });
+  assert.ok(failed.error);
+  assert.equal(requests.length, 7);
+  assert.ok(!JSON.stringify(requests[6]).includes('"type":"image"'));
+
+  // Old file references are checked too, even when their saved dimensions fit.
+  faux.setResponses([reject, reject]);
+  const broken = { ...file, path: "/broken.png", chunks: ["b".repeat(64)] };
+  assert.equal((await host.handle("prompt", { text: "broken file", history: "none", files: [broken] })).error, null);
+  assert.equal(requests.length, 8, "a damaged file is omitted before the provider sees it");
+  assert.ok(JSON.stringify(requests[7]).includes("/broken.png"));
+  assert.ok(JSON.stringify(requests[7]).includes(`image omitted: ${IMAGE_DAMAGED}`));
 });

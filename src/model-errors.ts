@@ -85,3 +85,8 @@ export function modelFailure(message: Failed, context: FailureContext): ModelFai
     model: `${message.provider}/${message.model}`,
   };
 }
+
+/** Match only the class; provider text can contain private input and must never be logged here. */
+export function isImageRejection(message: string | null | undefined): boolean {
+  return errorClass(message) === "image_rejected";
+}

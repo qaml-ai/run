@@ -9,7 +9,9 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import secrets
+import struct
 import subprocess
+import zlib
 import sys
 import tempfile
 import threading
@@ -30,7 +32,14 @@ from camelai_run.projects import Projects, file_bytes, publish_tool
 DATABASE_URL = os.environ.get("AGENT_TEST_DATABASE_URL", "postgres://postgres:test@127.0.0.1:55432/postgres")
 
 
-PNG = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13]) + b"IHDR" + bytes([0, 0, 0, 2, 0, 0, 0, 3, 8, 2, 0, 0, 0])
+def png(width, height):
+    """A complete PNG of black pixels: the runtime checks an image's chunks before a model sees it."""
+    chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    rows = zlib.compress(b"".join(b"\0" + bytes(width * 4) for _ in range(height)))
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) + chunk(b"IDAT", rows) + chunk(b"IEND", b"")
+
+
+PNG = png(2, 3)
 
 
 def fake_model(bodies, script=None):
@@ -124,8 +133,8 @@ def trace_ids(requests):
 
 
 HELLO = (ROOT / "tests" / "fixtures" / "audio" / "hello.ogg").read_bytes()
-# A 1024x1024 PNG's header (signature and IHDR): all the runtime reads of an image made or given to edit.
-IMAGE = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13]) + b"IHDR" + (1024).to_bytes(4, "big") * 2 + bytes([8, 6, 0, 0, 0, 0, 0, 0, 0])
+# A 1024x1024 PNG, as an image endpoint makes one.
+IMAGE = png(1024, 1024)
 
 
 def fake_transcriber(requests):

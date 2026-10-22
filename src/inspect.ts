@@ -4,7 +4,7 @@ import { errorText } from "./protocol.ts";
 import { Confined } from "./sandbox.ts";
 import { INSPECT_FRAME_BYTES } from "./sandbox-wire.ts";
 import { textual, type FileRef, type Media } from "./files.ts";
-import { imageHeader } from "./image-header.ts";
+import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
 import type { FileEntry, VolumeService } from "./volumes.ts";
 
 /**
@@ -15,8 +15,8 @@ import type { FileEntry, VolumeService } from "./volumes.ts";
  * takes down only that file's process. In it the parser runs on a worker thread with a V8 heap
  * limit, a deadline, and a ceiling on the process's resident memory: pdf.js inflates streams into
  * ArrayBuffers, which heap limits do not count, so a small compressed "bomb" is stopped by the
- * ceiling. Inspecting an image reads only its header, here (image-header.ts: a few bounds-checked
- * reads); an image is decoded only to scale it down for a model request (`fitImage`).
+ * ceiling. Inspecting an image checks its header and container, here (image-header.ts: bounds-checked
+ * reads and PNG checksums); an image is decoded only to scale it down for a model request (`fitImage`).
  */
 export type Inspection = { media: Media; text?: string; truncated?: boolean };
 /**
@@ -27,6 +27,9 @@ export type Fitted = { data: Buffer; mimeType: string; width: number; height: nu
 
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const none = (reason: string): Inspection => ({ media: { kind: "none", reason } });
+/** A recognizable image with no readable header is damaged too (including a partial PNG signature). */
+const imageLike = (data: Buffer) => data.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47])) ||
+  data[0] === 0xff && data[1] === 0xd8 || /^GIF8|^RIFF/.test(data.subarray(0, 4).toString("latin1"));
 
 /** Parse jobs this process runs at once; more wait their turn. Each may grow to the memory ceiling above. */
 const PARSE_CONCURRENCY = 2;
@@ -86,13 +89,15 @@ export function inspection(value: any): Inspection {
 }
 
 /**
- * What bytes are: an image's type and size from its header, read here (a few bounds-checked bytes, as
- * `fitImage` reads them); a PDF's pages, and with `text` its text, in a parse job (`parse`).
+ * What bytes are: an image's type, size and structural completeness, checked here without decoding
+ * (as `fitImage` checks them); a PDF's pages, and with `text` its text, in a parse job (`parse`).
  */
 export async function inspect(bytes: Uint8Array, text = false): Promise<Inspection> {
   if (bytes.length > FILE_LIMITS.inspectBytes) return none(`larger than ${FILE_LIMITS.inspectBytes} bytes`);
   const data = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const header = imageHeader(data);
+  if (!header && imageLike(data)) return none(IMAGE_DAMAGED);
+  if (header && !imageIntact(data, header.mimeType)) return none(IMAGE_DAMAGED);
   if (header) return inspection({ media: { kind: "image", ...header } });
   if (data.subarray(0, 5).toString("latin1") !== "%PDF-") return none("not an image or PDF the model can view");
   try { return inspection(await parse(bytes, text)); }
@@ -103,16 +108,17 @@ export async function inspect(bytes: Uint8Array, text = false): Promise<Inspecti
 export const fits = (width: number, height: number, bytes: number) => Math.max(width, height) <= FILE_LIMITS.requestImageSide && bytes <= FILE_LIMITS.requestImageBytes;
 
 /**
- * An image as a model request may carry it: `bytes` as they are when their header is within
+ * An image as a model request may carry it: intact `bytes` as they are when their header is within
  * `fits`, else decoded and scaled down where untrusted files are parsed (`inspect`). The same bytes
  * always give the same output. One that cannot be (not an image a model takes, over the input,
  * pixel or time caps, or still too large) is `omitted`, with the reason, for a placeholder.
  */
 export async function fitImage(bytes: Buffer): Promise<Fitted> {
   const header = imageHeader(bytes);
+  if (header && !imageIntact(bytes, header.mimeType)) return { omitted: IMAGE_DAMAGED };
   if (header && fits(header.width, header.height, bytes.length)) return { data: bytes, ...header };
   const size = header ? `${header.width}×${header.height} px` : "not an image the model can view";
-  if (!header) return { omitted: size };
+  if (!header) return { omitted: imageLike(bytes) ? IMAGE_DAMAGED : size };
   if (bytes.length > FILE_LIMITS.inspectBytes) return { omitted: `${size}, larger than ${FILE_LIMITS.inspectBytes} bytes` };
   if (header.width * header.height > FILE_LIMITS.imageSide ** 2) return { omitted: `${size}, too many pixels to scale down` };
   let answer: any;
@@ -125,6 +131,7 @@ export async function fitImage(bytes: Buffer): Promise<Fitted> {
     const reason = typeof answer?.media?.reason === "string" ? answer.media.reason.slice(0, 200) : undefined;
     return { omitted: `${size}, could not be resized${reason ? ` (${reason})` : ""}`, ...(answer?.transient === true ? { transient: true as const } : {}) };
   }
+  if (!imageIntact(data, scaled.mimeType)) return { omitted: IMAGE_DAMAGED };
   return { data, ...scaled };
 }
 

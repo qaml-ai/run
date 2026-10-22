@@ -1,3 +1,4 @@
+import sharp from "sharp";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -284,8 +285,10 @@ test("each sender is rate limited, and told once", async t => {
 test("a photo reaches the model as an image", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "Nice photo." }));
   const { channel, secret } = await r.createChannel({ access: { allow: ["42"] } });
-  // A JPEG's start and frame header (5×5), then noise: inspection reads only the header.
-  const small = Buffer.from("small-thumbnail"), large = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x05, 0x00, 0x05, 0x03, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]), randomBytes(2048)]);
+  // A real 5×5 JPEG, padded to 3 KB so it is distinct from the smaller thumbnail.
+  const small = Buffer.from("small-thumbnail"), large = Buffer.concat([
+    await sharp({ create: { width: 5, height: 5, channels: 3, background: "red" } }).jpeg().toBuffer(), Buffer.alloc(2048),
+  ]);
   r.tg.files.set("thumb", small);
   r.tg.files.set("full", large);
   await r.deliver(channel, secret, {
@@ -425,7 +428,7 @@ test("files the agent presents reach the chat after its reply", async t => {
 });
 
 test("send_message sends files from the agent's mounts, and refuses paths outside them", async t => {
-  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x05, 0x00, 0x05, 0x03, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]), randomBytes(64)]);
+  const jpeg = await sharp({ create: { width: 5, height: 5, channels: 3, background: "red" } }).jpeg().toBuffer();
   const r = await runtime(t, (body, index) => {
     const photo = /\[File (\/workspace\/uploads\/[^ ]+\/photo\.jpg) /.exec(lastUser(body))?.[1];
     const send = (args: object) => ({ role: "assistant", tool_calls: [{ index: 0, id: `call_${index}`, type: "function", function: { name: "send_message", arguments: JSON.stringify(args) } }] });
