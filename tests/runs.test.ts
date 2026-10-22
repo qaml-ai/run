@@ -282,7 +282,8 @@ test("the TypeScript SDK: agents.run in one call, runs.stream as it happens, run
   assert.equal(failed.error?.code, "aborted");
   await assert.rejects(agents.run({ input: "slow", idempotencyKey: "slow-2", signal: AbortSignal.timeout(500) }), /aborted|timeout/i);
   await agents.runs.abort((await agents.runs.create({ input: "slow", idempotencyKey: "slow-2" })).id);
-  await assert.rejects(agents.runs.run({ input: "slow", idempotencyKey: "slow-2" }), (error: unknown) => error instanceof RunError && error.run.error?.code === "aborted");
+  // The deadline can fire before the queued run starts, or while its model is running.
+  await assert.rejects(agents.runs.run({ input: "slow", idempotencyKey: "slow-2" }), (error: unknown) => error instanceof RunError && ["aborted", "cancelled"].includes(error.run.error?.code ?? ""));
   assert.deepEqual(await agents.runtime.listAgents(), [], "no agents were made");
 });
 

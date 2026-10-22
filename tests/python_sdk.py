@@ -679,9 +679,14 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await stream.result()).text, "two")
 
         self.script.append({"role": "assistant", "content": "too late", "delayMs": 5000})
+        before = len(self.bodies)
         slow = await self.agents.runs.create("slow")
         self.assertEqual(slow["status"], "running")
-        await asyncio.sleep(0.5)
+        for _ in range(200):
+            if len(self.bodies) > before:
+                break
+            await asyncio.sleep(0.05)
+        self.assertGreater(len(self.bodies), before, "the model call must start before testing in-flight abort")
         await self.agents.runs.abort(slow["id"])
         with self.assertRaises(RunError) as aborted:
             await (await self.agents.runs.stream(run_id=slow["id"])).result()
