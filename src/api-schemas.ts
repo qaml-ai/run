@@ -372,7 +372,7 @@ export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeade
 });
 
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
-const Builtin = z.enum(["web_fetch", "web_search", "schedule", "ask_user", "delegate", "generate_image", "agents"]).openapi("Builtin", { description: "agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings" });
+const Builtin = z.enum(["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents"]).openapi("Builtin", { description: "agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings" });
 const AgentTarget = z.union([
   z.string().openapi({ description: "A definition's key or id; the model sees it by that name" }),
   z.strictObject({
@@ -496,7 +496,7 @@ export const AgentInput = z.object({
   remount: z.boolean().optional().openapi({ description: "An upsert of an existing agent: true sets the mounts given, between its turns, where other mounts are a 409" }),
   subject: z.string().optional().openapi({ description: "Who the agent acts for (a user id in your app): the `sub` of the identity tokens its tool servers with auth \"runtime\" get. Set only here" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here" }),
-  builtins: z.array(Builtin).max(8).optional().openapi({ description: "Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate, generate_image, agents), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none" }),
+  builtins: z.array(Builtin).max(8).optional().openapi({ description: "Tools the runtime answers itself (web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none" }),
   delegate: DelegateSettings.optional().openapi({ description: "With the delegate or agents builtin: who the agent may hand tasks to. Not with a definition, whose own it takes" }),
   mcpServers: z.array(InlineMcpServerInput).max(64).optional().openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent, for an agent without a definition; one made from a definition has its definition's. No credentials: auth \"runtime\" or none. An upsert without mcpServers leaves the agent none" }),
   keyScope: z.string().optional().openapi({ description: "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own", example: "org_abc123" }),
@@ -591,7 +591,7 @@ export const RunInput = z.strictObject({
   maxOutputTokens: MaxOutputTokens.optional(),
   temperature: Temperature.optional(),
   dataCollection: DataCollection.optional(),
-  builtins: z.array(z.enum(["web_fetch", "web_search", "delegate", "generate_image"])).max(8).optional().openapi({ description: "Tools the runtime answers itself (generate_image gives the run a workspace for its images). Not schedule or ask_user: a run has no later and no one to ask" }),
+  builtins: z.array(z.enum(["web_fetch", "web_search", "x_search", "delegate", "generate_image"])).max(8).optional().openapi({ description: "Tools the runtime answers itself (generate_image gives the run a workspace for its images). Not schedule or ask_user: a run has no later and no one to ask" }),
   delegate: DelegateSettings.optional(),
   mcpServers: z.array(InlineMcpServerInput).max(64).optional().openapi({ description: "Remote MCP servers whose tools the run may call, as an agent's own: no credentials (auth \"runtime\" or none). A server that cannot be listed shows in sourceErrors" }),
   fileTools: z.boolean().optional().openapi({ description: "true: the run gets a workspace volume and file tools. Default: none, unless input has files" }),
@@ -937,7 +937,7 @@ const definitionFields = {
   limits: DefinitionLimits,
   runLimits: RunLimits,
   mounts: z.array(MountInput).max(16).openapi({ description: "Volumes for each agent's file tools, beside its own workspace at /workspace unless they include {workspace: false}" }),
-  builtins: z.array(Builtin).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace" }),
+  builtins: z.array(Builtin).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace" }),
   webSearch: z.object({
     providers: z.array(z.enum(["exa", "brave", "parallel"])).min(1).max(3).openapi({ description: "The providers web_search tries, in order; each is skipped without a key, and the next is tried when one fails, times out or is rate limited", example: ["brave"] }),
   }).strict().openapi({ description: "Pin web_search to providers of your choosing instead of the runtime's order (exa, brave, parallel by default)" }),
@@ -969,7 +969,7 @@ export const Definition = z.object({
   openApi: z.array(OpenApi).optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
-  warnings: z.array(z.string()).optional().openapi({ description: "On a save: builtins its agents could not use yet, and how to fix it: web_search without a key for any of its search providers (add one with PUT /v1/providers/{provider}/key), generate_image without an OpenAI key" }),
+  warnings: z.array(z.string()).optional().openapi({ description: "On a save: builtins its agents could not use yet, and how to fix it: web_search without a key for any of its search providers (add one with PUT /v1/providers/{provider}/key), x_search without an xAI key, generate_image without an OpenAI key" }),
 }).openapi("Definition");
 export const ApplyResult = z.object({
   agent: z.string(),

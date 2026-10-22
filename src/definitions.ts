@@ -46,7 +46,7 @@ export interface DefinitionSpec {
   fileTools?: boolean;
   /** false: agents get no js_exec, and call every tool directly (AgentConfig.codeMode). */
   codeMode?: boolean;
-  /** Built-in tools to enable: web_fetch, web_search, schedule, ask_user, delegate, agents. */
+  /** Built-in tools to enable: web_fetch, web_search, x_search, schedule, ask_user, delegate, agents. */
   builtins?: string[];
   /** The search providers web_search tries, in order, instead of the runtime's (AGENT_WEB_SEARCH_PROVIDERS). */
   webSearch?: { providers: string[] };

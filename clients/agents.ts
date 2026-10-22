@@ -63,7 +63,7 @@ export interface AgentConfig {
   mcp?: ToolServer;
   /** A definition (reusable configuration with tool sources: MCP servers, OpenAPI specs, built-ins) to make it from. */
   definition?: string;
-  /** Tools the runtime answers itself (web_fetch, web_search, schedule, ask_user, delegate, agents), without a definition. */
+  /** Tools the runtime answers itself (web_fetch, web_search, x_search, schedule, ask_user, delegate, agents), without a definition. */
   builtins?: Builtin[];
   /**
    * Sub-agents: who the agent may hand tasks to (definitions, or agents by key), with `delegate` as its tool. Without a definition;
@@ -392,8 +392,8 @@ export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick
    * workspace for them. Audio is transcribed for the model (`transcribe: false` keeps it a plain file).
    */
   files?: (Uint8Array | Blob | { name?: string; data: Uint8Array | Blob; contentType?: string; transcribe?: boolean } | { url: string; name?: string; contentType?: string; transcribe?: boolean })[];
-  /** Tools the runtime answers itself: web_fetch, web_search, delegate. */
-  builtins?: ("web_fetch" | "web_search" | "delegate")[];
+  /** Tools the runtime answers itself: web_fetch, web_search, x_search, delegate. */
+  builtins?: ("web_fetch" | "web_search" | "x_search" | "delegate")[];
   output?: S;
   user?: string | Sender;
   metadata?: Record<string, string>;

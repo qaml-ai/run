@@ -2864,7 +2864,7 @@ class Agents:
         """A stateless run: a configuration and `input` in, its result (a Run) out, nothing carried over and no agent kept.
         It is as durable as an agent's run (a node lost mid-run, or a deploy, goes on from its last step), and counts toward
         busy agents and runs per minute as one does. Options: instructions, model, output (a pydantic model or JSON Schema),
-        definition, builtins ("web_fetch", "web_search", "delegate"), mcp_servers (no credentials: auth {"type": "runtime"} or none),
+        definition, builtins ("web_fetch", "web_search", "x_search", "delegate"), mcp_servers (no credentials: auth {"type": "runtime"} or none),
         thinking_level, files (bytes, inline), user, metadata,
         idempotency_key, spend_limit, run_limits, retention_seconds, throw_on_error. A failed run raises RunError unless
         throw_on_error=False. For a conversation that carries over, upsert an agent instead.
@@ -2882,7 +2882,7 @@ class Agents:
         agent.delete(); any number of processes may upsert it. `tools` (@tool functions) run in this process, which
         then answers the agent's tool calls, one process at a time: serverless or several processes, serve tools over
         HTTP (serve_tools) and name them in a definition instead. `builtins` are tools the runtime answers itself
-        ("web_fetch", "web_search", "schedule", "ask_user", "generate_image"), without a definition. `delegate` ({"agents": [...]}) lets it hand
+        ("web_fetch", "web_search", "x_search", "schedule", "ask_user", "generate_image"), without a definition. `delegate` ({"agents": [...]}) lets it hand
         tasks to sub-agents (its builtin comes with it; see the multi-agent guide); subagents=True delivers its sub-agents'
         progress as events. `mcp_servers` ([{"name", "url", "auth"?: {"type": "runtime"}, ...}]) are remote MCP servers of its
         own, without a definition and without credentials: the runtime's identity tokens or none (a token or headers go in a definition).

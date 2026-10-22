@@ -68,6 +68,7 @@ const TOP_AGENTS = 25;
 
 /** What live agents use, over `h` (the header as jsonb) and `a` (the agent). */
 const FEATURES: { key: string; label: string; sql: string }[] = [
+  { key: "x_search", label: "X search", sql: "h->'sources'->'builtins' ? 'x_search'" },
   { key: "web_search", label: "Web search", sql: "h->'sources'->'builtins' ? 'web_search'" },
   { key: "web_fetch", label: "Reads web pages", sql: "h->'sources'->'builtins' ? 'web_fetch'" },
   { key: "mcp", label: "MCP servers", sql: "jsonb_array_length(coalesce(h->'sources'->'mcpServers', '[]')) > 0" },
@@ -323,7 +324,7 @@ export async function adminAccount(db: Db, tenant: string, options: { days: numb
     sql.query("select distinct client_name from oauth_grants where tenant = $1 order by client_name", [tenant]),
   ]));
   const row = account.rows[0];
-  const modelRows = models.rows.filter(model => !/^(compaction|transcription|image):|\/web_search$|^firecrawl\/web_fetch$|^runtime\/tool_search$/.test(model.model));
+  const modelRows = models.rows.filter(model => !/^(compaction|transcription|image):|\/web_search$|^xai\/x_search$|^firecrawl\/web_fetch$|^runtime\/tool_search$/.test(model.model));
   if (!row.known && !agents.rows.length && !models.rows.length) return undefined;
   const byDate = new Map(daily.rows.map(day => [day.date, n(day.responses)]));
   const c = credit.rows[0];

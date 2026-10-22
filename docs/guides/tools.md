@@ -701,7 +701,7 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["web_fetch", "web_search", "schedule", "ask_user", "delegate", "generate_image", "agents"]`.
+`"builtins": ["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents"]`.
 
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or
@@ -717,6 +717,25 @@ it is made from (whose builtins it then has):
   saying which keys would set it up, and the console shows them; a search then
   fails with the same text ("Web search isn't available for this account: add
   an Exa, Brave or Parallel key under Models & keys").
+- `x_search` (`{query, allowedHandles?, excludedHandles?, fromDate?, toDate?}`)
+  searches X through Grok and returns a summary, source citations, and usage.
+  It works with any main model. Set an xAI key under Models & keys
+  (`PUT /v1/providers/xai/key`), or use the platform's key when available.
+  `allowedHandles` and `excludedHandles` each accept up to 20 handles, with or
+  without `@`; use one filter or the other. Dates are `YYYY-MM-DD` in UTC:
+  `fromDate` is inclusive and `toDate` exclusive. Treat posts as claims to
+  corroborate, not verified facts.
+  Each call uses `grok-4.7`, with at most two model turns and 1,800 output tokens.
+  When calling from `js_exec`, set its `timeoutMs` to `150000` to allow for
+  the search deadline. The result includes `text`, `citations: [{url, title?}]`, `incomplete`, and
+  `usage: {inputTokens, cachedInputTokens, outputTokens, searchCalls,
+  postsFetched, profilesFetched, costUsd}`. An incomplete answer is marked;
+  a failed or empty answer raises an error. Provider-reported usage is counted
+  even when the answer is incomplete or empty. Cost includes Grok tokens and
+  fetched posts or profiles, not a flat price per search. Usage appears under
+  `xai/x_search`; calls using the platform's key charge prepaid credit at that
+  reported cost, with no added search fee. The runtime does not retry a failed
+  request automatically.
 - `schedule`, `list_schedules`, `cancel_schedule` let the agent manage its own
   wake-ups (100 per agent, at most a year ahead, repeats at least a minute apart).
 - `ask_user` lets the model ask the user 1 to 4 multiple-choice questions; the
