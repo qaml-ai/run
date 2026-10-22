@@ -32,14 +32,14 @@ const shell = (active: string, workspaces: Workspace[] | undefined = WORKSPACES)
 describe("nav groups", () => {
   it("puts what workspaces scope above the Account group, and keeps every page reachable", () => {
     expect(WORKSPACE_NAV.map(item => item.label)).toEqual(["Overview", "Agents", "Definitions", "Usage", "Workspaces"]);
-    expect(ACCOUNT_NAV.map(item => item.label)).toEqual(["Channels", "Volumes", "API keys", "Models & keys", "Billing", "Settings"]);
+    expect(ACCOUNT_NAV.map(item => item.label)).toEqual(["Channels", "Volumes", "Computers", "API keys", "Models & keys", "Billing", "Settings"]);
     expect(groupOf("")?.label).toBe("Overview");
     expect(groupOf("agents")?.label).toBe("Agents");
     expect(groupOf("account")?.label).toBe("Settings");
     expect(groupOf("telemetry")?.label).toBe("Settings");
     expect(groupOf("quickstart")?.label).toBe("Get started");
     const reachable = new Set([...WORKSPACE_NAV, ...ACCOUNT_NAV].map(item => item.to).concat(Object.values(TABS).flat().map(tab => tab.to)));
-    for (const page of ["agents", "definitions", "workspaces", "channels", "volumes", "models", "tokens", "usage", "telemetry", "billing", "account"]) expect(reachable).toContain(page);
+    for (const page of ["agents", "definitions", "workspaces", "channels", "volumes", "computers", "models", "tokens", "usage", "telemetry", "billing", "account"]) expect(reachable).toContain(page);
   });
 
   it("titles the tab with the page and the workspace it shows", () => {
@@ -48,6 +48,7 @@ describe("nav groups", () => {
     expect(documentTitle("agents", undefined, WORKSPACES)).toBe("Agents · camelRun");
     // Account pages never name a workspace.
     expect(documentTitle("billing", "ws_desk", WORKSPACES)).toBe("Billing · camelRun");
+    expect(documentTitle("computers", "ws_desk", WORKSPACES)).toBe("Computers · camelRun");
     expect(documentTitle("", undefined, [], true)).toBe("Get started · camelRun");
   });
 
