@@ -65,7 +65,7 @@ test("40 percent is inclusive; larger selections fall back to all tests", () => 
   assert.match(result.reason, /40%/);
 }));
 
-test("local affected command includes tracked edits, forces process mode and propagates failures", () => fixture((root, write) => {
+test("local affected command includes tracked edits, respects hosting mode and propagates failures", () => fixture((root, write) => {
   const git = (...args: string[]) => {
     const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
@@ -75,13 +75,14 @@ test("local affected command includes tracked edits, forces process mode and pro
   git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "base");
   git("update-ref", "refs/remotes/origin/main", "HEAD");
   const path = "tests/unrelated-0.test.ts";
-  for (const fail of [false, true]) {
-    write(path, `import { test } from "node:test"; import assert from "node:assert/strict"; test("affected process mode", () => { assert.equal(process.env.AGENT_HOSTING, "process"); ${fail ? 'throw new Error("expected fixture failure");' : ''} });`);
+  for (const hosting of [undefined, "process", "inline"]) for (const fail of [false, true]) {
+    const expected = hosting ?? "process";
+    write(path, `import { test } from "node:test"; import assert from "node:assert/strict"; test("affected hosting mode", () => { assert.equal(process.env.AGENT_HOSTING, "${expected}"); ${fail ? 'throw new Error("expected fixture failure");' : ''} });`);
     const result = spawnSync(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("test-select.ts", import.meta.url)), "--run"], {
-      cwd: root, encoding: "utf8", env: { ...process.env, AGENT_HOSTING: "inline", NODE_TEST_CONTEXT: undefined },
+      cwd: root, encoding: "utf8", env: { ...process.env, AGENT_HOSTING: hosting, NODE_TEST_CONTEXT: undefined },
     });
     assert.equal(result.status, fail ? 1 : 0, result.stdout + result.stderr);
-    assert.match(result.stdout, /6 files \(process hosting\)/);
-    assert.match(result.stdout, /affected process mode/);
+    assert.ok(result.stdout.includes(`6 files (${expected} hosting)`), result.stdout);
+    assert.match(result.stdout, /affected hosting mode/);
   }
 }));

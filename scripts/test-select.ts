@@ -93,10 +93,12 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const selection = selectTests(root, changed);
   if (!run) console.log(JSON.stringify(selection));
   else {
-    console.log(`# ${selection.reason}: ${selection.files.length} files (process hosting)`);
+    const hosting = process.env.AGENT_HOSTING ?? "process";
+    if (hosting !== "process" && hosting !== "inline") throw new Error("AGENT_HOSTING must be process or inline");
+    console.log(`# ${selection.reason}: ${selection.files.length} files (${hosting} hosting)`);
     mkdirSync("test-timings", { recursive: true });
     const result = spawnSync(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--test-timeout=240000", fileURLToPath(new URL("test-files.ts", import.meta.url)), "test-timings/affected.json", "test-timings/affected.failed", ...selection.files], {
-      cwd: root, stdio: "inherit", env: { ...process.env, AGENT_HOSTING: "process" },
+      cwd: root, stdio: "inherit", env: { ...process.env, AGENT_HOSTING: hosting },
     });
     process.exitCode = result.status ?? 1;
   }

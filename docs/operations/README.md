@@ -94,8 +94,8 @@ all test files. Changes outside the import graph, an empty diff, selector/API er
 run all files. PRs still use only process hosting on fallback; main and manual runs always use both modes.
 Static selection cannot see computed imports or runtime file reads, so the smoke set and full main run remain
 necessary. `npm run test:affected` uses the same selector against `git merge-base origin/main HEAD` and runs the
-files locally in process mode, including tracked working-tree edits (with the same Postgres and sandbox
-prerequisites as other runtime tests).
+files locally in process mode by default; `AGENT_HOSTING=inline npm run test:affected` selects inline hosting.
+It includes tracked working-tree edits, with the same Postgres and sandbox prerequisites as other runtime tests.
 
 Every main push runs the full suite, both image architectures and `publish`; no PR results are reused. On failure,
 `CI success` writes the commit SHA, associated PR and last earlier green main SHA to the job summary. It does not
