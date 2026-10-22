@@ -1,4 +1,4 @@
-# Native computers
+### Native computers
 
 Agents can connect to Modal, Daytona, Boat, E2B, Browserbase, or a Docker runner
 reached through Cloudflare Tunnel. The Computers page stores provider credentials
