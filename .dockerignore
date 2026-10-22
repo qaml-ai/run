@@ -6,6 +6,7 @@ examples
 tests
 clients/*
 !clients/history-formats.ts
+!clients/markdown.ts
 sdk
 deploy
 **/__pycache__
