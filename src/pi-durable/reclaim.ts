@@ -1,6 +1,13 @@
 import { transaction, type Db, type Sql } from "../db.ts";
 
 /**
+ * A stored record as jsonb, for its kind and markers. jsonb refuses a NUL (`\u0000`, a binary file's text in a tool result,
+ * say), and so does json's `->>`: it becomes `\u0001` first, an escape of the same shape, so the JSON stays valid; the
+ * fields read here never hold one.
+ */
+const json = (column: string) => `(replace(${column}, '\\u0000', '\\u0001')::jsonb)`;
+
+/**
  * What a reclaim stage removes from session $1 (plans/journal-reclaim.md): the entries it selects (`id`, `bytes`), and
  * the documents (`id`) whose revisions and rows go with them. IDs (`pi_durable_record_ids`) are never removed.
  */
@@ -13,7 +20,7 @@ const obsolete = `with head as (
 )
 select e.id, octet_length(e.record) as bytes from pi_durable_entries e, head
 where e.session_id = $1 and e.conversation_id = 1 and e.id < head.start
-  and (e.record::jsonb)->>'kind' in ('camel.legacy.context', 'camel.context.message', 'pi.system')`;
+  and ${json("e.record")}->>'kind' in ('camel.legacy.context', 'camel.context.message', 'pi.system')`;
 
 /** Stage 1: context checkpoints superseded by a newer head. */
 const CHECKPOINTS: ReclaimStage = { name: "checkpoints", entries: obsolete };
@@ -24,13 +31,13 @@ const CHECKPOINTS: ReclaimStage = { name: "checkpoints", entries: obsolete };
  * marker's `total`, less the running turn's messages the marker keeps): then nothing reads its host records any more.
  */
 const retiredAndIndexed = `exists (select 1 from pi_durable_entries rx where rx.session_id = $1 and rx.conversation_id = 1
-    and (rx.record::jsonb)->>'kind' = 'camel.host.disabled' and (rx.record::jsonb)->'data'->>'retired' = 'journal')
+    and ${json("rx.record")}->>'kind' = 'camel.host.disabled' and ${json("rx.record")}->'data'->>'retired' = 'journal')
   and exists (select 1 from pi_durable_documents rd
     join lateral (select rr.content from pi_durable_document_revisions rr where rr.session_id = rd.session_id and rr.document_id = rd.id and rr.kind = 'base' order by rr.seq desc limit 1) rr on true
-    join pi_durable_entries rm on rm.session_id = rd.session_id and rm.id = ((rr.content::jsonb)->>'entry')::bigint
+    join pi_durable_entries rm on rm.session_id = rd.session_id and rm.id = (${json("rr.content")}->>'entry')::bigint
     join agent_history_index ri on ri.agent = rd.session_id
     where rd.session_id = $1 and rd.kind = '"camel.history.base"' and rd.retired_at is null
-      and ri.indexed >= ((rm.record::jsonb)->'data'->>'total')::bigint - coalesce(jsonb_array_length((rm.record::jsonb)->'data'->'kept'), 0))`;
+      and ri.indexed >= (${json("rm.record")}->'data'->>'total')::bigint - coalesce(jsonb_array_length(${json("rm.record")}->'data'->'kept'), 0))`;
 
 /**
  * Stage 2: a retired host transcript's own data: its records, its archive (and the archive of imports from before
@@ -40,7 +47,7 @@ const retiredAndIndexed = `exists (select 1 from pi_durable_entries rx where rx.
 export const HOST_TRANSCRIPT: ReclaimStage = {
   name: "host_transcript",
   entries: `select he.id, octet_length(he.record) as bytes from pi_durable_entries he
-    where he.session_id = $1 and he.conversation_id = 1 and (he.record::jsonb)->>'kind' in ('camel.host.record', 'camel.host.archive', 'camel.legacy.record')
+    where he.session_id = $1 and he.conversation_id = 1 and ${json("he.record")}->>'kind' in ('camel.host.record', 'camel.host.archive', 'camel.legacy.record')
       and ${retiredAndIndexed}`,
   documents: `select hd.id, octet_length(hd.record) + coalesce((select sum(octet_length(hr.content)) from pi_durable_document_revisions hr
       where hr.session_id = hd.session_id and hr.document_id = hd.id), 0) as bytes

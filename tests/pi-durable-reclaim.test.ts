@@ -15,7 +15,7 @@ import { lastUser, runtime, until } from "./runtime-server.ts";
 const database = testDatabase();
 const never = ["pi.user", "pi.assistant", "pi.tool-result", "camel.user", "camel.message", "camel.history.marker",
   "pi.compaction", "camel.compaction.usage", "camel.legacy.migration", "camel.host.bootstrap", "camel.host.record", "camel.host.archive"];
-async function fixture() {
+async function fixture(content = "content must never be logged") {
   const { db } = await database;
   const session = randomUUID();
   await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ($1, 'test', '{}', 1, 'test', 'test', 'test')", [session]);
@@ -23,7 +23,7 @@ async function fixture() {
   const kinds = ["camel.legacy.context", "camel.context.message", "pi.system", ...never, "camel.legacy.context", "camel.context.message", "pi.system"];
   const writes: StorageWrite[] = [{ type: "conversation", value: { id: 1 as never } }, { type: "conversation", value: { id: 100 as never } }];
   kinds.forEach((kind, i) => writes.push({ type: "entry", value: { id: (i + 2) as EntryId, conversationId: 1 as never, kind,
-    ...(kind === "camel.legacy.context" ? { head: (i + 2) as EntryId } : {}), data: { fixture: "content must never be logged" } } }));
+    ...(kind === "camel.legacy.context" ? { head: (i + 2) as EntryId } : {}), data: { fixture: content } } }));
   writes.push({ type: "entry", value: { id: 101 as EntryId, conversationId: 100 as never, kind: "pi.system" } });
   await storage.commit(writes, context);
   await storage.close(context);
@@ -55,6 +55,18 @@ test("stage 1 CLI defaults to dry-run, sizes exact rows, and writes nothing; app
   assert.deepEqual(await snapshot(db, session), before.filter(row => ![2, 3, 4].includes(Number(row.id))));
   assert.deepEqual((await db.query("select * from pi_durable_record_ids where session_id = $1 order by id", [session])).rows, idsBefore);
   assert.equal((await reclaimCheckpoints(db, { apply: true, session }, () => {})).sessions, 0, "repeat run has nothing to reclaim");
+});
+
+test("records holding a NUL (a binary file read as text) neither stop a run nor change what it selects", async () => {
+  // jsonb refuses \u0000, and json's ->> too: one such record anywhere stopped the first dry run in production.
+  const { db, session, before } = await fixture("PK\u0003\u0004\u0000 \\u0000 \\\u0000");
+  assert.ok(before.some(row => row.record.includes("\\u0000")));
+  assert.equal((await reclaimCheckpoints(db, { session }, () => {})).rows, 3);
+  await reclaimCheckpoints(db, { apply: true, session }, () => {});
+  assert.deepEqual(await snapshot(db, session), before.filter(row => ![2, 3, 4].includes(Number(row.id))));
+  const host = await hostTranscriptSession({ retired: true, indexed: 3, content: "PK\u0000" });
+  await reclaimHostTranscripts(host.db, { apply: true, session: host.session }, () => {});
+  assert.deepEqual(await kinds(host.db, host.session), ["camel.legacy.migration", "camel.host.bootstrap", "camel.user", "camel.history.marker", "camel.host.disabled"]);
 });
 
 test("stage 1 skips live owners (including draining nodes), pending runs, and every nonterminal task status", async () => {
@@ -214,7 +226,7 @@ test("stage 1 bounds a run by session limit and resumes across completed session
  * (`retired`): host records, archive blocks (an import's from before #322 too), the snapshot document, the base marker
  * and its document; and how much of its history the index holds (`indexed`).
  */
-async function hostTranscriptSession(options: { retired: boolean; indexed: number }) {
+async function hostTranscriptSession(options: { retired: boolean; indexed: number; content?: string }) {
   const { db } = await database;
   const session = randomUUID();
   await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ($1, 'test', '{}', 1, 'test', 'test', 'test')", [session]);
@@ -223,7 +235,7 @@ async function hostTranscriptSession(options: { retired: boolean; indexed: numbe
   const entry = (id: number, kind: string, data?: Record<string, unknown>) => ({ type: "entry" as const, value: { id: id as EntryId, conversationId: 1 as never, kind, ...(data ? { data: data as never } : {}) } });
   const writes: StorageWrite[] = [{ type: "conversation", value: { id: 1 as never } },
     entry(2, "camel.legacy.migration"), entry(3, "camel.legacy.record", { records: ["host content"] }), entry(4, "camel.host.bootstrap"),
-    entry(5, "camel.host.archive", { records: ["host content"] }), entry(6, "camel.host.record", { record: { t: "turn", active: false } }),
+    entry(5, "camel.host.archive", { records: ["host content"] }), entry(6, "camel.host.record", { record: { t: "turn", active: false, ...(options.content ? { text: options.content } : {}) } }),
     entry(7, "camel.user", { message: "kept" }),
     { type: "document.create", record: { id: 8 as never, kind: "camel.host.snapshot", scope: { kind: "session" } }, content: { version: 1, kind: "base", value: { enabled: !options.retired, snapshot: { total: 3 } } } },
     entry(9, "camel.history.marker", { t: "base", total: 3, active: false, turnStart: 3, awaiting: [] }),
