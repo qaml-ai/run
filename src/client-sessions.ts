@@ -3428,7 +3428,7 @@ export class ClientSessions {
         model: convertToLlm([...summary, ...kept.slice(summary.length ? compaction!.cut : 0)]),
         ...(compaction && count < compaction.cut ? { fromHistory: true as const } : {}) };
     }
-    if (cut.fromHistory) console.log(JSON.stringify({ type: "fork_from_history", agent: sourceId, at: cut.through, messages: cut.messages.length }));
+    if (cut.fromHistory) console.log(JSON.stringify({ type: "fork_from_history", agent: sourceId, at: cut.through, messageCount: cut.messages.length }));
     const from: ForkedFrom = { agentId: sourceId, atMessage: cut.through };
     // The source's own workspace is forked for the fork, under the id its workspace has; shared volumes stay shared.
     let mounts: unknown[] | undefined = source.mounts;

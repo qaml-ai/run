@@ -224,8 +224,11 @@ test("a migration waiting on a lock gives up after lock_timeout instead of stall
     await holder.query("rollback");
     await holder.end();
   }
-  // Once the lock is gone, it applies.
-  assert.deepEqual(await migrate(db, undefined, { lockTimeoutMs: 300 }), MIGRATIONS.filter(name => name >= "022_agent_cursor.sql"));
+  // Once the lock is gone, it applies. A later concurrent index can retry after earlier batches committed,
+  // so check the durable result, not only the files returned by the final attempt.
+  await migrate(db, undefined, { lockTimeoutMs: 300 });
+  assert.deepEqual((await db.query("select name from schema_migrations order by name")).rows.map(row => row.name), MIGRATIONS);
+  assert.deepEqual(await migrate(db), []);
 });
 
 test("a serialization failure, a deadlock or a statement timeout is retryable, not an outage: 503 DATABASE_RETRY with Retry-After", () => {

@@ -187,7 +187,7 @@ test("a fork of a compacted agent keeps its summary: the model sees the summary 
   assert.deepEqual(said(raw), ["user:OLD-QUESTION", "user:EARLY-0"]);
   assert.ok(r.logs.some(line => {
     const event = JSON.parse(line);
-    return event.type === "fork_from_history" && event.agent === source && event.at === 0 && event.messages === 1;
+    return event.type === "fork_from_history" && event.agent === source && event.at === 0 && event.messageCount === 1;
   }));
   const at = await sentFor(1);
   assert.ok(at.includes("SUMMARY-OF-EARLIER") && !at.includes("OLD-ANSWER") && !at.includes("KEPT-QUESTION"), at);

@@ -6,7 +6,7 @@ itself as native entries, and its turns, retractions, waiting calls and skips as
 into Pi's context are gone. A session's first load on this release retires its host transcript, once: it indexes
 whatever settled history before the journal's base its history index lacks, then disables the host document
 (`retired: "journal"`), and logs `host_transcript_retired`. A release before this one then refuses the session
-(409 `AGENT_NOT_MIGRATED`), so a rollback below it is one-way. See [Pi durable sessions](pi-durable.md).
+(409 `AGENT_NOT_MIGRATED`), so a rollback below it is one-way. See `docs/operations/pi-durable.md`.
 
 `AGENT_HISTORY_BACKLOG_BYTES`, `AGENT_PI_DUAL_WRITE`, `AGENT_PI_DUAL_READ` and `AGENT_PI_HISTORY_SOURCE_TENANTS` are
 ignored (`settings_ignored`), and their Terraform variables (`agent_pi_dual_write`, `agent_pi_dual_read`,
