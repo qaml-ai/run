@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shell and switcher</title><link rel="stylesheet" href="mock.css"></head>
+<body data-ws="All workspaces" data-active="workspaces" data-menu="open">
+<div class="app">
+  <aside id="side"></aside>
+  <main><div class="page" style="position:relative">
+    <div class="crumb">All workspaces</div>
+    <div class="head">
+      <div><h1>Workspaces</h1><p class="desc">Group agents and definitions by project, team or customer, and see what each one spends. <a href="#">Learn more ↗</a></p></div>
+      <div class="actions"><button class="btn primary">＋ New workspace</button></div>
+    </div>
+    <div class="grid3" style="margin-bottom:20px">
+      <div class="frame pad">
+        <div style="display:flex;align-items:center;gap:8px"><span class="swatch"></span><b>Support bot</b><span class="muted" style="margin-left:auto;font-size:12px">2 agents · 1 definition</span></div>
+        <div class="mono" style="font-size:22px;margin:14px 0 2px">$51.40</div><div class="muted" style="font-size:12px">last 30 days · 55% of spend</div>
+        <div class="bar" style="margin:12px 0"><span style="width:55%"></span></div>
+        <div style="display:flex;gap:8px;align-items:center"><span class="badge live">1 running</span><span class="badge err">1 failed · 24h</span></div>
+      </div>
+      <div class="frame pad">
+        <div style="display:flex;align-items:center;gap:8px"><span class="swatch" style="background:#8a888f"></span><b>Research</b><span class="muted" style="margin-left:auto;font-size:12px">2 agents · 0 definitions</span></div>
+        <div class="mono" style="font-size:22px;margin:14px 0 2px">$28.03</div><div class="muted" style="font-size:12px">last 30 days · 30% of spend</div>
+        <div class="bar" style="margin:12px 0"><span style="width:30%"></span></div>
+        <div style="display:flex;gap:8px"><span class="badge live">1 running</span></div>
+      </div>
+      <div class="frame pad" style="border-style:dashed">
+        <div style="display:flex;align-items:center;gap:8px"><span class="swatch all"></span><b>Unassigned</b><span class="muted" style="margin-left:auto;font-size:12px">2 agents · 1 definition</span></div>
+        <div class="mono" style="font-size:22px;margin:14px 0 2px">$14.02</div><div class="muted" style="font-size:12px">includes usage from before workspaces</div>
+        <div class="bar" style="margin:12px 0"><span style="width:15%"></span></div>
+        <a class="link" style="font-size:13px">Assign 2 agents →</a>
+      </div>
+    </div>
+    <p class="muted" style="font-size:13px">Archived: <a class="link">Hackathon</a> ($0.00 in 30 days)</p>
+
+    <div class="annot" data-n="1" style="position:fixed;left:324px;top:400px;max-width:230px">Switcher at the top of the sidebar: everything under it is scoped. Totals per workspace in the menu.</div>
+    <div class="annot" data-n="2" style="position:fixed;left:250px;top:470px;max-width:260px">“Account” pages are account-wide (keys, channels, volumes, billing) and never change with the switcher.</div>
+    <div class="annot" data-n="3" style="position:fixed;left:1040px;top:340px">Unassigned is a first-class bucket, with the fix one click away.</div>
+  </div></main>
+</div>
+<script src="shell.js"></script>
+</body></html>

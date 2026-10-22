@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agents list</title><link rel="stylesheet" href="mock.css"></head>
+<body data-ws="All workspaces" data-active="agents">
+<div class="app">
+  <aside id="side"></aside>
+  <main><div class="page">
+    <div class="crumb"><span class="swatch all" style="width:8px;height:8px"></span>All workspaces</div>
+    <div class="head">
+      <div><h1>Agents</h1><p class="desc">Durable conversations your application creates with the SDK or POST /v1/agents. <a href="#">Learn more ↗</a></p></div>
+      <div class="actions"><input class="input" placeholder="Search name, key or id" style="width:240px"><button class="btn">Try an agent</button></div>
+    </div>
+    <div class="chips"><span class="chip on">All 6</span><span class="chip">Running 2</span><span class="chip">Failed · 24h 1</span><span class="chip">Sub-agents</span><span class="chip">Expiring</span></div>
+    <div class="frame" style="margin-bottom:6px;display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--accent)">
+      <b style="font-size:13px">2 selected</b><span class="select">Move to workspace ⌄</span><button class="btn ghost">Fork</button><button class="btn ghost danger" style="margin-left:auto">Delete</button>
+    </div>
+    <div class="frame"><table>
+      <thead><tr><th style="width:28px"><input type="checkbox"></th><th>Name</th><th>Workspace</th><th>Model</th><th>Status</th><th>Last active</th></tr></thead>
+      <tbody>
+        <tr><td><input type="checkbox" checked></td><td><b>support-acme-4411</b><div class="muted mono" style="font-size:11px">key acme-4411</div></td><td><span class="ws-tag"><span class="swatch"></span>Support bot</span></td><td class="mono" style="font-size:12px">anthropic/claude-sonnet-5.5</td><td><span class="badge live">Running</span></td><td class="muted">now</td></tr>
+        <tr><td><input type="checkbox" checked></td><td><b>support-globex-0921</b><div class="muted mono" style="font-size:11px">key globex-0921 · expires in 23h</div></td><td><span class="ws-tag"><span class="swatch"></span>Support bot</span></td><td class="mono" style="font-size:12px">anthropic/claude-sonnet-5.5</td><td><span class="badge err">Failed</span></td><td class="muted">2h ago</td></tr>
+        <tr><td><input type="checkbox"></td><td><b>researcher</b><div class="muted mono" style="font-size:11px">key researcher</div></td><td><span class="ws-tag"><span class="swatch" style="background:#8a888f"></span>Research</span></td><td class="mono" style="font-size:12px">openai/gpt-5.5</td><td><span class="badge">Asleep</span></td><td class="muted">1d ago</td></tr>
+        <tr><td><input type="checkbox"></td><td style="padding-left:30px"><span class="muted">↳</span> researcher / web pass</td><td><span class="ws-tag muted"><span class="swatch" style="background:#8a888f"></span>Research</span></td><td class="mono" style="font-size:12px">openai/gpt-5.5-mini</td><td><span class="badge live">Running</span></td><td class="muted">now</td></tr>
+        <tr><td><input type="checkbox"></td><td><b>nightly-digest</b><div class="muted mono" style="font-size:11px">key digest</div></td><td><a class="link muted" style="font-size:13px">Assign…</a></td><td class="mono" style="font-size:12px">deepseek/deepseek-v4</td><td><span class="badge">Asleep</span></td><td class="muted">9h ago</td></tr>
+        <tr><td><input type="checkbox"></td><td><b>Playground</b><div class="muted" style="font-size:11px">the console's try-it agent</div></td><td><a class="link muted" style="font-size:13px">Assign…</a></td><td class="mono" style="font-size:12px">anthropic/claude-sonnet-5.5</td><td><span class="badge">Asleep</span></td><td class="muted">5d ago</td></tr>
+      </tbody></table></div>
+    <p class="note" style="margin-top:14px">“Last active” and the Failed filter need two fields on <span class="mono">GET /v1/agents</span> (plan step 5); per-agent spend is a later column (step 7). With a workspace selected the Workspace column hides and the list is filtered; “Move to workspace” stays.</p>
+  </div></main>
+</div>
+<script src="shell.js"></script>
+</body></html>

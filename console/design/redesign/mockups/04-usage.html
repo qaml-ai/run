@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Usage by workspace</title><link rel="stylesheet" href="mock.css"></head>
+<body data-ws="All workspaces" data-active="usage">
+<div class="app">
+  <aside id="side"></aside>
+  <main><div class="page">
+    <div class="crumb"><span class="swatch all" style="width:8px;height:8px"></span>All workspaces</div>
+    <div class="head">
+      <div><h1>Usage</h1><p class="desc">Model and tool spend from your agents, by workspace. <a href="#">Pricing ↗</a></p></div>
+      <div class="actions"><span class="select">Last 30 days ⌄</span><button class="btn">Export CSV</button></div>
+    </div>
+    <dl class="stats">
+      <div><dt>Model &amp; tool spend</dt><dd>$93.45</dd><div class="sub">↑ 12% vs prior 30 days</div></div>
+      <div><dt>Responses</dt><dd>3,045</dd></div>
+      <div><dt>Input tokens</dt><dd>20.9M</dd><div class="sub">63% cache reads</div></div>
+      <div><dt>Account-only charges</dt><dd>$1.20</dd><div class="sub">agent time, storage · <a class="link">Billing</a></div></div>
+    </dl>
+
+    <div class="frame" style="margin-bottom:20px">
+      <div class="frame-head"><h2 style="margin:0">Daily spend by workspace</h2>
+        <div style="display:flex;gap:14px;font-size:12px"><span class="ws-tag"><span class="swatch"></span>Support bot</span><span class="ws-tag"><span class="swatch" style="background:#8a888f"></span>Research</span><span class="ws-tag"><span class="swatch" style="background:var(--chart-4)"></span>Unassigned</span></div></div>
+      <div class="pad"><svg id="chart" width="100%" height="190" viewBox="0 0 900 190" preserveAspectRatio="none"></svg>
+        <div class="muted mono" style="display:flex;justify-content:space-between;font-size:11px"><span>Sep 23</span><span>Oct 7</span><span>Oct 22</span></div></div>
+    </div>
+
+    <div class="tabs" style="margin-bottom:0;border-bottom:0"><a class="on">By workspace</a><a>By model</a><a>By day</a></div>
+    <div class="frame"><table>
+      <thead><tr><th>Workspace</th><th>Share</th><th class="r">Responses</th><th class="r">Input</th><th class="r">Output</th><th class="r">Cost</th><th></th></tr></thead>
+      <tbody>
+        <tr><td><span class="ws-tag"><span class="swatch"></span><b>Support bot</b></span></td><td style="width:22%"><div class="bar"><span style="width:55%"></span></div></td><td class="r mono">1,675</td><td class="r mono">11.5M</td><td class="r mono">436K</td><td class="r mono">$51.40</td><td class="r"><a class="link" style="font-size:12px">Open →</a></td></tr>
+        <tr><td><span class="ws-tag"><span class="swatch" style="background:#8a888f"></span><b>Research</b></span></td><td><div class="bar"><span style="width:30%"></span></div></td><td class="r mono">914</td><td class="r mono">6.3M</td><td class="r mono">238K</td><td class="r mono">$28.03</td><td class="r"><a class="link" style="font-size:12px">Open →</a></td></tr>
+        <tr><td><span class="ws-tag"><span class="swatch all"></span>Unassigned</span></td><td><div class="bar"><span style="width:15%;background:var(--chart-2)"></span></div></td><td class="r mono">457</td><td class="r mono">3.1M</td><td class="r mono">119K</td><td class="r mono">$14.02</td><td class="r"><a class="link" style="font-size:12px">Assign agents →</a></td></tr>
+        <tr><td class="muted">Hackathon <span class="badge" style="margin-left:6px">Archived</span></td><td></td><td class="r mono muted">0</td><td class="r mono muted">0</td><td class="r mono muted">0</td><td class="r mono muted">$0.00</td><td></td></tr>
+      </tbody>
+      <tfoot><tr><td style="border-top:1px solid var(--border)"><b>Total</b></td><td style="border-top:1px solid var(--border)"></td><td class="r mono" style="border-top:1px solid var(--border)">3,045</td><td class="r mono" style="border-top:1px solid var(--border)">20.9M</td><td class="r mono" style="border-top:1px solid var(--border)">793.8K</td><td class="r mono" style="border-top:1px solid var(--border)"><b>$93.45</b></td><td style="border-top:1px solid var(--border)"></td></tr></tfoot>
+    </table></div>
+    <p class="muted" style="font-size:12px;margin-top:10px">Spend stays with the workspace an agent was in when the call happened; moving an agent does not move its history. “By day” keeps today's day × model table, paged.</p>
+  </div></main>
+</div>
+<script src="shell.js"></script>
+<script>
+  const s = document.getElementById("chart"); let out = "";
+  for (let i = 0; i < 30; i++) {
+    const t = 70 + 60 * Math.abs(Math.sin(i * .4)) + i * 1.2, parts = [[.55, "var(--chart-3)"], [.3, "var(--chart-2)"], [.15, "var(--chart-4)"]];
+    let y = 190; for (const [f, c] of parts) { const h = t * f; y -= h; out += `<rect x="${i * 30 + 3}" y="${y}" width="22" height="${h}" fill="${c}"/>`; y -= 1; }
+  }
+  s.innerHTML = `<line x1="0" x2="900" y1="189.5" y2="189.5" stroke="var(--border)"/>` + out;
+</script>
+</body></html>

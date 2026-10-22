@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Workspace overview</title><link rel="stylesheet" href="mock.css"></head>
+<body data-ws="Support bot" data-active="overview">
+<div class="app">
+  <aside id="side"></aside>
+  <main><div class="page">
+    <div class="crumb"><span class="swatch" style="width:8px;height:8px"></span>Support bot</div>
+    <div class="head">
+      <div><h1>Overview</h1><p class="desc">What this workspace is doing and spending. Last 30 days.</p></div>
+      <div class="actions"><span class="select">Last 30 days ⌄</span><button class="btn">Try an agent</button></div>
+    </div>
+    <dl class="stats">
+      <div><dt>Spend · 30 days</dt><dd>$51.40</dd><div class="sub">55% of account · ↑ 12% vs prior</div></div>
+      <div><dt>Running now</dt><dd>1</dd><div class="sub">of 2 agents · 20 busy max</div></div>
+      <div><dt>Requests · 24h</dt><dd>214</dd><div class="sub">1 failed</div></div>
+      <div><dt>Agents</dt><dd>2</dd><div class="sub">from 1 definition · <a class="link">Settings</a></div></div>
+    </dl>
+
+    <div class="grid2">
+      <div class="frame">
+        <div class="frame-head"><h2 style="margin:0">Daily spend</h2><a class="link" style="font-size:13px" href="04-usage.html">Usage →</a></div>
+        <div class="pad"><svg id="chart" width="100%" height="170" viewBox="0 0 560 170" preserveAspectRatio="none"></svg>
+          <div class="muted mono" style="display:flex;justify-content:space-between;font-size:11px"><span>Sep 23</span><span>Oct 22</span></div></div>
+      </div>
+      <div class="frame">
+        <div class="frame-head"><h2 style="margin:0">By model</h2></div>
+        <div class="pad" style="display:flex;flex-direction:column;gap:14px">
+          <div><div style="display:flex;justify-content:space-between;font-size:13px"><span class="mono">anthropic/claude-sonnet-5.5</span><span class="mono">$32.10</span></div><div class="bar" style="margin-top:6px"><span style="width:62%"></span></div></div>
+          <div><div style="display:flex;justify-content:space-between;font-size:13px"><span class="mono">deepseek/deepseek-v4</span><span class="mono">$12.44</span></div><div class="bar" style="margin-top:6px"><span style="width:24%"></span></div></div>
+          <div><div style="display:flex;justify-content:space-between;font-size:13px"><span class="mono">web_search · exa</span><span class="mono">$4.90</span></div><div class="bar" style="margin-top:6px"><span style="width:10%"></span></div></div>
+          <div><div style="display:flex;justify-content:space-between;font-size:13px"><span class="mono">image · gpt-image-2.5</span><span class="mono">$1.96</span></div><div class="bar" style="margin-top:6px"><span style="width:4%"></span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="frame">
+        <div class="frame-head"><h2 style="margin:0">Needs attention</h2><span class="muted" style="font-size:12px">failed requests · 24h</span></div>
+        <table><tbody>
+          <tr><td><span class="badge err">Failed</span></td><td><a class="link">support-globex-0921</a></td><td class="muted">Model call failed: 529 overloaded</td><td class="r muted">2h ago</td></tr>
+          <tr><td><span class="badge">Retried</span></td><td>support-acme-4411</td><td class="muted">Tool timeout: lookup_order (30s)</td><td class="r muted">6h ago</td></tr>
+        </tbody></table>
+      </div>
+      <div class="frame">
+        <div class="frame-head"><h2 style="margin:0">Running now</h2><a class="link" style="font-size:13px" href="03-agents.html">All agents →</a></div>
+        <table><tbody>
+          <tr><td><span class="badge live">Running</span></td><td>support-acme-4411</td><td class="r mono muted">4m 12s</td></tr>
+        </tbody></table>
+        <div class="pad muted" style="font-size:13px;border-top:1px solid var(--border)">Agents made from <b>Support agent</b> join this workspace automatically.</div>
+      </div>
+    </div>
+  </div></main>
+</div>
+<script src="shell.js"></script>
+<script>
+  const s = document.getElementById("chart"); let out = "";
+  for (let i = 0; i < 30; i++) { const h = 40 + 70 * Math.abs(Math.sin(i * .45)) + i * 1.5; out += `<rect x="${i * 18.6 + 2}" y="${170 - h}" width="14" height="${h}" fill="${i === 29 ? "#5aa7ff" : "var(--chart-3)"}"/>`; }
+  s.innerHTML = `<line x1="0" x2="560" y1="169.5" y2="169.5" stroke="var(--border)"/>` + out;
+</script>
+</body></html>

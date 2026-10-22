@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Workspace settings</title><link rel="stylesheet" href="mock.css"></head>
+<body data-ws="Support bot" data-active="wsettings">
+<div class="app">
+  <aside id="side"></aside>
+  <main><div class="page" style="max-width:880px">
+    <div class="crumb"><span class="swatch" style="width:8px;height:8px"></span>Support bot</div>
+    <div class="head">
+      <div><h1>Workspace settings</h1><p class="desc">Name, members and lifecycle of this workspace. Keys, channels and volumes are account-wide. <a href="#">Learn more ↗</a></p></div>
+    </div>
+
+    <section style="padding-bottom:24px;border-bottom:1px solid var(--border)">
+      <h2>Name</h2>
+      <div style="display:flex;gap:8px"><input class="input" value="Support bot" style="width:320px"><button class="btn">Save</button></div>
+      <div class="muted" style="font-size:12px;margin-top:8px">ID <span class="mono">ws_7f3a91c0e2d4b5a6c8e1</span> · use it as <span class="mono">workspaceId</span> when creating agents and runs. Created Oct 2, 2026.</div>
+    </section>
+
+    <section style="padding:24px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline"><h2>Definitions</h2><button class="btn">＋ Add definition</button></div>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">Agents created from these definitions (by your code or by a channel) join this workspace.</p>
+      <div class="frame"><table><tbody>
+        <tr><td><b>Support agent</b> <span class="muted mono" style="font-size:11px">rev 7</span></td><td class="muted">used by channel <a class="link">Acme support Slack</a></td><td class="r"><button class="btn ghost">Remove</button></td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section style="padding:24px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline"><h2>Agents · 2</h2><button class="btn">＋ Add agents</button></div>
+      <p class="muted" style="font-size:13px;margin:0 0 12px">Moving an agent changes where its future spend goes; earlier spend stays put.</p>
+      <div class="frame"><table><tbody>
+        <tr><td><b>support-acme-4411</b></td><td><span class="badge live">Running</span></td><td class="muted">via Support agent</td><td class="r"><button class="btn ghost">Move…</button></td></tr>
+        <tr><td><b>support-globex-0921</b></td><td><span class="badge">Asleep</span></td><td class="muted">via Support agent</td><td class="r"><button class="btn ghost">Move…</button></td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section style="padding:24px 0">
+      <h2>Archive</h2>
+      <div class="frame pad" style="display:flex;justify-content:space-between;align-items:center;gap:16px">
+        <div style="font-size:13px">Archiving keeps its agents running and its spend history, and stops new assignments. You can restore it later.</div>
+        <button class="btn danger">Archive workspace</button>
+      </div>
+    </section>
+  </div></main>
+</div>
+<script src="shell.js"></script>
+</body></html>
