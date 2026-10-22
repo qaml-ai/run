@@ -773,8 +773,12 @@ export const Upload = z.object({
   version: z.number(), size: z.number(), updatedAt: z.number(), by: z.string().optional(), contentType: z.string(),
 }).openapi("Upload");
 
+const Calendar = z.object({ time: z.string().openapi({ description: "Local HH:MM" }), timeZone: z.string().openapi({ description: "IANA time zone, e.g. America/Chicago" }), daysOfWeek: z.array(z.number().int().min(0).max(6)).optional().openapi({ description: "Sunday 0 to Saturday 6; default every day" }) }).openapi("CalendarSchedule");
+const ScheduleEmail = z.object({ to: z.email(), subject: z.string().min(1).max(200) }).openapi("ScheduleEmail");
 // Documentation only: scheduleInput and Scheduler.create validate schedules.
 export const ScheduleInput = z.object({
+  calendar: Calendar.optional(),
+  email: ScheduleEmail.optional().openapi({ description: "Email the successful run's final reply. Owner-configured only; failed runs are not sent." }),
   text: z.string().optional().openapi({ description: "Prompt to deliver; give exactly one of text or code" }),
   code: z.string().optional().openapi({ description: "Code to run in the sandbox with the agent's tools" }),
   history: z.enum(["full", "none"]).optional().openapi({ description: "For a text schedule: what the model sees of the agent's history at each wake-up, as a prompt's history. full (default): all of it. none: only the system prompt and the text, so a periodic agent does not read an ever longer history; its runs are still recorded in the history" }),
@@ -784,6 +788,8 @@ export const ScheduleInput = z.object({
 }).openapi("ScheduleInput");
 
 export const Schedule = z.object({
+  calendar: Calendar.optional(),
+  email: ScheduleEmail.optional(),
   id: z.string(),
   agent: z.string(),
   tenant: z.string(),

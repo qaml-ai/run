@@ -1,3 +1,4 @@
+import { AgentSchedules } from "./agent-schedules";
 import { useRef, useState, type FormEvent } from "react";
 import { ArrowLeft, Braces, GitFork, Loader2, Paperclip, RefreshCw, Send, Square, Trash2, Wrench, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -367,11 +368,13 @@ export function AgentPage({ id }: { id: string }) {
           <TabsTrigger value="try">Try it</TabsTrigger>
           <TabsTrigger value="files">Files</TabsTrigger>
           <TabsTrigger value="config">Configuration</TabsTrigger>
+          <TabsTrigger value="schedules">Schedules</TabsTrigger>
         </TabsList>
         <TabsContent value="conversation" className="pt-4"><ErrorAlert error={history.error} />{history.data ? <Conversation messages={history.data.messages} mounts={data.mounts} onFork={atMessage => setForking({ atMessage })} /> : <Skeleton className="h-40 w-full" />}</TabsContent>
         <TabsContent value="requests" className="pt-4"><Requests requests={data.requests} mounts={data.mounts} /></TabsContent>
         <TabsContent value="try" className="pt-4"><TryIt agentId={id} onDone={() => { void history.reload(); void agent.reload(); }} /></TabsContent>
         <TabsContent value="files" className="pt-4"><Files mounts={data.mounts} /></TabsContent>
+        <TabsContent value="schedules" className="pt-4"><AgentSchedules agentId={id}/></TabsContent>
         <TabsContent value="config" className="grid gap-4 pt-4 lg:grid-cols-2">
           <Card>
             <CardHeader><CardTitle>System prompt</CardTitle></CardHeader>
