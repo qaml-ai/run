@@ -2,7 +2,8 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary, Usage } from "../web/lib/api";
 import { homeIsGetStarted } from "../web/lib/onboarding";
-import { OverviewPage, summarize, utcDay } from "../web/pages/overview";
+import { utcDay } from "../web/lib/usage";
+import { OverviewPage, summarize } from "../web/pages/overview";
 
 const NOW = Date.parse("2026-10-22T12:00:00Z");
 const row = (back: number, model: string, cost: number, fields: Partial<Usage["days"][number]> = {}): Usage["days"][number] =>
@@ -35,7 +36,7 @@ describe("summarize", () => {
     expect(summary.daily[0]).toEqual({ day: utcDay(NOW, 29), cost: 1 });
     expect(summary.daily.at(-1)).toEqual({ day: utcDay(NOW), cost: 3 });
     expect(summary.daily[1].cost).toBe(0);
-    expect(summary.models).toEqual([{ model: "anthropic/sonnet", cost: 6 }, { model: "image · gpt-image", cost: 1 }, { model: "deepseek/v4", cost: 1 }]);
+    expect(summary.models.map(({ model, cost }) => ({ model, cost }))).toEqual([{ model: "anthropic/sonnet", cost: 6 }, { model: "image · gpt-image", cost: 1 }, { model: "deepseek/v4", cost: 1 }]);
   });
 });
 

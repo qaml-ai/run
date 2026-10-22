@@ -370,7 +370,7 @@ export function AgentPage({ id }: { id: string }) {
       <ErrorAlert error={error} />
       {forking && <ForkDialog agent={data} atMessage={forking.atMessage} onClose={() => setForking(undefined)} />}
       <Tabs defaultValue="conversation">
-        <TabsList>
+        <TabsList variant="line">
           <TabsTrigger value="conversation">Conversation</TabsTrigger>
           <TabsTrigger value="requests">Requests</TabsTrigger>
           <TabsTrigger value="try">Try it</TabsTrigger>

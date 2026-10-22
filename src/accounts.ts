@@ -672,7 +672,15 @@ export class Accounts {
       const kind = row.model.startsWith(COMPACTION) ? "compaction" : row.model.startsWith(TRANSCRIPTION) ? "transcription" : row.model.startsWith(IMAGE) ? "image" : row.model.startsWith(SPEECH) ? "speech" : "turn";
       return { day: row.day, model: kind === "turn" ? row.model : row.model.slice(row.model.indexOf(":") + 1), kind, ...value };
     });
-    return { since, totals, days, workspaces: [...grouped.values()] };
+    // For the whole account: each workspace's spend by day (null: Unassigned), which a chart stacks.
+    const workspaceDays = new Map<string, { day: string; workspace: string | null; responses: number; cost: number }>();
+    if (workspace === undefined) for (const row of [...attributed, ...unassigned]) {
+      const key = JSON.stringify([row.day, row.workspace]);
+      const value = workspaceDays.get(key) ?? { day: row.day, workspace: row.workspace, responses: 0, cost: 0 };
+      value.responses += row.responses; value.cost += row.cost;
+      workspaceDays.set(key, value);
+    }
+    return { since, totals, days, workspaces: [...grouped.values()], ...(workspace === undefined ? { workspaceDays: [...workspaceDays.values()].filter(row => row.responses || Math.abs(row.cost) > 1e-12) } : {}) };
   }
 }
 

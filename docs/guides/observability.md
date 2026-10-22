@@ -60,7 +60,7 @@ camelrun telemetry set https://api.honeycomb.io/v1/traces --header x-honeycomb-t
 camelrun telemetry test
 ```
 
-In the console: **Telemetry** in the sidebar, with presets and a **Send test span** button.
+In the console: **Settings → Telemetry** in the sidebar, with presets and a **Send test span** button.
 
 See [SDKs](../reference/sdk.md#telemetry) and [CLI](../reference/cli.md#telemetry).
 

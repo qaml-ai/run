@@ -65,7 +65,7 @@ the runtime takes for Bedrock: no AWS access keys, no SigV4 signing, and never
 AWS credentials the runtime's own host has.
 
 - For the whole account: `PUT /v1/providers/amazon-bedrock/key` with
-  `{"apiKey": "…", "region": "us-west-2"}`, or the console's Models page. The
+  `{"apiKey": "…", "region": "us-west-2"}`, or the console's Models & keys page. The
   region is required. The key is not checked when saved (Bedrock has no free
   call for it): the first model call is.
 - For one key scope: `PUT /v1/key-scopes/:scope/providers/amazon-bedrock` with

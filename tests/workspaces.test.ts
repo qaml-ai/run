@@ -31,6 +31,12 @@ test("workspace assignment history keeps delayed usage and signed reconciliation
   assert.ok(Math.abs(report.workspaces.find(row => row.id === first.id)!.cost - 0.15) < 1e-9);
   assert.equal(report.workspaces.find(row => row.id === second.id)!.cost, 0.2);
   assert.ok(Math.abs((await accounts.usage("alice", 0, first.id)).totals.cost - 0.15) < 1e-9);
+  // By day and workspace, for the account only: each workspace's own spend that day.
+  const byDay = new Map(report.workspaceDays!.map(row => [row.workspace, row]));
+  assert.ok(Math.abs(byDay.get(first.id)!.cost - 0.15) < 1e-9);
+  assert.equal(byDay.get(second.id)!.cost, 0.2);
+  assert.equal(byDay.get(first.id)!.day, day);
+  assert.equal((await accounts.usage("alice", 0, first.id)).workspaceDays, undefined);
   await groups.assign("alice", "agent", "a", null);
   await groups.update("alice", first.id, { archived: true });
   await assert.rejects(groups.assign("alice", "agent", "b", first.id), /archived/);

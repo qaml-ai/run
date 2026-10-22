@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConsoleNav } from "../web/components/console-nav";
 import type { Workspace } from "../web/lib/api";
-import { ACCOUNT_NAV, groupOf, redirectFor, TABS, WORKSPACE_NAV } from "../web/lib/nav";
+import { ACCOUNT_NAV, documentTitle, groupOf, redirectFor, TABS, WORKSPACE_NAV } from "../web/lib/nav";
 import { navigate, usePath } from "../web/lib/router";
 import { useLayoutEffect } from "react";
 import { UsagePage } from "../web/pages/usage";
@@ -40,6 +40,15 @@ describe("nav groups", () => {
     expect(groupOf("quickstart")?.label).toBe("Get started");
     const reachable = new Set([...WORKSPACE_NAV, ...ACCOUNT_NAV].map(item => item.to).concat(Object.values(TABS).flat().map(tab => tab.to)));
     for (const page of ["agents", "definitions", "workspaces", "channels", "volumes", "models", "tokens", "usage", "telemetry", "billing", "account"]) expect(reachable).toContain(page);
+  });
+
+  it("titles the tab with the page and the workspace it shows", () => {
+    expect(documentTitle("usage", "ws_desk", WORKSPACES)).toBe("Usage · Trading Desk · camelRun");
+    expect(documentTitle("", "unassigned", WORKSPACES)).toBe("Overview · Unassigned · camelRun");
+    expect(documentTitle("agents", undefined, WORKSPACES)).toBe("Agents · camelRun");
+    // Account pages never name a workspace.
+    expect(documentTitle("billing", "ws_desk", WORKSPACES)).toBe("Billing · camelRun");
+    expect(documentTitle("", undefined, [], true)).toBe("Get started · camelRun");
   });
 
   it("keeps every old URL, and redirects the ones whose page moved", () => {
@@ -123,14 +132,14 @@ describe("workspace switcher", () => {
   });
 });
 
-it("filters Usage by the selected workspace, and its filter moves the switcher's choice", async () => {
+it("reads Usage for the selected workspace, and says when it has none", async () => {
   go("/console/usage?ws=ws_desk");
   render(<UsagePage />);
-  await waitFor(() => expect(paths).toContain("/v1/usage?days=30&workspaceId=ws_desk"));
-  go("/console/usage");
-  await waitFor(() => expect(paths).toContain("/v1/usage?days=30"));
-  fireEvent.click(await screen.findByRole("button", { name: "Trading Desk" }));
-  expect(location.search).toBe("?ws=ws_desk");
+  await waitFor(() => expect(paths).toContain("/v1/usage?days=60&workspaceId=ws_desk"));
+  expect(await screen.findByText("No usage in the last 30 days in Trading Desk")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Show all workspaces" }));
+  await waitFor(() => expect(paths).toContain("/v1/usage?days=60"));
+  expect(location.search).toBe("");
 });
 
 it("follows a redirect made before the location listeners attach", async () => {
