@@ -95,7 +95,7 @@ class BoatComputer:
                 time.sleep(1)
             raise TimeoutError("Boat deletion was accepted but not confirmed within 60 seconds")
         finally:
-            self.client.close()
+            self.client.__exit__(None, None, None)
 
 
 PROVIDERS = {"modal": ModalComputer, "daytona": DaytonaComputer, "boat": BoatComputer}

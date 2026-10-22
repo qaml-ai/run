@@ -67,6 +67,14 @@ Run offline boundary tests with:
 python3 examples/computer/test_tools.py
 ```
 
+## Live verification
+
+The same two-turn workload passed on Modal, Daytona and boat.dev using
+`azure/gpt-6-luna`. Each run installed a package in a virtual environment,
+started an HTTP server and updated its state in a later turn. An independent
+HTTP/file check verified the result, and provider lookups confirmed cleanup.
+These were functional tests, not controlled latency or cost benchmarks.
+
 ## What native support still needs
 
 The product should let a customer attach a computer to an agent without running

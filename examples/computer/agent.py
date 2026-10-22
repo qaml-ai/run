@@ -15,8 +15,8 @@ from tools import ComputerTools
 
 
 FIRST = """Use the private computer to complete this task, actually running each step:
-1. Create /workspace/computer-lab and install Python's humanize package with pip.
-2. Initialize /workspace/computer-lab/state.json to {"counter": 1} once BEFORE starting the server. Write a Python HTTP server at /workspace/computer-lab/server.py. On EVERY GET /proof it must READ the current counter from that file and return JSON with provider '__PROVIDER__' (the computer provider, not the model provider), marker 'camelrun-computer-proof', that counter, and formatted_size produced by humanize.naturalsize(1048576, binary=True). The request handler must NEVER write or reset the file and must NOT hard-code the counter.
+1. Create /tmp/camelrun-computer-lab and a Python virtual environment at /tmp/camelrun-computer-lab/.venv. Install humanize with that environment's pip. Use its Python for the server and requests. If Python venv support is absent, install it using the provider's sudo access.
+2. Initialize /tmp/camelrun-computer-lab/state.json to {"counter": 1} once BEFORE starting the server. Write a Python HTTP server at /tmp/camelrun-computer-lab/server.py. On EVERY GET /proof it must READ the current counter from that file and return JSON with provider '__PROVIDER__' (the computer provider, not the model provider), marker 'camelrun-computer-proof', that counter, and formatted_size produced by humanize.naturalsize(1048576, binary=True). The request handler must NEVER write or reset the file and must NOT hard-code the counter.
 3. Start the server on 127.0.0.1:8765 in the background, redirecting its output so the command returns.
 4. Request /proof using a separate Python process and inspect the response. Also run python3 -m compileall on your server file.
 Do not report success without successful command output. Leave the server and files running for the next turn. Reply concisely with the evidence."""
@@ -51,7 +51,7 @@ async def main():
             agent = await agents.upsert(
                 f"computer-lab-{args.provider}-{uuid.uuid4().hex[:8]}",
                 name=f"Computer Lab — {args.provider}", model=args.model, code_mode=False, file_tools=False,
-                instructions=f"You are testing a real private Linux computer on {args.provider}. Use the computer tools to execute work; never simulate command output. Your computer persists across turns for this test, then is automatically removed. Only touch /workspace/computer-lab and packages needed for this task. Never read credentials or host/account metadata.",
+                instructions=f"You are testing a real private Linux computer on {args.provider}. Use the computer tools to execute work; never simulate command output. Your computer persists across turns for this test, then is automatically removed. Only touch /tmp/camelrun-computer-lab and packages needed for this task. Never read credentials or host/account metadata.",
                 tools=controller.tools(), spend_limit={"usd": 1},
                 run_limits={"maxSeconds": 300, "maxResponses": 30}, **options,
             )
@@ -68,7 +68,7 @@ async def main():
                     raise RuntimeError("Agent run did not complete cleanly")
             # Independently verify the environment; the model's success claim is not the assertion.
             verify = await asyncio.to_thread(computer.execute,
-                "python3 - <<'PY'\nimport json,urllib.request,pathlib,humanize\nr=json.load(urllib.request.urlopen('http://127.0.0.1:8765/proof',timeout=5))\nassert r['marker']=='camelrun-computer-proof'\nassert r['counter']==2\nassert r['formatted_size']==humanize.naturalsize(1048576,binary=True)\nassert json.loads(pathlib.Path('/workspace/computer-lab/state.json').read_text())['counter']==2\nprint(json.dumps(r))\nPY", 15)
+                "/tmp/camelrun-computer-lab/.venv/bin/python - <<'PY'\nimport json,urllib.request,pathlib,humanize\nr=json.load(urllib.request.urlopen('http://127.0.0.1:8765/proof',timeout=5))\nassert r['marker']=='camelrun-computer-proof'\nassert r['counter']==2\nassert r['formatted_size']==humanize.naturalsize(1048576,binary=True)\nassert json.loads(pathlib.Path('/tmp/camelrun-computer-lab/state.json').read_text())['counter']==2\nprint(json.dumps(r))\nPY", 15)
             if verify.exit_code != 0:
                 raise RuntimeError("Independent computer verification failed")
             evidence["verification"] = json.loads(verify.stdout)
