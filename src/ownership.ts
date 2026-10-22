@@ -6,6 +6,12 @@ import { clock, network, random } from "./node-context.ts";
 import { buggify } from "./buggify.ts";
 import { reachable, sometimes } from "./assert.ts";
 
+/** Another live node owns this agent; the server forwards the request there. */
+export class NotOwner extends HttpError {
+  owner: string;
+  constructor(owner: string) { super(503, `This agent is served by another node; retry`); this.owner = owner; }
+}
+
 /** This node's ownership of one actor. Writes that only the owner may make are conditional on it. */
 export interface Claim { actor: string; session: string; epoch: number }
 
