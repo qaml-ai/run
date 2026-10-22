@@ -43,3 +43,19 @@ test("email requires an eligible recipient at creation and again before delivery
  await mailer.pump();assert.equal(sent,0);
  assert.equal((await db.query("select state from schedule_deliveries")).rows[0].state,"failed");
 });
+
+
+test("email formats preserve custom HTML and send plain text without adding markup", async () => {
+ const {db}=await testDatabase();
+ const scheduler=new Scheduler({db,node:"formats",emailEnabled:true,deliver:async()=>{}});
+ const html='<!doctype html><html><head><style>h1{color:red}</style></head><body style="background:#ece8df"><h1>Desk &amp; news</h1><p>Full report</p></body></html>';
+ for (const format of ["html", "text"] as const) await scheduler.create({agent:format,tenant:"alice",text:"Report",dueAt:Date.now()-1,email:{to:"r@example.com",subject:"Report",format}});
+ await scheduler.scan();
+ const mails:any[]=[];
+ await new ScheduleMailer({db,request:async(agent)=>({state:"completed",outcome:{result:{reply:agent==="html"?html:"# Plain <text>"}}}) as any,send:async(mail)=>{mails.push(mail);return {messageId:"sent"};}}).pump();
+ assert.equal(mails.length,2);
+ const custom=mails.find(m=>m.html!==undefined),plain=mails.find(m=>m.html===undefined);
+ assert.equal(custom.html,html);assert.equal(custom.text,"Desk & news\n\nFull report");
+ assert.equal(plain.text,"# Plain <text>");assert.ok(!Object.hasOwn(plain,"html"));
+ assert.throws(()=>scheduleInput({text:"x",inSeconds:1,email:{to:"r@example.com",subject:"x",format:"pdf"}}),/format/);
+});

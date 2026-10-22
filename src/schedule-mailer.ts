@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readableText } from "./html-text.ts";
 import { markdownEmail } from "./markdown-email.ts";
 import type { Db } from "./db.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
@@ -35,9 +36,10 @@ export class ScheduleMailer {
         const result = record.outcome?.result as { error?: unknown; stopped?: unknown; reply?: unknown } | undefined;
         if (record.outcome?.error || result?.error || result?.stopped || !result?.reply) { await finish("failed", "Scheduled run failed or returned no report; see the agent's run history"); return; }
         if (this.options.canEmail && !await this.options.canEmail(row.tenant, row.email.to)) { await finish("failed", "Recipient is no longer verified or is suppressed"); return; }
-        const text = String(result.reply);
-        const mail: OutgoingMail = { to: row.email.to, subject: row.email.subject, text,
-          html: markdownEmail(text),
+        const reply = String(result.reply), format = row.email.format ?? "markdown";
+        const mail: OutgoingMail = { to: row.email.to, subject: row.email.subject,
+          text: format === "html" ? readableText(reply).text : reply,
+          ...(format === "text" ? {} : { html: format === "html" ? reply : markdownEmail(reply) }),
           headers: [{ Name: "X-CamelRun-Delivery", Value: row.id }], tags: [{ Name: "product", Value: "camelrun-schedule" }] };
         this.transport ??= this.options.mail ? new MailTransport(this.options.mail) : undefined;
         const sent = this.options.send ? await this.options.send(mail, AbortSignal.timeout(15_000)) : await this.transport!.send(mail, AbortSignal.timeout(15_000));

@@ -717,7 +717,7 @@ export interface AgentFile { path: string; version: number; size: number; update
  * why the latest attempt failed, until a delivery succeeds.
  */
 export interface CalendarSchedule { time: string; timeZone: string; daysOfWeek?: number[] }
-export interface ScheduleEmail { to: string; subject: string }
+export interface ScheduleEmail { to: string; subject: string; format?: "text" | "markdown" | "html" }
 export interface Schedule { calendar?: CalendarSchedule; email?: ScheduleEmail; id: string; agent: string; text?: string; code?: string; history?: "none"; dueAt: number; everySeconds?: number; createdAt: number; failures?: number; lastError?: string; lastErrorAt?: number }
 /**
  * A steered message as the runtime took it (`steerMessage`, `agent.steer`): `accepted`, the running turn reads it after

@@ -79,6 +79,7 @@ test("a submission sends the diagnostics to support alone and the shared thread 
   assert.equal(internal.subject, `[HIGH] [Bug or error] Runs fail with a 402 · octocat · ${reference}`);
   assert.deepEqual(internal.tags, [{ Name: "product", Value: "camelrun-support" }, { Name: "help_request", Value: input.submissionId }]);
 
+  assert.ok(internal.html && thread.html, "Support messages include HTML alternatives");
   // Support sees observed facts, kept apart from what the user supplied; never secrets or the agent's prompt.
   for (const expected of ["octocat", "Tenant: alice", `${agentId} · key support-triage · "Support triage" · type chat · model anthropic/claude-sonnet-5-5 · definition triage@3`,
     "req-123 (supplied by the user, not verified)", "anthropic (tenant)", "Page: /console/agents/client_x", "2026-09-30T18:03:58Z POST /v1/agents/:id/prompt → 402",

@@ -774,7 +774,7 @@ export const Upload = z.object({
 }).openapi("Upload");
 
 const Calendar = z.object({ time: z.string().openapi({ description: "Local HH:MM" }), timeZone: z.string().openapi({ description: "IANA time zone, e.g. America/Chicago" }), daysOfWeek: z.array(z.number().int().min(0).max(6)).optional().openapi({ description: "Sunday 0 to Saturday 6; default every day" }) }).openapi("CalendarSchedule");
-const ScheduleEmail = z.object({ to: z.email(), subject: z.string().min(1).max(200) }).openapi("ScheduleEmail");
+const ScheduleEmail = z.object({ to: z.email(), subject: z.string().min(1).max(200), format: z.enum(["text", "markdown", "html"]).optional().describe("Reply format; defaults to markdown. HTML is sent as supplied, with a generated plain-text alternative.") }).openapi("ScheduleEmail");
 // Documentation only: scheduleInput and Scheduler.create validate schedules.
 export const ScheduleInput = z.object({
   calendar: Calendar.optional(),

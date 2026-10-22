@@ -193,7 +193,7 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
   tool("add_schedule", "Add schedule", "Wake an agent later with a message: once (inSeconds or at), or repeatedly (everySeconds, at least 60; or calendar for a local time and weekdays). Optionally email the successful final report to a verified recipient. Each wake-up is a run that uses the account's model credit.", {
     agent, text: z.string(),
     calendar: z.object({ time: z.string().describe("Local HH:MM"), timeZone: z.string().describe("IANA zone, e.g. America/Chicago"), daysOfWeek: z.array(z.number().int().min(0).max(6)).optional().describe("Sunday 0 through Saturday 6; omit for daily") }).optional().describe("Cannot combine with other timing fields"),
-    email: z.object({ to: z.email(), subject: z.string().min(1).max(200) }).optional().describe("Email the final report to your sign-in email or a verified billing recipient"),
+    email: z.object({ to: z.email(), subject: z.string().min(1).max(200), format: z.enum(["text", "markdown", "html"]).optional().describe("Reply format; defaults to markdown. HTML is sent as supplied, with a generated plain-text alternative.") }).optional().describe("Email the final report to your sign-in email or a verified billing recipient"),
     inSeconds: z.number().optional(), at: z.string().optional().describe("ISO time"), everySeconds: z.number().int().min(60).optional(),
     history: z.enum(["full", "none"]).optional().describe("none: each wake-up sees only the agent's instructions and the text, not its history"),
   }, async ({ agent, ...schedule }) => {

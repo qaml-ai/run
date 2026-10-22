@@ -5526,6 +5526,15 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "text",
+              "markdown",
+              "html"
+            ],
+            "description": "Reply format; defaults to markdown. HTML is sent as supplied, with a generated plain-text alternative."
           }
         },
         "required": [

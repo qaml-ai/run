@@ -32,10 +32,11 @@ export interface Schedule {
   /** Occurrences in a row whose delivery was given up, and why the latest attempt failed: until a delivery succeeds. */
   failures?: number; lastError?: string; lastErrorAt?: number;
 }
-export interface ScheduleEmail { to: string; subject: string }
+export interface ScheduleEmail { to: string; subject: string; format?: "text" | "markdown" | "html" }
 export function scheduleEmail(value: any): ScheduleEmail {
   if (!value || !z.email().safeParse(value.to).success || typeof value.subject !== "string" || !value.subject.trim() || value.subject.length > 200 || /[\r\n]/.test(value.subject)) throw new Error("email needs a valid to address and a subject (1–200 characters, one line)");
-  return { to: value.to, subject: value.subject.trim() };
+  if (value.format !== undefined && !["text", "markdown", "html"].includes(value.format)) throw new Error("email format must be text, markdown, or html");
+  return { to: value.to, subject: value.subject.trim(), ...(value.format !== undefined ? { format: value.format } : {}) };
 }
 export type Deliver = (schedule: Schedule, requestId: string) => Promise<void>;
 

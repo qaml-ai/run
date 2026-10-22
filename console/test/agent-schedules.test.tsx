@@ -10,6 +10,7 @@ it("creates a weekday calendar schedule with email without writing code",async()
  fireEvent.change(screen.getByLabelText("Repeat"),{target:{value:"weekdays"}});
  fireEvent.change(screen.getByLabelText("Time zone"),{target:{value:"America/Chicago"}});
  fireEvent.change(screen.getByLabelText("Email recipient"),{target:{value:"reader@example.com"}});
+ fireEvent.change(screen.getByLabelText("Email format"),{target:{value:"html"}});
  fireEvent.click(screen.getByRole("button",{name:"Create schedule"}));
- await waitFor(()=>expect(writes).toEqual([{text:"Write the daily report",history:"none",calendar:{time:"08:00",timeZone:"America/Chicago",daysOfWeek:[1,2,3,4,5]},email:{to:"reader@example.com",subject:"Agent report"}}]));
+ await waitFor(()=>expect(writes).toEqual([{text:"Write the daily report",history:"none",calendar:{time:"08:00",timeZone:"America/Chicago",daysOfWeek:[1,2,3,4,5]},email:{to:"reader@example.com",subject:"Agent report",format:"html"}}]));
 });

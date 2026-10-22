@@ -17,7 +17,7 @@ For example, `POST /v1/agents/{id}/schedules`:
     "timeZone": "America/Chicago",
     "daysOfWeek": [1, 2, 3, 4, 5]
   },
-  "email": { "to": "reader@example.com", "subject": "Daily research" }
+  "email": { "to": "reader@example.com", "subject": "Daily research", "format": "markdown" }
 }
 ```
 
@@ -29,9 +29,19 @@ skipped; a repeated local time runs once. Missed occurrences are skipped after
 recovery. Calendar cannot be combined with `at`, `inSeconds`, or `everySeconds`;
 those existing one-off and interval options continue to work.
 
-Email delivery sends the successful run's complete final reply as formatted Markdown HTML,
-with a plain-text alternative. Headings, lists, tables and source links are preserved;
-raw HTML is escaped and images remain links. Have the agent
+Email delivery sends the successful run's complete final reply. Choose `email.format`
+to match what the agent returns:
+
+- `markdown` (default): basic HTML formatting for headings, lists, tables and source
+  links, with the original Markdown as the plain-text alternative. Raw HTML is
+  escaped and images remain links.
+- `html`: sends the agent's HTML unchanged, including its own styling or template,
+  and generates a plain-text alternative. The platform adds no layout or branding.
+- `text`: sends only plain text, without HTML or Markdown conversion.
+
+The format is also selectable in the console. Custom templates belong in the
+agent's instructions or saved files; the platform does not require a particular
+report layout. Have the agent
 include its report in that reply, not just a saved-file path. Failed or empty
 runs are not emailed. Delivery state is visible in the Schedules tab and at
 `GET /v1/agents/{id}/schedule-deliveries`. Delivery waits durably for the run to
