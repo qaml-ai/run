@@ -892,7 +892,7 @@ class AgentRuntime(_RuntimeCalls):
             raise
         return then(value) if then else value
 
-    async def create_agent(self, *, tools, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, traceparent=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, mcp_servers=None, idle_ttl_seconds=None):
+    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, traceparent=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, mcp_servers=None, idle_ttl_seconds=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -913,7 +913,7 @@ class AgentRuntime(_RuntimeCalls):
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens")
         # subject: who the agent acts for; context: claims for its tool servers' identity tokens. Set only here.
         body = _provisioning(tools, definition=definition, name=name, type=type, system_prompt=system_prompt, model=model, thinking_level=thinking_level,
-                             mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
+                             workspace_id=workspace_id, mounts=mounts, subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, model_headers=model_headers, builtins=builtins,
                              delegate=delegate, prompt=prompt, initial_messages=initial_messages, import_messages=import_messages, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, mcp_servers=mcp_servers)
         # A key of the caller's makes the agent durable (it lives until deleted); one the SDK makes up, only so a retried
         # create finds the same agent, keeps a scratch agent's day, said explicitly since any key would make it durable.
@@ -1346,7 +1346,7 @@ class Telemetry:
         return self._call("POST", "/v1/telemetry/test", retry=False)
 
 
-def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
+def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,
                   subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, system_prompt_append=None, file_tools=None, builtins=None,
                   delegate=None, prompt=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, mcp_servers=None, bucket=None):
     """A create request's body: the tools as the attached MCP server's tools/list, and the fields given."""
@@ -1354,7 +1354,9 @@ def _provisioning(tools, *, definition=None, name=None, type=None, system_prompt
                 "mounts": mounts, "remount": remount, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit, "runLimits": run_limits, "modelHeaders": model_headers,
                 "systemPromptAppend": system_prompt_append, "fileTools": file_tools, "codeMode": code_mode, "builtins": builtins, "delegate": delegate, "mcpServers": mcp_servers, "prompt": prompt,
                 "initialMessages": initial_messages, "importMessages": import_messages, "maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "bucket": bucket}
-    return _with_multi_agent({"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None}})
+    if workspace_id is not _DEFAULT:
+        optional["workspaceId"] = workspace_id
+    return _with_multi_agent({"mcp": {"tools": [item.mcp_tool() for item in tools]}, **{key: value for key, value in optional.items() if value is not None or key == "workspaceId"}})
 
 
 def _definition_fields(fields):
@@ -2773,7 +2775,7 @@ class Runs:
         self.runtime = runtime
 
     @staticmethod
-    def _request(input, *, instructions=None, instructions_append=None, model=None, definition=None, thinking_level=None, output=None, builtins=None, delegate=None,
+    def _request(input, *, workspace_id=_DEFAULT, instructions=None, instructions_append=None, model=None, definition=None, thinking_level=None, output=None, builtins=None, delegate=None,
                  file_tools=None, mounts=None, files=None, user=None, metadata=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None,
                  model_headers=None, name=None, retention_seconds=None, code_mode=None, max_output_tokens=None, temperature=None, data_collection=None, mcp_servers=None, bucket=None):
         parts = [{"type": "text", "text": input}] if input else []
@@ -2793,7 +2795,9 @@ class Runs:
                   "from": _sender(user) if user else None, "metadata": metadata, "subject": subject, "context": context, "keyScope": key_scope, "spendLimit": spend_limit,
                   "runLimits": run_limits, "modelHeaders": model_headers, "name": name, "retentionSeconds": retention_seconds, "codeMode": code_mode,
                   "maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "bucket": bucket}
-        return {key: value for key, value in fields.items() if value is not None}
+        if workspace_id is not _DEFAULT:
+            fields["workspaceId"] = workspace_id
+        return {key: value for key, value in fields.items() if value is not None or key == "workspaceId"}
 
     async def create(self, input, *, idempotency_key=None, wait=None, traceparent=None, **config):
         """Start a run and return at once, still running (or, with `wait`, once it ends within it): its view as a dict."""
@@ -2873,7 +2877,7 @@ class Agents:
         """
         return await self.runs.run(input, **options)
 
-    async def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
+    async def upsert(self, key, *, workspace_id=_DEFAULT, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                      key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, instructions_append=None, file_tools=None,
                      builtins=None, delegate=None, subagents=False, on_event=None, on_input=None, on_error=None, attach=None, takeover=False, connection=None,
                      code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, mcp_servers=None, bucket=None):
@@ -2898,7 +2902,7 @@ class Agents:
         model and thinking level that take one (a 400 otherwise). `bucket`, with end-user credits on (agents.end_users), is the bucket
         of its subject's credit its runs spend from (default "default")."""
         tools = list(tools or [])
-        session = await self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
+        session = await self.runtime.upsert_agent(key, workspace_id=workspace_id, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                                   subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                                   model_headers=model_headers, mounts=mounts, remount=remount, name=name, system_prompt_append=instructions_append, file_tools=file_tools, builtins=builtins,
                                                   delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,

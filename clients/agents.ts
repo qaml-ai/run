@@ -39,6 +39,8 @@ export interface AgentsOptions {
 
 /** An agent's configuration: what `upsert` makes it, or changes it to. */
 export interface AgentConfig {
+  /** Account workspace for spend attribution. */
+  workspaceId?: string | null;
   /** A model from the catalog (GET /v1/models) as "provider/model-id", e.g. "anthropic/claude-sonnet-5-5". */
   model?: string;
   /** The system prompt. */
@@ -382,7 +384,7 @@ export class Agents {
 }
 
 /** A stateless run's configuration (an agent's, but for tools that need a connected process) and its input. */
-export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "mcpServers" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "dataCollection" | "subject" | "context" | "keyScope" | "bucket" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
+export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "mcpServers" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "dataCollection" | "subject" | "context" | "workspaceId" | "keyScope" | "bucket" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
   /** js_exec. Default: on for a run with tools (builtins, MCP servers, a definition, files), off for a tool-less run. */
   codeMode?: boolean;
   /** What the run is asked. It may be empty when `files` has audio, whose transcript is then the input. */

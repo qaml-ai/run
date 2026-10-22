@@ -1,3 +1,4 @@
+import { Workspaces } from "../src/workspaces.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -90,13 +91,23 @@ test("reconciliation survives a lost host, includes BYOK cost, and runs concurre
 
 test("authoritative reconciliation posts only the difference, including a refund; uncertainty stays pending", async () => {
   const { db, attempts } = await setup();
+  const workspaces = new Workspaces(db);
+  const original = await workspaces.create("payg", "Original"), moved = await workspaces.create("payg", "Moved");
+  await workspaces.assign("payg", "agent", "agent", original.id);
   const id = await begin(attempts);
   await attempts.event("payg","agent",true,true,{...finish(id,0.2),completed:false});
   assert.equal(await total(db),-200000);
+  await new Promise(resolve => setTimeout(resolve, 2));
+  await workspaces.assign("payg", "agent", "agent", moved.id);
   await Promise.all([attempts.settle(id,"payg","agent",{input:100,output:10,providerCost:0.1,providerCreditCost:0},0,true,true),attempts.settle(id,"payg","agent",{input:100,output:10,providerCost:0.1,providerCreditCost:0},0,true,true)]);
   assert.equal(await total(db),-100000);
   const usage=(await db.query("select responses,cost from usage")).rows[0];
   assert.equal(usage.responses,1);assert.ok(Math.abs(usage.cost-0.1)<1e-12);
+  const attributed = (await db.query("select workspace, cost, responses from workspace_usage")).rows;
+  assert.equal(attributed.length, 1);
+  assert.equal(attributed[0].workspace, original.id);
+  assert.equal(attributed[0].responses, 1);
+  assert.ok(Math.abs(attributed[0].cost - 0.1) < 1e-12);
   const pending = await begin(attempts);
   await attempts.event("payg","agent",true,true,{type:"finish",id:pending,usage:{},chars:0,completed:false});
   await db.query("update model_attempts set next_check_at=0 where id=$1",[pending]);

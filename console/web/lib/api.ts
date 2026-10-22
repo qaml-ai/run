@@ -117,7 +117,10 @@ export interface AgentDetail extends AgentSummary {
 }
 export interface ApiToken { id: string; name: string; prefix: string; createdAt: number }
 export interface OAuthGrant { id: string; clientName: string; login: string | null; scope: string; createdAt: number; usedAt: number | null }
+export interface Workspace { id: string; name: string; archived: boolean; createdAt: number; updatedAt: number }
+export interface WorkspaceMembership { kind: "agent" | "definition"; id: string; workspaceId: string | null }
 export interface Usage {
+  workspaces?: { id: string | null; name: string; responses: number; cost: number }[];
   since: number;
   totals: { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
   days: { day: string; model: string; kind: "turn" | "compaction" | "transcription" | "image"; responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformCost: number }[];

@@ -1,3 +1,5 @@
+import { workspaceRoutes } from "./workspaces-api.ts";
+import { Workspaces } from "./workspaces.ts";
 import { randomUUID } from "node:crypto";
 import { HistoryFormatError, toPiMessages } from "../clients/history-formats.ts";
 import { safeError } from "./metrics.ts";
@@ -139,6 +141,10 @@ type Env = { Variables: { principal: Caller } };
  * channels, provider keys and endpoints, volumes' links), so revoking the grant leaves no access behind.
  */
 const OAUTH_ROUTES = [
+  /^(?:GET|POST) \/v1\/workspaces$/,
+  /^(?:GET|PATCH) \/v1\/workspaces\/[^/]+(?:\/members)?$/,
+  /^GET \/v1\/workspace-memberships$/,
+  /^PUT \/v1\/workspace-memberships\/(?:agent|definition)\/[^/]+$/,
   /^GET \/v1\/(?:me|models|providers|inputs|usage|billing|billing\/ledger)$/,
   /^(?:GET|POST) \/v1\/agents$/,
   /^(?:GET|DELETE) \/v1\/agents\/[^/]+$/,
@@ -620,7 +626,11 @@ export function api(context: ApiContext) {
     for (const [name, value] of Object.entries(rateLimitHeaders(await context.rateLimits?.agentCreate(tenant)))) c.header(name, value);
     // Lives as long as a create's agent would: with a key until deleted, without one a day, unless it says.
     const ttlMs = ttlSeconds === undefined ? (key !== undefined ? null : undefined) : ttlSeconds === null ? null : ttlSeconds * 1000;
-    return json(c, 201, withoutToken(c, await clients.fork(c.req.param("id")!, tenant, { key, name, atMessage, ttlMs, identity, systemPromptAppend, ...(modelHeaders !== undefined ? { modelHeaders: modelHeadersInput(modelHeaders) } : {}) })));
+    const fork = await clients.fork(c.req.param("id")!, tenant, { key, name, atMessage, ttlMs, identity, systemPromptAppend, ...(modelHeaders !== undefined ? { modelHeaders: modelHeadersInput(modelHeaders) } : {}) });
+    const workspaces = new Workspaces(accounts.db);
+    const inherited = await workspaces.current(tenant, "agent", c.req.param("id")!);
+    await workspaces.assign(tenant, "agent", fork.id, inherited?.workspace ?? null, true, true);
+    return json(c, 201, withoutToken(c, fork));
   });
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/events",
@@ -834,11 +844,13 @@ export function api(context: ApiContext) {
   });
 
   route(createRoute({
-    method: "get", path: "/v1/usage", request: { query: z.object({ days: z.string().optional().openapi({ description: "1–365, default 30" }) }) },
+    method: "get", path: "/v1/usage", request: { query: z.object({ days: z.string().optional().openapi({ description: "1–365, default 30" }), workspaceId: z.string().optional().openapi({ description: "Filter by workspace id, or unassigned. Omit for the account total." }) }) },
     responses: { 200: reply("Token usage per UTC day and model", schema.Usage) },
   }), async c => {
     const days = Math.min(365, Math.max(1, Number(c.req.query("days") ?? 30) || 30));
-    return json(c, 200, await accounts.usage(c.var.principal.tenant, Date.now() - days * 86_400_000));
+    const workspace = c.req.query("workspaceId");
+    if (workspace && workspace !== "unassigned") await new Workspaces(accounts.db).get(c.var.principal.tenant, workspace);
+    return json(c, 200, await accounts.usage(c.var.principal.tenant, Date.now() - days * 86_400_000, workspace));
   });
 
   route(createRoute({
@@ -1237,6 +1249,7 @@ export function api(context: ApiContext) {
 
   channelRoutes(route, () => context.channels);
   definitionRoutes(route, () => context);
+  workspaceRoutes(route, () => accounts.db);
   runRoutes(route, () => context);
   endUserRoutes(route, () => context.endUsers);
   route(createRoute({
