@@ -47,9 +47,6 @@ const rewrite = (count: number) => command(`rewrite(${count})`, async (model, wo
 const read = command("read", async (model, world) => {
   const records = await world.writer.read();
   observe(model, ids(records), "read");
-  const replayed: Rec[] = [];
-  await world.writer.replay!(record => replayed.push(record));
-  assert.deepEqual(replayed, records, "streamed replay agrees after appends, rewrites and torn writes");
 });
 /** The process dies: the file keeps what was durable and `keep` (0..1) of the bytes written after, cut anywhere. */
 const crash = (keep: number) => command(`crash(keep ${keep.toFixed(2)})`, async (model, world) => {

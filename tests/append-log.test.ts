@@ -51,26 +51,6 @@ test("a torn final record from a crash is dropped, but corruption elsewhere is a
   await assert.rejects(fileAppendLog(path).read(), /Corrupt append log record 3/);
 });
 
-test("streamed replay preserves JSONL framing, large Unicode records, torn tails, and callback failures", async t => {
-  const path = join(await directory(t), "streamed.jsonl");
-  const log = fileAppendLog<{ text: string }>(path);
-  const replay = async () => {
-    const records: { text: string }[] = [];
-    await log.replay!(record => records.push(record));
-    return records;
-  };
-  assert.deepEqual(await replay(), [], "a missing log is empty");
-  const large = { text: "你好 🐪\n".repeat(30_000) };
-  await appendFile(path, `${JSON.stringify(large)}\n\n${JSON.stringify({ text: "last" })}`);
-  assert.deepEqual(await replay(), await log.read(), "including a whole final record without a newline");
-  await appendFile(path, '\n{"text":\n\n');
-  assert.deepEqual(await replay(), await log.read(), "blank lines after a torn record");
-  const callbackError = Object.assign(new Error("consumer failed"), { code: "ENOENT" });
-  await assert.rejects(log.replay!(() => { throw callbackError; }), error => error === callbackError);
-  await appendFile(path, '{"text":"after corruption"}\n');
-  await assert.rejects(replay(), /Corrupt append log record 4/);
-});
-
 test("a writer after a crash appends after the last whole record, not onto a torn one", async t => {
   // Found by prop-append-log: the next record was glued onto the torn line, then dropped with it as torn.
   const path = join(await directory(t), "log.jsonl");
@@ -111,15 +91,17 @@ test("rewrite folds the log from a snapshot taken inside the write sequence", as
   assert.deepEqual(await fileAppendLog(path).read(), [{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }]);
 });
 
-test("bounded file reads reject oversized input and retain torn-tail semantics", async t => {
-  const path = join(await directory(t), "bounded.jsonl");
+test("file emptiness checks do not read or change existing records, including corrupt data", async t => {
+  const path = join(await directory(t), "empty.jsonl");
+  const log = fileAppendLog(path);
+  assert.equal(await log.empty!(), true, "a missing log is empty");
+  await log.rewrite(() => []);
+  assert.equal(await log.empty!(), true, "an empty file is empty");
   const text = '{"text":"é"}\n{"torn":';
   await appendFile(path, text);
-  const log = fileAppendLog(path);
-  const bytes = Buffer.byteLength(text);
-  assert.equal(await log.readBounded!(bytes - 1), undefined);
-  assert.deepEqual(await log.readBounded!(bytes), [{ text: "é" }]);
-  assert.equal(await readFile(path, "utf8"), text, "bounded reads never modify the original");
+  assert.equal(await log.empty!(), false);
+  assert.equal(await readFile(path, "utf8"), text, "checking never modifies the original");
   await appendFile(path, '\n{"later":true}\n');
-  await assert.rejects(log.readBounded!(1024), /Corrupt append log record 2/);
+  assert.equal(await log.empty!(), false, "corrupt data still prevents starting a fresh session");
+  await log.close();
 });

@@ -8,8 +8,8 @@ import {
   type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage, type TaskId,
 } from "@earendil-works/pi-durable";
 
-export interface DurableCursor { entryId: number; index: number }
-export interface DurableMessage { message: AgentMessage; cursor: DurableCursor }
+interface DurableCursor { entryId: number; index: number }
+interface DurableMessage { message: AgentMessage; cursor: DurableCursor }
 export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
   durable: {
     storage: Storage;
@@ -113,7 +113,7 @@ const summaryOf = (message: AssistantMessage) => {
  * split into requests that each fit `window` with `maxTokens` to answer: each takes a part of the conversation, cut
  * between lines, after the summary of the parts before it. Undefined when the request fits as it is (or is not one).
  */
-export function summaryChunks(messages: Message[], window: number, maxTokens: number): ((before?: string) => Message[])[] | undefined {
+function summaryChunks(messages: Message[], window: number, maxTokens: number): ((before?: string) => Message[])[] | undefined {
   const [system, user] = messages;
   const text = user?.role === "user" && Array.isArray(user.content) && user.content.length === 1 && user.content[0].type === "text" ? user.content[0].text : undefined;
   const match = text?.match(/^<conversation>\n([\s\S]*)\n<\/conversation>\n\n([\s\S]*)$/);
@@ -164,19 +164,6 @@ function storageGuard(storage: Storage, onFailure?: (error: unknown) => void): S
       } catch (error) { return failed(error); }
     };
   } });
-}
-
-/** Retire native work for an explicit rollback without ever dispatching its run phases. */
-export async function discardDurableRun(storage: Storage, conversationId: ConversationId | number): Promise<DurableCursor | undefined> {
-  const harness = await Harness.open(storage, { registry: createRegistry(),
-    models: { getModel: () => undefined } as unknown as HarnessOptions["models"],
-    settings: { compaction: { enabled: false }, retry: { enabled: false } },
-  }, context);
-  try {
-    const conversation = await harness.conversation(conversationId as ConversationId, context);
-    if (conversation) await conversation.abort(context);
-    return await latestDurableCursor(storage, conversationId as ConversationId);
-  } finally { await harness.close(context); }
 }
 
 export async function recoverDurableMessages(storage: Pick<Storage, "scanEntries">, conversationId: ConversationId | number, after?: DurableCursor): Promise<DurableMessage[]> {

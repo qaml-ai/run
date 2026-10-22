@@ -24,7 +24,7 @@ export interface JournalForkCut {
 }
 
 /** The journal's retained context cannot reconstruct this point; use the settled history instead. */
-export class ForkBeforeHead extends Error {
+class ForkBeforeHead extends Error {
   readonly status = 400;
   readonly code = "FORK_POINT_INVALID";
   constructor() {

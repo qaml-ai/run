@@ -136,7 +136,7 @@ test("retiring indexes the settled history before the base the index lacks, keep
 test("retiring a session whose import is in its legacy log indexes from that log first", async () => {
   const records: TranscriptRecord[] = [{ t: "message", message: user("imported", "old") }, { t: "message", message: fauxAssistantMessage("answer") }];
   const kept: TranscriptRecord[] = [];
-  const legacy: AppendLog<TranscriptRecord> = { read: async () => kept, readBounded: async () => kept, append: record => { kept.push(record); }, flush: async () => {},
+  const legacy: AppendLog<TranscriptRecord> = { read: async () => kept, empty: async () => kept.length === 0, append: record => { kept.push(record); }, flush: async () => {},
     rewrite: async snapshot => { kept.splice(0, kept.length, ...snapshot()); }, close: async () => {}, appendedSinceRewrite: 0 };
   await legacy.rewrite(() => records);
   const storage = await earlier(records, { legacy });

@@ -185,8 +185,7 @@ export class Transcript {
   async hasRequest(requestId: string) { return this.requests.has(requestId); }
 
   async load() {
-    if (this.log.replay) await this.log.replay(record => this.apply(record));
-    else for (const record of await this.log.read()) this.apply(record);
+    for (const record of await this.log.read()) this.apply(record);
   }
 
   snapshot(): TranscriptSnapshot {
