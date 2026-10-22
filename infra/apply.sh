@@ -33,7 +33,7 @@ echo "==> Fetching prod.tfvars"
 aws s3 cp --only-show-errors "$tfvars_s3" "$tfvars"
 cp "$tfvars" "$tfvars.orig"
 for setting in "$@"; do
-  [[ $setting =~ ^([a-z_]+)=(.*)$ ]] || { echo "Arguments are <variable>=<value>, not '$setting'." >&2; exit 2; }
+  [[ $setting =~ ^([a-z][a-z0-9_]*)=(.*)$ ]] || { echo "Arguments are <variable>=<value>, not '$setting'." >&2; exit 2; }
   key=${BASH_REMATCH[1]} value=${BASH_REMATCH[2]}
   [[ $value =~ ^[0-9]+$|^true$|^false$|^\".*\"$ ]] || value="\"$value\""
   grep -Ev "^[[:space:]]*${key}[[:space:]]*=" "$tfvars" > "$tfvars.new" || true
