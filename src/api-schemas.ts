@@ -524,6 +524,12 @@ export const AgentSummary = z.object({
   expiresAt: z.number().nullable(),
   resume: z.object({ failures: z.number(), after: z.number() }).nullable().openapi({ description: "Loads of its unfinished work that failed, or found no room, and when the next may be tried: put off, doubling, at most an hour apart, never for good" }),
   parentAgentId: z.string().optional().openapi({ description: "For a child a delegate or spawn_agent call made: the agent whose run made it" }),
+  workspaceId: z.string().nullable().optional().openapi({ description: "In GET /v1/agents: the workspace it is in (PUT /v1/workspace-memberships), or null for none" }),
+  lastActiveAt: z.number().nullable().optional().openapi({ description: "In GET /v1/agents: when its latest run ended (ms since the epoch), or null before its first" }),
+  lastError: z.object({
+    at: z.number().openapi({ description: "When the run ended (ms since the epoch)" }),
+    class: z.string().openapi({ description: "How it failed, never its text: a stop (spend_limit, turn_limit, agent_loop_limit), the runtime's code (aborted, resume_limit, model_stream_stalled…), runtime_restart, runtime_error or model_error. Its request's outcome has the message" }),
+  }).nullable().optional().openapi({ description: "In GET /v1/agents: its latest failed run, or null if none has failed" }),
 }).openapi("AgentSummary");
 
 const Outcome = z.object({ result: z.unknown().optional(), error: z.string().optional(), uncertain: z.boolean().optional() }).openapi("Outcome");

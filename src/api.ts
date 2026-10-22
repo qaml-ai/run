@@ -21,6 +21,7 @@ import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readBytes, readJson, readText, signInHint } from "./http.ts";
+import { AGENT_PAGE_MAX } from "./client-sessions/configuration.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
 import { validTtl, type Definitions } from "./definitions.ts";
@@ -548,8 +549,35 @@ export function api(context: ApiContext) {
     return json(c, 200, shown);
   });
 
-  route(createRoute({ method: "get", path: "/v1/agents", responses: { 200: reply("The tenant's agents", z.array(schema.AgentSummary)) } }),
-    async c => json(c, 200, await clients.list(c.var.principal.tenant)));
+  route(createRoute({
+    method: "get", path: "/v1/agents",
+    request: { query: z.object({
+      limit: z.string().optional().openapi({ description: `A page of at most this many (1–${AGENT_PAGE_MAX}), by id; the X-Next-Cursor header then holds the next page's cursor while there are more. Without limit or cursor, every agent that matches, as always` }),
+      cursor: z.string().optional().openapi({ description: "The previous page's X-Next-Cursor" }),
+      workspaceId: z.string().optional().openapi({ description: "Only agents in this workspace, or unassigned for agents in none" }),
+      status: z.enum(["running", "failed", "expiring"]).optional().openapi({ description: "running: loaded on a node now; failed: a run failed in the last 24 hours (lastError); expiring: has an expiresAt" }),
+      subAgents: z.enum(["only", "exclude"]).optional().openapi({ description: "Only sub-agents (those with a parentAgentId), or none of them" }),
+      q: z.string().max(200).optional().openapi({ description: "Part of its name, key or id, ignoring case" }),
+    }) },
+    responses: { 200: { ...reply("The tenant's agents that match, by id", z.array(schema.AgentSummary)), headers: z.object({ "X-Next-Cursor": z.string().optional().openapi({ description: "With limit or cursor, while more agents match: the next page's cursor" }) }) } },
+  }), async c => {
+    const query = c.req.query();
+    const limit = query.limit === undefined ? undefined : Number(query.limit);
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > AGENT_PAGE_MAX)) throw new HttpError(400, `limit must be an integer from 1 to ${AGENT_PAGE_MAX}`);
+    const oneOf = <T extends string>(name: string, values: readonly T[]) => {
+      const value = query[name];
+      if (value !== undefined && !values.includes(value as T)) throw new HttpError(400, `${name} must be one of ${values.join(", ")}`);
+      return value as T | undefined;
+    };
+    if (query.q !== undefined && query.q.length > 200) throw new HttpError(400, "q must be at most 200 characters");
+    const page = await clients.page(c.var.principal.tenant, {
+      // A cursor without a limit pages at the largest size.
+      limit: limit ?? (query.cursor !== undefined ? AGENT_PAGE_MAX : undefined), cursor: query.cursor, workspaceId: query.workspaceId || undefined, q: query.q,
+      status: oneOf("status", ["running", "failed", "expiring"] as const), subAgents: oneOf("subAgents", ["only", "exclude"] as const),
+    });
+    if (page.next) c.header("X-Next-Cursor", page.next);
+    return json(c, 200, page.agents);
+  });
   route(createRoute({
     method: "post", path: "/v1/agents",
     request: { headers: z.object({ "idempotency-key": z.string().optional().openapi({ description: "Provisioning with the same key returns the same agent" }) }).extend(traceHeaders.shape), body: content(schema.AgentInput) },

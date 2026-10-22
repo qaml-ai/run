@@ -49,7 +49,7 @@ import * as delegation from "./client-sessions/delegation.ts";
 import * as childSessions from "./client-sessions/children.ts";
 import * as humanInput from "./client-sessions/inputs.ts";
 import { dollars } from "./client-sessions/spend.ts";
-import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type HistoryTail, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun } from "./client-sessions/state.ts";
+import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type HistoryTail, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun, failureClass } from "./client-sessions/state.ts";
 
 const has = (object: object, key: string) => Object.hasOwn(object, key);
 
@@ -1108,7 +1108,9 @@ export class ClientSessions {
   }
 
   /** A tenant's live agents (not its stateless runs' sessions). `running` covers agents served by any node. */
-  async list(tenant: string) { return configuration.list(this.configurationContext, tenant); }
+  async list(tenant: string) { return (await configuration.list(this.configurationContext, tenant)).agents; }
+  /** GET /v1/agents: filtered, and a page of them with `limit` (`next` when there are more). */
+  async page(tenant: string, query: configuration.AgentListQuery) { return configuration.list(this.configurationContext, tenant, query); }
 
   /**
    * Whether `id` is one of `tenant`'s live agents (one read, not a listing); with `agentsOnly`, not a stateless run's
@@ -2357,6 +2359,20 @@ export class ClientSessions {
   private hook(name: "runStarted" | "runEnded", session: Session, record: RequestRecord) {
     try { this.options.hooks?.[name]?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, record); }
     catch (error) { console.error(JSON.stringify({ type: "session_hook_failed", hook: name, error: safeError(error) })); }
+    if (name === "runEnded" && !session.header.run) void this.recordActivity(session.header.id, record);
+  }
+
+  /**
+   * GET /v1/agents' lastActiveAt and lastError: when its latest run ended and, of a failed one, when and its class (never
+   * its text). Best effort: a lost write only leaves the list a run behind.
+   */
+  private async recordActivity(id: string, record: RequestRecord) {
+    const at = record.endedAt ?? Date.now(), failure = failureClass(record);
+    try {
+      await this.db.query(failure
+        ? "update agents set last_active_at = greatest(coalesce(last_active_at, 0), $2), last_error_at = greatest(coalesce(last_error_at, 0), $2), last_error_class = case when coalesce(last_error_at, 0) <= $2 then $3 else last_error_class end where id = $1"
+        : "update agents set last_active_at = greatest(coalesce(last_active_at, 0), $2) where id = $1", failure ? [id, at, failure] : [id, at]);
+    } catch (error) { console.error(JSON.stringify({ type: "agent_activity_failed", agent: id, error: safeError(error) })); }
   }
 
   remove(id: string): Promise<void> {

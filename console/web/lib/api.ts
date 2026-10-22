@@ -12,6 +12,16 @@ export class ApiError extends Error {
 }
 
 export async function api<T = any>(path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
+  return (await request<T>(path, init)).value;
+}
+
+/** A GET of a paged list: its page, and the cursor of the next (the X-Next-Cursor header) while there are more. */
+export async function apiPage<T>(path: string): Promise<{ items: T[]; next?: string }> {
+  const { value, headers } = await request<T[]>(path);
+  return { items: value, next: headers.get("X-Next-Cursor") ?? undefined };
+}
+
+async function request<T>(path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<{ value: T; headers: Headers }> {
   const method = init.method ?? (init.body === undefined ? "GET" : "POST");
   const scope = helpRequestScope();
   let response: Response;
@@ -40,7 +50,7 @@ export async function api<T = any>(path: string, init: { method?: string; body?:
     throw new ApiError(response.status, value?.error ?? `HTTP ${response.status}`, typeof value?.code === "string" ? value.code : undefined,
       Number.isFinite(retry) && retry > 0 ? retry : undefined);
   }
-  return value as T;
+  return { value: value as T, headers: response.headers };
 }
 
 export function useApi<T>(path: string | undefined, intervalMs?: number) {
@@ -61,6 +71,26 @@ export function useApi<T>(path: string | undefined, intervalMs?: number) {
     return () => clearInterval(timer);
   }, [reload, intervalMs, path]);
   return { data, error, loading, reload };
+}
+
+/** `useApi` for one page of a paged list (`apiPage`): polled with `intervalMs`, that page only. */
+export function useApiPage<T>(path: string | undefined, intervalMs?: number) {
+  const [data, setData] = useState<{ items: T[]; next?: string; path: string }>();
+  const [error, setError] = useState<ApiError>();
+  const reload = useCallback(async () => {
+    if (!path) return;
+    try { const page = await apiPage<T>(path); setData({ ...page, path }); setError(undefined); }
+    catch (caught) { setError(caught instanceof ApiError ? caught : new ApiError(0, String(caught))); }
+  }, [path]);
+  useEffect(() => {
+    void reload();
+    if (!intervalMs) return;
+    const timer = setInterval(() => void reload(), intervalMs);
+    return () => clearInterval(timer);
+  }, [reload, intervalMs]);
+  // A page another query left is not this one's: loading until this one's arrives.
+  const current = data?.path === path ? data : undefined;
+  return { items: current?.items, next: current?.next, stale: !current && !!data, previous: data?.items, error, reload };
 }
 
 /** `login` (Google or sign-in address, or GitHub login) and `name` are the person; `tenant` is the account's id, for the API and support only. */
@@ -95,7 +125,13 @@ export interface AgentSummary {
   key?: string | null;
   /** A sub-agent's parent: the agent whose delegate call made it. */
   parentAgentId?: string;
+  /** In GET /v1/agents: its workspace (null: none), when its latest run ended, and its latest failed run (a class, never text). */
+  workspaceId?: string | null;
+  lastActiveAt?: number | null;
+  lastError?: { at: number; class: string } | null;
 }
+/** GET /v1/agents' page size in the console, and its filters. */
+export const AGENT_PAGE = 50;
 export interface RequestRecord {
   id: string; method: string; state: "running" | "completed"; startedAt?: number; endedAt?: number; prompt?: string;
   outcome?: { result?: unknown; error?: string; uncertain?: boolean };
@@ -152,6 +188,16 @@ export const formatMicros = (value: number) => {
 
 export const formatNumber = (value: number) => new Intl.NumberFormat("en-US", { notation: value >= 100_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);
 export const formatCost = (value: number) => `$${value === 0 || value >= 1 ? value.toFixed(2) : value.toFixed(4)}`;
+/** "now", "5m ago", "3h ago", "2d ago", then the date: how long ago something happened. */
+export function formatAgo(value: number | null | undefined, now = Date.now()) {
+  if (!value) return "—";
+  const seconds = Math.max(0, (now - value) / 1000);
+  if (seconds < 60) return "now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 30 * 86400) return `${Math.floor(seconds / 86400)}d ago`;
+  return new Date(value).toLocaleDateString(undefined, { dateStyle: "medium" });
+}
 export const formatTime = (value?: number) => value ? new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
 export interface Definition {
   id: string; name: string; revision: number; model?: string; systemPrompt?: string; thinkingLevel?: string;

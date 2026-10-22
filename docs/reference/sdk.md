@@ -381,7 +381,7 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | `runtime.browserToken(agentId, options)` | `runtime.browser_token(agent_id, …)` | a browser token |
 | `runtime.me()` | `runtime.me()` | who the API key is: `tenant`, your tenant's id, which `serveTools` takes |
 | `runtime.setProvider(name, config)`, `providers()`, `deleteProvider(name)` | `set_provider(name, base_url=, models=, api_key=, headers=)`, `providers()`, `delete_provider(name)` | a provider of your own: any OpenAI-compatible server and its models; see [Custom models](../guides/custom-models.md) |
-| `runtime.listAgents()` | `runtime.list_agents()` | the tenant's agents, each with the `key` it was made with (`null` without one) and its `name` |
+| `runtime.listAgents()` | `runtime.list_agents()` | the tenant's agents, each with the `key` it was made with (`null` without one), its `name`, `workspaceId`, `lastActiveAt` and `lastError` (see [Listing agents](#listing-agents)) |
 | `runtime.upsertDefinition(key, input)`, `createDefinition`, `updateDefinition`, `definition(s)`, `deleteDefinition` | `upsert_definition(key, …)`, `create_definition`, … | definitions; the same key is the same definition |
 | `runtime.createVolume`, `volume(id)`, `mounts`, `setMounts` | `create_volume`, `volume(id)`, … | volumes and mounts |
 | `runtime.projects.create({ key, template })`, `project.mount`, `project.publish`, `publishTool` | `camelai_run.projects`: `Projects(runtime).create(key, template=)`, `mount`, `publish`, `publish_tool` | [projects](../guides/projects.md): an agent builds in a keyed volume; your code checks and publishes snapshots |
@@ -409,6 +409,25 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 `client.prompt()` resolves with the run's raw result, even when the model
 failed (`result.error`), and rejects only on a runtime error. Requests have no
 timeout unless you pass `timeoutMs` or `signal` (Python: `timeout`).
+
+### Listing agents
+
+`listAgents()` (`list_agents()`) returns every agent, as `GET /v1/agents` does
+without a `limit`. For an account with many, call the REST API with filters
+and pages:
+
+- `limit` (1 to 200) returns a page by id; while more match, the response's
+  `X-Next-Cursor` header holds the cursor to pass as `cursor` for the next.
+- `workspaceId`: a workspace's agents, or `unassigned`.
+- `status`: `running` (loaded on a node now), `failed` (a run failed in the
+  last 24 hours), or `expiring` (has an `expiresAt`).
+- `subAgents`: `only` or `exclude`.
+- `q`: part of the name, key or id, ignoring case.
+
+Each agent also has `workspaceId`, `lastActiveAt` (when its latest run ended)
+and `lastError` (`{ at, class }` of its latest failed run: a class such as
+`model_error`, `spend_limit` or `aborted`, never the error's text; the
+request's outcome has the message).
 
 ### Telemetry
 

@@ -561,6 +561,12 @@ export interface AgentSummary {
   configHash: string;
   /** A sub-agent's parent: the agent whose delegate call made it. */
   parentAgentId?: string;
+  /** Its workspace, or null for none (runtimes before workspaces leave it out). */
+  workspaceId?: string | null;
+  /** When its latest run ended (ms since the epoch), or null before its first. */
+  lastActiveAt?: number | null;
+  /** Its latest failed run: when, and how (a class such as model_error or spend_limit, never the error's text). */
+  lastError?: { at: number; class: string } | null;
 }
 export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean }
 /**

@@ -423,6 +423,21 @@ export const visible = ({ params: _params, announce: _announce, handedOff: _hand
   return { ...record, ...ending, status };
 };
 
+/**
+ * How a failed run failed, as a short class and never its text (which can quote a provider or the user): its stop
+ * (spend_limit, turn_limit, agent_loop_limit), the runtime's code (aborted, resume_limit, model_stream_stalled…), or
+ * runtime_restart, runtime_error or model_error. Undefined for a run that did not fail.
+ */
+export function failureClass(record: Pick<RequestRecord, "outcome">): string | undefined {
+  const ending = outcomeEnding(record.outcome);
+  if (ending.stopped && ending.stopped !== "input_required") return ending.stopped;
+  if (ending.error === undefined) return undefined;
+  const code = (record.outcome?.result as { code?: unknown } | undefined)?.code;
+  if (typeof code === "string" && /^[a-z][a-z0-9_]{0,39}$/.test(code)) return code;
+  if (record.outcome?.error !== undefined) return record.outcome.uncertain ? "runtime_restart" : "runtime_error";
+  return "model_error";
+}
+
 /** The agent's run that has begun: the one its tool calls are made in. */
 export function runningRun(session: Session) {
   return [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began);
