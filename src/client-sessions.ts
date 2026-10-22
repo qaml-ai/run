@@ -2,18 +2,18 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { END_USER_CREDIT } from "./model-attempt.ts";
 import { bucketInput } from "./end-user-credits.ts";
-import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import type { AgentConfig, Credentials, ToolDefinition } from "./protocol.ts";
-import { errorText, NOT_MIGRATED, PERSISTENCE_FAILED, scratchMount } from "./protocol.ts";
+import type { AgentConfig, ToolDefinition } from "./protocol.ts";
+import { errorText, NOT_MIGRATED, PERSISTENCE_FAILED } from "./protocol.ts";
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { withCatalogPrices } from "./pi-catalog.ts";
 import { configurationRefusal, configurationUpdate, runLimitsInput } from "./session-config.ts";
-import { outputInput, validateDefinitions } from "./tool-policy.ts";
+import { outputInput } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
 import { convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import { canonical } from "../shared/durable-json.ts";
@@ -26,61 +26,31 @@ import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson 
 import { rateLimitHeaders, type RateLimitState } from "./rate-limits.ts";
 import { VolumeService } from "./volumes.ts";
 import { databaseRetryable, databaseUnavailable, type Db, type Sql } from "./db.ts";
-import { LostClaim, underClaim, type Claim } from "./ownership.ts";
+import { NotOwner, LostClaim, underClaim, type Claim } from "./ownership.ts";
 import { deleteTail } from "./log-tail.ts";
-import { OVERRIDES, type DefinitionRef } from "./definitions.ts";
-import { mcpServerView, type McpServerSpec, type Sources } from "./tool-sources.ts";
-import { builtinsInput } from "./builtins.ts";
-import { contentResult, type McpResult } from "./mcp-results.ts";
-import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import type { DefinitionRef } from "./definitions.ts";
+import type { McpServerSpec, Sources } from "./tool-sources.ts";
 import { actorInput, type AgentIdentity } from "./identity.ts";
 import { metadataInput, senderInput } from "./sender.ts";
-import { compose, toolCallKey, ToolFailure, type ToolCallCode, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
-import { searchTools, type SearchQuery } from "./tool-search.ts";
 import { CodeGate, DEFAULT_CODE_CAPACITY } from "./codemode.ts";
-import { declaredType, FILE_LIMITS, fileResponse, safeName, validFileRef, type FileRef } from "./files.ts";
-import { fileRef } from "./inspect.ts";
-import { resolve as resolveMount, type ToolContext } from "./volume-tools.ts";
+import { fileResponse, type FileRef } from "./files.ts";
 import { chunksOf, HistoryIndex, type HistoryPage } from "./history-pages.ts";
-import { argumentsHash, inputView, resolution, type Input, type Responder } from "./inputs.ts";
+import { inputView, resolution, type Input, type Responder } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, safeError, Steps } from "./metrics.ts";
 import { inputSpans } from "./telemetry.ts";
-import { newSpanId } from "./otlp.ts";
-import { delegateSettings, limitsOnly, PARENT_KEYS, startsChildren, type DelegateSettings } from "./multi-agent.ts";
+import { PARENT_KEYS, type DelegateSettings } from "./multi-agent.ts";
 import { clock, random } from "./node-context.ts";
 import { always, reachable, sometimes } from "./assert.ts";
+import * as tools from "./client-sessions/tools.ts";
+import * as configuration from "./client-sessions/configuration.ts";
 import * as events from "./client-sessions/events.ts";
 import * as spend from "./client-sessions/spend.ts";
 import * as delegation from "./client-sessions/delegation.ts";
 import * as childSessions from "./client-sessions/children.ts";
 import * as humanInput from "./client-sessions/inputs.ts";
 import { dollars } from "./client-sessions/spend.ts";
-import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type HistoryTail, type Session, type Carried, type ClientSessionOptions, type DefinitionConfig, type UsageRecord, type AgentRef, RUN_METHODS, MODEL_RUNS, validSessionId, visible, runningRun } from "./client-sessions/state.ts";
+import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type HistoryTail, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun } from "./client-sessions/state.ts";
 
-/** Another live node owns this agent; the server forwards the request there. */
-export class NotOwner extends HttpError {
-  owner: string;
-  constructor(owner: string) { super(503, `This agent is served by another node; retry`); this.owner = owner; }
-}
-
-/**
- * An agent's own sources (one without a definition) once a configuration gives builtins, delegate or mcpServers: what it
- * leaves out stays, the delegate settings go with their builtin (delegateSettings), and its MCP servers are checked by
- * `inline` (ToolSources.inline: no credentials).
- */
-function ownSources(current: Sources | undefined, given: { builtins?: unknown; delegate?: unknown; mcpServers?: unknown }, inline: (input: unknown) => McpServerSpec[]): Sources | undefined {
-  const builtins = given.builtins !== undefined ? builtinsInput(given.builtins) as string[] : current?.builtins ?? [];
-  // Kept when builtins change: settings of a builtin still given, or limits alone (which need none).
-  const kept = current?.delegate && (startsChildren(builtins) || limitsOnly(current.delegate)) ? current.delegate : undefined;
-  const delegate = delegateSettings(builtins, given.delegate !== undefined ? given.delegate : kept);
-  const mcpServers = given.mcpServers !== undefined ? inline(given.mcpServers) : current?.mcpServers ?? [];
-  const { builtins: _builtins, delegate: _delegate, mcpServers: _servers, ...rest } = current ?? {};
-  const next: Sources = { ...rest, ...(builtins.length ? { builtins } : {}), ...(delegate ? { delegate } : {}), ...(mcpServers.length ? { mcpServers } : {}) };
-  return Object.keys(next).length ? next : undefined;
-}
-
-const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value);
 const has = (object: object, key: string) => Object.hasOwn(object, key);
 
 /** How far past its time limit a run may get before it is aborted, and twice this before its agent is stopped (`overrun`). */
@@ -115,19 +85,7 @@ const MAX_HANDOFFS_KEPT = 20;
 
 /** Notified, as `<node> <agent>`, when a node gives up an agent with runs open, or ends a dead peer's heartbeat: nodes sweep at once. */
 export const ORPHANS_CHANNEL = "agent_runtime_orphans";
-/**
- * Whether an agent is busy, from its request records alone: the one source every view of it (GET /v1/agents/{id}, its
- * state, a `status` request) reads, so they never disagree. Busy while any run is open, running or queued; `activeRun`
- * is the run that has begun, and `queuedRuns` how many wait behind it.
- */
-export function activityOf(records: Iterable<RequestRecord>) {
-  let activeRun: string | null = null, queuedRuns = 0;
-  for (const record of records) {
-    if (record.state !== "running" || !RUN_METHODS.includes(record.method)) continue;
-    if (record.began) activeRun = record.id; else queuedRuns++;
-  }
-  return { busy: activeRun !== null || queuedRuns > 0, activeRun, queuedRuns };
-}
+
 /** A model turn that began can continue from its transcript on another node; a code execution cannot. */
 const resumable = (request: RequestRecord) => ["prompt", "continue", "resume"].includes(request.method) && !!request.began;
 /**
@@ -160,10 +118,6 @@ const MAX_RESUME_DELAY_MS = 60 * 60_000;
 /** How often an idle watcher's agent is checked for an owner elsewhere, should its load's notice be missed. */
 const IDLE_CHECK_MS = 20_000;
 
-/** Files written in one run that its outcome lists. */
-const OUTPUT_FILES = 100;
-const OUTPUT_TOOL_CALLS = 100;
-
 /** A finished run's reply text, if it has one. */
 function replyText(record: RequestRecord) {
   const reply = (record.outcome?.result as { reply?: unknown } | undefined)?.reply;
@@ -177,12 +131,7 @@ function replyText(record: RequestRecord) {
  */
 const body = (c: Context<ClientEnv>) => c.env.operatorTenant === undefined && c.env.incoming ? c.env.incoming : c.req.raw.body;
 const json = (c: Context, status: number, value: unknown) => c.json(value, status as ContentfulStatusCode, { "Cache-Control": "no-store" });
-/** Never-expiring agents have `expiresAt: null`; a bare `<=` would treat null as 0, long expired. */
-const expired = (expiresAt: number | null, now = Date.now()) => expiresAt !== null && expiresAt <= now;
 const settled = (state: string) => state !== "running";
-
-/** The key scope an agent has once `update` applies: the one it names (null for none), else its own. */
-const scopeAfter = (header: SessionHeader, update: { keyScope?: unknown }) => Object.hasOwn(update, "keyScope") ? update.keyScope as string | null : header.keyScope;
 
 /**
  * SSE carries streamed events; POST mutations use persistent request/call IDs.
@@ -207,6 +156,8 @@ export class ClientSessions {
   private readonly delegationContext: delegation.DelegationContext;
   private readonly childrenContext: childSessions.ChildrenContext;
   private readonly inputsContext: humanInput.InputContext;
+  private readonly toolsContext: tools.ToolsContext;
+  private readonly configurationContext: configuration.ConfigurationContext;
   private closed = false;
   /** Set while the node drains or retires: runs that have not begun stay queued for the next owner. */
   draining = false;
@@ -234,9 +185,9 @@ export class ClientSessions {
     this.historyIndex = new HistoryIndex(this.db, this.storage);
     this.spendContext = {
       options, db: this.db, supervisor, sessions: this.sessions, historyIndex: this.historyIndex,
-      apiKey: (session, provider, keyScope) => this.apiKey(session, provider, keyScope),
+      apiKey: (session, provider, keyScope) => configuration.resolveApiKey(this.configurationContext, session, provider, keyScope),
       counted: (session, cost) => this.counted(session, cost), spent: (session, cost) => this.spent(session, cost),
-      agentSpendLimit: session => this.agentSpendLimit(session), toolContext: session => this.toolContext(session),
+      agentSpendLimit: session => this.agentSpendLimit(session), toolContext: session => tools.toolContext(this.toolsContext, session),
       spendOf: session => this.spendOf(session), spendWrite: (session, cost) => this.spendWrite(session, cost),
     };
     this.delegationContext = {
@@ -258,6 +209,26 @@ export class ClientSessions {
       accept: (session, body, trusted) => this.accept(session, body, trusted),
       headerFor: (id, tenant) => this.headerFor(id, tenant),
       submit: (agent, tenant, request) => this.submit(agent, tenant, request),
+    };
+    this.toolsContext = {
+      options, supervisor, eventContext: this.eventContext, spendContext: this.spendContext,
+      delegationContext: this.delegationContext, childrenContext: this.childrenContext, inputsContext: this.inputsContext,
+      owns: (id, tenant) => this.owns(id, tenant), load: id => this.load(id),
+      headerFor: (id, tenant) => this.headerFor(id, tenant), writeHeader: session => this.writeHeader(session),
+      publish: (session, data) => this.publish(session, data), beforeEffect: session => this.beforeEffect(session),
+      leased: (session, signal) => this.leased(session, signal), endUserCharge: (agent, usage) => this.endUserCharge(agent, usage),
+    };
+    this.configurationContext = {
+      options, db: this.db, supervisor, storage: this.storage, sessions: this.sessions, loading: this.loading,
+      creatingRuns: this.creatingRuns, historyIndex: this.historyIndex,
+      get eventBlock() { return options.eventBlock ?? events.EVENT_BLOCK; },
+      toolsContext: this.toolsContext, spendContext: this.spendContext, delegationContext: this.delegationContext,
+      load: id => this.load(id), readHeader: id => this.readHeader(id), writeHeader: session => this.writeHeader(session),
+      ownerElsewhere: id => this.ownerElsewhere(id), makeRoom: (id, tenant, run) => this.makeRoom(id, tenant, run),
+      journalKey: id => this.journalKey(id), seedFork: (id, claim, fork) => this.seedFork(id, claim, fork),
+      setSpendLimit: (session, usd) => this.setSpendLimit(session, usd), ensureStarted: session => this.ensureStarted(session),
+      discard: session => this.discard(session), owns: (id, tenant) => this.owns(id, tenant),
+      busy: session => this.busy(session), spendOf: session => this.spendOf(session),
     };
     this.codeGate = new CodeGate(options.codeCapacity ?? DEFAULT_CODE_CAPACITY);
     this.heartbeat = setInterval(() => this.tick(), Math.min(5000, Math.max(50, Math.floor((options.idleMs ?? 5 * 60_000) / 2))));
@@ -788,11 +759,6 @@ export class ClientSessions {
     }
   }
 
-  private async apiKey(session: Session, provider: string, keyScope: string | undefined): Promise<{ key?: string; platform: boolean }> {
-    const resolved = await this.options.apiKeyFor?.(session.header.tenant, provider, keyScope);
-    return typeof resolved === "object" ? resolved : { key: resolved, platform: false };
-  }
-
   /** Start the agent's host, unless it runs. */
   private ensureStarted(session: Session): Promise<any> {
     if (this.closed || session.header.revoked) return Promise.reject(new HttpError(410, "Session closed"));
@@ -805,12 +771,12 @@ export class ClientSessions {
       await steps.time("room", this.makeRoom(id, session.header.tenant, !!session.header.run));
       // Read before any response is counted against it.
       await steps.time("spend", this.spendOf(session));
-      const [{ key: apiKey, platform }, priced] = await steps.time("key", Promise.all([this.apiKey(session, session.header.config.model.provider, session.header.keyScope), this.options.catalogPriced?.(session.header.tenant)]));
+      const [{ key: apiKey, platform }, priced] = await steps.time("key", Promise.all([configuration.resolveApiKey(this.configurationContext, session, session.header.config.model.provider, session.header.keyScope), this.options.catalogPriced?.(session.header.tenant)]));
       session.platformKey = platform;
       session.catalogPriced = !!priced;
       // Its tool servers are listed (remote MCP servers connected to) before its host starts.
       session.hosted = session.header.mounts ?? [];
-      const definitions = await steps.time("tools", this.toolset(session));
+      const definitions = await steps.time("tools", tools.toolset(this.toolsContext, session));
       const { cpuMs, maxTimeoutMs } = await spend.codeLimits(this.spendContext, session.header.tenant);
       // Lost or given up while it got ready (its node fenced, or is leaving): it starts nothing. A host started now would
       // serve an owner that is gone, and whoever loads the agent next would find it and take it for theirs, still starting.
@@ -834,9 +800,9 @@ export class ClientSessions {
           // This node is leaving: the turn stops at this step boundary, and its next owner continues it (`park`).
           return this.handingOff ? { stopped: "handoff" as const, message: `This node is leaving the cluster (${this.handingOff.reason}); the turn continues on another` } : undefined;
         },
-        call: (name, args, signal, context) => this.callTool(session, { name, args, signal, ...context }),
-        file: ref => this.fileData(session, ref),
-        modelAuth: () => this.modelAuth(session),
+        call: (name, args, signal, context) => tools.callTool(this.toolsContext, session, { name, args, signal, ...context }),
+        file: ref => tools.fileData(this.toolsContext, session, ref),
+        modelAuth: () => configuration.modelAuth(this.configurationContext, session),
         modelAttempt: async event => {
           if (event.type === "begin" && session.header.revoked) return Promise.reject(new Error("Session revoked"));
           const run = runningRun(session);
@@ -853,8 +819,8 @@ export class ClientSessions {
           }
           return tracked;
         },
-        fs: (op, args, signal) => this.fsCall(session, op, args, signal),
-        search: async query => { await this.leased(session); return this.searchTools(session, query); },
+        fs: (op, args, signal) => tools.fsCall(this.toolsContext, session, op, args, signal),
+        search: async query => { await this.leased(session); return tools.searchTools(this.toolsContext, session, query); },
         lease: () => this.leased(session),
         background: event => this.backgroundEvent(session, event),
         committing: entry => spend.entryEffect(this.spendContext, session, entry),
@@ -893,186 +859,12 @@ export class ClientSessions {
   }
 
   /**
-   * The agent's tool servers in order of precedence: the runtime feature's (a channel's
-   * send_message), the application's attached server, file tools over its mounts, then its
-   * definition's built-ins, OpenAPI specs and remote MCP servers.
-   */
-  private async servers(session: Session, tools: ToolDefinition[], sources: Sources | undefined, fileTools: boolean | undefined, codeMode = session.header.config.codeMode): Promise<ToolServer[]> {
-    const header = session.header;
-    const tenant = header.tenant;
-    const agent: AgentRef = { id: header.id, tenant, claim: session.claim };
-    const feature = await this.options.hooks?.server?.(agent);
-    session.channel = !!feature;
-    const volumes = this.options.volumes;
-    const view = (kind: ToolSourceView["kind"], server: ToolServer, extra: Partial<ToolSourceView> = {}): ToolServer =>
-      ({ ...server, sources: async () => [{ kind, name: kind, status: "listed", ...extra, tools: await server.tools() }] });
-    const multiAgent = childSessions.multiAgentServer(this.childrenContext, session, sources);
-    const images = spend.imageServer(this.spendContext, session, sources);
-    const definition = header.definition;
-    // An agent with no tools at all (no js_exec, file tools or tools of any source) has nothing to present a file from: no present_file either.
-    const bare = codeMode === false && fileTools === false && !tools.length && !feature && !multiAgent && !images && !sources;
-    return [
-      ...feature ? [view("channel", feature)] : [],
-      { tools: () => defaultExposure(tools), call: call => events.callAttached(this.eventContext, session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
-      ...volumes && header.mounts?.length && !bare ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(this.toolContext(session), name, args, signal)))] : [],
-      ...multiAgent ? [multiAgent] : [],
-      ...images ? [images] : [],
-      ...sources && this.options.sources ? [this.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: () => session.header.mounts ?? [], onWrite: this.toolContext(session).onWrite }, sources)] : [],
-    ];
-  }
-
-  /**
-   * What the agent's file tools act as: its tenant, mounts and current model. A run's writes and
-   * presented files are collected for its outcome; a presented file is also an event on the
-   * agent's stream, with a signed download link, as soon as it is presented.
-   */
-  private toolContext(session: Session): ToolContext {
-    const header = session.header;
-    return {
-      tenant: header.tenant, agent: header.id, mounts: header.mounts ?? [], model: () => session.header.config.model, seen: session.seen ??= new Map(),
-      onWrite: file => {
-        const files = session.outputs?.files;
-        if (files && (files.has(file.path) || files.size < OUTPUT_FILES)) files.set(file.path, file);
-      },
-      onPresent: (file, volumePath) => {
-        const outputs = session.outputs;
-        if (!outputs) throw new Error("Files can be presented only during a run");
-        if (outputs.presented.length >= FILE_LIMITS.attachments) throw new Error(`At most ${FILE_LIMITS.attachments} files can be presented in a run`);
-        outputs.presented.push(file);
-        const request = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began);
-        const link = this.options.links?.sign({ tenant: header.tenant, volume: file.volume, path: volumePath, method: "GET" });
-        this.publish(session, { type: "event", requestId: request?.id ?? "", event: { type: "file_presented", file, ...(link ? { url: link.url, expiresAt: link.expiresAt } : {}) } });
-      },
-    };
-  }
-
-  /**
-   * The agent's tools from its servers (see `servers`), or from the ones `next` gives it (a configuration it is about to
-   * take). Records the route, and the servers for `toolSources`.
-   */
-  private async toolset(session: Session, next: { tools?: ToolDefinition[]; sources?: Sources; fileTools?: boolean; codeMode?: boolean; warm?: boolean } = {}) {
-    const { header } = session;
-    const servers = await this.servers(session, next.tools ?? header.definitions, "sources" in next ? next.sources : header.sources, "fileTools" in next ? next.fileTools : header.config.fileTools, "codeMode" in next ? next.codeMode : header.config.codeMode);
-    const { tools: definitions, route } = await compose(servers);
-    session.route = route;
-    session.servers = servers;
-    // Sources that could not be listed (down, or refusing their credentials): the model has none of their tools, so each run's outcome says so.
-    const views = (await Promise.all(servers.map(server => server.sources?.({ refresh: false }).catch(() => []) ?? []))).flat();
-    // Served tools are MCP sources the runtime calls with its identity tokens.
-    const served = new Set((("sources" in next ? next.sources : header.sources)?.mcpServers ?? []).filter(spec => spec.auth?.type === "runtime").map(spec => spec.name));
-    session.toolSources = new Map(views.flatMap(view => view.tools.map(tool => [tool.name, view.kind === "application" ? "attached" : view.kind === "mcp" && served.has(view.name) ? "served" : view.kind] as const)));
-    session.sourceErrors = views.flatMap(view => view.status === "error" ? [{ kind: view.kind, source: view.name, message: view.error ?? "Could not be listed" }] : []);
-    session.searchable = definitions.filter(tool => tool.exposure !== "direct");
-    // Rerankers that index the catalog (embeddings) start now, so the first search need not wait; the agent's tenant pays for it at cost.
-    if (next.warm !== false) for (const stage of this.options.rerankers ?? []) stage.warm?.(session.searchable, usd => this.toolSearchUsage(session, usd, 0));
-    return definitions;
-  }
-
-  /**
    * What each of a tenant's agent's tool sources offers, and which tools its model gets. A running
    * agent shows the lists its tools were built from; otherwise MCP servers show what this node last
    * listed, or `unlisted`. `refresh` lists every MCP server now, connecting to it: what the servers
    * offer at this moment, which a running agent takes at its next start or reconfiguration.
    */
-  async toolSources(id: string, tenant: string, options: { refresh?: boolean; schemas?: boolean } = {}) {
-    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
-    if (!session) throw new HttpError(404, "Agent not found");
-    const servers = this.supervisor.agents.has(id) && session.servers ? session.servers : await this.servers(session, session.header.definitions, session.header.sources, session.header.config.fileTools);
-    const sources = (await Promise.all(servers.map(server => server.sources?.({ refresh: options.refresh }) ?? [])));
-    return describeSources(sources.flat(), options.schemas);
-  }
-
-  /**
-   * Answer one of the agent's tool calls through the server that lists it, once the run's start is
-   * durable. A tool that asks for human input (MCP's `input_required`, or the runtime's approval
-   * policy and ask_user in that form) suspends the call instead (`suspend`). In a `resume` run, a
-   * call the person answered runs again with their answers, and only with the same arguments.
-   */
-  private async callTool(session: Session, call: ToolCall) {
-    let code: ToolCallCode | undefined;
-    // A direct call's span is made from its events; a call from js_exec's code has one of its own, under js_exec's.
-    const spans = session.spans, started = Date.now();
-    const innerSpan = spans && call.innerCallId ? newSpanId() : undefined;
-    let answer: Awaited<ReturnType<ClientSessions["answerToolCall"]>> | undefined;
-    try {
-      answer = await this.answerToolCall(session, spans ? { ...call, traceparent: spans.traceparent(call.toolCallId, innerSpan) } : call);
-      code = "inputRequired" in answer ? "input_required" : "isError" in answer && answer.isError ? "tool_error" : undefined;
-      return answer;
-    } catch (error) {
-      code = call.signal.aborted ? "aborted" : error instanceof ToolFailure ? error.code : "failed";
-      throw error;
-    } finally {
-      if (innerSpan) spans!.innerCall(call, innerSpan, started, Date.now(), code, answer);
-      // Listed in the run's outcome (`toolCalls`), ids only: its arguments and result are in history.
-      const calls = session.toolCalls ??= [];
-      // A call that started a child (delegate, spawn_agent, a tool's spawn directive) names it.
-      const child = call.toolCallId && !call.innerCallId ? session.children?.get(call.toolCallId)?.agent : undefined;
-      if (calls.length < OUTPUT_TOOL_CALLS) calls.push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), ok: !code, ...(code ? { code } : {}), ...(child ? { agentId: child } : {}) });
-    }
-  }
-
-  private async answerToolCall(session: Session, call: ToolCall) {
-    const server = session.route?.get(call.name);
-    if (!server) throw new Error(`Unknown tool ${call.name}`);
-    const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
-    const plan = call.toolCallId && !call.innerCallId ? session.retries?.get(call.toolCallId) : undefined;
-    if (plan && plan.argumentsHash !== argumentsHash(call.name, call.args)) throw new Error("These are not the arguments the user answered for; the call did not run");
-    const origin = await this.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, request?.id);
-    const lineage = delegation.lineage(this.delegationContext, session, request);
-    await this.beforeEffect(session);
-    await this.leased(session, call.signal);
-    // A server's progress reaches the event stream as an update of the model's tool call (js_exec's, for a call from code),
-    // at most one per PROGRESS_MS: the latest of a burst is published at its window's end, and before the call's result.
-    let progressed: (() => void) | undefined;
-    const onProgress = call.toolCallId ? events.throttled(({ progress, total, message }: Progress) => this.publish(session, { type: "event", requestId: request?.id ?? "", event: {
-      type: "tool_execution_update", toolCallId: call.toolCallId, toolName: call.innerCallId ? "js_exec" : call.name,
-      partialResult: { content: [{ type: "text", text: message ?? `${progress}${total !== undefined ? `/${total}` : ""}` }], details: { type: "progress", tool: call.name, ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), progress, ...(total !== undefined ? { total } : {}), ...(message !== undefined ? { message } : {}) } },
-    } }), flush => { progressed = flush; }) : undefined;
-    let result: McpResult;
-    try {
-      result = await this.recordingFailures(session, call, () => server.call({
-        ...call, ...(request ? { run: request.id } : {}), ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}), ...(onProgress ? { onProgress } : {}),
-        ...(call.toolCallId ? { idempotencyKey: toolCallKey(session.header.id, call.messageIndex, call.toolCallId, call.innerCallId) } : {}),
-        ...(plan?.approval ? { approval: { input: plan.approval.input, by: humanInput.approver(plan.approval.by), at: plan.approval.at } } : {}),
-        ...(plan?.inputResponses ? { inputResponses: plan.inputResponses } : {}), ...(plan?.requestState !== undefined ? { requestState: plan.requestState } : {}),
-        ...(humanInput.humanSurface(session) ? { elicit: true } : {}), ...(lineage ? { lineage } : {}),
-      }));
-    } catch (error) {
-      progressed?.();
-      // MCP's older form of a URL step (-32042): the user opens each URL, then the call is retried.
-      const elicitations = error instanceof McpError && error.code === -32042 ? (error.data as { elicitations?: unknown[] } | undefined)?.elicitations : undefined;
-      if (!Array.isArray(elicitations) || !elicitations.length) throw error;
-      result = { resultType: "input_required", inputRequests: Object.fromEntries(elicitations.map((params, index) => [`url_${index}`, { method: "elicitation/create", params: { ...params as object, mode: "url" } }])) };
-    }
-    progressed?.();
-    if (result.resultType === "input_required") return humanInput.suspend(this.inputsContext, session, call, request, result);
-    // A trusted tool prepared a sub-agent: its directive replaces the result (`toolSpawn`).
-    const directive = (result as { _meta?: Record<string, unknown> })._meta?.["camelrun/spawn"];
-    if (directive !== undefined) return childSessions.toolSpawn(this.childrenContext, session, { ...call, ...(call.toolCallId ? { idempotencyKey: toolCallKey(session.header.id, call.messageIndex, call.toolCallId, call.innerCallId) } : {}) }, directive);
-    const content = contentResult(result, server.returnsFiles);
-    // The model learns who answered, and how long ago: it should check what may have changed meanwhile.
-    if (plan) content.content.push({ type: "text", text: plan.note });
-    return content;
-  }
-
-  /**
-   * Run a tool call, recording in the run's outcome (`toolErrors`) why it did not complete, if it did not: so a
-   * caller sees a call that timed out, found no application connected, or could not reach its server, and not only the model.
-   */
-  private async recordingFailures<T>(session: Session, call: ToolCall, work: () => Promise<T>): Promise<T> {
-    try { return await work(); }
-    catch (error) {
-      if (call.signal.aborted || (error instanceof McpError && error.code === -32042)) throw error;
-      const failure = error instanceof ToolFailure ? error
-        : error instanceof McpError && error.code === ErrorCode.RequestTimeout ? new ToolFailure("timeout", `${error.message}. Its outcome is unknown: it may or may not have taken effect.`, true)
-        : error instanceof McpError && error.code === ErrorCode.ConnectionClosed ? new ToolFailure("connection_lost", events.CONNECTION_LOST, true)
-        : /^Could not connect to MCP server|MCP server .* (?:failed|refused|answered)/.test(errorText(error)) ? new ToolFailure("source_unavailable", errorText(error))
-        : new ToolFailure("failed", errorText(error));
-      (session.toolErrors ??= []).push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}),
-        code: failure.code, ...(failure.outcomeUnknown ? { outcomeUnknown: true } : {}), message: failure.message });
-      throw failure;
-    }
-  }
+  async toolSources(id: string, tenant: string, options: { refresh?: boolean; schemas?: boolean } = {}) { return tools.toolSources(this.toolsContext, id, tenant, options); }
 
   /**
    * Sweep for children whose ending was not delivered, on any node: rows whose ending is recorded, and running rows not
@@ -1184,226 +976,22 @@ export class ClientSessions {
    */
   async expireInputs(now = Date.now()) { return humanInput.expireInputs(this.inputsContext, now); }
 
-  /**
-   * An upsert's target for an existing agent: a `configure` request's parameters carrying the whole configuration
-   * asked for, and its provision hash. It is queued whether or not the agent has it already (an earlier upsert may be
-   * queued), so the last upsert wins; when it runs, what the agent already has is left (see `upsertChanges`). What
-   * configuration cannot change (who it acts for, its definition, its mounts) is refused now; initialMessages only
-   * apply when an agent is made.
-   */
-  private reconfiguration(header: SessionHeader, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">, metadata: AgentMetadata,
-    mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string, own: Pick<Sources, "builtins" | "delegate" | "mcpServers"> = {}, remount = false) {
-    const differs = (a: unknown, b: unknown) => canonical(a ?? null) !== canonical(b ?? null);
-    const remounted = mounts !== undefined && differs((header.mounts ?? []).map(({ volumeId, path, mode }) => ({ volumeId, path, mode })), (VolumeService.resolved(header.id, mounts as unknown[]) as { volumeId: string; path: string; mode?: string }[]).map(({ volumeId, path, mode }) => ({ volumeId, path, mode: mode ?? "rw" })));
-    const fixed = [
-      ...differs(header.identity?.subject, identity?.subject) ? ["subject"] : [], ...differs(header.identity?.context, identity?.context) ? ["context"] : [],
-      ...(header.definition?.id ?? null) !== (origin?.definition.id ?? null) ? ["definition"] : [],
-      // Mounts change only when the upsert says so (`remount`): its configure request then sets them between turns.
-      ...remounted && !remount ? ["mounts"] : [],
-    ];
-    if (fixed.length) throw new HttpError(409, `An existing agent's ${fixed.join(", ")} cannot change; delete it (DELETE /v1/agents/${header.id}) or use another idempotency key${fixed.includes("mounts") ? ", or send remount: true to change its mounts" : ""}`);
-    return {
-      ...remounted ? { mounts } : {},
-      provisionHash, model: `${config.model.provider}/${config.model.id}`, thinkingLevel: config.thinkingLevel ?? "off",
-      systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, codeMode: config.codeMode !== false, runLimits: config.runLimits ?? null,
-      maxOutputTokens: config.maxOutputTokens ?? null, temperature: config.temperature ?? null, dataCollection: config.dataCollection ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
-      // Only a definition's own fields are the agent's: the rest follow its definition.
-      ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions, builtins: own.builtins ?? [], delegate: own.delegate ?? null, mcpServers: own.mcpServers ?? [] },
-    };
-  }
-
-  /** Of an upsert's target, the fields the agent does not have already. */
-  private upsertChanges(header: SessionHeader, target: Record<string, any>) {
-    const differs = (a: unknown, b: unknown) => canonical(a ?? null) !== canonical(b ?? null);
-    const current = header.config;
-    const changes: Record<string, unknown> = {};
-    if (target.model !== undefined && target.model !== `${current.model.provider}/${current.model.id}`) changes.model = target.model;
-    if (target.thinkingLevel !== undefined && target.thinkingLevel !== (current.thinkingLevel ?? "off")) changes.thinkingLevel = target.thinkingLevel;
-    if (target.systemPromptAppend !== undefined && target.systemPromptAppend !== (current.systemPromptAppend ?? "")) changes.systemPromptAppend = target.systemPromptAppend;
-    if (target.fileTools !== undefined && target.fileTools !== (current.fileTools !== false)) changes.fileTools = target.fileTools;
-    if (target.codeMode !== undefined && target.codeMode !== (current.codeMode !== false)) changes.codeMode = target.codeMode;
-    if ("systemPrompt" in target && differs(current.systemPrompt, target.systemPrompt)) changes.systemPrompt = target.systemPrompt;
-    if ("modelHeaders" in target && differs(current.modelHeaders, target.modelHeaders)) changes.modelHeaders = target.modelHeaders;
-    if ("runLimits" in target && differs(current.runLimits, target.runLimits)) changes.runLimits = target.runLimits;
-    for (const key of ["maxOutputTokens", "temperature", "dataCollection"] as const) if (key in target && differs(current[key], target[key])) changes[key] = target[key] as never;
-    if (target.tools !== undefined && differs(header.definitions, target.tools)) changes.tools = target.tools;
-    if (target.builtins !== undefined && differs(header.sources?.builtins ?? [], target.builtins)) changes.builtins = target.builtins;
-    if (target.delegate !== undefined && differs(header.sources?.delegate, target.delegate)) changes.delegate = target.delegate;
-    if (target.mcpServers !== undefined && differs(header.sources?.mcpServers ?? [], target.mcpServers)) changes.mcpServers = target.mcpServers;
-    return changes;
-  }
-
-  /** An agent's own MCP servers, checked as the runtime's tool sources check them: none without tool sources. */
-  private readonly inlineServers = (tenant: string) => (input: unknown): McpServerSpec[] => {
-    if (input === null || (Array.isArray(input) && !input.length)) return [];
-    if (!this.options.sources) throw new HttpError(400, "This runtime has no tool sources: mcpServers cannot be served");
-    return this.options.sources.inline(input, tenant);
-  };
-
   /** The id of the agent `create` makes for a tenant's idempotency key. */
-  agentId(tenant: string, key: string) {
-    return `client_${hash(`${tenant}:${key}`).slice(0, 40)}`;
-  }
+  agentId(tenant: string, key: string) { return configuration.agentId(tenant, key); }
 
   /**
    * Provision an agent, idempotently per `key`. An agent made from a definition records it
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; messages: AgentMessage[]; turns: number[]; model: Message[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
-    metadata = agentMetadata(metadata);
-    validateDefinitions(definitions);
-    // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
-    const key = given ?? randomUUID();
-    if (!validId(key)) throw new HttpError(400, "Invalid provisioning idempotency key");
-    const { id, token, existing } = await steps.time("lookup", this.keyed(tenant, key));
-    // A stateless run's key names one run: the same request again is that run, as it is; another request is refused.
-    const sameRun = (header: SessionHeader) => {
-      if (header.tenant !== tenant || header.run?.fingerprint !== access.run!.fingerprint) throw new HttpError(409, "This Idempotency-Key was used for another run; use another key", "IDEMPOTENCY_CONFLICT");
-      return { id, token, expiresAt: header.expiresAt, existing: true };
-    };
-    const ranAlready = access.run && (this.sessions.get(id)?.header ?? existing?.value);
-    if (ranAlready) return sameRun(ranAlready);
-    // A fork's volume was made for the id its key had a moment ago: another generation now (it was deleted meanwhile) is a retry.
-    if (access.fork && access.fork.id !== id) throw new HttpError(503, "The fork's key changed agents while it was made; retry");
-    const { apiKey: _key, ...safeConfig } = config;
-    // Its own MCP servers are checked as they are given (ToolSources.inline), or copied from a checked agent (a fork).
-    const own = { ...(access.builtins?.length ? { builtins: access.builtins } : {}), ...(access.delegate ? { delegate: access.delegate } : {}), ...(access.mcpServers?.length ? { mcpServers: access.mcpServers } : {}) };
-    const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}), ...own }, ...(identity ? { identity } : {}) }));
-    // The same key for an existing agent updates it: create or reconfigure (the last upsert wins).
-    const changes = (header: SessionHeader) => ({ reconfigure: { ...this.reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash, own, access.remount), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(access.bucket !== undefined && access.bucket !== header.bucket ? { bucket: access.bucket } : {}) } });
-    // An agent's own sources are its builtins (and their settings) and MCP servers; one made from a definition has the definition's.
-    const sources: Sources | undefined = origin ? origin.sources : Object.keys(own).length ? own : undefined;
-    // The caller counts the create (its rate limit) now, told whether the key's agent has this configuration already:
-    // an upsert that changes nothing makes nothing.
-    const known = this.sessions.get(id)?.header ?? existing?.value;
-    await access.admit?.(!!known && known.tenant === tenant && known.provisionHash === provisionHash && !known.revoked && !expired(known.expiresAt));
-    if (existing) {
-      if (existing.value.tenant !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
-      const changed = changes(existing.value);
-      if (await steps.time("route", this.ownerElsewhere(id))) return { id, token, expiresAt: existing.value.expiresAt, configHash: provisionHash, running: true, ...changed };
-    }
-    // A key with no agent a moment ago needs no second read: unless a create here is making it, this one does.
-    let session = existing || this.sessions.has(id) || this.loading.has(id) ? await steps.time("load", this.load(id)) : undefined;
-    // Another create of this agent on this node is provisioning it: wait for what it makes. Two at once
-    // would each take the claim, and the second acquire's new epoch would fence the first out.
-    while (!session && this.loading.has(id)) session = await steps.time("load", this.load(id));
-    let created = false;
-    let changed = {};
-    if (session) {
-      if (session.header.tenant !== tenant) throw new HttpError(409, "Idempotency key belongs to another tenant");
-      if (session.header.revoked || expired(session.header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
-      if (access.run) return sameRun(session.header);
-      changed = changes(session.header);
-    } else {
-      // Loads and creates of this agent here wait for this one (see `load`).
-      const provisioned = Promise.withResolvers<Session | undefined>();
-      this.loading.set(id, provisioned.promise);
-      const settle = (made?: Session) => {
-        provisioned.resolve(made);
-        if (this.loading.get(id) === provisioned.promise) this.loading.delete(id);
-      };
-      let claim: Claim | undefined;
-      try {
-        // Capacity is reserved before anything is persisted: an agent refused for it leaves nothing behind.
-        if (access.run) this.creatingRuns.add(id);
-        await steps.time("room", this.makeRoom(id, tenant, !!access.run));
-        const granted = this.options.volumes ? await steps.time("mounts", this.options.volumes.mountsFor(tenant, id, mounts)) : undefined;
-        const ownership = this.options.ownership;
-        if (ownership) {
-          const acquired = await steps.time("claim", ownership.acquire(id));
-          if ("owner" in acquired) throw new NotOwner(acquired.owner);
-          claim = acquired.claim;
-        }
-        // A new agent's first ids are reserved with its row (`writeHeader`).
-        const cursor = Date.now() * 1000;
-        session = {
-          header: { version: 3, id, tenant, digest: hash(token), expiresAt: access.idleTtlMs ? Date.now() + access.idleTtlMs : ttlMs === null ? null : Date.now() + (ttlMs ?? this.options.ttlMs ?? 24 * 60 * 60 * 1000), revoked: false, ...(access.idleTtlMs ? { idleTtlMs: access.idleTtlMs } : {}), metadata, definitions, config: safeConfig, provisionHash, ...(granted ? { mounts: granted } : {}), ...(origin ? { definition: origin.definition } : {}), ...(sources ? { sources } : {}), ...(origin?.overrides?.length ? { overrides: origin.overrides } : {}), ...(identity ? { identity } : {}), ...(access.keyScope ? { keyScope: access.keyScope } : {}), ...(access.bucket ? { bucket: access.bucket } : {}), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(given !== undefined ? { key: given } : {}), ...(access.fork ? { forkedFrom: access.fork.from } : {}), ...(access.parent ? { parent: access.parent } : {}), ...(access.run ? { run: access.run } : {}) },
-          claim, requests: new Map(), running: new Map(), log: this.storage.log<JournalRecord>(this.journalKey(id), claim),
-          cursor, reserved: cursor + this.eventBlock, events: [], eventBytes: 0, watchers: new Set(), polls: new Set(), inflight: 0, runs: Promise.resolve(), resuming: new Set(), settling: 0, lastActive: Date.now(),
-        };
-        // FileRefs its initial messages or a fork's history carry are its own now: their chunks are pinned to it before it
-        // exists, so there is never an agent without them (a pin left by a create that failed only keeps chunks stored).
-        const refs = [...safeConfig.initialMessages ?? [], ...access.fork?.messages ?? []].flatMap(message => Array.isArray((message as { content?: unknown }).content) ? (message as { content: unknown[] }).content.filter(validFileRef) : []);
-        if (refs.length && this.options.volumes) await this.options.volumes.pin(tenant, id, refs.flatMap(ref => ref.chunks));
-        // A fork's history is in its index and its journal before it exists, written under its claim: the copied history
-        // in its index (again from where a create that failed left it), then its journal, starting after it.
-        if (access.fork) await steps.time("history", this.seedFork(id, claim, access.fork));
-        // A conditional create: if a concurrent request made this agent first, retry as a load. A new agent's history is
-        // indexed from its first message (a fork's after its copy); beginning its index is idempotent, so it goes alongside.
-        const seeded = access.fork?.messages.length ?? 0;
-        await Promise.all([steps.time("header", this.writeHeader(session)), steps.time("index", this.historyIndex.begin(id, seeded))]);
-        this.sessions.set(id, session);
-        created = true;
-        settle(session);
-        await Promise.all([
-          granted && steps.time("watch", this.options.volumes!.watch(id, tenant, [], granted, claim)),
-          access.spendLimit !== undefined && steps.time("spend", this.setSpendLimit(session, access.spendLimit)),
-        ]);
-      } catch (error) {
-        settle();
-        if (!created) {
-          this.supervisor.unreserve(id);
-          if (claim) await this.options.ownership!.release(claim).catch(() => {});
-          if (session?.fault?.message.includes("moved")) return this.create(definitions, config, key, metadata, tenant, ttlMs, mounts, origin, identity, access, steps);
-          throw error;
-        }
-        await this.discard(session!);
-        throw error;
-      } finally { this.creatingRuns.delete(id); }
-    }
-    // Creating records the agent: its host starts in the background, so the response does not wait on listing its tool
-    // servers, and a prompt sent meanwhile waits on the same start. A start that fails is only logged: the agent exists,
-    // and its next request starts it again, answering with the error if it recurs.
-    if (created) void this.ensureStarted(session).catch(error => {
-      if (!session.header.revoked) console.error(JSON.stringify({ type: "agent_start_failed", agent: id, tenant, error: safeError(error) }));
-    });
-    return { id, token, expiresAt: session.header.expiresAt, configHash: provisionHash, ...changed };
-  }
-
-  /**
-   * An agent's token: derived from its tenant and key (with the key's generation) until it is rotated, then from its
-   * id and how many times it was, so rotating makes a new one even for an agent made without a key.
-   */
-  private agentToken(tenant: string, scoped: string, id: string, rotation = 0) {
-    return createHmac("sha256", this.options.secret).update(rotation ? `client-rotated:${tenant}:${id}:${rotation}` : `client-v2:${tenant}:${scoped}`).digest("hex");
-  }
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; messages: AgentMessage[]; turns: number[]; model: Message[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> { return configuration.create(this.configurationContext, definitions, config, given, metadata, tenant, ttlMs, mounts, origin, identity, access, steps); }
 
   /**
    * A new token for a tenant's agent: the old one stops working at once, here and on every node (they check the header
    * this writes), and connections made with it (the application's, event streams) are closed. Applications reconnect
    * with the new one, which `credentials` gives from now on.
    */
-  async rotateToken(id: string, tenant: string): Promise<{ id: string; token: string; expiresAt: number | null }> {
-    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
-    if (!session || session.header.tenant !== tenant) throw new HttpError(404, "Unknown agent");
-    const rotation = (session.header.tokenRotation ?? 0) + 1;
-    const token = this.agentToken(tenant, "", id, rotation);
-    session.header.tokenRotation = rotation;
-    session.header.digest = hash(token);
-    await this.writeHeader(session);
-    events.retire(session);
-    events.endStreams(session);
-    console.log(JSON.stringify({ type: "agent_token_rotated", agent: id, tenant, rotation }));
-    return { id, token, expiresAt: session.header.expiresAt };
-  }
-
-  /**
-   * The agent a tenant's key names now: its id and token, and its stored header unless this node holds it. A key whose
-   * agent was deleted or expired names a fresh one: the next generation of the key, with an id and token of its own, so
-   * the old agent's id is never reused and its token never works again.
-   */
-  private async keyed(tenant: string, key: string): Promise<{ id: string; token: string; existing?: { value: SessionHeader } }> {
-    for (let generation = 0; ; generation++) {
-      // Idempotency keys are per tenant.
-      const scoped = `${key}${generation ? `#${generation}` : ""}`;
-      const id = this.agentId(tenant, scoped);
-      // A deleted or expired agent (a tombstone once purged) is never loaded again; one another node serves only needs its header.
-      const existing = this.sessions.has(id) ? undefined : await this.readHeader(id);
-      const header = this.sessions.get(id)?.header ?? existing?.value;
-      if (!header || !(header.revoked || expired(header.expiresAt))) return { id, token: this.agentToken(tenant, scoped, id, header?.tokenRotation), existing };
-    }
-  }
+  async rotateToken(id: string, tenant: string): Promise<{ id: string; token: string; expiresAt: number | null }> { return configuration.rotateToken(this.configurationContext, id, tenant); }
 
   /**
    * A fork's history before it exists, under its claim: its copied messages in its history index (again from where a
@@ -1435,7 +1023,7 @@ export class ClientSessions {
     if (!source || source.tenant !== tenant || source.revoked || source.purged || expired(source.expiresAt)) throw new HttpError(404, "Unknown agent");
     const key = input.key ?? randomUUID();
     if (!validId(key)) throw new HttpError(400, "Invalid fork key");
-    const made = await steps.time("lookup", this.keyed(tenant, key));
+    const made = await steps.time("lookup", configuration.keyed(this.configurationContext, tenant, key));
     const found = this.sessions.get(made.id)?.header ?? made.existing?.value;
     const answer = (header: SessionHeader) => {
       if (header.tenant !== tenant || header.forkedFrom?.agentId !== sourceId) throw new HttpError(409, "This key names another agent, not a fork of this one; use another key");
@@ -1520,22 +1108,7 @@ export class ClientSessions {
   }
 
   /** A tenant's live agents (not its stateless runs' sessions). `running` covers agents served by any node. */
-  async list(tenant: string) {
-    const { rows } = await this.db.query(`
-      select a.id, a.header->>'key' as key, a.name, a.type, a.model, a.expires_at, a.resume_failures, a.resume_after, a.header->'parent'->>'agentId' as parent, a.header->>'provisionHash' as config_hash, n.node is not null as served from agents a
-      left join actor_owners o on o.actor = a.id
-      left join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now()
-      where a.tenant = $1 and not a.revoked and (a.expires_at is null or a.expires_at > $2) and a.header->'run' is null order by a.id`, [tenant, Date.now()]);
-    return rows.map(row => {
-      const local = this.sessions.get(row.id);
-      const response = local?.response;
-      const running = this.supervisor.agents.has(row.id) || (!local && row.served);
-      // The configuration it has: equal hashes, equal configurations (an upsert of it changes nothing).
-      const configHash = (local?.header.provisionHash ?? row.config_hash) as string;
-      return { id: row.id as string, key: row.key as string | null, name: row.name as string, type: row.type as string, model: row.model as string, configHash, connected: !!response && !response.destroyed, running: running as boolean, expiresAt: row.expires_at as number | null,
-        resume: row.resume_failures ? { failures: row.resume_failures as number, after: Number(row.resume_after) } : null, ...(row.parent ? { parentAgentId: row.parent as string } : {}) };
-    });
-  }
+  async list(tenant: string) { return configuration.list(this.configurationContext, tenant); }
 
   /**
    * Whether `id` is one of `tenant`'s live agents (one read, not a listing); with `agentsOnly`, not a stateless run's
@@ -1552,53 +1125,9 @@ export class ClientSessions {
    * upsert would set it to what the caller passes). The token is the one `create` gave: derived from the key and its
    * generation, so only an agent made with a key has one to give again; or, once rotated (`rotateToken`), the latest.
    */
-  async credentials(tenant: string, ref: string): Promise<{ id: string; token: string; expiresAt: number | null; configHash?: string }> {
-    // By id alone: a purged agent's tombstone keeps only its id, and still holds its key's generation.
-    const live = async (id: string) => (await this.db.query("select tenant, header->>'key' as key, (header->>'tokenRotation')::int as rotation, header->>'provisionHash' as config_hash, expires_at, revoked, header->'run' is not null as run from agents where id = $1", [id])).rows[0] as { tenant: string | null; key: string | null; rotation: number | null; config_hash: string | null; expires_at: number | null; revoked: boolean; run: boolean } | undefined;
-    // A stateless run's session is no agent: it has no credentials to give.
-    const alive = (row: { tenant: string | null; expires_at: number | null; revoked: boolean; run: boolean }) => row.tenant === tenant && !row.revoked && !row.run && !expired(row.expires_at === null ? null : Number(row.expires_at));
-    const found = (id: string, scoped: string, row: { rotation: number | null; config_hash: string | null; expires_at: number | null }) => {
-      const configHash = this.sessions.get(id)?.header.provisionHash ?? row.config_hash;
-      return { id, token: this.agentToken(tenant, scoped, id, row.rotation ?? 0), expiresAt: row.expires_at === null ? null : Number(row.expires_at), ...(configHash ? { configHash } : {}) };
-    };
-    if (validSessionId(ref)) {
-      const row = await live(ref);
-      if (row && alive(row)) {
-        if (row.rotation) return found(ref, "", row);
-        if (!row.key) throw new HttpError(409, "AGENT_KEYLESS: this agent was made without a key, so its token is only what its create answered");
-        // Its generation: the key's agents before it were deleted or expired.
-        for (let generation = 0; generation < 10_000; generation++) {
-          const scoped = `${row.key}${generation ? `#${generation}` : ""}`;
-          if (this.agentId(tenant, scoped) === ref) return found(ref, scoped, row);
-        }
-      }
-    }
-    if (validId(ref)) {
-      for (let generation = 0; ; generation++) {
-        const scoped = `${ref}${generation ? `#${generation}` : ""}`, id = this.agentId(tenant, scoped);
-        const row = await live(id);
-        if (!row) break;
-        if (alive(row)) return found(id, scoped, row);
-      }
-    }
-    throw new HttpError(404, "No agent has this id or key");
-  }
+  async credentials(tenant: string, ref: string): Promise<{ id: string; token: string; expiresAt: number | null; configHash?: string }> { return configuration.credentials(this.configurationContext, tenant, ref); }
 
-  async inspect(id: string, tenant: string) {
-    const metadata = (await this.owns(id, tenant)) ? (await this.list(tenant)).find(agent => agent.id === id) : undefined;
-    const session = metadata && await this.load(id);
-    if (!metadata || !session) throw new HttpError(404, "Agent not found");
-    const definition = session.header.definition && { id: session.header.definition.id, revision: session.header.definition.revision };
-    return { ...metadata, ...(definition ? { definition } : {}), tools: session.header.definitions, systemPrompt: session.header.config.systemPrompt ?? "",
-      ...(session.header.config.systemPromptAppend ? { systemPromptAppend: session.header.config.systemPromptAppend } : {}),
-      ...(session.header.config.fileTools === false ? { fileTools: false } : {}), ...(session.header.config.codeMode === false ? { codeMode: false } : {}), mounts: session.header.mounts ?? [], keyScope: session.header.keyScope ?? null, bucket: session.header.bucket ?? null, modelHeaders: session.header.config.modelHeaders ?? null,
-      builtins: session.header.sources?.builtins ?? [], delegate: session.header.sources?.delegate ?? null, mcpServers: (session.header.sources?.mcpServers ?? []).map(mcpServerView),
-      ...(session.header.parent ? { parentAgentId: session.header.parent.agentId, parentRunId: session.header.parent.runId } : {}),
-      spendLimit: await this.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }), runLimits: session.header.config.runLimits ?? null,
-      maxOutputTokens: session.header.config.maxOutputTokens ?? null, temperature: session.header.config.temperature ?? null, dataCollection: session.header.config.dataCollection ?? null,
-      ...(session.header.forkedFrom ? { forkedFrom: session.header.forkedFrom } : {}),
-      ...activityOf(session.running.values()), cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
-  }
+  async inspect(id: string, tenant: string) { return configuration.inspect(this.configurationContext, id, tenant); }
 
   /**
    * One of a tenant's agent's requests (`GET /v1/agents/:id/requests/:requestId`). With `wait` (seconds, at most 25)
@@ -1840,35 +1369,12 @@ export class ClientSessions {
    * so their next request starts with the new key. Busy agents keep their key
    * until their turn ends and they go idle.
    */
-  async providerKeyChanged(tenant: string, provider: string) {
-    for (const session of this.sessions.values()) {
-      if (session.header.tenant !== tenant || session.header.config.model.provider !== provider) continue;
-      if (this.supervisor.agents.has(session.header.id) && !this.busy(session)) await this.supervisor.stop(session.header.id);
-    }
-  }
+  async providerKeyChanged(tenant: string, provider: string) { return configuration.providerKeyChanged(this.configurationContext, tenant, provider); }
 
   /**
    * Replace a tenant's agent's mounts: they apply from its next tool call (see `remount`).
    */
-  async setMounts(id: string, tenant: string, requested: unknown) {
-    const session = (await this.owns(id, tenant)) ? await this.load(id) : undefined;
-    if (!session) throw new HttpError(404, "Unknown agent");
-    return this.remount(session, requested);
-  }
-  /**
-   * Set an agent's mounts (`requested`, as given). They apply from the agent's next tool call (a call under way keeps
-   * the mounts it began with), so a turn can swap a mount and go on working in it; the next run starts the agent again,
-   * so its prompt describes them (`run`).
-   */
-  private async remount(session: Session, requested: unknown) {
-    if (!this.options.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
-    const { id, tenant } = session.header;
-    const mounts = await this.options.volumes.mountsFor(tenant, id, requested ?? []);
-    await this.options.volumes.watch(id, tenant, session.header.mounts ?? [], mounts, session.claim);
-    session.header.mounts = mounts;
-    await this.writeHeader(session);
-    return mounts;
-  }
+  async setMounts(id: string, tenant: string, requested: unknown) { return tools.setMounts(this.toolsContext, id, tenant, requested); }
 
   /** Revoke a tenant's agent, stop it and unload it; the purge sweep, started now, then deletes its data. */
   async destroyAgent(id: string, tenant: string, agentsOnly = false) {
@@ -2005,27 +1511,27 @@ export class ClientSessions {
     app.get(`${agent}/files`, async c => {
       const { path, glob, after, limit } = c.req.query();
       const session = c.var.session;
-      const target = this.mounted(session, path ?? session.header.mounts?.[0]?.path ?? "/");
+      const target = tools.mounted(this.toolsContext, session, path ?? session.header.mounts?.[0]?.path ?? "/");
       const listing = await this.options.volumes!.call(target.mount.volumeId, session.header.tenant, "list", {
-        path: target.path, ...(glob ? { glob } : {}), ...(after ? { after: this.mounted(session, after).path } : {}), ...(limit ? { limit: Number(limit) } : {}),
+        path: target.path, ...(glob ? { glob } : {}), ...(after ? { after: tools.mounted(this.toolsContext, session, after).path } : {}), ...(limit ? { limit: Number(limit) } : {}),
       });
       return json(c, 200, { files: listing.files.map(({ chunks: _chunks, path, ...file }: { chunks: string[]; path: string }) => ({ path: target.show(path), ...file })), ...(listing.next ? { next: target.show(listing.next) } : {}) });
     });
     const filePath = (c: Context) => `/${new URL(c.req.url).pathname.split("/files/").slice(1).join("/files/").split("/").map(decodeURIComponent).join("/")}`;
     app.get(`${agent}/files/*`, async c => {
       const session = c.var.session;
-      const target = this.mounted(session, filePath(c));
+      const target = tools.mounted(this.toolsContext, session, filePath(c));
       const entry = await this.options.volumes!.call(target.mount.volumeId, session.header.tenant, "stat", { path: target.path });
       if (entry.type !== "file") throw new HttpError(404, `${filePath(c)} is a directory`);
       return fileResponse(this.options.volumes!, session.header.tenant, entry, c.req.header("range"));
     });
     app.put(`${agent}/files/*`, async c => {
       const session = c.var.session;
-      const target = this.mounted(session, filePath(c), true);
+      const target = tools.mounted(this.toolsContext, session, filePath(c), true);
       const { chunks: _chunks, path, ...entry } = await this.options.volumes!.put(session.header.tenant, target.mount.volumeId, target.path, body(c) as AsyncIterable<Uint8Array>, { contentType: c.req.header("content-type") });
       return json(c, 201, { path: target.show(path), ...entry });
     });
-    app.post(`${agent}/links`, async c => json(c, 201, this.signLink(c.var.session, await readJson(body(c), 4096))));
+    app.post(`${agent}/links`, async c => json(c, 201, tools.signLink(this.toolsContext, c.var.session, await readJson(body(c), 4096))));
     // A file for request `:request` to attach by the path this answers with; the body streams to storage.
     app.put(`${agent}/uploads/:request/:name`, async c => json(c, 201, await this.upload(c.var.session, c.req.param("request"), c.req.param("name"), body(c) as AsyncIterable<Uint8Array>, c.req.header("content-type"))));
     app.get(`${agent}/state`, c => {
@@ -2101,14 +1607,14 @@ export class ClientSessions {
     try {
       if (body.method === "configure" && !applying) {
         const { spendLimit: _limit, bucket: _bucket, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, mounts: _mounts, builtins, delegate, mcpServers, ...update } = body.params;
-        const checked = configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, update)));
+        const checked = configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, configuration.scopeAfter(session.header, update)));
         // A model, thinking level, maxOutputTokens or temperature that leaves the agent asking its model for what it refuses is refused now.
         const refusal = configurationRefusal(session.header.config, checked);
         if (refusal) throw new Error(refusal);
         const own = builtins !== undefined || delegate !== undefined || mcpServers !== undefined;
         if (own && session.header.definition) throw new HttpError(400, `This agent's ${mcpServers !== undefined ? "MCP servers" : "builtins"} come from its definition; change them there`);
         // An upsert gives the whole of them, which `execute` checks as it applies them; a change of some is checked now.
-        if (own && body.params.provisionHash === undefined) ownSources(session.header.sources, { builtins, delegate, mcpServers }, this.inlineServers(session.header.tenant));
+        if (own && body.params.provisionHash === undefined) configuration.ownSources(session.header.sources, { builtins, delegate, mcpServers }, configuration.inlineServers(this.configurationContext, session.header.tenant));
       }
       // Assistant and tool-result history is runtime-owned; callers may only add user input.
       if (["prompt", "steer"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
@@ -2230,7 +1736,7 @@ export class ClientSessions {
         if (work && work.fingerprint !== fingerprint) throw new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
         if (!work) {
           const budget = params.spendLimit?.usd as number | undefined;
-          work = { fingerprint, files: this.attach(session, body.id, params.files).then(files => spend.transcribeAttached(this.spendContext, session, body.id, files, { actor, budget, bucket })) };
+          work = { fingerprint, files: tools.attach(this.toolsContext, session, body.id, params.files).then(files => spend.transcribeAttached(this.spendContext, session, body.id, files, { actor, budget, bucket })) };
           attaching.set(body.id, work);
           const done = () => { if (attaching.get(body.id) === work) attaching.delete(body.id); };
           work.files.then(done, done);
@@ -2295,194 +1801,26 @@ export class ClientSessions {
     catch { return false; /* Not running after all: the queued prompt runs. */ }
   }
 
-  /**
-   * Where a request's attachments go: `uploads/<request>/<name>` in the agent's workspace (`scratchMount`).
-   * Requests have their own directories, so names only collide within one.
-   */
-  private uploadTarget(session: Pick<Session, "header">, requestId: string, name: string) {
-    const mounts = session.header.mounts ?? [];
-    const mount = scratchMount(VolumeService.markWorkspace(session.header.id, mounts));
-    if (!this.options.volumes || !mount) throw new HttpError(400, "Attaching files needs a writable mount, like the default /workspace");
-    if (!validId(requestId)) throw new HttpError(400, "Invalid request id");
-    return resolveMount(mounts, `${mount.path}/uploads/${requestId}/${safeName(name)}`)!;
-  }
-
   /** Save an attachment for request `requestId` ahead of it (the SDKs upload files this way, then reference them by path). */
-  async upload(session: Pick<Session, "header">, requestId: string, name: string, source: Uint8Array | AsyncIterable<Uint8Array>, contentType?: string) {
-    const target = this.uploadTarget(session, requestId, name);
-    const { chunks: _chunks, path, ...entry } = await this.options.volumes!.put(session.header.tenant, target.mount.volumeId, target.path, source, { contentType, by: session.header.id });
-    return { path: target.show(path), ...entry };
-  }
-
-  /** A signed link to a file in the agent's mounts (`POST /clients/:id/links`, `POST /v1/agents/:id/links`): as a volume link, by the agent's path. */
-  private signLink(session: Pick<Session, "header">, input: any) {
-    const method = input?.method ?? "GET";
-    if (method !== "GET" && method !== "PUT") throw new HttpError(400, "method must be GET or PUT");
-    const target = this.mounted(session, input?.path, method === "PUT");
-    if (!this.options.links) throw new HttpError(404, "Links are not enabled on this runtime");
-    const contentType = input.contentType === undefined ? undefined : declaredType(input.contentType);
-    if (input.contentType !== undefined && !contentType) throw new HttpError(400, "contentType must be a specific content type");
-    const { tenant: _tenant, volume: _volume, path: _path, ...link } = this.options.links.sign({ tenant: session.header.tenant, volume: target.mount.volumeId, path: target.path, method, expiresIn: input.expiresIn, ...(input.maxBytes !== undefined ? { maxBytes: input.maxBytes } : {}), ...(contentType ? { contentType } : {}) });
-    return { ...link, path: target.show(target.path) };
-  }
+  async upload(session: Pick<Session, "header">, requestId: string, name: string, source: Uint8Array | AsyncIterable<Uint8Array>, contentType?: string) { return tools.upload(this.toolsContext, session, requestId, name, source, contentType); }
 
   /** A tenant's signed link to a file of its agent's, as the agent would sign it (`POST /v1/agents/:id/links`). */
-  async agentLink(id: string, tenant: string, input: unknown) {
-    return this.signLink(await this.headerFor(id, tenant), input);
-  }
-
-  /** A path as the agent sees it, resolved to its mount (writable, for `write`). */
-  private mounted(session: Pick<Session, "header">, path: unknown, write = false) {
-    if (!this.options.volumes) throw new HttpError(404, "Volumes are not enabled on this runtime");
-    let target;
-    try { target = resolveMount(session.header.mounts ?? [], path); } catch (error) { throw new HttpError(400, errorText(error)); }
-    if (!target) throw new HttpError(400, "Name a path inside one of the agent's mounts");
-    if (write && target.mount.mode !== "rw") throw new HttpError(403, `${target.mount.path} is mounted read-only`);
-    return target;
-  }
+  async agentLink(id: string, tenant: string, input: unknown) { return tools.agentLink(this.toolsContext, id, tenant, input); }
 
   /** `upload` for a tenant's agent (REST API, channels). */
-  async uploadFor(id: string, tenant: string, requestId: string, name: string, source: AsyncIterable<Uint8Array>, contentType?: string) {
-    return this.upload(await this.headerFor(id, tenant), requestId, name, source, contentType);
-  }
+  async uploadFor(id: string, tenant: string, requestId: string, name: string, source: AsyncIterable<Uint8Array>, contentType?: string) { return tools.uploadFor(this.toolsContext, id, tenant, requestId, name, source, contentType); }
 
   /** A file in a tenant's agent's mounts, as a reference (channels' send_message). */
-  async fileFor(id: string, tenant: string, path: string) {
-    return this.pathRef(await this.headerFor(id, tenant), path);
-  }
+  async fileFor(id: string, tenant: string, path: string) { return tools.fileFor(this.toolsContext, id, tenant, path); }
 
   /** A signed download link to a file in a tenant's agent's mounts. */
-  async linkFor(id: string, tenant: string, path: string, expiresIn?: number) {
-    const session = await this.headerFor(id, tenant);
-    const target = this.mounted(session, path);
-    if (!this.options.links) throw new HttpError(404, "Links are not enabled on this runtime");
-    return this.options.links.sign({ tenant, volume: target.mount.volumeId, path: target.path, method: "GET", expiresIn });
-  }
+  async linkFor(id: string, tenant: string, path: string, expiresIn?: number) { return tools.linkFor(this.toolsContext, id, tenant, path, expiresIn); }
 
   /** What file work needs of an agent (its mounts), on any node: files are volumes, which any node reaches. */
   private async headerFor(id: string, tenant: string): Promise<Pick<Session, "header">> {
     const header = (await this.owns(id, tenant)) ? this.sessions.get(id)?.header ?? (await this.readHeader(id))?.value : undefined;
     if (!header || header.purged) throw new HttpError(404, "Unknown agent");
     return { header };
-  }
-
-  /** A file already in the agent's mounts, as a reference. */
-  private async pathRef(session: Pick<Session, "header">, path: string): Promise<FileRef> {
-    const volumes = this.options.volumes;
-    if (!volumes) throw new HttpError(400, "Volumes are not enabled on this runtime");
-    const tenant = session.header.tenant;
-    let target;
-    try { target = resolveMount(session.header.mounts ?? [], path); } catch (error) { throw new HttpError(400, errorText(error)); }
-    if (!target) throw new HttpError(400, "Attach a file, not /");
-    const entry = await volumes.call(target.mount.volumeId, tenant, "stat", { path: target.path }).catch(error => { throw (error as HttpError).status === 404 ? new HttpError(400, `${target.show(target.path)} does not exist`) : error; });
-    if (entry.type !== "file") throw new HttpError(400, `${target.show(target.path)} is a directory`);
-    return fileRef(volumes, tenant, session.header.id, target.mount.volumeId, target.show(entry.path), { ...entry, contentType: await volumes.contentType(tenant, entry.path, entry) });
-  }
-
-  /**
-   * A message's attachments as file references: files already in the agent's mounts ({path}), and
-   * small files sent inline ({name, data: base64, contentType?}), saved first.
-   * Everything is checked before anything is saved.
-   */
-  private async attach(session: Session, requestId: string, inputs: unknown): Promise<FileRef[]> {
-    if (!Array.isArray(inputs)) throw new HttpError(400, "files must be an array");
-    if (inputs.length > FILE_LIMITS.attachments) throw new HttpError(400, `At most ${FILE_LIMITS.attachments} files can be attached to a message`);
-    let inline = 0;
-    const names = new Set<string>();
-    const checked = inputs.map((input, index) => {
-      const { transcribe, ...file } = input && typeof input === "object" ? input : {} as Record<string, unknown>;
-      if (transcribe !== undefined && typeof transcribe !== "boolean") throw new HttpError(400, "transcribe is true or false");
-      const asked = transcribe === undefined ? {} : { transcribe: transcribe as boolean };
-      if (Object.keys(file).length === 1 && typeof file.path === "string") return { path: file.path as string, ...asked };
-      const { name, data, url, contentType, ...rest } = file;
-      if ((typeof data === "string") === (typeof url === "string") || (typeof data === "string" && !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) || Object.keys(rest).length || (name !== undefined && typeof name !== "string") || (contentType !== undefined && typeof contentType !== "string")) {
-        throw new HttpError(400, "An attached file is {path} (a file in the agent's mounts), {name, data (base64), contentType?} or {url, name?, contentType?}, each with transcribe?");
-      }
-      let address: URL | undefined;
-      if (typeof url === "string") {
-        try { address = new URL(url); } catch { throw new HttpError(400, "An attached file's url must be an absolute https URL"); }
-        if (!this.options.outbound) throw new HttpError(400, "Attaching files by URL is not enabled on this runtime");
-      } else {
-        inline += Math.floor((data as string).length * 3 / 4);
-        if (inline > FILE_LIMITS.inlineBytes) throw new HttpError(413, `Inline files are limited to ${FILE_LIMITS.inlineBytes} bytes in all; upload larger ones first and attach them by path`);
-      }
-      // Two files of one name in a request become name, name-2, ...
-      const base = safeName(name ?? (address ? decodeURIComponent(address.pathname.split("/").pop() ?? "") : undefined), `attachment-${index + 1}`);
-      let unique = base;
-      for (let n = 2; names.has(unique); n++) unique = base.replace(/(\.[^.]*)?$/, extension => `-${n}${extension}`);
-      names.add(unique);
-      return { name: unique, ...(address ? { url: address } : { data: data as string }), contentType: contentType as string | undefined, ...asked };
-    });
-    const volumes = this.options.volumes;
-    if (checked.length && !volumes) throw new HttpError(400, "Volumes are not enabled on this runtime");
-    const tenant = session.header.tenant;
-    const refs: (FileRef & { transcribe?: boolean })[] = [];
-    for (const input of checked) {
-      const asked = input.transcribe === undefined ? {} : { transcribe: input.transcribe };
-      if ("path" in input) { refs.push({ ...await this.pathRef(session, input.path as string), ...asked }); continue; }
-      const target = this.uploadTarget(session, requestId, input.name);
-      const { body, contentType } = "url" in input ? await this.fetchAttachment(input.url) : { body: Buffer.from(input.data, "base64"), contentType: undefined };
-      const saved = await volumes!.put(tenant, target.mount.volumeId, target.path, body, { contentType: input.contentType ?? contentType, by: session.header.id });
-      refs.push({ ...await fileRef(volumes!, tenant, session.header.id, target.mount.volumeId, target.show(saved.path), { ...saved, contentType: saved.contentType! }), ...asked });
-    }
-    return refs;
-  }
-
-  /** A file attached by URL: fetched from the public internet (the outbound guard), at most FILE_LIMITS.urlBytes, streamed to the volume. */
-  private async fetchAttachment(url: URL): Promise<{ body: AsyncIterable<Uint8Array>; contentType?: string }> {
-    let response: Response;
-    try { response = await this.options.outbound!.fetch(url, { timeoutMs: FILE_LIMITS.urlMs, maxBytes: FILE_LIMITS.urlBytes, maxRedirects: FILE_LIMITS.urlRedirects }); }
-    catch (error) { throw new HttpError(400, `Could not fetch ${url.origin}${url.pathname} (${errorText(error).slice(0, 200)})`); }
-    if (!response.ok || !response.body) {
-      await response.body?.cancel();
-      throw new HttpError(400, `Could not fetch ${url.origin}${url.pathname} (HTTP ${response.status})`);
-    }
-    const contentType = declaredType(response.headers.get("content-type"));
-    const length = Number(response.headers.get("content-length"));
-    if (length > FILE_LIMITS.urlBytes) { await response.body.cancel(); throw new HttpError(413, `A file attached by URL may be at most ${FILE_LIMITS.urlBytes} bytes`); }
-    const stream = response.body;
-    const body = async function* () {
-      try { for await (const chunk of stream) yield chunk as Uint8Array; }
-      catch (error) { throw new HttpError(/larger than/.test(errorText(error)) ? 413 : 400, `Could not fetch ${url.origin}${url.pathname} (${errorText(error).slice(0, 200)})`); }
-    };
-    return { body: body(), ...(contentType ? { contentType } : {}) };
-  }
-
-  /** js_exec's `fs`: the file tools over the agent's mounts, durable before any effect like any other tool call. */
-  private async fsCall(session: Session, op: string, args: Record<string, unknown>, signal: AbortSignal) {
-    if (!this.options.volumes || !session.header.mounts?.length) throw new Error("This agent has no volumes mounted");
-    if (!["readFile", "writeFile", "stat", "list", "remove"].includes(op)) throw new Error("Unknown fs call");
-    await this.beforeEffect(session);
-    return this.options.volumes.tool(this.toolContext(session), `fs.${op}`, args, signal);
-  }
-
-  /**
-   * Credentials for one model call: for the agent's tenant's own endpoint, a token with the claims its tool
-   * servers' tokens have, for the turn's actor; else its key scope's current key for the model's provider.
-   */
-  private async modelAuth(session: Session): Promise<Credentials> {
-    const { header } = session;
-    const endpoint = spend.endpoint(this.spendContext, session);
-    if (endpoint && this.options.modelToken) {
-      const run = runningRun(session), actor = run?.actor, lineage = delegation.lineage(this.delegationContext, session, run);
-      return { identity: true, apiKey: await this.options.modelToken(endpoint.baseUrl, {
-        tenant: header.tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}), ...lineage,
-      }) };
-    }
-    const provider = header.config.model.provider;
-    if (!this.options.scopedKey) throw new Error("This agent's model takes no per-call credentials");
-    const resolved = await this.options.scopedKey(header.tenant, header.keyScope, provider);
-    if (!resolved && !header.keyScope) throw new Error(`The ${provider} provider is gone: set it again with PUT /v1/providers/${provider}, or move this agent to another model`);
-    if (!resolved) throw new Error(`No ${provider} API key is configured for key scope ${header.keyScope} or this tenant; set one with PUT /v1/key-scopes/${header.keyScope}/providers/${provider}`);
-    const { platform, ...credentials } = resolved;
-    session.platformKey = platform;
-    return credentials;
-  }
-
-  /** A referenced file's bytes for the agent's model request, as base64 (only sizes a model can be shown). */
-  private async fileData(session: Session, ref: unknown) {
-    if (!validFileRef(ref) || ref.size > Math.max(FILE_LIMITS.imageBytes, FILE_LIMITS.documentBytes) || !this.options.volumes) throw new Error("Invalid file reference");
-    return (await this.options.volumes.readRange(session.header.tenant, ref, 0, ref.size)).toString("base64");
   }
 
   /**
@@ -2533,58 +1871,7 @@ export class ClientSessions {
       await humanInput.cancelInputs(this.inputsContext, session, "aborted");
       return live ? { aborted: true, cancelled } : { aborted: false, running: false, cancelled };
     }
-    if (record.method === "configure") {
-      const applied = params.definition !== undefined ? await this.definitionUpdate(session, params.definition) : undefined;
-      // An upsert's own fields (see `reconfiguration`): what the agent is called, and the configuration it now matches.
-      // Of its target, only what the agent does not have already is applied.
-      const { provisionHash, name, type, toolsHash: declared, ...asked } = params;
-      // The hash of the tools as the application declared them: given by an upsert, else of a configure's own mcp.tools.
-      const toolsHash = declared ?? (asked.mcp?.tools !== undefined ? hash(JSON.stringify(asked.mcp.tools)) : undefined);
-      const { mounts, ...wanted } = asked;
-      const { builtins, delegate, mcpServers, ...given } = provisionHash !== undefined ? this.upsertChanges(session.header, wanted) : wanted;
-      // The agent's own builtins, their settings and MCP servers (an agent from a definition has the definition's): its sources, with the tools they offer.
-      const reSourced = builtins !== undefined || delegate !== undefined || mcpServers !== undefined;
-      const sources = reSourced ? ownSources(session.header.sources, { builtins, delegate, mcpServers }, this.inlineServers(session.header.tenant)) : session.header.sources;
-      // An upsert with remount: true sets its mounts here, between turns; the agent's next start describes them.
-      if (mounts !== undefined) await this.remount(session, mounts);
-      const changed = provisionHash === undefined || reSourced || mounts !== undefined || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
-      const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, scopeAfter(session.header, given)))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean; codeMode?: boolean };
-      // Checked again as it applies, after the configuration queued before it (a definition's own change is not: its calls leave out what does not apply).
-      const refusal = applied ? undefined : configurationRefusal(session.header.config, update);
-      if (refusal) throw new HttpError(400, refusal);
-      // A new model may belong to another provider, and a new key scope has keys of its own: the agent needs that provider's key.
-      const resolved = update.model || keyScope !== undefined ? await this.apiKey(session, (update.model ?? session.header.config.model).provider, keyScope === undefined ? session.header.keyScope : keyScope ?? undefined) : undefined;
-      const apiKey = resolved?.key;
-      if (resolved && this.options.apiKeyFor && !apiKey) throw new Error(`No ${(update.model ?? session.header.config.model).provider} API key is configured for this tenant; set one with PUT /v1/providers/${(update.model ?? session.header.config.model).provider}/key`);
-      // An agent that is not running takes its new configuration when it next starts.
-      const result = !Object.keys(update).length && !keyScope && keyScope !== null && !reSourced ? { configured: true } : live ? await this.supervisor.request(id, "configure", {
-        ...update, ...apiKey ? { apiKey } : {},
-        // Replacing the application's tools keeps the runtime's own.
-        ...update.tools || "fileTools" in update || "codeMode" in update || reSourced ? { tools: await this.toolset(session, { ...update.tools ? { tools: update.tools } : {}, sources: applied ? applied.sources : sources, ..."fileTools" in update ? { fileTools: update.fileTools } : {}, ..."codeMode" in update ? { codeMode: update.codeMode } : {} }) } : {},
-      }) : { configured: true };
-      const { tools, ...config } = update;
-      if (resolved && live) session.platformKey = resolved.platform;
-      if (keyScope) session.header.keyScope = keyScope; else if (keyScope === null) delete session.header.keyScope;
-      if (tools !== undefined) session.header.definitions = tools;
-      session.header.config = { ...session.header.config, ...config };
-      if (reSourced) { if (sources) session.header.sources = sources; else delete session.header.sources; }
-      if (applied) {
-        session.header.definition = applied.definition;
-        if (applied.sources) session.header.sources = applied.sources; else delete session.header.sources;
-      } else if (session.header.definition) {
-        // A model or thinking level configured directly is the agent's own from then on.
-        const overrides = new Set([...session.header.overrides ?? [], ...OVERRIDES.filter(key => (update as Record<string, unknown>)[key] !== undefined)]);
-        if (overrides.size) session.header.overrides = [...overrides];
-      }
-      if (provisionHash !== undefined) session.header.provisionHash = provisionHash;
-      if (toolsHash !== undefined) session.header.toolsHash = toolsHash;
-      if (name !== undefined || type !== undefined) {
-        const metadata = { ...session.header.metadata, ...name !== undefined ? { name } : {}, ...type !== undefined ? { type } : {} };
-        session.header.metadata = Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== null)) as AgentMetadata;
-      }
-      await this.writeHeader(session);
-      return provisionHash !== undefined ? { ...result, changed } : result;
-    }
+    if (record.method === "configure") return configuration.configure(this.configurationContext, session, params, live);
     if (record.method === "resume") params = await this.resumeParams(session, record.suspension!);
     // The run's own budget is the runtime's to keep (runSpendLimit), not the agent's.
     if (params?.spendLimit !== undefined) {
@@ -2672,19 +1959,6 @@ export class ClientSessions {
     }
     const close = rows.every(row => row.answer?.by.system && !(row.answer.by.system === "expired" && onExpire === "resume"));
     return { calls, close };
-  }
-
-  /** The configuration an agent takes from its definition's current revision; tools added at creation stay. */
-  private async definitionUpdate(session: Session, target?: { id: string }) {
-    const current = session.header.definition;
-    if (!current) throw new Error("This agent was not made from a definition");
-    const id = target?.id ?? current.id;
-    const resolved = await this.options.definitionFor!(session.header.tenant, id);
-    // Its servers are listed afresh for the tools the agent takes now: what they offer may have changed with it.
-    if (resolved.sources?.mcpServers?.length) this.options.sources?.forget(session.header.tenant, resolved.sources.mcpServers);
-    // The attached server's tools stay, as does the agent's own configuration; the tools list is rebuilt with the definition's sources.
-    const config = Object.fromEntries(Object.entries(resolved.config).filter(([key]) => !session.header.overrides?.includes(key))) as Partial<DefinitionConfig["config"]>;
-    return { update: { ...config, tools: session.header.definitions }, definition: { id, revision: resolved.revision }, sources: resolved.sources };
   }
 
   /** Finish a run whose node was lost: continue its turn, or take the answer it had already reached. */
@@ -3083,25 +2357,6 @@ export class ClientSessions {
   private hook(name: "runStarted" | "runEnded", session: Session, record: RequestRecord) {
     try { this.options.hooks?.[name]?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, record); }
     catch (error) { console.error(JSON.stringify({ type: "session_hook_failed", hook: name, error: safeError(error) })); }
-  }
-
-  /**
-   * A `tools.search` query over the agent's code-mode tools; a rerank stage that fails is logged and
-   * left out. Ranking by meaning is platform usage at what its providers charged: the tenant pays
-   * the runtime, never with its own keys, so which provider serves it stays the runtime's choice.
-   */
-  private searchTools(session: Session, query: SearchQuery) {
-    return searchTools(session.searchable ?? [], query, {
-      rerankers: this.options.rerankers ?? [],
-      onError: (error, stage) => console.error(JSON.stringify({ type: "tool_search_rerank_failed", reranker: stage.kind, agent: session.header.id, error: safeError(error) })),
-      onRanked: ({ cost }) => this.toolSearchUsage(session, cost, 1),
-    });
-  }
-
-  private toolSearchUsage(session: Session, usd: number, searches: number) {
-    const usage: UsageRecord = { provider: "runtime", model: "tool_search", usage: { cost: { total: usd } }, platform: true, toolSearch: true, toolSearches: searches };
-    this.options.onUsage?.(session.header.tenant, session.header.id, usage);
-    this.endUserCharge(session.header.id, usage);
   }
 
   remove(id: string): Promise<void> {

@@ -1,9 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { AppendLog } from "../shared/append-log.ts";
 import type { Storage } from "../shared/storage.ts";
-import { NotOwner } from "./client-sessions.ts";
 import type { Db, Sql } from "./db.ts";
-import { LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
+import { NotOwner, LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
 import { HttpError } from "./http.ts";
 import { deleteTail } from "./log-tail.ts";
 import { errorText, type ToolDefinition } from "./protocol.ts";
