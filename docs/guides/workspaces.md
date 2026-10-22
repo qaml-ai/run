@@ -1,9 +1,10 @@
 # Workspaces
 
 Workspaces group an account's agents and definitions by project or use case. In
-the console, open **Agents → Workspaces**, create a workspace, then assign agents
-and definitions. **Settings → Usage** shows model and tool spend by workspace;
-select a workspace to see its daily breakdown.
+the console, open **Workspaces**, create a workspace, then add agents and
+definitions to it. The workspace switcher at the top of the sidebar scopes
+**Agents**, **Definitions** and **Usage** to one workspace; channels, volumes,
+API keys and billing stay account-wide.
 
 Each agent belongs to at most one workspace. New agents inherit their
 definition's workspace, and sub-agents and forks inherit their parent's. A
@@ -35,6 +36,8 @@ not remove its workspace's spend.
 - `PUT /v1/workspace-memberships/{kind}/{id}` with
   `{ "workspaceId": "ws_…" }`: assign an `agent` or `definition`. Send
   `{ "workspaceId": null }` to unassign it.
+- `GET /v1/agents?workspaceId=ws_…`: a workspace's agents (`unassigned` for
+  agents in none). Each agent in the list has its `workspaceId`.
 - `GET /v1/usage?days=30&workspaceId=ws_…`: a workspace's usage. Use
   `workspaceId=unassigned` for unassigned usage; omit it for account totals and
   the `workspaces` summary.

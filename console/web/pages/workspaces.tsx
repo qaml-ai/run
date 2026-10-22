@@ -10,10 +10,10 @@ import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { CopyButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
 import { MoveMenu, ScopeCrumb, WorkspaceTag } from "@/components/workspace-ui";
 import { WorkspaceSwatch } from "@/components/workspace-switcher";
-import { api, formatCost, formatTime, useApi, type AgentSummary, type Channel, type Definition, type Usage, type Workspace } from "@/lib/api";
+import { AGENT_PAGE, api, formatCost, formatTime, useApi, useApiPage, type AgentSummary, type Channel, type Definition, type Usage, type Workspace } from "@/lib/api";
 import { Link, navigate } from "@/lib/router";
-import { AgentStatus, matches } from "@/pages/agents";
-import { changeWorkspaces, moveToWorkspace, useWorkspaceDirectory, type WorkspaceDirectory } from "@/lib/workspace";
+import { AgentStatus } from "@/pages/agents";
+import { changeWorkspaces, moveToWorkspace, useWorkspaceDirectory, WORKSPACES_CHANGED, type WorkspaceDirectory } from "@/lib/workspace";
 
 const DESCRIPTION = "Group agents and definitions by project, team or customer, and see what each one spends.";
 
@@ -31,7 +31,7 @@ export function WorkspacesPage() {
   }, []);
   const total = usage.data?.totals.cost ?? 0;
   const count = (id: string | null) => ({
-    agents: agents.data?.filter(agent => directory.workspaceOf("agent", agent.id) === id) ?? [],
+    agents: agents.data?.filter(agent => (agent.workspaceId ?? directory.workspaceOf("agent", agent.id)) === id) ?? [],
     definitions: definitions.data?.filter(definition => directory.workspaceOf("definition", definition.id) === id) ?? [],
   });
   const spend = (id: string | null) => usage.data?.workspaces?.find(row => row.id === id)?.cost ?? 0;
@@ -121,19 +121,25 @@ function NewWorkspaceDialog({ open, onOpenChange }: { open: boolean; onOpenChang
 /** One workspace: its name and id, the definitions whose agents join it, its agents, and archiving. */
 export function WorkspaceSettingsPage({ id }: { id: string }) {
   const directory = useWorkspaceDirectory();
-  const agents = useApi<AgentSummary[]>("/v1/agents");
+  // Its agents, a page of them: the list is filtered on the server.
+  const agents = useApiPage<AgentSummary>(`/v1/agents?workspaceId=${encodeURIComponent(id)}&limit=${AGENT_PAGE}`);
   const definitions = useApi<Definition[]>("/v1/definitions");
   const channels = useApi<Channel[]>("/v1/channels");
+  const { reload: reloadAgents } = agents;
+  useEffect(() => {
+    const reload = () => void reloadAgents();
+    addEventListener(WORKSPACES_CHANGED, reload);
+    return () => removeEventListener(WORKSPACES_CHANGED, reload);
+  }, [reloadAgents]);
   const [error, setError] = useState<string>();
   const [adding, setAdding] = useState(false);
   const workspace = directory.find(id);
   if (directory.loaded && !workspace) return <EmptyState icon={<FolderOpen />} title="No such workspace" action={<Button size="sm" variant="outline" asChild><Link to="workspaces?ws=">All workspaces</Link></Button>}>It may have been deleted, or belong to another account.</EmptyState>;
   if (!workspace) return <><ErrorAlert error={directory.error} /><Skeleton className="h-64 w-full" /></>;
   const run = async (action: () => Promise<unknown>) => { setError(undefined); try { await action(); } catch (caught) { setError((caught as Error).message); } };
-  const members = agents.data?.filter(agent => directory.workspaceOf("agent", agent.id) === id) ?? [];
+  const members = agents.items ?? [];
   const ownDefinitions = definitions.data?.filter(definition => directory.workspaceOf("definition", definition.id) === id) ?? [];
   const otherDefinitions = definitions.data?.filter(definition => directory.workspaceOf("definition", definition.id) !== id) ?? [];
-  const SHOWN = 50;
 
   return <div className="max-w-3xl">
     <ScopeCrumb directory={directory} />
@@ -161,10 +167,10 @@ export function WorkspaceSettingsPage({ id }: { id: string }) {
       )}
     </Section>
 
-    <Section title={`Agents · ${members.length}`} description="Moving an agent changes where its future spend goes; earlier spend stays put."
+    <Section title={`Agents · ${members.length}${agents.next ? "+" : ""}`} description="Moving an agent changes where its future spend goes; earlier spend stays put."
       action={<Button size="sm" variant="outline" disabled={workspace.archived} onClick={() => setAdding(true)}><Plus />Add agents</Button>}>
-      {!agents.data ? <Skeleton className="h-24 w-full" /> : members.length === 0 ? <p className="text-muted-foreground border border-dashed px-4 py-3 text-sm">No agents yet. Add existing ones, or create them with this workspace's id.</p> : (
-        <div className="bg-card border"><Table><TableBody>{members.slice(0, SHOWN).map(agent => (
+      {!agents.items ? <Skeleton className="h-24 w-full" /> : members.length === 0 ? <p className="text-muted-foreground border border-dashed px-4 py-3 text-sm">No agents yet. Add existing ones, or create them with this workspace's id.</p> : (
+        <div className="bg-card border"><Table><TableBody>{members.map(agent => (
           <TableRow key={agent.id}>
             <TableCell><Link to={`agents/${agent.id}`} className="font-medium hover:underline underline-offset-4">{agent.name}</Link></TableCell>
             <TableCell><AgentStatus agent={agent} /></TableCell>
@@ -177,7 +183,7 @@ export function WorkspaceSettingsPage({ id }: { id: string }) {
           </TableRow>
         ))}</TableBody></Table></div>
       )}
-      {members.length > SHOWN && <p className="mt-2 text-sm"><Link to={`agents?ws=${id}`} className="underline underline-offset-4">All {members.length} agents in Agents</Link></p>}
+      {agents.next && <p className="mt-2 text-sm"><Link to={`agents?ws=${id}`} className="underline underline-offset-4">All of its agents in Agents</Link></p>}
     </Section>
 
     <Section title={workspace.archived ? "Restore" : "Archive"} last>
@@ -189,7 +195,7 @@ export function WorkspaceSettingsPage({ id }: { id: string }) {
         </Button>
       </div>
     </Section>
-    <AddAgentsDialog open={adding} onOpenChange={setAdding} workspace={workspace} directory={directory} agents={agents.data ?? []}
+    <AddAgentsDialog open={adding} onOpenChange={setAdding} workspace={workspace} directory={directory}
       onAdd={ids => run(() => moveToWorkspace("agent", ids, id))} />
   </div>;
 }
@@ -246,13 +252,18 @@ function AddDefinition({ directory, definitions, disabled, onAdd }: { directory:
 }
 
 /** Pick agents from elsewhere (searchable, with where each is now) and move them here in one go. */
-function AddAgentsDialog({ open, onOpenChange, workspace, directory, agents, onAdd }: {
-  open: boolean; onOpenChange: (open: boolean) => void; workspace: Workspace; directory: WorkspaceDirectory; agents: AgentSummary[]; onAdd: (ids: string[]) => Promise<void>;
+function AddAgentsDialog({ open, onOpenChange, workspace, directory, onAdd }: {
+  open: boolean; onOpenChange: (open: boolean) => void; workspace: Workspace; directory: WorkspaceDirectory; onAdd: (ids: string[]) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
+  // Searched on the server: a page of matches, at most AGENT_PAGE.
+  const [q, setQ] = useState("");
+  useEffect(() => { const timer = setTimeout(() => setQ(query.trim()), 300); return () => clearTimeout(timer); }, [query]);
+  const found = useApiPage<AgentSummary>(open ? `/v1/agents?limit=${AGENT_PAGE}${q ? `&q=${encodeURIComponent(q)}` : ""}` : undefined);
+  const agents = found.items ?? found.previous ?? [];
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
-  const candidates = agents.filter(agent => directory.workspaceOf("agent", agent.id) !== workspace.id && matches(agent, query));
+  const candidates = agents.filter(agent => (agent.workspaceId ?? null) !== workspace.id);
   const close = (next: boolean) => { if (!next) { setPicked(new Set()); setQuery(""); } onOpenChange(next); };
   return (
     <Dialog open={open} onOpenChange={close}>
@@ -268,7 +279,7 @@ function AddAgentsDialog({ open, onOpenChange, workspace, directory, agents, onA
               <input type="checkbox" className="accent-foreground size-4" checked={picked.has(agent.id)}
                 onChange={event => setPicked(current => { const next = new Set(current); if (event.target.checked) next.add(agent.id); else next.delete(agent.id); return next; })} />
               <span className="min-w-0 flex-1 truncate font-medium">{agent.name}</span>
-              <WorkspaceTag directory={directory} id={directory.workspaceOf("agent", agent.id)} className="text-xs" />
+              <WorkspaceTag directory={directory} id={agent.workspaceId ?? null} className="text-xs" />
             </label>
           ))}
         </div>

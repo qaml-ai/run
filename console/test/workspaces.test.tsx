@@ -14,14 +14,31 @@ const agent = (id: string, name: string, fields: Partial<AgentSummary> = {}): Ag
 
 /** A small fake of the workspace endpoints, with the writes it took. */
 let state: { workspaces: any[]; memberships: { kind: string; id: string; workspaceId: string | null }[]; agents: AgentSummary[] };
+const membership = (kind: string, id: string) => state.memberships.find(member => member.kind === kind && member.id === id)?.workspaceId ?? null;
 let writes: { path: string; method: string; body: any }[];
+/** GET /v1/agents as the server answers it: filtered, by id, a page at a time with X-Next-Cursor. */
+function listAgents(path: string) {
+  agentPaths.push(path);
+  const query = new URL(path, "http://x").searchParams, ws = query.get("workspaceId"), q = query.get("q")?.toLowerCase();
+  const day = Date.now() - 24 * 3600_000;
+  const list = state.agents.map(agent => ({ ...agent, workspaceId: membership("agent", agent.id) })).sort((a, b) => a.id < b.id ? -1 : 1).filter(agent =>
+    (!ws || (ws === "unassigned" ? agent.workspaceId === null : agent.workspaceId === ws))
+    && (query.get("status") !== "running" || agent.running) && (query.get("status") !== "failed" || (agent.lastError?.at ?? 0) > day)
+    && (query.get("status") !== "expiring" || agent.expiresAt !== null) && (query.get("subAgents") !== "only" || !!agent.parentAgentId)
+    && (!q || [agent.name, agent.key ?? "", agent.id].some(field => field.toLowerCase().includes(q)))
+    && (!query.get("cursor") || agent.id > atob(query.get("cursor")!)));
+  const limit = Number(query.get("limit") ?? Infinity), page = list.slice(0, limit);
+  const next = list.length > limit ? btoa(page.at(-1)!.id) : undefined;
+  return new Response(JSON.stringify(page), { headers: { "Content-Type": "application/json", ...(next ? { "X-Next-Cursor": next } : {}) } });
+}
+let agentPaths: string[];
 beforeEach(() => {
   localStorage.clear();
-  writes = [];
+  writes = []; agentPaths = [];
   state = {
     workspaces: [{ id: "ws_desk", name: "Trading Desk", archived: false, createdAt: 1, updatedAt: 1 }, { id: "ws_lab", name: "Research", archived: false, createdAt: 2, updatedAt: 2 }],
     memberships: [{ kind: "agent", id: "a_desk", workspaceId: "ws_desk" }, { kind: "agent", id: "a_lab", workspaceId: "ws_lab" }, { kind: "definition", id: "d_desk", workspaceId: "ws_desk" }],
-    agents: [agent("a_desk", "desk-bot", { running: true, key: "desk-1" }), agent("a_lab", "lab-bot", { expiresAt: Date.now() + 1e6 }), agent("a_free", "loose-bot"), agent("a_sub", "desk-bot / helper", { parentAgentId: "a_desk", running: true })],
+    agents: [agent("a_desk", "desk-bot", { running: true, key: "desk-1" }), agent("a_lab", "lab-bot", { expiresAt: Date.now() + 1e6, lastActiveAt: Date.now() - 5 * 60_000, lastError: { at: Date.now() - 3600_000, class: "model_error" } }), agent("a_free", "loose-bot", { lastActiveAt: Date.now() - 3 * 86400_000 }), agent("a_sub", "desk-bot / helper", { parentAgentId: "a_desk", running: true })],
   };
   vi.stubGlobal("fetch", vi.fn(async (path: string, init?: RequestInit) => {
     const method = init?.method ?? "GET", body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -36,7 +53,7 @@ beforeEach(() => {
     }
     if (path === "/v1/workspaces") return json(state.workspaces);
     if (path === "/v1/workspace-memberships") return json(state.memberships);
-    if (path === "/v1/agents") return json(state.agents);
+    if (path.startsWith("/v1/agents") && !/^\/v1\/agents\/[^?]/.test(path)) return listAgents(path);
     if (path === "/v1/definitions") return json([{ id: "d_desk", name: "Desk agent", revision: 3, createdAt: 1, updatedAt: 1 }, { id: "d_free", name: "Free agent", revision: 1, createdAt: 1, updatedAt: 1 }]);
     if (path === "/v1/channels") return json([{ id: "c1", type: "slack", name: "Desk Slack", definition: "d_desk", access: { public: true, allow: [] }, limits: {}, account: {}, credentials: {}, createdAt: 1 }]);
     if (path.startsWith("/v1/usage")) return json({ since: 0, totals: totals(100), days: [], workspaces: [{ id: "ws_desk", name: "Trading Desk", ...totals(60) }, { id: null, name: "Unassigned", ...totals(40) }] });
@@ -46,12 +63,10 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 const go = (url: string) => act(() => { history.replaceState(null, "", url); dispatchEvent(new PopStateEvent("popstate")); });
-const membership = (kind: string, id: string) => state.memberships.find(member => member.kind === kind && member.id === id)?.workspaceId ?? null;
 
 function Agents() {
-  const agents = useApi<AgentSummary[]>("/v1/agents");
   const billing = useApi<any>(undefined);
-  return <AgentsPage agents={agents} billing={billing} />;
+  return <AgentsPage hasAgents={state.agents.length > 0} billing={billing} />;
 }
 const names = () => screen.getAllByRole("link").map(link => link.textContent).filter(text => text?.includes("bot"));
 
@@ -115,41 +130,70 @@ describe("workspace settings", () => {
 });
 
 describe("agents list", () => {
-  it("shows each agent's workspace with all selected, and filters by ?ws=", async () => {
+  it("shows each agent's workspace with all selected, and asks the server for ?ws='s", async () => {
     go("/console/agents");
     render(<Agents />);
     await screen.findByRole("columnheader", { name: "Workspace" });
-    expect(names()).toEqual(["desk-bot", "desk-bot / helper", "lab-bot", "loose-bot"]);
+    await waitFor(() => expect(names()).toEqual(["desk-bot", "desk-bot / helper", "loose-bot", "lab-bot"]));
     expect(screen.getAllByRole("button", { name: "Assign…" }).length).toBe(2);
+    expect(agentPaths.at(-1)).toBe("/v1/agents?limit=50");
 
     go("/console/agents?ws=ws_desk");
     await waitFor(() => expect(names()).toEqual(["desk-bot"]));
+    expect(agentPaths.at(-1)).toBe("/v1/agents?limit=50&workspaceId=ws_desk");
     expect(screen.queryByRole("columnheader", { name: "Workspace" })).toBeNull();
     go("/console/agents?ws=unassigned");
     await waitFor(() => expect(names()).toEqual(["loose-bot", "desk-bot / helper"]));
   });
 
-  it("searches name, key or id, and filters by status", async () => {
+  it("searches and filters on the server, with last activity and recent failures", async () => {
     go("/console/agents");
     render(<Agents />);
-    await screen.findByRole("columnheader", { name: "Workspace" });
+    await screen.findByRole("columnheader", { name: "Last active" });
+    const row = (name: string) => screen.getByRole("link", { name }).closest("tr")!;
+    await waitFor(() => expect(within(row("lab-bot")).getByText("5m ago")).toBeTruthy());
+    expect(within(row("lab-bot")).getByText("Failed")).toBeTruthy();
+    expect(within(row("loose-bot")).getByText("3d ago")).toBeTruthy();
+    expect(within(row("desk-bot")).getByText("now")).toBeTruthy();
+
     fireEvent.change(screen.getByLabelText("Search agents"), { target: { value: "desk-1" } });
-    expect(names()).toEqual(["desk-bot"]);
+    await waitFor(() => expect(names()).toEqual(["desk-bot"]));
+    expect(agentPaths.at(-1)).toBe("/v1/agents?limit=50&q=desk-1");
     fireEvent.change(screen.getByLabelText("Search agents"), { target: { value: "" } });
-    fireEvent.click(screen.getByRole("button", { name: "Running 2" }));
-    expect(names()).toEqual(["desk-bot", "desk-bot / helper"]);
-    fireEvent.click(screen.getByRole("button", { name: "Sub-agents 1" }));
-    expect(names()).toEqual(["desk-bot / helper"]);
-    fireEvent.click(screen.getByRole("button", { name: "Expiring 1" }));
-    expect(names()).toEqual(["lab-bot"]);
-    expect(screen.getByRole("button", { name: "Expiring 1" }).getAttribute("aria-pressed")).toBe("true");
+    await waitFor(() => expect(names().length).toBe(4));
+    fireEvent.click(screen.getByRole("button", { name: "Running" }));
+    await waitFor(() => expect(names()).toEqual(["desk-bot", "desk-bot / helper"]));
+    fireEvent.click(screen.getByRole("button", { name: "Failed · 24h" }));
+    await waitFor(() => expect(names()).toEqual(["lab-bot"]));
+    expect(agentPaths.at(-1)).toBe("/v1/agents?limit=50&status=failed");
+    fireEvent.click(screen.getByRole("button", { name: "Sub-agents" }));
+    await waitFor(() => expect(names()).toEqual(["desk-bot / helper"]));
+    fireEvent.click(screen.getByRole("button", { name: "Expiring" }));
+    await waitFor(() => expect(names()).toEqual(["lab-bot"]));
+    expect(screen.getByRole("button", { name: "Expiring" }).getAttribute("aria-pressed")).toBe("true");
+    // Never the whole list: every read is a page.
+    expect(agentPaths.every(path => path.includes("limit="))).toBe(true);
+  });
+
+  it("pages with the server's cursor", async () => {
+    state.agents = Array.from({ length: 60 }, (_, at) => agent(`a_${String(at).padStart(2, "0")}`, `bot ${at}`));
+    go("/console/agents");
+    render(<Agents />);
+    await waitFor(() => expect(names().length).toBe(50));
+    expect(screen.getByText("Page 1")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+    await waitFor(() => expect(names()).toEqual(Array.from({ length: 10 }, (_, at) => `bot ${at + 50}`)));
+    expect(agentPaths.at(-1)).toBe(`/v1/agents?limit=50&cursor=${encodeURIComponent(btoa("a_49"))}`);
+    expect((screen.getByRole("button", { name: /Next/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: /Previous/ }));
+    await waitFor(() => expect(names()[0]).toBe("bot 0"));
   });
 
   it("moves the selected agents to a workspace in one go", async () => {
     go("/console/agents");
     render(<Agents />);
     await screen.findByRole("columnheader", { name: "Workspace" });
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select loose-bot" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select loose-bot" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Select lab-bot" }));
     const bar = screen.getByRole("region", { name: "Selected agents" });
     expect(within(bar).getByText("2 selected")).toBeTruthy();
@@ -163,7 +207,7 @@ describe("agents list", () => {
     state.workspaces = []; state.memberships = [];
     go("/console/agents?ws=ws_desk");
     render(<Agents />);
-    await waitFor(() => expect(names()).toEqual(["desk-bot", "desk-bot / helper", "lab-bot", "loose-bot"]));
+    await waitFor(() => expect(names()).toEqual(["desk-bot", "desk-bot / helper", "loose-bot", "lab-bot"]));
     expect(screen.queryByRole("columnheader", { name: "Workspace" })).toBeNull();
     expect(screen.queryByRole("checkbox")).toBeNull();
   });

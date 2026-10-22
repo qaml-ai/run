@@ -3093,6 +3093,41 @@
           "parentAgentId": {
             "type": "string",
             "description": "For a child a delegate or spawn_agent call made: the agent whose run made it"
+          },
+          "workspaceId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "In GET /v1/agents: the workspace it is in (PUT /v1/workspace-memberships), or null for none"
+          },
+          "lastActiveAt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "In GET /v1/agents: when its latest run ended (ms since the epoch), or null before its first"
+          },
+          "lastError": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "at": {
+                "type": "number",
+                "description": "When the run ended (ms since the epoch)"
+              },
+              "class": {
+                "type": "string",
+                "description": "How it failed, never its text: a stop (spend_limit, turn_limit, agent_loop_limit), the runtime's code (aborted, resume_limit, model_stream_stalled…), runtime_restart, runtime_error or model_error. Its request's outcome has the message"
+              }
+            },
+            "required": [
+              "at",
+              "class"
+            ],
+            "description": "In GET /v1/agents: its latest failed run, or null if none has failed"
           }
         },
         "required": [
@@ -13012,9 +13047,91 @@
     },
     "/v1/agents": {
       "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "A page of at most this many (1–200), by id; the X-Next-Cursor header then holds the next page's cursor while there are more. Without limit or cursor, every agent that matches, as always"
+            },
+            "required": false,
+            "description": "A page of at most this many (1–200), by id; the X-Next-Cursor header then holds the next page's cursor while there are more. Without limit or cursor, every agent that matches, as always",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The previous page's X-Next-Cursor"
+            },
+            "required": false,
+            "description": "The previous page's X-Next-Cursor",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Only agents in this workspace, or unassigned for agents in none"
+            },
+            "required": false,
+            "description": "Only agents in this workspace, or unassigned for agents in none",
+            "name": "workspaceId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "running",
+                "failed",
+                "expiring"
+              ],
+              "description": "running: loaded on a node now; failed: a run failed in the last 24 hours (lastError); expiring: has an expiresAt"
+            },
+            "required": false,
+            "description": "running: loaded on a node now; failed: a run failed in the last 24 hours (lastError); expiring: has an expiresAt",
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "only",
+                "exclude"
+              ],
+              "description": "Only sub-agents (those with a parentAgentId), or none of them"
+            },
+            "required": false,
+            "description": "Only sub-agents (those with a parentAgentId), or none of them",
+            "name": "subAgents",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "Part of its name, key or id, ignoring case"
+            },
+            "required": false,
+            "description": "Part of its name, key or id, ignoring case",
+            "name": "q",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
-            "description": "The tenant's agents",
+            "description": "The tenant's agents that match, by id",
+            "headers": {
+              "X-Next-Cursor": {
+                "schema": {
+                  "type": "string",
+                  "description": "With limit or cursor, while more agents match: the next page's cursor"
+                },
+                "required": false,
+                "description": "With limit or cursor, while more agents match: the next page's cursor"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {

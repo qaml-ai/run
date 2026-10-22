@@ -97,7 +97,8 @@ function Console({ me }: { me: Me }) {
   const billing = useApi<Billing>("/v1/billing", 30_000);
   const billingState = useBillingState(billing);
   const isAgentsList = section === "agents" && !rest[0];
-  const agents = useApi<AgentSummary[]>(!section || isAgentsList ? "/v1/agents" : undefined, 10_000);
+  // Whether the account has any agent: one, not the list (the Agents page pages its own).
+  const agents = useApi<AgentSummary[]>(!section || isAgentsList ? "/v1/agents?limit=1" : undefined, 10_000);
   // Home is Get started for an account with no agents (or a use-case start's deep link), and the agents list after.
   const home = !section && (!!startFrom(location.search) || agents.data?.length === 0);
   const starting = home || section === "start" || section === "quickstart";
@@ -118,7 +119,7 @@ function Console({ me }: { me: Me }) {
     : section === "telemetry" ? <TelemetryPage me={me} />
     : section === "billing" ? <BillingPage state={billingState} />
     : section === "account" ? <AccountPage me={me} />
-    : <AgentsPage agents={agents} billing={billing} />;
+    : <AgentsPage hasAgents={agents.data ? agents.data.length > 0 : agents.error ? true : undefined} billing={billing} />;
   const active = home ? "start" : section || "agents";
   const group = groupOf(active);
   const tabs = group && TABS[group.to] && !rest[0] ? group.to : undefined;
