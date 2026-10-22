@@ -166,7 +166,10 @@ infra/ecs-deploy.sh <tag>    # deploy an image already in ECR
 The script builds an arm64 image from the current checkout, tagged with the git
 commit (plus `-dirty-<time>` for uncommitted runtime changes), and pushes it to
 ECR. It registers a task definition revision with the new image, rolls the
-service, and returns once the new tasks are healthy in the target group.
+service, and returns once that deployment has completed and every running task
+runs the new image. It needs `jq` and `python3`. It never rolls an older commit over a
+newer one: when production already runs a commit that includes this one, it
+follows that deployment instead (`DEPLOY_ALLOW_OLDER=1` rolls back on purpose).
 
 A deploy interrupts no turns:
 - a busy task keeps itself protected from scale-in;

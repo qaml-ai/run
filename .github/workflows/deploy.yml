@@ -1,16 +1,39 @@
 name: Deploy
-# Every main commit that passes CI rolls out to the ECS service; run it by hand to redeploy.
-# The job runs in the `production` environment: add required reviewers there to gate deploys.
+# Every main commit that passes CI rolls out to the ECS service. Run it by hand for a hotfix (any main commit, without
+# waiting for CI or for the automatic deploys) or a rollback. The job runs in the `production` environment: add
+# required reviewers there to gate deploys.
+# A workflow_run run's own head SHA is main's head when CI finished, not the commit CI tested: the title names the
+# commit this run deploys.
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+  && format('Hotfix deploy {0}{1}', inputs.sha || 'main', inputs.rollback && ' (rollback)' || '')
+  || format('Deploy {0}', github.event.workflow_run.head_sha) }}
 on:
   workflow_run:
     workflows: [CI]
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit on main to deploy (default main's head)
+        required: false
+        default: ""
+      rollback:
+        description: Deploy even when production runs a newer commit
+        type: boolean
+        default: false
 concurrency:
-  # One rollout at a time, in order; a queued deploy is never cancelled half-way.
-  group: deploy-production
-  cancel-in-progress: false
+  # Two lanes, so an automatic deploy never cancels or queues ahead of a hand-run one. Automatic: a newer commit's
+  # deploy cancels the older run (which only waits; ECS carries on) and supersedes its rollout. Hand-run: one at a
+  # time beside it. infra/ecs-deploy.sh orders the lanes: neither rolls back a deploy that includes its commit, and
+  # each follows a newer deploy that replaces its own to completion. Runs that deploy nothing (CI failed) get a group
+  # of their own, so they cancel nothing.
+  group: >-
+    ${{ github.event_name == 'workflow_dispatch' && 'deploy-production-manual'
+    || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push') && 'deploy-production'
+    || format('deploy-noop-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_run' }}
 permissions:
   contents: read
   id-token: write
@@ -21,36 +44,40 @@ jobs:
     # Includes protected-turn retirement and deployment-alarm bake time.
     timeout-minutes: 60
     environment: production
-    env:
-      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
+      # The deploy tooling comes from this run's commit (main), whatever commit it deploys; the full history orders
+      # commits.
       - uses: actions/checkout@v4
-        # Full history, to tell whether production already runs a newer commit.
-        with: { ref: "${{ env.SHA }}", fetch-depth: 0 }
+        with: { fetch-depth: 0 }
+      - id: target
+        env:
+          EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          command -v jq >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; }
+          cp -R infra "$RUNNER_TEMP/infra"
+          git fetch --quiet origin main
+          ref=${EVENT_SHA:-${INPUT_SHA:-origin/main}}
+          sha=$(git rev-parse --verify --quiet "$ref^{commit}") || { echo "::error::no commit $ref"; exit 1; }
+          git merge-base --is-ancestor "$sha" origin/main || { echo "::error::$sha is not on main"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=${sha::12}" >> "$GITHUB_OUTPUT"
+          echo "### Deploying \`${sha::12}\` ($GITHUB_EVENT_NAME)" >> "$GITHUB_STEP_SUMMARY"
+          git log -1 --format='%h %s' "$sha"
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-west-2
-      # CI runs finish out of order, so a green run can arrive after a newer commit already shipped: skip it
-      # rather than roll production back (run the workflow by hand to roll back on purpose).
-      # CI's publish job pushes every main commit's image; build here only when it is missing, as for a
-      # hand-run redeploy of a commit from before that job existed.
+      # CI's publish job pushes every main commit's image within about a minute of the merge. A hotfix that starts
+      # sooner, or a commit from before that job existed, builds it here.
       - id: image
+        env: { TAG: "${{ steps.target.outputs.tag }}" }
         run: |
-          echo "tag=${SHA::12}" >> "$GITHUB_OUTPUT"
-          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
-            definition=$(aws ecs describe-services --cluster camelai-agent-runtime --services camelai-agent-runtime --query 'services[0].taskDefinition' --output text)
-            live=$(aws ecs describe-task-definition --task-definition "$definition" --query 'taskDefinition.containerDefinitions[0].image' --output text)
-            live=${live##*:}
-            if [ "$live" != "${SHA::12}" ] && git merge-base --is-ancestor "$SHA" "$live" 2>/dev/null; then
-              echo "::notice::Production already runs $live, which includes ${SHA::12}; not deploying"
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          if ! aws ecr describe-images --repository-name camelai-agent-runtime --image-ids imageTag="${SHA::12}" >/dev/null 2>&1; then
+          if ! aws ecr describe-images --repository-name camelai-agent-runtime --image-ids imageTag="$TAG" >/dev/null 2>&1; then
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
+      - if: steps.image.outputs.build == 'true'
+        run: git checkout --quiet --detach "${{ steps.target.outputs.sha }}"
       - if: steps.image.outputs.build == 'true'
         uses: ./.github/actions/node-dependencies
       - if: steps.image.outputs.build == 'true'
@@ -58,17 +85,32 @@ jobs:
       - if: steps.image.outputs.build == 'true'
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
-      # Build on native ARM with the same persistent layers as CI and publishing.
+      # Build on native ARM with the same persistent layers and arguments as CI's publish job.
       - if: steps.image.outputs.build == 'true'
         uses: useblacksmith/setup-docker-builder@v2
         with: { cache-key: run-image-arm64 }
+      # Tags are immutable: when CI's publish job pushes the same tag first, this push fails and the next step finds
+      # CI's image.
       - if: steps.image.outputs.build == 'true'
+        continue-on-error: true
         uses: useblacksmith/build-push-action@v2
         with:
           context: .
+          build-args: BASE_REGISTRY=docker.io/library
           platforms: linux/arm64
           provenance: false
           push: true
-          tags: ${{ steps.ecr.outputs.registry }}/camelai-agent-runtime:${{ steps.image.outputs.tag }}
-      - if: steps.image.outputs.skip != 'true'
-        run: infra/ecs-deploy.sh "${{ steps.image.outputs.tag }}"
+          tags: ${{ steps.ecr.outputs.registry }}/camelai-agent-runtime:${{ steps.target.outputs.tag }}
+      - if: steps.image.outputs.build == 'true'
+        env: { TAG: "${{ steps.target.outputs.tag }}" }
+        run: |
+          for _ in $(seq 24); do
+            aws ecr describe-images --repository-name camelai-agent-runtime --image-ids imageTag="$TAG" >/dev/null 2>&1 && exit 0
+            sleep 5
+          done
+          echo "::error::no image camelai-agent-runtime:$TAG in ECR"; exit 1
+      - env:
+          DEPLOY_SHA: ${{ steps.target.outputs.sha }}
+          DEPLOY_GIT_DIR: ${{ github.workspace }}
+          DEPLOY_ALLOW_OLDER: ${{ inputs.rollback && '1' || '' }}
+        run: '"$RUNNER_TEMP/infra/ecs-deploy.sh" "${{ steps.target.outputs.tag }}"'

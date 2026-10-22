@@ -122,9 +122,27 @@ A shard whose failures are in at most three files runs those files once more, al
 and the run carries a "Flaky test file" warning naming each one. Treat that warning as a bug to fix (a fixed wait or a
 short deadline that a busy runner misses is the usual cause), not as green. More failing files fail the shard at once.
 
-To deploy without waiting for CI (an emergency fix, or a rollback to an earlier commit), run Deploy by hand:
-`gh workflow run deploy.yml -R qaml-ai/run --ref <branch or tag>` deploys that ref's commit, building its image if
-CI has not pushed it. A hand-run deploy skips the "production already runs a newer commit" check, so it can roll back.
+**Hotfix** (a merged fix, live without waiting for CI or for the deploys queued before it):
+
+```sh
+gh workflow run deploy.yml -R qaml-ai/run -f sha=<commit on main> && sleep 5 && gh run watch -R qaml-ai/run $(gh run list -R qaml-ai/run -w deploy.yml -e workflow_dispatch -L 1 --json databaseId -q '.[0].databaseId')
+```
+
+Leave out `-f sha=…` to deploy main's head. A hand-run Deploy uses CI's image when the `publish` job has pushed it
+(about a minute after the merge) and builds it otherwise. It runs in its own concurrency lane
+(`deploy-production-manual`), so an automatic deploy neither cancels it nor makes it wait, and it logs the rollout as
+it goes: ECS's service events, each deployment's running tasks, healthy new tasks, then `rollout COMPLETED` and the
+running image check. New tasks serve about 1.5 minutes after the update; the rollout completes once the old tasks'
+protected turns are handed off (usually 2–7 minutes more, at most `AGENT_RETIRE_MAX_MS`).
+
+Only commits on main deploy, and never over a newer one. Every deploy, automatic or by hand, compares its commit with
+the image of the service's primary deployment right before `update-service`: when that deployment already includes
+the commit (the same commit, or a later one), it registers nothing and follows that deployment to completion instead;
+a deploy that a later commit replaces mid-rollout follows that one. To roll back on purpose, add `-f rollback=true`.
+Automatic deploys run one at a time; a newer commit's deploy cancels the older run (only its wait: ECS carries on) and
+supersedes its rollout. A run that ends green has seen every running task on an image that includes its commit, by tag
+and by ECR digest; the run's title names the commit it deploys (the run list's commit column shows main's head when CI
+finished instead).
 
 ### CI test isolation
 
