@@ -8,71 +8,58 @@ import { fileURLToPath } from "node:url";
 
 const sha = "a".repeat(40);
 const head = "b".repeat(40);
-const commit = "c".repeat(40);
-const tree = "d".repeat(40);
-
-type Options = { event?: string; paths?: string[]; apiFailure?: boolean; success?: boolean; artifact?: boolean; sameTree?: boolean; sameHead?: boolean; expired?: boolean; fork?: boolean; wrongWorkflow?: boolean; greenGate?: boolean; olderRun?: boolean; secondPage?: boolean };
+type Options = { event?: string; paths?: string[]; apiFailure?: boolean; draft?: boolean; selectorFailure?: boolean };
 
 function changes(options: Options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ci-changes-"));
   try {
-    writeFileSync(join(dir, "event.json"), JSON.stringify({ pull_request: { base: { sha }, head: { sha: head } } }));
+    // The event says the opposite of the PR's live state: only the live state counts.
+    writeFileSync(join(dir, "event.json"), JSON.stringify({ pull_request: { base: { sha }, head: { sha: head }, number: 7, draft: !options.draft } }));
     writeFileSync(join(dir, "git"), `#!/usr/bin/env bash
 case "$1" in
   fetch) exit 0 ;;
   diff) printf '%s' '${(options.paths ?? ["src/server.ts"]).join("|")}' | tr '|' '\\0' ;;
-  rev-parse) echo '${tree}' ;;
 esac
 `, { mode: 0o755 });
-    const artifact = { id: 43, expired: options.expired ?? false, workflow_run: { id: 42 } };
-    const artifacts = options.olderRun ? [{ ...artifact, workflow_run: { id: 41 } }, artifact] : [artifact];
     writeFileSync(join(dir, "gh"), `#!/usr/bin/env bash
 ${options.apiFailure ? "exit 1" : ""}
 case "$*" in
-  *artifacts/43/zip*) ${options.artifact === false ? "exit 1" : `cat '${dir}/artifact.zip'`} ;;
-  *artifacts\?*)
-    ${options.secondPage ? `if [[ "$*" == *page=1 ]]; then echo '${JSON.stringify({ artifacts: Array.from({ length: 100 }, () => ({ ...artifact, expired: true })) })}'; else echo '${JSON.stringify({ artifacts })}'; fi` : `echo '${JSON.stringify({ artifacts })}'`} ;;
-  */jobs*) echo '${JSON.stringify({ jobs: [{ name: "CI success", conclusion: options.greenGate === false ? "failure" : "success" }] })}' ;;
-  */runs/41*) echo '{"conclusion":"failure"}' ;;
-  */runs/42*) echo '${JSON.stringify({ event: "pull_request", conclusion: options.success === false ? "failure" : "success", path: options.wrongWorkflow ? ".github/workflows/other.yml" : ".github/workflows/ci.yml", head_sha: head, run_attempt: 2, head_repository: { full_name: options.fork ? "someone/run" : "qaml-ai/run" } })}' ;;
+  *pulls/7*) echo '${options.draft ? "true" : "false"}' ;;
   *) exit 1 ;;
 esac
 `, { mode: 0o755 });
-    writeFileSync(join(dir, "merge.json"), JSON.stringify({ tree: options.sameTree === false ? sha : tree, commit, head: options.sameHead === false ? sha : head, pr: 1 }));
-    assert.equal(spawnSync("zip", ["-q", "artifact.zip", "merge.json"], { cwd: dir }).status, 0);
+    if (options.selectorFailure) writeFileSync(join(dir, "node"), "#!/usr/bin/env bash\nexit 1\n", { mode: 0o755 });
     const result = spawnSync("bash", [fileURLToPath(new URL("ci-changes.sh", import.meta.url))], {
       env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, GITHUB_OUTPUT: join(dir, "output"), GITHUB_EVENT_PATH: join(dir, "event.json"), GITHUB_EVENT_NAME: options.event ?? "push", GITHUB_REF: "refs/heads/main", GITHUB_REPOSITORY: "qaml-ai/run", GITHUB_SHA: sha },
       encoding: "utf8",
     });
-    return result.status === 0 ? readFileSync(join(dir, "output"), "utf8") : "tests=true\nreuse=false\nimage=true\n";
+    if (!options.apiFailure && !options.selectorFailure) assert.equal(result.status, 0, result.stderr);
+    return result.status === 0 ? readFileSync(join(dir, "output"), "utf8") : "tests=true\nimage=true\n";
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-test("tree-indexed reuse requires a trusted successful PR run and successful aggregate check", () => {
-  assert.equal(changes(), "tests=false\nreuse=true\nimage=true\n");
-  for (const options of [{ apiFailure: true }, { success: false }, { artifact: false }, { sameTree: false }, { sameHead: false }, { expired: true }, { fork: true }, { wrongWorkflow: true }, { greenGate: false }]) {
-    assert.equal(changes(options), "tests=true\nreuse=false\nimage=true\n", JSON.stringify(options));
-  }
+test("main always runs everything without looking up PR artifacts", () => {
+  assert.equal(changes({ apiFailure: true }), "tests=true\nimage=true\n");
 });
 
-test("reuse finds older successful identical trees and paginates past expired artifacts", () => {
-  assert.equal(changes({ olderRun: true }), "tests=false\nreuse=true\nimage=true\n");
-  assert.equal(changes({ secondPage: true }), "tests=false\nreuse=true\nimage=true\n");
+test("a live draft API failure falls back to all tests and images", () => {
+  assert.equal(changes({ event: "pull_request", apiFailure: true, paths: ["README.md"] }), "tests=true\nimage=true\n");
 });
 
 test("only allowlisted PR paths skip expensive tests", () => {
-  for (const paths of [["docs/guide.md", "infra/terraform/main.tf", "deploy/selfhost/docker-compose.yml", ".github/ISSUE_TEMPLATE/bug.yml", "README.md"], ["docs/page.ts"]]) {
-    assert.equal(changes({ event: "pull_request", paths }), "tests=false\nreuse=false\nimage=true\n");
+  for (const paths of [["docs/guide.md", "infra/terraform/main.tf", "deploy/selfhost/docker-compose.yml", "README.md"], ["docs/page.ts"]]) {
+    assert.equal(changes({ event: "pull_request", paths }), "tests=false\nimage=true\n");
   }
   for (const paths of [[], ["README.md", "src/server.ts"], [".github/workflows/ci.yml"], ["docs/moved.ts", "src/deleted.ts"]]) {
-    assert.equal(changes({ event: "pull_request", paths }), "tests=true\nreuse=false\nimage=true\n");
+    assert.equal(changes({ event: "pull_request", paths }), "tests=true\nimage=true\n");
   }
+  assert.equal(changes({ event: "pull_request", paths: [".github/ISSUE_TEMPLATE/bug.yml"] }), "tests=true\nimage=false\n");
 });
 
 test("manual runs always test", () => {
-  assert.equal(changes({ event: "workflow_dispatch" }), "tests=true\nreuse=false\nimage=true\n");
+  assert.equal(changes({ event: "workflow_dispatch" }), "tests=true\nimage=true\n");
 });
 
 
@@ -84,4 +71,25 @@ test("PR images follow all Dockerfile and build inputs, including removed paths"
     assert.match(changes({ event: "pull_request", paths }), /image=false\n$/, paths.join(","));
   }
   assert.match(changes({ event: "pull_request", paths: [] }), /image=true\n$/);
+});
+
+test("drafts, by the PR's state when the run starts, run only the fast checks and the test files their change names", () => {
+  assert.equal(changes({ event: "pull_request", draft: true, paths: ["README.md"] }), "tests=false\nimage=false\ndraft=true\nquick=\n");
+  const quick = changes({ event: "pull_request", draft: true, paths: ["src/model.ts", "tests/limits.test.ts", "Dockerfile", "src/nonexistent-module.ts", "docs/model.ts"] });
+  assert.match(quick, /^tests=false\nimage=false\ndraft=true\nquick=tests\/limits\.test\.ts( tests\/model[-.][^ ]*\.test\.ts)+\n$/);
+  assert.ok(quick.includes(" tests/model-errors.test.ts "), "src/model.ts names tests/model-*.test.ts");
+  assert.match(changes({ event: "pull_request", draft: false, paths: ["src/model.ts"] }), /tests=true\nimage=true\n$/);
+});
+
+test("ready PRs publish a JSON selection while draft checks remain name-based", () => {
+  const output = changes({ event: "pull_request", paths: ["tests/agent-host.test.ts"] });
+  const selected = JSON.parse(output.split("selected=")[1].split("\n")[0]) as string[];
+  assert.ok(selected.includes("tests/agent-host.test.ts"));
+  assert.ok(selected.includes("tests/config.test.ts"));
+  assert.ok(!selected.includes("tests/client-lifecycle.test.ts"));
+  assert.match(output, /tests=true\nimage=false\n$/);
+});
+
+test("selector errors leave all checks enabled", () => {
+  assert.equal(changes({ event: "pull_request", paths: ["tests/agent-host.test.ts"], selectorFailure: true }), "tests=true\nimage=true\n");
 });

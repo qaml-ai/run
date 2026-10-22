@@ -8,7 +8,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, Storage } from "@earendil-works/pi-durable";
 import { fileAppendLog } from "../shared/append-log.ts";
 import { Transcript, type TranscriptRecord } from "../src/transcript.ts";
-import { importLegacyTranscript } from "../src/pi-durable/migration.ts";
+import { seedWithoutGeneration } from "./fixtures/pi-seed-before-322.ts";
 import { projectPiRecords, projectPiTranscript, reconcilePiTranscript } from "../src/pi-durable/projection.ts";
 import { openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts";
 import { testDatabase } from "./database.ts";
@@ -23,7 +23,7 @@ for (const mode of ["sqlite", "postgres"] as const) {
     const storage = await openPiStorage(options);
     try {
       const records: TranscriptRecord[] = [{ t: "message", message: user("legacy") }];
-      const migration = await importLegacyTranscript({ storage, sessionId: options.sessionId, records });
+      const migration = await seedWithoutGeneration(storage, options.sessionId, records);
       const native = await storage.mintId<EntryId>();
       await storage.commit([{ type: "entry", value: { id: native, conversationId: root, kind: "pi.user", model: [user("committed"), user("second in entry")] as any } }], context);
       const before = mode === "sqlite" ? await readFile(join(directory, "pi-durable.sqlite")) : undefined;

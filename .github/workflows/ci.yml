@@ -23,47 +23,72 @@ jobs:
       pull-requests: read
     outputs:
       tests: ${{ steps.changes.outputs.tests || 'true' }}
-      reuse: ${{ steps.changes.outputs.reuse || 'false' }}
+      selected: ${{ steps.changes.outputs.selected }}
       image: ${{ steps.changes.outputs.image || 'true' }}
-      shards: ${{ (github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '[1,2,3,4,5]' || '[1,2,3,4,5,6,7,8,9,10,11,12]' }}
-      shard-count: ${{ (github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '5' || '12' }}
+      # A draft runs only the fast checks and its changed test files; marking it ready runs the affected suite.
+      draft: ${{ steps.changes.outputs.draft || 'false' }}
+      quick: ${{ steps.changes.outputs.quick }}
+      # Blacksmith for this repository's PRs, main and dispatches; forks stay on GitHub's runners.
+      blacksmith: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+      - uses: ./.github/actions/node-dependencies
+        if: github.event_name == 'pull_request'
       - id: changes
-        # API, artifact or git uncertainty always runs the full suite.
+        # API, selector or git uncertainty always runs the full suite.
         continue-on-error: true
         run: bash scripts/ci-changes.sh
         env: { GH_TOKEN: "${{ github.token }}" }
   checks:
     needs: changes
-    # Only a proven successful PR run of this exact main tree can replace these checks.
-    if: needs.changes.outputs.reuse != 'true'
     # Fail fast: each job here takes 1-4 minutes, so anything near this limit is hung.
     timeout-minutes: 15
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-8vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
+    # Under a minute on four vCPUs, beside test shards that take two to three.
+    runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/node-dependencies
-      - name: Test ECS deployment rollback handling (offline)
-        run: python3 infra/test-ecs-deploy.py
+      - name: Test the ECS deploy script against a simulated ECS (offline)
+        run: node --experimental-strip-types --disable-warning=ExperimentalWarning --test infra/ecs-deploy.test.ts
       - run: npm run typecheck
       - run: npm run test:ui
       - run: npm run build:console && npm run build
+  quick:
+    # A draft's own test files, and those named after the source files it changes (src/foo.ts: tests/foo*.test.ts).
+    name: changed tests
+    needs: changes
+    if: needs.changes.outputs.quick != ''
+    timeout-minutes: 15
+    runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/node-dependencies
+      - uses: ./.github/actions/v8-exec
+      - name: Start test Postgres
+        id: postgres
+        uses: ./.github/actions/test-postgres
+      - run: mkdir -p test-timings && node --experimental-strip-types --disable-warning=ExperimentalWarning --test-timeout=240000 --import ./scripts/test-worker-database.ts scripts/test-files.ts test-timings/quick.json test-timings/quick.failed ${{ needs.changes.outputs.quick }}
+        env:
+          TEST_DATABASE_PER_FILE: "true"
+          TEST_CONCURRENCY: ${{ needs.changes.outputs.blacksmith == 'true' && '4' || '2' }}
+          AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
+      - name: Stop test Postgres
+        if: always() && steps.postgres.outputs.container != ''
+        run: docker rm -f '${{ steps.postgres.outputs.container }}'
   python:
     timeout-minutes: 15
     # Python starts a runtime and needs the sandbox executable; restore it without waiting for another builder.
     needs: changes
     if: needs.changes.outputs.tests == 'true'
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-8vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
+    # Eight vCPUs: on four the suite took 180 s instead of 134 s, past the test shards.
+    runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/v8-exec
       - name: Start test Postgres
         id: postgres
         uses: ./.github/actions/test-postgres
-        with:
-          image: ${{ github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && 'public.ecr.aws/docker/library/postgres:16-alpine' || 'postgres:16-alpine' }}
       - uses: ./.github/actions/node-dependencies
       - uses: actions/setup-python@v5
         id: python
@@ -89,20 +114,23 @@ jobs:
   test:
     # Bound a hung shard while allowing the flaky-file rerun (scripts/test-shard.ts).
     timeout-minutes: 15
-    # Duration-balanced files, five shards per mode; 8-vCPU Blacksmith runners run eight files at once.
-    # Drafts, forks and self-hosted runners retain twelve shards per mode and two-file concurrency.
-    name: test (${{ matrix.hosting }} ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }})
+    # Duration-balanced files, five shards per mode; 8-vCPU Blacksmith runners run eight files at once, forks two.
+    # The shards are CPU-bound: on four vCPUs they took 170-450 s against 115-165 s on eight, at no lower cost.
+    name: test (${{ matrix.hosting }} ${{ matrix.shard }}/5)
     needs: changes
     if: needs.changes.outputs.tests == 'true'
     strategy:
       # One failed PR shard makes the PR red; main and manual full runs retain every result.
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        hosting: [process, inline]
-        shard: ${{ fromJSON(needs.changes.outputs.shards) }}
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-8vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
+        hosting: ${{ fromJSON(github.event_name == 'pull_request' && '["process"]' || '["process","inline"]') }}
+        shard: [1, 2, 3, 4, 5]
+    runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     env:
       AGENT_HOSTING: ${{ matrix.hosting }}
+      TEST_FILES: ${{ needs.changes.outputs.selected }}
+      # Sim nodes host inline internally, even in a PR process shard.
+      TEST_INCLUDE_SIM: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/node-dependencies
@@ -110,12 +138,10 @@ jobs:
       - name: Start test Postgres
         id: postgres
         uses: ./.github/actions/test-postgres
-        with:
-          image: ${{ github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && 'public.ecr.aws/docker/library/postgres:16-alpine' || 'postgres:16-alpine' }}
-      - run: npm run test:shard -- ${{ matrix.shard }}/${{ needs.changes.outputs.shard-count }}
+      - run: npm run test:shard -- ${{ matrix.shard }}/5
         env:
           TEST_DATABASE_PER_FILE: "true"
-          TEST_CONCURRENCY: ${{ (github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')) && '2' || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '8' || '2') }}
+          TEST_CONCURRENCY: ${{ needs.changes.outputs.blacksmith == 'true' && '8' || '2' }}
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
@@ -127,10 +153,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.tests == 'true'
     # The deterministic simulator (tests/sim, npm run sim): ten fixed seeds, each run twice and required to replay to the
-    # same trace. Fresh seeds explore beyond them after the deploy (sim-seeds.yml), so finding a new one never holds a
+    # same trace. Fresh seeds explore beyond them every night (sim-seeds.yml), so finding a new one never holds a
     # deploy back. Seeds are CPU-bound, one process per vCPU. A failing seed prints the commands that reproduce it, and
     # its plan, history and logs are kept as the sim-failures artifact (npm run sim -- --replay <file>).
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
+    runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -142,7 +168,7 @@ jobs:
         with: { name: sim-failures, path: sim-failures/, if-no-files-found: ignore }
   image:
     needs: changes
-    # PRs smoke-test amd64 only when image inputs change; main always covers both architectures.
+    # PRs smoke-test amd64 only when image inputs change (never on drafts); main always covers both architectures.
     if: github.event_name != 'pull_request' || needs.changes.outputs.image == 'true'
     # The deployed image installs only runtime dependencies; prove it migrates its database, starts and serves,
     # with js_exec and file parsing confined by agent-launcher. Keep native ARM64 (production) and x86 coverage.
@@ -150,12 +176,11 @@ jobs:
       fail-fast: false
       matrix:
         arch: ${{ fromJSON(github.event_name == 'pull_request' && '["amd64"]' || '["amd64","arm64"]') }}
-    runs-on: ${{ matrix.arch == 'arm64' && ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && 'blacksmith-16vcpu-ubuntu-2404-arm' || 'ubuntu-24.04-arm') || fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-16vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
+    runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && format('blacksmith-16vcpu-ubuntu-2404{0}', matrix.arch == 'arm64' && '-arm' || '') || (matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest') }}
     timeout-minutes: 20
     services:
       postgres:
-        # Hosted runners have a Docker Hub pull-limit exemption; ECR Public can throttle them.
-        image: ${{ matrix.arch == 'amd64' && github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && 'public.ecr.aws/docker/library/postgres:16-alpine' || 'postgres:16-alpine' }}
+        image: postgres:16-alpine
         env: { POSTGRES_PASSWORD: test }
         ports: ["127.0.0.1::5432"]
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
@@ -163,14 +188,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/node-dependencies
       - run: npm run build:console
-      - if: ${{ !((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && (matrix.arch == 'arm64' || !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')))) }}
+      - if: needs.changes.outputs.blacksmith != 'true'
         uses: docker/setup-buildx-action@v3
         # Hosted fallback runners can pull Docker Hub directly; avoid GCR's shared quota.
         with: { driver-opts: "image=docker.io/moby/buildkit:v0.20.2" }
-      - if: ${{ (github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && (matrix.arch == 'arm64' || !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted'))) }}
+      - if: needs.changes.outputs.blacksmith == 'true'
         uses: useblacksmith/setup-docker-builder@v2
         with: { cache-key: "run-image-${{ matrix.arch }}" }
-      - if: ${{ !((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && (matrix.arch == 'arm64' || !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted')))) }}
+      - if: needs.changes.outputs.blacksmith != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -183,7 +208,7 @@ jobs:
           tags: agent-runtime:ci
           cache-from: type=gha,scope=image-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
-      - if: ${{ (github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && (matrix.arch == 'arm64' || !(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted'))) }}
+      - if: needs.changes.outputs.blacksmith == 'true'
         uses: useblacksmith/build-push-action@v2
         with:
           context: .
@@ -249,7 +274,10 @@ jobs:
       - if: steps.image.outputs.pushed != 'true'
         uses: useblacksmith/setup-docker-builder@v2
         with: { cache-key: run-image-arm64 }
+      # A hand-run Deploy (a hotfix) may push this tag first; tags are immutable, so this push then fails and the
+      # next step finds that image.
       - if: steps.image.outputs.pushed != 'true'
+        continue-on-error: true
         uses: useblacksmith/build-push-action@v2
         with:
           context: .
@@ -260,12 +288,12 @@ jobs:
           provenance: false
           push: true
           tags: ${{ steps.ecr.outputs.registry }}/camelai-agent-runtime:${{ steps.image.outputs.tag }}
+      - if: steps.image.outputs.pushed != 'true'
+        run: aws ecr describe-images --repository-name camelai-agent-runtime --image-ids imageTag="${GITHUB_SHA::12}" >/dev/null
   docs:
     needs: changes
-    # Only a proven successful PR run of this exact main tree can replace these checks.
-    if: needs.changes.outputs.reuse != 'true'
     timeout-minutes: 15
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && vars.CI_RUNNER_LABELS || ((github.ref == 'refs/heads/main' || (github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft)) && '["blacksmith-8vcpu-ubuntu-2404"]' || '["ubuntu-latest"]')) }}
+    runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/v8-exec
@@ -275,7 +303,7 @@ jobs:
         with:
           image: postgres:16-alpine
       - uses: ./.github/actions/node-dependencies
-      - run: node --experimental-strip-types --test scripts/ci-changes.test.ts scripts/ci-workflow.test.ts scripts/test-files.test.ts tests/docs.test.ts tests/openapi.test.ts tests/openapi-sources.test.ts
+      - run: node --experimental-strip-types --test scripts/ci-changes.test.ts scripts/ci-workflow.test.ts scripts/test-select.test.ts scripts/test-shard.test.ts scripts/test-files.test.ts tests/docs.test.ts tests/openapi.test.ts tests/openapi-sources.test.ts
         env:
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
       - name: Stop test Postgres
@@ -284,23 +312,22 @@ jobs:
   ci:
     name: CI success
     timeout-minutes: 5
-    if: always()
-    needs: [changes, checks, python, test, sim, image, publish, docs]
+    # Always report a result on ready PRs, including when a dependency failed or was cancelled.
+    if: always() && needs.changes.outputs.draft != 'true'
+    needs: [changes, checks, quick, python, test, sim, image, publish, docs]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     steps:
       - name: Require successful checks or intentional skips
         env: { RESULTS: '${{ toJSON(needs) }}' }
         run: |
           echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")'
           echo "$RESULTS" | jq -e '.changes.result == "success"'
-          if [ '${{ needs.changes.outputs.reuse }}' = true ]; then
-            # Reuse is valid only on main pushes, with all replaced jobs intentionally skipped.
-            test '${{ github.event_name }}' = push
-            test '${{ github.ref }}' = refs/heads/main
-            echo "$RESULTS" | jq -e '[.checks, .python, .test, .sim, .docs] | all(.result == "skipped")'
-          else
-            echo "$RESULTS" | jq -e '[.checks, .docs] | all(.result == "success")'
-          fi
+          echo "$RESULTS" | jq -e '.quick.result == "skipped"'
+          echo "$RESULTS" | jq -e '[.checks, .docs] | all(.result == "success")'
           if [ '${{ github.event_name }}' = pull_request ] && [ '${{ needs.changes.outputs.image }}' = false ]; then
             echo "$RESULTS" | jq -e '.image.result == "skipped"'
           else
@@ -309,22 +336,19 @@ jobs:
           if [ '${{ github.event_name }}' = push ] && [ '${{ github.ref }}' = refs/heads/main ]; then
             echo "$RESULTS" | jq -e '.publish.result == "success"'
           fi
-          if [ '${{ needs.changes.outputs.tests }}' = true ]; then
+          if [ '${{ needs.changes.outputs.tests }}' = true ] || [ '${{ github.event_name }}' != pull_request ]; then
             echo "$RESULTS" | jq -e '[.python, .test, .sim] | all(.result == "success")'
           fi
-      - uses: actions/checkout@v4
-        if: github.event_name == 'pull_request'
-      - name: Record the tested merge tree
-        id: tested-tree
-        if: github.event_name == 'pull_request'
+      - name: Identify failed main commit
+        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          tree=$(git rev-parse 'HEAD^{tree}')
-          echo "tree=$tree" >> "$GITHUB_OUTPUT"
-          jq -n --arg tree "$tree" --arg commit "$(git rev-parse HEAD)" --arg head "$PR_HEAD" --argjson pr "$PR_NUMBER" '{tree:$tree,commit:$commit,head:$head,pr:$pr}' > merge.json
-      - uses: actions/upload-artifact@v4
-        if: github.event_name == 'pull_request'
-        # A successful rerun replaces the same run's proof instead of failing with an artifact-name conflict.
-        with: { name: "tested-tree-${{ steps.tested-tree.outputs.tree }}", path: merge.json, retention-days: 14, overwrite: true }
+          prs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '[.[] | "#\(.number) \(.html_url)"] | join(", ")') || prs="unavailable (API error)"
+          green=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=100" | jq -rs --argjson current "$GITHUB_RUN_NUMBER" '[.[].workflow_runs[] | select(.run_number < $current)] | max_by(.run_number).head_sha // "none found"') || green="unavailable (API error)"
+          {
+            echo "### Main CI failed"
+            echo "Commit: $GITHUB_SHA"
+            echo "PR: ${prs:-none (direct push)}"
+            echo "Last green main SHA: $green"
+          } >> "$GITHUB_STEP_SUMMARY"

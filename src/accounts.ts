@@ -1,3 +1,4 @@
+import type { AnthropicFederation } from "./anthropic-federation.ts";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { transaction, type Db, type Sql } from "./db.ts";
 import type { Tenants } from "./tenants.ts";
@@ -62,6 +63,7 @@ const AZURE = "azure";
 
 export class Accounts {
   readonly tenants: Tenants;
+  readonly anthropicFederation?: AnthropicFederation;
   readonly db: Db;
   private readonly secretsKey?: Buffer;
   /** The platform's Azure OpenAI resource (azure-openai.ts): its chat deployments are the platform's `azure` provider. */
@@ -79,8 +81,9 @@ export class Accounts {
   private readonly spend = new Map<string, { month: string; cost: number; until: number }>();
   private readonly spendReads = new Map<string, Promise<number>>();
 
-  constructor(options: { tenants: Tenants; db: Db; secretsKey?: string; pricing?: Pricing; publicUrl?: string; stripe?: Stripe; maxAgentsPerTenant?: number; azureOpenAI?: AzureOpenAI }) {
+  constructor(options: { tenants: Tenants; db: Db; secretsKey?: string; pricing?: Pricing; publicUrl?: string; stripe?: Stripe; maxAgentsPerTenant?: number; azureOpenAI?: AzureOpenAI; anthropicFederation?: AnthropicFederation }) {
     this.tenants = options.tenants;
+    this.anthropicFederation = options.anthropicFederation;
     this.azure = options.azureOpenAI;
     this.db = options.db;
     this.billing = new Billing({ db: this.db, tenants: this.tenants, pricing: options.pricing, publicUrl: options.publicUrl, stripe: options.stripe, maxAgentsPerTenant: options.maxAgentsPerTenant, pending: tenant => this.pendingCharges(tenant), flush: () => this.flushUsage() });
@@ -267,7 +270,7 @@ export class Accounts {
    * The key an agent uses: the tenant's own key, else one an admin configured, else, for a prepaid or an
    * admin tenant (`usesPlatformKeys`), the platform's. The tenant's own amazon-bedrock key comes with its `region`.
    */
-  async providerKey(tenant: string, provider: string): Promise<{ key: string; source: KeySource; region?: string } | undefined> {
+  async providerKey(tenant: string, provider: string): Promise<{ key: string; source: KeySource; region?: string; bearer?: true } | undefined> {
     // Azure's models are the platform's only: a key alone would not reach a deployment.
     if (provider === AZURE) { const key = this.platformKey(provider); return key && await this.usesPlatformKeys(tenant) ? { key, source: "platform" } : undefined; }
     const stored = this.secretsKey && validTenant(tenant) ? (await this.db.query("select sealed, region from provider_keys where tenant = $1 and provider = $2", [tenant, provider])).rows[0] : undefined;
@@ -275,7 +278,13 @@ export class Accounts {
     const admin = this.tenants.apiKey(tenant, provider);
     if (admin) return { key: admin, source: "admin" };
     const platform = this.platformKey(provider);
-    if (platform && await this.usesPlatformKeys(tenant)) return { key: platform, source: "platform" };
+    if ((platform || (provider === "anthropic" && this.anthropicFederation)) && await this.usesPlatformKeys(tenant)) {
+      if (provider === "anthropic" && this.anthropicFederation) {
+        const { apiKey, ...auth } = await this.anthropicFederation.credentials(platform);
+        return { key: apiKey, source: "platform", ...auth };
+      }
+      return { key: platform!, source: "platform" };
+    }
     return undefined;
   }
 
@@ -283,7 +292,7 @@ export class Accounts {
 
   async keyStatus(tenant: string): Promise<KeyStatus[]> {
     const statuses = new Map<string, KeyStatus>();
-    if (await this.usesPlatformKeys(tenant)) for (const provider of [...this.tenants.platformProviders(), ...this.platformKey(AZURE) ? [AZURE] : []]) statuses.set(provider, { provider, source: "platform" });
+    if (await this.usesPlatformKeys(tenant)) for (const provider of [...this.tenants.platformProviders(), ...this.anthropicFederation ? ["anthropic"] : [], ...this.platformKey(AZURE) ? [AZURE] : []]) statuses.set(provider, { provider, source: "platform" });
     for (const provider of this.tenants.providers(tenant)) statuses.set(provider, { provider, source: "admin" });
     for (const key of await this.storedKeys(tenant)) statuses.set(key.provider, { provider: key.provider, source: "tenant", last4: key.last4, setAt: key.set_at, ...(key.region ? { region: key.region } : {}) });
     return [...statuses.values()].sort((a, b) => a.provider.localeCompare(b.provider));
@@ -298,7 +307,7 @@ export class Accounts {
     const platform = await this.usesPlatformKeys(tenant);
     const endpoints = this.tenants.modelEndpoints(tenant) ?? {};
     return (provider, model) => provider === AZURE ? platform && !!this.platformKey(AZURE) && (model === undefined || !!this.azureDeployment(model))
-      : own.has(provider) || !!this.tenants.apiKey(tenant, provider) || (platform && !!this.tenants.platformKey(provider)) || Object.hasOwn(endpoints, provider);
+      : own.has(provider) || !!this.tenants.apiKey(tenant, provider) || (platform && (!!this.tenants.platformKey(provider) || (provider === "anthropic" && !!this.anthropicFederation))) || Object.hasOwn(endpoints, provider);
   }
 
   /** The platform's key for `provider`: the tenants file's, and azure's when the platform's Azure OpenAI resource deploys chat models (azure-openai.ts). */

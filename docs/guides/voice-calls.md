@@ -60,7 +60,7 @@ Discord allows one voice connection per user and server: a second `POST` for the
 | `subject`, `context`, `keyScope` | whose usage it is (`usage.recorded`'s `subject`), your claims in its `context`, and a [key scope](models-and-keys.md#key-scopes) whose key for the realtime provider is used |
 | `bucket` | with end-user credits on: which of the subject's buckets pays |
 | `deliver` | `agent`: the bot's agent, which the model asks for anything beyond talk (`ask_agent`); `webhooks` (default `true`): `voice.*` events to your endpoints |
-| `language`, `prompt` | the language spoken (`en`, `pt-BR`; detected when left out), and words to expect (names, jargon), for the transcripts |
+| `language`, `prompt` | the language spoken (`en`, `pt-BR`; detected when left out), and words to expect (names, jargon), for the transcripts. OpenAI transcription uses the ISO-639-1 base language (`pt-BR` → `pt`, `es-ES` → `es`); invalid or unknown codes are omitted for auto-detection |
 | `addressing` | which turns are the bot's in a group call: `{names, mode, conversationMs}`; see [who it answers](#who-it-answers) (default: every turn) |
 | `endOfTurn` | how a speaker's turn ends: `smart` (the default where the runtime has the models) or `silence`, or `{mode, commitMs, threshold, maxSilenceMs}`; see [turns](#turns) |
 | `silenceMs` | with `endOfTurn: silence`: silence that ends a turn: 200 to 5000, default 800 |
@@ -103,8 +103,8 @@ await agents.voice.update(session.id, { discord: { endpoint: voiceServer.endpoin
 send the next one) and `token`, and `ignoreUserIds`, `metadata` and `speakers`. A session whose connection was refused (the bot was
 disconnected or kicked, or Discord stopped taking its credentials) waits 15 seconds for new ones, then ends.
 
-When Discord stops taking the credentials (its voice session ended), only your gateway can get new ones, so camelRun
-says so at once: `voice.session.error` with `code: "credentials_needed"` (and `waitMs`, how long it waits). Send OP 4
+When Discord stops taking the credentials (its voice session ended), or their voice server keeps refusing reconnects
+(one that is down answers 521 or 522), only your gateway can get new ones, so camelRun says so at once: `voice.session.error` with `code: "credentials_needed"` (and `waitMs`, how long it waits). Send OP 4
 for the same channel again, and forward what Discord answers (`VOICE_STATE_UPDATE`'s `session_id`,
 `VOICE_SERVER_UPDATE`'s `endpoint` and `token`) with a PATCH: the session reconnects and goes on. A session moving
 between camelRun's nodes keeps its credentials: the node letting it go drops its voice socket rather than closing it,
@@ -377,8 +377,8 @@ your own key the provider bills you directly; the usage record still carries the
 nothing.
 
 A session starts only when the account may spend (402 `SPEND_LIMIT` otherwise). An account that runs out during a call
-ends it: `reason: "budget"`, `limit: "tenant"`. With end-user credits on, a subject with nothing left is refused at the
-start (402 `END_USER_CREDIT`), each answer holds $0.05 of the subject's credit before it is asked for and settles at
+ends it: `reason: "budget"`, `limit: "tenant"`. With end-user credits on, a subject with less than an answer's hold
+left ($0.05 for a realtime brain; anything for a listening one) is refused at the start (402 `END_USER_CREDIT`), each answer holds $0.05 of the subject's credit before it is asked for and settles at
 what it cost, and running out ends the session (`limit: "end_user"`).
 
 ## Privacy and your duties

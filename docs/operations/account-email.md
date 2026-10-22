@@ -38,7 +38,7 @@ the operator's to set (`PUT /v1/tenants/{id}/password`, `infra/tenant.sh set-pas
   Google account signed up with gets no second account: its owner is mailed to sign in with Google and add a
   password on the Account page. GitHub addresses are not known to the runtime, so an email sign-up with one is
   an account of its own. An address that already signs in to one account cannot be added to another.
-- **Credit**: an email sign-up is prepaid like a Google one, with no automatic starting credit; a card check
+- **Credit**: an email sign-up is prepaid like a Google one, with no automatic starting credit; a card check, when offered,
   unlocks it ([Billing](billing.md)). Only GitHub sign-ups get it automatically, on account age.
 - **Limits** ([Limits](../reference/limits.md#rate-limits)): requests that mail a link, per client address an
   hour (`AGENT_RATE_LIMIT_EMAIL_REQUESTS_PER_IP`, 10 behind Cloudflare), and mails per address a day

@@ -17,7 +17,7 @@ import { bucketInput, DEFAULT_BUCKET } from "./end-user-credits.ts";
 import { DEFAULT_ADDRESSING, Floor, type AddressingPolicy } from "./voice/turns/floor.ts";
 import { BARGE_IN_LIMITS, DEFAULT_BARGE_IN, type BargeInPolicy } from "./voice/echo-guard.ts";
 import type { TurnModels } from "./voice/turns/inference.ts";
-import { RealtimeBrain, ASK_AGENT, STAY_SILENT, realtimeInstructions, type BrainHooks } from "./voice/realtime/brain.ts";
+import { RealtimeBrain, ASK_AGENT, STAY_SILENT, REALTIME_LIMITS, realtimeInstructions, type BrainHooks } from "./voice/realtime/brain.ts";
 import { realtimePrice, REALTIME_PROVIDERS, REALTIME_TRANSCRIPTION, realtimeVoice, type RealtimeCredentials, type RealtimeProvider, type RealtimeProviderId } from "./voice/realtime/provider.ts";
 
 /**
@@ -99,7 +99,7 @@ export const END_REASONS = ["requested", "empty", "idle", "max_duration", "budge
 export type EndReason = typeof END_REASONS[number];
 /** Why a session ended, with what the reason needs: which limit for `budget`, a short detail for `error`. */
 /** How a session ended; with reason budget, whose credit (`limit`), and for an end user's why (one of CREDIT_REASONS) and which bucket. */
-export type Ending = { reason: EndReason; limit?: "tenant" | "end_user"; endUserReason?: string; bucket?: string; detail?: string };
+export type Ending = { reason: EndReason; limit?: "tenant" | "end_user"; endUserReason?: string; bucket?: string; detail?: string; error?: string };
 
 /** A session's settings, as created (and some patched): stored as they are read back. */
 export type VoiceOptions = {
@@ -360,7 +360,8 @@ function discordInput(value: unknown, endpoints: RegExp, partial = false): Parti
  * settled with what it cost. Undefined answers: the tenant does not meter end users.
  */
 export interface VoiceCredit {
-  refusal(tenant: string, endUser: string, bucket: string): Promise<{ reason: string; message: string } | undefined>;
+  /** With `usd`, also refused when the subject cannot cover that much (a realtime brain's first response hold). */
+  refusal(tenant: string, endUser: string, bucket: string, options?: { usd?: number }): Promise<{ reason: string; message: string } | undefined>;
   /** Throws 402 END_USER_CREDIT (`details.reason`) when the subject cannot cover `usd`. */
   hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata?: Record<string, unknown>): Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
 }
@@ -615,7 +616,9 @@ export class VoiceSessions {
     if (options.endOfTurn?.mode === "smart" && !this.options.turnModels) throw new HttpError(404, "Smart end of turn is not enabled on this runtime: use endOfTurn silence");
     if (options.deliver.agent && !await this.options.agentOwned(options.deliver.agent, tenant)) throw new HttpError(404, "Unknown agent in deliver.agent");
     await this.options.admit(tenant);
-    const refused = options.subject !== undefined ? await this.options.credit?.refusal(tenant, options.subject, options.bucket ?? DEFAULT_BUCKET) : undefined;
+    // A realtime brain holds REALTIME_LIMITS.holdUsd before each response: a subject with less could join, then end at
+    // its first answer (budget).
+    const refused = options.subject !== undefined ? await this.options.credit?.refusal(tenant, options.subject, options.bucket ?? DEFAULT_BUCKET, listen ? {} : { usd: REALTIME_LIMITS.holdUsd }) : undefined;
     if (refused) throw new HttpError(402, refused.message, "END_USER_CREDIT", { endUser: options.subject, bucket: options.bucket ?? DEFAULT_BUCKET, reason: refused.reason });
     if (listen) {
       const transcriber = this.options.transcriber!;
@@ -1198,7 +1201,7 @@ export class VoiceSessions {
         where id = $1 and state <> 'ended' returning *`, [id, ending.reason, now, JSON.stringify({ ...options, ...(ending.limit || ending.endUserReason ? { ending } : {}) })]);
       const row = rows[0] as Row | undefined;
       if (row?.options.deliver.webhooks) await enqueueEvents(sql, [this.event(row, "voice.session.ended", {
-        reason: ending.reason, ...(ending.limit ? { limit: ending.limit } : {}), ...(ending.endUserReason ? { endUserReason: ending.endUserReason } : {}), ...(ending.bucket ? { bucket: ending.bucket } : {}),
+        reason: ending.reason, ...(ending.detail ? { detail: ending.detail } : {}), ...(ending.error ? { error: ending.error } : {}), ...(ending.limit ? { limit: ending.limit } : {}), ...(ending.endUserReason ? { endUserReason: ending.endUserReason } : {}), ...(ending.bucket ? { bucket: ending.bucket } : {}),
         startedAt: num(row.started_at), endedAt: now, utterances: row.utterances, speechSeconds: row.speech_seconds, costUsd: Number(row.cost) / 1_000_000,
       }, `voice:${id}:ended`)]);
       return row;
@@ -1341,8 +1344,8 @@ export class VoiceSessions {
           data: () => ({ speechId: spoke.id, reason: spoke.reason, ...(spoke.by ? { by: spoke.by } : {}), seconds: spoke.seconds, costUsd: spoke.costUsd }),
         });
       },
-      failed: detail => {
-        void this.finish(this.held.get(held.id) === held ? held : undefined, held.id, { reason: "error", detail })
+      failed: (detail, error) => {
+        void this.finish(this.held.get(held.id) === held ? held : undefined, held.id, { reason: "error", detail, ...(error ? { error } : {}) })
           .catch(error => console.error(JSON.stringify({ type: "voice_finish_failed", session: held.id, error: safeError(error) })));
       },
       log,

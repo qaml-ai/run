@@ -10,8 +10,9 @@ import { discordGrant, speak, until, voiceCluster } from "./voice-fakes.ts";
 function fakeCredit(balances: Record<string, number>) {
   const log: string[] = [];
   const credit: VoiceCredit = {
-    async refusal(_tenant, endUser) {
-      return (balances[endUser] ?? 0) > 0 ? undefined : { reason: "balance", message: `${endUser} has no credit left` };
+    async refusal(_tenant, endUser, _bucket, { usd = 0 } = {}) {
+      const left = balances[endUser] ?? 0;
+      return left > 0 && left >= usd ? undefined : { reason: "balance", message: `${endUser} has too little credit left` };
     },
     async hold(_tenant, endUser, bucket, usd, call, metadata) {
       if ((balances[endUser] ?? 0) < usd) throw new HttpError(402, `${endUser} has no credit left`, "END_USER_CREDIT", { endUser, bucket, reason: "balance" });
@@ -35,6 +36,15 @@ test("a session for an end user with no credit is refused; one without a subject
   await assert.rejects(a.voice.create("alice", { discord: discordGrant(), subject: "rich", bucket: "not a bucket!" }), (error: HttpError) => error.status === 400);
   assert.equal((await a.voice.create("alice", { discord: discordGrant(), subject: "rich" })).subject, "rich");
   await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000055" }) });
+});
+
+test("a realtime session is refused when its subject has less than one response's hold left", async t => {
+  const { credit } = fakeCredit({ short: REALTIME_LIMITS.holdUsd / 2, enough: REALTIME_LIMITS.holdUsd });
+  const { node } = await voiceCluster(t, { credit });
+  const a = await node("http://a");
+  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), subject: "short", bucket: "bot:7" }),
+    (error: HttpError) => error.status === 402 && error.code === "END_USER_CREDIT" && error.details?.reason === "balance");
+  assert.equal((await a.voice.create("alice", { discord: discordGrant(), subject: "enough", bucket: "bot:7" })).subject, "enough");
 });
 
 /** A response's usage that costs $0.04 on gpt-realtime-2.1 (625 output audio tokens at $64 a million). */
@@ -116,4 +126,7 @@ test("with the runtime's end-user credits: a call's responses are held, posted t
   await until(async () => (await a.voice.get("alice", created.id)).state === "ended", "the end");
   const session = await a.voice.get("alice", created.id);
   assert.deepEqual([session.endReason, session.limit, session.endUserReason], ["budget", "end_user", "balance"]);
+  // $0.02 left, less than a response holds: a new call is refused as it starts, not ended at its first answer.
+  await assert.rejects(a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000067" }), subject: "ada", bucket: "bot:7" }),
+    (error: HttpError) => error.status === 402 && error.code === "END_USER_CREDIT" && error.details?.reason === "balance");
 });

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { END_USER_CREDIT, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
-import { NativeTranscript } from "./pi-durable/transcript.ts";
+import { dualWriting, hostRetired, NativeTranscript } from "./pi-durable/transcript.ts";
 import { mkdir } from "node:fs/promises";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { convertToLlm } from "./pi-harness/messages.ts";
@@ -11,12 +11,12 @@ import {
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { errorText, IDENTITY_KEY, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
+import { errorText, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import type { AppendLog } from "../shared/append-log.ts";
-import { Transcript, readTranscriptLog, type Backlog, type TranscriptRecord, type TranscriptSnapshot } from "./transcript.ts";
+import { Transcript, readTranscriptLog, type Backlog, type TranscriptRecord } from "./transcript.ts";
 import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
@@ -35,7 +35,11 @@ import { usageMissing } from "./platform-pricing.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
 import { DurableAgent, type DurableAgentOptions } from "./pi-durable/agent.ts";
 import { checkDualRead } from "./pi-durable/dual-read.ts";
-import { LEGACY_CONVERSATION_ID, legacyImportShape, LegacyMigrationDeferred, loadLegacyMigration, readMigrationRecords, type LegacyImportShape } from "./pi-durable/migration.ts";
+import { JournalHistory } from "./pi-durable/history.ts";
+import { metricLine, safeError } from "./metrics.ts";
+import { always } from "./assert.ts";
+import { SESSION_CONVERSATION_ID } from "./pi-durable/seed.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { reconcilePiTranscript } from "./pi-durable/projection.ts";
 
 /** How often an agent reads back from its log what its history backlog could not hold (see `index`). */
@@ -73,8 +77,6 @@ export interface HostIO {
   runLimit(): Promise<RunStop | undefined>;
   /** The agent's transcript, which its supervisor writes. */
   transcript: AppendLog<TranscriptRecord>;
-  /** Process hosting reduces the log on its owner before crossing IPC; inline hosting replays it here. */
-  loadTranscript?(indexed: number | null, bound?: number): Promise<TranscriptSnapshot>;
   /** Native Pi storage stays on the supervisor under the session's ownership claim. */
   piStorage?(): Promise<PiStorage | undefined>;
   /** `tools.search`, answered by the supervisor (which holds the rerankers); without it, code searches here. */
@@ -101,11 +103,20 @@ export interface HostIO {
    * `log` reports mismatches, `throw` also fails the request on an unexpected one (tests, the simulation).
    */
   piDualRead?: "log" | "throw";
+  /**
+   * Tenants whose agents read their history from Pi's journal (AGENT_PI_HISTORY_SOURCE_TENANTS; `*`: every tenant), on
+   * nodes that dual-write it: plans/host-transcript-removal.md, phase 2. The host transcript is still written, and
+   * served wherever the journal disagrees.
+   */
+  historySourceTenants?: string[];
   /** Tenants whose agents' system sections are native Pi sections (AGENT_NATIVE_SECTIONS_TENANTS; `*`: every tenant). */
   nativeSectionsTenants?: string[];
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number>; read(from: number): Promise<Backlog> };
 }
+
+/** A history value the journal does not hold (`served`). */
+const NOT_HELD = Symbol("not held");
 
 /** The least time between an agent's dual reads in `log` mode, past its load's. */
 export const DUAL_READ_INTERVAL_MS = 10 * 60_000;
@@ -143,11 +154,12 @@ export function createAgentHost(hostIO: HostIO) {
   let agent: DurableAgent | undefined;
   let config: AgentConfig;
   /** How this start found the session: on Pi already, or imported from its legacy transcript now (and what that import took). */
-  let migration: { state: "existing" } | { state: "migrated" | "adopted"; from?: LegacyImportShape; archive?: "legacy-log" } | undefined;
   // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
   const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
   const io: HostIO = { ...hostIO, emit: event => { turns.event(event); hostIO.emit(event); } };
   let transcript: Transcript;
+  /** The agent's history as its journal gives it, where reads have moved there (`historyFromJournal`). */
+  let piHistory: JournalHistory | undefined;
   /** The agent's Pi storage, once loaded: the dual read reads it. */
   let journal: PiStorage | undefined;
   /** When the dual read last ran for this agent (`DUAL_READ_INTERVAL_MS`). */
@@ -246,7 +258,13 @@ export function createAgentHost(hostIO: HostIO) {
       if (!backlog?.messages.length || (!final && backlog.bytes < CHUNK_BYTES)) return;
       // A turn cut off by the stop is settled at the next start, with its repairs.
       const count = !final ? backlog.messages.length - 1 : transcript.active ? Math.max(0, transcript.turnStart - backlog.from) : backlog.messages.length;
-      await write(chunksOf(backlog, count));
+      // Where the agent reads from the journal, its messages and turn starts are the journal's (the host's where they differ).
+      const kept = { messages: backlog.messages.slice(0, count), turns: backlog.turns.filter(turn => turn < backlog.from + count) };
+      const indexed = await served("indexTail", kept, async journal => {
+        const messages = (await journal.messagesFrom(backlog.from))?.slice(0, count);
+        return messages ? { messages, turns: journal.turnsFrom(backlog.from).filter(turn => turn < backlog.from + count) } : NOT_HELD;
+      });
+      await write(chunksOf({ ...backlog, messages: indexed.messages, sizes: backlog.sizes.slice(0, count), turns: indexed.turns }, count));
     }).catch(error => console.error(JSON.stringify({ type: "history_index_failed", agent: config.id, error: errorText(error) })));
   }
 
@@ -358,6 +376,54 @@ export function createAgentHost(hostIO: HostIO) {
     lastPromptHash = hash;
   }
 
+  /** Whether the agent reads its history from Pi's journal: its tenant is listed, and the journal is dual-written. */
+  const historyFromJournal = () => dualWriting() && !!io.historySourceTenants && (io.historySourceTenants.includes("*") || io.historySourceTenants.includes(config.tenant ?? ""));
+
+  /**
+   * A history value as the journal gives it, where the agent reads from there: the host transcript's when they differ,
+   * which is logged (history_source_mismatch, with values and hashes only) for the cutover to explain.
+   */
+  async function served<T>(field: string, host: T, journalValue: (history: JournalHistory) => T | typeof NOT_HELD | Promise<T | typeof NOT_HELD>): Promise<T> {
+    if (!piHistory || transcript.failed !== undefined) return host;
+    let value: T | typeof NOT_HELD;
+    try {
+      await piHistory.refresh();
+      value = await journalValue(piHistory);
+    } catch (error) {
+      // The journal could not be read (its storage closed as the agent stops): the host's value, as where they differ.
+      console.error(JSON.stringify({ type: "history_source_unavailable", agent: config.id, field, error: safeError(error) }));
+      return host;
+    }
+    // What the journal does not hold (messages before its base the history index lacks yet): the host's, not a mismatch.
+    if (value === NOT_HELD) return host;
+    const same = JSON.stringify(value) === JSON.stringify(host);
+    const summary = (item: unknown) => typeof item === "number" || typeof item === "boolean" || item === undefined ? item
+      : createHash("sha256").update(JSON.stringify(item)).digest("hex").slice(0, 16);
+    console.log(metricLine(same ? "history_source" : "history_source_mismatch", {
+      dimensions: { Outcome: same ? "match" : "mismatch" }, rollups: [[], ["Outcome"]],
+      metrics: { HistorySourceReads: 1, HistorySourceMismatches: same ? 0 : 1 },
+      properties: { agent: config.id, field, ...(same ? {} : { host: summary(host), journal: summary(value), ...difference(host, value) }) },
+    }));
+    // The simulation records each: a value the journal gives otherwise is a violation of the run. Tests (the dual read in
+    // `throw`) fail on it.
+    always(same, "a history value the journal gives is the host transcript's");
+    if (!same && io.piDualRead === "throw") throw new Error(`History from the journal: ${field} is ${JSON.stringify(summary(value))}, the host's ${JSON.stringify(summary(host))}`);
+    return same ? value : host;
+  }
+
+  /**
+   * Where two lists of messages first differ, without their content: the lengths, the index, each side's role there,
+   * and the names of the fields whose values differ (for history_source_mismatch).
+   */
+  function difference(host: unknown, journal: unknown) {
+    if (!Array.isArray(host) || !Array.isArray(journal)) return {};
+    const at = host.findIndex((message, index) => JSON.stringify(message) !== JSON.stringify(journal[index]));
+    const index = at < 0 ? Math.min(host.length, journal.length) : at;
+    const left = host[index] as Record<string, unknown> | undefined, right = journal[index] as Record<string, unknown> | undefined;
+    const keys = [...new Set([...Object.keys(left ?? {}), ...Object.keys(right ?? {})])].filter(key => JSON.stringify(left?.[key]) !== JSON.stringify(right?.[key]));
+    return { lengths: [host.length, journal.length], index, roles: [left?.role ?? null, right?.role ?? null], keys };
+  }
+
   /** Whether the agent's system sections are native Pi sections: its tenant is in AGENT_NATIVE_SECTIONS_TENANTS (or `*`). */
   const nativeSections = () => !!io.nativeSectionsTenants && (io.nativeSectionsTenants.includes("*") || io.nativeSectionsTenants.includes(config.tenant ?? ""));
 
@@ -379,8 +445,8 @@ export function createAgentHost(hostIO: HostIO) {
    * Where the model made a call: the history index of the assistant message carrying it. With the call's id it names
    * the call for good (providers may number calls per response, so ids repeat across turns), the same on a retry or resume.
    */
-  function made(toolCallId: string): { messageIndex?: number } {
-    const messageIndex = transcript.calls.get(toolCallId);
+  async function made(toolCallId: string): Promise<{ messageIndex?: number }> {
+    const messageIndex = await served("callIndex", transcript.calls.get(toolCallId), history => history.callIndex(toolCallId));
     return messageIndex === undefined ? {} : { messageIndex };
   }
 
@@ -422,7 +488,7 @@ export function createAgentHost(hostIO: HostIO) {
     if (!forcing.last || signal.aborted || stopped || last?.role !== "assistant" || last.stopReason !== "error" || isRetryableAssistantError(last) || isContextOverflow(last, config.model.contextWindow)) return;
     forcing = { left: 0, reminding: false, last: false };
     await transcript.retract();
-    io.emit({ type: "message_retracted", index: transcript.total });
+    io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
     agent!.state.messages = agent!.state.messages.slice(0, -1);
     await agent!.continue();
   }
@@ -463,7 +529,7 @@ export function createAgentHost(hostIO: HostIO) {
       definitions: config.tools.filter(tool => tool.exposure !== "direct"),
       call: async (name, args) => {
         signal.throwIfAborted();
-        const value = await io.tool(name, args, toolCallId ? { toolCallId, innerCallId: `${toolCallId}:${++calls}`, ...made(toolCallId) } : undefined);
+        const value = await io.tool(name, args, toolCallId ? { toolCallId, innerCallId: `${toolCallId}:${++calls}`, ...await made(toolCallId) } : undefined);
         // MCP tools answer with content; code gets their data.
         return config.tools.find(tool => tool.name === name)?.resultFormat === "content" ? scriptValue(value) : value;
       },
@@ -484,7 +550,7 @@ export function createAgentHost(hostIO: HostIO) {
     const readable = config.fileTools !== false || config.codeMode !== false;
     const mount = readable ? scratchMount(config.mounts) : undefined;
     // Named by the message that made the call too: providers may give calls in different turns the same id.
-    const at = made(toolCallId).messageIndex;
+    const at = (await made(toolCallId)).messageIndex;
     const path = mount && `${mount.path}/tool-results/${at !== undefined ? `${at}-` : ""}${toolCallId.replace(/[^A-Za-z0-9_.-]/g, "_")}.txt`;
     const whole = Buffer.from(text, "utf8");
     const saved = path ? await io.fs("writeFile", { path, text: whole.length > FILE_LIMITS.scriptFileBytes ? whole.subarray(0, FILE_LIMITS.scriptFileBytes).toString("utf8") : text }).then(() => true, () => false) : false;
@@ -507,7 +573,7 @@ export function createAgentHost(hostIO: HostIO) {
         },
         execute: async (toolCallId, args, signal) => {
           signal?.throwIfAborted();
-          const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId, ...made(toolCallId) });
+          const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId, ...await made(toolCallId) });
           signal?.throwIfAborted();
           // The call waits on a person (inputs.ts): it stays open, with no result, and the turn suspends after this step.
           if (value?.inputRequired) {
@@ -724,7 +790,7 @@ export function createAgentHost(hostIO: HostIO) {
     if (output || stopped || signal.aborted || last?.role !== "assistant" || last.stopReason !== "stop" || !agent!.state.tools.some(tool => tool.name === OUTPUT_TOOL)) return;
     if (transcript.total <= transcript.turnStart + 1) return;
     await transcript.retract();
-    io.emit({ type: "message_retracted", index: transcript.total });
+    io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
     const reminder: SystemMessage = { role: "system", content: "", sections: { [OUTPUT]: `${OUTPUT_INSTRUCTIONS}\n${OUTPUT_REMINDER}` }, timestamp: Date.now() };
     await declare(reminder, agent!.state.messages[0] as SystemMessage);
     agent!.state.messages = [...agent!.state.messages.slice(0, -1), reminder];
@@ -760,14 +826,14 @@ export function createAgentHost(hostIO: HostIO) {
       // A node leaving asks again elsewhere: the failed attempt is taken back, and the turn handed off at that boundary.
       if (await handingOff()) {
         await transcript.retract();
-        io.emit({ type: "message_retracted", index: transcript.total });
+        io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
         agent!.state.messages = agent!.state.messages.slice(0, -1);
         return;
       }
       io.emit({ type: "auto_retry_start", attempt, maxAttempts: policy.maxAttempts, delayMs, errorMessage: last.errorMessage ?? "Unknown error", failure: modelFailure(last, failureContext()) });
       // The failed attempt is not history: drop it from the log and the live state, and say so on the stream.
       await transcript.retract();
-      io.emit({ type: "message_retracted", index: transcript.total });
+      io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
       agent!.state.messages = agent!.state.messages.slice(0, -1);
       try { await clock().sleep(delayMs, { signal }); }
       catch { return; }
@@ -779,43 +845,33 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
-   * The session's host transcript on Pi. A session not on Pi yet is read from its legacy log once and imported as it
-   * stands, a turn its old node left running or waiting on a person included: the recovery that follows treats it as it
-   * treats any session on Pi, and nothing writes the legacy log after the import. `tools` make the leading system
-   * message an import starts Pi's context with.
+   * The session's host transcript on Pi. A new agent's (no Pi storage yet, nothing in its legacy log) is seeded here, its
+   * Pi context starting from the leading system message `tools` make; a fork's was seeded as it was made. A session
+   * whose history is still only in the legacy format (never imported, or rolled back to the legacy engine by an earlier
+   * release) is refused, loudly: this release imports nothing, and starting it empty would lose its history.
    */
-  async function open(storage: PiStorage, indexed: number | undefined, tools: Tool[]): Promise<Transcript> {
+  async function open(storage: PiStorage, indexed: number | undefined, tools: Tool[]): Promise<NativeTranscript> {
     const native = await NativeTranscript.open(storage, indexed, io.historyBacklogBytes, io.transcript);
-    const migrated = await loadLegacyMigration(storage);
     if (native) {
-      migration = { state: "existing" };
       // The native journal commits before its host record. Each copied message carries its cursor in that same
       // record, so a torn append is safe to copy again after reopen.
-      if (migrated) await reconcilePiTranscript(native, storage, migrated.conversationId);
+      await reconcilePiTranscript(native, storage, SESSION_CONVERSATION_ID);
       return native;
     }
-    const legacy = new Transcript(io.transcript, indexed, io.historyBacklogBytes);
-    if (io.loadTranscript) legacy.restore(await io.loadTranscript(indexed ?? null, io.historyBacklogBytes));
-    else await legacy.load();
-    // Imported by a release that started no host generation with it, or rolled back to the legacy engine since
-    // (camel.host.disabled): the native messages its log lacks are copied to it first, then the whole log is adopted.
-    if (migrated) await reconcilePiTranscript(legacy, storage, migrated.conversationId);
-    const leadingSystem = legacy.system ?? leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
-    const working = [leadingSystem, ...legacy.view()];
-    const from = legacyImportShape(legacy, working);
-    if (!migrated) {
-      // One commit imports the session and starts the host's generation on it; Pi's context starts as the host's
-      // working set, checkpointed once. A log too large to copy is never read whole: it stays the archive.
-      const records = await readMigrationRecords(legacy.log).catch(error => { if (error instanceof LegacyMigrationDeferred) return undefined; throw error; });
-      const imported = await NativeTranscript.importLegacy(storage, legacy, { sessionId: config.id,
-        ...records ? { records } : {}, leadingSystem, working, indexed, bound: io.historyBacklogBytes });
-      if (imported.transcript) {
-        migration = { state: "migrated", ...from ? { from } : {}, ...records ? {} : { archive: "legacy-log" } };
-        return imported.transcript;
-      }
+    if (await hostRetired(storage)) {
+      console.error(JSON.stringify({ type: "session_format_newer", agent: config.id, tenant: config.tenant }));
+      throw new Error(`${NOT_MIGRATED}: this agent's history format is newer than this runtime (a later release keeps its history in Pi's journal alone), so this release cannot open it. Run a newer release; nothing was changed`);
     }
-    migration = { state: "adopted", ...from ? { from } : {} };
-    return NativeTranscript.adopt(storage, legacy, indexed, io.historyBacklogBytes, working);
+    const legacy = await storage.conversation(SESSION_CONVERSATION_ID, BACKGROUND_CONTEXT) ? "not_on_pi"
+      : (await io.transcript.readBounded?.(0))?.length === 0 ? undefined : "legacy_log";
+    if (legacy) {
+      console.error(JSON.stringify({ type: "legacy_session_not_imported", agent: config.id, tenant: config.tenant, reason: legacy }));
+      throw new Error(`${NOT_MIGRATED}: this agent's history is in the legacy format (${legacy === "not_on_pi" ? "its Pi host generation is missing or disabled" : "only its legacy transcript holds it"}), which this release no longer imports. An operator must import it (docs/operations/pi-durable.md); nothing was changed`);
+    }
+    const leadingSystem = leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
+    const seeded = await NativeTranscript.seed(storage, { sessionId: config.id, records: [], leadingSystem, working: [leadingSystem], indexed, bound: io.historyBacklogBytes });
+    if (!seeded) throw new Error("The agent's Pi storage was seeded meanwhile, without its host generation");
+    return seeded;
   }
 
   async function handle(method: string, params: any): Promise<any> {
@@ -828,15 +884,11 @@ export function createAgentHost(hostIO: HostIO) {
       const indexed = io.history ? await io.history.indexed().catch(() => null) : null;
       const piStorage = await io.piStorage?.();
       if (!piStorage) throw new Error("The agent's Pi durable storage is not open");
-      // Tools first: an import starts Pi's context with the leading system message they make.
+      // Tools first: a new agent's Pi context starts with the leading system message they make.
       jsExec = codeTool();
       const tools = [...config.codeMode === false ? [] : [jsExec], ...directAgentTools(config.tools)];
       journal = piStorage;
       transcript = await open(piStorage, indexed ?? undefined, tools.map(toToolDeclaration));
-      // Each legacy session is imported once, as it is first loaded: what its imports took, for operators to follow.
-      if (migration?.state !== "existing") console.log(JSON.stringify({ type: "legacy_session_imported", agent: config.id, tenant: config.tenant, ...migration }));
-      // The Pi sweep's start: the import was all it wanted. The next open recovers and configures as for any session on Pi.
-      if (config.importOnly) return { pid: process.pid, ...(migration ? { migration } : {}), recovered: false, messages: transcript.total };
       transcript.pin = () => agent ? leading() : undefined;
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
@@ -938,7 +990,7 @@ export function createAgentHost(hostIO: HostIO) {
         toolExecution: "parallel",
       };
       agent = await DurableAgent.create({ ...agentOptions, durable: {
-        storage: piStorage, conversationId: LEGACY_CONVERSATION_ID, cursor: transcript.piCursor, written: () => transcript.piCursor,
+        storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: transcript.piCursor, written: () => transcript.piCursor,
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when the
         // transcript fails one. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
         onStorageFailure: error => { transcript.failed ??= error; },
@@ -955,11 +1007,16 @@ export function createAgentHost(hostIO: HostIO) {
           const refused = transcript.context.at(-1) as AssistantMessage | undefined;
           if (reason === "overflow" && refused?.role === "assistant" && refused.stopReason === "error" && isContextOverflow(refused) && transcript.total > transcript.turnStart) {
             await transcript.retract();
-            io.emit({ type: "message_retracted", index: transcript.total });
+            io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
           }
-          const cut = transcript.total - keptMessages;
-          if (cut < transcript.offset || cut > transcript.total) throw new Error("Native compaction is outside the host working set");
-          if (transcript.compaction?.cut === cut && transcript.compaction.summary === summary && transcript.compaction.at === at) return;
+          // Pi replays its last compaction when an agent starts: one the host recorded already is in place, whatever the
+          // working set has grown to since.
+          if (transcript.compaction?.summary === summary && transcript.compaction.at === at) return;
+          const kept = transcript.total - keptMessages;
+          // A cut outside the host's working set (Pi kept more than the host holds, or counted past its end) is placed at
+          // its nearest edge rather than refusing the start: the summary stands, and the agent keeps what the host holds.
+          const cut = Math.min(Math.max(kept, transcript.offset), transcript.total);
+          if (cut !== kept) console.error(JSON.stringify({ type: "native_compaction_clamped", agent: config.id, cut: kept, offset: transcript.offset, total: transcript.total }));
           const offset = transcript.offset;
           const state = { summary, cut, tokensBefore: contextTokens(transcript.view()), at };
           await transcript.compact(state, transcript.compaction, changes => getCurrentSystemMessage([leading(tools.map(toToolDeclaration)), ...changes]));
@@ -998,13 +1055,18 @@ export function createAgentHost(hostIO: HostIO) {
       // A configuration changed elsewhere (another node, or while this agent was stopped) applies from here.
       await declareConfiguration();
       void index();
-      return { pid: process.pid, ...(migration ? { migration } : {}), recovered, messages: transcript.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? endedTurn() : {}) };
+      // Reads move to the journal from here: its history starts where the host's stands now, once per session.
+      if (historyFromJournal() && transcript instanceof NativeTranscript && journal) {
+        await transcript.writeBase();
+        piHistory = await JournalHistory.open(journal);
+        // A session that already had its base: the turn it holds is the host's too.
+        await served("turn", { active: transcript.active, turnStart: transcript.turnStart, awaiting: [...transcript.awaiting].sort() },
+          history => ({ active: history.active, turnStart: history.turnStart, awaiting: [...history.awaiting].sort() }));
+      }
+      return { pid: process.pid, recovered, messages: transcript.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? endedTurn() : {}) };
     }
-    // An import-only host (the Pi sweep's) has no agent: it answers its status and indexes its history as it is stopped.
-    if (!agent && config?.importOnly && method === "status") return { pid: process.pid, ...(migration ? { migration } : {}), busy, messages: transcript.total };
-    if (!agent && config?.importOnly && method === "historyFlush") { await index(true); return null; }
     if (!agent) throw new Error("Agent is not initialized");
-    if (method === "status") return { pid: process.pid, ...(migration ? { migration } : {}), busy, messages: transcript.total, contextMessages: transcript.context.length, compacted: !!transcript.compaction };
+    if (method === "status") return { pid: process.pid, busy, messages: transcript.total, contextMessages: transcript.context.length, compacted: !!transcript.compaction };
     if (method === "configure") {
       if (busy) throw new Error("Agent is busy");
       if (params.systemPrompt !== undefined) config.systemPrompt = params.systemPrompt ?? undefined;
@@ -1033,7 +1095,15 @@ export function createAgentHost(hostIO: HostIO) {
     if (method === "historyTail") {
       const backlog = transcript.backlog;
       // Part of it left to the log: the page reads the log instead.
-      return backlog && backlog.kept === backlog.from ? { from: backlog.from, messages: backlog.messages, turns: backlog.turns } : null;
+      if (!backlog || backlog.kept !== backlog.from) return null;
+      // Either writer may be ahead mid-run: compare every message both hold, and serve the host's full tail.
+      const messages = await served("tail", backlog.messages, async history => {
+        const journal = (await history.messagesFrom(backlog.from))?.slice(0, backlog.messages.length);
+        if (!journal) return NOT_HELD;
+        if (journal.length < backlog.messages.length && JSON.stringify(journal) === JSON.stringify(backlog.messages.slice(0, journal.length))) return backlog.messages;
+        return journal;
+      });
+      return { from: backlog.from, messages, turns: backlog.turns };
     }
     if (method === "steer") {
       const messages = await fittedImages(userMessages(params));
@@ -1095,7 +1165,7 @@ export function createAgentHost(hostIO: HostIO) {
       if (method === "continue" && transcript.awaiting.length) throw new Error("The agent is waiting for input: answer it, or send a new prompt");
       await transcript.setActive(true);
       // Where the run's messages start in the agent's history, so a client can line up its stream with history pages.
-      io.emit({ type: "turn_opened", index: transcript.total });
+      io.emit({ type: "turn_opened", index: await served("total", transcript.total, history => history.total) });
       steerable = true;
       if (method === "resume") {
         const settled = await settle(params.calls ?? [], active.signal);
@@ -1312,6 +1382,8 @@ export function createAgentHost(hostIO: HostIO) {
   async function handled(method: string, params: any): Promise<any> {
     try {
       const result = await handle(method, params);
+      // Each request's history length, as the journal gives it where the agent reads from there.
+      if (piHistory && typeof result?.messages === "number") result.messages = await served("total", result.messages, history => history.total);
       // In `log` (production), a check reads the session's journal since its host generation began: at load, then at
       // most every DUAL_READ_INTERVAL_MS per agent. `throw` (tests, the simulation) checks after every run.
       if (io.piDualRead && journal && transcript?.failed === undefined && ["init", "prompt", "execute", "continue", "resume"].includes(method) &&

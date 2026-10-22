@@ -181,6 +181,13 @@ export class HistoryIndex {
     return { entries, next: start > 0 ? start : null, total, ...(split ? { split: true as const } : {}) };
   }
 
+  /** Every message the chunks hold, from the first up to (not including) `end`, in order: a full history's settled part. */
+  async messages(agent: string, end: number): Promise<AgentMessage[]> {
+    const { rows } = await this.db.query("select start, count, bytes, turns, hash from agent_history_chunks where agent = $1 and start < $2 order by start", [agent, end]);
+    const loaded = await mapLimit(rows as Row[], READS, row => this.read(agent, row));
+    return loaded.flat().slice(0, end);
+  }
+
   private async read(agent: string, row: Row): Promise<AgentMessage[]> {
     const stored = await this.storage.readBlob(this.key(agent, row));
     if (!stored) throw new Error(`History chunk ${row.start} of ${agent} is missing`);

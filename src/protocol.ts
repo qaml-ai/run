@@ -63,6 +63,8 @@ export interface ToolBridge {
 /** The `apiKey` of an agent whose model is on its tenant's own endpoint: each call gets a fresh identity token instead (`ToolBridge.modelAuth`). */
 /** How an error says the agent's storage failed a write: nothing more is written until a reload reads what it holds. */
 export const PERSISTENCE_FAILED = "Session persistence failed";
+/** A host refused an agent whose history is still only in the legacy format, which no release imports any more. */
+export const NOT_MIGRATED = "AGENT_NOT_MIGRATED";
 export const IDENTITY_KEY = "agent-runtime:identity-token";
 /** The `apiKey` of an agent with a key scope: each call reads the scope's current entry (`ToolBridge.modelAuth`), so a rotated key applies at once. */
 export const SCOPE_KEY = "agent-runtime:key-scope";
@@ -71,7 +73,7 @@ export const SCOPE_KEY = "agent-runtime:key-scope";
  * A key scope's entry may also put an endpoint in front of the provider (`baseUrl`), add `headers`,
  * and name Bedrock's `region`.
  */
-/** `bearer`: send the key as `Authorization: Bearer` where the API would send `x-api-key` (an Anthropic gateway that wants it so). */
+/** `bearer`: plain `Authorization: Bearer` instead of `x-api-key`, without Pi's subscription OAuth behavior (Anthropic federation or a gateway). */
 /** `deployments`: for the platform's Azure OpenAI resource (whose v1 API root is `baseUrl`), each azure model's deployment. */
 export type Credentials = { apiKey: string; identity?: boolean; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; deployments?: Record<string, string> };
 export interface AgentConfig {
@@ -110,12 +112,6 @@ export interface AgentConfig {
   streamTimeouts?: { firstTokenMs?: number; idleMs?: number };
   /** A run that began elsewhere will resume: leave an interrupted turn open to continue it. */
   resume?: boolean;
-  /**
-   * Only import the session to Pi (the Pi sweep): init opens the transcript, which imports a legacy session, and stops
-   * there. It recovers no turn, writes no configuration change and makes no agent; the host answers only status and
-   * history requests, and is stopped next.
-   */
-  importOnly?: boolean;
   /** The agent's tenant, set by the runtime, for its metric lines. */
   tenant?: string;
   /** The tenant's js_exec limits, set by the runtime (never the agent's configuration): CPU per execution, the longest timeoutMs, and the engine. */

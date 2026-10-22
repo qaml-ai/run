@@ -114,16 +114,6 @@ variable "task_memory" {
   default = 4096
 }
 
-variable "agent_pi_sweep" {
-  description = "AGENT_PI_SWEEP: the most the Pi migration sweep may do: off, dry-run (log what migrating each legacy agent would do) or on (open idle legacy agents so they migrate to Pi). The operator's mode (infra/pi-sweep.sh) chooses within it, and starts in dry-run"
-  type        = string
-  default     = "off"
-  validation {
-    condition     = contains(["off", "dry-run", "on"], var.agent_pi_sweep)
-    error_message = "agent_pi_sweep is off, dry-run or on."
-  }
-}
-
 variable "agent_engine" {
   description = "AGENT_ENGINE, kept at pi-durable for images before the legacy engine's removal (which default to legacy without it; a deploy rollback may run one). The current image ignores it. Remove once no image that reads it can be deployed."
   type        = string
@@ -203,6 +193,12 @@ variable "runtime_env" {
   }
 }
 
+
+variable "agent_card_credit_usd" {
+  description = "Free credit in USD for verifying a card. Empty leaves AGENT_CARD_CREDIT_USD unset and follows AGENT_CREDIT_GRANT_USD (default $5); 0 disables card credit without changing the GitHub starting grant."
+  type        = string
+  default     = ""
+}
 
 variable "openai_apps_challenge" {
   description = "The domain-verification token the OpenAI Plugins dashboard shows for the ChatGPT plugin, served at https://<hostname>/.well-known/openai-apps-challenge. Not a secret. Empty serves nothing."
@@ -325,4 +321,14 @@ variable "agent_native_sections_tenants" {
   description = "AGENT_NATIVE_SECTIONS_TENANTS: tenants whose agents' system sections are native Pi sections, comma-separated, or * for every tenant; empty for none"
   type        = string
   default     = ""
+}
+
+variable "agent_pi_history_source_tenants" {
+  description = "AGENT_PI_HISTORY_SOURCE_TENANTS: tenants whose agents read their history from Pi's journal (on nodes with agent_pi_dual_write), comma-separated, or * for every tenant; empty for none"
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.agent_pi_history_source_tenants == "" || var.agent_pi_history_source_tenants == "*" || can(regex("^[a-z0-9][a-z0-9-]{0,39}(,[a-z0-9][a-z0-9-]{0,39})*$", var.agent_pi_history_source_tenants))
+    error_message = "agent_pi_history_source_tenants is empty, * or comma-separated tenant ids."
+  }
 }

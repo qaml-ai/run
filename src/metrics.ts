@@ -6,6 +6,7 @@
  * of run and usage events. Dimensions are few and bounded: outcome, error class,
  * provider, model, tenant, webhook kind. Nothing a user wrote goes into a line: errors go as `safeError` has them.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { WebhookEvent } from "./webhooks.ts";
 import { errorText } from "./protocol.ts";
 
@@ -194,22 +195,18 @@ export function recordV8Exec(event: { event: "spawn_failed" | "killed"; code?: s
 
 /** The methods that are a turn of the model (not code executions, configuration or loads). */
 const TURN_METHODS = new Set(["prompt", "continue", "resume"]);
+/** A turn's first request this late says why (`slowFirstRequest`). */
+const SLOW_FIRST_REQUEST_MS = 2_000;
 
-/** This process's recent turns' TimeToFirstRequestMs (the runtime's part of the time to first token), newest last. */
-const firstRequests: { at: number; ms: number }[] = [];
-/**
- * The 95th percentile of TimeToFirstRequestMs over this process's turns in the last `windowMs`, or undefined with fewer
- * than `minSamples` of them: how long the runtime itself keeps a turn from its model (the Pi sweep backs off past a limit).
- * Turns hosted in agent processes (`process` hosting) are theirs, not counted here.
- */
-export function recentFirstRequestP95(windowMs = 5 * 60_000, minSamples = 10, now = Date.now()) {
-  const recent = firstRequests.filter(sample => now - sample.at <= windowMs).map(sample => sample.ms).sort((a, b) => a - b);
-  return recent.length < minSamples ? undefined : recent[Math.ceil(recent.length * 0.95) - 1];
-}
-function recordFirstRequest(ms: number) {
-  const now = Date.now();
-  firstRequests.push({ at: now, ms });
-  while (firstRequests.length > 2_000 || (firstRequests.length && now - firstRequests[0].at > 15 * 60_000)) firstRequests.shift();
+/** The running turn's time in Pi storage (its database round trips, waits for a connection included). */
+const turnStorage = new AsyncLocalStorage<{ ms: number }>();
+/** `work`, a Pi storage read or commit, its time counted to the turn it runs for, if any. */
+export async function timedStorage<T>(work: () => Promise<T>): Promise<T> {
+  const turn = turnStorage.getStore();
+  if (!turn) return work();
+  const started = performance.now();
+  try { return await work(); }
+  finally { turn.ms += performance.now() - started; }
 }
 
 /**
@@ -217,7 +214,10 @@ function recordFirstRequest(ms: number) {
  * the host emits, `wrap` times each turn and writes its line when it ends.
  */
 export function observeTurns(model: () => { provider: string; id: string } | undefined, clock = Date.now, tenant: () => string | undefined = () => undefined) {
-  let turn: { started: number; firstRequest?: number; firstToken?: number; responses: number; errors: number; retries: number; tools: number; toolErrors: number } | undefined;
+  let turn: { started: number; firstRequest?: number; firstToken?: number; responses: number; errors: number; retries: number; tools: number; toolErrors: number;
+    storage: { ms: number }; storageMs?: number; first: boolean } | undefined;
+  // Whether the host has run a turn yet: its first reads the whole context from Pi's journal.
+  let ran = false;
   // The model response being streamed: when it started (its stream's headers), when its request began, and its first token.
   let response: { started: number; requested?: number; firstToken?: number } | undefined;
   // When the latest model request began (`turn_start`: the runtime has its context and starts the call), until its response starts.
@@ -227,7 +227,10 @@ export function observeTurns(model: () => { provider: string; id: string } | und
     const event = value as { type?: string; message?: any; toolName?: string; isError?: boolean; result?: any };
     if (event.type === "turn_start") {
       requested = clock();
-      if (turn && turn.firstRequest === undefined) turn.firstRequest = requested;
+      if (turn && turn.firstRequest === undefined) {
+        turn.firstRequest = requested;
+        turn.storageMs = turn.storage.ms;
+      }
     } else if (event.type === "message_start" && event.message?.role === "assistant") {
       response = { started: clock(), ...(requested === undefined ? {} : { requested }) };
       requested = undefined;
@@ -292,7 +295,11 @@ export function observeTurns(model: () => { provider: string; id: string } | und
     // A turn handed off at a step boundary ends here and goes on on another node: its part here is a turn of its own.
     const outcome = aborted ? "aborted" : error !== "none" ? "failed" : result?.handedOff ? "handed_off" : result?.stopped === "input_required" ? "input_required" : limited ?? "completed";
     const { provider = "unknown", id = "unknown" } = model() ?? {};
-    if (current.firstRequest !== undefined) recordFirstRequest(current.firstRequest - current.started);
+    const firstRequestMs = current.firstRequest === undefined ? undefined : current.firstRequest - current.started;
+    // Why its first request waited, where it waited long: Pi storage, or the host's first turn.
+    const slow = firstRequestMs !== undefined && firstRequestMs >= SLOW_FIRST_REQUEST_MS
+      ? (current.storageMs ?? 0) >= firstRequestMs / 2 ? "storage" : current.first ? "first_turn" : "other"
+      : undefined;
     emit("turn_metrics", {
       dimensions: { Outcome: outcome, ErrorClass: error, Provider: provider, Model: id },
       rollups: [[], ["Outcome"], ["ErrorClass"], ["Provider", "Model"]],
@@ -300,12 +307,14 @@ export function observeTurns(model: () => { provider: string; id: string } | und
         Turns: 1, TurnDurationMs: [clock() - current.started, "Milliseconds"],
         TimeToFirstTokenMs: current.firstToken === undefined ? undefined : [current.firstToken - current.started, "Milliseconds"],
         // The runtime's part of it: from the turn's start until its first model request starts (loads, journal reads and commits).
-        TimeToFirstRequestMs: current.firstRequest === undefined ? undefined : [current.firstRequest - current.started, "Milliseconds"],
+        TimeToFirstRequestMs: firstRequestMs === undefined ? undefined : [firstRequestMs, "Milliseconds"],
+        // Of it, the time in Pi storage (database round trips, pool waits included).
+        FirstRequestStorageMs: current.storageMs === undefined ? undefined : [Math.round(current.storageMs), "Milliseconds"],
         // Failed responses are counted by their own lines (model_error), under the same dimensions.
         ModelResponses: current.responses, ModelRetries: current.retries,
         ToolCalls: current.tools, ToolErrors: current.toolErrors,
       },
-      properties: { method, modelErrors: current.errors },
+      properties: { method, modelErrors: current.errors, firstTurn: current.first, ...(slow ? { slowFirstRequest: slow } : {}) },
     });
   }
 
@@ -313,9 +322,10 @@ export function observeTurns(model: () => { provider: string; id: string } | und
     return async (method: string, params: any): Promise<any> => {
       // A turn while another runs is refused by the host ("busy"): not a turn of its own.
       if (!TURN_METHODS.has(method) || turn) return handle(method, params);
-      const current = turn = { started: clock(), responses: 0, errors: 0, retries: 0, tools: 0, toolErrors: 0 };
+      const current = turn = { started: clock(), responses: 0, errors: 0, retries: 0, tools: 0, toolErrors: 0, storage: { ms: 0 }, first: !ran };
+      ran = true;
       let result: any;
-      try { result = await handle(method, params); }
+      try { result = await turnStorage.run(current.storage, () => handle(method, params)); }
       catch (error) { turn = undefined; finish(current, method, undefined, error); throw error; }
       turn = undefined;
       finish(current, method, result, undefined);

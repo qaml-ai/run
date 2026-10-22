@@ -284,8 +284,9 @@ test("health says what the platform spent, for whom, and what is waiting longer 
   assert.match(check("schedules").detail, /oldest for 60 min/);
   assert.equal(check("attempts").status, "warn", "a call five hours old the provider has not confirmed");
   assert.equal(check("help").status, "ok");
-  assert.equal(check("pi_migration").status, "info");
+  // This fixture's agents are rows with no Pi storage: each counts, and any at all warns (they cannot be opened).
   assert.match(check("pi_migration").value, /^\d+ agents?$/);
+  assert.equal(check("pi_migration").status, check("pi_migration").value.startsWith("0 ") ? "ok" : "warn");
   assert.equal(health.nodes.length, 1);
 });
 
@@ -363,7 +364,7 @@ test("on a path of the runtime's hostname, the site is that path alone, and all 
   // Access always sets an expiry: a token without one is not taken.
   const lasting = await new SignJWT({ email: "ops@example.test" }).setProtectedHeader({ alg: "RS256", kid: "fixture" }).setIssuer(TEAM).setAudience(AUD).setIssuedAt().sign(privateKey);
   assert.equal((await call("/ops/api/me", { token: lasting })).status, 401);
-  const paths = ["/ops", "/ops/", "/ops/api/growth", "/ops/api/usage", "/ops/api/revenue", "/ops/api/health", "/ops/api/acquisition", "/ops/api/account?tenant=ann", "/ops/api/me", "/ops/favicon.svg", "/ops/anything"];
+  const paths = ["/ops", "/ops/", "/ops/api/growth", "/ops/api/usage", "/ops/api/mcp", "/ops/api/revenue", "/ops/api/health", "/ops/api/acquisition", "/ops/api/account?tenant=ann", "/ops/api/me", "/ops/favicon.svg", "/ops/anything"];
   for (const path of paths) {
     assert.equal((await call(path, { token: null })).status, 401, path);
     assert.equal((await call(path, { token: await token({ aud: "another-application" }) })).status, 401, path);
@@ -380,12 +381,17 @@ test("on a path of the runtime's hostname, the site is that path alone, and all 
   assert.equal((await call("/ops/usage")).text, page.text, "any other page address is the page");
   assert.equal((await call("/ops/favicon.svg")).text, "<svg/>");
   assert.equal(JSON.parse((await call("/ops/api/me")).text).viewer, "ops@example.test");
-  for (const tab of ["growth", "usage", "revenue", "health"]) {
+  for (const tab of ["growth", "usage", "revenue", "health", "mcp"]) {
     const answer = await call(`/ops/api/${tab}?days=7`);
     assert.equal(answer.status, 200, tab);
     assert.equal(JSON.parse(answer.text).range.days, 7);
     assert.equal((await call(`/ops/api/${tab}?days=0`)).status, 400);
   }
+  const mcp = JSON.parse((await call("/ops/api/mcp?days=7")).text);
+  assert.equal(mcp.schema_version, 1);
+  assert.equal(mcp.daily.length, 28);
+  assert.deepEqual(mcp.funnel.map((row: { kind: string }) => row.kind), ["chatgpt", "codex", "claude", "other"]);
+  assert.equal(mcp.limitations.length, 4);
   assert.equal(JSON.parse((await call("/ops/api/acquisition")).text).status, "not_configured");
   assert.equal(JSON.parse((await call("/ops/api/account?tenant=ann&days=7")).text).account.tenant, "ann");
   assert.equal((await call("/ops/api/account?tenant=nobody")).status, 404);

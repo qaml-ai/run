@@ -65,3 +65,9 @@ test("the native sections allow-list is off unless set, trims tenant ids, and is
     assert.throws(() => nodeConfig({ AGENT_NATIVE_SECTIONS_TENANTS: value }), /AGENT_NATIVE_SECTIONS_TENANTS/);
   }
 });
+
+test("the journal history allow-list is checked like the native sections one", () => {
+  assert.deepEqual(nodeConfig({}).historySourceTenants, []);
+  assert.deepEqual(nodeConfig({ AGENT_PI_HISTORY_SOURCE_TENANTS: "camel-bots" }).historySourceTenants, ["camel-bots"]);
+  assert.throws(() => nodeConfig({ AGENT_PI_HISTORY_SOURCE_TENANTS: "camel_bots" }), /AGENT_PI_HISTORY_SOURCE_TENANTS/);
+});

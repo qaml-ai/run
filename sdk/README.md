@@ -9,7 +9,8 @@ model-written code in a sandbox that can only call your tools.
 npm install @camelai/run
 ```
 
-Node 22 or later, Bun, Deno or Cloudflare Workers. Create an API key at
+Node 22 or later (on Node 26, 26.5.1 or later: 26.3.1 to 26.5.0 ship a fetch that stalls behind
+an open event stream), Bun, Deno or Cloudflare Workers. Create an API key at
 <https://run.camelai.com/console/tokens> and export it as `CAMELAI_API_KEY`.
 
 Coding agents: this version's docs are in the package, at

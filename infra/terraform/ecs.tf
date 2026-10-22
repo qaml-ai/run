@@ -13,8 +13,10 @@ locals {
 
   runtime_image = "${aws_ecr_repository.runtime.repository_url}:${var.runtime_image_tag}"
 
-  runtime_environment = merge(var.runtime_env, local.email_environment, local.account_email_environment, local.billing_environment, local.admin_environment, local.journey_environment, var.openai_apps_challenge == "" ? {} : {
+  runtime_environment = merge(var.runtime_env, local.anthropic_federation_environment, local.email_environment, local.account_email_environment, local.billing_environment, local.admin_environment, local.journey_environment, var.openai_apps_challenge == "" ? {} : {
     AGENT_OPENAI_APPS_CHALLENGE = var.openai_apps_challenge
+    }, var.agent_card_credit_usd == "" ? {} : {
+    AGENT_CARD_CREDIT_USD = var.agent_card_credit_usd
     }, var.storage_gc_enabled ? {
     AGENT_GC_ENABLED = "true"
     AGENT_GC_DRY_RUN = tostring(var.storage_gc_dry_run)
@@ -73,18 +75,15 @@ locals {
     AGENT_MEMORY_HIGH_BYTES = tostring(floor(var.task_memory * 0.65) * 1048576)
     # Read only by images before the legacy engine's removal, which a deploy rollback may run (see var.agent_engine).
     AGENT_ENGINE = var.agent_engine
-    # Legacy agents opened one at a time so they migrate to Pi (docs/operations/pi-durable.md): the most the sweep may do;
-    # the operator's mode (infra/pi-sweep.sh) chooses within it. It takes no agent past 60% of the task's memory.
-    AGENT_PI_SWEEP                  = var.agent_pi_sweep
-    AGENT_PI_SWEEP_MAX_MEMORY_BYTES = tostring(floor(var.task_memory * 0.6) * 1048576)
-    # Its large pass (a session too large to copy reads its legacy log whole) only below 35%: room for the read.
-    AGENT_PI_SWEEP_LARGE_MAX_MEMORY_BYTES = tostring(floor(var.task_memory * 0.35) * 1048576)
     # Removing the host transcript (docs/operations/pi-durable.md): what the host writes is written into Pi's journal too
     # ("1"), and each agent's host transcript is compared with the journal ("log"). Off unless set.
     AGENT_PI_DUAL_WRITE = var.agent_pi_dual_write ? "1" : "0"
     AGENT_PI_DUAL_READ  = var.agent_pi_dual_read == "off" ? "" : var.agent_pi_dual_read
     # Tenants whose agents' system sections are native Pi sections (the canary of the instructions section's move).
     AGENT_NATIVE_SECTIONS_TENANTS = var.agent_native_sections_tenants
+    # Tenants whose agents read their history from Pi's journal, on nodes that dual-write it (removing the host transcript,
+    # phase 2); the host transcript is still written and served where they disagree. Empty: none.
+    AGENT_PI_HISTORY_SOURCE_TENANTS = var.agent_pi_history_source_tenants
     # node_load every 5 s while Pi's memory is watched (cgroup current and peak); the default is 60 s.
     AGENT_LOAD_INTERVAL_MS = "5000"
     # Tool sources (MCP servers, HTTP tools, web_fetch) never reach the VPC, on top of the private ranges the runtime always refuses.
@@ -167,6 +166,12 @@ resource "aws_iam_role_policy" "task" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = concat(local.state_bucket_statements, [
+      {
+        Sid      = "AnthropicFederation"
+        Effect   = "Allow"
+        Action   = "sts:GetWebIdentityToken"
+        Resource = "*"
+      },
       {
         Sid    = "RuntimeSecrets"
         Effect = "Allow"

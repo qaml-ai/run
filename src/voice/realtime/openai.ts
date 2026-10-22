@@ -342,15 +342,37 @@ export function usageOf(usage: any): RealtimeUsage {
   };
 }
 
+/** ISO-639-1 language hints only; unknown or malformed tags leave transcription on auto-detect. */
+const ISO_639_1 = new Set((
+  "aa ab ae af ak am an ar as av ay az ba be bg bh bi bm bn bo br bs ca ce ch co cr cs cu cv cy da de dv dz " +
+  "ee el en eo es et eu fa ff fi fj fo fr fy ga gd gl gn gu gv ha he hi ho hr ht hu hy hz ia id ie ig ii ik " +
+  "io is it iu ja jv ka kg ki kj kk kl km kn ko kr ks ku kv kw ky la lb lg li ln lo lt lu lv mg mh mi mk " +
+  "ml mn mr ms mt my na nb nd ne ng nl nn no nr nv ny oc oj om or os pa pi pl ps pt qu rm rn ro ru rw " +
+  "sa sc sd se sg si sk sl sm sn so sq sr ss st su sv sw ta te tg th ti tk tl tn to tr ts tt tw ty ug uk " +
+  "ur uz ve vi vo wa wo xh yi yo za zh zu"
+).split(" "));
+
+export function transcriptionLanguage(language?: string): string | undefined {
+  if (!language) return undefined;
+  try {
+    const locale = new Intl.Locale(language);
+    // Keep valid two-letter codes such as tl, which Intl canonicalizes to fil.
+    const primary = language.split("-")[0].toLowerCase();
+    const code = ISO_639_1.has(primary) ? primary : locale.language;
+    return ISO_639_1.has(code) ? code : undefined;
+  } catch { return undefined; }
+}
+
 /** The session OpenAI's GA protocol takes; on Azure, `model` is the realtime deployment and `transcription` the transcription one. */
 function openaiSession(config: RealtimeConfig, transcription: string = REALTIME_TRANSCRIPTION.model) {
+  const language = transcriptionLanguage(config.language);
   const prompt = [config.prompt].filter(Boolean).join("\n");
   return {
     type: "realtime", model: config.model, instructions: config.instructions, output_modalities: ["audio"],
     audio: {
       input: {
         format: { type: "audio/pcm", rate: 24_000 }, turn_detection: null,
-        ...(config.transcribe ? { transcription: { model: transcription, ...(config.language ? { language: config.language } : {}), ...(prompt ? { prompt } : {}) } } : {}),
+        ...(config.transcribe ? { transcription: { model: transcription, ...(language ? { language } : {}), ...(prompt ? { prompt } : {}) } } : {}),
       },
       output: { format: { type: "audio/pcm", rate: 24_000 }, voice: config.voice },
     },

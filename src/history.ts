@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { fileChars, validFileRef } from "./files.ts";
+import { validFileRef } from "./files.ts";
 import type { CompactionState, Transcript } from "./transcript.ts";
 
 const HISTORY_BYTES = 16 * 1024 * 1024;
@@ -133,39 +133,4 @@ export async function closeInterruptedTurn(transcript: Transcript): Promise<bool
     return [...interruptedTurnRepairs(transcript.context, !awaiting.length, awaiting).map(message => ({ t: "message" as const, message })), { t: "turn" as const, active: false }];
   });
   return closed;
-}
-
-export function recoverInterruptedTurn(messages: AgentMessage[]): AgentMessage[] {
-  return [...messages, ...interruptedTurnRepairs(messages)];
-}
-
-/** Approximate prompt characters for a message; an image counts like pi's estimate, not by its base64 size, and a file reference by what it stands for. */
-export function messageChars(message: AgentMessage): number {
-  let extra = 0;
-  const text = JSON.stringify(message, (key, value) => {
-    if (key === "data" && typeof value === "string" && value.length > 256) { extra += 4800; return ""; }
-    if (value?.type === "file" && validFileRef(value)) { extra += fileChars(value); return undefined; }
-    return value;
-  });
-  return text.length + extra;
-}
-
-/**
- * Last-resort bound on provider context, used only when compaction could not run:
- * drop whole older user turns until the rest fits `budgetTokens` (pi's chars/4
- * estimate, the same measure compaction uses). Durable history stays complete.
- */
-export function boundedContext(messages: AgentMessage[], budgetTokens: number): AgentMessage[] {
-  const budget = Math.max(1024, budgetTokens) * 4;
-  let size = 0;
-  let start = -1;
-  // Walk back from the newest message, remembering the oldest user turn that still fits.
-  for (let index = messages.length - 1; index >= 0; index--) {
-    size += messageChars(messages[index]);
-    if (size > budget) break;
-    if (messages[index].role === "user" || messages[index].role === "compactionSummary") start = index;
-  }
-  if (size <= budget) return messages;
-  if (start < 0) throw new Error("The current turn exceeds the model context budget; use smaller tool results or a larger-context model");
-  return messages.slice(start);
 }

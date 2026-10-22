@@ -30,10 +30,10 @@ const host = createAgentHost({
   lease: () => rpc.request("lease"),
   history: { indexed: () => rpc.request("history", { op: "indexed" }), write: chunk => rpc.request("history", { op: "write", chunk }), read: from => rpc.request("history", { op: "read", from }) },
   transcript: remoteTranscript(rpc),
-  loadTranscript: (indexed, bound) => rpc.request("transcript", { op: "load", indexed, bound }),
   piStorage: async () => await rpc.request("pi-storage", { method: "available" }) ? remotePiStorage(request => rpc.request("pi-storage", request)) : undefined,
   // This process's environment is the node's settings for it (agentProcessEnv).
   ...(Number(process.env.AGENT_HISTORY_BACKLOG_BYTES) ? { historyBacklogBytes: Number(process.env.AGENT_HISTORY_BACKLOG_BYTES) } : {}),
+  ...(process.env.AGENT_PI_HISTORY_SOURCE_TENANTS ? { historySourceTenants: process.env.AGENT_PI_HISTORY_SOURCE_TENANTS.split(",").map(item => item.trim()).filter(Boolean) } : {}),
   ...(process.env.AGENT_NATIVE_SECTIONS_TENANTS ? { nativeSectionsTenants: process.env.AGENT_NATIVE_SECTIONS_TENANTS.split(",").map(item => item.trim()).filter(Boolean) } : {}),
   ...(process.env.AGENT_PI_DUAL_READ === "log" || process.env.AGENT_PI_DUAL_READ === "throw" ? { piDualRead: process.env.AGENT_PI_DUAL_READ } : {}),
 });

@@ -15,7 +15,8 @@ import type { SystemMessage } from "@earendil-works/pi-ai";
 import { APPLICATION, applicationInstructions } from "../src/system-prompt.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
 import { openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts";
-import { nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
+import { NativeTranscript, nativeTranscriptRecords } from "../src/pi-durable/transcript.ts";
+import { JournalHistory } from "../src/pi-durable/history.ts";
 import { setDualWrite } from "../src/pi-durable/transcript.ts";
 
 // The agent host as nodes run it with AGENT_PI_DUAL_WRITE=1 (plans/host-transcript-removal.md, phase 1).
@@ -23,8 +24,7 @@ setDualWrite(true);
 
 /**
  * The agent host on its own, without a supervisor or processes: a faux model, its Pi storage, and crashes simulated by
- * stopping a host mid-turn and loading the agent in a new host. A turn a node on the legacy engine lost is written as
- * that node left it, in the legacy transcript file: the next host imports it as it stands, then recovers it.
+ * stopping a host mid-turn, or seeding the history a lost node left, and loading the agent in a new host.
  */
 type Context = { after(fn: () => unknown): void };
 
@@ -37,9 +37,10 @@ async function setup(t: Context) {
     { name: "lookup", description: "Look something up", parameters: { type: "object" }, exposure: "direct" },
     { name: "approve", description: "Needs a person", parameters: { type: "object" }, exposure: "direct" },
     { name: "delegate", description: "A sub-agent", parameters: { type: "object" }, exposure: "direct" },
+    { name: "fetch", description: "Fetch something, alongside other calls", parameters: { type: "object" }, exposure: "direct", executionMode: "parallel" },
   ];
   /** A host over the transcript file, as a node starting the agent: `call` answers its tools. */
-  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[]; tenant?: string; nativeSectionsTenants?: string[]; piDualRead?: "log" | "throw" } = {}) {
+  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[]; tenant?: string; nativeSectionsTenants?: string[]; piDualRead?: "log" | "throw"; historySource?: boolean; history?: HostIO["history"] } = {}) {
     const events: any[] = [];
     const log = fileAppendLog<TranscriptRecord>(path);
     const opened = await openPiStorage({ sessionId: "agent", directory });
@@ -54,7 +55,10 @@ async function setup(t: Context) {
       file: async () => { throw new Error("no files"); },
       modelAuth: async () => { throw new Error("no per-call credentials"); },
       fs: async () => { throw new Error("no files"); },
+      ...(options.history ? { history: options.history } : {}),
       piDualRead: options.piDualRead ?? "throw",
+      // Every agent reads its history from the journal (phase 2), and fails on a value the host's transcript disagrees with.
+      ...(options.historySource === false ? {} : { historySourceTenants: ["*"] }),
       ...(options.nativeSectionsTenants ? { nativeSectionsTenants: options.nativeSectionsTenants } : {}),
     };
     const host = createAgentHost(io);
@@ -62,14 +66,15 @@ async function setup(t: Context) {
     t.after(async () => { await host.dispose(0); await opened.close(BACKGROUND_CONTEXT); });
     return { host, init, events, log };
   }
-  /** Leave the transcript as a node lost mid-turn would: a turn opened and `messages` written, nothing after. */
-  async function crashedTurn(messages: AgentMessage[], before: AgentMessage[] = []) {
-    const transcript = new Transcript(fileAppendLog<TranscriptRecord>(path));
-    await transcript.load();
-    if (before.length) { await transcript.setActive(true); await transcript.append(before); await transcript.setActive(false); }
-    await transcript.setActive(true);
-    await transcript.append(messages);
-    await transcript.log.close();
+  /** Leave the agent as a node lost mid-turn would: a turn opened and `messages` written, nothing after (`records`, its whole history so far). */
+  async function crashedTurn(messages: AgentMessage[], before: AgentMessage[] = [], after: TranscriptRecord[] = []) {
+    const records: TranscriptRecord[] = [];
+    const message = (message: AgentMessage): TranscriptRecord => ({ t: "message", message });
+    if (before.length) records.push({ t: "turn", active: true }, ...before.map(message), { t: "turn", active: false });
+    records.push({ t: "turn", active: true }, ...messages.map(message), ...after);
+    const storage = await openPiStorage({ sessionId: "agent", directory });
+    try { assert.ok(await NativeTranscript.seed(storage, { sessionId: "agent", records })); }
+    finally { await storage.close(BACKGROUND_CONTEXT); }
   }
   /** The agent's records: Pi's, once a host has the agent (imported or new), else the legacy file a lost node left. */
   const records = async () => {
@@ -79,7 +84,7 @@ async function setup(t: Context) {
   };
   const history = async () => { const transcript = new Transcript(undefined as never); for (const record of await records()) transcript.apply(record); return transcript; };
   const respond = (...steps: FauxResponseStep[]) => faux.setResponses(steps);
-  return { faux, start, crashedTurn, history, records, respond, path };
+  return { faux, start, crashedTurn, history, records, respond, path, directory };
 }
 
 const user = (text: string) => ({ role: "user", content: text, timestamp: 1 }) as AgentMessage;
@@ -147,11 +152,7 @@ test("repair: a turn lost while a call waited on a person keeps that call open a
   const fake = await setup(t);
   // One call suspended for input, the other still running when the node was lost.
   const calls = answer([fauxToolCall("approve", {}, { id: "ask" }), fauxToolCall("lookup", {}, { id: "run" })], "toolUse");
-  const transcript = new Transcript(fileAppendLog<TranscriptRecord>(fake.path));
-  await transcript.setActive(true);
-  await transcript.append([user("do it"), calls]);
-  await transcript.await(["ask"]);
-  await transcript.log.close();
+  await fake.crashedTurn([user("do it"), calls], [], [{ t: "awaiting", calls: ["ask"] }]);
   const { init } = await fake.start({ resume: true });
   assert.deepEqual(init.resume, { finished: { messages: 3, error: null, stopped: "input_required" } });
   const after = await fake.history();
@@ -289,10 +290,11 @@ test("a conversation a later release re-keyed to the application section keeps t
   // As the release that renames the section leaves a conversation: its instructions under `application`.
   const instructions = applicationInstructions();
   const leading = { role: "system", content: "Runtime rules.", sections: { [APPLICATION]: instructions }, timestamp: 0 } as SystemMessage;
-  await fileAppendLog<TranscriptRecord>(fake.path).rewrite(() => [
+  const storage = await openPiStorage({ sessionId: "agent", directory: fake.directory });
+  try { assert.ok(await NativeTranscript.seed(storage, { sessionId: "agent", records: [
     { t: "system", message: leading, leading: true }, { t: "turn", active: true },
     { t: "message", message: user("earlier") }, { t: "message", message: answer("Earlier answer.") }, { t: "turn", active: false },
-  ]);
+  ] })); } finally { await storage.close(BACKGROUND_CONTEXT); }
   const { host } = await fake.start();
   let seen: AgentMessage[] = [];
   fake.respond(context => { seen = context.messages as AgentMessage[]; return answer("Done."); });
@@ -353,4 +355,124 @@ test("in log mode an agent's dual read runs at its load, then at most every ten 
   await host.handle("prompt", { text: "one" });
   await host.handle("prompt", { text: "two" });
   assert.equal(checks(), 1, "runs within ten minutes of the last check read nothing");
+});
+
+test("a session's journal history starts once: its base is written at its first load reading from the journal, and kept after", async t => {
+  const fake = await setup(t);
+  const bases = async () => {
+    const reader = (await openPiJournalReader({ sessionId: "agent", directory: fake.path.replace(/\/transcript\.jsonl$/, "") }))!;
+    try {
+      let count = 0;
+      for (let cursor; ;) {
+        const page = await reader.scanEntries({ conversationId: 1 as never, order: "ascending" }, 256, cursor, BACKGROUND_CONTEXT);
+        count += page.items.filter(entry => entry.kind === "camel.history.marker" && (entry.data as { t?: string }).t === "base").length;
+        if (!(cursor = page.next)) break;
+      }
+      return count;
+    } finally { await reader.close(BACKGROUND_CONTEXT); }
+  };
+  const first = await fake.start();
+  fake.respond(answer("One."));
+  await first.host.handle("prompt", { text: "one" });
+  assert.equal(await bases(), 1);
+  await first.host.dispose(0);
+  const second = await fake.start();
+  fake.respond(answer("Two."));
+  assert.equal((await second.host.handle("prompt", { text: "two" })).messages, 4);
+  assert.equal(await bases(), 1, "a later load keeps the base");
+});
+
+test("a session that never read from the journal has its journal history from the host's last snapshot, with no base marker", async t => {
+  const fake = await setup(t);
+  const { host } = await fake.start({ historySource: false });
+  fake.respond(answer(fauxToolCall("lookup", {}, { id: "look" }), "toolUse"), answer("Found."));
+  const run = await host.handle("prompt", { text: "look it up" });
+  await host.dispose(0);
+  const reader = await openPiStorage({ sessionId: "agent", directory: fake.path.replace(/\/transcript\.jsonl$/, "") });
+  t.after(() => reader.close(BACKGROUND_CONTEXT));
+  assert.equal(await JournalHistory.open(reader), undefined, "no base marker was written");
+  const history = (await JournalHistory.openAny(reader))!;
+  assert.equal(history.total, run.messages);
+  assert.equal(history.active, false);
+  assert.equal(history.callIndex("look"), 1);
+});
+
+test("the history index takes its chunks from the journal where the agent reads from there, the same messages as the host's", async t => {
+  const fake = await setup(t);
+  const chunks: { start: number; messages: AgentMessage[]; turns: number[] }[] = [];
+  let indexed = 0;
+  const history = { indexed: async () => indexed, read: async () => { throw new Error("nothing left to the log"); },
+    write: async (chunk: { start: number; messages: AgentMessage[]; turns: number[] }) => { chunks.push(chunk); indexed = chunk.start + chunk.messages.length; return indexed; } };
+  const logged = t.mock.method(console, "log", () => {});
+  const { host } = await fake.start({ history: history as HostIO["history"] });
+  fake.respond(answer(fauxToolCall("lookup", {}, { id: "look" }), "toolUse"), answer("Found."), answer("Again."));
+  await host.handle("prompt", { text: "look it up" });
+  await host.handle("prompt", { text: "again" });
+  await host.handle("historyFlush", {});
+  assert.deepEqual(chunks.flatMap(chunk => chunk.messages).map(message => message.role), ["user", "assistant", "toolResult", "assistant", "user", "assistant"]);
+  assert.deepEqual(chunks.flatMap(chunk => chunk.turns), [0, 4]);
+  const reads = logged.mock.calls.map(call => String(call.arguments[0])).filter(line => line.includes('"field":"indexTail"'));
+  assert.ok(reads.length > 0 && reads.every(line => line.includes('"Outcome":"match"')), "the journal's chunk is the host's");
+});
+
+test("two calls of one response that ask for their message index at once read the journal history once each (it fails a run that counts twice)", async t => {
+  const fake = await setup(t);
+  // Journal reads that take a while, as Postgres's do: the two calls' served("callIndex") refreshes overlap.
+  const { host } = await fake.start({ storage: storage => {
+    const scan = storage.scanEntries.bind(storage);
+    storage.scanEntries = async (...args) => { await new Promise(resolve => setTimeout(resolve, 5)); return scan(...args); };
+    return storage;
+  } });
+  fake.respond(answer([fauxToolCall("fetch", {}, { id: "a" }), fauxToolCall("fetch", {}, { id: "b" })], "toolUse"), answer("Done."));
+  const run = await host.handle("prompt", { text: "fetch both" });
+  assert.equal(run.error, null);
+  assert.equal(run.reply, "Done.");
+  assert.equal(run.messages, 5);
+});
+
+test("a history tail read while Pi has committed what the host has yet to record is the host's, without a mismatch", async t => {
+  const fake = await setup(t);
+  const noIndex = { indexed: async () => 0, read: async () => { throw new Error("no log reads"); }, write: async () => 0 } as unknown as HostIO["history"];
+  let journal!: PiStorage;
+  const { host } = await fake.start({ history: noIndex, storage: storage => (journal = storage) });
+  fake.respond(answer("One."));
+  await host.handle("prompt", { text: "one" });
+  // Pi's next response is committed; the host's record of it is not written yet (its event is still on its way).
+  await journal.commit([{ type: "entry", value: { id: await journal.mintId(), conversationId: 1 as never, kind: "pi.assistant", model: [answer("Two.")] as never } }], BACKGROUND_CONTEXT);
+  const tail = await host.handle("historyTail", {});
+  assert.deepEqual(tail.messages.map((message: AgentMessage) => message.role), ["user", "assistant"]);
+});
+
+for (const pending of [1, 2]) test(`a history tail with ${pending} host messages not yet committed to Pi compares every shared message`, async t => {
+  const fake = await setup(t);
+  const noIndex = { indexed: async () => 0, read: async () => { throw new Error("no log reads"); }, write: async () => 0 } as unknown as HostIO["history"];
+  const logged = t.mock.method(console, "log", () => {});
+  let hold = false;
+  const { host } = await fake.start({ history: noIndex, piDualRead: "log", storage: storage => {
+    const commit = storage.commit.bind(storage);
+    // Let the host record the messages while Pi's newest journal entries are still pending.
+    storage.commit = (writes, context) => commit(writes.filter(write => !hold || write.type !== "entry" ||
+      !(write.value.kind === "pi.assistant" || pending === 2 && write.value.kind === "camel.user")), context);
+    return storage;
+  } });
+  fake.respond(answer("One."), answer("Two."));
+  await host.handle("prompt", { text: "one" });
+  hold = true;
+  await host.handle("prompt", { text: "two" });
+  const reads = () => logged.mock.calls.map(call => JSON.parse(String(call.arguments[0]))).filter(line => line.field === "tail");
+  const tail = await host.handle("historyTail", {});
+  assert.deepEqual(tail.messages.map((message: AgentMessage) => message.role), ["user", "assistant", "user", "assistant"]);
+  assert.equal(reads().length, 1);
+  assert.equal(reads()[0].type, "history_source");
+  const messagesFrom = JournalHistory.prototype.messagesFrom;
+  t.mock.method(JournalHistory.prototype, "messagesFrom", async function (this: JournalHistory, from: number) {
+    const messages = (await messagesFrom.call(this, from))!;
+    messages[1] = answer("Different.");
+    return messages;
+  });
+  assert.deepEqual(await host.handle("historyTail", {}), tail, "a real mismatch still serves the host's tail");
+  assert.equal(reads()[1].type, "history_source_mismatch");
+  assert.deepEqual(reads()[1].lengths, [4, 4 - pending]);
+  assert.equal(reads()[1].index, 1, "shared elements beyond the first are compared too");
+  assert.ok(reads()[1].keys.includes("content"));
 });

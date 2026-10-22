@@ -4,7 +4,7 @@ import { MemoryStorage, type EntryId, type StorageWrite } from "@earendil-works/
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { dualReadHistory } from "../src/pi-durable/dual-read.ts";
-import { HOST_BOOTSTRAP_KIND, LEGACY_CONVERSATION_ID as conversationId } from "../src/pi-durable/migration.ts";
+import { HOST_BOOTSTRAP_KIND, SESSION_CONVERSATION_ID as conversationId } from "../src/pi-durable/seed.ts";
 
 /**
  * A journal: a host generation, then each entry given (`native` kinds hold one message; `record` a host record). A

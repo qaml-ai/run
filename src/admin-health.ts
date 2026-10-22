@@ -4,6 +4,21 @@ import {
 } from "./admin-accounts.ts";
 import type { Db } from "./db.ts";
 
+/**
+ * Whether agent `a` runs on Pi: it has an enabled Pi host document. A canary rollback left it disabled. Pi stores
+ * document kinds as JSON text. NativeTranscript writes enabled in each base, as the value's first key; its deltas only
+ * change snapshot fields. The address index selects the current document and the (session_id, document_id, kind, seq
+ * desc) index finds its latest base, each with limit 1, without replaying deltas. Only the base's first characters are
+ * read: parsing it whole (the host's context) for every agent would make each count read every session's context. A
+ * missing base is not a disabled document.
+ */
+export const ON_PI = `coalesce((select coalesce((select left(r.content, 256) not like '%"enabled":false%' from pi_durable_document_revisions r
+        where r.session_id = d.session_id and r.document_id = d.id and r.kind = 'base'
+        order by r.seq desc limit 1), true)
+    from pi_durable_documents d where d.session_id = a.id and d.kind = '"camel.host.snapshot"'
+      and d.scope_kind = 'session' and d.owner_id = 0 and d.family = 0 and d.key_value = '""' and d.retired_at is null
+    order by d.created_at desc limit 1), false)`;
+
 /** A UTC day of what the platform paid providers (USD, on its own keys, with OpenRouter's funding cost), by what it was for. */
 export type AdminSpendDay = { date: string } & Record<AdminUsageKind, number>;
 /**
@@ -110,7 +125,7 @@ export async function adminHealth(db: Db, options: { days: number | string; now?
         (select count(*) from telemetry_exporters where last_error_at is not null and last_error_at > coalesce(last_export_at, 0)) as telemetry_failing,
         (select count(*) from voice_sessions where state <> 'ended') as voice_live,
         (select count(*) from agents a where not a.revoked and a.purged_at is null
-          and not exists (select 1 from pi_durable_documents d where d.session_id = a.id and d.kind = '"camel.host.snapshot"')) as legacy_agents`,
+          and not ${ON_PI}) as legacy_agents`,
       [now - 10 * MINUTE, now - 60 * MINUTE, now - 7 * DAY_MS]),
   ]));
 
@@ -157,8 +172,8 @@ export async function adminHealth(db: Db, options: { days: number | string; now?
       value: n(q.journey_waiting) ? `${plural(n(q.journey_waiting), "event")} waiting` : n(q.journey_rejected) ? `${plural(n(q.journey_rejected), "event")} refused` : "Delivered",
       detail: n(q.journey_waiting) ? "Analytics events over an hour old the store has not taken" : "Analytics events reach the journey store" },
     { key: "running", label: "Running now", status: "info", value: plural(n(q.busy), "agent"), detail: `${plural(n(q.voice_live), "voice call")} live` },
-    { key: "pi_migration", label: "Agents on the legacy engine", status: "info", value: plural(n(q.legacy_agents), "agent"),
-      detail: "Kept agents not yet migrated to Pi: each migrates when it next opens, or with the Pi sweep (AGENT_PI_SWEEP)" },
+    { key: "pi_migration", label: "Agents not on Pi", status: n(q.legacy_agents) ? "warn" : "ok", value: plural(n(q.legacy_agents), "agent"),
+      detail: "Kept agents whose history is only in the legacy format: the runtime refuses to open them (AGENT_NOT_MIGRATED) until an operator imports them" },
     { key: "webhooks", label: "Customers' webhooks", status: "info", value: n(q.webhooks_retrying) ? `${plural(n(q.webhooks_retrying), "delivery", "deliveries")} retrying` : "Delivering",
       detail: `Retries are usually the customer's endpoint being down. ${plural(n(q.telemetry_failing), "telemetry export")} failing` },
   ];

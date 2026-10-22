@@ -59,3 +59,37 @@ test("a parent whose node dies while it waits on a child resumes on another node
   assert.equal(childRequests, 2, "the child's model was asked once more, by its resumed turn");
   assert.equal(record.outcome.result.toolCalls[0].agentId, children[0].id);
 });
+
+test("a parent whose node dies while it waits on a child, then is aborted, stops the child through its row; deleting it deletes the child", { timeout: 120_000 }, async t => {
+  const c = await cluster(t);
+  const childAsked = Promise.withResolvers<void>();
+  const model = await fakeModel(t, async body => {
+    // The child's model never answers: only an abort ends its run.
+    if (systemText(body).includes("CHILD")) { childAsked.resolve(); return undefined; }
+    return body.messages.at(-1).role === "tool" ? { role: "assistant", content: `Parent got: ${toolText(body)}` } : toolCalls(["delegate", { instructions: "You are CHILD.", task: "work" }, "call_child"]);
+  });
+  const a = await c.start("a", model.env);
+  const b = await c.start("b", model.env);
+  const onA = api(a.url), onB = api(b.url);
+  const parent = (await onA("/v1/agents", { builtins: ["delegate"], delegate: { instructions: true } })).json.id;
+  const accepted = await onA(`/v1/agents/${parent}/prompt`, { text: "go", requestId: "parent-turn" });
+  assert.equal(accepted.status, 202, JSON.stringify(accepted.json));
+  await childAsked.promise;
+  const child = (await onA("/v1/agents")).json.find((agent: any) => agent.parentAgentId === parent).id;
+  a.child.kill("SIGKILL");
+  await once(a.child, "close");
+
+  // The node that ran the delegate call is gone, and with it what it knew of the child: the abort finds it by its row.
+  // Tried until the dead node's lease on the parent lapses and b takes it over.
+  await until(async () => (await onB(`/v1/agents/${parent}/abort`, {})).status === 200, "the abort, on b", 60_000);
+  const request = (await c.db.query("select request_id from agent_children where parent = $1", [parent])).rows[0].request_id;
+  const childRun = await settled(onB, child, request, 30_000);
+  assert.match(JSON.stringify(childRun.outcome), /abort/i);
+  const parentRun = await settled(onB, parent, "parent-turn", 30_000);
+  assert.ok(parentRun.outcome, JSON.stringify(parentRun));
+  const { rows } = await c.db.query("select kind, made, ended_at is not null as ended from agent_children where parent = $1", [parent]);
+  assert.deepEqual(rows, [{ kind: "delegate", made: true, ended: true }]);
+
+  assert.equal((await onB(`/v1/agents/${parent}`, undefined, "DELETE")).status, 200);
+  assert.equal((await onB(`/v1/agents/${child}`)).status, 404);
+});

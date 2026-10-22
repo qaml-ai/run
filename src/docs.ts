@@ -7,6 +7,11 @@ const DOCS_ORIGIN = "https://run.camelai.com";
 export const SKILL_PATHS = ["/SKILL.md", "/skill.md"];
 /** The docs for people: `/docs` on the runtime goes there. */
 export const DOCS_SITE = "https://camelai.com/docs/camelrun/overview";
+/**
+ * Blocks nothing: the console and the documents served here answer with `X-Robots-Tag: noindex`, which a crawler
+ * reads only on a page it may fetch, and agents and tools fetch the documents and `/v1` (its OpenAPI document, file links).
+ */
+export const ROBOTS_TXT = "User-agent: *\nAllow: /\n";
 
 /**
  * The public docs, read once at startup from `directory` (docs/ in the image): `/llms.txt` and

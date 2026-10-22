@@ -16,12 +16,11 @@ permissions:
 concurrency: { group: nightly, cancel-in-progress: false }
 jobs:
   properties:
-    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 90
     services:
       postgres:
-        # Hosted runners have a Docker Hub pull-limit exemption; ECR Public can throttle them.
-        image: ${{ github.ref == 'refs/heads/main' && contains(fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]'), 'self-hosted') && 'public.ecr.aws/docker/library/postgres:16-alpine' || 'postgres:16-alpine' }}
+        image: postgres:16-alpine
         env: { POSTGRES_PASSWORD: test }
         ports: ["127.0.0.1::5432"]
         options: --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 20
@@ -32,11 +31,9 @@ jobs:
       PROP_REPLAY_PATH: ${{ inputs.replay_path }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - run: npm ci
+      - uses: ./.github/actions/node-dependencies
       # An empty PROP_SEED (a scheduled run) means a fresh seed per property.
-      # The shared host has 16 vCPUs; keep file concurrency within this job's resource budget.
+      # Two files at a time on four vCPUs: the properties are CPU-bound at nightly scale.
       - run: node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-concurrency=2 --test-timeout=3600000 tests/prop-*.test.ts
         env:
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres

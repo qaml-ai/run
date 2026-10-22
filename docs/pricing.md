@@ -22,8 +22,8 @@ rates below as your account is charged them.
 ## Credit
 
 - **Starting credit: $5**, once. GitHub accounts older than 30 days get it at
-  sign-up. Everyone else unlocks it by verifying a card on the **Billing** page;
-  the card is not charged.
+  sign-up. When offered, everyone else can unlock starting credit by verifying a
+  card on the **Billing** page; the card is not charged.
 - **Buying credit:** $5 to $1,000 at a time, with a 5.5% fee on the purchase.
   Auto top-up can buy more when your balance runs low.
 - **Before your first purchase:** at most $1 of model tokens and agent time an

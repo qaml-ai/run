@@ -1,5 +1,10 @@
+import type { Message } from "@earendil-works/pi-ai";
 import { durableEntryMessages } from "./pi-durable/agent.ts";
-import { NativeTranscript, nativeTranscriptRecords, nativeUnrecorded } from "./pi-durable/transcript.ts";
+import { safeError } from "./metrics.ts";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { dualWriting, NativeTranscript, nativeTranscriptRecords, nativeUnrecorded } from "./pi-durable/transcript.ts";
+import { JournalHistory, servedHistory } from "./pi-durable/history.ts";
+import { journalForkCut, type JournalForkCut } from "./pi-durable/fork.ts";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
@@ -25,7 +30,7 @@ import type { Storage as PiStorage } from "@earendil-works/pi-durable";
 import { deletePiStorage, hasPiStorage, openPiJournalReader, openPiStorage, purgePiStorage, storageRequest } from "./pi-durable/storage.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { projectPiRecords, projectPiTranscript, reconcilePiTranscript } from "./pi-durable/projection.ts";
-import { LEGACY_CONVERSATION_ID, LegacyMigrationDeferred, loadLegacyMigration, piReorders, planLegacyMigration, readMigrationRecords, type LegacyImportShape } from "./pi-durable/migration.ts";
+import { copyFingerprint, SESSION_CONVERSATION_ID } from "./pi-durable/seed.ts";
 
 /**
  * How agents run. "process": each agent is its own Node process (strong memory
@@ -64,6 +69,8 @@ export type SupervisorOptions = {
   piDualRead?: "log" | "throw";
   /** Tenants whose inline agents' system sections are native Pi sections (agent processes get it in `agentEnv`). */
   nativeSectionsTenants?: string[];
+  /** Tenants whose inline agents read their history from Pi's journal (agent processes get it in `agentEnv`). */
+  historySourceTenants?: string[];
   /** Shared Pi records use the same database and ownership claim as the session. */
   db?: Db;
 };
@@ -79,8 +86,6 @@ export class AgentSupervisor {
   private readonly unhosted = new Map<string, Set<{ cancelled: boolean; settled: Promise<void> }>>();
   /** Turns being closed without their agent (`closeTurn`): the latest close of each, which the next one and a start wait for. */
   private readonly closing = new Map<string, Promise<void>>();
-  /** First imports of a legacy history materialize its archive. Only one runs per node at a time. */
-  private migrating: Promise<void> = Promise.resolve();
   readonly root: string;
   readonly options: SupervisorOptions;
   /**
@@ -132,42 +137,25 @@ export class AgentSupervisor {
       const native = journal ? await nativeTranscriptRecords(journal, () => log.read()) : undefined;
       if (native) return native;
       const records = await log.read();
-      return journal ? await projectPiRecords(records, journal, LEGACY_CONVERSATION_ID) : records;
+      return journal ? await projectPiRecords(records, journal, SESSION_CONVERSATION_ID) : records;
     } finally { await journal?.close(BACKGROUND_CONTEXT); await log.close(); }
   }
 
   /**
-   * What a stopped agent's next open would import, from its legacy transcript alone: its record count, whether it pins
-   * its leading system message (`system`: without one, the import makes it from the agent's tools), how it differs from
-   * a session Pi left idle (`from`), and `measure`d, the bytes it would write; or why it would not be imported whole. Read beside a live owner,
-   * without writing or taking a claim (the Pi sweep). Refuses an oversized transcript before reading its bodies, as
-   * the import does.
+   * Start a new agent's history as `records` (a fork's), in its Pi storage under its owner's `claim`, before it is
+   * started (`NativeTranscript.seed`). Records past the copy budget go to the agent's legacy log instead, which its
+   * history reads first.
    */
-  async migrationPlan(id: string, options: { measure?: boolean } = {}): Promise<{ ready: true; records: number; system: boolean; from?: LegacyImportShape; bytes?: number; contextBytes?: number } | { ready: false; reason: LegacyMigrationDeferred["reason"] }> {
+  /** `model`: the model context the agent starts with (a fork's, as Pi had it at the cut), else its records' working set. */
+  async seed(id: string, records: TranscriptRecord[], claim?: Claim, model?: Message[]) {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
-    const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
+    await mkdir(resolve(join(this.root, id)), { recursive: true, mode: 0o700 });
+    const storage = await openPiStorage({ ...this.piLocation(id), ...(claim ? { claim } : {}) });
+    const log = copyFingerprint(records) === undefined ? this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id)))) : undefined;
     try {
-      const records = await readMigrationRecords(log);
-      const { snapshot, model } = planLegacyMigration(records);
-      const from = snapshot.active ? "active" : snapshot.awaiting?.length ? "awaiting" : piReorders(model) ? "context_changed" : undefined;
-      // What the import would write, `measure`d: the archive (the records as stored) and the context checkpoint.
-      const measured = options.measure ? {
-        bytes: records.reduce((sum, record) => sum + Buffer.byteLength(JSON.stringify(record)), 0),
-        contextBytes: model.reduce((sum, message) => sum + Buffer.byteLength(JSON.stringify(message)), 0),
-      } : {};
-      return { ready: true, records: records.length, system: !!snapshot.system, ...(from ? { from } : {}), ...measured };
-    } catch (error) {
-      if (error instanceof LegacyMigrationDeferred) return { ready: false, reason: error.reason };
-      throw error;
-    } finally { await log.close(); }
-  }
-
-  /** Start a new agent's transcript as `records` (a fork's), under its owner's `claim`, before it is started. */
-  async seed(id: string, records: TranscriptRecord[], claim?: Claim) {
-    if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
-    const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id), claim) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
-    try { await log.rewrite(() => records); }
-    finally { await log.close(); }
+      if (log) await log.rewrite(() => records);
+      if (!await NativeTranscript.seed(storage, { sessionId: id, records, ...(log ? { legacy: log } : {}), ...(model ? { working: model as AgentMessage[] } : {}) })) throw new Error("The agent's Pi storage was seeded already");
+    } finally { await storage.close(BACKGROUND_CONTEXT); await log?.close(); }
   }
 
   /**
@@ -196,14 +184,14 @@ export class AgentSupervisor {
       try {
         const native = durable ? await NativeTranscript.open(durable) : undefined;
         if (native) {
-          await reconcilePiTranscript(native, durable!, LEGACY_CONVERSATION_ID);
+          await reconcilePiTranscript(native, durable!, SESSION_CONVERSATION_ID);
           return await closeInterruptedTurn(native);
         }
       } finally { await durable?.close(BACKGROUND_CONTEXT); }
       const transcript = new Transcript(effect ? committing(log, effect) : log);
       await transcript.load();
       const journal = await openPiJournalReader(this.piLocation(id));
-      try { if (journal) await reconcilePiTranscript(transcript, journal, LEGACY_CONVERSATION_ID); }
+      try { if (journal) await reconcilePiTranscript(transcript, journal, SESSION_CONVERSATION_ID); }
       finally { await journal?.close(BACKGROUND_CONTEXT); }
       return await closeInterruptedTurn(transcript);
     } finally { await log.close(); }
@@ -282,28 +270,24 @@ export class AgentSupervisor {
             if (record) await bridge.committing?.(record)?.(sql);
           }
         } });
-        let release: (() => void) | undefined;
         try {
-          // Only a start with a legacy history to import waits for the node's import in progress: a new agent's (an
-          // empty log) has nothing to materialize, and serializing every first start held agents created together back.
-          if (!await loadLegacyMigration(durable) && (await transcript.readBounded?.(0))?.length !== 0) {
-            const previous = this.migrating;
-            this.migrating = new Promise<void>(resolve => { release = resolve; });
-            await previous;
-          }
           if (pending.cancelled) throw new Error("Agent stopped");
           hosted();
           const init = { ...config, id, directory, tools: bridge.definitions };
           return this.hosting === "inline" ? await this.startInline(id, init, bridge, transcript, durable) : await this.startProcess(id, directory, init, bridge, transcript, durable);
         } catch (error) { await durable?.close(BACKGROUND_CONTEXT); await transcript.close(); throw error; }
-        finally { release?.(); }
       } finally { this.starting.delete(id); }
     } finally { hosted(); }
   }
 
   private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, transcript: AppendLog<TranscriptRecord>, durable?: PiStorage) {
-    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, this.options.nativeSectionsTenants?.length && !this.options.agentEnv?.AGENT_NATIVE_SECTIONS_TENANTS
-      ? { ...this.options.agentEnv ?? agentProcessEnv(process.env), AGENT_NATIVE_SECTIONS_TENANTS: this.options.nativeSectionsTenants.join(",") } : this.options.agentEnv);
+    // A supervisor given its tenant lists directly (tests) tells its agent processes, as a node's agentEnv does.
+    const lists = {
+      ...(this.options.nativeSectionsTenants?.length && !this.options.agentEnv?.AGENT_NATIVE_SECTIONS_TENANTS ? { AGENT_NATIVE_SECTIONS_TENANTS: this.options.nativeSectionsTenants.join(",") } : {}),
+      ...(this.options.historySourceTenants?.length && !this.options.agentEnv?.AGENT_PI_HISTORY_SOURCE_TENANTS ? { AGENT_PI_HISTORY_SOURCE_TENANTS: this.options.historySourceTenants.join(",") } : {}),
+    };
+    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, Object.keys(lists).length
+      ? { ...this.options.agentEnv ?? agentProcessEnv(process.env), ...lists } : this.options.agentEnv);
     const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), transcript, durable, slots: new Map() };
     this.agents.set(id, handle);
     this.starting.delete(id);
@@ -431,7 +415,56 @@ export class AgentSupervisor {
   }
 
   /** The messages an agent's history index lacks, read from its log (all of them from `from`), without its process. */
-  async backlog(id: string, from: number) {
+  /**
+   * The messages an agent's history index lacks, from its journal (pi-durable/history.ts) where its tenant reads
+   * history from there (`historySourceTenants`), without its process; undefined where the journal does not hold them.
+   */
+  /** Whether agents of `tenant` read their history from Pi's journal (`historySourceTenants`, on a node that dual-writes it). */
+  readsJournal(tenant: string) {
+    const tenants = this.options.historySourceTenants;
+    return dualWriting() && !!tenants?.length && (tenants.includes("*") || tenants.includes(tenant));
+  }
+
+  /**
+   * A fork of agent `id` cut from its journal (pi-durable/fork.ts), read without its process: its history is `settled`
+   * (the history index's first `indexed` messages, which `settled` reads) then the journal's. Undefined where the
+   * journal cannot place the cut.
+   */
+  async journalFork(id: string, indexed: number, settled: (indexed: number) => Promise<AgentMessage[]>, at?: number | string): Promise<JournalForkCut | undefined> {
+    if (!await hasPiStorage(this.piLocation(id))) return undefined;
+    // Read only: opening the storage writes nothing that is not there already, and nothing here commits.
+    const storage = await openPiStorage(this.piLocation(id));
+    try {
+      const history = await JournalHistory.openAny(storage);
+      const tail = history && await history.messagesFrom(indexed);
+      if (!history || !tail) return undefined;
+      return await journalForkCut(storage, history, [...await settled(indexed), ...tail], at);
+    } finally { await storage.close(BACKGROUND_CONTEXT); }
+  }
+
+  async journalBacklog(id: string, from: number): Promise<{ messages: AgentMessage[]; turns: number[] } | undefined> {
+    if (!await hasPiStorage(this.piLocation(id))) return undefined;
+    // Read only: opening the storage writes nothing that is not there already, and nothing here commits.
+    const storage = await openPiStorage(this.piLocation(id));
+    try {
+      const history = await JournalHistory.openAny(storage);
+      const messages = history && await history.messagesFrom(from);
+      return messages && { messages, turns: history!.turnsFrom(from) };
+    } finally { await storage.close(BACKGROUND_CONTEXT); }
+  }
+
+  async backlog(id: string, from: number, tenant?: string) {
+    const host = await this.hostBacklog(id, from);
+    if (tenant === undefined || !this.readsJournal(tenant)) return host;
+    const journal = await this.journalBacklog(id, from).catch(error => {
+      console.error(JSON.stringify({ type: "history_source_unavailable", agent: id, field: "backlog", error: safeError(error) }));
+      return undefined;
+    });
+    const served = servedHistory(id, "backlog", { messages: host.messages, turns: host.turns }, journal);
+    return { ...host, messages: served.messages, turns: served.turns };
+  }
+
+  private async hostBacklog(id: string, from: number) {
     const log = this.options.storage ? this.options.storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<TranscriptRecord>(transcriptPath(resolve(join(this.root, id))));
     // Unbounded: this backlog is read for one page, not kept.
     const transcript = new Transcript(log, from, Infinity);
@@ -441,7 +474,7 @@ export class AgentSupervisor {
       if (native) for (const record of native) transcript.apply(record);
       else {
         await transcript.load();
-        if (journal) await projectPiTranscript(transcript, journal, LEGACY_CONVERSATION_ID);
+        if (journal) await projectPiTranscript(transcript, journal, SESSION_CONVERSATION_ID);
       }
       return transcript.backlog!;
     } finally { await journal?.close(BACKGROUND_CONTEXT); await log.close(); }
@@ -450,11 +483,6 @@ export class AgentSupervisor {
   /** An agent process's transcript operations. Appends are applied before the first await, so they keep IPC order. */
   private async transcriptRequest(handle: Handle, params: { op: string; records?: TranscriptRecord[]; durable?: boolean; indexed?: number | null; bound?: number; maxBytes?: number }) {
     const log = handle.transcript;
-    if (params.op === "load") {
-      const transcript = new Transcript(log, params.indexed ?? undefined, params.bound);
-      await transcript.load();
-      return transcript.snapshot();
-    }
     if (params.op === "read-bounded") return (await log.readBounded?.(params.maxBytes!)) ?? null;
     if (params.op === "read") return log.read();
     if (params.op === "append") { for (const record of params.records ?? []) log.append(record); return log.flush(params.durable).then(() => null); }
@@ -483,6 +511,7 @@ export class AgentSupervisor {
       ...(this.options.historyBacklogBytes ? { historyBacklogBytes: this.options.historyBacklogBytes } : {}),
       ...(this.options.piDualRead ? { piDualRead: this.options.piDualRead } : {}),
       ...(this.options.nativeSectionsTenants?.length ? { nativeSectionsTenants: this.options.nativeSectionsTenants } : {}),
+      ...(this.options.historySourceTenants?.length ? { historySourceTenants: this.options.historySourceTenants } : {}),
       ...(this.options.modelOutbound ? { modelOutbound: this.options.modelOutbound } : {}),
       lease: async () => { await handle.bridge.lease?.(); },
       history: {

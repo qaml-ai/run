@@ -13,11 +13,12 @@ import { AdminAnalytics } from "../admin-analytics";
 import { AccountDialog } from "./account-dialog";
 import { GrowthTab } from "./growth-tab";
 import { HealthTab } from "./health-tab";
+import { McpTab } from "./mcp-tab";
 import { Choice, Hint } from "./parts";
 import { RevenueTab } from "./revenue-tab";
 import { UsageTab } from "./usage-tab";
 
-const TAB_LABELS: Record<OpsTab, string> = { growth: "Growth", usage: "Usage", revenue: "Revenue", health: "Health", journeys: "Journeys" };
+const TAB_LABELS: Record<OpsTab, string> = { growth: "Growth", mcp: "MCP plugins", usage: "Usage", revenue: "Revenue", health: "Health", journeys: "Journeys" };
 
 /**
  * The team's ops dashboard (the admin site, src/admin-site.ts, behind Cloudflare Access): Growth, Usage, Revenue,
@@ -108,6 +109,7 @@ export function OpsPage() {
 
         <main className="mx-auto w-full max-w-6xl px-4 pt-6 pb-16 md:px-6 md:pt-8">
           <TabsContent value="growth" className="text-sm"><GrowthTab days={view.days} refresh={refresh} growth={growth} /></TabsContent>
+          <TabsContent value="mcp" className="text-sm"><McpTab days={view.days} refresh={refresh} /></TabsContent>
           <TabsContent value="usage" className="text-sm"><UsageTab days={view.days} refresh={refresh} everyone={everyone.usage} onAccount={setAccount} /></TabsContent>
           <TabsContent value="revenue" className="text-sm"><RevenueTab days={view.days} refresh={refresh} onAccount={setAccount} /></TabsContent>
           <TabsContent value="health" className="text-sm"><HealthTab days={view.days} refresh={refresh} everyone={everyone.health} onAccount={setAccount} /></TabsContent>

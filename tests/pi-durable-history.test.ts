@@ -9,13 +9,13 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { fileStorage } from "../shared/storage.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { HistoryIndex } from "../src/history-pages.ts";
-import { importLegacyTranscript } from "../src/pi-durable/migration.ts";
+import { seedWithoutGeneration } from "./fixtures/pi-seed-before-322.ts";
 import { hasPiStorage, openPiStorage } from "../src/pi-durable/storage.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
 import type { TranscriptRecord } from "../src/transcript.ts";
 import { testDatabase } from "./database.ts";
 
-test("cold paginated history includes a native commit beyond an up-to-date legacy index, without starting or writing the session", async t => {
+test("cold paginated history of an import before #322 includes a native commit beyond an up-to-date legacy index, without starting or writing the session", async t => {
   const { db } = await testDatabase();
   const directory = await mkdtemp(join(tmpdir(), "pi-cold-history-"));
   const storage = fileStorage(join(directory, "storage"));
@@ -27,16 +27,17 @@ test("cold paginated history includes a native commit beyond an up-to-date legac
   const user = (content: string) => ({ role: "user" as const, content, timestamp: 1 });
   const old = [user("original question"), fauxAssistantMessage("original answer")];
   const records: TranscriptRecord[] = [{ t: "turn", active: true }, ...old.map(message => ({ t: "message" as const, message })), { t: "turn", active: false }];
-  await supervisor.seed(id, records);
+  const writeLog = async () => { const log = storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)); await log.rewrite(() => records); await log.close(); };
+  await writeLog();
   const index = new HistoryIndex(db, storage);
   await index.begin(id, old.length);
   await index.write(id, undefined, { start: 0, messages: old, turns: [0] });
 
   const journal = await openPiStorage({ sessionId: id, directory: join(directory, "agents", id), db });
-  await importLegacyTranscript({ storage: journal, sessionId: id, records });
+  await seedWithoutGeneration(journal, id, records);
   // The host durably marks a turn before Pi receives its input. Its messages can then commit only to Pi.
   records.push({ t: "turn", active: true });
-  await supervisor.seed(id, records);
+  await writeLog();
   const fresh = [user("committed question"), fauxAssistantMessage("committed answer")];
   for (const message of fresh) await journal.commit([{ type: "entry", value: {
     id: await journal.mintId<EntryId>(), conversationId: 1 as ConversationId,

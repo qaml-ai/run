@@ -45,7 +45,7 @@ server and never ship it to a browser.
 
 ## 2. Install
 
-TypeScript (Node 22 or later, or Bun):
+TypeScript (Node 22 or later, and on Node 26, 26.5.1 or later; or Bun):
 
 ```sh
 npm install @camelai/run

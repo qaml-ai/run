@@ -92,26 +92,9 @@ test("agents, runs, definitions and configure: data_collection deny sent when se
   }
 });
 
-test("compaction summaries carry the agent's data policy too", async t => {
-  const host = await fakeModel(t, () => ({ role: "assistant", content: "Summary: they said hello." }));
-  const { runCompaction } = await import("../src/compaction.ts");
-  const turn = (text: string, i: number) => [
-    { role: "user", content: `${text} ${"x".repeat(400)}`, timestamp: i },
-    { role: "assistant", content: [{ type: "text", text: `Reply ${i} ${"y".repeat(400)}` }], api: "openai-completions", provider: "openrouter", model: FLASH_1017.id, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: i },
-  ];
-  const context = [0, 1, 2, 3, 4, 5].flatMap(i => turn("Hello", i));
-  const model = { ...FLASH_1017, baseUrl: host.url };
-  for (const dataCollection of [undefined, "deny"] as const) {
-    const before = host.bodies.length;
-    await runCompaction({ context: context as never, offset: 0, model, apiKey: "sk-or", keepRecentTokens: 1, ...(dataCollection ? { dataCollection } : {}) });
-    assert.ok(host.bodies.length > before, "a summary was asked for");
-    for (const body of host.bodies.slice(before)) assert.deepEqual(body.provider, { only: HOSTS_1017, ...(dataCollection ? { data_collection: "deny" } : {}) });
-  }
-});
-
 test("Pi's compaction summaries carry the agent's data policy too", async t => {
   const host = await fakeModel(t, () => ({ role: "assistant", content: "Summary: they said hello." }));
-  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), { ...LOCAL, AGENT_ENGINE: "pi-durable" });
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
   await r.call("/v1/key-scopes/chat/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: host.url } });
   const summaries = () => host.bodies.filter(body => JSON.stringify(body.messages).includes("context summarization assistant"));
   for (const dataCollection of [undefined, "deny"] as const) {

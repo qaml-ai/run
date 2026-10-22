@@ -480,8 +480,10 @@ export class DurableAgent {
     const view = await this.conversation.context(context, live ? { at: entry.id } : undefined);
     const retained = new Set(view.entries.map(entry => entry.id));
     for (const id of this.originalInputs.keys()) if (id < entry.id && !retained.has(id as never)) this.originalInputs.delete(id);
+    // Counted as the host's history holds them: never a waiting tool's input-required placeholder (durableEntryMessages).
     const keptMessages = view.contributions.reduce((count, messages, index) => count +
-      (view.entries[index].id === view.head?.id ? 0 : messages.filter(message => message.role !== "system").length), 0);
+      (view.entries[index].id === view.head?.id ? 0 : messages.filter(message => message.role !== "system" &&
+        !(message.role === "toolResult" && (message.details as { inputRequired?: boolean } | undefined)?.inputRequired)).length), 0);
     let summary = (entry.model ?? []).map(message => typeof message.content === "string" ? message.content :
       message.content.filter(part => part.type === "text").map(part => part.text).join("\n")).join("\n");
     if (summary.startsWith(COMPACTION_SUMMARY_PREFIX) && summary.endsWith(COMPACTION_SUMMARY_SUFFIX)) {

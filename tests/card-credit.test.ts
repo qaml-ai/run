@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { Accounts } from "../src/accounts.ts";
 import { type Db } from "../src/db.ts";
-import { DEFAULT_PRICING, micros } from "../src/pricing.ts";
+import { micros, pricingFromEnvironment } from "../src/pricing.ts";
 import { Stripe, signWebhook } from "../src/stripe.ts";
 import { Tenants } from "../src/tenants.ts";
 import { testDatabase } from "./database.ts";
@@ -16,7 +16,7 @@ const neutral = (sub: string, length = 16) => `u-${createHash("sha256").update(`
 const count = async (db: Db, table: string, where = "true") => Number((await db.query(`select count(*) as n from ${table} where ${where}`)).rows[0].n);
 
 /** A Stripe with customers, setup-mode Checkout sessions and their SetupIntents. `verify` finishes one with a card. */
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, env: Record<string, string> = {}) {
   const { db } = await testDatabase();
   const objects = new Map<string, any>();
   let count = 0;
@@ -42,7 +42,8 @@ async function fixture(t: TestContext) {
   const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { root: { tokenSha256: "a".repeat(64), billing: "prepaid" }, [neutral("sub-admin")]: { tokenSha256: "b".repeat(64) } } }) });
   await tenants.reload();
   const stripe = new Stripe({ secretKey: "sk_test_fixture", webhookSecret: SECRET, apiUrl: url });
-  const accounts = new Accounts({ db, tenants, stripe, publicUrl: "https://agents.example.test", pricing: { ...DEFAULT_PRICING, startingGrant: micros(5) } });
+  const configured = (settings: Record<string, string>) => new Accounts({ db, tenants, stripe, publicUrl: "https://agents.example.test", pricing: pricingFromEnvironment(settings) });
+  const accounts = configured(env);
   const cards = accounts.billing.cardCredit!;
   /** Start a card check for `tenant` and finish it in Stripe with a card of this fingerprint; returns the completed session. */
   const verify = async (tenant: string, fingerprint: string, options: { funding?: string; status?: string } = {}) => {
@@ -59,7 +60,7 @@ async function fixture(t: TestContext) {
     return accounts.billing.webhook(body, signWebhook(SECRET, body));
   };
   const google = (name: string) => accounts.tenantForGoogle({ sub: `sub-${name}`, email: `${name}@example.com` });
-  return { db, accounts, cards, verify, send, google };
+  return { db, accounts, cards, verify, send, google, configured };
 }
 
 test("a Google signup gets no automatic credit; a verified card unlocks it once, through webhook retries and races", async t => {
@@ -151,4 +152,46 @@ test("Google tenants get neutral ids, never an admin tenant's or another account
   assert.deepEqual(new Set(same), new Set([neutral("sub-once")]));
   assert.equal(await count(f.db, "credit_ledger"), 0, "Google signups get no automatic grant");
   await assert.rejects(f.accounts.tenantForGoogle({ sub: "", email: "x@example.com" }), /valid account/);
+});
+
+
+test("card credit follows the starting grant when unset and can use an independent amount", async t => {
+  for (const [env, amount] of [
+    [{ AGENT_CREDIT_GRANT_USD: "7" }, 7],
+    [{ AGENT_CREDIT_GRANT_USD: "7", AGENT_CARD_CREDIT_USD: "1.25" }, 1.25],
+    [{ AGENT_CREDIT_GRANT_USD: "0", AGENT_CARD_CREDIT_USD: "2" }, 2],
+  ] as const) {
+    const f = await fixture(t, env);
+    const tenant = await f.google("custom");
+    assert.deepEqual((await f.accounts.billing.startingCredit(tenant)).cardCheck, { amount: micros(amount) });
+    const session = await f.verify(tenant, "fp_custom");
+    assert.deepEqual(await f.cards.confirm(tenant, session.id), { status: "granted", amount: micros(amount) });
+    assert.equal((await f.accounts.billing.summary(tenant)).balance, micros(amount));
+  }
+});
+
+test("disabling card credit records pending checks without granting through webhook or confirmation", async t => {
+  const f = await fixture(t);
+  const tenant = await f.google("pending");
+  const webhookSession = await f.verify(tenant, "fp_disabled_webhook");
+  const confirmSession = await f.verify(tenant, "fp_disabled_confirm");
+  // A new runtime configuration shares the database and Stripe checks created before the switch.
+  const disabled = f.configured({ AGENT_CARD_CREDIT_USD: "0" }).billing;
+  assert.deepEqual(await disabled.startingCredit(tenant), { status: "not_granted", amount: 0 });
+  await assert.rejects(disabled.cardCredit!.start(tenant), {
+    status: 409, code: "CARD_CREDIT_UNAVAILABLE",
+    message: "Free credit for verifying a card is not offered; add credit to start",
+  });
+  const body = JSON.stringify({ id: "evt_disabled", type: "checkout.session.completed", livemode: false, data: { object: webhookSession } });
+  assert.deepEqual(await disabled.webhook(body, signWebhook(SECRET, body)), { handled: "card check" });
+  assert.deepEqual(await disabled.cardCredit!.confirm(tenant, webhookSession.id), { status: "not_granted", amount: 0 });
+  assert.deepEqual(await disabled.cardCredit!.confirm(tenant, confirmSession.id), { status: "not_granted", amount: 0 });
+  assert.equal(await count(f.db, "card_checks", "not granted and grant_ledger_id is null"), 2);
+  assert.equal(await count(f.db, "credit_ledger"), 0);
+  assert.equal((await disabled.summary(tenant)).balance, 0);
+  // Re-enabling does not retroactively grant a settled check.
+  assert.deepEqual(await f.cards.confirm(tenant, confirmSession.id), { status: "not_granted", amount: 0 });
+  const veteran = await f.configured({ AGENT_CARD_CREDIT_USD: "0" }).tenantForGithub(
+    { id: 905, login: "still-eligible", createdAt: Date.now() - 400 * DAY }, { minAccountAgeMs: 30 * DAY });
+  assert.deepEqual(await disabled.startingCredit(veteran), { status: "granted", amount: micros(5) });
 });

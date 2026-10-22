@@ -1,3 +1,4 @@
+import { anthropicFederationFromEnvironment } from "./anthropic-federation.ts";
 import { ModelAttempts } from "./model-attempts.ts";
 import { setDualWrite } from "./pi-durable/transcript.ts";
 import { bucketInput, EndUserCredits } from "./end-user-credits.ts";
@@ -13,9 +14,8 @@ import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
 import { Telemetry, TELEMETRY_CHANNEL } from "./telemetry.ts";
 import { expireIdempotencyKeys } from "./idempotency.ts";
-import { DOCS_SITE, loadDocs, loadRegistry, SKILL_PATHS } from "./docs.ts";
+import { DOCS_SITE, loadDocs, loadRegistry, ROBOTS_TXT, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
-import { PiSweep, PiSweepControl, piSweepGate } from "./pi-sweep.ts";
 import { modelHeadersInput, resolveModel, sessionConfig } from "./session-config.ts";
 import { ClientSessions, ORPHANS_CHANNEL, runSessionOf, spendInput, type RunSettings, type SessionHooks } from "./client-sessions.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
@@ -69,7 +69,7 @@ import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 import { cgroupMemory } from "./process-memory.ts";
-import { recentFirstRequestP95, recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
+import { recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
 import { runtimeSecrets, managedDiscordSecrets } from "./secrets.ts";
 import { checkSandbox, type CodeExecutor } from "./codemode.ts";
 import { V8Exec } from "./v8-exec.ts";
@@ -302,7 +302,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     db,
     // Pi's journal rides out a failover as the log tail does: for as long as the node's lease lasts.
     piRetryMs: leaseTtlMs,
-    agentEnv: config.agentEnv, historyBacklogBytes: config.historyBacklogBytes, ...(config.piDualRead ? { piDualRead: config.piDualRead } : {}), ...(config.nativeSectionsTenants.length ? { nativeSectionsTenants: config.nativeSectionsTenants } : {}), modelOutbound: outbound,
+    agentEnv: config.agentEnv, historyBacklogBytes: config.historyBacklogBytes, ...(config.piDualRead ? { piDualRead: config.piDualRead } : {}), ...(config.nativeSectionsTenants.length ? { nativeSectionsTenants: config.nativeSectionsTenants } : {}), ...(config.historySourceTenants.length ? { historySourceTenants: config.historySourceTenants } : {}), modelOutbound: outbound,
   });
   const model = configuredModel(env);
   // Where people are sent (the public URL), other names served in full (an earlier domain), and the issuer tokens name.
@@ -311,7 +311,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Prepaid tenants pay from credit at the rates in src/pricing.ts, which the environment may override.
   // Credit is bought through Stripe Checkout when Stripe is configured (AGENT_STRIPE_SECRET_ARN, or STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET).
   const stripe = secrets.stripe && new Stripe({ ...secrets.stripe, ...config.stripe });
-  const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe, maxAgentsPerTenant, ...(secrets.azureOpenAI ? { azureOpenAI: secrets.azureOpenAI } : {}) });
+  const accounts = new Accounts({ anthropicFederation: anthropicFederationFromEnvironment(env), tenants, db, secretsKey: secrets.secretsKey, pricing, publicUrl, stripe, maxAgentsPerTenant, ...(secrets.azureOpenAI ? { azureOpenAI: secrets.azureOpenAI } : {}) });
   // Recover committed fallback Pi usage before serving model work.
   await accounts.flushUsage();
   // Busy agents per tenant, counted across the fleet: each tenant's own maxAgents, its usage tier, or AGENT_MAX_AGENTS_PER_TENANT.
@@ -820,6 +820,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       if (Object.hasOwn(tenants.modelEndpoints(tenant) ?? {}, provider)) return { key: IDENTITY_KEY, platform: false };
       // An agent with a key scope, or on the tenant's own provider, resolves its key at each call, so a changed key applies at once.
       if (keyScope || await modelProviders.has(tenant, provider)) return { key: SCOPE_KEY, platform: false };
+      // Resolve on every model call, including after a static fallback, so rotations and recovery reach existing agents.
+      if (provider === "anthropic" && accounts.anthropicFederation) return { key: SCOPE_KEY, platform: false };
       const resolved = await accounts.providerKey(tenant, provider);
       // The tenant's own Bedrock key names a region, which each call takes with the key (`scopedKey`).
       if (resolved?.region) return { key: SCOPE_KEY, platform: false };
@@ -839,7 +841,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       const resolved = await accounts.providerKey(tenant, provider);
       const azure = provider === "azure" && accounts.azureChat;
       if (resolved && azure) return { ...azureChatCredentials(azure), platform: true };
-      return resolved && { apiKey: resolved.key, platform: resolved.source !== "tenant", ...(resolved.region ? { region: resolved.region } : {}) };
+      return resolved && { apiKey: resolved.key, platform: resolved.source !== "tenant", ...(resolved.region ? { region: resolved.region } : {}), ...(resolved.bearer ? { bearer: true as const } : {}) };
     },
     modelEndpoints: tenant => tenants.modelEndpoints(tenant),
     customProviders: (tenant, keyScope) => modelProviders.resolvable(tenant, keyScope),
@@ -1073,7 +1075,11 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   app.get("/.well-known/oauth-authorization-server", c => c.json({
     issuer: origins.issuer, jwks_uri: `${origins.issuer}/.well-known/jwks.json`, ...oauth.metadata(),
   }, 200, { "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" }));
-  // The public docs (docs/ in the image), for people and for models: cacheable, and readable from any page.
+  // Crawlers may fetch everything, so they see the noindex the console and the documents below answer with: a page
+  // robots.txt blocks can still be listed, from links to it.
+  app.get("/robots.txt", c => c.text(ROBOTS_TXT, 200, { "Cache-Control": "public, max-age=3600" }));
+  // The public docs (docs/ in the image), for people and for models: cacheable, and readable from any page. They are
+  // copies for agents and tools, not search results: search should send people to the docs site.
   const docs = loadDocs(config.docsDir, publicUrl);
   // The UI registry's JSON (packages/registry/public/r/ in the image), for `npx shadcn add <runtime>/r/<name>.json`.
   const registry = loadRegistry(config.registryDir, publicUrl);
@@ -1088,7 +1094,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (!served) return next();
     const doc = c.req.method === "GET" || c.req.method === "HEAD" ? served.get(path) : undefined;
     if (!doc) return c.json({ type: "error", error: `Unknown document. The docs' index: ${origins.canonical}/llms.txt`, code: "NOT_FOUND" }, 404, { "Access-Control-Allow-Origin": "*" });
-    return c.body(doc.body, 200, { "Content-Type": doc.type, "Cache-Control": skill ? "no-cache" : "public, max-age=300", "Access-Control-Allow-Origin": "*" });
+    return c.body(doc.body, 200, { "Content-Type": doc.type, "Cache-Control": skill ? "no-cache" : "public, max-age=300", "Access-Control-Allow-Origin": "*", "X-Robots-Tag": "noindex" });
   });
   app.get("/healthz", c => draining ? c.json({ ok: false, draining: true }, 503) : c.json({ ok: true, ...(retiringSince !== undefined ? { retiring: true } : {}) }));
   // Every 503 is worth retrying (capacity, an actor moving, this node draining), and so is a 429 (a
@@ -1225,6 +1231,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     }
   });
   app.all("/internal/*", c => c.body(null, 404));
+  // The pages people use (the console, its sign-in and billing routes, OAuth's sign-in page) are no one's search result.
+  // After forwarding, so the node that answers a request is the one that marks it.
+  app.use(async (c, next) => {
+    await next();
+    if (BROWSER_PAGES.test(c.req.path)) c.res.headers.set("X-Robots-Tag", "noindex");
+  });
   app.route("/", consoleAuth.app);
   if (managedDiscord) app.route("/", managedDiscord.app);
   else app.get("/console/discord/config", c => c.json({ enabled: false }, 200, { "Cache-Control": "no-store" }));
@@ -1273,7 +1285,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     },
     runPrecheck: async tenant => { await rateLimits.runsLeft(tenant); const refused = await busyAgents.check(tenant); if (refused) throw refused; },
     createRun: (tenant, params, key, run) => createAgent(tenant, params, key, undefined, undefined, run) as Promise<{ id: string; existing?: boolean }>,
-    piSweep: new PiSweepControl(db, config.piSweep.mode),
     billingAdmins: config.billingAdmins }));
   if (journey) app.route("/", journeyApp(journey, consoleAuth, c => requestClient(c).key));
   // The query goes along: a link from the operator's site says in it where the visitor came from (src/journey.ts).
@@ -1435,23 +1446,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // writes created) is recorded either way, so turning it on later loses nothing.
   const storageGc = new StorageGc({ db, storage, volumes, graceMs: config.gc.graceMs, intervalMs: config.gc.intervalMs, dryRun: config.gc.dryRun });
   if (config.gc.enabled) storageGc.start(config.gc.pollMs);
-  // Retained agents still on the legacy engine, opened one at a time so they migrate to Pi (AGENT_PI_SWEEP, off by
-  // default; the operator's mode chooses within it). An agent only while this node has memory and database connections to
-  // spare, has room, and is not leaving: live traffic comes first.
-  const piSweep = new PiSweep({
-    db, setting: config.piSweep.mode, node: ownership.node, paceMs: config.piSweep.paceMs, repassMs: config.piSweep.repassMs,
-    largePaceMs: config.piSweep.largePaceMs,
-    sweep: (candidate, dryRun, large) => clients.piSweepAgent(candidate, dryRun, large),
-    busy: large => piSweepGate({
-      leaving: retiringSince !== undefined || clients.draining, dbWaiting: db.waitingCount, memoryHigh: supervisor.memoryHigh, full: supervisor.full,
-      firstRequestP95: recentFirstRequestP95(), maxFirstRequestMs: config.piSweep.maxFirstRequestMs,
-      // The large pass's lower limit leaves room for a log read whole.
-      maxMemoryBytes: large ? config.piSweep.largeMaxMemoryBytes ?? config.piSweep.maxMemoryBytes : config.piSweep.maxMemoryBytes,
-      memoryBytes: async () => (await deps.readCgroupMemory?.() as { cgroupMemoryBytes?: number } | undefined)?.cgroupMemoryBytes ?? process.memoryUsage.rss(),
-    }),
-  });
-  const piSweepTimer = config.piSweep.mode === "off" ? undefined : setTimeout(() => piSweep.start(), config.piSweep.delayMs);
-  piSweepTimer?.unref();
   // Agents no node holds with work left (a dead owner's turn, runs a drain queued) are loaded by whichever node gets to them first,
   // so their runs resume even when no one reads them. A node sweeps as it starts too: in a deploy, its peers are retiring and do not.
   const orphanTimer = orphanMs ? setInterval(() => void clients.resumeSoon(), orphanMs) : undefined;
@@ -1569,9 +1563,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     clearInterval(loadTimer);
     clearInterval(sweepTimer);
     clearInterval(purgeTimer);
-    clearTimeout(piSweepTimer);
-    // Not waited for: the agent in hand, if any, ends with the node (its load or start refused, or released with the rest).
-    void piSweep.stop();
     clearInterval(orphanTimer);
     clearInterval(childTimer);
     clearInterval(billingTimer);

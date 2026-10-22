@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { tenantsFromEnvironment } from "../src/tenants.ts";
 import { storageFromEnvironment } from "../shared/storage-config.ts";
 import { runtime } from "./runtime-server.ts";
-import { AgentRuntime, privateHost } from "../clients/typescript.ts";
+import { AgentRuntime, privateHost, stallingFetch } from "../clients/typescript.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const TOKEN = "selfhost-operator-token-at-least-24-chars";
@@ -74,4 +74,9 @@ test("the SDK takes plain http:// only to private hosts, as a runtime kept on a 
   for (const host of ["agents.example.com", "8.8.8.8", "172.32.0.1", "[2001:db8::1]"]) assert.equal(privateHost(host), false, host);
   new AgentRuntime({ url: "http://runtime:8790", apiKey: "x" });
   assert.throws(() => new AgentRuntime({ url: "http://agents.example.com", apiKey: "x" }), /require https/);
+});
+
+test("the SDK names the Node releases whose fetch stalls behind an open event stream (#351)", () => {
+  for (const version of ["8.4.0", "8.5.0", "8.7.0"]) assert.equal(stallingFetch(version), true, version);
+  for (const version of [undefined, "", "6.22.0", "7.29.0", "8.3.0", "8.8.0", "8.12.2", "9.0.0"]) assert.equal(stallingFetch(version), false, version);
 });

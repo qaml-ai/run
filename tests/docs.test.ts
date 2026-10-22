@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,6 +63,41 @@ test("coding agents' setup skill is at /SKILL.md (and /skill.md), uncached; /doc
     const docs = await fetch(`${r.base}${path}`, { redirect: "manual" });
     assert.equal(docs.status, 302, path);
     assert.equal(docs.headers.get("location"), "https://camelai.com/docs/camelrun/overview");
+  }
+});
+
+test("search engines may crawl everything but list neither the console nor the docs' Markdown copies; the API and MCP answer as before", async t => {
+  const consoleDir = await mkdtemp(join(tmpdir(), "console-fixture-"));
+  t.after(() => rm(consoleDir, { recursive: true, force: true }));
+  await writeFile(join(consoleDir, "index.html"), "<!doctype html><title>Console fixture</title>");
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { AGENT_CONSOLE_DIR: consoleDir });
+  // robots.txt blocks nothing: a crawler sees a page's noindex only on a page it may fetch.
+  const robots = await fetch(`${r.base}/robots.txt`);
+  assert.equal(robots.status, 200);
+  assert.match(robots.headers.get("content-type")!, /^text\/plain/);
+  assert.equal(await robots.text(), "User-agent: *\nAllow: /\n");
+  // The console with its sign-in and billing routes, OAuth's sign-in page, and / (which sends people to the console).
+  for (const path of ["/", "/console", "/console/", "/console/billing", "/console/agents/client_" + "0".repeat(40), "/console/auth/github", "/console/auth/methods", "/oauth/authorize"]) {
+    for (const method of ["GET", "HEAD"]) {
+      const page = await fetch(`${r.base}${path}`, { method, redirect: "manual" });
+      assert.equal(page.headers.get("x-robots-tag"), "noindex", `${method} ${path}: ${page.status}`);
+    }
+  }
+  const billing = await fetch(`${r.base}/console/billing`);
+  assert.equal(billing.status, 200);
+  assert.match(await billing.text(), /Console fixture/);
+  // The docs' copies for agents: still served, and never listed.
+  for (const path of ["/llms.txt", "/llms-full.txt", "/SKILL.md", "/skill.md", "/docs/quickstart.md", "/docs/guides/tools.md"]) {
+    for (const method of ["GET", "HEAD"]) {
+      const doc = await fetch(`${r.base}${path}`, { method });
+      assert.equal(doc.status, 200, `${method} ${path}`);
+      assert.equal(doc.headers.get("x-robots-tag"), "noindex", `${method} ${path}`);
+    }
+  }
+  // The API, MCP and the runtime's own endpoints carry no such header.
+  assert.equal((await fetch(`${r.base}/v1/openapi.json`)).status, 200);
+  for (const path of ["/v1/me", "/v1/openapi.json", "/mcp", "/healthz", "/.well-known/jwks.json", "/does-not-exist"]) {
+    assert.equal((await fetch(`${r.base}${path}`)).headers.get("x-robots-tag"), null, path);
   }
 });
 

@@ -2,17 +2,13 @@ import { attemptStream, type UsageSink } from "./model-attempt-stream.ts";
 import type { CreditStop, ModelAttemptHook } from "./model-attempt.ts";
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import { getProviders, streamSimple, type Api, type Model } from "@earendil-works/pi-ai/compat";
-import { compact, estimateContextTokens, estimateTokens, generateSummary, prepareCompaction, shouldCompact, type CompactionSettings, type Complete } from "./pi-harness/compaction.ts";
+import { estimateContextTokens, estimateTokens } from "./pi-harness/tokens.ts";
 import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { CompactionState } from "./transcript.ts";
-import { messageChars } from "./history.ts";
 import { fileChars as charsOf, validFileRef } from "./files.ts";
 import type { Credentials } from "./protocol.ts";
 import { AZURE_CHAT_API_VERSION } from "./azure-openai.ts";
 import { guardedModelFetch, guardedNodeAgents, outboundOfProcess, type Outbound } from "./outbound.ts";
 import { reasoningFloor, withOpenRouterHosts } from "./pi-catalog.ts";
-import { usageMissing } from "./platform-pricing.ts";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { streamTimeouts, watchedStream, type Stall, type StreamTimeouts } from "./model-stream.ts";
 import { network } from "./node-context.ts";
@@ -20,25 +16,10 @@ import { MODEL_INTERRUPTED } from "./model-errors.ts";
 import { deepseekContext, deepseekTarget } from "./deepseek-replay.ts";
 
 /**
- * Context compaction on top of Pi's compaction functions (vendored from pi-agent-core 0.87.1 in
- * pi-harness/, as Pi 1.0 dropped them). Pi picks the
- * cut (never splitting a tool call from its result, summarizing a split turn's
- * prefix separately) and writes a structured summary that updates the previous
- * one. This module decides when to compact, adapts our flat working set to pi's
- * session entries, and summarizes oversized histories in chunks.
+ * Model calls as the runtime makes them (`explicitKeyStream`: the tenant's key or per-call credentials, never the
+ * environment's; its node's lease and outbound policy; attempt accounting), and the token estimate of a context.
+ * Pi durable compacts natively; the compactor that lived here went with the legacy engine.
  */
-
-/** Scale pi's defaults (16k reserve, 20k kept) down for small context windows. */
-export function compactionSettings(model: Model<Api>): CompactionSettings {
-  return {
-    enabled: true,
-    reserveTokens: Math.min(16_384, Math.floor(model.contextWindow * 0.15)),
-    keepRecentTokens: Math.min(20_000, Math.floor(model.contextWindow * 0.25)),
-  };
-}
-
-/** Working sets above this many characters compact even if tokens look fine (image-heavy histories). */
-export const MAX_WORKING_CHARS = 12_000_000;
 
 /**
  * Tokens the context will cost: the provider's last usage report plus an estimate for
@@ -59,38 +40,10 @@ export function contextTokens(messages: AgentMessage[], fixedTokens = 0): number
   return Math.max(reported.tokens + trailing, estimated + fixedTokens);
 }
 
-/** Pi's per-message estimate of `messages`' tokens, file references included: unlike `contextTokens`, for any part of a context. */
-export function messagesTokens(messages: AgentMessage[]): number {
-  return messages.reduce((sum, message) => sum + estimateTokens(message) + Math.ceil(fileChars(message) / 4), 0);
-}
-
 /** Characters the file references in a user message or tool result stand for. */
 function fileChars(message: AgentMessage): number {
   const content = (message as { content?: unknown }).content;
   return Array.isArray(content) ? content.reduce((sum: number, block) => sum + (validFileRef(block) ? charsOf(block) : 0), 0) : 0;
-}
-
-/**
- * How far below the blocking threshold background compaction starts: pi-durable's 32k tokens, scaled
- * down for small context windows like the reserve. Enough room for a few turns while the summary is made.
- */
-export function backgroundTokens(model: Model<Api>): number {
-  return Math.min(32_768, Math.floor(model.contextWindow * 0.15));
-}
-
-/**
- * Whether the context needs compacting before its next request (`blocking`: it would not fit, past the
- * window less the reserve or MAX_WORKING_CHARS), may compact in the background while requests go on
- * (`background`: within `backgroundTokens` of that), or neither. `fixedTokens` covers what every request
- * carries besides messages, such as the system prompt.
- */
-export function compactionNeed(messages: AgentMessage[], model: Model<Api>, fixedTokens = 0): "blocking" | "background" | undefined {
-  const settings = compactionSettings(model);
-  const tokens = contextTokens(messages, fixedTokens);
-  if (shouldCompact(tokens, model.contextWindow, settings)) return "blocking";
-  let chars = 0;
-  for (const message of messages) if ((chars += messageChars(message)) > MAX_WORKING_CHARS) return "blocking";
-  return shouldCompact(tokens, model.contextWindow, { ...settings, reserveTokens: settings.reserveTokens + backgroundTokens(model) }) ? "background" : undefined;
 }
 
 /** Where a call to a tenant's own endpoint carries its identity token, besides where the provider takes its key. */
@@ -264,7 +217,9 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
   if (!apiKey && !fetchable) throw new Error(`A key scope entry without an apiKey cannot call ${model.provider}'s ${model.api} API`);
   const bedrock = model.api === "bedrock-converse-stream";
   const callOptions = {
-    ...options, apiKey: apiKey || "keyless", headers: { ...options?.headers, ...headers, ...modelHeaders },
+    // A bearer credential must not reach Pi's sk-ant-oat substring detection: that path adds
+    // Claude Code subscription headers, tool renaming and a system prompt. callFetch installs the real token.
+    ...options, apiKey: bearer && model.api === "anthropic-messages" ? "runtime-bearer" : apiKey || "keyless", headers: { ...options?.headers, ...headers, ...modelHeaders },
     // Bedrock's region reaches Pi's client only through `env` (its simple options drop a `region`), ahead of the
     // process's AWS_REGION. Bedrock through a gateway speaks HTTP/1.1, as its pass-through does.
     env: bedrock ? { ...(region ? { AWS_REGION: region } : {}), ...(baseUrl ? { AWS_BEDROCK_FORCE_HTTP1: "1" } : {}) } : {},
@@ -379,111 +334,3 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
   };
 }
 
-/**
- * Pi's summarizer only needs a completion; bind the tenant's key (or per-call credentials:
- * a fresh identity token for its own endpoint, a key scope's entry) and never the environment.
- * Every completed request is reported, so chunks and a run that fails after some are billed too.
- */
-type ApiKey = string | (() => Promise<Credentials>);
-function summarizer(apiKey: ApiKey, onResponse: ((message: AssistantMessage) => void) | undefined, modelHeaders: Record<string, string> | null | undefined, gate: ModelGate | undefined, outbound: Outbound, attempt?: ModelAttemptHook, dataCollection?: "deny" | null): Complete {
-  return async (model, context, options) => {
-    await gate?.wait(options?.signal);
-    const { signal, done } = gatedSignal(gate, options?.signal);
-    let response: AssistantMessage;
-    try {
-      const credentials = typeof apiKey === "string" ? { apiKey } : await apiKey();
-      const inputTokens = Math.min(model.contextWindow, context.messages.reduce((sum, message) => sum + estimateTokens(message as AgentMessage), 0) + Math.ceil((context.systemPrompt?.length ?? 0) / 4));
-      const estimate = { inputTokens, maxOutputTokens: options?.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output } };
-      const tracked = await attemptStream(attemptModel(model, credentials), credentials.apiKey, "compaction", attempt, (sink, halt) => {
-      const [target, callOptions] = authorize(model, dataCollection ? { ...options, dataCollection } : options, credentials, sink, modelHeaders, outbound);
-      // Watched like a turn's requests: a summary whose stream goes quiet fails (the context is left as it is) rather than hold the turn.
-      return watchedStream(model, (watched, activity) => streamSimple(target, deepseekContext(target, context), { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown) => activity(event) }),
-        streamTimeouts(model, callOptions?.reasoning), signal ? AbortSignal.any([signal, halt]) : halt, undefined, event => {
-          if (sink.cost !== undefined) Object.assign(event.type === "done" ? event.message.usage : event.error.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
-          if (sink.host) Object.assign(event.type === "done" ? event.message.usage : event.error.usage, { providerHost: sink.host });
-          // A summary that ended without its usage is billed at the input estimated here (and what it wrote).
-          if (event.type === "done" && usageMissing(event.message.usage)) Object.assign(event.message.usage, { estimatedInputTokens: estimate.inputTokens });
-          return event;
-        });
-      }, estimate);
-      response = await tracked.result();
-    } finally { done(); }
-    if (response.stopReason !== "error") onResponse?.(response);
-    return response;
-  };
-}
-
-/**
- * Our working set as pi session entries. The previous summary retains nothing itself:
- * the working set is exactly what follows it, so entry ids stay absolute indexes.
- */
-function entries(context: AgentMessage[], offset: number, previous?: CompactionState) {
-  const list: any[] = [];
-  let parentId: string | null = null;
-  if (previous) {
-    list.push({ type: "compaction", id: "previous", parentId, seq: 0, timestamp: previous.at, summary: previous.summary, retainedTail: [], tokensBefore: previous.tokensBefore, details: previous.details, fromHook: false });
-    parentId = "previous";
-  }
-  context.forEach((message, index) => {
-    const id = String(offset + index);
-    list.push({ type: "message", id, parentId, seq: offset + index + 1, timestamp: (message as { timestamp?: number }).timestamp ?? Date.now(), message });
-    parentId = id;
-  });
-  return list;
-}
-
-export type CompactionOutcome = { state: CompactionState } | { skipped: string };
-
-/**
- * Summarize everything before a cut that keeps recent context. Histories too large
- * for one summarization request (e.g. a big imported conversation) are folded in
- * chunks, each summary feeding the next as the "previous summary".
- */
-export async function runCompaction(options: {
-  attempt?: ModelAttemptHook;
-  context: AgentMessage[]; offset: number; previous?: CompactionState;
-  model: Model<Api>; apiKey: ApiKey; signal?: AbortSignal;
-  /** Keep less than usual, e.g. after the provider rejected the context as too long. */
-  keepRecentTokens?: number;
-  /** Each summarization response the provider completed, for billing. */
-  onResponse?: (message: AssistantMessage) => void;
-  /** The agent's own headers for its model calls. */
-  modelHeaders?: Record<string, string> | null;
-  /** The agent's OpenRouter data policy, on summaries as on its turns. */
-  dataCollection?: "deny" | null;
-  /** Its node's lease, which each summarization request waits for and is cut by (`ModelGate`). */
-  gate?: ModelGate;
-  /** The policy calls to endpoints tenants give go through: this process's unless given (its node's). */
-  outbound?: Outbound;
-}): Promise<CompactionOutcome> {
-  const { context, offset, previous, model, apiKey, signal } = options;
-  const defaults = compactionSettings(model);
-  const settings = options.keepRecentTokens ? { ...defaults, keepRecentTokens: Math.min(defaults.keepRecentTokens, options.keepRecentTokens) } : defaults;
-  const prepared = prepareCompaction(entries(context, offset, previous) as never, settings);
-  if (!prepared.ok) throw prepared.error;
-  const preparation = prepared.value;
-  // A cut that keeps everything would only add a summary of nothing, and change the cached prefix for it.
-  if (!preparation || (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length)) return { skipped: "Nothing before the recent context to summarize" };
-  const complete = summarizer(apiKey, options.onResponse, options.modelHeaders, options.gate, options.outbound ?? outboundOfProcess(), options.attempt, options.dataCollection);
-  // Leave room for the summarization prompt and the summary itself.
-  const chunkBudget = Math.max(4_000, Math.floor((model.contextWindow - settings.reserveTokens) * 0.6));
-  let tokens = 0;
-  let chunkStart = 0;
-  for (let index = 0; index < preparation.messagesToSummarize.length; index++) {
-    tokens += estimateTokens(preparation.messagesToSummarize[index]);
-    if (tokens <= chunkBudget || index === chunkStart) continue;
-    const summary = await generateSummary(preparation.messagesToSummarize.slice(chunkStart, index), complete, { model, reserveTokens: settings.reserveTokens, previousSummary: preparation.previousSummary }, signal);
-    if (!summary.ok) throw summary.error;
-    preparation.previousSummary = summary.value.text;
-    chunkStart = index;
-    tokens = estimateTokens(preparation.messagesToSummarize[index]);
-  }
-  preparation.messagesToSummarize = preparation.messagesToSummarize.slice(chunkStart);
-  const result = await compact(preparation, complete, { model }, signal);
-  if (!result.ok) throw result.error;
-  // Pi returns the kept messages themselves; they are the working set's tail.
-  const kept = result.value.retainedTail;
-  const cut = offset + context.length - kept.length;
-  if (cut < offset || kept.some((message, index) => message !== context[cut - offset + index])) throw new Error("Compaction kept messages that are not the working set's tail");
-  return { state: { summary: result.value.summary, cut, tokensBefore: result.value.tokensBefore, details: result.value.details, at: Date.now() } };
-}

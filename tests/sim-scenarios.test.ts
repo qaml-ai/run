@@ -85,12 +85,12 @@ test("a tenant's own maxAgents replaces the default limit, and an idle agent mak
   assert.equal((await sim.env.settle(create(TOKEN, "a3"))).status, 201, "alice's idle agent makes room under the default");
 });
 
-test("a session whose commit fails while its node still owns the agent gives the agent up, and the run resumes (seed 41)", async () => {
+test("a session whose commit fails while its node still owns the agent gives the agent up, and the run resumes (seed 16)", async () => {
   // First minimized from the first nightly (seed 2686), where a lost append acknowledgement failed the commit with the
   // lease healthy; the faulted session used to stay loaded, holding its run open (and the agent refusing runs) until its
-  // node restarted. On Pi the same failure is a journal write the object store throttles while the node still owns the
-  // agent: a spawner's prompt, minimized from seed 41.
-  const plan: Plan = {"seed": "41", "nodes": ["a", "b"], "leaseTtlMs": 3000, "durationMs": 60000, "skews": {"a": 398, "b": -3483}, "modelDelayMs": [50, 200], "buggify": "swarm", "steps": [{"at": 0, "op": {"op": "create", "agent": 0, "node": "a", "spawner": true}}, {"at": 10, "op": {"op": "create", "agent": 1, "node": "a"}}, {"at": 5412, "op": {"op": "prompt", "agent": 0, "run": 2, "node": "a", "spawn": true}}], "drifts": {"a": {"wall": -0.0069, "monotonic": 0.00057}, "b": {"wall": 0.0003, "monotonic": 0.00088}}, "storageFaults": {"rate": 0.05, "kinds": ["throttle"], "slowMs": [50, 2000]}, "env": {"AGENT_CHILD_SWEEP_MS": "2000", "AGENT_OUTBOUND_ALLOW_HTTP": "true", "AGENT_OUTBOUND_ALLOW_CIDRS": "10.0.0.0/8"}};
+  // node restarted. On Pi the same failure is a journal statement the database cancels (57014) while the node still
+  // owns the agent: minimized from seed 16 (the plan moves as the runtime's database calls change).
+  const plan: Plan = {"seed": "16", "nodes": ["a", "b"], "leaseTtlMs": 12000, "durationMs": 60000, "skews": {"a": 0, "b": 0}, "modelDelayMs": [50, 200], "buggify": false, "steps": [{"at": 0, "op": {"op": "create", "agent": 0, "node": "a"}}, {"at": 10, "op": {"op": "create", "agent": 1, "node": "a"}}, {"at": 20, "op": {"op": "create", "agent": 2, "node": "b"}}, {"at": 2702, "op": {"op": "prompt", "agent": 1, "run": 0, "node": "b"}}, {"at": 5621, "op": {"op": "crash", "node": "b"}}, {"at": 13758, "op": {"op": "prompt", "agent": 0, "run": 4, "node": "a"}}, {"at": 15028, "op": {"op": "prompt", "agent": 0, "run": 5, "node": "a", "key": "requestId"}}], "dbErrors": {"rate": 0.02, "codes": ["57014"]}};
   const result = await runPlan(plan, { quiet: true });
   assert.deepEqual(result.failures, []);
   assert.ok(result.logs.some(log => log.line.includes('"session_fault_released"')), "the faulted session was released");

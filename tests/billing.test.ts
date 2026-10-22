@@ -64,6 +64,18 @@ test("pricing: defaults, environment overrides in USD, and the purchase fee in w
   assert.throws(() => pricingFromEnvironment({ AGENT_CREDIT_MIN_PURCHASE_USD: "0.1" }), /at least 0.50/);
 });
 
+test("card-credit pricing follows the starting grant unless explicitly configured", () => {
+  assert.equal(pricingFromEnvironment({}).cardCreditGrant, micros(5));
+  assert.equal(pricingFromEnvironment({ AGENT_CREDIT_GRANT_USD: "7" }).cardCreditGrant, micros(7));
+  const disabled = pricingFromEnvironment({ AGENT_CARD_CREDIT_USD: "0" });
+  assert.equal(disabled.cardCreditGrant, 0);
+  assert.equal(disabled.startingGrant, micros(5));
+  assert.equal(pricingFromEnvironment({ AGENT_CARD_CREDIT_USD: "1.25" }).cardCreditGrant, micros(1.25));
+  for (const value of ["-1", "NaN", "Infinity", "no", "1e20"]) {
+    assert.throws(() => pricingFromEnvironment({ AGENT_CARD_CREDIT_USD: value }), /AGENT_CARD_CREDIT_USD must be a non-negative/);
+  }
+});
+
 test("usage tiers: the defaults, AGENT_USAGE_TIERS, its validation, and which tier an amount paid is in", () => {
   assert.deepEqual(DEFAULT_PRICING.tiers.map(tier => [tier.name, tier.paid, tier.busyAgents]),
     [["Free", 0, 20], ["Tier 1", micros(5), 50], ["Tier 2", micros(50), 100], ["Tier 3", micros(250), 250], ["Tier 4", micros(1000), 1000]]);
@@ -792,3 +804,25 @@ async function prompt(call: (path: string, init?: any) => Promise<any>, agent: s
     return record.state === "completed" && record;
   }, "the turn to end")).outcome;
 }
+
+
+test("disabled card credit is absent from billing and its start endpoint refuses while GitHub grants remain", async t => {
+  const github = await fakeGithub(t);
+  const stripeApi = await fakeStripe(t);
+  const { call, base } = await runtime(t, () => ({ role: "assistant", content: "hi" }), {
+    ...githubEnv(github.url), AGENT_CARD_CREDIT_USD: "0", AGENT_VERIFY_KEYS: "false",
+    STRIPE_SECRET_KEY: "sk_test_fixture", STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET, AGENT_STRIPE_API_URL: stripeApi.url,
+  }, tenantsFile);
+  github.account(2091, "NoCardCredit", 1);
+  const newcomer = await github.signIn(base, 2091);
+  const asNewcomer = consoleCall(call, newcomer.cookie!);
+  assert.deepEqual((await asNewcomer("/v1/billing")).json.startingCredit, { status: "not_eligible", amount: 0 });
+  const refused = await asNewcomer("/v1/billing/card-check", { body: {} });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.json.code, "CARD_CREDIT_UNAVAILABLE");
+  assert.equal(refused.json.error, "Free credit for verifying a card is not offered; add credit to start");
+  assert.equal(stripeApi.requests.length, 0, "disabled card checks never contact Stripe");
+  github.account(2092, "GitHubCredit", 400);
+  const veteran = await github.signIn(base, 2092);
+  assert.deepEqual((await consoleCall(call, veteran.cookie!)("/v1/billing")).json.startingCredit, { status: "granted", amount: micros(5) });
+});

@@ -106,6 +106,10 @@ and the RDS instance also have deletion protection in AWS.
   trusts the proxy first (any image from this change on), set
   `runtime_image_tag` to it, apply, then redeploy that tag with
   `infra/ecs-deploy.sh <tag>` to ship the new environment.
+- **Card credit**: `agent_card_credit_usd` is a string, default `""`. When non-empty it sets
+  `AGENT_CARD_CREDIT_USD` in the task environment. Empty follows `AGENT_CREDIT_GRANT_USD`
+  (default $5); `"0"` disables card credit, including grants from pending checks, without
+  changing the GitHub starting grant.
 - **Task definition** (`ecs.tf`). Settings come from `var.runtime_env`. Storage,
   database, public-URL and tenant settings are derived from the resources:
   - `AGENT_STORAGE=s3`, `AGENT_S3_BUCKET`, `AGENT_S3_PREFIX`, `AWS_REGION`;
@@ -210,7 +214,10 @@ and the RDS instance also have deletion protection in AWS.
   itself once idle. `ecs-deploy.sh` first waits up to 30 minutes for the service's desired count of new
   healthy targets, then waits for the requested revision's `rolloutState = COMPLETED`, with a 45-minute
   total deadline including retirement and the deployment-alarm bake window. A rollback, failed state,
-  missing deployment, API error or timeout exits nonzero and fails Deploy. It never reissues an update
+  missing deployment, API error or timeout exits nonzero and fails Deploy. A newer commit's deployment that replaces
+  it (another deploy) is followed to completion instead; before its own update the script follows a primary
+  deployment that already includes its commit rather than roll an older commit over it (see the script's header).
+  It ends by checking every running task runs the deployed image, by tag and ECR digest. It never reissues an update
   to counter a rollback. `services-stable` alone is insufficient: the previous revision can become stable
   after rollback. Deploy has a 60-minute job timeout, including image preparation and public health checks.
 

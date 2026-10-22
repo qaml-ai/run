@@ -2,14 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeContext, type Api, type Model } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
-import { compactionNeed, contextTokens, explicitKeyStream, runCompaction } from "../src/compaction.ts";
-import { readTranscript } from "../src/transcript.ts";
+import { contextTokens, explicitKeyStream } from "../src/compaction.ts";
+import { historyOf, type TranscriptRecord } from "../src/transcript.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
@@ -17,6 +17,9 @@ import { testDatabase } from "./database.ts";
 import { fileStorage, memoryStorage } from "../shared/storage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { Ownership } from "../src/ownership.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { openPiStorage } from "../src/pi-durable/storage.ts";
+import { SESSION_CONVERSATION_ID as LEGACY_CONVERSATION_ID } from "../src/pi-durable/seed.ts";
 
 type Body = { messages: { role: string; content: unknown }[] };
 const text = (body: Body) => JSON.stringify(body.messages);
@@ -129,16 +132,18 @@ test("a message whose request the history already holds is not taken again, even
   assert.equal(history.filter((message: any) => message.requestId === "steer-1").length, 1, "recorded once");
 });
 
-test("a transcript written by pi 0.80.6 loads, replays its tool history and summary, and keeps compacting", async t => {
+test("a history pi 0.80.6 wrote loads, replays its tool history and summary, and keeps compacting", async t => {
   const fake = await provider(t);
   const root = await mkdtemp(join(tmpdir(), "compaction-legacy-"));
   const directory = join(root, "agents", "legacy");
   await mkdir(directory, { recursive: true });
   // Recorded by the runtime on pi 0.80.6: an image prompt, tool calls with thinking, and two compactions.
-  await copyFile(new URL("./fixtures/pi-0.80.6-transcript.jsonl", import.meta.url), join(directory, "transcript.jsonl"));
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined });
   t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
-  const before = await readTranscript(directory);
+  // Its records are in Pi now, as the archive its import (or a fork of it) seeded.
+  const records = (await readFile(new URL("./fixtures/pi-0.80.6-transcript.jsonl", import.meta.url), "utf8")).trim().split("\n").map(line => JSON.parse(line) as TranscriptRecord);
+  await supervisor.seed("legacy", records);
+  const before = historyOf(records);
   assert.equal(before.length, 20);
   const inspect = { definitions: [{ name: "inspect", description: "Inspect", parameters: { type: "object" }, exposure: "direct" as const }], async call() { return "inspected"; } };
   // Compactions between runs report to the bridge, as no run's stream carries them.
@@ -159,17 +164,19 @@ test("a transcript written by pi 0.80.6 loads, replays its tool history and summ
   assert.deepEqual((await supervisor.request("legacy", "history")).messages.slice(0, 20), before);
 });
 
-test("a transcript written by pi 0.87.1 loads on pi 1.0, replays its summary, tool history and system change, and keeps compacting", async t => {
+test("a history pi 0.87.1 wrote loads on pi 1.0, replays its summary, tool history and system change, and keeps compacting", async t => {
   const fake = await provider(t);
   const root = await mkdtemp(join(tmpdir(), "compaction-087-"));
   const directory = join(root, "agents", "legacy");
   await mkdir(directory, { recursive: true });
   // Recorded by the runtime on pi 0.87.1 (long turns shortened): an import with a compactionSummary, an image prompt,
   // tool calls with thinking, a failed tool call, a prompt change, and a compaction that folded the change in.
-  await copyFile(new URL("./fixtures/pi-0.87.1-transcript.jsonl", import.meta.url), join(directory, "transcript.jsonl"));
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined });
   t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
-  const before = await readTranscript(directory);
+  // Its records are in Pi now, as the archive its import (or a fork of it) seeded.
+  const records = (await readFile(new URL("./fixtures/pi-0.87.1-transcript.jsonl", import.meta.url), "utf8")).trim().split("\n").map(line => JSON.parse(line) as TranscriptRecord);
+  await supervisor.seed("legacy", records);
+  const before = historyOf(records);
   assert.equal(before.length, 26);
   assert.deepEqual(before.filter(message => message.role === "toolResult" && message.isError).map(message => (message as { toolName: string }).toolName), ["fails"]);
   const definitions = ["inspect", "fails"].map(name => ({ name, description: name, parameters: { type: "object" }, exposure: "direct" as const }));
@@ -335,7 +342,7 @@ test("model calls require the agent's explicit key and never read provider keys 
   } finally { delete process.env.OPENAI_API_KEY; }
 });
 
-test("model and summarization requests carry only the tenant's key, whatever provider credentials the host has", async t => {
+test("model requests (Pi's summaries are made the same way) carry only the tenant's key, whatever provider credentials the host has", async t => {
   const hostEnv = {
     OPENAI_API_KEY: "host-openai", OPENROUTER_API_KEY: "host-openrouter",
     ANTHROPIC_API_KEY: "host-anthropic", ANTHROPIC_OAUTH_TOKEN: "host-anthropic-oauth", ANTHROPIC_AUTH_TOKEN: "host-anthropic-bearer",
@@ -359,13 +366,10 @@ test("model and summarization requests carry only the tenant's key, whatever pro
     ].map(([provider, id, baseUrl]) => ({ ...(getModel as (provider: string, id: string) => Model<Api>)(provider, id), baseUrl }));
     const context = normalizeContext({ systemPrompt: "fixture", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] });
     for (const model of models) await (await explicitKeyStream()(model, context, { apiKey: `tenant-${model.provider}`, maxRetries: 0 })).result();
-    // Compaction's summaries go through a separate pi-ai path.
-    const turns = Array.from({ length: 6 }, (_, index) => ({ role: index % 2 ? "assistant" : "user", content: index % 2 ? [{ type: "text", text: "x".repeat(4000) }] : "y".repeat(4000), timestamp: Date.now(), ...(index % 2 ? { api: models[0].api, provider: models[0].provider, model: models[0].id, stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } : {}) })) as any[];
-    await assert.rejects(runCompaction({ context: turns, offset: 0, model: models[0], apiKey: "tenant-anthropic", keepRecentTokens: 1_000 }), /fixture|401/);
-    assert.equal(headers.length, models.length + 1);
+    assert.equal(headers.length, models.length);
     const sent = JSON.stringify(headers);
     for (const secret of Object.values(hostEnv)) assert.ok(!sent.includes(secret), `a request carried the host's ${secret}`);
-    for (const [index, model] of [...models, models[0]].entries()) {
+    for (const [index, model] of models.entries()) {
       const key = headers[index]["x-api-key"] ?? String(headers[index].authorization).replace(/^Bearer /, "");
       assert.equal(key, `tenant-${model.provider}`, `${model.provider}/${model.id}`);
     }
@@ -480,59 +484,28 @@ test("under runLimits.contextTokens, a context whose fixed part nearly fills the
   assert.ok(ended.length <= turns / 2, `${ended.length} compactions in ${turns} turns`);
 });
 
-test("the system prompt counts once: a provider's usage report already includes it, a bare estimate does not", async t => {
-  const fake = await provider(t);
-  const model = fake.model(25_000);
+test("the system prompt counts once: a provider's usage report already includes it, a bare estimate does not", () => {
   const usage = (input: number) => ({ input, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: input + 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
   const user = { role: "user", content: "next", timestamp: 1 } as any;
   const answer = { role: "assistant", content: [{ type: "text", text: "ok" }], api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop", usage: usage(15_000), timestamp: 2 } as any;
-  // 15,000 reported (system prompt included) is below the 17,500 where a 25,000 window starts compacting in the background.
+  // 15,000 reported (system prompt included): the system prompt is not added again.
   assert.equal(contextTokens([user, answer], 9_000), 15_010);
-  assert.equal(compactionNeed([user, answer], model, 9_000), undefined);
   // With no report, the estimate is all there is: the system prompt is added to it.
   assert.ok(contextTokens([user], 9_000) >= 9_000);
-  const long = [{ role: "user", content: "x".repeat(40_000), timestamp: 1 } as any];
-  assert.equal(compactionNeed(long, model), undefined, "about 10,000 estimated");
-  assert.equal(compactionNeed(long, model, 9_000), "background", "and 9,000 more for the system prompt");
 });
 
-test("a compaction whose cut keeps every message makes no summary call and writes nothing", async t => {
+test("Pi's summaries are attempts of their own kind, each settled", async t => {
+  // No usage reported: Pi decides from its estimate, which these turns exceed.
   const fake = await provider(t);
-  const context = [
-    { role: "user", content: "Remember the task code PELICAN-42.", timestamp: 1 },
-    { role: "assistant", content: [{ type: "text", text: "noted" }], api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop", timestamp: 2,
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
-    { role: "user", content: "next", timestamp: 3 },
-  ] as any[];
-  const outcome = await runCompaction({ context, offset: 0, model: fake.model(25_000), apiKey: "fixture" });
-  assert.ok("skipped" in outcome, JSON.stringify(outcome));
-  assert.equal(fake.summarizations().length, 0);
+  const supervisor = await fixture(t);
+  const events: { type: string; id: string; kind?: string }[] = [];
+  await supervisor.start("attempts", { model: fake.model(8000), apiKey: "fixture", codeMode: false }, { ...bridge, modelAttempt: async (event: any) => { events.push(event); return true; } });
+  for (let index = 0; index < 6 && !fake.summarizations().length; index++) assert.equal((await supervisor.request("attempts", "prompt", { text: turn(index) })).error, null);
+  assert.ok(fake.summarizations().length > 0, "a summary was made");
+  const summaries = events.filter(event => event.type === "begin" && event.kind === "compaction");
+  assert.equal(summaries.length, fake.summarizations().length);
+  for (const begun of summaries) assert.ok(events.some(event => event.type === "finish" && event.id === begun.id), "each summary attempt settles");
 });
-
-test("compaction persists each summary attempt and settles before reporting usage", async t => {
-  const fake = await provider(t, { usage: true });
-  const { db } = await testDatabase();
-  const account = new Accounts({ tenants: new Tenants({ read: async () => '{"tenants":{}}' }), db });
-  const { ModelAttempts } = await import("../src/model-attempts.ts");
-  const attempts = new ModelAttempts(db, account);
-  const context = [
-    { role:"user",content:"x".repeat(20000),timestamp:1 },
-    { role:"assistant",content:[{type:"text",text:"noted"}],api:"openai-completions",provider:"openai",model:"fixture",stopReason:"stop",timestamp:2,
-      usage:{input:5000,output:1,cacheRead:0,cacheWrite:0,totalTokens:5001,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}} },
-    { role:"user",content:"next",timestamp:3 },
-  ] as any[];
-  context.splice(2, 0, { ...context[0], timestamp: 3 }, { ...context[1], timestamp: 4 });
-  let reported = 0;
-  const outcome = await runCompaction({context,offset:0,model:fake.model(25000),apiKey:"fixture",keepRecentTokens:1000,
-    attempt:event=>attempts.event("tenant","agent",false,false,event),
-    onResponse:message=>{assert.ok((message.usage as any).billingAttemptId);reported++;account.recordUsage("tenant","agent",{...message,kind:"compaction"});}});
-  assert.ok("state" in outcome, JSON.stringify(outcome));assert.ok(reported>0);
-  await account.flushUsage();
-  const rows=(await db.query("select kind,state from model_attempts")).rows;
-  assert.equal(rows.length,reported);assert.ok(rows.every(row=>row.kind==="compaction" && row.state==="settled"));
-  assert.equal(Number((await db.query("select sum(responses) n from usage")).rows[0].n),reported);
-});
-
 
 test("Pi applies a lowered context limit to an already loaded host", async t => {
   const fake = await provider(t);
@@ -547,4 +520,31 @@ test("Pi applies a lowered context limit to an already loaded host", async t => 
   assert.ok(fake.summarizations().length > 0, "the new limit compacts without restarting the host");
   assert.equal((await supervisor.request("live-pi-context", "status")).compacted, true);
   assert.equal((await supervisor.request("live-pi-context", "history")).messages.length, 10);
+});
+
+test("an agent whose journal keeps more messages after its compaction than the host's working set holds still starts", async t => {
+  const fake = await provider(t);
+  const supervisor = await fixture(t);
+  const model = fake.model(8000);
+  await supervisor.start("drifted", { model, apiKey: "fixture" }, bridge);
+  for (let index = 0; index < 5; index++) await supervisor.request("drifted", "prompt", { text: turn(index) });
+  assert.equal((await supervisor.request("drifted", "status")).compacted, true);
+  await supervisor.stop("drifted");
+  // A call that waits on a person, as camel-builder's cards do: Pi's context holds its input-required placeholder after
+  // the compaction, which the host's history never takes in.
+  const storage = await openPiStorage({ sessionId: "drifted", directory: join((supervisor as any).root, "drifted") });
+  const page = await storage.scanEntries({ conversationId: LEGACY_CONVERSATION_ID as never, order: "descending" }, 1, undefined, BACKGROUND_CONTEXT);
+  const next = page.items[0]!.id + 1000;
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  await storage.commit([
+    { type: "entry", value: { id: next, conversationId: LEGACY_CONVERSATION_ID, kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "ask-1", name: "ask", arguments: {} }],
+      api: "openai-completions", provider: "openai", model: "fixture", usage, stopReason: "toolUse", timestamp: 5 }] } },
+    { type: "entry", value: { id: next + 1, conversationId: LEGACY_CONVERSATION_ID, kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "ask-1", toolName: "ask",
+      content: [{ type: "text", text: "Waiting for the user's input." }], details: { inputRequired: true }, isError: false, timestamp: 6 }] } },
+  ] as never, BACKGROUND_CONTEXT);
+  await storage.close(BACKGROUND_CONTEXT);
+  const restarted = await supervisor.start("drifted", { model, apiKey: "fixture" }, bridge);
+  assert.ok(restarted.messages >= 10, "the agent started");
+  const result = await supervisor.request("drifted", "prompt", { text: "After the drift" });
+  assert.equal(result.error, null);
 });

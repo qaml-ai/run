@@ -124,7 +124,7 @@ export interface BrainHooks {
   /** A response began playing (voice.speech.started), and ended (voice.speech.ended, with what it cost). */
   spoke(event: { type: "started"; id: string; latencyMs: number; turn?: TurnClock } | { type: "ended"; id: string; reason: "done" | "interrupted" | "error"; by?: string; seconds: number; costUsd: number }): void;
   /** The provider cannot be reached any more: the session ends. */
-  failed(detail: string): void;
+  failed(detail: string, error?: string): void;
   /** Structured log lines: never words. */
   log(type: string, fields?: Record<string, unknown>): void;
 }
@@ -422,7 +422,7 @@ export class RealtimeBrain {
     if (this.metered) {
       this.meteredHold ??= this.creditHold();
       void this.meteredHold.then(() => {
-        try { connect(); } catch { this.hooks.failed("realtime_failed"); }
+        try { connect(); } catch (error) { this.hooks.failed("realtime_failed", safeError(error)); }
       }).catch(() => {});
     } else connect();
   }
@@ -552,7 +552,7 @@ export class RealtimeBrain {
     const now = this.clock.now();
     this.reconnects = [...this.reconnects.filter(at => now - at < REALTIME_LIMITS.reconnectWindowMs), now];
     const retrying = retryable && this.reconnects.length <= REALTIME_LIMITS.reconnects;
-    this.hooks.log("voice_realtime_lost", { detail: detail.slice(0, 300), attempt: this.reconnects.length, retrying });
+    this.hooks.log("voice_realtime_lost", { detail: safeError(detail), attempt: this.reconnects.length, retrying });
     for (const response of [this.current, this.playing]) {
       if (!response || response.done) continue;
       response.done = true;
@@ -560,7 +560,7 @@ export class RealtimeBrain {
       if (!response.played) { response.turn?.end("error"); this.settle(response, 0); }
     }
     this.current = undefined;
-    if (!retrying) { this.hooks.failed("realtime_failed"); return; }
+    if (!retrying) { this.hooks.failed("realtime_failed", safeError(detail)); return; }
     this.stats.reconnects++;
     this.open();
   }
