@@ -3,9 +3,13 @@ import { transaction, type Db, type Sql } from "../db.ts";
 /**
  * A stored record as jsonb, for its kind and markers. jsonb refuses a NUL (`\u0000`, a binary file's text in a tool result,
  * say), and so does json's `->>`: it becomes `\u0001` first, an escape of the same shape, so the JSON stays valid; the
- * fields read here never hold one.
+ * fields read here never hold one. Text jsonb refuses for another reason (half of a surrogate pair, from text cut in the
+ * middle of an emoji) reads as null: no kind, so nothing selects that record, nor a session by a marker it cannot read.
  */
-const json = (column: string) => `(replace(${column}, '\\u0000', '\\u0001')::jsonb)`;
+const json = (column: string) => {
+  const text = `replace(${column}, '\\u0000', '\\u0001')`;
+  return `(case when pg_input_is_valid(${text}, 'jsonb') then ${text}::jsonb end)`;
+};
 
 /**
  * What a reclaim stage removes from session $1 (plans/journal-reclaim.md): the entries it selects (`id`, `bytes`), and
