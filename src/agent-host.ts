@@ -17,7 +17,7 @@ import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, step, va
 import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
-import { MODEL_INTERRUPTED, modelFailure, retriesModelError } from "./model-errors.ts";
+import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isImageRejection } from "./model-errors.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
@@ -25,7 +25,7 @@ import { describeFile, documentPayload, FILE_LIMITS, IMAGE_PAST_BUDGET, nativeBl
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
 import { observeTurns, recordCodeExecution } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
-import { imageHeader } from "./image-header.ts";
+import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
 import { clock } from "./node-context.ts";
 import { usageMissing } from "./platform-pricing.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
@@ -167,6 +167,8 @@ export function createAgentHost(hostIO: HostIO) {
   const waitingToFit: (() => void)[] = [];
   /** Whether the model request being built carries a PDF, whose block the provider payload needs rewritten. */
   let documents = false;
+  /** A provider refused an intact image: omit every image for the rest of this turn only. */
+  let omitImages = false;
   /** History index writes, one at a time. */
   let indexing = Promise.resolve();
   /** About how much of the history the index lacks, in bytes, as messages end: a pass reads the journal only past a chunk. */
@@ -529,13 +531,13 @@ export function createAgentHost(hostIO: HostIO) {
 
   /** A referenced file's bytes as the request carries them: an image scaled down if it must be (`fitImage`), or why it is omitted. */
   async function fileData(ref: FileRef): Promise<Hydrated> {
+    if (omitImages && ref.media?.kind === "image") return { omitted: IMAGE_DAMAGED };
     const key = ref.chunks.join("");
     let data = hydrated.get(key);
     if (data !== undefined) hydrated.delete(key);
     else {
       const read = await io.file(ref);
-      const media = ref.media;
-      const fitted = media?.kind === "image" && !fits(media.width, media.height, ref.size) ? await scaled(Buffer.from(read, "base64")) : undefined;
+      const fitted = ref.media?.kind === "image" ? await scaled(Buffer.from(read, "base64")) : undefined;
       // Kept only when the next request would get the same: one that failed for now tries again then.
       if (fitted && "omitted" in fitted && fitted.transient) return fitted;
       data = fitted ? hydratedImage(fitted) : { data: read };
@@ -559,16 +561,18 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
-   * An image block as a request may carry it: as it is when its header is within `fits`, else scaled down,
+   * An image block as a request may carry it: intact bytes as they are when the header is within `fits`, else scaled down,
    * or a placeholder in its place when it cannot be. The journal is not changed: it heals in the request.
    * Written to the journal (`writing`), an image that failed only for now stays as it is, for requests to try again.
    */
   async function fittedBlock(block: { type: "image"; data: string; mimeType: string }, writing: boolean): Promise<{ type: "image"; data: string; mimeType: string } | { type: "text"; text: string }> {
     if (block.mimeType === "application/pdf") return block;
-    // The header is near the start: a JPEG's may follow its metadata, so the whole image is decoded only when the start lacks it.
-    const header = imageHeader(Buffer.from(block.data.slice(0, 64 * 1024), "base64")) ?? (block.data.length > 64 * 1024 ? imageHeader(Buffer.from(block.data, "base64")) : undefined);
-    if (header && fits(header.width, header.height, Math.floor(block.data.length * 3 / 4))) return block;
-    const fitted = await scaled(Buffer.from(block.data, "base64"));
+    if (!writing && omitImages) return { type: "text", text: `[image omitted: ${IMAGE_DAMAGED}]` };
+    const bytes = Buffer.from(block.data, "base64");
+    const header = imageHeader(bytes);
+    if (!imageIntact(bytes, block.mimeType)) return { type: "text", text: `[image omitted: ${IMAGE_DAMAGED}]` };
+    if (header && fits(header.width, header.height, bytes.length)) return block;
+    const fitted = await scaled(bytes);
     if (writing && "omitted" in fitted && fitted.transient) return block;
     return "omitted" in fitted ? { type: "text", text: `[image omitted: ${fitted.omitted}]` } : { type: "image", data: fitted.data.toString("base64"), mimeType: fitted.mimeType };
   }
@@ -710,8 +714,8 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
-   * Recover failed responses within the same turn: transient provider failures retry with backoff, and the failed
-   * response is retracted, so it never becomes history.
+   * Recover failed responses within the same turn: transient provider failures retry with backoff; an image refusal
+   * gets one try without images. The failed response is retracted, so it never becomes history.
    */
   async function recoverFailedResponses(signal: AbortSignal) {
     const policy = config.retry ?? DEFAULT_RETRY;
@@ -726,7 +730,17 @@ export function createAgentHost(hostIO: HostIO) {
       const interrupted = last.errorMessage === MODEL_INTERRUPTED;
       // What the API reports as `retryable` (model-errors.ts): a tenant's own endpoint has retried already, so its errors
       // (a credit gate's 402, say) end the turn; a stream that went quiet is retried like any.
-      if (!retriesModelError(last, failureContext())) return;
+      if (!retriesModelError(last, failureContext())) {
+        if (omitImages || !isImageRejection(last.errorMessage)) return;
+        omitImages = true;
+        console.log(JSON.stringify({ type: "image_rejected", agent: config.id }));
+        await journal.retract();
+        io.emit({ type: "message_retracted", index: journal.total });
+        await agent!.continue();
+        // This fallback gets one try, independently of the transient retry budget.
+        if ((agent!.state.messages.at(-1) as AssistantMessage | undefined)?.stopReason === "error") return;
+        continue;
+      }
       if (!interrupted && attempt > policy.maxAttempts) {
         io.emit({ type: "auto_retry_end", success: false, attempt: attempt - 1, finalError: last.errorMessage, failure: modelFailure(last, failureContext()) });
         return;
@@ -1048,6 +1062,7 @@ export function createAgentHost(hostIO: HostIO) {
     const promptMessages = method === "prompt" ? userMessages(params) : undefined;
     busy = true;
     stopped = undefined;
+    omitImages = false;
     output = undefined;
     forcing = { left: FORCED_OUTPUT_REQUESTS, reminding: false, last: false };
     active = new AbortController();

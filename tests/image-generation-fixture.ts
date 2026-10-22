@@ -1,5 +1,8 @@
+import { pngBytes as png } from "./file-fixtures.ts";
 import { createHash } from "node:crypto";
 import { free, listen, runtime, type T } from "./runtime-server.ts";
+
+export { png };
 
 // A runtime with image generation on a local stand-in for OpenAI's, for tests/image-generation*.test.ts.
 
@@ -19,16 +22,6 @@ const tenantsFile = {
   platformKeys: { openrouter: "fixture-platform-model-key", openai: "platform-openai-key" },
 };
 
-/** A PNG's header (signature and IHDR) for an image of this size: all image-header.ts reads. */
-export function png(width: number, height: number) {
-  const ihdr = Buffer.alloc(25);
-  ihdr.writeUInt32BE(13, 0);
-  ihdr.write("IHDR", 4, "latin1");
-  ihdr.writeUInt32BE(width, 8);
-  ihdr.writeUInt32BE(height, 12);
-  ihdr.set([8, 6, 0, 0, 0], 16);
-  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), ihdr]);
-}
 export const PHOTO = png(1024, 1024);
 
 export type ImageCall = { key: string; apiKey?: string; path: string; fields: Record<string, string>; images: { name: string; type: string; bytes: number }[]; mask?: string };

@@ -1,7 +1,21 @@
-import { createDeflate } from "node:zlib";
+import { createDeflate, crc32, deflateSync } from "node:zlib";
 
-/** A 2×3 PNG's signature and header: enough for sniffing and inspection, which never decode pixels. */
-export const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), Buffer.from("IHDR"), Buffer.from([0, 0, 0, 2, 0, 0, 0, 3, 8, 2, 0, 0, 0])]);
+/** A complete PNG with transparent pixels, including chunk checksums. */
+export function pngBytes(width: number, height: number) {
+  const chunk = (type: string, data: Buffer) => {
+    const length = Buffer.alloc(4); length.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type), data]);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, crc]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4);
+  header[8] = 8; header[9] = 6;
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header), chunk("IDAT", deflateSync(Buffer.alloc((width * 4 + 1) * height))), chunk("IEND", Buffer.alloc(0))]);
+}
+
+export const PNG = pngBytes(2, 3);
 
 /** A minimal PDF with one line of text per page. */
 export function pdfBytes(pages: string[]) {

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { isContextOverflow, isRetryableAssistantError, type AssistantMessage } from "@earendil-works/pi-ai";
 import { errorClass } from "../src/metrics.ts";
-import { MODEL_INTERRUPTED, modelFailure, providerStatus, retriesModelError } from "../src/model-errors.ts";
+import { MODEL_INTERRUPTED, modelFailure, providerStatus, retriesModelError, isImageRejection } from "../src/model-errors.ts";
 import { isStalled } from "../src/model-stream.ts";
 
 const failed = (errorMessage: string, rawStopReason?: string) =>
@@ -83,4 +83,15 @@ test("a provider's HTTP status, wherever its error puts it", () => {
   assert.equal(providerStatus("Request timed out."), undefined);
   assert.equal(providerStatus("used 1500 tokens"), undefined, "a number that is no status");
   assert.equal(providerStatus(undefined), undefined);
+});
+
+
+test("image-load errors have a private metric class and a separate one-shot recovery", () => {
+  for (const message of ["Failed to load image: cannot identify image file", "CANNOT IDENTIFY IMAGE", "invalid image", "could not process image", "unable to process image", "image could not be decoded", "cannot decode image"]) {
+    assert.equal(isImageRejection(message), true);
+    assert.equal(errorClass(message), "image_rejected");
+    assert.equal(retriesModelError(failed(message), { ownEndpoint: false }), false);
+  }
+  assert.equal(isImageRejection("too many images"), false);
+  assert.equal(isImageRejection("400 invalid request"), false);
 });
