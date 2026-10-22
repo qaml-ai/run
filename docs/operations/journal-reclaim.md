@@ -69,5 +69,5 @@ index holds every message before what its journal holds (`agent_history_index.in
 marker's `total`, less the running turn's messages the marker keeps) is selected: nothing reads its host records any
 more. Sessions not loaded since that release keep their host transcript until they are, and a later run picks them up.
 The generation marker (`camel.host.bootstrap`), the `camel.host.disabled` entry, the base marker and its document, and
-every `pi_durable_record_ids` row stay, so a release from #374 on still refuses such a session as newer. Do not run
-stage 2 while a rollback below the host transcript's removal is still possible.
+every `pi_durable_record_ids` row stay, so a release from #374 on still refuses such a session as newer.
+Rollback below the host transcript's removal is no longer supported.

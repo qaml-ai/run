@@ -45,7 +45,7 @@ type CodeSlots = Map<string, { controller: AbortController; release?: () => void
 type ProcessHandle = Common & { kind: "process"; child: ChildProcess; rpc: Rpc; slots: CodeSlots; watchdog?: NodeJS.Timeout };
 type InlineHandle = Common & { kind: "inline"; host: ReturnType<typeof createAgentHost>; stop: (error: Error) => void; stopped: Promise<never> };
 type Handle = ProcessHandle | InlineHandle;
-export type SupervisorOptions = {
+type SupervisorOptions = {
   runtime?: string; maxAgents?: number;
   /**
    * The node takes no more agents while this process's resident memory is above this (AGENT_MEMORY_HIGH_BYTES): with
@@ -441,7 +441,7 @@ export class AgentSupervisor {
   /** An agent process's reads of its legacy log. */
   private async legacyRequest(handle: Handle, params: { op: string }) {
     if (params.op === "read") return handle.legacy.read();
-    if (params.op === "empty") return (await handle.legacy.readBounded?.(0))?.length === 0;
+    if (params.op === "empty") return (await handle.legacy.empty?.()) === true;
     throw new Error("Unknown legacy log operation");
   }
 

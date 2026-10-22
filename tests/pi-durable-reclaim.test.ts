@@ -134,7 +134,7 @@ test("stage 1 holds the claim against a first acquisition until deletion commits
 
 test("after reclaim a cold agent runs, pages history, and forks retained and pre-checkpoint messages", { timeout: 60_000 }, async t => {
   const r = await runtime(t, body => ({ role: "assistant", content: `answer to ${lastUser(body)}` }),
-    { AGENT_IDLE_MS: "1000", AGENT_PI_DUAL_WRITE: "1", AGENT_PI_HISTORY_SOURCE_TENANTS: "*" });
+    { AGENT_IDLE_MS: "1000" });
   const session = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const idle = () => until(async () => (await r.db.query("select 1 from agents a where id = $1 and not pending_runs and not exists (select 1 from actor_owners where actor = a.id and node is not null)", [session])).rowCount, "agent unload");
   await r.prompt(session, "first");

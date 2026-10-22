@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileStorage, memoryStorage, type Storage, type StorageMeter } from "../shared/storage.ts";
+import { fileStorage, memoryStorage, segmentLog, type Storage, type StorageMeter, type SegmentStore } from "../shared/storage.ts";
 import { storageOwner } from "../src/storage-usage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { testDatabase } from "./database.ts";
@@ -23,21 +23,36 @@ if (process.env.AGENT_TEST_S3_BUCKET) {
   backends.push(["s3", async (_t, meter) => s3Storage({ bucket: process.env.AGENT_TEST_S3_BUCKET!, region: process.env.AWS_REGION ?? "us-west-2", prefix: `tests/${randomUUID()}`, tail: await tail(), meter })]);
 }
 
+test("log emptiness refuses tail and compacted data without reading bodies or needing object sizes", async () => {
+  const real = await tail();
+  let last: number | undefined = 5, snapshots = [5];
+  const unreadable = async (): Promise<never> => { throw new Error("record bodies must not be read"); };
+  const store: SegmentStore = { list: async () => ({ segments: [], snapshots }), read: unreadable, create: unreadable, remove: unreadable };
+  const log = segmentLog(store, "old/log", { ...real, last: async () => last, rows: unreadable });
+  assert.equal(await log.empty!(), false, "a tail row, including an external blob, is data");
+  last = undefined;
+  assert.equal(await log.empty!(), false, "a compaction moved it to storage");
+  snapshots = [];
+  assert.equal(await log.empty!(), true, "only a log with no persisted data is empty");
+  await log.close(true);
+});
+
 for (const [name, open] of backends) {
-  test(`${name} storage: bounded reads accept small logs and defer oversized logs without mutation`, async t => {
+  test(`${name} storage: emptiness checks preserve logs, before and after tail compaction`, async t => {
     const storage = await open(t);
-    const key = `bounded/${randomUUID()}`;
+    const key = `empty/${randomUUID()}`;
     const log = storage.log<{ text: string }>(key);
+    assert.equal(await log.empty!(), true);
     log.append({ text: "saved" });
     await log.flush(true);
-    assert.deepEqual(await log.readBounded!(4096), [{ text: "saved" }]);
+    assert.equal(await log.empty!(), false);
     log.append({ text: "x".repeat(8192) });
     await log.flush(true);
-    assert.equal(await log.readBounded!(4096), undefined);
+    assert.equal(await log.empty!(), false);
     assert.equal((await log.read()).length, 2);
     await log.close();
     const reopened = storage.log<{ text: string }>(key);
-    assert.equal(await reopened.readBounded!(4096), undefined, "also applies after tail compaction");
+    assert.equal(await reopened.empty!(), false, "also applies after tail compaction");
     assert.equal((await reopened.read()).length, 2);
     await reopened.close();
   });

@@ -11,4 +11,4 @@ Every format the imports wrote is still read, including imports too large to cop
 whose history reads their legacy log first. A session whose history is still only
 in the legacy format is refused with 409 `AGENT_NOT_MIGRATED` (logged as
 `legacy_session_not_imported`), and nothing is written. New agents and forks are
-seeded straight into Pi. See [Pi durable sessions](pi-durable.md#sessions-from-the-legacy-engine).
+seeded straight into Pi. See `docs/operations/pi-durable.md`.

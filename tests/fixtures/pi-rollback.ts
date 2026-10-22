@@ -1,8 +1,8 @@
 /**
  * What a release with the legacy engine wrote when an operator rolled a session back off Pi (AGENT_ENGINE=legacy):
  * the legacy log rewritten from the native history, then the host generation disabled (`camel.host.disabled`, and the
- * host document's `enabled: false`). The legacy engine then appended its own turns to that log. Sessions left in this
- * state still exist, and this release imports them again.
+ * host document's `enabled: false`). The legacy engine then appended its own turns to that log. The current release refuses to start a session in this
+ * state, but still reads its history.
  */
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ConversationId, DocumentId, EntryId, JsonObject, Storage } from "@earendil-works/pi-durable";

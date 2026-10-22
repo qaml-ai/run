@@ -62,18 +62,17 @@ Every session the legacy engine kept was imported into Pi, when a host first ope
 it or by the migration sweep (both now removed). The runtime no longer reads a
 legacy transcript to import it. It still reads every format those imports wrote:
 
-- A session's Pi storage starts with a seed marker (`camel.legacy.migration`), then
-  its host generation (`camel.host.bootstrap`) with the records it started with as
-  archive blocks, a context checkpoint and its request IDs, all in one commit.
-  Releases before #326 refuse a root without the marker. New agents, imports and
-  forks start with the marker too, then their journal history's base, the history
-  they start with (an import's, as native entries; a fork's is copied into its
-  history index first), their context checkpoint and request IDs (`seedJournal`).
+- Every session starts with `camel.legacy.migration`, and its context checkpoint
+  uses `camel.legacy.context`. These persisted kinds stay the same for new agents,
+  imports of initial messages and forks. Older imports follow the seed marker with
+  their host generation (`camel.host.bootstrap`), archive blocks, a context
+  checkpoint and request IDs. New seeds follow it with their journal history's
+  base, initial history, context checkpoint and request IDs (`seedJournal`).
 - An import too large to copy (more than 64 MiB or 200,000 records) left its records
   in the session's legacy log (`archive: "legacy-log"` on the marker and the
-  generation). That log is read-only: the generation's history reads it first,
-  live, cold and for exports. A fork that large is seeded the same way, into its
-  own legacy log.
+  generation). Retirement reads that log first to backfill the history index.
+  New forks put their copied history into the history index, then seed their Pi
+  context; they do not write a legacy log.
 - Imports from before #322 have archive blocks and no generation of their own; their
   history reads the same way.
 
@@ -82,9 +81,9 @@ missing, or disabled by an earlier release's rollback to the legacy engine) is
 refused: its host logs `legacy_session_not_imported` (agent, tenant, `reason`:
 `legacy_log` or `not_on_pi`), and the request fails with 409 `AGENT_NOT_MIGRATED`.
 Nothing is written, so its history stays where it is, and readable (from its legacy
-log, and Pi's messages past it). To import one,
-run it on a release that still has the importer (before the importer's removal),
-then come back. The operator dashboard's "Agents not on Pi" counts them.
+log, and Pi's messages past it). This refusal protects old data; it is not an
+upgrade path. Every production agent is on Pi. Rollback below the host transcript's
+removal is no longer supported, and the migration dashboard check is gone.
 
 ## Persistence and billing
 

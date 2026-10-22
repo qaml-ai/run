@@ -16,9 +16,9 @@ export const SEED_MARKER_KIND = "camel.legacy.migration";
 export const SEED_RECORD_KIND = "camel.legacy.record";
 /** The host transcript's generation marker and archive blocks, in sessions seeded before its removal (retired-host.ts). */
 export const HOST_BOOTSTRAP_KIND = "camel.host.bootstrap", HOST_ARCHIVE_KIND = "camel.host.archive";
-export const CONTEXT_HEAD_KIND = "camel.legacy.context";
+const CONTEXT_HEAD_KIND = "camel.legacy.context";
 /** One message of a context checkpoint after its head entry: Pi can choose a compaction cut between them. */
-export const CONTEXT_MESSAGE_KIND = "camel.context.message";
+const CONTEXT_MESSAGE_KIND = "camel.context.message";
 /** Each Camel session has its own fenced Pi storage, so it uses Pi's reserved root. */
 export const SESSION_CONVERSATION_ID = 1 as ConversationId;
 const VERSION = 1;

@@ -28,7 +28,7 @@ export const HOST_SYSTEM_KIND = "camel.system";
 export const BASE_ADDRESS = { kind: "camel.history.base", scope: { kind: "session" as const } };
 
 /** The host transcript's state document and records (written by releases before its removal): read, never written, here. */
-export const SNAPSHOT_ADDRESS = { kind: "camel.host.snapshot", scope: { kind: "session" as const } };
+const SNAPSHOT_ADDRESS = { kind: "camel.host.snapshot", scope: { kind: "session" as const } };
 const RECORD_KIND = "camel.host.record";
 type Snapshot = { total: number; piCursor?: At; active: boolean; turnStart: number; awaiting?: string[]; calls?: [string, number][]; context?: AgentMessage[] };
 

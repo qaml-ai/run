@@ -4,7 +4,7 @@ import { transaction, type Db, type Sql } from "../db.ts";
  * What a reclaim stage removes from session $1 (plans/journal-reclaim.md): the entries it selects (`id`, `bytes`), and
  * the documents (`id`) whose revisions and rows go with them. IDs (`pi_durable_record_ids`) are never removed.
  */
-export interface ReclaimStage { name: string; entries: string; documents?: string }
+interface ReclaimStage { name: string; entries: string; documents?: string }
 
 /** Stage 1 only. IDs, native history, compactions, documents and the live context are never removed. */
 const obsolete = `with head as (
@@ -16,7 +16,7 @@ where e.session_id = $1 and e.conversation_id = 1 and e.id < head.start
   and (e.record::jsonb)->>'kind' in ('camel.legacy.context', 'camel.context.message', 'pi.system')`;
 
 /** Stage 1: context checkpoints superseded by a newer head. */
-export const CHECKPOINTS: ReclaimStage = { name: "checkpoints", entries: obsolete };
+const CHECKPOINTS: ReclaimStage = { name: "checkpoints", entries: obsolete };
 
 /**
  * Whether session $1's host transcript was retired (its first load on a release without it wrote `camel.host.disabled`

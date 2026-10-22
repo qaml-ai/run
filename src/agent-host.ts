@@ -1,10 +1,9 @@
-import { createHash } from "node:crypto";
 import { END_USER_CREDIT, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
 import { mkdir } from "node:fs/promises";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { COMPACTION_SUMMARY_PREFIX, convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import {
-  getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
+  getCurrentSystemMessage, getCurrentTools, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
   type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall, type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
@@ -147,8 +146,6 @@ export function createAgentHost(hostIO: HostIO) {
   let journal: HostJournal;
   /** How many of its messages the history index has (undefined: none is kept, or it could not be read at start). */
   let indexedTo: number | undefined;
-  /** The last system prompt hash logged for this agent (`systemPromptHash`). */
-  let lastPromptHash: string | undefined;
   let busy = false;
   let active: AbortController | undefined;
   /** Why the current run ended early: a spend limit, tool calls waiting on a person's input, or a hand-off (its node is leaving). */
@@ -334,19 +331,6 @@ export function createAgentHost(hostIO: HostIO) {
       await journal.push(message);
       io.emit({ type: "message_end", message });
     }
-  }
-
-  /**
-   * Temporary, for the instructions section's canary (#339): the hash of the system prompt the model is sent, as one
-   * leading prompt (what every model in the catalog gets), logged when it differs from this agent's last one here. A
-   * change that is not a configuration change shows a release changed the prompt. Hashes only, never the text.
-   */
-  function systemPromptHash(messages: Message[]) {
-    const system = getCurrentSystemMessage(messages);
-    const hash = system ? createHash("sha256").update(getSystemMessageText(system)).digest("hex").slice(0, 16) : "none";
-    if (hash === lastPromptHash) return;
-    console.log(JSON.stringify({ type: "system_prompt_hash", agent: config.id, hash, previous: lastPromptHash ?? null, sections: Object.keys(system?.sections ?? {}) }));
-    lastPromptHash = hash;
   }
 
   /** Whether the agent's system sections are native Pi sections: its tenant is in AGENT_NATIVE_SECTIONS_TENANTS (or `*`). */
@@ -794,7 +778,7 @@ export function createAgentHost(hostIO: HostIO) {
       : await io.legacyLog.empty() ? undefined : "legacy_log";
     if (legacy) {
       console.error(JSON.stringify({ type: "legacy_session_not_imported", agent: config.id, tenant: config.tenant, reason: legacy }));
-      throw new Error(`${NOT_MIGRATED}: this agent's history is in the legacy format (${legacy === "not_on_pi" ? "its Pi host generation is missing or disabled" : "only its legacy transcript holds it"}), which this release no longer imports. An operator must import it (docs/operations/pi-durable.md); nothing was changed`);
+      throw new Error(`${NOT_MIGRATED}: this agent's history is in the legacy format (${legacy === "not_on_pi" ? "its Pi host generation is missing or disabled" : "only its legacy transcript holds it"}), which this release no longer imports. This release cannot start it; nothing was changed`);
     }
     const leadingSystem = leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
     // Pi's context starts with the leading system message: before the history it was created with (`initialMessages`), or
@@ -888,7 +872,6 @@ export function createAgentHost(hostIO: HostIO) {
         // A structured run's request may force final_output (`outputChoice`).
         // The agent's maxOutputTokens and temperature go on each of its own calls (not compaction's summaries), as far as the call takes them.
         streamFn: (model, context, options) => {
-          systemPromptHash(context.messages as Message[]);
           const toolChoice = outputChoice(model);
           const settings = callSettings(model, config, options?.reasoning);
           return stream(model, context, { ...options, ...settings, ...(toolChoice === undefined ? {} : { toolChoice }), ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options);

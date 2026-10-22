@@ -108,20 +108,10 @@ variable "task_cpu" {
   default = 1024
 }
 
-# 4 GiB: a Pi session's first load imports its legacy history in-process (one task peaked at 2.4 GiB on 2026-10-21).
+# 4 GiB for loaded Pi sessions and their model/tool work.
 variable "task_memory" {
   type    = number
   default = 4096
-}
-
-variable "agent_engine" {
-  description = "AGENT_ENGINE, kept at pi-durable for images before the legacy engine's removal (which default to legacy without it; a deploy rollback may run one). The current image ignores it. Remove once no image that reads it can be deployed."
-  type        = string
-  default     = "pi-durable"
-  validation {
-    condition     = var.agent_engine == "pi-durable"
-    error_message = "agent_engine is pi-durable: the legacy engine was removed, and an older image rolled back to it would take sessions off Pi."
-  }
 }
 
 variable "service_min_count" {

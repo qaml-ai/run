@@ -162,6 +162,8 @@ test("a definition with applyOnUpdate reaches its live agents on every save that
   // A PATCH revises it too; turning applyOnUpdate off is saved without applying, and later saves reach new agents only.
   const patched = await r.call(`/v1/definitions/${created.json.id}`, { method: "PATCH", body: { systemPrompt: "You are builder v3." } });
   assert.equal(patched.json.applied.length, 2);
+  // An apply can be queued: let both agents persist it before advancing the definition again.
+  await until(async () => (await r.call(`/v1/definitions/${created.json.id}/agents`)).json.every((agent: any) => agent.revision === 3), "both agents to take revision 3");
   const off = await r.call(`/v1/definitions/${created.json.id}`, { method: "PATCH", body: { applyOnUpdate: null } });
   assert.equal(off.json.applyOnUpdate, undefined);
   assert.equal(off.json.applied, undefined);
