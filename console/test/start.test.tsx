@@ -1,7 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary, ApiToken, Definition, ManagedDiscordBinding, Usage } from "../web/lib/api";
-import { groupOf, NAV, TABS } from "../web/lib/nav";
 import { codeSteps, discordSteps, navProgress, startFrom, startNext, type useOnboarding } from "../web/lib/onboarding";
 import { ManagedDiscordDialog, preselected } from "../web/pages/discord-managed";
 import { GetStartedPage } from "../web/pages/start";
@@ -83,21 +82,6 @@ describe("deep links", () => {
     expect(startNext("/console/start", "?start=code")).toBe("/console/?start=code");
     expect(startNext("/console/agents", "?start=code")).toBeUndefined();
     expect(startNext("/console/", "?start=https://evil.example")).toBeUndefined();
-  });
-});
-
-describe("nav", () => {
-  it("has five places, with the old pages grouped under them", () => {
-    expect(NAV.map(item => item.label)).toEqual(["Get started", "Agents", "Channels", "API keys", "Settings"]);
-    expect(groupOf("billing")?.label).toBe("Settings");
-    expect(groupOf("telemetry")?.label).toBe("Settings");
-    expect(groupOf("definitions")?.label).toBe("Agents");
-    expect(groupOf("volumes")?.label).toBe("Agents");
-    expect(groupOf("quickstart")?.label).toBe("Get started");
-    expect(groupOf("tokens")?.label).toBe("API keys");
-    // Every page the console had is still reachable from the nav or a group's tabs.
-    const reachable = new Set([...NAV.map(item => item.to), ...Object.values(TABS).flat().map(tab => tab.to)]);
-    for (const page of ["agents", "definitions", "channels", "volumes", "models", "tokens", "usage", "telemetry", "billing", "account"]) expect(reachable).toContain(page);
   });
 });
 

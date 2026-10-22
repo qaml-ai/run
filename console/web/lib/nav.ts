@@ -1,15 +1,55 @@
-import { Bot, KeyRound, MessageCircle, Rocket, Settings } from "lucide-react";
+import { BarChart3, Bot, Boxes, CreditCard, FileCode, HardDrive, KeyRound, MessageCircle, Rocket, Settings, SlidersHorizontal, type LucideIcon } from "lucide-react";
 
-/** Five places; each owns the pages under it (old URLs keep working), and pages in a group share its tabs. */
-export const NAV = [
-  { to: "start", label: "Get started", icon: Rocket, sections: ["start", "quickstart"] },
-  { to: "agents", label: "Agents", icon: Bot, sections: ["agents", "definitions", "workspaces", "volumes"] },
-  { to: "channels", label: "Channels", icon: MessageCircle, sections: ["channels"] },
-  { to: "tokens", label: "API keys", icon: KeyRound, sections: ["tokens"] },
-  { to: "models", label: "Settings", icon: Settings, sections: ["models", "usage", "billing", "telemetry", "account"] },
+export interface NavItem { to: string; label: string; icon: LucideIcon; sections: string[] }
+
+/** Get started sits above the groups while a path is in progress, then beside Docs. */
+export const START: NavItem = { to: "start", label: "Get started", icon: Rocket, sections: ["start", "quickstart"] };
+/** What the workspace switcher scopes: only what the server scopes (agents, definitions and their spend). */
+export const WORKSPACE_NAV: NavItem[] = [
+  // Home ("") is the agents list until Overview lands.
+  { to: "agents", label: "Agents", icon: Bot, sections: ["", "agents"] },
+  { to: "definitions", label: "Definitions", icon: FileCode, sections: ["definitions"] },
+  { to: "usage", label: "Usage", icon: BarChart3, sections: ["usage"] },
+  { to: "workspaces", label: "Workspaces", icon: Boxes, sections: ["workspaces"] },
 ];
+/** Account-wide pages: they never change with the switcher. */
+export const ACCOUNT_NAV: NavItem[] = [
+  { to: "channels", label: "Channels", icon: MessageCircle, sections: ["channels"] },
+  { to: "volumes", label: "Volumes", icon: HardDrive, sections: ["volumes"] },
+  { to: "tokens", label: "API keys", icon: KeyRound, sections: ["tokens"] },
+  { to: "models", label: "Models & keys", icon: SlidersHorizontal, sections: ["models"] },
+  { to: "billing", label: "Billing", icon: CreditCard, sections: ["billing"] },
+  { to: "telemetry", label: "Settings", icon: Settings, sections: ["telemetry", "account"] },
+];
+export const NAV: NavItem[] = [START, ...WORKSPACE_NAV, ...ACCOUNT_NAV];
+/** Places that group several pages show them as link tabs; each page keeps its own URL. */
 export const TABS: Record<string, { to: string; label: string }[]> = {
-  agents: [{ to: "agents", label: "Agents" }, { to: "definitions", label: "Definitions" }, { to: "workspaces", label: "Workspaces" }, { to: "volumes", label: "Volumes" }],
-  models: [{ to: "models", label: "Models & keys" }, { to: "usage", label: "Usage" }, { to: "billing", label: "Billing" }, { to: "telemetry", label: "Telemetry" }, { to: "account", label: "Account" }],
+  telemetry: [{ to: "telemetry", label: "Telemetry" }, { to: "account", label: "Account" }],
 };
 export const groupOf = (section: string) => NAV.find(item => item.sections.includes(section));
+
+const SCOPED = new Set(WORKSPACE_NAV.flatMap(item => item.sections));
+/** Whether a page (its first path segment) follows the workspace switcher. */
+export const isScoped = (section: string) => SCOPED.has(section);
+
+/**
+ * Where an old or shorthand URL now lives, or undefined when it is current. `path` is relative to /console/, `search`
+ * includes its `?`. Returns the path (with query) to replace it with.
+ */
+export function redirectFor(path: string, search: string): string | undefined {
+  const [section, id] = path.split("/");
+  const query = new URLSearchParams(search);
+  if (section === "settings" && !id) return withQuery("telemetry", query);
+  // Usage's workspace filter was ?workspaceId= before the switcher.
+  if (section === "usage" && query.has("workspaceId")) {
+    const ws = query.get("workspaceId")!;
+    query.delete("workspaceId");
+    if (ws && ws !== "all") query.set("ws", ws); else query.delete("ws");
+    return withQuery(path, query);
+  }
+  // A workspace's settings page selects that workspace.
+  if (section === "workspaces" && id && query.get("ws") !== id) { query.set("ws", id); return withQuery(path, query); }
+  return undefined;
+}
+
+const withQuery = (path: string, query: URLSearchParams) => query.toString() ? `${path}?${query}` : path;
