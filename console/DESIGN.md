@@ -66,9 +66,17 @@ offscreen and in hidden tabs, and paint a still frame under reduced motion.
 
 ## Structure
 
-- The nav has five places (`web/lib/nav.ts`): Get started, Agents, Channels, API keys and Settings, then Docs and Get
-  help. Get started shows its progress until a path is done, then moves beside Docs. Agents and Settings group the
-  other pages as link tabs; each page keeps its URL.
+- The nav has two groups (`web/lib/nav.ts`). The workspace switcher sits above the pages it scopes: Agents,
+  Definitions, Usage and Workspaces (Workspace settings when one is selected). It scopes only what the server scopes,
+  and is hidden for an account with no workspaces. Below it, **Account** holds what is account-wide and never changes
+  with it: Channels, Volumes, API keys, Models & keys, Billing and Settings (Telemetry and Account as link tabs).
+  Then Docs and Get help. Get started shows its progress at the top until a path is done, then moves beside Docs.
+- The selected workspace is `?ws=` (a workspace id or `unassigned`; absent is all) on scoped pages. Links between
+  scoped pages carry it (`web/lib/router.tsx`), account pages drop it, and the browser remembers it for the way back.
+  Pages read it with `useWorkspace()` (`web/lib/workspace.ts`). Every old URL keeps working; `redirectFor` replaces
+  the ones whose page moved.
+- Workspaces wear the gray ramp (`--chart-3`, `--chart-2`, `--chart-4`, then hatched), never a hue: signal blue keeps
+  meaning "live".
 - Every page header links its docs page (`PageHeader`'s `docs`, `LearnMore`) on the docs site people read
   (`web/lib/docs.ts`). An empty list says what the thing is and gives the one action to take (`EmptyState`'s `action`).
 - Get started's checklists tick from the account's real state through existing endpoints (`web/lib/onboarding.ts`);

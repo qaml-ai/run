@@ -7,10 +7,14 @@ import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorAlert, PageHeader, Stats } from "@/components/common";
 import { formatCost, formatNumber, useApi, type Usage, type Workspace } from "@/lib/api";
 import { Link } from "@/lib/router";
+import { useWorkspace } from "@/lib/workspace";
 
 export function UsagePage() {
   const [days, setDays] = useState("30");
-  const [workspaceId, setWorkspaceId] = useState(new URLSearchParams(location.search).get("workspaceId") ?? "all");
+  // The sidebar's switcher and this filter are one choice, kept in ?ws=.
+  const { ws, setWorkspace } = useWorkspace();
+  const workspaceId = ws ?? "all";
+  const setWorkspaceId = (value: string) => setWorkspace(value === "all" ? undefined : value);
   const workspaces = useApi<Workspace[]>("/v1/workspaces");
   const usage = useApi<Usage>(`/v1/usage?days=${days}${workspaceId === "all" ? "" : `&workspaceId=${encodeURIComponent(workspaceId)}`}`);
   const totals = usage.data?.totals;

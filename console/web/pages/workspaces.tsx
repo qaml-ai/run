@@ -7,6 +7,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { api, formatCost, useApi, type AgentSummary, type Workspace, type WorkspaceMembership, type Usage } from "@/lib/api";
 import { Link } from "@/lib/router";
 
+/** Dispatched on window after a workspace is created, renamed or archived, so the sidebar's switcher follows. */
+export const WORKSPACES_CHANGED = "console:workspaces-changed";
+
 export function WorkspacesPage() {
   const workspaces = useApi<Workspace[]>("/v1/workspaces");
   const memberships = useApi<WorkspaceMembership[]>("/v1/workspace-memberships");
@@ -18,7 +21,7 @@ export function WorkspacesPage() {
   const [busy, setBusy] = useState(false);
   async function write(action: () => Promise<unknown>) {
     setBusy(true); setError(undefined);
-    try { await action(); await Promise.all([workspaces.reload(), memberships.reload(), usage.reload()]); }
+    try { await action(); await Promise.all([workspaces.reload(), memberships.reload(), usage.reload()]); dispatchEvent(new Event(WORKSPACES_CHANGED)); }
     catch (error) { setError(error); }
     finally { setBusy(false); }
   }
@@ -27,7 +30,7 @@ export function WorkspacesPage() {
     <PageHeader title="Workspaces" description="Group agents and definitions by project. New agents inherit their definition’s workspace. Earlier spend stays where it happened." />
     <ErrorAlert error={error ?? workspaces.error ?? memberships.error ?? agents.error ?? definitions.error ?? usage.error} />
     <form className="mb-6 flex max-w-lg gap-2" onSubmit={event => { event.preventDefault(); void write(async () => { await api("/v1/workspaces", { body: { name: name.trim() } }); setName(""); }); }}>
-      <Input aria-label="Workspace name" placeholder="Workspace name" maxLength={120} value={name} onChange={event => setName(event.target.value)} />
+      <Input aria-label="Workspace name" autoFocus={location.hash === "#new"} placeholder="Workspace name" maxLength={120} value={name} onChange={event => setName(event.target.value)} />
       <Button disabled={busy || !name.trim()}>Create workspace</Button>
     </form>
     {workspaces.data?.length === 0 ? <EmptyState icon={<FolderOpen />} title="Organize your agents">Create a workspace for a project, team, or use case, then assign its agents below.</EmptyState> : <div className="mb-8 border bg-card">
@@ -58,7 +61,7 @@ function WorkspaceRow({ workspace, cost, busy, write }: { workspace: Workspace; 
   const [name, setName] = useState(workspace.name);
   return <TableRow>
     <TableCell><Input aria-label={`Rename ${workspace.name}`} value={name} maxLength={120} onChange={event => setName(event.target.value)} /></TableCell>
-    <TableCell className="text-right font-mono tabular-nums"><Link to={`usage?workspaceId=${workspace.id}`}>{formatCost(cost)}</Link></TableCell>
+    <TableCell className="text-right font-mono tabular-nums"><Link to={`usage?ws=${workspace.id}`}>{formatCost(cost)}</Link></TableCell>
     <TableCell>{workspace.archived ? "Archived" : "Active"}</TableCell>
     <TableCell><div className="flex justify-end gap-2">
       <Button size="sm" variant="outline" disabled={busy || !name.trim() || name.trim() === workspace.name} onClick={() => void write(() => api(`/v1/workspaces/${workspace.id}`, { method: "PATCH", body: { name: name.trim() } }))}>Save name</Button>
