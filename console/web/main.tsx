@@ -15,12 +15,13 @@ import { SignedInAs } from "@/components/signed-in-as";
 import { setHelpTenant } from "@/lib/help-context";
 import { api, useApi, type Me, type Billing, type AgentSummary, type Workspace } from "@/lib/api";
 import { groupOf, redirectFor, TABS } from "@/lib/nav";
-import { navProgress, startFrom, useOnboarding } from "@/lib/onboarding";
+import { homeIsGetStarted, navProgress, startFrom, useOnboarding } from "@/lib/onboarding";
 import { Link, navigate, usePath, useSearch } from "@/lib/router";
 import { reportPages } from "@/lib/journey";
 import { cn } from "@/lib/utils";
 import { AccountPage } from "@/pages/account";
 import { AgentsPage } from "@/pages/agents";
+import { OverviewPage } from "@/pages/overview";
 import { AgentPage } from "@/pages/agent";
 import { ChannelsPage } from "@/pages/channels";
 import { DefinitionsPage } from "@/pages/definitions";
@@ -99,8 +100,8 @@ function Console({ me }: { me: Me }) {
   const isAgentsList = section === "agents" && !rest[0];
   // Whether the account has any agent: one, not the list (the Agents page pages its own).
   const agents = useApi<AgentSummary[]>(!section || isAgentsList ? "/v1/agents?limit=1" : undefined, 10_000);
-  // Home is Get started for an account with no agents (or a use-case start's deep link), and the agents list after.
-  const home = !section && (!!startFrom(location.search) || agents.data?.length === 0);
+  // Home is Get started for an account with no agents (or a use-case start's deep link), and Overview after.
+  const home = !section && homeIsGetStarted(location.search, agents.data?.length);
   const starting = home || section === "start" || section === "quickstart";
   // One read for the nav's progress; on Get started, polled, so its steps tick as they happen.
   const onboarding = useOnboarding(starting ? 5_000 : undefined);
@@ -119,8 +120,9 @@ function Console({ me }: { me: Me }) {
     : section === "telemetry" ? <TelemetryPage me={me} />
     : section === "billing" ? <BillingPage state={billingState} />
     : section === "account" ? <AccountPage me={me} />
+    : !section ? <OverviewPage billing={billing.data} />
     : <AgentsPage hasAgents={agents.data ? agents.data.length > 0 : agents.error ? true : undefined} billing={billing} />;
-  const active = home ? "start" : section || "agents";
+  const active = home ? "start" : groupOf(section) ? section : "agents";
   const group = groupOf(active);
   const tabs = group && TABS[group.to] && !rest[0] ? group.to : undefined;
   // Get started stays at the top of the nav, with its progress, until a path is done; then it sits beside Docs.

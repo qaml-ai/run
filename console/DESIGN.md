@@ -66,7 +66,8 @@ offscreen and in hidden tabs, and paint a still frame under reduced motion.
 
 ## Structure
 
-- The nav has two groups (`web/lib/nav.ts`). The workspace switcher sits above the pages it scopes: Agents,
+- The nav has two groups (`web/lib/nav.ts`). The workspace switcher sits above the pages it scopes: Overview (home once
+  an account has an agent; Get started before), Agents,
   Definitions, Usage and Workspaces (Workspace settings when one is selected). It scopes only what the server scopes,
   and is hidden for an account with no workspaces. Below it, **Account** holds what is account-wide and never changes
   with it: Channels, Volumes, API keys, Models & keys, Billing and Settings (Telemetry and Account as link tabs).
@@ -78,6 +79,8 @@ offscreen and in hidden tabs, and paint a still frame under reduced motion.
 - Scoped lists filter by it and say so above their title (`ScopeCrumb`); a workspace is shown with `WorkspaceTag`
   and changed with `MoveMenu` (`components/workspace-ui.tsx`), never a native select. An account with no workspaces
   sees no workspace column, selection or crumb.
+- Charts are allowed on Overview and Usage only: plain SVG bars in `--chart-3` inside `border bg-card` frames, each bar
+  titled with its value, never a hue (signal blue stays status). Failures show their class and time, never their text.
 - Workspaces wear the gray ramp (`--chart-3`, `--chart-2`, `--chart-4`, then hatched), never a hue: signal blue keeps
   meaning "live".
 - Every page header links its docs page (`PageHeader`'s `docs`, `LearnMore`) on the docs site people read

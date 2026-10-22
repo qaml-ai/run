@@ -1,4 +1,4 @@
-import { BarChart3, Bot, Boxes, CreditCard, FileCode, HardDrive, KeyRound, MessageCircle, Rocket, Settings, SlidersHorizontal, type LucideIcon } from "lucide-react";
+import { BarChart3, Bot, Boxes, CreditCard, FileCode, HardDrive, KeyRound, LayoutDashboard, MessageCircle, Rocket, Settings, SlidersHorizontal, type LucideIcon } from "lucide-react";
 
 export interface NavItem { to: string; label: string; icon: LucideIcon; sections: string[] }
 
@@ -6,8 +6,9 @@ export interface NavItem { to: string; label: string; icon: LucideIcon; sections
 export const START: NavItem = { to: "start", label: "Get started", icon: Rocket, sections: ["start", "quickstart"] };
 /** What the workspace switcher scopes: only what the server scopes (agents, definitions and their spend). */
 export const WORKSPACE_NAV: NavItem[] = [
-  // Home ("") is the agents list until Overview lands.
-  { to: "agents", label: "Agents", icon: Bot, sections: ["", "agents"] },
+  // Home: Overview for an account with agents (Get started before its first).
+  { to: "", label: "Overview", icon: LayoutDashboard, sections: [""] },
+  { to: "agents", label: "Agents", icon: Bot, sections: ["agents"] },
   { to: "definitions", label: "Definitions", icon: FileCode, sections: ["definitions"] },
   { to: "usage", label: "Usage", icon: BarChart3, sections: ["usage"] },
   { to: "workspaces", label: "Workspaces", icon: Boxes, sections: ["workspaces"] },
@@ -40,6 +41,7 @@ export function redirectFor(path: string, search: string): string | undefined {
   const [section, id] = path.split("/");
   const query = new URLSearchParams(search);
   if (section === "settings" && !id) return withQuery("telemetry", query);
+  if (section === "overview" && !id) return withQuery("", query);
   // Usage's workspace filter was ?workspaceId= before the switcher.
   if (section === "usage" && query.has("workspaceId")) {
     const ws = query.get("workspaceId")!;

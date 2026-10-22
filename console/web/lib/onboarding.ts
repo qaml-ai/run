@@ -7,6 +7,9 @@ export const startFrom = (search: string): Start | undefined => {
   return start === "discord" || start === "code" ? start : undefined;
 };
 
+/** Whether home (/console/) is Get started: a use-case start's deep link, or an account with no agent yet. Else Overview. */
+export const homeIsGetStarted = (search: string, agents: number | undefined) => !!startFrom(search) || agents === 0;
+
 /** Where sign-in returns a deep link to: only /console/?start=<a start>, which the server's sign-in also accepts. */
 export const startNext = (pathname: string, search: string) => {
   const start = startFrom(search);
