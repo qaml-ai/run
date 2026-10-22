@@ -69,6 +69,17 @@ test("records holding a NUL (a binary file read as text) neither stop a run nor 
   assert.deepEqual(await kinds(host.db, host.session), ["camel.legacy.migration", "camel.host.bootstrap", "camel.user", "camel.history.marker", "camel.host.disabled"]);
 });
 
+test("a record jsonb cannot read (half an emoji) is never selected, and the rest of its session still is", async () => {
+  const { db, session, before } = await fixture();
+  // As JSON.stringify writes a lone surrogate: the text before a cut in the middle of an emoji.
+  const unreadable = JSON.stringify({ id: 1, conversationId: 1, kind: "camel.context.message", data: { text: "🟥\ud83d" } });
+  assert.ok(unreadable.includes("\\ud83d"));
+  await db.query("insert into pi_durable_entries (session_id, id, conversation_id, head, commit_seq, record) values ($1, 1, 1, null, 1, $2)", [session, unreadable]);
+  assert.equal((await reclaimCheckpoints(db, { session }, () => {})).rows, 3);
+  await reclaimCheckpoints(db, { apply: true, session }, () => {});
+  assert.deepEqual((await snapshot(db, session)).map(row => Number(row.id)), [1, ...before.map(row => Number(row.id)).filter(id => ![2, 3, 4].includes(id))]);
+});
+
 test("stage 1 skips live owners (including draining nodes), pending runs, and every nonterminal task status", async () => {
   const { db, session, before } = await fixture();
   const node = randomUUID(), lease = randomUUID();
