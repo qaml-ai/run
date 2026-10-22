@@ -880,6 +880,12 @@ tool's exposure (**Tools the model gets**), and `GET /v1/agents/:id` its
 
 Pass `tools` to `upsert` and this process serves them to the agent:
 
+For an agent that needs Linux commands, package installation and a server that
+stays running between turns, see the [computer example](https://github.com/qaml-ai/run/blob/main/examples/computer/README.md).
+It attaches a private Modal, Daytona or boat environment through the same tool
+interface. This is an integration example: camelRun does not yet provision or
+bill these computers itself, and the adapter process must remain connected.
+
 ```ts
 const agent = await agents.upsert("ops", { model, instructions, tools: { refund } });
 ```

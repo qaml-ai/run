@@ -1,0 +1,6 @@
+# Only install the provider you use. These are example dependencies, not runtime dependencies.
+modal==1.2.4
+daytona==0.226.0
+# httpx-ws used by Daytona needs AsyncContextManagerMixin from recent AnyIO.
+anyio>=4.14,<5
+boat-sdk==1.10.0
