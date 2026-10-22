@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { Sim } from "./sim/sim.ts";
 import type { SimDb } from "./sim/db.ts";
 import { runPlan } from "./sim/run.ts";
-import { resumeId } from "../src/client-sessions.ts";
+import { resumeId } from "../src/client-sessions/inputs.ts";
 import type { Plan } from "./sim/workload.ts";
 import { prompt, outcome } from "./sim/scenario.ts";
 

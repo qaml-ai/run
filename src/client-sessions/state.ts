@@ -31,6 +31,8 @@ import type { Backlog } from "../history-pages.ts";
 import type { Inputs, RetryPlan } from "../inputs.ts";
 import type { BackgroundSpans, RunSpans, ToolSource, Tracing } from "../telemetry.ts";
 
+export const validSessionId = (value: string) => /^client_[a-f0-9]{40}$/.test(value);
+
 export type SessionConfig = Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">;
 /** Rarely-changing session identity and configuration (a row in `agents`); rewritten only when it changes. */
 export interface SessionHeader {
