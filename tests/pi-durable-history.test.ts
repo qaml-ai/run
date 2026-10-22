@@ -12,7 +12,7 @@ import { HistoryIndex } from "../src/history-pages.ts";
 import { seedWithoutGeneration } from "./fixtures/pi-seed-before-322.ts";
 import { hasPiStorage, openPiStorage } from "../src/pi-durable/storage.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
-import type { TranscriptRecord } from "../src/transcript.ts";
+import type { TranscriptRecord } from "./fixtures/host-transcript.ts";
 import { testDatabase } from "./database.ts";
 
 test("cold paginated history of an import before #322 includes a native commit beyond an up-to-date legacy index, without starting or writing the session", async t => {

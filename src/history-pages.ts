@@ -3,7 +3,12 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Storage } from "../shared/storage.ts";
 import { underClaim, type Claim } from "./ownership.ts";
 import type { Db, Sql } from "./db.ts";
-import type { Backlog } from "./transcript.ts";
+
+/**
+ * Messages the agent's history index does not have yet, from absolute index `from` on, with each one's size (its JSON's
+ * length), and where runs began among them.
+ */
+export interface Backlog { from: number; messages: AgentMessage[]; sizes: number[]; turns: number[] }
 
 /** Messages from absolute index `start`, and where turns begin among them. */
 export type HistoryChunk = { start: number; messages: AgentMessage[]; turns: number[] };
@@ -98,18 +103,19 @@ export class HistoryIndex {
   /**
    * Write a chunk where the index ends, under the owner's claim; returns where the index ends now.
    * A chunk that does not start there (another writer indexed these messages first) is not written.
+   * `creating`: the agent is being made (a fork's copied history), and has no row yet.
    */
-  async write(agent: string, claim: Claim | undefined, chunk: HistoryChunk): Promise<number> {
+  async write(agent: string, claim: Claim | undefined, chunk: HistoryChunk, { creating = false } = {}): Promise<number> {
     const count = chunk.messages.length;
     const body = Buffer.from(JSON.stringify(chunk.messages));
     const hash = createHash("sha256").update(body).digest("hex").slice(0, 32);
     // A deleted agent's history is purged, not written again: checked before the blob, so almost never is one left
     // behind (a delete landing between the check and the write can leave one, unreferenced, under its content hash),
     // and again with the row, holding the agent's, so no row outlives a purge.
-    if (!await this.live(agent, this.db)) throw new Error(`Agent ${agent} is deleted; its history is not written`);
+    if (!creating && !await this.live(agent, this.db)) throw new Error(`Agent ${agent} is deleted; its history is not written`);
     await this.storage.writeBlob(this.key(agent, { start: chunk.start, count, hash }), body);
     return underClaim(this.db, claim, async sql => {
-      if (!await this.live(agent, sql, true)) throw new Error(`Agent ${agent} is deleted; its history is not written`);
+      if (!creating && !await this.live(agent, sql, true)) throw new Error(`Agent ${agent} is deleted; its history is not written`);
       await sql.query("insert into agent_history_index (agent, indexed) values ($1, 0) on conflict (agent) do nothing", [agent]);
       const indexed: number = (await sql.query("select indexed from agent_history_index where agent = $1 for update", [agent])).rows[0].indexed;
       if (indexed !== chunk.start || !count) return indexed;

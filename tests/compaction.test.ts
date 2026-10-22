@@ -9,7 +9,7 @@ import { normalizeContext, type Api, type Model } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { contextTokens, explicitKeyStream } from "../src/compaction.ts";
-import { historyOf, type TranscriptRecord } from "../src/transcript.ts";
+import { historyOf, hostTranscriptSession, type TranscriptRecord } from "./fixtures/host-transcript.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
@@ -18,6 +18,7 @@ import { fileStorage, memoryStorage } from "../shared/storage.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { Ownership } from "../src/ownership.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { openPiJournalReader } from "../src/pi-durable/storage.ts";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { SESSION_CONVERSATION_ID as LEGACY_CONVERSATION_ID } from "../src/pi-durable/seed.ts";
 
@@ -99,7 +100,7 @@ test("long conversations compact into a summary; history stays complete and the 
   assert.equal(status.messages, 10);
   assert.ok(status.contextMessages < status.messages);
   // History is the full conversation, read from the log.
-  const history = (await supervisor.request("long", "history")).messages;
+  const history = ((await supervisor.history("long")) as any[]);
   assert.equal(history.length, 10);
   assert.match(JSON.stringify(history[0]), /TURN-0 /);
 
@@ -128,7 +129,7 @@ test("a message whose request the history already holds is not taken again, even
   const again = await supervisor.request("steered", "prompt", { text: turn(0), requestId: "steer-1" });
   assert.equal(again.taken, true);
   assert.equal(fake.chat().length, calls, "no model call");
-  const history = (await supervisor.request("steered", "history")).messages;
+  const history = ((await supervisor.history("steered")) as any[]);
   assert.equal(history.filter((message: any) => message.requestId === "steer-1").length, 1, "recorded once");
 });
 
@@ -140,9 +141,9 @@ test("a history pi 0.80.6 wrote loads, replays its tool history and summary, and
   // Recorded by the runtime on pi 0.80.6: an image prompt, tool calls with thinking, and two compactions.
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined });
   t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
-  // Its records are in Pi now, as the archive its import (or a fork of it) seeded.
+  // Its records are in Pi, as the archive its import (or a fork of it) seeded, in the host transcript its first load retires.
   const records = (await readFile(new URL("./fixtures/pi-0.80.6-transcript.jsonl", import.meta.url), "utf8")).trim().split("\n").map(line => JSON.parse(line) as TranscriptRecord);
-  await supervisor.seed("legacy", records);
+  await hostTranscriptSession({ sessionId: "legacy", directory }, records);
   const before = historyOf(records);
   assert.equal(before.length, 20);
   const inspect = { definitions: [{ name: "inspect", description: "Inspect", parameters: { type: "object" }, exposure: "direct" as const }], async call() { return "inspected"; } };
@@ -150,7 +151,7 @@ test("a history pi 0.80.6 wrote loads, replays its tool history and summary, and
   const events: any[] = [];
   const started = await supervisor.start("legacy", { model: fake.model(8000), apiKey: "fixture" }, { ...inspect, background: (event: any) => events.push(event) });
   assert.equal(started.messages, 20);
-  assert.deepEqual((await supervisor.request("legacy", "history")).messages, before);
+  assert.deepEqual(((await supervisor.history("legacy")) as any[]), before);
   const result = await supervisor.request("legacy", "prompt", { text: "After the upgrade" });
   assert.equal(result.error, null);
   const sent = text(fake.chat().at(-1)!);
@@ -161,7 +162,7 @@ test("a history pi 0.80.6 wrote loads, replays its tool history and summary, and
   for (let index = 0; index < 3; index++) assert.equal((await supervisor.request("legacy", "prompt", { text: turn(index) }, event => events.push(event))).error, null);
   await until(() => events.some(event => event.type === "compaction_end" && event.summarizedMessages > 0), "a compaction ran");
   assert.match(text(fake.summarizations()[0]), /SUMMARY-write-4/, "the stored summary seeds the next one");
-  assert.deepEqual((await supervisor.request("legacy", "history")).messages.slice(0, 20), before);
+  assert.deepEqual(((await supervisor.history("legacy")) as any[]).slice(0, 20), before);
 });
 
 test("a history pi 0.87.1 wrote loads on pi 1.0, replays its summary, tool history and system change, and keeps compacting", async t => {
@@ -173,9 +174,9 @@ test("a history pi 0.87.1 wrote loads on pi 1.0, replays its summary, tool histo
   // tool calls with thinking, a failed tool call, a prompt change, and a compaction that folded the change in.
   const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting: process.env.AGENT_HOSTING as Hosting | undefined });
   t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
-  // Its records are in Pi now, as the archive its import (or a fork of it) seeded.
+  // Its records are in Pi, as the archive its import (or a fork of it) seeded, in the host transcript its first load retires.
   const records = (await readFile(new URL("./fixtures/pi-0.87.1-transcript.jsonl", import.meta.url), "utf8")).trim().split("\n").map(line => JSON.parse(line) as TranscriptRecord);
-  await supervisor.seed("legacy", records);
+  await hostTranscriptSession({ sessionId: "legacy", directory }, records);
   const before = historyOf(records);
   assert.equal(before.length, 26);
   assert.deepEqual(before.filter(message => message.role === "toolResult" && message.isError).map(message => (message as { toolName: string }).toolName), ["fails"]);
@@ -184,7 +185,7 @@ test("a history pi 0.87.1 wrote loads on pi 1.0, replays its summary, tool histo
   const events: any[] = [];
   const started = await supervisor.start("legacy", { model: fake.model(8000), apiKey: "fixture", systemPrompt: "Changed rules" }, { definitions, async call() { return "inspected"; }, background: event => events.push(event) });
   assert.equal(started.messages, 26);
-  assert.deepEqual((await supervisor.request("legacy", "history")).messages, before);
+  assert.deepEqual(((await supervisor.history("legacy")) as any[]), before);
   assert.equal((await supervisor.request("legacy", "status")).compacted, true);
   assert.equal((await supervisor.request("legacy", "prompt", { text: "After the upgrade" })).error, null);
   const sent = fake.chat().at(-1)!;
@@ -196,7 +197,7 @@ test("a history pi 0.87.1 wrote loads on pi 1.0, replays its summary, tool histo
   for (let index = 0; index < 3; index++) assert.equal((await supervisor.request("legacy", "prompt", { text: turn(index) }, event => events.push(event))).error, null);
   await until(() => events.some(event => event.type === "compaction_end" && event.summarizedMessages > 0), "a compaction ran");
   assert.match(text(fake.summarizations()[0]), /SUMMARY-087-2/, "the stored summary seeds the next one");
-  assert.deepEqual((await supervisor.request("legacy", "history")).messages.slice(0, 26), before);
+  assert.deepEqual(((await supervisor.history("legacy")) as any[]).slice(0, 26), before);
 });
 
 test("an imported history larger than one summarization request is summarized in chunks", async t => {
@@ -229,7 +230,7 @@ test("a context overflow from the provider compacts and retries the turn once", 
     assert.equal(result.error, null, `turn ${index}`);
   }
   assert.ok(events.some(event => event.type === "compaction_end" && event.reason === "overflow" && event.summarizedMessages > 0));
-  const history = (await supervisor.request("overflow", "history")).messages;
+  const history = ((await supervisor.history("overflow")) as any[]);
   assert.equal(history.filter((message: any) => message.stopReason === "error").length, 0, "the rejected attempt is not history");
   assert.equal(history.length, 6);
   // A subscriber folding the stream counts the same: the rejected attempt ended, and was taken back.
@@ -301,7 +302,7 @@ for (const native of [false, true]) test(`a prompt or tool change on an agent wi
   assert.equal(updates(second).length, 1);
   assert.match(JSON.stringify(updates(second)), /New rules/);
   assert.match(JSON.stringify(second.messages.at(-1)), /"role":"user".*"two"/);
-  assert.ok((await a.request("agent", "history")).messages.every((message: any) => message.role !== "system"), "system messages are not history");
+  assert.ok(((await a.history("agent")) as any[]).every((message: any) => message.role !== "system"), "system messages are not history");
 
   // Another node loads the agent with its current configuration, as the stored header gives it.
   await a.stop("agent");
@@ -461,9 +462,10 @@ test("a mount added after the first message is appended after the cached prefix,
   const second = fake.chat().at(-1)!;
   assert.deepEqual(second.messages.slice(0, first.messages.length), first.messages, "the prefix the provider cached is byte-identical");
   assert.match(JSON.stringify(second.messages.slice(first.messages.length)), /Updated system prompt section \\"environment\\"[\s\S]*\/bot \(read-write\)/);
-  // The agent's records, from whichever store its engine keeps them in.
-  const log = await supervisor.records("agent");
-  assert.equal(log.filter(record => record.t === "system" && (record as { leading?: boolean }).leading).length, 1, "pinned once, with the first message");
+  // The leading system message was written once, with the agent's first context: the change follows it.
+  const journal = (await openPiJournalReader({ sessionId: "agent", directory: join(root, "agents", "agent"), db }))!;
+  try { assert.equal((await journal.scanEntries({ conversationId: 1 as never, order: "ascending" }, 1000, undefined, BACKGROUND_CONTEXT)).items.filter(entry => entry.kind === "camel.legacy.context").length, 1, "pinned once, with the first message"); }
+  finally { await journal.close(BACKGROUND_CONTEXT); }
 });
 
 test("under runLimits.contextTokens, a context whose fixed part nearly fills the limit is not summarized again on every turn", async t => {
@@ -519,7 +521,7 @@ test("Pi applies a lowered context limit to an already loaded host", async t => 
   }
   assert.ok(fake.summarizations().length > 0, "the new limit compacts without restarting the host");
   assert.equal((await supervisor.request("live-pi-context", "status")).compacted, true);
-  assert.equal((await supervisor.request("live-pi-context", "history")).messages.length, 10);
+  assert.equal(((await supervisor.history("live-pi-context")) as any[]).length, 10);
 });
 
 test("an agent whose journal keeps more messages after its compaction than the host's working set holds still starts", async t => {

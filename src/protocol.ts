@@ -10,7 +10,6 @@ import type { SearchHit, SearchQuery } from "./tool-search.ts";
 export type CallContext = { toolCallId: string; innerCallId?: string; messageIndex?: number };
 import type { HistoryChunk } from "./history-pages.ts";
 import type { CommitEffect } from "../shared/append-log.ts";
-import type { TranscriptRecord } from "./transcript.ts";
 /** The least `runLimits.contextTokens` may be: below it, a summary and the recent messages it keeps would not fit. */
 export const MIN_CONTEXT_TOKENS = 20_000;
 /**
@@ -56,9 +55,8 @@ export interface ToolBridge {
   codeSlot?(signal: AbortSignal): Promise<() => void>;
   /** Wait until this node may act for the agent (`Ownership.whenFresh`), before a model request or js_exec; rejects once it lost the agent. */
   lease?(): Promise<void>;
-  /** What commits with a transcript record, in the transaction that writes it (a model response's spend): called as it is appended. */
-  nativeCommitting?(entry: import("@earendil-works/pi-durable").EntryRecord): CommitEffect | undefined;
-  committing?(record: TranscriptRecord): CommitEffect | undefined;
+  /** What commits with a journal entry, in the transaction that writes it (a model response's spend): called as it is committed. */
+  committing?(entry: import("@earendil-works/pi-durable").EntryRecord): CommitEffect | undefined;
 }
 /** The `apiKey` of an agent whose model is on its tenant's own endpoint: each call gets a fresh identity token instead (`ToolBridge.modelAuth`). */
 /** How an error says the agent's storage failed a write: nothing more is written until a reload reads what it holds. */

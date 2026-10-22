@@ -2,8 +2,8 @@
 
 Stage 1 removes obsolete context copies from Postgres. An operator runs this command with the runtime's
 `AGENT_DATABASE_URL`, or `AGENT_DATABASE_HOST` and `AGENT_DATABASE_SECRET_ARN` settings (including its usual TLS settings).
-Deploy the fork-boundary change to all readers before applying reclaim: journal forks before the newest retained
-context head return `400 FORK_POINT_INVALID`, asking for a later message.
+Deploy the history-fallback change to all readers before applying reclaim. Forks before the newest retained
+context head use raw messages from the history index and journal; later forks use Pi's retained context.
 
 Start with a read-only inventory (dry run is also the default):
 
@@ -16,7 +16,7 @@ sizes, not a promise of immediate disk space returned to the filesystem. No reco
 Use `--session ID` to inspect or apply to one session. Sessions with no obsolete rows are omitted.
 
 Apply to a small batch, then dry-run each applied session ID from the log and check that those agents still open,
-run, page history, and fork at a recent message:
+run, page history, and fork at both an early and a recent message:
 
 ```sh
 node --experimental-strip-types scripts/ops/reclaim-checkpoints.ts --apply --limit 5

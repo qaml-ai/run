@@ -5,7 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { JournalHistory, type HistoryBase } from "../src/pi-durable/history.ts";
 import { HOST_BOOTSTRAP_KIND, SESSION_CONVERSATION_ID as conversationId } from "../src/pi-durable/seed.ts";
-import { MARKER_KIND } from "../src/pi-durable/transcript.ts";
+import { MARKER_KIND } from "../src/pi-durable/history.ts";
 
 type Draft = { native: string; message: unknown } | { marker: Record<string, unknown> };
 

@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { forkCut, Transcript, type TranscriptRecord } from "../src/transcript.ts";
 import { Agents } from "../clients/node.ts";
 import { lastUser, OPERATOR, OTHER_OPERATOR, runtime, toolCall, until } from "./runtime-server.ts";
 
@@ -172,43 +171,26 @@ test("a fork of a compacted agent keeps its summary: the model sees the summary 
   for (const seen of ["SUMMARY-OF-EARLIER", "KEPT-QUESTION", "NEW-QUESTION"]) assert.ok(sent.includes(seen), seen);
   for (const gone of ["OLD-QUESTION", "OLD-ANSWER"]) assert.ok(!sent.includes(gone), `${gone} is summarized`);
 
-  // Forked before the summary's cut, the import is cut too, and the summary (which covers more) is left out; forked at
-  // its cut, it is the summary of everything the fork keeps.
+  // Forked at its cut, it is the summary of everything the fork keeps.
   const sentFor = async (atMessage: number) => {
     const early = (await r.call(`/v1/agents/${source}/fork`, { body: { atMessage } })).json.id as string;
     await r.prompt(early, `EARLY-${atMessage}`);
     return JSON.stringify(r.model.bodies.at(-1).messages);
   };
-  const before = await sentFor(0);
-  assert.ok(before.includes("OLD-QUESTION") && !before.includes("SUMMARY-OF-EARLIER") && !before.includes("KEPT-QUESTION"), before);
+  // Before the import cut, seed the fork from raw indexed history, without the summary.
+  const before = await r.call(`/v1/agents/${source}/fork`, { body: { atMessage: 0 } });
+  assert.equal(before.status, 201, before.text);
+  assert.deepEqual(before.json.forkedFrom, { agentId: source, atMessage: 0 });
+  assert.deepEqual(said((await r.call(`/v1/agents/${before.json.id}/history`)).json.messages), ["user:OLD-QUESTION"]);
+  await r.prompt(before.json.id, "EARLY-0");
+  const raw = r.model.bodies.at(-1).messages.filter((message: any) => message.role !== "system");
+  assert.deepEqual(said(raw), ["user:OLD-QUESTION", "user:EARLY-0"]);
+  assert.ok(r.logs.some(line => {
+    const event = JSON.parse(line);
+    return event.type === "fork_from_history" && event.agent === source && event.at === 0 && event.messageCount === 1;
+  }));
   const at = await sentFor(1);
   assert.ok(at.includes("SUMMARY-OF-EARLIER") && !at.includes("OLD-ANSWER") && !at.includes("KEPT-QUESTION"), at);
-});
-
-test("forking a transcript with compactions keeps them, and its working set loads as the source's would", async () => {
-  // Recorded by the runtime on pi 0.80.6: tool calls with thinking, and two compactions.
-  const text = await readFile(new URL("./fixtures/pi-0.80.6-transcript.jsonl", import.meta.url), "utf8");
-  const records = text.split("\n").filter(Boolean).map(line => JSON.parse(line)) as TranscriptRecord[];
-  const load = (kept: TranscriptRecord[]) => { const transcript = new Transcript(undefined as never); for (const record of kept) transcript.apply(record); return transcript; };
-  const source = load(records);
-  assert.ok(source.compaction, "the fixture is compacted");
-  const whole = forkCut(records);
-  const fork = load(whole.records);
-  assert.equal(whole.through, source.total - 1);
-  assert.deepEqual(fork.compaction, source.compaction);
-  assert.deepEqual(fork.view(), source.view());
-  assert.equal(fork.active, false);
-
-  // At a message after the first compaction's cut and before the second was written: the first holds, the second does not.
-  const compactions = records.flatMap((record, position) => record.t === "compaction" ? [{ position, cut: record.cut }] : []);
-  assert.ok(compactions.length >= 2);
-  const totals = records.map((_, position) => load(records.slice(0, position + 1)).total);
-  const at = totals[compactions[1].position] - 1;
-  const partial = forkCut(records, at);
-  const loaded = load(partial.records);
-  assert.equal(loaded.total, partial.through! + 1);
-  assert.ok(loaded.compaction && loaded.compaction.cut === compactions[0].cut, "the first compaction is the fork's summary");
-  assert.equal(loaded.active, false);
 });
 
 test("a fork's key makes it idempotent: a retry returns the same fork, another source's fork with it is refused", async t => {
@@ -294,8 +276,8 @@ test("the SDK's fork() makes a new agent from this one: its history, configurati
   assert.equal((await source.history()).length, 2, "the source's history is its own");
 });
 
-test("where the source's tenant reads history from Pi's journal, a fork is cut from the journal: the same history, and Pi's context as of the cut", async t => {
-  const r = await runtime(t, answering(), { ...roomy, AGENT_PI_DUAL_WRITE: "1", AGENT_PI_HISTORY_SOURCE_TENANTS: "*" });
+test("a fork is cut from the source's journal: its history, and Pi's context as of the cut", async t => {
+  const r = await runtime(t, answering(), roomy);
   const source = (await r.call("/v1/agents", { body: { name: "Journal" } })).json.id as string;
   await r.prompt(source, "first question");
   await r.prompt(source, "second question");
@@ -304,9 +286,6 @@ test("where the source's tenant reads history from Pi's journal, a fork is cut f
   assert.deepEqual(forked.json.forkedFrom, { agentId: source, atMessage: 1 });
   const fork = forked.json.id as string;
   assert.deepEqual(said((await r.call(`/v1/agents/${fork}/history`)).json.messages), ["user:first question", "assistant:answer to first question"]);
-  const fromJournal = r.logs.filter(line => line.includes('"field":"fork"'));
-  assert.equal(fromJournal.length, 1);
-  assert.match(fromJournal[0], /"Outcome":"match"/, "the journal's cut is the host's");
   await r.prompt(fork, "fork question");
   const sent = JSON.stringify(r.model.bodies.at(-1).messages);
   assert.ok(sent.includes("first question") && sent.includes("answer to first question"));

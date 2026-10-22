@@ -46,7 +46,10 @@ test("?request= keeps a stream or poll to one request's events and response", as
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   await r.prompt(agent, "first", undefined, { requestId: "req-first" });
   await r.prompt(agent, "second", undefined, { requestId: "req-second" });
-  const all = (await r.call(`/v1/agents/${agent}/events?poll=1&snapshot=0`)).json.events;
+  const all = await until(async () => {
+    const events = (await r.call(`/v1/agents/${agent}/events?poll=1&snapshot=0`)).json.events;
+    return events.some(({ data }: any) => data.type === "response" && data.id === "req-second") && events;
+  }, "the second response in the event log");
   const ids = (events: any[]) => new Set(events.map(({ data }) => data.type === "event" ? data.requestId : data.type === "response" ? data.id : data.type));
   assert.deepEqual([...ids(all)].sort(), ["req-first", "req-second"]);
   const one = (await r.call(`/v1/agents/${agent}/events?poll=1&snapshot=0&request=req-second`)).json.events;
@@ -123,6 +126,9 @@ test("an agent with work left that cannot be loaded is tried again with capped b
   // Backing off, doubling: a few windows in a couple of seconds, not a try per sweep.
   await sleep(2_000);
   assert.ok((await row()).resume_failures <= 5, `${(await row()).resume_failures} failures in about 2.5 s of 200 ms sweeps`);
+  // Read during a fixed backoff window, rather than race the next deliberately failing sweep's load.
+  await r.db.query("update agents set resume_after = $2 where id = $1", [agent, Date.now() + 60_000]);
+  await until(async () => !(await r.db.query("select node from actor_owners where actor = $1", [agent])).rows[0]?.node, "the failed load to release the agent");
   // Reads answer from storage, and say it waits.
   const state = await r.call(`/v1/agents/${agent}/state`);
   assert.equal(state.status, 200);

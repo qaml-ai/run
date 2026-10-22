@@ -14,16 +14,47 @@ disabled. Camel supplies credentials, lease and network checks, tools, sandbox
 execution, human-input handling, output schemas, run limits and provider retry
 policy.
 
-The host stores its bounded working state in a latest-only `camel.host.snapshot`
-document. Immutable `camel.host.record` entries preserve turns, resets,
-retractions, configuration changes and human waits. A record for a native message
-references its canonical entry rather than copying the message body. The host
-record and checkpoint commit atomically. Loading reads the checkpoint and any
-unacknowledged native tail, without replaying a legacy transcript or retaining
-lifetime request/tool-ID maps. Request deduplication uses Pi's indexed submissions.
+An agent's history and its model context are Pi's journal alone
+(`src/pi-durable/host-journal.ts`). Pi's own messages are history as Pi commits
+them. The host writes the messages it makes itself (repairs, answers to calls that
+waited on a person, messages that land without a turn) as native entries
+(`camel.message`, `camel.user`), its system changes as `camel.system` entries (in
+Pi's context, never history), and its retractions, turns, calls left waiting and
+skips as `camel.history.marker` entries; a retraction or skip also takes its
+messages out of Pi's context with an `omit` edit. `JournalHistory`
+(`src/pi-durable/history.ts`) reads the history back from a base marker: the
+messages before it are the history index's. Once a session's history has grown
+256 messages past its base and the index holds all of it, the next turn's end
+writes a new base (the `camel.history.base` document names the newest), so a load
+reads the journal from there. Request deduplication uses Pi's indexed submissions.
 
-Full history, export and fork operations reconstruct immutable history on demand;
-they are intentionally separate from bounded host loading.
+A run's working context is Pi's own; nothing checks the host's in again. A new
+agent's context starts with its leading system message, as a checkpoint
+(`camel.legacy.context`); one with no history yet rebuilds it there when its
+configuration changes. A prompt with `history: "none"` sends its requests from its
+own first message (with the system message as it stands then), while Pi's context
+keeps the whole history.
+
+Full history, export and fork read the history index, then the journal past it.
+
+## Sessions from before the host transcript's removal
+
+Releases before it kept a host transcript beside Pi's journal: a latest-only
+`camel.host.snapshot` document and `camel.host.record` entries. Its first load by
+this release retires it, once (`HostJournal.retire`): the settled history before
+the journal's base that the history index lacks is indexed from the host's records
+first (the session's legacy log first, for an import too large to copy); then, in
+one commit, the base marker (where the host's last snapshot stood, with the running
+or waiting turn's messages before it, unless an earlier release's base marker
+holds the session already), the base document, and the host document set to
+`enabled: false, retired: "journal"` with a `camel.host.disabled` entry. The host
+logs `host_transcript_retired`. Releases from #374 on refuse such a session with 409
+`AGENT_NOT_MIGRATED` saying its history format is newer (`session_format_newer`);
+earlier ones refuse it as not on Pi. Rolling back below this release is one-way.
+
+A history index that lacks messages before a session's base (it was lost, or never
+written) is logged as `history_index_behind_journal`; history reads then read those
+messages from the retired host records.
 
 ## Sessions from the legacy engine
 
@@ -33,9 +64,11 @@ legacy transcript to import it. It still reads every format those imports wrote:
 
 - A session's Pi storage starts with a seed marker (`camel.legacy.migration`), then
   its host generation (`camel.host.bootstrap`) with the records it started with as
-  archive blocks, a context checkpoint and its request IDs, all in one commit. New
-  agents and forks are seeded the same way (`NativeTranscript.seed`); releases before
-  #326 refuse a root without the marker.
+  archive blocks, a context checkpoint and its request IDs, all in one commit.
+  Releases before #326 refuse a root without the marker. New agents, imports and
+  forks start with the marker too, then their journal history's base, the history
+  they start with (an import's, as native entries; a fork's is copied into its
+  history index first), their context checkpoint and request IDs (`seedJournal`).
 - An import too large to copy (more than 64 MiB or 200,000 records) left its records
   in the session's legacy log (`archive: "legacy-log"` on the marker and the
   generation). That log is read-only: the generation's history reads it first,
@@ -48,7 +81,8 @@ A session whose history is still only in the legacy format (its Pi host generati
 missing, or disabled by an earlier release's rollback to the legacy engine) is
 refused: its host logs `legacy_session_not_imported` (agent, tenant, `reason`:
 `legacy_log` or `not_on_pi`), and the request fails with 409 `AGENT_NOT_MIGRATED`.
-Nothing is written, so its history stays where it is, and readable. To import one,
+Nothing is written, so its history stays where it is, and readable (from its legacy
+log, and Pi's messages past it). To import one,
 run it on a release that still has the importer (before the importer's removal),
 then come back. The operator dashboard's "Agents not on Pi" counts them.
 
@@ -81,10 +115,10 @@ also removes its receipt records after the normal accounting flush.
 
 ## Local validation
 
-The tests cover import of every shape above, inline/process hosting, bounded
-reload, old request IDs, exact full history, forks, human answers, failed host
-checkpoints, lost commit acknowledgements, native compaction failures, transaction
-rollback and concurrent receipt consumption. Cluster tests exercise Postgres
+The tests cover retiring every shape above (tests/fixtures/host-transcript.ts writes
+them as the releases before did), inline/process hosting, old request IDs, exact full
+history, forks, human answers, lost commits of the host's markers, native compaction
+failures, transaction rollback and concurrent receipt consumption. Cluster tests exercise Postgres
 handoff, cross-node human input, forks and exports.
 
 ```sh

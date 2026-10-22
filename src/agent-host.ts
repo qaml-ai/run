@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 import { END_USER_CREDIT, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
-import { dualWriting, hostRetired, NativeTranscript } from "./pi-durable/transcript.ts";
 import { mkdir } from "node:fs/promises";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
-import { convertToLlm } from "./pi-harness/messages.ts";
+import { COMPACTION_SUMMARY_PREFIX, convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import {
   getCurrentSystemMessage, getCurrentTools, getSystemMessageText, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
   type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall, type ToolResultMessage,
@@ -15,9 +14,7 @@ import { errorText, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY, s
 import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
-import type { AppendLog } from "../shared/append-log.ts";
-import { Transcript, readTranscriptLog, type Backlog, type TranscriptRecord } from "./transcript.ts";
-import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, validateInitialMessages, validateUserMessages } from "./history.ts";
+import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, step, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } from "./compaction.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
@@ -34,16 +31,11 @@ import { clock } from "./node-context.ts";
 import { usageMissing } from "./platform-pricing.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
 import { DurableAgent, type DurableAgentOptions } from "./pi-durable/agent.ts";
-import { checkDualRead } from "./pi-durable/dual-read.ts";
-import { JournalHistory } from "./pi-durable/history.ts";
-import { metricLine, safeError } from "./metrics.ts";
-import { always } from "./assert.ts";
-import { SESSION_CONVERSATION_ID } from "./pi-durable/seed.ts";
+import { HostJournal } from "./pi-durable/host-journal.ts";
+import type { RetiredRecord } from "./pi-durable/retired-host.ts";
+import { seedJournal, SESSION_CONVERSATION_ID } from "./pi-durable/seed.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { reconcilePiTranscript } from "./pi-durable/projection.ts";
 
-/** How often an agent reads back from its log what its history backlog could not hold (see `index`). */
-const LAG_READ_MS = 60_000;
 /** How long a stopping agent waits to index its settled turns (see `index`). */
 export const HISTORY_FLUSH_MS = 5_000;
 
@@ -66,6 +58,9 @@ type Hydrated = { data: string; mimeType?: string } | { omitted: string };
 const hydratedSize = (value: Hydrated) => "data" in value ? value.data.length : value.omitted.length;
 const hydratedImage = (fitted: Fitted): Hydrated => "omitted" in fitted ? { omitted: fitted.omitted } : { data: fitted.data.toString("base64"), mimeType: fitted.mimeType };
 
+/** An agent's legacy log, read only (`HostIO.legacyLog`). */
+export interface LegacyLog { read(): Promise<RetiredRecord[]>; empty(): Promise<boolean> }
+
 /** How a host talks to its supervisor: over IPC in its own process, or directly when inline. */
 export interface HostIO {
   emit(event: unknown): void;
@@ -75,8 +70,11 @@ export interface HostIO {
   cancelTools(): Promise<unknown>;
   /** Why the running turn must end before its next model request (a reached spend cap, the run's own limits, or its node leaving), if so. */
   runLimit(): Promise<RunStop | undefined>;
-  /** The agent's transcript, which its supervisor writes. */
-  transcript: AppendLog<TranscriptRecord>;
+  /**
+   * The agent's legacy log, read only: what the host transcript's first imports could not copy (retired-host.ts), read
+   * once, as the session's history before its journal base is indexed. A session holding history only there is refused.
+   */
+  legacyLog: LegacyLog;
   /** Native Pi storage stays on the supervisor under the session's ownership claim. */
   piStorage?(): Promise<PiStorage | undefined>;
   /** `tools.search`, answered by the supervisor (which holds the rerankers); without it, code searches here. */
@@ -94,32 +92,16 @@ export interface HostIO {
   codeExecutor?: CodeExecutor;
   /** The outbound policy model calls to endpoints tenants give go through: its node's (this process's unless given). */
   modelOutbound?: Outbound;
-  /** The history backlog's bound (AGENT_HISTORY_BACKLOG_BYTES; `BACKLOG_BYTES` unless given). */
-  historyBacklogBytes?: number;
   /** Wait until the node may act for the agent (its lease is fresh), before each model request and js_exec; rejects once it lost the agent. */
   lease?(): Promise<void>;
-  /**
-   * Compare the host's records with Pi's journal after each load and run (pi-durable/dual-read.ts, AGENT_PI_DUAL_READ):
-   * `log` reports mismatches, `throw` also fails the request on an unexpected one (tests, the simulation).
-   */
-  piDualRead?: "log" | "throw";
-  /**
-   * Tenants whose agents read their history from Pi's journal (AGENT_PI_HISTORY_SOURCE_TENANTS; `*`: every tenant), on
-   * nodes that dual-write it: plans/host-transcript-removal.md, phase 2. The host transcript is still written, and
-   * served wherever the journal disagrees.
-   */
-  historySourceTenants?: string[];
   /** Tenants whose agents' system sections are native Pi sections (AGENT_NATIVE_SECTIONS_TENANTS; `*`: every tenant). */
   nativeSectionsTenants?: string[];
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
-  history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number>; read(from: number): Promise<Backlog> };
+  history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number> };
 }
 
-/** A history value the journal does not hold (`served`). */
-const NOT_HELD = Symbol("not held");
-
-/** The least time between an agent's dual reads in `log` mode, past its load's. */
-export const DUAL_READ_INTERVAL_MS = 10 * 60_000;
+/** The messages one pass of the history index reads from the journal at most, in bytes (see `index`). */
+const INDEX_READ_BYTES = 4 * CHUNK_BYTES;
 
 /** Tools a lost node's open call to is made again on resume, not closed as unknown: each is keyed by its call (multi-agent.ts). */
 export const RERUN = ["delegate", "spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"];
@@ -140,6 +122,11 @@ export function openCalls(messages: AgentMessage[]): ToolCall[] {
  * and end user where it names them.
  */
 const sameCursor = (a: { entryId: number; index: number }, b: { entryId: number; index: number } | undefined) => !!b && a.entryId === b.entryId && a.index === b.index;
+/** Whether a message of Pi's context is a compaction's summary (as the host imported it, or as Pi wrote it). */
+const isSummary = (message: AgentMessage) => message.role === "compactionSummary" || message.role === "user" &&
+  (typeof message.content === "string" ? message.content : message.content.find(part => part.type === "text")?.text ?? "").startsWith(COMPACTION_SUMMARY_PREFIX);
+/** Whether two messages are the same: one read back from the journal, the other as the agent holds it. */
+const sameMessage = (a: AgentMessage | undefined, b: AgentMessage | undefined) => !!a && !!b && (a === b || JSON.stringify(a) === JSON.stringify(b));
 const stopFields = (stop: Partial<RunStop>) => ({
   code: stop.code ?? stop.stopped,
   ...(stop.limit ? { limit: stop.limit } : {}), ...(stop.reason ? { reason: stop.reason } : {}),
@@ -147,23 +134,19 @@ const stopFields = (stop: Partial<RunStop>) => ({
 });
 
 /**
- * One agent: its Pi loop, working-set transcript, compaction and retries. It runs
- * in its own process (agent-child.ts) or inline in a worker hosting many agents.
+ * One agent: its Pi loop, its history and turn in Pi's journal (HostJournal), and retries. It runs in its own process
+ * (agent-child.ts) or inline in a worker hosting many agents.
  */
 export function createAgentHost(hostIO: HostIO) {
   let agent: DurableAgent | undefined;
   let config: AgentConfig;
-  /** How this start found the session: on Pi already, or imported from its legacy transcript now (and what that import took). */
   // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
   const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
   const io: HostIO = { ...hostIO, emit: event => { turns.event(event); hostIO.emit(event); } };
-  let transcript: Transcript;
-  /** The agent's history as its journal gives it, where reads have moved there (`historyFromJournal`). */
-  let piHistory: JournalHistory | undefined;
-  /** The agent's Pi storage, once loaded: the dual read reads it. */
-  let journal: PiStorage | undefined;
-  /** When the dual read last ran for this agent (`DUAL_READ_INTERVAL_MS`). */
-  let lastDualRead = 0;
+  /** The agent's history and turn, in its Pi journal. */
+  let journal: HostJournal;
+  /** How many of its messages the history index has (undefined: none is kept, or it could not be read at start). */
+  let indexedTo: number | undefined;
   /** The last system prompt hash logged for this agent (`systemPromptHash`). */
   let lastPromptHash: string | undefined;
   let busy = false;
@@ -189,8 +172,10 @@ export function createAgentHost(hostIO: HostIO) {
   let documents = false;
   /** History index writes, one at a time. */
   let indexing = Promise.resolve();
-  /** When messages the backlog left to the log were last read back (see `index`). */
-  let lagRead = 0;
+  /** About how much of the history the index lacks, in bytes, as messages end: a pass reads the journal only past a chunk. */
+  let unindexed = 0;
+  /** The first user message of a running turn that sees no history (a prompt's `history: "none"`): its requests send from there (`freshView`). */
+  let fresh: AgentMessage | undefined;
   /** Whether the running turn can still take a steer sent `whileRunning` (see `steer`). */
   let steerable = false;
   /** Steering messages not yet taken, in order; `whileRunning` ones are taken back if the turn ends without them. */
@@ -224,92 +209,80 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
-   * Add what the history index lacks to it, in the background. Like the log's own segments, chunks
-   * are written when the backlog has grown past one (all but the latest message, the only one a retry
-   * retracts) and when the agent stops (`final`: the settled turns), never per turn. A failed write
-   * is tried again with the next; what a crash leaves out is indexed at the next start. Messages the
-   * backlog left to the log (more than it holds: an index far behind) are read back from the log and
-   * indexed first, a chunk at a time, at most once a minute and as the agent stops.
+   * Add what the history index lacks to it, from the journal, in the background. Chunks are written when what the index
+   * lacks has grown past one (all but the latest message, the only one a retry retracts), and when the agent stops
+   * (`final`: the settled turns), never per turn; a turn cut off by the stop is settled at the next start, with its
+   * repairs. A failed write is tried again with the next. Settled, with every message indexed, the journal's later
+   * reads start from there (`HostJournal.rebase`).
    */
   function index(final = false): Promise<void> {
     const history = io.history;
-    if (!history || !transcript) return Promise.resolve();
-    /** Add chunks in order; false when the index took less than a chunk (another writer, a gap): the rest waits for the next pass. */
-    const write = async (chunks: HistoryChunk[]) => {
-      for (const chunk of chunks) {
-        const indexed = await history.write(chunk);
-        transcript.indexed(indexed);
-        if (indexed !== chunk.start + chunk.messages.length) return false;
-      }
-      return true;
-    };
+    if (!history || !journal || indexedTo === undefined || (!final && unindexed < CHUNK_BYTES)) return Promise.resolve();
     return indexing = indexing.then(async () => {
-      const backlog = transcript.backlog;
-      if (backlog && backlog.kept > backlog.from) {
-        if (!final && Date.now() - lagRead < LAG_READ_MS) return;
-        lagRead = Date.now();
-        // Read apart from the transcript's own log, so the running turn's appends do not wait behind it.
-        const past = await history.read(backlog.from);
-        // A turn cut off by the stop is settled at the next start, with its repairs; while the agent runs, its latest
-        // message (which a retry may take back) waits, as it does in memory.
-        const upto = final ? (transcript.active ? Math.min(backlog.kept, transcript.turnStart) : backlog.kept) : Math.min(backlog.kept, transcript.total - 1);
-        if (!await write(chunksOf(past, Math.max(0, Math.min(upto - backlog.from, past.messages.length)))) || backlog.kept > backlog.from) return;
+      await journal.refresh();
+      const kept = journal.history;
+      if (indexedTo! < kept.heldFrom) {
+        console.error(JSON.stringify({ type: "history_index_behind_journal", agent: config.id, indexed: indexedTo, base: kept.heldFrom }));
+        return;
       }
-      if (!backlog?.messages.length || (!final && backlog.bytes < CHUNK_BYTES)) return;
-      // A turn cut off by the stop is settled at the next start, with its repairs.
-      const count = !final ? backlog.messages.length - 1 : transcript.active ? Math.max(0, transcript.turnStart - backlog.from) : backlog.messages.length;
-      // Where the agent reads from the journal, its messages and turn starts are the journal's (the host's where they differ).
-      const kept = { messages: backlog.messages.slice(0, count), turns: backlog.turns.filter(turn => turn < backlog.from + count) };
-      const indexed = await served("indexTail", kept, async journal => {
-        const messages = (await journal.messagesFrom(backlog.from))?.slice(0, count);
-        return messages ? { messages, turns: journal.turnsFrom(backlog.from).filter(turn => turn < backlog.from + count) } : NOT_HELD;
-      });
-      await write(chunksOf({ ...backlog, messages: indexed.messages, sizes: backlog.sizes.slice(0, count), turns: indexed.turns }, count));
+      const upto = final ? (kept.active ? Math.min(kept.turnStart, kept.total) : kept.total) : kept.total - 1;
+      const sizes = (from: number, to: number) => kept.sizesFrom(from, to);
+      if (upto <= indexedTo! || (!final && sizes(indexedTo!, upto).reduce((sum, size) => sum + size, 0) < CHUNK_BYTES)) return;
+      // A pass at a time, each of what fits in INDEX_READ_BYTES.
+      while (indexedTo! < upto) {
+        const from = indexedTo!, all = sizes(from, upto);
+        let count = 0, bytes = 0;
+        while (count < all.length && (!count || bytes + all[count] <= INDEX_READ_BYTES)) bytes += all[count++];
+        const messages = await kept.messagesFrom(from, from + count);
+        if (!messages) throw new Error(`The journal does not hold messages ${from} to ${from + count}`);
+        for (const chunk of chunksOf({ from, messages, sizes: all.slice(0, count), turns: kept.turnsFrom(from) })) {
+          indexedTo = await history.write(chunk);
+          // Another writer, or a gap: the rest waits for the next pass.
+          if (indexedTo !== chunk.start + chunk.messages.length) return;
+        }
+      }
+      unindexed = sizes(indexedTo!, kept.total).reduce((sum, size) => sum + size, 0);
+      if (final || !kept.active) await journal.rebase(indexedTo!);
     }).catch(error => console.error(JSON.stringify({ type: "history_index_failed", agent: config.id, error: errorText(error) })));
   }
 
-  /**
-   * The context's first system message, the start of the provider's cached prefix. It is built
-   * from configuration until the prompt or tools change with history; the transcript then pins
-   * it, and each change follows as a system message of its own where the conversation stood.
-   */
+  /** The leading system message the agent's configuration makes: a new agent's Pi context starts with it. */
   function leading(tools: Tool[] = agent!.state.tools.map(toToolDeclaration)): SystemMessage {
-    return transcript.system ?? leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
+    return leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
   }
 
-  /** Pi's messages from the transcript: what a run starts from. */
-  function stateMessages(): AgentMessage[] { return [leading(), ...transcript.view()]; }
-
   /**
-   * Begin a run that sees no history (a prompt's history: "none", which its user message records): Pi's state is the
-   * system message as it stands (the leading one with every change since), then the run's own messages, from `first` on.
-   * Its messages are still history, which later runs see. Continued or resumed, a turn whose last user message says so
-   * stays fresh; undefined (the whole history) otherwise.
+   * What a request of a turn that sees no history sends (a prompt's history: "none", which its user message records):
+   * the system message as it stands there (the leading one with every change since), then the turn's own messages, from
+   * its first. Its messages are still history, which later turns see. Every request sends the whole context otherwise.
    */
-  function freshTurn(first?: AgentMessage): AgentMessage[] | undefined {
-    first ??= transcript.context.findLast(message => message.role === "user");
-    if ((first as { history?: string } | undefined)?.history !== "none") return undefined;
-    const all = stateMessages();
-    const at = all.indexOf(first!);
-    return [getCurrentSystemMessage(at < 0 ? all : all.slice(0, at))!, ...at < 0 ? [] : all.slice(at)];
-  }
-
-  /** Record a system message after the leading one, pinning `current` as that first, in one commit (`Transcript.declareSystem`). */
-  function declare(message: SystemMessage, current: SystemMessage): Promise<void> {
-    return transcript.declareSystem(message, current);
+  function freshView(messages: AgentMessage[]): AgentMessage[] {
+    if (!fresh) return messages;
+    const at = messages.findLastIndex(message => message.role === "user" && sameMessage(message, fresh));
+    return [getCurrentSystemMessage(at < 0 ? messages : messages.slice(0, at))!, ...at < 0 ? [] : messages.slice(at)].filter(Boolean);
   }
 
   /**
-   * Bring the system messages in line with the configuration. Without history the leading message
-   * is rebuilt; with history a change is appended, so the cached prefix stays byte-identical. `durable`
-   * appends the change even without history: a tool the configuration does not hold (final_output) is
-   * declared only by the transcript, so another node continuing the turn finds it.
+   * A continued or resumed turn sees no history when its latest user message says so (`freshView`): that message, and
+   * undefined otherwise.
+   */
+  async function freshTurn(): Promise<AgentMessage | undefined> {
+    const first = (await journal.since(message => message.role === "user"))[0];
+    return (first as { history?: string } | undefined)?.history === "none" ? first : undefined;
+  }
+
+  /**
+   * Bring the system messages in line with the configuration. Without history the leading message is rebuilt; with
+   * history a change follows as a system message of its own (in Pi's context, never history), so the cached prefix
+   * stays byte-identical. `durable` writes the change even without history: a tool the configuration does not hold
+   * (final_output) is declared only by the journal, so another node continuing the turn finds it.
    */
   async function declareConfiguration(durable = false): Promise<void> {
     const messages = agent!.state.messages;
     const tools = agent!.state.tools.map(toToolDeclaration);
-    if (!durable && !transcript.total && !transcript.compaction) {
-      agent!.state.messages = [leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS), ...messages.filter(message => message.role !== "system")];
+    if (!durable && !journal.total) {
+      const rebuilt = leading(tools);
+      if (JSON.stringify(convertToLlm([rebuilt])) !== JSON.stringify(convertToLlm(messages.slice(0, 1)))) await agent!.replaceContext([rebuilt, ...messages.filter(message => message.role !== "system")]);
       return;
     }
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
@@ -334,8 +307,8 @@ export function createAgentHost(hostIO: HostIO) {
       ...(toolsAdded.length ? { toolsAdded } : {}), ...(toolsRemoved.length ? { toolsRemoved } : {}),
     };
     // Pi takes the change once it is written.
-    for (const message of [...cleared, change]) await declare(message, messages[0] as SystemMessage);
-    agent!.state.messages = [...messages, ...cleared, change];
+    await journal.commit(() => [...cleared, change].map(message => ({ t: "system" as const, message })));
+    await agent!.reload();
   }
 
   /**
@@ -358,7 +331,7 @@ export function createAgentHost(hostIO: HostIO) {
       const result = results[index];
       io.emit({ type: "tool_execution_end", toolCallId: call.id, toolName: call.name, result, isError: !!result.isError });
       const message = { role: "toolResult", toolCallId: call.id, toolName: call.name, content: result.content, ...(result.details !== undefined ? { details: result.details } : {}), isError: !!result.isError, timestamp: Date.now() } as AgentMessage;
-      await transcript.push(message);
+      await journal.push(message);
       io.emit({ type: "message_end", message });
     }
   }
@@ -374,54 +347,6 @@ export function createAgentHost(hostIO: HostIO) {
     if (hash === lastPromptHash) return;
     console.log(JSON.stringify({ type: "system_prompt_hash", agent: config.id, hash, previous: lastPromptHash ?? null, sections: Object.keys(system?.sections ?? {}) }));
     lastPromptHash = hash;
-  }
-
-  /** Whether the agent reads its history from Pi's journal: its tenant is listed, and the journal is dual-written. */
-  const historyFromJournal = () => dualWriting() && !!io.historySourceTenants && (io.historySourceTenants.includes("*") || io.historySourceTenants.includes(config.tenant ?? ""));
-
-  /**
-   * A history value as the journal gives it, where the agent reads from there: the host transcript's when they differ,
-   * which is logged (history_source_mismatch, with values and hashes only) for the cutover to explain.
-   */
-  async function served<T>(field: string, host: T, journalValue: (history: JournalHistory) => T | typeof NOT_HELD | Promise<T | typeof NOT_HELD>): Promise<T> {
-    if (!piHistory || transcript.failed !== undefined) return host;
-    let value: T | typeof NOT_HELD;
-    try {
-      await piHistory.refresh();
-      value = await journalValue(piHistory);
-    } catch (error) {
-      // The journal could not be read (its storage closed as the agent stops): the host's value, as where they differ.
-      console.error(JSON.stringify({ type: "history_source_unavailable", agent: config.id, field, error: safeError(error) }));
-      return host;
-    }
-    // What the journal does not hold (messages before its base the history index lacks yet): the host's, not a mismatch.
-    if (value === NOT_HELD) return host;
-    const same = JSON.stringify(value) === JSON.stringify(host);
-    const summary = (item: unknown) => typeof item === "number" || typeof item === "boolean" || item === undefined ? item
-      : createHash("sha256").update(JSON.stringify(item)).digest("hex").slice(0, 16);
-    console.log(metricLine(same ? "history_source" : "history_source_mismatch", {
-      dimensions: { Outcome: same ? "match" : "mismatch" }, rollups: [[], ["Outcome"]],
-      metrics: { HistorySourceReads: 1, HistorySourceMismatches: same ? 0 : 1 },
-      properties: { agent: config.id, field, ...(same ? {} : { host: summary(host), journal: summary(value), ...difference(host, value) }) },
-    }));
-    // The simulation records each: a value the journal gives otherwise is a violation of the run. Tests (the dual read in
-    // `throw`) fail on it.
-    always(same, "a history value the journal gives is the host transcript's");
-    if (!same && io.piDualRead === "throw") throw new Error(`History from the journal: ${field} is ${JSON.stringify(summary(value))}, the host's ${JSON.stringify(summary(host))}`);
-    return same ? value : host;
-  }
-
-  /**
-   * Where two lists of messages first differ, without their content: the lengths, the index, each side's role there,
-   * and the names of the fields whose values differ (for history_source_mismatch).
-   */
-  function difference(host: unknown, journal: unknown) {
-    if (!Array.isArray(host) || !Array.isArray(journal)) return {};
-    const at = host.findIndex((message, index) => JSON.stringify(message) !== JSON.stringify(journal[index]));
-    const index = at < 0 ? Math.min(host.length, journal.length) : at;
-    const left = host[index] as Record<string, unknown> | undefined, right = journal[index] as Record<string, unknown> | undefined;
-    const keys = [...new Set([...Object.keys(left ?? {}), ...Object.keys(right ?? {})])].filter(key => JSON.stringify(left?.[key]) !== JSON.stringify(right?.[key]));
-    return { lengths: [host.length, journal.length], index, roles: [left?.role ?? null, right?.role ?? null], keys };
   }
 
   /** Whether the agent's system sections are native Pi sections: its tenant is in AGENT_NATIVE_SECTIONS_TENANTS (or `*`). */
@@ -446,7 +371,8 @@ export function createAgentHost(hostIO: HostIO) {
    * the call for good (providers may number calls per response, so ids repeat across turns), the same on a retry or resume.
    */
   async function made(toolCallId: string): Promise<{ messageIndex?: number }> {
-    const messageIndex = await served("callIndex", transcript.calls.get(toolCallId), history => history.callIndex(toolCallId));
+    await journal.refresh();
+    const messageIndex = journal.callIndex(toolCallId);
     return messageIndex === undefined ? {} : { messageIndex };
   }
 
@@ -487,9 +413,8 @@ export function createAgentHost(hostIO: HostIO) {
     const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
     if (!forcing.last || signal.aborted || stopped || last?.role !== "assistant" || last.stopReason !== "error" || isRetryableAssistantError(last) || isContextOverflow(last, config.model.contextWindow)) return;
     forcing = { left: 0, reminding: false, last: false };
-    await transcript.retract();
-    io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
-    agent!.state.messages = agent!.state.messages.slice(0, -1);
+    await journal.retract();
+    io.emit({ type: "message_retracted", index: journal.total });
     await agent!.continue();
   }
 
@@ -577,7 +502,7 @@ export function createAgentHost(hostIO: HostIO) {
           signal?.throwIfAborted();
           // The call waits on a person (inputs.ts): it stays open, with no result, and the turn suspends after this step.
           if (value?.inputRequired) {
-            await transcript.await([toolCallId]);
+            await journal.await([toolCallId]);
             return { content: value.content, details: { inputRequired: true } };
           }
           if (tool.resultFormat === "content") {
@@ -651,8 +576,8 @@ export function createAgentHost(hostIO: HostIO) {
 
   /**
    * An image block as a request may carry it: as it is when its header is within `fits`, else scaled down,
-   * or a placeholder in its place when it cannot be. The transcript is not changed: it heals in the request.
-   * Written to the transcript (`writing`), an image that failed only for now stays as it is, for requests to try again.
+   * or a placeholder in its place when it cannot be. The journal is not changed: it heals in the request.
+   * Written to the journal (`writing`), an image that failed only for now stays as it is, for requests to try again.
    */
   async function fittedBlock(block: { type: "image"; data: string; mimeType: string }, writing: boolean): Promise<{ type: "image"; data: string; mimeType: string } | { type: "text"; text: string }> {
     if (block.mimeType === "application/pdf") return block;
@@ -675,7 +600,7 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
-   * The model request's files: the transcript keeps references, and each becomes a line naming it
+   * The model request's files: the history keeps references, and each becomes a line naming it
    * plus, where the model can take it, its bytes as a native block. The same references always
    * give the same request, so the provider's cached prefix holds. Every image, referenced or inline,
    * is within what any provider takes in a request of many images (`fitImage`).
@@ -788,12 +713,12 @@ export function createAgentHost(hostIO: HostIO) {
   async function remindOfOutput(signal: AbortSignal) {
     const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
     if (output || stopped || signal.aborted || last?.role !== "assistant" || last.stopReason !== "stop" || !agent!.state.tools.some(tool => tool.name === OUTPUT_TOOL)) return;
-    if (transcript.total <= transcript.turnStart + 1) return;
-    await transcript.retract();
-    io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
+    await journal.refresh();
+    if (journal.total <= journal.turnStart + 1) return;
     const reminder: SystemMessage = { role: "system", content: "", sections: { [OUTPUT]: `${OUTPUT_INSTRUCTIONS}\n${OUTPUT_REMINDER}` }, timestamp: Date.now() };
-    await declare(reminder, agent!.state.messages[0] as SystemMessage);
-    agent!.state.messages = [...agent!.state.messages.slice(0, -1), reminder];
+    // The answer leaves history and Pi's context, and the reminder follows, in one commit.
+    await journal.commit(() => [{ t: "retract" }, { t: "system", message: reminder }]);
+    io.emit({ type: "message_retracted", index: journal.total });
     forcing.reminding = true;
     await agent!.continue();
     await unforced(signal);
@@ -825,16 +750,14 @@ export function createAgentHost(hostIO: HostIO) {
       const delayMs = interrupted ? 0 : policy.baseDelayMs * 2 ** (attempt - 1);
       // A node leaving asks again elsewhere: the failed attempt is taken back, and the turn handed off at that boundary.
       if (await handingOff()) {
-        await transcript.retract();
-        io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
-        agent!.state.messages = agent!.state.messages.slice(0, -1);
+        await journal.retract();
+        io.emit({ type: "message_retracted", index: journal.total });
         return;
       }
       io.emit({ type: "auto_retry_start", attempt, maxAttempts: policy.maxAttempts, delayMs, errorMessage: last.errorMessage ?? "Unknown error", failure: modelFailure(last, failureContext()) });
       // The failed attempt is not history: drop it from the log and the live state, and say so on the stream.
-      await transcript.retract();
-      io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
-      agent!.state.messages = agent!.state.messages.slice(0, -1);
+      await journal.retract();
+      io.emit({ type: "message_retracted", index: journal.total });
       try { await clock().sleep(delayMs, { signal }); }
       catch { return; }
       await agent!.continue();
@@ -844,33 +767,51 @@ export function createAgentHost(hostIO: HostIO) {
     }
   }
 
+  /** Write `messages` (the history's from `from`, where `turns` begin) to the history index, as chunks: where it ends then. */
+  async function writeIndex(from: number, messages: AgentMessage[], turns: number[]): Promise<number> {
+    let indexed = from;
+    for (const chunk of chunksOf({ from, messages, sizes: messages.map(message => JSON.stringify(message).length), turns })) {
+      indexed = await io.history!.write(chunk);
+      if (indexed !== chunk.start + chunk.messages.length) break;
+    }
+    return indexed;
+  }
+
   /**
-   * The session's host transcript on Pi. A new agent's (no Pi storage yet, nothing in its legacy log) is seeded here, its
-   * Pi context starting from the leading system message `tools` make; a fork's was seeded as it was made. A session
-   * whose history is still only in the legacy format (never imported, or rolled back to the legacy engine by an earlier
-   * release) is refused, loudly: this release imports nothing, and starting it empty would lose its history.
+   * The session's history in Pi's journal. A session the host transcript wrote has it retired first (its history before
+   * the journal's base indexed from it: `HostJournal.retire`). A new agent's journal (no Pi storage yet, nothing in its
+   * legacy log) is seeded here: its Pi context starts from the leading system message `tools` make, after the history
+   * it was created with (`initialMessages`); a fork's was seeded as it was made. A session whose history is still only
+   * in the legacy format (never imported, or rolled back to the legacy engine by an earlier release) is refused,
+   * loudly: this release imports nothing, and starting it empty would lose its history.
    */
-  async function open(storage: PiStorage, indexed: number | undefined, tools: Tool[]): Promise<NativeTranscript> {
-    const native = await NativeTranscript.open(storage, indexed, io.historyBacklogBytes, io.transcript);
-    if (native) {
-      // The native journal commits before its host record. Each copied message carries its cursor in that same
-      // record, so a torn append is safe to copy again after reopen.
-      await reconcilePiTranscript(native, storage, SESSION_CONVERSATION_ID);
-      return native;
-    }
-    if (await hostRetired(storage)) {
-      console.error(JSON.stringify({ type: "session_format_newer", agent: config.id, tenant: config.tenant }));
-      throw new Error(`${NOT_MIGRATED}: this agent's history format is newer than this runtime (a later release keeps its history in Pi's journal alone), so this release cannot open it. Run a newer release; nothing was changed`);
-    }
+  async function open(storage: PiStorage, tools: Tool[]): Promise<HostJournal> {
+    if (await HostJournal.retire(storage, { ...(io.history && indexedTo !== undefined ? { indexed: indexedTo, index: async (from, messages, turns) => indexedTo = await writeIndex(from, messages, turns) } : {}),
+      legacy: () => io.legacyLog.read() })) console.log(JSON.stringify({ type: "host_transcript_retired", agent: config.id, tenant: config.tenant }));
+    const opened = await HostJournal.open(storage);
+    if (opened) return opened;
     const legacy = await storage.conversation(SESSION_CONVERSATION_ID, BACKGROUND_CONTEXT) ? "not_on_pi"
-      : (await io.transcript.readBounded?.(0))?.length === 0 ? undefined : "legacy_log";
+      : await io.legacyLog.empty() ? undefined : "legacy_log";
     if (legacy) {
       console.error(JSON.stringify({ type: "legacy_session_not_imported", agent: config.id, tenant: config.tenant, reason: legacy }));
       throw new Error(`${NOT_MIGRATED}: this agent's history is in the legacy format (${legacy === "not_on_pi" ? "its Pi host generation is missing or disabled" : "only its legacy transcript holds it"}), which this release no longer imports. An operator must import it (docs/operations/pi-durable.md); nothing was changed`);
     }
     const leadingSystem = leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
-    const seeded = await NativeTranscript.seed(storage, { sessionId: config.id, records: [], leadingSystem, working: [leadingSystem], indexed, bound: io.historyBacklogBytes });
-    if (!seeded) throw new Error("The agent's Pi storage was seeded meanwhile, without its host generation");
+    // Pi's context starts with the leading system message: before the history it was created with (`initialMessages`), or
+    // with that history's summary, at its cut.
+    let messages: AgentMessage[] = [], head: AgentMessage[] = [leadingSystem], headAt = 0;
+    if (config.initialMessages?.length) {
+      validateInitialMessages(config.initialMessages);
+      const imported = importedHistory(config.initialMessages);
+      messages = imported.messages;
+      if (imported.compaction) {
+        head = [leadingSystem, createCompactionSummaryMessage(imported.compaction.summary, imported.compaction.tokensBefore, new Date(imported.compaction.at).toISOString()) as AgentMessage];
+        headAt = imported.compaction.cut;
+      }
+    }
+    await seedJournal({ storage, sessionId: config.id, model: convertToLlm(head), messages, headAt });
+    const seeded = await HostJournal.open(storage);
+    if (!seeded) throw new Error("The agent's Pi storage was seeded without its journal history");
     return seeded;
   }
 
@@ -879,53 +820,49 @@ export function createAgentHost(hostIO: HostIO) {
       if (agent) throw new Error("Agent already initialized");
       config = params;
       await mkdir(config.directory, { recursive: true, mode: 0o700 });
-      // Messages the history index lacks are kept from here, as the log is read: all of them for an agent never indexed.
-      // One whose index cannot be read now (null) is left for the next start.
-      const indexed = io.history ? await io.history.indexed().catch(() => null) : null;
+      // Where the history index ends: the journal's history past it is indexed from here. One whose index cannot be read
+      // now (null) is left for the next start.
+      indexedTo = (io.history ? await io.history.indexed().catch(() => null) : null) ?? undefined;
       const piStorage = await io.piStorage?.();
       if (!piStorage) throw new Error("The agent's Pi durable storage is not open");
       // Tools first: a new agent's Pi context starts with the leading system message they make.
       jsExec = codeTool();
       const tools = [...config.codeMode === false ? [] : [jsExec], ...directAgentTools(config.tools)];
-      journal = piStorage;
-      transcript = await open(piStorage, indexed ?? undefined, tools.map(toToolDeclaration));
-      transcript.pin = () => agent ? leading() : undefined;
+      journal = await open(piStorage, tools.map(toToolDeclaration));
+      if (indexedTo !== undefined) unindexed = journal.history.sizesFrom(Math.max(indexedTo, journal.history.heldFrom)).reduce((sum, size) => sum + size, 0);
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
-      if (transcript.active && transcript.awaiting.length) {
+      if (journal.active && journal.awaiting.length) {
         // The turn had suspended for input when its node stopped: its other calls are closed as unknown, and it stays suspended.
-        await closeInterruptedTurn(transcript);
-        if (config.resume) resume = { finished: { messages: transcript.total, error: null, stopped: "input_required" } };
+        await closeInterruptedTurn(journal);
+        if (config.resume) resume = { finished: { messages: journal.total, error: null, stopped: "input_required" } };
         recovered = true;
-      } else if (transcript.active && config.resume) {
+      } else if (journal.active && config.resume) {
         // A response cut off when its node stopped is not history; the model is asked again.
-        for (let last = transcript.context.at(-1); last?.role === "assistant" && ["aborted", "error"].includes(last.stopReason) && transcript.total > transcript.turnStart; last = transcript.context.at(-1)) await transcript.retract();
+        for (let last = await journal.last(); last?.role === "assistant" && ["aborted", "error"].includes(last.stopReason) && journal.total > journal.turnStart; last = await journal.last()) await journal.retract();
         // Answer tool calls whose outcome was lost as unknown, never by running them again; but for calls keyed by the call
         // itself (a delegate call finds the child it started, and collects its answer), made again as the turn continues.
-        rerun = openCalls(transcript.context).filter(call => RERUN.includes(call.name));
-        await transcript.append(interruptedTurnRepairs(transcript.context, false, rerun.map(call => call.id)));
-        const last = transcript.context.at(-1);
+        rerun = openCalls(await journal.since(step)).filter(call => RERUN.includes(call.name));
+        await journal.append(interruptedTurnRepairs(await journal.since(step), false, rerun.map(call => call.id)));
+        const turn = await journal.since(step);
+        const last = turn.at(-1);
         if (rerun.length) resume = { continue: true };
         // At a step boundary the model is simply called again; a final answer (final_output's, too) means the turn had ended.
-        else if (last?.role === "toolResult" && last.toolName === OUTPUT_TOOL && !last.isError && transcript.total > transcript.turnStart) {
-          const said = transcript.context.findLast(message => message.role === "assistant") as AssistantMessage | undefined;
-          resume = { finished: { messages: transcript.total, ...answer(said), output: (last.details as { output?: unknown } | undefined)?.output } };
-          await transcript.setActive(false);
+        else if (last?.role === "toolResult" && last.toolName === OUTPUT_TOOL && !last.isError && journal.total > journal.turnStart) {
+          const said = turn.findLast(message => message.role === "assistant") as AssistantMessage | undefined;
+          resume = { finished: { messages: journal.total, ...await answer(said), output: (last.details as { output?: unknown } | undefined)?.output } };
+          await journal.setActive(false);
         } else if (last && (last.role === "user" || last.role === "toolResult")) resume = { continue: true };
         else {
-          if (last?.role === "assistant" && transcript.total > transcript.turnStart) resume = { finished: { messages: transcript.total, ...answer(last as AssistantMessage) } };
-          else await transcript.append(interruptedTurnRepairs(transcript.context));
-          await transcript.setActive(false);
+          if (last?.role === "assistant" && journal.total > journal.turnStart) resume = { finished: { messages: journal.total, ...await answer(last as AssistantMessage) } };
+          else await journal.append(interruptedTurnRepairs(turn));
+          await journal.setActive(false);
         }
         recovered = true;
-      } else if (transcript.active) {
+      } else if (journal.active) {
         // Close the interrupted turn instead of refusing work until an operator intervenes.
-        await closeInterruptedTurn(transcript);
+        await closeInterruptedTurn(journal);
         recovered = true;
-      } else if (transcript.total === 0 && config.initialMessages?.length) {
-        validateInitialMessages(config.initialMessages);
-        const { messages, compaction } = importedHistory(config.initialMessages);
-        await transcript.replace(messages, undefined, compaction);
       }
       // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
       const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
@@ -942,7 +879,7 @@ export function createAgentHost(hostIO: HostIO) {
       const agentOptions: Omit<DurableAgentOptions, "durable"> = {
         initialState: {
           model: config.model,
-          tools, messages: [leading(tools.map(toToolDeclaration)), ...transcript.view()],
+          tools, messages: [],
           thinkingLevel: config.thinkingLevel ?? "off",
         },
         getApiKey: () => config.apiKey,
@@ -961,7 +898,8 @@ export function createAgentHost(hostIO: HostIO) {
         onPayload: payload => documents ? documentPayload(payload) : undefined,
         // A turn with calls waiting on a person suspends; one past a spend cap or its run's limits (responses, time) stops before the next model request, after this response's tool results.
         finishTurn: async turn => {
-          if (transcript.awaiting.length) {
+          await journal.refresh();
+          if (journal.awaiting.length) {
             stopped = { stopped: "input_required" };
             return { action: "end" };
           }
@@ -990,10 +928,11 @@ export function createAgentHost(hostIO: HostIO) {
         toolExecution: "parallel",
       };
       agent = await DurableAgent.create({ ...agentOptions, durable: {
-        storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: transcript.piCursor, written: () => transcript.piCursor,
-        // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when the
-        // transcript fails one. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
-        onStorageFailure: error => { transcript.failed ??= error; },
+        storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: journal.history.latest, written: () => journal.written,
+        leading: () => leading(agent ? undefined : tools.map(toToolDeclaration)), view: freshView,
+        // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own
+        // writes fails. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
+        onStorageFailure: error => { journal.failed ??= error; },
         // Summaries share credential/network gates but not the run's output
         // schema, temperature or max-output settings.
         summaryStream,
@@ -1001,49 +940,41 @@ export function createAgentHost(hostIO: HostIO) {
         get contextWindow() { return compactionModel().contextWindow; },
         onSummary: message => io.emit({ type: "compaction_usage", provider: message.provider,
           model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
-        onCompaction: async ({ summary, keptMessages, at, reason }) => {
+        onCompaction: async ({ keptMessages, reason }) => {
           // Pi compacts after a context overflow with the refused response in its journal: as the legacy loop did, that
           // response is taken back from history, and the stream told so.
-          const refused = transcript.context.at(-1) as AssistantMessage | undefined;
-          if (reason === "overflow" && refused?.role === "assistant" && refused.stopReason === "error" && isContextOverflow(refused) && transcript.total > transcript.turnStart) {
-            await transcript.retract();
-            io.emit({ type: "message_retracted", index: await served("total", transcript.total, history => history.total) });
+          const refused = await journal.last() as AssistantMessage | undefined;
+          if (reason === "overflow" && refused?.role === "assistant" && refused.stopReason === "error" && isContextOverflow(refused) && journal.total > journal.turnStart) {
+            await journal.retract();
+            io.emit({ type: "message_retracted", index: journal.total });
           }
-          // Pi replays its last compaction when an agent starts: one the host recorded already is in place, whatever the
-          // working set has grown to since.
-          if (transcript.compaction?.summary === summary && transcript.compaction.at === at) return;
-          const kept = transcript.total - keptMessages;
-          // A cut outside the host's working set (Pi kept more than the host holds, or counted past its end) is placed at
-          // its nearest edge rather than refusing the start: the summary stands, and the agent keeps what the host holds.
-          const cut = Math.min(Math.max(kept, transcript.offset), transcript.total);
-          if (cut !== kept) console.error(JSON.stringify({ type: "native_compaction_clamped", agent: config.id, cut: kept, offset: transcript.offset, total: transcript.total }));
-          const offset = transcript.offset;
-          const state = { summary, cut, tokensBefore: contextTokens(transcript.view()), at };
-          await transcript.compact(state, transcript.compaction, changes => getCurrentSystemMessage([leading(tools.map(toToolDeclaration)), ...changes]));
-          io.emit({ type: "compaction_end", reason, tokensBefore: state.tokensBefore,
-            keptMessages, summarizedMessages: cut - offset });
+          // The context as the agent held it when Pi compacted it: its history messages less those the summary keeps.
+          const before = agent!.state.messages;
+          const held = before.filter(message => message.role !== "system" && !isSummary(message)).length;
+          io.emit({ type: "compaction_end", reason, tokensBefore: contextTokens(before), keptMessages, summarizedMessages: Math.max(0, held - keptMessages) });
         },
       } });
+      // What Pi settles for a run it was interrupted in is not history: the host closed that turn itself, above.
+      await journal.refresh();
+      const latest = journal.history.latest, before = agent.latestCursor;
       const cursor = await agent.discardInterruptedRun();
-      // Recorded only when it moved: a start with nothing new writes no host record.
-      if (cursor && !sameCursor(cursor, transcript.piCursor)) await transcript.commit(() => [{ t: "pi", cursor }]);
+      if (cursor && !sameCursor(cursor, before)) await journal.skip(cursor, latest);
       agent.subscribe(async event => {
         if ((event.type === "message_start" || event.type === "message_update" || event.type === "message_end") && event.message.role === "system") {
           // Pi declares a tool set that no longer matches the context's; it stays in place like the runtime's own changes.
           if (event.type === "message_end") {
-            try { await declare(event.message, agent!.state.messages[0] as SystemMessage); }
+            try { await journal.system(event.message); }
             catch (error) { agent!.abort(); throw error; }
           }
           return;
         }
         // A turn handed off at a step boundary goes on elsewhere: for its subscribers it has not ended.
         if (event.type === "agent_end" && stopped?.stopped === "handoff") return;
-        // A call waiting on input has no result yet: the transcript keeps it open instead (`awaiting`).
+        // A call waiting on input has no result yet: the journal keeps it open instead (`awaiting`).
         if (event.type === "message_end" && event.message.role === "user") steers = steers.filter(steer => steer.message !== event.message);
+        // Pi's journal holds each finished message as Pi commits it; streaming deltas are never persisted.
         if (event.type === "message_end" && !(event.message.role === "toolResult" && (event.message.details as { inputRequired?: boolean } | undefined)?.inputRequired)) {
-          // One durable append per finished message. Streaming deltas are never persisted.
-          try { await transcript.push(event.message, (event as unknown as { durable?: import("./transcript.ts").PiMessageCursor }).durable); }
-          catch (error) { agent!.abort(); throw error; }
+          unindexed += JSON.stringify(event.message).length;
           void index();
         }
         // A failed response's event says how it failed, for callers that would otherwise parse its message.
@@ -1055,18 +986,14 @@ export function createAgentHost(hostIO: HostIO) {
       // A configuration changed elsewhere (another node, or while this agent was stopped) applies from here.
       await declareConfiguration();
       void index();
-      // Reads move to the journal from here: its history starts where the host's stands now, once per session.
-      if (historyFromJournal() && transcript instanceof NativeTranscript && journal) {
-        await transcript.writeBase();
-        piHistory = await JournalHistory.open(journal);
-        // A session that already had its base: the turn it holds is the host's too.
-        await served("turn", { active: transcript.active, turnStart: transcript.turnStart, awaiting: [...transcript.awaiting].sort() },
-          history => ({ active: history.active, turnStart: history.turnStart, awaiting: [...history.awaiting].sort() }));
-      }
-      return { pid: process.pid, recovered, messages: transcript.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? endedTurn() : {}) };
+      await journal.refresh();
+      return { pid: process.pid, recovered, messages: journal.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? await endedTurn() : {}) };
     }
     if (!agent) throw new Error("Agent is not initialized");
-    if (method === "status") return { pid: process.pid, busy, messages: transcript.total, contextMessages: transcript.context.length, compacted: !!transcript.compaction };
+    if (method === "status") {
+      await journal.refresh();
+      return { pid: process.pid, busy, messages: journal.total, contextMessages: agent.state.messages.length, compacted: agent.state.messages.some(isSummary) };
+    }
     if (method === "configure") {
       if (busy) throw new Error("Agent is busy");
       if (params.systemPrompt !== undefined) config.systemPrompt = params.systemPrompt ?? undefined;
@@ -1087,23 +1014,15 @@ export function createAgentHost(hostIO: HostIO) {
       if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.model !== undefined) await declareConfiguration();
       return { configured: true };
     }
-    // Full history comes from the log; memory holds only the working set.
-    if (method === "history") return { messages: await readTranscriptLog(transcript.log) };
-    // Before a stop: index the settled turns, so a page of them needs neither the process nor the log.
+    // Before a stop: index the settled turns, so a page of them needs neither the process nor the journal.
     if (method === "historyFlush") { await index(true); return null; }
-    // What the history index lacks yet: the running turn, and anything a failed write left. Null when nothing indexes the agent.
+    // What the history index lacks yet: the running turn, and anything a failed write left. Null when nothing indexes the
+    // agent, or the journal does not hold it all.
     if (method === "historyTail") {
-      const backlog = transcript.backlog;
-      // Part of it left to the log: the page reads the log instead.
-      if (!backlog || backlog.kept !== backlog.from) return null;
-      // Either writer may be ahead mid-run: compare every message both hold, and serve the host's full tail.
-      const messages = await served("tail", backlog.messages, async history => {
-        const journal = (await history.messagesFrom(backlog.from))?.slice(0, backlog.messages.length);
-        if (!journal) return NOT_HELD;
-        if (journal.length < backlog.messages.length && JSON.stringify(journal) === JSON.stringify(backlog.messages.slice(0, journal.length))) return backlog.messages;
-        return journal;
-      });
-      return { from: backlog.from, messages, turns: backlog.turns };
+      if (indexedTo === undefined) return null;
+      await journal.refresh();
+      const from = indexedTo, messages = await journal.history.messagesFrom(from);
+      return messages ? { from, messages, turns: journal.history.turnsFrom(from) } : null;
     }
     if (method === "steer") {
       const messages = await fittedImages(userMessages(params));
@@ -1137,10 +1056,11 @@ export function createAgentHost(hostIO: HostIO) {
     }
     if (method !== "prompt" && method !== "execute" && method !== "continue" && method !== "resume") throw new Error(`Unknown method: ${method}`);
     if (busy) throw new Error("Agent is busy");
-    if (transcript.failed !== undefined) throw new Error(`${PERSISTENCE_FAILED}: ${String(transcript.failed)}`);
+    if (journal.failed !== undefined) throw new Error(`${PERSISTENCE_FAILED}: ${String(journal.failed)}`);
     // A prompt a turn took as a steer before the node running it stopped: it is in the history already, compacted or not.
-    if (method === "prompt" && params.requestId && await transcript.hasRequest(params.requestId)) {
-      return { messages: transcript.total, error: null, taken: true };
+    if (method === "prompt" && params.requestId && await journal.hasRequest(params.requestId)) {
+      await journal.refresh();
+      return { messages: journal.total, error: null, taken: true };
     }
     const promptMessages = method === "prompt" ? userMessages(params) : undefined;
     busy = true;
@@ -1149,7 +1069,7 @@ export function createAgentHost(hostIO: HostIO) {
     forcing = { left: FORCED_OUTPUT_REQUESTS, reminding: false, last: false };
     active = new AbortController();
     try {
-      // Aborted before this host had it (its session's `aborted`): a turn resumed from the transcript is open here, and is closed.
+      // Aborted before this host had it (its session's `aborted`): a turn resumed from the journal is open here, and is closed.
       if (method === "continue" && params?.aborted) return await abortedBeforeLoop();
       // A notification's turn the runtime refused as it landed (a cap), resumed here: closed without the model.
       if (method === "continue" && params?.landOnly) {
@@ -1162,19 +1082,19 @@ export function createAgentHost(hostIO: HostIO) {
         const { returned: _returned, cpuMs: _cpuMs, ...result } = await runCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
         return result;
       }
-      if (method === "continue" && transcript.awaiting.length) throw new Error("The agent is waiting for input: answer it, or send a new prompt");
-      await transcript.setActive(true);
+      if (method === "continue" && journal.awaiting.length) throw new Error("The agent is waiting for input: answer it, or send a new prompt");
+      await journal.setActive(true);
       // Where the run's messages start in the agent's history, so a client can line up its stream with history pages.
-      io.emit({ type: "turn_opened", index: await served("total", transcript.total, history => history.total) });
+      io.emit({ type: "turn_opened", index: journal.total });
       steerable = true;
       if (method === "resume") {
         const settled = await settle(params.calls ?? [], active.signal);
         // Closed without the model (expired or cancelled inputs), still waiting, or nothing left to resume.
-        if (params.close || transcript.awaiting.length || !settled) {
-          await transcript.setActive(false);
-          return { messages: transcript.total, error: null, ...(transcript.awaiting.length ? { stopped: "input_required" } : {}) };
+        if (params.close || journal.awaiting.length || !settled) {
+          await journal.setActive(false);
+          return { messages: journal.total, error: null, ...(journal.awaiting.length ? { stopped: "input_required" } : {}) };
         }
-        agent.state.messages = freshTurn() ?? stateMessages();
+        fresh = await freshTurn();
         if (active.signal.aborted) return await abortedBeforeLoop();
         // The answered calls were this run's step: a node leaving hands the turn off before the model is asked.
         if (await handingOff()) return handedOff();
@@ -1183,19 +1103,16 @@ export function createAgentHost(hostIO: HostIO) {
         if (active.signal.aborted) return await abortedBeforeLoop();
         if (rerun.length) {
           await rerunOpenCalls(active.signal);
-          agent.state.messages = stateMessages();
           if (await handingOff()) return handedOff();
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
-        const own = freshTurn();
-        if (own) agent.state.messages = own;
+        fresh = await freshTurn();
         await agent.continue();
       }
       else {
         // A new message supersedes calls still waiting on input: each is closed first, so the model sees why.
-        if (transcript.awaiting.length) {
-          await settle(transcript.awaiting.map(toolCallId => ({ toolCallId, result: { content: [{ type: "text", text: "Not answered: the user sent a new message instead (next)." }], isError: true } })), active.signal);
-          agent.state.messages = stateMessages();
+        if (journal.awaiting.length) {
+          await settle(journal.awaiting.map(toolCallId => ({ toolCallId, result: { content: [{ type: "text", text: "Not answered: the user sent a new message instead (next)." }], isError: true } })), active.signal);
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
         if (params.landOnly) {
@@ -1203,35 +1120,35 @@ export function createAgentHost(hostIO: HostIO) {
           const messages = await fittedImages(promptMessages!);
           for (const message of messages) {
             io.emit({ type: "message_start", message });
-            await transcript.push(message);
+            await journal.push(message);
             io.emit({ type: "message_end", message });
           }
-          await transcript.setActive(false);
+          await journal.setActive(false);
           const { stopped: why, message: said } = params.landOnly as RunStop;
-          return { messages: transcript.total, error: said, stopped: why, ...stopFields(params.landOnly) };
+          return { messages: journal.total, error: said, stopped: why, ...stopFields(params.landOnly) };
         }
-        // Images enter the transcript as requests carry them: scaled down once here, not on every request after.
+        // Images enter the journal as requests carry them: scaled down once here, not on every request after.
         const messages = await fittedImages(promptMessages!);
-        if (params.history === "none") agent.state.messages = freshTurn(messages[0])!;
+        if (params.history === "none") fresh = messages[0];
         await agent.prompt(messages);
       }
       await unforced(active.signal);
       await recoverFailedResponses(active.signal);
       await remindOfOutput(active.signal);
       // Stopped at a step boundary for another node to continue (in any of the model calls above): the turn stays open
-      // (active) in the transcript.
+      // (active) in the journal.
       if (handedOffHere()) {
-        if (transcript.failed !== undefined) throw transcript.failed;
+        if (journal.failed !== undefined) throw journal.failed;
         return handedOff();
       }
-      if (transcript.failed !== undefined) throw transcript.failed;
-      await transcript.setActive(false);
+      if (journal.failed !== undefined) throw journal.failed;
+      await journal.setActive(false);
       // Set by finishTurn as the turn ran.
       const given = output as { value: unknown } | undefined;
       // A suspended turn ends on its open calls, and a structured answer on final_output's result: what the model said as it made them is the reply.
-      const last = (transcript.awaiting.length || given ? agent.state.messages.findLast(message => message.role === "assistant") : agent.state.messages.at(-1)) as AssistantMessage | undefined;
+      const last = (journal.awaiting.length || given ? agent.state.messages.findLast(message => message.role === "assistant") : agent.state.messages.at(-1)) as AssistantMessage | undefined;
       // A failed model call fails the run, whether Pi kept its error or only the message does.
-      const answered = answer(last);
+      const answered = await answer(last);
       const error = agent.state.errorMessage ?? answered.error;
       // A run that asked for structured output and ended without it, nor stopped for a reason of its own, failed.
       const missing = !given && !error && !stopped && agent.state.tools.some(tool => tool.name === OUTPUT_TOOL);
@@ -1239,7 +1156,7 @@ export function createAgentHost(hostIO: HostIO) {
       // every retry, or a run aborted (stopped by its caller).
       const failure = error ? modelKeyFailure(error, config.model) ?? (isStalled(error) ? { code: "model_stream_stalled" } : active.signal.aborted || last?.stopReason === "aborted" ? { code: "aborted" } : {}) : {};
       return {
-        messages: transcript.total, ...answered, error, ...failure, ...(stopped ?? {}), ...(given ? { output: given.value } : {}),
+        messages: journal.total, ...answered, error, ...failure, ...(stopped ?? {}), ...(given ? { output: given.value } : {}),
         ...(missing ? { error: `The model ended its turn without calling ${OUTPUT_TOOL}, so the run has no output in its schema`, code: "output_missing" } : {}),
       };
     } finally {
@@ -1250,8 +1167,7 @@ export function createAgentHost(hostIO: HostIO) {
         steers = steers.filter(steer => !steer.whileRunning);
         for (const steer of steers) agent.steer(steer.message);
       }
-      // The next run starts from the transcript: Pi's summary and the messages it kept.
-      if (method !== "execute" && transcript.failed === undefined) agent.state.messages = stateMessages();
+      fresh = undefined;
       await io.cancelTools();
       active = undefined;
       busy = false;
@@ -1270,25 +1186,26 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
-   * A turn stopped at a step boundary for the next owner: left open (active) in the transcript, whose last message is a
+   * A turn stopped at a step boundary for the next owner: left open (active) in the journal, whose last message is a
    * tool result or the user's, so the next owner calls the model again with nothing lost (see `init`'s resume).
    */
-  function handedOff() {
-    return { messages: transcript.total, error: null, handedOff: true };
+  async function handedOff() {
+    await journal.refresh();
+    return { messages: journal.total, error: null, handedOff: true };
   }
 
   /**
    * An abort that came after the run began but before Pi's loop did: Pi's own abort found no loop to stop, so the run ends
-   * here, checked in the same tick as each loop starts. The turn is settled in the transcript before the run is seen to
+   * here, checked in the same tick as each loop starts. The turn is settled in the journal before the run is seen to
    * end: a turn resumed from it (a lost node's) may still have calls open, those to make again (`RERUN`) among them, which
    * are closed as unknown, never made; calls waiting on a person stay open.
    */
   async function abortedBeforeLoop() {
     rerun = [];
-    const repairs = interruptedTurnRepairs(transcript.context, false, transcript.awaiting);
-    if (repairs.length) await transcript.append(repairs);
-    if (transcript.active) await transcript.setActive(false);
-    return { messages: transcript.total, error: "The run was aborted", code: "aborted", ...(stopped ?? {}) };
+    const repairs = interruptedTurnRepairs(await journal.since(step), false, journal.awaiting);
+    if (repairs.length) await journal.append(repairs);
+    if (journal.active) await journal.setActive(false);
+    return { messages: journal.total, error: "The run was aborted", code: "aborted", ...(stopped ?? {}) };
   }
 
   type Settled = { content: unknown[]; isError?: boolean; details?: unknown };
@@ -1299,11 +1216,17 @@ export function createAgentHost(hostIO: HostIO) {
    * it runs leaves it open to be closed as unknown, never run twice. Returns how many calls it settled.
    */
   async function settle(calls: { toolCallId: string; result?: Settled; retry?: boolean }[], signal: AbortSignal) {
-    const made = transcript.context.flatMap(message => message.role === "assistant" ? message.content : []).filter(part => part.type === "toolCall") as ToolCall[];
+    // The calls waiting, as the model made them: in the assistant messages that made them, in order.
+    await journal.refresh();
+    const made: ToolCall[] = [];
+    for (const at of [...new Set(journal.awaiting.map(id => journal.callIndex(id)).filter((at): at is number => at !== undefined))].sort((a, b) => a - b)) {
+      const message = (await journal.history.messagesFrom(at, at + 1))?.[0];
+      if (message?.role === "assistant") made.push(...message.content.filter(part => part.type === "toolCall") as ToolCall[]);
+    }
     const position = (id: string) => made.findIndex(part => part.id === id);
-    const wanted = calls.filter(call => transcript.awaiting.includes(call.toolCallId)).sort((a, b) => position(a.toolCallId) - position(b.toolCallId));
+    const wanted = calls.filter(call => journal.awaiting.includes(call.toolCallId)).sort((a, b) => position(a.toolCallId) - position(b.toolCallId));
     const retried = wanted.filter(call => call.retry).map(call => call.toolCallId);
-    if (retried.length) await transcript.await(retried, true);
+    if (retried.length) await journal.await(retried, true);
     for (const call of wanted) {
       const toolCall = made.find(part => part.id === call.toolCallId);
       // The call ends now, as any call does on the stream: a start, then its end, then its result's message.
@@ -1324,7 +1247,7 @@ export function createAgentHost(hostIO: HostIO) {
       }
       io.emit({ type: "tool_execution_end", toolCallId: call.toolCallId, toolName: toolCall?.name ?? "", result, isError: !!result!.isError });
       const message = { role: "toolResult", toolCallId: call.toolCallId, toolName: toolCall?.name ?? "", content: result!.content, ...(result!.details !== undefined ? { details: result!.details } : {}), isError: !!result!.isError, timestamp: Date.now() } as AgentMessage;
-      await transcript.push(message);
+      await journal.push(message);
       io.emit({ type: "message_end", message });
     }
     return wanted.length;
@@ -1335,16 +1258,16 @@ export function createAgentHost(hostIO: HostIO) {
    * results it holds) and what it ended with, so a run resumed here that never recorded its end takes that outcome, not an
    * unknown one.
    */
-  function endedTurn() {
-    if (transcript.active || transcript.total <= transcript.turnStart) return {};
-    const turn = transcript.context.slice(Math.max(0, transcript.turnStart - transcript.offset));
+  async function endedTurn() {
+    if (journal.active || journal.total <= journal.turnStart) return {};
+    const turn = await journal.turnMessages();
     const said = turn.findLast(message => message.role === "assistant") as AssistantMessage | undefined;
     const given = turn.findLast(message => message.role === "toolResult" && message.toolName === OUTPUT_TOOL && !message.isError) as ToolResultMessage | undefined;
     return { ended: {
       requests: turn.flatMap(message => message.role === "user" && (message as { requestId?: string }).requestId ? [(message as { requestId?: string }).requestId!] : []),
       calls: turn.flatMap(message => message.role === "toolResult" ? [message.toolCallId] : []),
       finished: {
-        messages: transcript.total, ...answer(said), ...(transcript.awaiting.length ? { stopped: "input_required" } : {}),
+        messages: journal.total, ...await answer(said), ...(journal.awaiting.length ? { stopped: "input_required" } : {}),
         ...(given ? { output: (given.details as { output?: unknown } | undefined)?.output } : {}),
       },
     } };
@@ -1354,47 +1277,42 @@ export function createAgentHost(hostIO: HostIO) {
    * The final answer's text, for callers that relay it (channels), and that message's index in the history; the model
    * that made it (`servedModel`, as `provider/model-id`: retries ask the same one); and when it failed, how (`modelError`).
    */
-  function answer(last: AssistantMessage | undefined) {
+  async function answer(last: AssistantMessage | undefined) {
     const said = last?.role === "assistant" ? last : undefined;
     const reply = said && said.stopReason !== "error" ? said.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim() : "";
-    const at = reply ? transcript.context.lastIndexOf(last as AgentMessage) : -1;
+    // Its index in the history: the turn's latest such message, read back from the history's end.
+    let at = -1;
+    if (reply) {
+      await journal.refresh();
+      for (let index = journal.total - 1; index >= Math.max(journal.turnStart, journal.history.heldFrom) && at < 0; index--) {
+        if (sameMessage((await journal.history.messagesFrom(index, index + 1))?.[0], last)) at = index;
+      }
+    }
     const failed = said?.stopReason === "error";
     return {
-      error: failed ? said.errorMessage ?? "The model returned an error" : null, ...(reply ? { reply } : {}), ...(at >= 0 ? { replyIndex: transcript.offset + at } : {}),
+      error: failed ? said.errorMessage ?? "The model returned an error" : null, ...(reply ? { reply } : {}), ...(at >= 0 ? { replyIndex: at } : {}),
       ...(said ? { servedModel: `${said.provider}/${said.model}` } : {}), ...(failed ? { modelError: modelFailure(said, failureContext()) } : {}),
     };
   }
 
   /**
-   * Stop serving: abort the run and close the transcript, so nothing more is
-   * written. An interrupted turn stays marked active and is recovered on next load.
+   * Stop serving: abort the run and close Pi's journal, so nothing more is written. An interrupted turn stays marked
+   * active and is recovered on next load.
    */
   async function dispose(flushMs = HISTORY_FLUSH_MS) {
     active?.abort();
     agent?.abort();
     await io.cancelTools();
+    // Its settled turns are indexed while the journal is still open.
+    if (flushMs > 0 && agent) await Promise.race([index(true), clock().sleep(flushMs)]);
     await agent?.close();
-    if (flushMs > 0) await Promise.race([index(true), clock().sleep(flushMs)]);
-    await transcript?.log.close();
   }
 
-  /** Once the transcript failed, any request it ends says so, for the session to give the agent up (and reload it). */
+  /** Once a journal write failed, any request it ends says so, for the session to give the agent up (and reload it). */
   async function handled(method: string, params: any): Promise<any> {
-    try {
-      const result = await handle(method, params);
-      // Each request's history length, as the journal gives it where the agent reads from there.
-      if (piHistory && typeof result?.messages === "number") result.messages = await served("total", result.messages, history => history.total);
-      // In `log` (production), a check reads the session's journal since its host generation began: at load, then at
-      // most every DUAL_READ_INTERVAL_MS per agent. `throw` (tests, the simulation) checks after every run.
-      if (io.piDualRead && journal && transcript?.failed === undefined && ["init", "prompt", "execute", "continue", "resume"].includes(method) &&
-        (io.piDualRead === "throw" || method === "init" || clock().now() - lastDualRead >= DUAL_READ_INTERVAL_MS)) {
-        lastDualRead = clock().now();
-        await checkDualRead(io.piDualRead, config.id, journal, transcript.awaiting, transcript.active);
-      }
-      return result;
-    }
+    try { return await handle(method, params); }
     catch (error) {
-      if (transcript?.failed !== undefined && !errorText(error).startsWith(PERSISTENCE_FAILED)) throw new Error(`${PERSISTENCE_FAILED}: ${errorText(error)}`);
+      if (journal?.failed !== undefined && !errorText(error).startsWith(PERSISTENCE_FAILED)) throw new Error(`${PERSISTENCE_FAILED}: ${errorText(error)}`);
       throw error;
     }
   }

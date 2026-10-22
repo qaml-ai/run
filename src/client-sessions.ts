@@ -1,4 +1,5 @@
 import type { Message } from "@earendil-works/pi-ai";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { END_USER_CREDIT, type AttemptAck, type ModelAttemptHook } from "./model-attempt.ts";
 import { bucketInput, creditError, DEFAULT_BUCKET, MICROS, type CreditHold, type EndUserCredits } from "./end-user-credits.ts";
 import { durableEntryMessages } from "./pi-durable/agent.ts";
@@ -17,7 +18,7 @@ import { withCatalogPrices } from "./pi-catalog.ts";
 import { configurationRefusal, configurationUpdate, runLimitsInput, type CustomProviders, type ModelEndpoints } from "./session-config.ts";
 import { outputInput, validateDefinitions } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
-import { forkCut, historyOf, recordedMessages, type Backlog, type TranscriptRecord } from "./transcript.ts";
+import { convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import { canonical } from "../shared/durable-json.ts";
 import type { AppendLog, CommitEffect } from "../shared/append-log.ts";
 import { fileStorage, type Storage } from "../shared/storage.ts";
@@ -50,9 +51,7 @@ import { GENERATE_IMAGE, generateImage, type Imager } from "./images.ts";
 import type { Outbound } from "./outbound.ts";
 import { fileRef } from "./inspect.ts";
 import { resolve as resolveMount, type ToolContext, type WrittenFile } from "./volume-tools.ts";
-import { servedHistory } from "./pi-durable/history.ts";
-import { ForkBeforeHead } from "./pi-durable/fork.ts";
-import { HistoryIndex, type HistoryPage } from "./history-pages.ts";
+import { chunksOf, HistoryIndex, type Backlog, type HistoryPage } from "./history-pages.ts";
 import { answerInput, argumentsHash, expiresAt, INPUT_LIMITS, inputRequests, inputView, mayAnswer, resolution, type Answer, type Input, type Inputs, type InputRow, type Responder, type RetryPlan } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, recordWatchRefused, safeError, Steps } from "./metrics.ts";
 import { BackgroundSpans, inputSpans, RunSpans, type ToolSource, type Tracing } from "./telemetry.ts";
@@ -233,7 +232,7 @@ type Session = {
   beginning?: { durable?: Promise<void> };
   /** How the agent process found the interrupted turn when it started. */
   handoff?: { continue: true } | { finished: unknown };
-  /** The transcript's last turn, ended before this load (agent-host `endedTurn`): for a resumed run that never recorded its end. */
+  /** The journal's last turn, ended before this load (agent-host `endedTurn`): for a resumed run that never recorded its end. */
   ended?: { requests: string[]; calls: string[]; finished: unknown };
   fault?: Error;
   /** A header write failed with the database unreachable, so the stored revision is unknown. */
@@ -247,7 +246,7 @@ type Session = {
   defaultBucketSaid?: boolean;
   /** Its spend limit and what it has spent since it was set (`agent_spend_limits`); null when it has none, undefined until read. */
   spend?: SpendLimit | null;
-  /** Spend counted that no transcript record has carried yet (`spent`), for the next to write. */
+  /** Spend counted that no journal entry has carried yet (`spent`), for the next to write (`entryEffect`). */
   unwritten?: number;
   /** Since when a run's active time has not been reported (`onActive`). */
   activeSince?: number;
@@ -882,12 +881,12 @@ export class ClientSessions {
     if (header.version !== 3 || header.id !== id) throw new Error("Invalid client session header");
     // Loading means no process anywhere owns the session, so nothing it recorded is still running.
     // Queued runs that never began are safe to run now. A turn that began resumes from its
-    // transcript, a bounded number of times; anything else that began has an unknown outcome.
+    // journal, a bounded number of times; anything else that began has an unknown outcome.
     const queued: RequestRecord[] = [];
     const resumed: RequestRecord[] = [];
     const decisions = [...session.running.values()].map(request => ({ request, decision: loadDecision(request, this.options.maxResumes) }));
     // A model turn that began ends here, with no host to end it (past its resumes, or stopped before its node was lost): the
-    // turn it left open is settled in the transcript first, as the agent's next start would, so the run is never seen to
+    // turn it left open is settled in its journal first, as the agent's next start would, so the run is never seen to
     // end before its turn has (a fork, a history page). A failed write fails the load, which leaves the run to the next.
     if (decisions.some(({ request, decision }) => (decision === "aborted" || decision === "uncertain" || decision === "resume_limit") && resumable(request)) && !decisions.some(({ decision }) => decision === "resume")) {
       await this.closeTurn(session);
@@ -1678,8 +1677,7 @@ export class ClientSessions {
         search: async query => { await this.leased(session); return this.searchTools(session, query); },
         lease: () => this.leased(session),
         background: event => this.backgroundEvent(session, event),
-        committing: record => this.spendEffect(session, record),
-        nativeCommitting: entry => this.nativeUsageEffect(session, entry),
+        committing: entry => this.entryEffect(session, entry),
         history: {
           // One whose create failed before writing its row begins it now, and is indexed from its log.
           indexed: async () => (await this.historyIndex.indexed(id)) ?? (await this.historyIndex.begin(id), 0),
@@ -1688,7 +1686,7 @@ export class ClientSessions {
       }, session.claim));
       // Init can recover native responses through committing without emitting their old message_end events.
       await this.refreshSpend(session);
-      // Bootstrap history has been imported into the transcript; keep only one authority.
+      // Bootstrap history has been imported into the journal; keep only one authority.
       if (session.header.config.initialMessages !== undefined) {
         delete session.header.config.initialMessages;
         await this.writeHeader(session);
@@ -3223,7 +3221,7 @@ export class ClientSessions {
    * (`origin.definition`), and `origin.provision` stands for its configuration in the
    * idempotency check, so a retry after the definition changed returns the same agent.
    */
-  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; records: TranscriptRecord[]; model?: Message[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+  async create(definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; mcpServers?: McpServerSpec[]; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; messages: AgentMessage[]; turns: number[]; model: Message[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
     metadata = agentMetadata(metadata);
     validateDefinitions(definitions);
     // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
@@ -3297,14 +3295,14 @@ export class ClientSessions {
         };
         // FileRefs its initial messages or a fork's history carry are its own now: their chunks are pinned to it before it
         // exists, so there is never an agent without them (a pin left by a create that failed only keeps chunks stored).
-        const refs = [...safeConfig.initialMessages ?? [], ...access.fork ? recordedMessages(access.fork.records) : []].flatMap(message => Array.isArray((message as { content?: unknown }).content) ? (message as { content: unknown[] }).content.filter(validFileRef) : []);
+        const refs = [...safeConfig.initialMessages ?? [], ...access.fork?.messages ?? []].flatMap(message => Array.isArray((message as { content?: unknown }).content) ? (message as { content: unknown[] }).content.filter(validFileRef) : []);
         if (refs.length && this.options.volumes) await this.options.volumes.pin(tenant, id, refs.flatMap(ref => ref.chunks));
-        // A fork's history is its transcript before it exists, written under its claim.
-        if (access.fork) await steps.time("history", this.supervisor.seed(id, access.fork.records, claim, access.fork.model));
+        // A fork's history is in its index and its journal before it exists, written under its claim: the copied history
+        // in its index (again from where a create that failed left it), then its journal, starting after it.
+        if (access.fork) await steps.time("history", this.seedFork(id, claim, access.fork));
         // A conditional create: if a concurrent request made this agent first, retry as a load. A new agent's history is
-        // indexed from its first message (a fork's copy, too, once it starts: until then a page reads its log); beginning
-        // its index is idempotent, so it goes alongside.
-        const seeded = access.fork?.from.atMessage == null ? 0 : access.fork.from.atMessage + 1;
+        // indexed from its first message (a fork's after its copy); beginning its index is idempotent, so it goes alongside.
+        const seeded = access.fork?.messages.length ?? 0;
         await Promise.all([steps.time("header", this.writeHeader(session)), steps.time("index", this.historyIndex.begin(id, seeded))]);
         this.sessions.set(id, session);
         created = true;
@@ -3379,10 +3377,26 @@ export class ClientSessions {
   }
 
   /**
+   * A fork's history before it exists, under its claim: its copied messages in its history index (again from where a
+   * create of it that failed left them), then its journal, whose history starts after them, its model from `model`.
+   */
+  private async seedFork(id: string, claim: Claim | undefined, fork: { messages: AgentMessage[]; turns: number[]; model: Message[] }) {
+    let indexed = (await this.historyIndex.indexed(id)) ?? 0;
+    for (const chunk of chunksOf({ from: 0, messages: fork.messages, sizes: fork.messages.map(message => JSON.stringify(message).length), turns: fork.turns })) {
+      if (chunk.start + chunk.messages.length <= indexed) continue;
+      indexed = await this.historyIndex.write(id, claim, chunk, { creating: true });
+      if (indexed !== chunk.start + chunk.messages.length) throw new Error(`The fork's history index ends at ${indexed}, not ${chunk.start + chunk.messages.length}`);
+    }
+    const requests = fork.messages.flatMap(message => message.role === "user" && (message as { requestId?: string }).requestId ? [(message as { requestId?: string }).requestId!] : []);
+    await this.supervisor.seed(id, { before: fork.messages.length, requests, model: fork.model }, claim);
+  }
+
+  /**
    * A new agent with `source`'s configuration and a copy of its history and workspace (POST /v1/agents/:id/fork), on
-   * the node serving `source`. Its history is the source's transcript as its log holds it (every record a turn
-   * committed, wherever the source runs) up to the fork point (see `forkCut`): records of its own, sharing nothing
-   * mutable with the source, whose FileRefs are pinned to it. Its workspace volume is a fork of the source's, as it is
+   * the node serving `source`. Its history is the source's as its index and journal hold it (every message a turn
+   * committed, wherever the source runs) up to the fork point (`journalForkCut`), and its model context Pi's as of
+   * there (raw history before Pi's retained head): copies of its own, sharing nothing mutable with the source, whose
+   * FileRefs are pinned to it. Its workspace volume is a fork of the source's, as it is
    * now; other mounts are the same volumes. Not copied: schedules, channels, inputs, requests and spend so far. Who it
    * acts for (`identity`), its prompt addition and its model headers may be its own. With a key, a retry returns the same fork; a key naming
    * another agent is refused.
@@ -3399,26 +3413,22 @@ export class ClientSessions {
       return { id: header.id, token: made.token, expiresAt: header.expiresAt, forkedFrom: header.forkedFrom };
     };
     if (found) return answer(found);
-    let records = await steps.time("history", this.supervisor.records(sourceId));
-    // History given at create is imported when the agent first starts: one that has not yet holds it in its configuration.
-    if (!records.length && source.config.initialMessages?.length) records = [{ t: "reset", ...importedHistory(source.config.initialMessages) }];
-    let cut: { records: TranscriptRecord[]; through: number | null; model?: Message[] } = forkCut(records, input.atMessage);
-    // Where the source's tenant reads history from Pi's journal, the fork is cut from it (pi-durable/fork.ts): its
-    // history and Pi's context as of the cut. The host's cut where they keep different messages (logged), or where the
-    // journal cannot place it.
-    if (this.supervisor.readsJournal(tenant)) {
-      const indexed = (await this.historyIndex.indexed(sourceId)) ?? 0;
-      const journal = await steps.time("journal", this.supervisor.journalFork(sourceId, indexed, count => this.historyIndex.messages(sourceId, count), input.atMessage))
-        .catch(error => {
-          // Before the retained head the journal can't place the cut: the host's cut serves it while the host transcript
-          // lasts (reclaim has not run), as before #381.
-          if (error instanceof ForkBeforeHead) { console.log(JSON.stringify({ type: "fork_before_head_host_fallback", agent: sourceId })); return undefined; }
-          console.error(JSON.stringify({ type: "history_source_unavailable", agent: sourceId, field: "fork", error: safeError(error) })); return undefined;
-        });
-      const host = { through: cut.through, messages: historyOf(cut.records) };
-      const served = servedHistory(sourceId, "fork", host, journal && { through: journal.through, messages: historyOf(journal.records) });
-      if (journal && served !== host) cut = journal;
+    // Cut from the source's journal (pi-durable/fork.ts): its history, and Pi's context as of the cut.
+    const indexed = (await this.historyIndex.indexed(sourceId)) ?? 0;
+    let cut = await steps.time("history", this.supervisor.journalFork(sourceId, indexed, count => this.historyIndex.messages(sourceId, count), input.atMessage));
+    // A source that never started has no journal: its history is what it was created with, if anything.
+    if (!cut) {
+      const { messages, compaction } = source.config.initialMessages?.length ? importedHistory(source.config.initialMessages) : { messages: [], compaction: undefined };
+      const count = input.atMessage === undefined ? messages.length : typeof input.atMessage === "number" && Number.isSafeInteger(input.atMessage) && input.atMessage >= 0 && input.atMessage < messages.length ? input.atMessage + 1 : -1;
+      if (count < 0) throw new HttpError(400, `atMessage is a history index from 0 to ${messages.length - 1}`, "FORK_POINT_INVALID");
+      const kept = messages.slice(0, count);
+      // Its summary, if it covers no more than the fork keeps, then what follows it.
+      const summary = compaction && compaction.cut <= count ? [createCompactionSummaryMessage(compaction.summary, compaction.tokensBefore, new Date(compaction.at).toISOString()) as AgentMessage] : [];
+      cut = { through: count ? count - 1 : null, messages: kept, turns: kept.flatMap((message, index) => message.role === "user" && kept[index - 1]?.role !== "user" ? [index] : []),
+        model: convertToLlm([...summary, ...kept.slice(summary.length ? compaction!.cut : 0)]),
+        ...(compaction && count < compaction.cut ? { fromHistory: true as const } : {}) };
     }
+    if (cut.fromHistory) console.log(JSON.stringify({ type: "fork_from_history", agent: sourceId, at: cut.through, messageCount: cut.messages.length }));
     const from: ForkedFrom = { agentId: sourceId, atMessage: cut.through };
     // The source's own workspace is forked for the fork, under the id its workspace has; shared volumes stay shared.
     let mounts: unknown[] | undefined = source.mounts;
@@ -3438,7 +3448,7 @@ export class ClientSessions {
     const name = input.name ?? (source.metadata?.name && `${source.metadata.name} (fork)`.slice(0, 120));
     const created = await this.create(source.definitions, config as Omit<AgentConfig, "id" | "directory" | "tools">, key, { ...source.metadata, ...(name ? { name } : {}) }, tenant, input.ttlMs, mounts,
       source.definition && { definition: source.definition, provision: { fork: source.provisionHash }, overrides: source.overrides, sources: source.sources }, identity,
-      { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, ...source.definition ? {} : { builtins: source.sources?.builtins, delegate: source.sources?.delegate, mcpServers: source.sources?.mcpServers }, fork: { id: made.id, from, records: cut.records, ...(cut.model ? { model: cut.model } : {}) } }, steps);
+      { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, ...source.definition ? {} : { builtins: source.sources?.builtins, delegate: source.sources?.delegate, mcpServers: source.sources?.mcpServers }, fork: { id: made.id, from, messages: cut.messages, turns: cut.turns, model: cut.model } }, steps);
     // Made meanwhile by a retry: whatever it holds is the fork.
     if (created.reconfigure) return answer(this.sessions.get(created.id)?.header ?? (await this.readHeader(created.id))!.value);
     return { id: created.id, token: created.token, expiresAt: created.expiresAt, forkedFrom: from };
@@ -3685,19 +3695,9 @@ export class ClientSessions {
     return session && this.history(session);
   }
 
-  /**
-   * An unloaded agent's full history: from its log, or, where its tenant reads history from Pi's journal, its index's
-   * chunks and the journal after them (the log's where they differ, which is logged, or where the journal lacks some).
-   */
-  private async unloadedHistory(id: string, tenant: string) {
-    const host = await this.supervisor.history(id);
-    if (!this.supervisor.readsJournal(tenant)) return host;
-    const journal = await (async () => {
-      const indexed = (await this.historyIndex.indexed(id)) ?? 0;
-      const tail = await this.supervisor.journalBacklog(id, indexed);
-      return tail && [...await this.historyIndex.messages(id, indexed), ...tail.messages];
-    })().catch(error => { console.error(JSON.stringify({ type: "history_source_unavailable", agent: id, field: "history", error: safeError(error) })); return undefined; });
-    return servedHistory(id, "history", host, journal);
+  /** An unloaded agent's full history: its index's chunks, and the journal after them. */
+  private async unloadedHistory(id: string, _tenant: string) {
+    return this.supervisor.history(id, count => this.historyIndex.messages(id, count));
   }
 
   /**
@@ -3896,20 +3896,11 @@ export class ClientSessions {
     // An agent still starting answers nothing yet: wait for it (or, should it fail, read the log).
     if (!("unloaded" in session)) await session.starting?.catch(() => {});
     let tail = !("unloaded" in session) && this.supervisor.agents.has(id) ? await this.liveRead(id, "historyTail") as HistoryTail | null | undefined : undefined;
-    if (!tail) {
-      // The index should have every message the agent's runs reported, or the running agent the rest. An index
-      // behind (a stop that could not write its last chunks), none yet (an agent from before the index, until its next
-      // start), a running agent keeping no backlog, or work its last owner never unloaded (a node that died: what its
-      // runs reported died with it): the rest is read from its log, whole, as a full history read does. Nothing is
-      // indexed here; an agent's own process indexes from where its index ends.
-      const indexed = await this.historyIndex.indexed(id);
-      const reported = "unloaded" in session ? await this.historyIndex.reported(id) : Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
-      const orphaned = "unloaded" in session && !!(await this.db.query("select 1 from agents where id = $1 and pending_runs", [id])).rowCount;
-      // A Pi response may have committed just before its host record and run outcome failed. Neither reported nor
-      // pending_runs then reveals that tail: the native journal's newest entries do.
-      const durable = await this.supervisor.unrecordedHistory(id);
-      if (tail === null || indexed === undefined || indexed < reported || orphaned || durable) tail = await this.supervisor.backlog(id, indexed ?? 0, session.header.tenant);
-    }
+    // Without a running agent to answer (or one whose journal does not hold all the index lacks), what the index lacks
+    // is read from the journal, beside its owner: an index behind (a stop that could not write its last chunks), none yet,
+    // or work its last owner never indexed (a node that died). Nothing is indexed here; an agent's own process indexes
+    // from where its index ends.
+    if (!tail) tail = await this.supervisor.journalBacklog(id, (await this.historyIndex.indexed(id)) ?? 0, count => this.historyIndex.messages(id, count));
     return this.historyIndex.page(id, { before, limit }, tail ?? undefined);
   }
 
@@ -3922,19 +3913,18 @@ export class ClientSessions {
     return this.historyPage(session, query);
   }
 
-  /** The transcript, from the live agent when it runs, otherwise straight from its log. */
+  /** The agent's full history: its index's chunks, and its journal after them, read beside it when it runs. */
   private async history(session: Session) {
-    // An agent still starting answers nothing yet: wait for it (or, should it fail, read the log).
+    // An agent still starting answers nothing yet: wait for it (it may retire its host transcript as it starts).
     await session.starting?.catch(() => {});
-    const live = this.supervisor.agents.has(session.header.id) ? await this.liveRead(session.header.id, "history") : undefined;
-    return live ?? { messages: await this.supervisor.history(session.header.id) };
+    return { messages: await this.supervisor.history(session.header.id, count => this.historyIndex.messages(session.header.id, count)) };
   }
 
   /**
    * A read of the agent's running host; undefined when it stopped while answering (a run that just ended stops its
    * agent, an idle one is unloaded): its log, read beside it, has what it held, so the read is not failed for that.
    */
-  private async liveRead(id: string, method: "history" | "historyTail") {
+  private async liveRead(id: string, method: "historyTail") {
     try { return await this.supervisor.request(id, method); }
     catch (error) {
       if (this.supervisor.agents.has(id)) throw error;
@@ -4773,7 +4763,7 @@ export class ClientSessions {
             const usage = this.responseUsage(session, event.message);
             this.options.onUsage?.(session.header.tenant, id, { ...event.message, usage, ...run, provider: via + event.message.provider, platform: !!session.platformKey,
               ...(event.durable && this.supervisor.options.db ? { durableReceipt: true } : {}) });
-            // Its spend was written with the transcript record (`spendEffect`).
+            // Its spend was written with its journal entry (`entryEffect`).
             this.counted(session, responseCost(usage));
             this.tally(session, record.id, usage);
           }
@@ -5034,7 +5024,7 @@ export class ClientSessions {
       // A limit that refused the run as it left the queue: its result is coded as a stop at that limit mid-run is.
       const stop = refusalStop(error);
       value = stop ? { result: { error: errorText(error), ...stop } } : { error: errorText(error) };
-      // Its host's transcript failed a write: only a reload knows what it holds, so the agent is given up as a fault of
+      // Its host's journal failed a write: only a reload knows what it holds, so the agent is given up as a fault of
       // the session's own would, and the turn goes on from storage, not from this host's memory.
       if (errorText(error).startsWith(PERSISTENCE_FAILED)) this.fail(session, error, "transcript");
     }
@@ -5233,7 +5223,9 @@ export class ClientSessions {
       session.platformKey = platform;
       session.catalogPriced = !!priced;
     }
-    const closed = await this.supervisor.closeTurn(session.header.id, session.claim, record => this.spendEffect(session, record));
+    const id = session.header.id;
+    const closed = await this.supervisor.closeTurn(id, session.claim, { committing: entry => this.entryEffect(session, entry),
+      index: { indexed: async () => (await this.historyIndex.indexed(id)) ?? (await this.historyIndex.begin(id), 0), write: chunk => this.historyIndex.write(id, session.claim, chunk) } });
     // Recovered messages have no live message_end event to count them in memory. Read the committed ledger instead;
     // a retry or a second close finds the same native cursor and cannot charge the response twice.
     await this.refreshSpend(session);
@@ -5349,10 +5341,12 @@ export class ClientSessions {
     };
   }
 
-  private spendEffect(session: Session, record: TranscriptRecord): CommitEffect | undefined {
-    if (!session.spend) return undefined;
-    const message = record.t === "message" ? record.message : undefined;
-    return this.spendWrite(session, billed(message) ? responseCost(this.responseUsage(session, message, true)) : 0);
+  /**
+   * What commits with a journal entry (`ToolBridge.committing`): a model response's usage and cost (`nativeUsageEffect`),
+   * and, with any other entry, the spend counted since that no entry carried yet.
+   */
+  private entryEffect(session: Session, entry: import("@earendil-works/pi-durable").EntryRecord): CommitEffect | undefined {
+    return this.nativeUsageEffect(session, entry) ?? this.spendWrite(session, 0);
   }
 
   /** The write of `cost` to the agent's spend, with the spend counted that no record carried yet; undefined when there is none. */

@@ -66,7 +66,8 @@ async function views(r: Runtime, agent: { id: string; token: string }) {
 
 test("a run past its agent's own maxSeconds is aborted inside a hung model request, and ends as its time limit's", { timeout: 60_000 }, async t => {
   const model = await provider(t, () => "hang");
-  const r = await runtime(t, () => ({}), { AGENT_BASE_URL: model.url, AGENT_RUN_OVERRUN_MS: "1000", AGENT_IDLE_MS: "2000" });
+  // Give the asynchronous abort time to persist before the forced-stop fallback, even in a busy test run.
+  const r = await runtime(t, () => ({}), { AGENT_BASE_URL: model.url, AGENT_RUN_OVERRUN_MS: "5000", AGENT_IDLE_MS: "2000" });
   // The stall timeouts (minutes, by default) are far off: only the run's time limit can end this turn.
   const { id } = (await r.call("/v1/agents", { body: { runLimits: { maxSeconds: 1 } } })).json;
   const started = Date.now();

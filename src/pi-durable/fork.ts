@@ -2,26 +2,28 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Cursor, EntryId, EntryRecord, Storage } from "@earendil-works/pi-durable";
-import { COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
-import type { CompactionState, TranscriptRecord } from "../transcript.ts";
+import { convertToLlm } from "../pi-harness/messages.ts";
 import { piOrdered } from "./agent.ts";
 import type { At, JournalHistory } from "./history.ts";
 import { SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
 
 /**
  * A fork cut from Pi's journal (plans/host-transcript-removal.md, appendix): which of the source's history messages the
- * fork keeps, and the context its model starts with, Pi's own as of the cut, with no host transcript read.
+ * fork keeps, and the context its model starts with, Pi's own as of the cut.
  */
 export interface JournalForkCut {
   /** The history index of the last message the fork keeps (null: none). */
   through: number | null;
-  /** What the fork's host transcript starts with: the kept history, its context's summary where it has one. */
-  records: TranscriptRecord[];
-  /** The fork's model context as of the cut, as Pi derives it. */
+  /** The history the fork starts with, and where its turns began. */
+  messages: AgentMessage[];
+  turns: number[];
+  /** Pi's context as of the cut, or raw history when the cut predates its retained head. */
   model: Message[];
+  /** The retained context could not cover the cut; the model starts from raw history. */
+  fromHistory?: true;
 }
 
-/** The journal's retained context cannot reconstruct this point; do not fall back to the host's fork. */
+/** The journal's retained context cannot reconstruct this point; use the settled history instead. */
 export class ForkBeforeHead extends Error {
   readonly status = 400;
   readonly code = "FORK_POINT_INVALID";
@@ -33,23 +35,20 @@ export class ForkBeforeHead extends Error {
 
 const refused = (status: number, code: string, message: string) => Object.assign(new Error(message), { status, code });
 const callsOf = (message: AgentMessage) => message.role === "assistant" ? message.content.flatMap(part => part.type === "toolCall" ? [part.id] : []) : [];
-const textOf = (message: Message) => typeof message.content === "string" ? message.content
-  : message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("");
+/** Where conversational turns begin in `messages` without turn records: at a user message after anything else. */
+const userTurns = (messages: readonly AgentMessage[]) => messages.flatMap((message, index) => message.role === "user" && messages[index - 1]?.role !== "user" ? [index] : []);
 
 /**
- * How many of the history's messages a fork at `at` keeps, by the rules `forkCut` (transcript.ts) applies to the host's
- * records: by default up to the last turn that ended; at a history index, that message and the results answering it;
- * at a request id, the whole turn that request ran. A message of the running turn, or one whose calls have no results
- * in what is kept, is refused (409 FORK_POINT_RUNNING).
+ * How many of the history's messages a fork at `at` keeps: by default up to the last turn that ended; at a history
+ * index, that message and the results answering it; at a request id, the whole turn that request ran. A message of the
+ * running turn, or one whose calls have no results in what is kept, is refused (409 FORK_POINT_RUNNING).
  */
-export function forkCount(history: Pick<JournalHistory, "total" | "active" | "turnStart" | "awaiting">, messages: readonly AgentMessage[], turns: readonly number[], at?: number | string, baseTotal = 0): number | undefined {
+export function forkCount(history: Pick<JournalHistory, "total" | "active" | "turnStart" | "awaiting">, messages: readonly AgentMessage[], turns: readonly number[], at?: number | string): number {
   const open = history.active || history.awaiting.length > 0;
   if (at === undefined) return open ? history.turnStart : history.total;
   if (typeof at === "string") {
     const index = messages.findLastIndex(message => message.role === "user" && (message as { requestId?: string }).requestId === at);
     if (index < 0) throw refused(400, "FORK_POINT_INVALID", `No message in this agent's history was sent by request ${at}`);
-    // A turn before the base: where it ended is the host's to say.
-    if (index < baseTotal) return undefined;
     const end = [...turns, history.total].filter(turn => turn > index).sort((a, b) => a - b)[0] ?? history.total;
     if (open && end > history.turnStart) throw refused(409, "FORK_POINT_RUNNING", `Request ${at}'s turn has not ended yet; fork once it has, or at an earlier message`);
     return end;
@@ -68,13 +67,15 @@ export function forkCount(history: Pick<JournalHistory, "total" | "active" | "tu
 }
 
 /**
- * Pi's retained model context through journal cursor `at`: the newest head marker (a compaction's summary, or a
- * context checkpoint), then the entries from its head through `at` (each entry's messages as its newest edit leaves
- * them; later head markers' own messages left out), settled as Pi settles them (`piOrdered`).
+ * Pi's retained model context through journal cursor `at` (`index` -1: the whole entry; past every entry: the journal's
+ * end): the newest head marker (a compaction's summary, or a context checkpoint), then the entries from its head
+ * through `at` (each entry's messages as its newest edit leaves them; later head markers' own messages left out),
+ * settled as Pi settles them (`piOrdered`).
  */
 export async function contextAt(storage: Pick<Storage, "scanEntries" | "findLatestHeadMarker">, at: At): Promise<Message[]> {
+  const end = Number.isSafeInteger(at.entryId) && at.entryId < Number.MAX_SAFE_INTEGER ? at.entryId as EntryId : undefined;
   const head = await storage.findLatestHeadMarker(conversationId, undefined, context);
-  if (head && at.entryId < (head.head ?? head.id)) {
+  if (head && end !== undefined && end < (head.head ?? head.id)) {
     throw new ForkBeforeHead();
   }
   // A compaction marker can follow the first message it keeps. That retained range already belongs to its
@@ -82,7 +83,7 @@ export async function contextAt(storage: Pick<Storage, "scanEntries" | "findLate
   const entries: EntryRecord[] = [];
   let cursor: Cursor | undefined;
   do {
-    const page = await storage.scanEntries({ conversationId, order: "ascending", minEntryId: (head?.head ?? 0) as EntryId, maxEntryId: at.entryId as EntryId }, 256, cursor, context);
+    const page = await storage.scanEntries({ conversationId, order: "ascending", minEntryId: (head?.head ?? 0) as EntryId, ...(end === undefined ? {} : { maxEntryId: end }) }, 256, cursor, context);
     entries.push(...page.items);
     cursor = page.next;
   } while (cursor !== undefined);
@@ -98,32 +99,29 @@ export async function contextAt(storage: Pick<Storage, "scanEntries" | "findLate
 }
 
 /**
- * The summary a context leads with (a compaction's, as Pi or the host's checkpoint renders it), and how many history
- * messages it keeps after it: what the fork's host transcript starts with, so its working set is Pi's context.
- */
-export function contextSummary(model: readonly Message[]): { summary: string; kept: number; at: number } | undefined {
-  const index = model.findIndex(message => message.role === "user" && textOf(message).startsWith(COMPACTION_SUMMARY_PREFIX) && textOf(message).endsWith(COMPACTION_SUMMARY_SUFFIX));
-  if (index < 0) return undefined;
-  const text = textOf(model[index]);
-  return { summary: text.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length),
-    kept: model.slice(index + 1).filter(message => message.role !== "system").length, at: model[index].timestamp };
-}
-
-/**
  * The fork of a session at `at` from its journal: `messages` is its whole history (the history index's settled part,
- * then the journal's), `history` its journal history. Undefined where the journal cannot place the cut (a cut before
- * the session's base, whose messages have no journal cursor here).
+ * then the journal's), `history` its journal history. Its model starts from Pi's context as of the cut. Before the
+ * retained head, or the journal base (whose messages have no cursor), it starts from raw kept history, which Pi
+ * compacts on the first turn as needed.
  */
-export async function journalForkCut(storage: Pick<Storage, "scanEntries" | "findLatestHeadMarker">, history: JournalHistory, messages: readonly AgentMessage[], at?: number | string): Promise<JournalForkCut | undefined> {
-  if (messages.length !== history.total) return undefined;
-  const count = forkCount(history, messages, history.turnsFrom(0), at, history.baseTotal);
-  if (count === undefined) return undefined;
+export async function journalForkCut(storage: Pick<Storage, "scanEntries" | "findLatestHeadMarker">, history: JournalHistory, messages: readonly AgentMessage[], at?: number | string): Promise<JournalForkCut> {
+  if (messages.length !== history.total) throw new Error(`The agent's history has ${messages.length} messages, its journal ${history.total}`);
+  // Turn starts the journal records, and before its base, where user messages begin them.
+  const turns = [...new Set([...userTurns(messages.slice(0, history.baseTotal)), ...history.turnsFrom(0)])].sort((a, b) => a - b);
+  const count = forkCount(history, messages, turns, at);
   const kept = messages.slice(0, count);
-  if (!count) return { through: null, records: [], model: [] };
-  const cursor = history.cursorAt(count - 1);
-  if (!cursor) return undefined;
-  const model = await contextAt(storage, cursor);
-  const summary = contextSummary(model);
-  const compaction: CompactionState | undefined = summary && summary.kept <= count ? { summary: summary.summary, cut: count - summary.kept, tokensBefore: 0, at: summary.at } : undefined;
-  return { through: count - 1, records: [{ t: "reset", messages: [...kept], ...(compaction ? { compaction } : {}) }], model };
+  if (!count) return { through: null, messages: [], turns: [], model: [] };
+  // Pi's context just before the next history message: with what the journal holds between (a compaction or a
+  // checkpoint that summarizes what the fork keeps, an import's summary at its cut), never anything after.
+  const cursor = history.cursorAt(count - 1), next = history.cursorAt(count);
+  const through = !cursor ? undefined : !next ? { entryId: Number.MAX_SAFE_INTEGER, index: -1 } : next.index > 0 ? { entryId: next.entryId, index: next.index - 1 } : { entryId: next.entryId - 1, index: -1 };
+  if (through) {
+    try {
+      const model = await contextAt(storage, through);
+      return { through: count - 1, messages: [...kept], turns: turns.filter(turn => turn < count), model };
+    } catch (error) {
+      if (!(error instanceof ForkBeforeHead)) throw error;
+    }
+  }
+  return { through: count - 1, messages: [...kept], turns: turns.filter(turn => turn < count), model: convertToLlm([...kept]), fromHistory: true };
 }

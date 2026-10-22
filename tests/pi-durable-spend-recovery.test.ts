@@ -13,7 +13,7 @@ import { Ownership } from "../src/ownership.ts";
 import { getModel } from "../src/pi-catalog.ts";
 import { openPiStorage, purgePiStorage } from "../src/pi-durable/storage.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
-import { Transcript, type TranscriptRecord } from "../src/transcript.ts";
+import { Transcript, type TranscriptRecord } from "./fixtures/host-transcript.ts";
 import { testDatabase } from "./database.ts";
 
 const database = testDatabase();
