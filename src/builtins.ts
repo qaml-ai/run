@@ -12,6 +12,7 @@ import { HttpError } from "./http.ts";
 import { textual } from "./files.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
 import { questionsInput } from "./inputs.ts";
+import { X_SEARCH, xSearchUnavailable, type XSearch } from "./x-search.ts";
 
 export { readableText };
 
@@ -28,6 +29,7 @@ export { readableText };
 export const BUILTINS = {
   web_fetch: ["web_fetch"],
   web_search: ["web_search"],
+  x_search: ["x_search"],
   schedule: ["schedule", "list_schedules", "cancel_schedule"],
   ask_user: ["ask_user"],
   delegate: [],
@@ -48,16 +50,17 @@ export function managedBuiltinsRefusal(builtins: readonly string[] | undefined) 
 /**
  * What builtins a definition or agent enables cannot do for its tenant, as warnings for its save: web_search
  * without a key (the tenant's, an admin's or the platform's) for any provider it would try, `order` unless
- * the definition pins its own; generate_image without an OpenAI key. web_fetch works without its renderer's key, so it
+ * the definition pins its own; x_search without an xAI key; generate_image without an OpenAI key. web_fetch works without its renderer's key, so it
  * is never warned about.
  */
 export async function builtinWarnings(sources: { builtins?: readonly string[]; webSearch?: { providers: readonly string[] } } | undefined, order: readonly string[], keyed: () => Promise<(provider: string) => boolean>): Promise<string[]> {
-  const search = sources?.builtins?.includes("web_search"), images = sources?.builtins?.includes("generate_image");
-  if (!search && !images) return [];
+  const search = sources?.builtins?.includes("web_search"), images = sources?.builtins?.includes("generate_image"), x = sources?.builtins?.includes("x_search");
+  if (!search && !images && !x) return [];
   const has = await keyed();
   const providers = sources!.webSearch?.providers ?? order;
   return [
     ...search && !providers.some(has) ? [webSearchUnavailable(providers)] : [],
+    ...x && !has("xai") ? [xSearchUnavailable()] : [],
     ...images && !has("openai") ? ["generate_image can't make images for this account: add an OpenAI key under Models & keys (PUT /v1/providers/openai/key)"] : [],
   ];
 }
@@ -73,6 +76,17 @@ export const builtinNames = (builtins: string[] = []) => builtins.flatMap(builti
 const FETCH = { timeoutMs: 20_000, maxBytes: 5 * 1024 * 1024, maxRedirects: 5, characters: 20_000, maxCharacters: 100_000, htmlBytes: 2 * 1024 * 1024 };
 
 const DEFINITIONS: Record<string, ToolDefinition> = {
+  x_search: {
+    name: "x_search", exposure: "both",
+    description: "Search X posts with Grok and return a summary, source citations, and usage. Use for recent discussion, specialist commentary, and reported claims; corroborate important claims with primary sources. Optional handle filters and dates narrow the search. toDate is exclusive, in UTC. Your main model stays the same. A search can take two minutes; call directly or give js_exec a timeoutMs of 150000.",
+    parameters: { type: "object", additionalProperties: false, required: ["query"], properties: {
+      query: { type: "string", minLength: 1, maxLength: X_SEARCH.queryCharacters },
+      allowedHandles: { type: "array", minItems: 1, maxItems: 20, items: { type: "string", pattern: "^@?[A-Za-z0-9_]{1,15}$" }, description: "Only these handles; cannot be combined with excludedHandles" },
+      excludedHandles: { type: "array", minItems: 1, maxItems: 20, items: { type: "string", pattern: "^@?[A-Za-z0-9_]{1,15}$" } },
+      fromDate: { type: "string", description: "Inclusive start date, YYYY-MM-DD (UTC)" },
+      toDate: { type: "string", description: "Exclusive end date, YYYY-MM-DD (UTC)" },
+    } },
+  },
   web_fetch: {
     name: "web_fetch", exposure: "both",
     description: `Fetch a public web page or file over HTTPS and return its readable text (HTML is reduced to text). Up to ${FETCH.characters} characters by default; pass maxCharacters (at most ${FETCH.maxCharacters}) for more. Any other file (a PDF, an image) is saved to your workspace and its path returned; you are shown images and PDFs. Private and internal addresses cannot be reached.`,
@@ -132,7 +146,7 @@ export const builtinDefinitions = (builtins: string[] = []) => builtinNames(buil
 
 /** `searchProviders`: the order the agent's definition gives web_search, instead of the runtime's; `files`, where web_fetch saves files. */
 export type BuiltinContext = { tenant: string; agent: string; claim?: Claim; searchProviders?: string[]; files?: ToolFiles };
-export type BuiltinServices = { outbound: Outbound; scheduler?: Scheduler; search?: WebSearch; render?: WebRender };
+export type BuiltinServices = { outbound: Outbound; scheduler?: Scheduler; search?: WebSearch; render?: WebRender; xSearch?: XSearch };
 
 export async function runBuiltin(services: BuiltinServices, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
   if (name === "web_fetch") return webFetch(services, context, String(args.url), (args.maxCharacters as number | undefined) ?? FETCH.characters, signal);
@@ -142,6 +156,10 @@ export async function runBuiltin(services: BuiltinServices, context: BuiltinCont
 }
 
 async function builtinValue(services: BuiltinServices, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+  if (name === "x_search") {
+    if (!services.xSearch) throw new Error("X search is not enabled on this runtime");
+    return services.xSearch.search(context, args, signal);
+  }
   if (name === "web_search") {
     if (!services.search) throw new Error("Web search is not enabled on this runtime");
     return services.search.search({ tenant: context.tenant, agent: context.agent, ...(context.searchProviders ? { providers: context.searchProviders } : {}) }, args, signal);

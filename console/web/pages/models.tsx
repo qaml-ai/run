@@ -12,7 +12,7 @@ import { ConfirmButton, CopyButton, ErrorAlert, PageHeader } from "@/components/
 import { api, formatNumber, formatTime, useApi, type Me, type Model, type Provider } from "@/lib/api";
 
 /** Providers most people want, listed first (exa, brave, parallel: web search, in the order web_search tries them; firecrawl: web_fetch's renderer). */
-const FEATURED = ["anthropic", "openai", "google", "openrouter", "exa", "brave", "parallel", "firecrawl"];
+const FEATURED = ["anthropic", "openai", "google", "openrouter", "xai", "exa", "brave", "parallel", "firecrawl"];
 const PURPOSE: Record<string, string> = { search: "web search", fetch: "page rendering" };
 
 function KeyDialog({ provider, onClose, onSaved }: { provider: Provider; onClose: () => void; onSaved: () => void }) {
@@ -38,7 +38,9 @@ function KeyDialog({ provider, onClose, onSaved }: { provider: Provider; onClose
           <DialogHeader>
             <DialogTitle>{provider.key?.source === "tenant" ? "Replace" : "Add"} {provider.id} key</DialogTitle>
             <DialogDescription>
-              {provider.kind === "search"
+              {provider.id === "xai"
+                ? <>The key is stored encrypted and never shown again. Agents can use it for Grok models and the x_search tool. xAI bills X search for model tokens and posts or profiles fetched.</>
+                : provider.kind === "search"
                 ? <>The key is stored encrypted and never shown again. Agents whose definition enables web_search search with it (web_search tries exa, brave, then parallel, using the first with a key that answers), and {provider.id} bills the searches to it.</>
                 : provider.kind === "fetch"
                 ? <>The key is stored encrypted and never shown again. When web_fetch reads a page that is only a JavaScript shell, {provider.id} renders it with this key and bills the render to it.</>
@@ -100,7 +102,7 @@ export function ModelsPage({ me }: { me: Me }) {
                 {shown.map(provider => (
                   <TableRow key={provider.id}>
                     <TableCell className="font-medium">{provider.id}</TableCell>
-                    <TableCell className="text-muted-foreground">{PURPOSE[provider.kind] ?? provider.models}</TableCell>
+                    <TableCell className="text-muted-foreground">{provider.id === "xai" ? `${provider.models} models + X search` : PURPOSE[provider.kind] ?? provider.models}</TableCell>
                     <TableCell><KeyBadge provider={provider} /></TableCell>
                     <TableCell className="text-muted-foreground hidden text-xs md:table-cell">{formatTime(provider.key?.setAt)}</TableCell>
                     <TableCell className="text-right whitespace-nowrap">

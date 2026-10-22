@@ -81,6 +81,7 @@ import { Imager, openaiImages } from "./images.ts";
 import { azureChatCredentials, azureCredentials, azureRealtimeCredentials, azureRealtimeDeployment } from "./azure-openai.ts";
 import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
 import { WebRender } from "./web-render.ts";
+import { XSearch } from "./x-search.ts";
 import { Stripe } from "./stripe.ts";
 import { identityInput, RuntimeSigner } from "./identity.ts";
 import { FileUrls } from "./file-arguments.ts";
@@ -401,6 +402,10 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     outbound: outbound.withoutOrigins(), key: webKey, price: accounts.billing.pricing.webRender, endpoint: config.firecrawlUrl,
     onRender: (tenant, agent, usage) => { accounts.recordUsage(tenant, agent, usage); clients.endUserCharge(agent, usage); },
   });
+  const xSearch = new XSearch({
+    outbound: outbound.withoutOrigins(), key: webKey, endpoint: env.AGENT_XAI_RESPONSES_URL,
+    onSearch: (tenant, agent, usage) => { accounts.recordUsage(tenant, agent, usage); clients.endUserCharge(agent, usage); },
+  });
   // A provider's key for speech to text and images, as a model call resolves it: its key scope's, its own, else the
   // platform's, which a prepaid tenant pays for (per second of audio, per token of an image).
   const providerKey = async (tenant: string, keyScope: string | undefined, provider: string, azureDeployment?: string) => {
@@ -447,7 +452,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   // Files sent to tools as URLs bound to their call, signed with the identity tokens' key (file-arguments.ts).
   const fileUrls = new FileUrls({ signer, get volumes() { return volumes; }, publicUrl: () => links.publicUrl });
-  const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, render, get scheduler() { return scheduler; }, get volumes() { return volumes; }, fileUrls });
+  const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, render, xSearch, get scheduler() { return scheduler; }, get volumes() { return volumes; }, fileUrls });
   // Tenants' own OpenAI-compatible model providers.
   const modelProviders = new ModelProviders({ db, accounts, outbound });
   // A tenant of the tenants file may have its entry's maxDefinitions, else AGENT_MAX_DEFINITIONS_PER_TENANT; a self-serve one MAX_DEFINITIONS.

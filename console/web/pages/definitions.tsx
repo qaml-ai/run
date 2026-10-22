@@ -16,6 +16,7 @@ const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const BUILTINS = [
   { id: "web_fetch", label: "web_fetch", help: "read public web pages as text (JavaScript-only pages rendered with a firecrawl key)" },
   { id: "web_search", label: "web_search", help: "search the web (an Exa, Brave or Parallel key on Models & keys, or the platform's, billed per search on prepaid credit)" },
+  { id: "x_search", label: "x_search", help: "search X posts with Grok (an xAI key, or the platform’s; billed at xAI’s reported cost)" },
   { id: "schedule", label: "schedule", help: "set, list and cancel its own wake-ups" },
   { id: "generate_image", label: "generate_image", help: "make and edit images (an OpenAI key on Models & keys, or the platform's, billed per token on prepaid credit)" },
 ];

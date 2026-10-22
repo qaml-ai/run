@@ -122,7 +122,7 @@ function Detail({ data }: { data: AdminAccountDetail }) {
 }
 
 const BUILTINS: Record<string, string> = {
-  web_search: "Web search", web_fetch: "Reads web pages", schedule: "Schedules", delegate: "Sub-agents", agents: "Sub-agents", ask_user: "Asks a person",
+  web_search: "Web search", x_search: "X search", web_fetch: "Reads web pages", schedule: "Schedules", delegate: "Sub-agents", agents: "Sub-agents", ask_user: "Asks a person",
   generate_image: "Makes images",
 };
 

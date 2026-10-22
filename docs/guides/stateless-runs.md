@@ -48,7 +48,7 @@ curl -s https://run.camelai.com/v1/runs -H "Authorization: Bearer $CAMELAI_API_K
 | --- | --- | --- |
 | History | None: each run starts empty | Kept: each run continues the conversation |
 | Lifetime | Its result is kept for a retention window (a day by default), then deleted | Until you delete it (keyed) |
-| Tools | Built-ins (`web_fetch`, `web_search`, `delegate`), its own MCP servers, a definition's MCP servers and OpenAPI specs, `js_exec` | Also tools served by your process (`tools`), schedules and human input |
+| Tools | Built-ins (`web_fetch`, `web_search`, `x_search`, `delegate`), its own MCP servers, a definition's MCP servers and OpenAPI specs, `js_exec` | Also tools served by your process (`tools`), schedules and human input |
 | Listed in `GET /v1/agents` | No | Yes |
 | Use it for | Classify, extract, vote, judge, summarize: one answer per input | Chats, assistants, anything that remembers |
 
@@ -65,7 +65,7 @@ The fields an agent takes, plus the input:
   time. Fields given alongside override it, as for an agent.
 - `model`, `systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`,
   `temperature` (see [Output length and temperature](models-and-keys.md#output-length-and-temperature)), `builtins`
-  (`web_fetch`, `web_search`, `delegate`, `generate_image`: [generate_image](images.md#in-an-agent) gives the run a
+  (`web_fetch`, `web_search`, `x_search`, `delegate`, `generate_image`: [generate_image](images.md#in-an-agent) gives the run a
   workspace for its images), `delegate`, `keyScope`, `modelHeaders`,
   `runLimits`, `subject`, `context`.
 - `mcpServers`: MCP servers of its own, as an agent's: no credentials, only

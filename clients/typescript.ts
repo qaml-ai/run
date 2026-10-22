@@ -447,11 +447,11 @@ export interface CreateAgentOptions extends AgentOptions {
   traceparent?: string;
 }
 /**
- * A tool the runtime answers itself: web_fetch, web_search, schedule (wake-ups), ask_user (questions, waiting for the answer),
+ * A tool the runtime answers itself: web_fetch, web_search, x_search, schedule (wake-ups), ask_user (questions, waiting for the answer),
  * delegate (sub-agents: needs `delegate` settings), or agents (sub-agents in the background: spawn_agent, wait_agent and
  * list_agents, with the same settings).
  */
-export type Builtin = "web_fetch" | "web_search" | "schedule" | "ask_user" | "delegate" | "generate_image" | "agents";
+export type Builtin = "web_fetch" | "web_search" | "x_search" | "schedule" | "ask_user" | "delegate" | "generate_image" | "agents";
 /**
  * A delegate target: a definition's key or id, as a string or `{ definition }`, or an existing agent's key
  * (`{ agent }`, which keeps its own history across calls). `name` is what the model calls it (default: the key); `description`
@@ -1772,7 +1772,7 @@ export interface RunRequest {
   temperature?: number;
   /** "deny": its OpenRouter calls go only to hosts that do not collect their data (OpenRouter's provider.data_collection; skips providers that may train on it). Default: OpenRouter's. */
   dataCollection?: "deny";
-  builtins?: ("web_fetch" | "web_search" | "delegate")[]; delegate?: DelegateSettings;
+  builtins?: ("web_fetch" | "web_search" | "x_search" | "delegate")[]; delegate?: DelegateSettings;
   /** Remote MCP servers the run may call, without credentials (auth `{ type: "runtime" }` or none). */
   mcpServers?: InlineMcpServer[];
   /** true: a workspace volume and file tools. Default: none, unless the input has files. */

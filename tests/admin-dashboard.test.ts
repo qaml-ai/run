@@ -154,6 +154,8 @@ test("growth counts self-serve sign-ups that are not staff or erased, who did wo
 
 test("usage keeps admin tenants apart, and says which models and features agents use", async () => {
   const db = await seeded();
+  await db.query("insert into usage (tenant, day, model, responses, cost) values ('ann', '2026-03-18', 'xai/x_search', 2, 0.12)");
+  await db.query(`update agents set header = jsonb_set(header::jsonb, '{sources,builtins}', '["web_search", "schedule", "x_search"]') where id = 'ann-bot'`);
   const usage = await adminUsage(db, { days: 7, now: NOW, internalDomains: STAFF });
   assert.deepEqual(usage.tiles.active_accounts, { current: 2, previous: 1 });
   assert.deepEqual(usage.tiles.self_serve_responses, { current: 9, previous: 1 }, "model responses only: no web searches or compactions");
@@ -175,6 +177,7 @@ test("usage keeps admin tenants apart, and says which models and features agents
     { model: "anthropic/claude-sonnet-4-5", agents: 1, accounts: 1, self_serve_agents: 1, self_serve_accounts: 1 },
   ]);
   const feature = (key: string) => usage.features.find(feature => feature.key === key)!;
+  assert.deepEqual([feature("x_search").agents, feature("x_search").self_serve_agents], [1, 1]);
   assert.deepEqual([feature("web_search").agents, feature("web_search").self_serve_agents], [1, 1]);
   assert.deepEqual([feature("mcp").agents, feature("schedules").agents, feature("channel").agents], [1, 1, 1]);
   assert.deepEqual([feature("app_tools").agents, feature("definition").agents, feature("no_code_mode").agents, feature("web_fetch").self_serve_agents], [1, 1, 1, 0]);

@@ -106,6 +106,7 @@
 | `AGENT_PRICE_WEB_SEARCH_EXA_USD`, `AGENT_PRICE_WEB_SEARCH_BRAVE_USD`, `AGENT_PRICE_WEB_SEARCH_PARALLEL_USD`, `AGENT_PRICE_WEB_RENDER_USD` | per platform-key `web_search` by the provider that answered, and per page `web_fetch` has Firecrawl render (defaults 0.007, 0.005, 0.001, 0.00083); `AGENT_PRICE_WEB_SEARCH_USD` sets all three search prices at once |
 | `AGENT_WEB_SEARCH_PROVIDERS` | the providers `web_search` tries, in order (default `exa,brave,parallel`) |
 | `AGENT_WEB_SEARCH_TIMEOUT_MS` | how long each search provider gets before the next is tried (default 5000) |
+| `AGENT_XAI_RESPONSES_URL` | `https://api.x.ai/v1/responses` | xAI Responses endpoint for the `x_search` builtin; override for tests. |
 | `AGENT_EXA_SEARCH_URL`, `AGENT_BRAVE_SEARCH_URL`, `AGENT_PARALLEL_SEARCH_URL`, `AGENT_FIRECRAWL_SCRAPE_URL` | the providers' endpoints (default their own; tests point them at local servers) |
 | `AGENT_BILLING_INTERVAL_MS` | how often a node checks whether today's storage charge has run (default 3600000) |
 | `AGENT_STORAGE_RECONCILE_DAYS` | how often the storage charge first corrects tracked storage by listing Storage (default 7; 0: only the first time; see [Billing](billing.md)) |
