@@ -5,10 +5,11 @@ install packages, write programs, run subprocesses and keep a web server alive
 between turns. The model loop and history stay in camelRun; commands execute at
 Modal, Daytona, boat.dev or E2B. The provider key stays in this adapter process.
 
-This is an **attached-tool integration example**, not a hosted camelRun computer
-service. Run the adapter while testing. There is no native `computer` option in
-the console, and these provider charges are not included in camelRun workspace
-spend. A shell also does not provide a graphical desktop or screenshot tool.
+This is an **attached-tool integration example**. For the hosted platform
+integration, use [Computers](../../docs/guides/computers.md): connect credentials
+in the console and camelRun supplies the tools and durable lifecycle. This
+example still requires you to run the adapter. A shell does not provide a
+graphical desktop or screenshot tool.
 
 ## Run
 
@@ -75,25 +76,15 @@ started an HTTP server and updated its state in a later turn. An independent
 HTTP/file check verified the result, and provider lookups confirmed cleanup.
 These were functional tests, not controlled latency or cost benchmarks.
 
-## What native support still needs
+## Scope
 
-The product should let a customer attach a computer to an agent without running
-this adapter. That requires:
+Native support now includes encrypted provider connections, durable sessions,
+operation receipts, cleanup and workspace session time. The adapters here remain
+useful for testing your own attached-tool service. Their receipts are in memory.
 
-- A sealed provider connection and an agent-owned durable computer record.
-- Idempotent allocation and command records, recovery after a runtime restart,
-  bounded concurrent commands, cancellation and orphan cleanup.
-- Explicit choices for a persistent disk versus a disposable task environment.
-- File transfer between the computer and camelRun volumes, with artifact links.
-- Separate capabilities for shell, browser, graphical desktop, Docker and GPU;
-  providers do not all offer the same machine or isolation boundary.
-- Provider usage receipts attributed to the agent/workspace, separate from model
-  cost until billing is reconciled, plus a computer spending limit.
-
-The adapters here cover create, execute and destroy only. They do not claim
-provider parity for snapshots, pause/resume, desktop streaming, GPUs or networking.
-Keep the existing restricted `js_exec` unchanged: a full Linux computer is an
-additional opt-in environment with its own lifecycle.
+Neither path provides snapshots, pause/resume, desktop streaming, GPUs or
+transferring files automatically between the computer and camelRun volumes.
+The restricted `js_exec` remains separate from the computer environment.
 
 Provider references: [Modal sandboxes](https://modal.com/docs/guide/sandboxes),
 [Daytona SDK](https://www.daytona.io/docs/en/python-sdk/sync/daytona/),

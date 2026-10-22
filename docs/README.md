@@ -14,6 +14,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Scheduled agents and email reports](guides/schedules.md)
    - [Workspaces](guides/workspaces.md): group agents and definitions and see model and tool spend by project
    - [Projects](guides/projects.md): an agent builds a bot, site or report; your app checks and publishes versions
+   - [Computers](guides/computers.md): native Linux computers, remote browsers and Cloudflare Tunnel
    - [Tools](guides/tools.md): writing tools, attached and served tools, identity, MCP and OpenAPI sources, built-ins
    - [Human input](guides/human-input.md): approvals, questions and forms; answering
    - [Structured output](guides/structured-output.md): a run's answer as an object in your schema (zod, pydantic, JSON Schema)

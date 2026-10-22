@@ -1,3 +1,4 @@
+import { ComputersPage } from "@/pages/computers";
 import { StrictMode, useEffect, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { LogOut, Loader2 } from "lucide-react";
@@ -114,6 +115,7 @@ function Console({ me }: { me: Me }) {
   const page = starting ? <GetStartedPage billing={billing.data} onboarding={onboarding} />
     : section === "agents" && rest[0] ? <AgentPage id={rest[0]} />
     : section === "volumes" ? (rest[0] ? <VolumePage id={rest[0]} /> : <VolumesPage />)
+    : section === "computers" ? <ComputersPage />
     : section === "workspaces" ? (rest[0] ? <WorkspaceSettingsPage id={rest[0]} /> : <WorkspacesPage />)
     : section === "definitions" ? <DefinitionsPage />
     : section === "channels" ? <ChannelsPage />

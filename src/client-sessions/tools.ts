@@ -69,7 +69,7 @@ async function toolServers(ctx: ToolsContext, session: Session, tools: ToolDefin
     ...volumes && header.mounts?.length && !bare ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(toolContext(ctx, session), name, args, signal)))] : [],
     ...multiAgent ? [multiAgent] : [],
     ...images ? [images] : [],
-    ...sources && ctx.options.sources ? [ctx.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: () => session.header.mounts ?? [], onWrite: toolContext(ctx, session).onWrite }, sources)] : [],
+    ...ctx.options.sources ? [ctx.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: () => session.header.mounts ?? [], onWrite: toolContext(ctx, session).onWrite }, sources)] : [],
   ];
 }
 

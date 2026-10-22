@@ -1,5 +1,7 @@
 # Tools
 
+For native Linux computers and remote browsers, see [Computers](computers.md).
+
 An agent's tools are how it acts. This guide covers where they run, how to write
 them so a retry never does harm, and how the runtime tells a tool who a call is
 for. For the short version of where tools should run, see the table in
@@ -94,12 +96,9 @@ tool's exposure (**Tools the model gets**), and `GET /v1/agents/:id` its
 
 Pass `tools` to `upsert` and this process serves them to the agent:
 
-For an agent that needs Linux commands, package installation and a server that
-stays running between turns, see the [computer example](../../examples/computer/README.md).
-It attaches a private Modal, Daytona, boat or E2B environment through the same
-tool interface. It also includes Browserbase browser tools and an authenticated
-Cloudflare Tunnel runner for a disposable container on your own computer. This is an integration example: camelRun does not yet provision or
-bill these computers itself, and the adapter process must remain connected.
+For native Linux computers and remote browsers, use [Computers](computers.md).
+The [computer example](../../examples/computer/README.md) remains available if
+you want to run an attached adapter in your own process instead.
 
 ```ts
 const agent = await agents.upsert("ops", { model, instructions, tools: { refund } });

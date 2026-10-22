@@ -1,3 +1,4 @@
+import { COMPUTER_TOOLS, type Computers } from "./computers/service.ts";
 import { randomUUID } from "node:crypto";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -17,7 +18,7 @@ import type { XSearch } from "./x-search.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
 import type { DelegateSettings } from "./multi-agent.ts";
 import type { McpResult } from "./mcp-results.ts";
-import { callMeta, declaredTimeout, defaultExposure, timedOut, TOOL_DEADLINES, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
+import { jsonResult, callMeta, declaredTimeout, defaultExposure, timedOut, TOOL_DEADLINES, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { callScope, type AgentIdentity, type RuntimeSigner } from "./identity.ts";
 import { checkDocument, definition as operationTool, operations, parseSpec, request as operationRequest, result as operationResult, type Operation } from "./openapi.ts";
 import { acceptFiles, resolveFiles, savedContent, ToolFiles } from "./tool-files.ts";
@@ -361,14 +362,14 @@ export class ToolSources {
   private readonly accounts?: Accounts;
   private readonly mcp: McpConnections;
   private readonly outbound: Outbound;
-  private readonly options: { scheduler?: Scheduler; search?: WebSearch; render?: WebRender; xSearch?: XSearch; volumes?: VolumeService; fileUrls?: FileUrls };
+  private readonly options: { scheduler?: Scheduler; search?: WebSearch; render?: WebRender; xSearch?: XSearch; computers?: Computers; volumes?: VolumeService; fileUrls?: FileUrls };
 
   private readonly signer?: RuntimeSigner;
   /** Credentials fetched for servers with auth "exchange": this node's, in memory only. */
   readonly exchange: CredentialExchange;
 
   /** `fileUrls` signs the URLs of files sent to tools (file-arguments.ts). */
-  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch; render?: WebRender; xSearch?: XSearch; volumes?: VolumeService; fileUrls?: FileUrls }) {
+  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch; render?: WebRender; xSearch?: XSearch; computers?: Computers; volumes?: VolumeService; fileUrls?: FileUrls }) {
     this.accounts = options.accounts;
     this.mcp = options.mcp;
     this.outbound = options.outbound;
@@ -474,6 +475,8 @@ export class ToolSources {
     }));
   }
 
+  computerRevision(tenant: string, agent: string) { return this.options.computers?.revision(tenant, agent) ?? Promise.resolve(""); }
+
   server(context: SourceContext, sources: Sources | undefined): ToolServer {
     const builtins = builtinNames(sources?.builtins);
     const mcpServer = (name: string) => sources?.mcpServers?.find(server => name.startsWith(`${server.name}__`));
@@ -513,7 +516,7 @@ export class ToolSources {
           listed.set(spec.name, listing);
           return "tools" in listing ? listing.tools : [];
         }));
-        return [...builtinDefinitions(sources?.builtins), ...(sources?.openApi ?? []).flatMap(apiTools), ...lists.flat()];
+        return [...await this.options.computers?.tools(context.tenant, context.agent) ?? [], ...builtinDefinitions(sources?.builtins), ...(sources?.openApi ?? []).flatMap(apiTools), ...lists.flat()];
       },
       sources: async ({ refresh }) => {
         const known = (spec: McpServerSpec): Listing | undefined => {
@@ -533,6 +536,7 @@ export class ToolSources {
           return { ...source, status: "listed", listedAt: listing.at, tools: listing.tools };
         }));
         return [
+          ...this.options.computers ? [{ kind: "builtin" as const, name: "computer", status: "listed" as const, tools: await this.options.computers.tools(context.tenant, context.agent) }].filter(source => source.tools.length) : [],
           // delegate is listed by the sessions' own server.
           ...(sources?.builtins ?? []).filter(name => builtinNames([name]).length).map((name): ToolSourceView => ({ kind: "builtin", name, status: "listed", tools: builtinDefinitions([name]) })),
           ...(sources?.openApi ?? []).map((api): ToolSourceView => ({ kind: "openapi", name: api.name, url: api.baseUrl, ...(api.exposure ? { exposure: api.exposure } : {}), status: "listed", tools: apiTools(api) })),
@@ -544,6 +548,7 @@ export class ToolSources {
         const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}), ...(runId ? { request: runId } : {}), ...(toolCallId ? { toolCall: toolCallId } : {}), ...(lineage ?? {}) };
         // What a file URL is bound to: the call's stable key, else its tool call (and its place in a js_exec run).
         const call = idempotencyKey ?? (toolCallId && (innerCallId ? `${toolCallId}:${innerCallId}` : toolCallId)) ?? randomUUID();
+        if (COMPUTER_TOOLS.has(name) && this.options.computers) return jsonResult(await this.options.computers.call(context.tenant, context.agent, name, args, call));
         if (builtins.includes(name)) {
           const callFiles = files(name, runId);
           // web_fetch reads URLs the model chooses: never the operator's own services, however they are allowed for configured ones.
