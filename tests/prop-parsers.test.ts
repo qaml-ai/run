@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import type { Socket } from "node:net";
 import * as schemas from "../src/api-schemas.ts";
-import { answerList } from "../src/client-sessions.ts";
+import { answerList } from "../src/client-sessions/inputs.ts";
 import { spendInput } from "../src/client-sessions/spend.ts";
 import { HttpError } from "../src/http.ts";
 import { addressBytes, Outbound, OutboundBlocked } from "../src/outbound.ts";
