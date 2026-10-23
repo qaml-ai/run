@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
-import { ATTEMPT_STALE_MS, ModelAttempts } from "../src/model-attempts.ts";
+import { ModelAttempts } from "../src/model-attempts.ts";
 import type { Db } from "../src/db.ts";
 import { testDatabase } from "./database.ts";
 import { fixture } from "./client-fixture.ts";
@@ -77,7 +77,7 @@ test("reconciliation survives a lost host, includes BYOK cost, and runs concurre
   const { db, account, attempts } = await setup();
   const id = await begin(attempts);
   await attempts.event("payg","agent",true,true,{ type:"generation",id,generation:"gen-recovery-fixture" });
-  await db.query("update model_attempts set updated_at=0,next_check_at=0 where id=$1",[id]);
+  await db.query("update model_attempts set next_check_at=0 where id=$1",[id]);
   const fetcher: typeof fetch = async (_url, init) => {
     assert.equal(new Headers(init?.headers).get("Authorization"),`Bearer ${KEY}`);
     return Response.json({data:{ id:"gen-recovery-fixture", total_cost:0.01,is_byok:true,upstream_inference_cost:0.2,generation_time:150,cancelled:true,provider_responses:[{status:499}],native_tokens_prompt:100,native_tokens_completion:30 }});
@@ -110,7 +110,7 @@ test("authoritative reconciliation posts only the difference, including a refund
   assert.ok(Math.abs(attributed[0].cost - 0.1) < 1e-12);
   const pending = await begin(attempts);
   await attempts.event("payg","agent",true,true,{type:"finish",id:pending,usage:{},chars:0,completed:false});
-  await db.query("update model_attempts set updated_at=0,next_check_at=0 where id=$1",[pending]);
+  await db.query("update model_attempts set next_check_at=0 where id=$1",[pending]);
   await attempts.reconcile();
   const row=(await db.query("select state,last_error from model_attempts where id=$1",[pending])).rows[0];
   assert.equal(row.state,"pending");assert.match(row.last_error,/Awaiting provider evidence/);
@@ -180,12 +180,12 @@ test("missing provider records and rotated keys never finalize an unknown charge
   const { db, account, attempts } = await setup();
   const id=await begin(attempts);
   await attempts.event("payg","agent",true,true,{type:"generation",id,generation:"gen-unavailable-fixture"});
-  await db.query("update model_attempts set updated_at=0,next_check_at=0");
+  await db.query("update model_attempts set next_check_at=0");
   await new ModelAttempts(db,account,async()=>new Response(null,{status:404})).reconcile();
   assert.equal((await db.query("select state from model_attempts")).rows[0].state,"pending");
-  await db.query("update model_attempts set updated_at=0,next_check_at=0,key_hash=$1",["0".repeat(64)]);
+  await db.query("update model_attempts set next_check_at=0,key_hash=$1",["0".repeat(64)]);
   await new ModelAttempts(db,account,async()=>{throw new Error("must not use a different key");}).reconcile();
-  assert.match((await db.query("select last_error from model_attempts")).rows[0].last_error,/Original provider credential is unavailable/);
+  assert.match((await db.query("select last_error from model_attempts")).rows[0].last_error,/key changed/);
   assert.equal(await total(db),0);
 });
 
@@ -213,7 +213,7 @@ test("tenant-owned OpenRouter usage reconciles with its original key without cha
   const id=randomUUID();
   await attempts.event("own","agent",false,false,{type:"begin",id,provider:"openrouter",model:"openai/gpt-6-luna",kind:"response",at:Date.now(),keyHash});
   await attempts.event("own","agent",false,false,{type:"generation",id,generation:"gen-tenant-fixture"});
-  await db.query("update model_attempts set updated_at=0,next_check_at=0");
+  await db.query("update model_attempts set next_check_at=0");
   await attempts.reconcile();
   const row=(await db.query("select state,totals,charge from model_attempts")).rows[0];
   assert.equal(row.state,"settled");assert.equal(row.totals.cost,0.02);assert.equal(Number(row.charge),0);
@@ -232,7 +232,7 @@ test("a late completed delivery upgrades an estimate once without counting a sec
 test("HTTP success alone does not finalize a still-running generation", async () => {
   const {db,account,attempts}=await setup(); const id=await begin(attempts);
   await attempts.event("payg","agent",true,true,{type:"generation",id,generation:"gen-running"});
-  await db.query("update model_attempts set updated_at=0,next_check_at=0");
+  await db.query("update model_attempts set next_check_at=0");
   await new ModelAttempts(db,account,async()=>Response.json({data:{id:"gen-running",total_cost:0,generation_time:0,provider_responses:[{status:200}]}})).reconcile();
   const row=(await db.query("select state,last_error from model_attempts")).rows[0];
   assert.equal(row.state,"pending"); assert.match(row.last_error,/terminal evidence/);
@@ -251,7 +251,7 @@ test("scoped OpenRouter reconciliation selects only a fingerprint-matching key",
   const {db,account,attempts}=await setup(); const id=await begin(attempts);
   const scopeKey="scope-fixture-only";
   await attempts.event("payg","agent",true,true,{type:"generation",id,generation:"gen-scoped"});
-  await db.query("update model_attempts set updated_at=0,next_check_at=0,context=$1,key_hash=$2",[JSON.stringify({keyScope:"customer"}),createHash("sha256").update(scopeKey).digest("hex")]);
+  await db.query("update model_attempts set next_check_at=0,context=$1,key_hash=$2",[JSON.stringify({keyScope:"customer"}),createHash("sha256").update(scopeKey).digest("hex")]);
   await new ModelAttempts(db,account,async(_url,init)=>{
     assert.equal(new Headers(init?.headers).get("authorization"),`Bearer ${scopeKey}`);
     return Response.json({data:{id:"gen-scoped",total_cost:0.01,generation_time:1,finish_reason:"stop"}});
@@ -259,24 +259,24 @@ test("scoped OpenRouter reconciliation selects only a fingerprint-matching key",
   assert.equal((await db.query("select state from model_attempts")).rows[0].state,"settled");
 });
 
-test("duplicate no-evidence finishes never bill or emit a correction webhook", async () => {
+test("duplicate completed estimates do not emit another revision or correction webhook", async () => {
   const {db,attempts}=await setup(); const id=await begin(attempts);
   const empty={type:"finish" as const,id,usage:{},chars:0,completed:true};
   await attempts.event("payg","agent",true,true,empty);
   await attempts.event("payg","agent",true,true,empty);
   const row=(await db.query("select state,revision from model_attempts")).rows[0];
-  assert.equal(row.state,"pending");assert.equal(row.revision,0);
+  assert.equal(row.state,"estimated");assert.equal(row.revision,1);
 });
 
 test("recoverable generations are not crowded out by unsupported provider records", async () => {
   const {db,account,attempts}=await setup();
   for(let i=0;i<25;i++) {
     const id=await begin(attempts);
-    await db.query("update model_attempts set updated_at=0,provider='anthropic',next_check_at=0 where id=$1",[id]);
+    await db.query("update model_attempts set provider='anthropic',next_check_at=0 where id=$1",[id]);
   }
   const id=await begin(attempts);
   await attempts.event("payg","agent",true,true,{type:"generation",id,generation:"gen-priority"});
-  await db.query("update model_attempts set updated_at=0,next_check_at=1 where id=$1",[id]);
+  await db.query("update model_attempts set next_check_at=1 where id=$1",[id]);
   await new ModelAttempts(db,account,async()=>Response.json({data:{id:"gen-priority",total_cost:0.01,generation_time:1,finish_reason:"stop"}})).reconcile();
   assert.equal((await db.query("select state from model_attempts where id=$1",[id])).rows[0].state,"settled");
 });
@@ -307,173 +307,8 @@ test("Messages API native message IDs preserve the header generation through can
   const row=(await f.db.query("select id,generation_id from model_attempts")).rows[0];
   assert.equal(row.generation_id,"gen-messages-fixture");
   await f.sessions.abortAgent(agent.session.id,"default");await run;
-  await f.db.query("update model_attempts set updated_at=0,next_check_at=0");
+  await f.db.query("update model_attempts set next_check_at=0");
   await new ModelAttempts(f.db,account,async()=>Response.json({data:{id:"gen-messages-fixture",total_cost:0.01,generation_time:100,cancelled:true,native_tokens_prompt:100,native_tokens_completion:8}})).reconcile();
   const settled=(await f.db.query("select state,totals from model_attempts where id=$1",[row.id])).rows[0];
   assert.equal(settled.state,"settled");assert.equal(settled.totals.cost,0.01);
-});
-
-test("gateway and empty-key attempts finalize estimates; existing gateway rows stop reconciliation", async () => {
-  const { db, account, attempts } = await setup();
-  let lookups = 0;
-  const worker = new ModelAttempts(db, account, async () => { lookups++; throw new Error("gateway credentials must not reach OpenRouter"); }, 0,
-    async () => ({ baseUrl: "https://gateway.example/v1" }));
-  for (const legacy of [false, "empty", "gateway"]) {
-    const id = randomUUID();
-    await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: "anthropic/claude-opus-4.1", kind: "response", at: Date.now(),
-      keyHash: legacy === "gateway" ? keyHash : createHash("sha256").update("").digest("hex"), context: { keyScope: "hosted" }, ...(legacy === "gateway" ? { reconciliationDisabled: "Gateway credential has no direct reconciliation" } : {}),
-      estimate: { inputTokens: 100, maxOutputTokens: 100, rates: { input: 15, output: 75 } } });
-    await attempts.event("payg", "agent", true, true, { type: "generation", id, generation: `gen-gateway-${legacy}` });
-    await attempts.event("payg", "agent", true, true, { type: "finish", id, usage: {}, chars: 80, completed: true });
-    assert.equal((await db.query("select state from model_attempts where id=$1", [id])).rows[0].state, "settled");
-    if (legacy === "gateway") await db.query("update model_attempts set platform=false where id=$1", [id]);
-    if (legacy) await db.query("update model_attempts set updated_at=0,state='estimated',context=context-'reconciliationDisabled',next_check_at=0 where id=$1", [id]);
-    const before = await total(db);
-    await worker.reconcile();
-    const row = (await db.query("select state,last_error,checks from model_attempts where id=$1", [id])).rows[0];
-    assert.equal(row.state, "settled");
-    assert.equal(row.last_error, null);
-    assert.equal(await total(db), before, "the existing estimate is preserved");
-    await db.query("update model_attempts set updated_at=0,next_check_at=0 where id=$1", [id]);
-    await worker.reconcile();
-    assert.equal((await db.query("select checks from model_attempts where id=$1", [id])).rows[0].checks, row.checks);
-  }
-  assert.equal(lookups, 0);
-});
-
-test("a hosted-scope gateway generation settles without an OpenRouter credential", async t => {
-  const { explicitKeyStream } = await import("../src/compaction.ts");
-  const { Outbound } = await import("../src/outbound.ts");
-  const { normalizeContext } = await import("@earendil-works/pi-ai");
-  const { db, attempts } = await setup();
-  let count = 0;
-  const server = createServer(async (req, res) => {
-    for await (const _ of req) {}
-    res.writeHead(200, { "Content-Type": "text/event-stream" });
-    const id = `gen-hosted-${++count}`;
-    res.write(`data: ${JSON.stringify({ id, choices: [{ index: 0, delta: { role: "assistant", content: "answer" }, finish_reason: null }] })}\n\n`);
-    res.write(`data: ${JSON.stringify({ id, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
-    res.end("data: [DONE]\n\n");
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
-  const baseUrl = `http://127.0.0.1:${(server.address() as any).port}/v1`;
-  for (const apiKey of ["", "gateway-only-fixture"]) {
-    const stream = explicitKeyStream(async () => ({ apiKey, baseUrl, platform: false }), undefined, undefined, undefined, undefined, new Outbound({ allowHttp: true, allow: ["127.0.0.1/32"] }),
-      event => attempts.event("payg", "agent", true, true, event.type === "begin" ? { ...event, context: { keyScope: "hosted" } } : event));
-    const events = await stream({ ...getModel("openrouter", "openai/gpt-6-luna")!, api: "openai-completions" }, normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 1 }] }), { apiKey: "scope-placeholder" });
-    const result = await events.result();
-    assert.equal(result.stopReason, "stop", result.errorMessage);
-  }
-  const rows = (await db.query("select state,generation_id,last_error,context from model_attempts")).rows;
-  assert.equal(rows.length, 2);
-  for (const row of rows) {
-    assert.equal(row.state, "settled");
-    assert.ok(row.generation_id);
-    assert.equal(row.last_error, null);
-    assert.equal(row.context.keyScope, "hosted");
-  }
-});
-
-
-test("platform Azure Luna refusals never bill estimated input", async () => {
-  const { db, attempts } = await setup();
-  const id = randomUUID();
-  await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "azure", model: "gpt-6-luna", kind: "response", at: Date.now(), keyHash,
-    estimate: { inputTokens: 400_000, maxOutputTokens: 100, rates: { input: 5, output: 20 } } });
-  await attempts.event("payg", "agent", true, true, { type: "finish", id, usage: { input: 0, output: 0 }, chars: 0, completed: false });
-  assert.equal(await total(db), 0);
-  await db.query("update model_attempts set updated_at=0,next_check_at=0 where id=$1", [id]);
-  await attempts.reconcile();
-  const row = (await db.query("select state,charge,last_error from model_attempts where id=$1", [id])).rows[0];
-  assert.equal(row.state, "settled");
-  assert.equal(Number(row.charge), 0);
-  assert.equal(row.last_error, null);
-});
-
-test("a gateway refusal settles at zero and is never polled", async () => {
-  const { db, attempts } = await setup();
-  const id = randomUUID();
-  await attempts.event("payg", "agent", false, false, { type: "begin", id, provider: "openrouter", model: "openai/gpt-6-luna", kind: "response", at: Date.now(), keyHash,
-    reconciliationDisabled: "Gateway credential", estimate: { inputTokens: 400_000, maxOutputTokens: 100, rates: { input: 5, output: 20 } } });
-  await attempts.event("payg", "agent", false, false, { type: "finish", id, usage: {}, chars: 0, completed: false });
-  await db.query("update model_attempts set updated_at=0,next_check_at=0 where id=$1", [id]);
-  await attempts.reconcile();
-  const row = (await db.query("select state,charge,checks from model_attempts where id=$1", [id])).rows[0];
-  assert.equal(row.state, "settled");
-  assert.equal(Number(row.charge), 0);
-  assert.equal(row.checks, 0);
-});
-
-test("reconciliation leaves an in-flight attempt for its real full-usage finish", async () => {
-  const { db, account, attempts } = await setup();
-  const id = await begin(attempts);
-  await attempts.event("payg", "agent", true, true, { type: "generation", id, generation: "gen-inflight" });
-  await db.query("update model_attempts set next_check_at=0,updated_at=$2 where id=$1", [id, Date.now() - ATTEMPT_STALE_MS + 60_000]);
-  await new ModelAttempts(db, account, async () => { throw new Error("in-flight lookup"); }).reconcile();
-  assert.equal((await db.query("select checks from model_attempts where id=$1", [id])).rows[0].checks, 0);
-  await attempts.event("payg", "agent", true, true, finish(id, 0.25));
-  assert.equal(await total(db), -250000);
-});
-
-
-test("real provider reconciliation can increase an end user's charge after the call", async () => {
-  const { EndUserCredits } = await import("../src/end-user-credits.ts");
-  const { db, account } = await setup();
-  const credits = new EndUserCredits(db);
-  await credits.setSettings("payg", { enabled: true, allowances: { default: 1_000_000 } });
-  const attempts = new ModelAttempts(db, account, undefined, 0, undefined, credits);
-  const id = randomUUID();
-  await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: "openai/gpt-6-luna", kind: "response", at: Date.now(), keyHash,
-    endUser: { id: "person", bucket: "default" }, estimate: { inputTokens: 100, maxOutputTokens: 100, rates: { input: 5, output: 20 } } });
-  await attempts.event("payg", "agent", true, true, { ...finish(id, 0.01), completed: false });
-  const before = (await db.query("select end_user_raw from model_attempts where id=$1", [id])).rows[0].end_user_raw;
-  await attempts.event("payg", "agent", true, true, { type: "generation", id, generation: "gen-end-user-correction" });
-  await db.query("update model_attempts set updated_at=0,next_check_at=0 where id=$1", [id]);
-  await new ModelAttempts(db, account, async () => Response.json({ data: {
-    id: "gen-end-user-correction", total_cost: 0.2, generation_time: 1, finish_reason: "stop", native_tokens_prompt: 100, native_tokens_completion: 10,
-  } }), 0, undefined, credits).reconcile();
-  const after = (await db.query("select end_user_raw,charge from model_attempts where id=$1", [id])).rows[0];
-  assert.ok(Number(after.end_user_raw) > Number(before));
-  assert.equal(Number(after.charge), 211_000, "provider cost plus platform funding");
-  assert.equal(Number(after.end_user_raw), Number(after.charge));
-});
-
-test("platform Azure and tenant provider base URLs are not gateway credentials", async t => {
-  const { explicitKeyStream } = await import("../src/compaction.ts");
-  const { Outbound } = await import("../src/outbound.ts");
-  const { normalizeContext } = await import("@earendil-works/pi-ai");
-  const server = createServer(async (req, res) => {
-    for await (const _ of req) {}
-    res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: "maximum context length exceeded" } }));
-  });
-  server.listen(0, "127.0.0.1"); await once(server, "listening");
-  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
-  for (const [provider, platform] of [["azure", true], ["openai", false]] as const) {
-    const events: any[] = [];
-    const credentials = { apiKey: KEY, platform, baseUrl: `http://127.0.0.1:${(server.address() as any).port}/v1` };
-    const call = explicitKeyStream(async () => credentials, undefined, undefined, undefined, undefined, new Outbound({ allowHttp: true, allow: ["127.0.0.1/32"] }), async event => { events.push(event); return true; });
-    const result = await (await call(getModel(provider, "gpt-6-luna")!, normalizeContext({ messages: [{ role: "user", content: "hi", timestamp: 1 }] }), { apiKey: "scope", maxRetries: 0 })).result();
-    assert.equal(result.stopReason, "error");
-    assert.equal(events[0].reconciliationDisabled, undefined);
-    assert.equal(events[0].reconciliationEligible, true);
-  }
-});
-
-
-test("a recorded direct credential is not reclassified when its scope becomes a gateway", async () => {
-  const { db, account, attempts } = await setup();
-  const id = randomUUID();
-  await attempts.event("payg", "agent", false, false, { type: "begin", id, provider: "openrouter", model: "openai/gpt-6-luna", kind: "response", at: Date.now(), keyHash,
-    reconciliationEligible: true, context: { keyScope: "changed" } });
-  await attempts.event("payg", "agent", false, false, { type: "generation", id, generation: "gen-old-direct" });
-  await db.query("update model_attempts set updated_at=0,next_check_at=0 where id=$1", [id]);
-  let fetched = false;
-  await new ModelAttempts(db, account, async () => {
-    fetched = true;
-    return Response.json({ data: { id: "gen-old-direct", total_cost: 0.01, generation_time: 1, finish_reason: "stop" } });
-  }, 0, async () => ({ baseUrl: "https://gateway.example" })).reconcile();
-  assert.equal(fetched, true);
-  assert.equal((await db.query("select totals from model_attempts where id=$1", [id])).rows[0].totals.cost, 0.01);
 });

@@ -1,20 +1,12 @@
-import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, InboxDoc, LiveDoc, StorageRequestError, createRegistry, createSession, defineDoc, section,
+  GenerationTask, Harness, InboxDoc, LiveDoc, StorageRequestError, createRegistry, section,
   type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage, type TaskId,
 } from "@earendil-works/pi-durable";
-
-/** Small latest-value document: loading an agent never scans its journal for a limit. */
-export const ContextLimitDoc = defineDoc({
-  kind: "camel.context.limit", version: 1, scope: "conversation", history: "latest", fork: "current",
-  initial: (): { provider: string; model: string; window: number } => ({ provider: "", model: "", window: 0 }),
-  checkpointWhen: () => true,
-});
 
 interface DurableCursor { entryId: number; index: number }
 interface DurableMessage { message: AgentMessage; cursor: DurableCursor }
@@ -400,9 +392,6 @@ export class DurableAgent {
     agent.conversation = options.durable.conversationId === undefined ? await agent.harness.root(context) :
       (await agent.harness.conversation(options.durable.conversationId as ConversationId, context))!;
     if (!agent.conversation) throw new Error("Pi durable conversation does not exist");
-    const limit = await agent.harness.snapshot(ContextLimitDoc, agent.conversation.id, context);
-    if (limit?.provider === agent.state.model.provider && limit.model === agent.state.model.id && Number.isFinite(limit.window) && limit.window > 0)
-      agent.overflowWindow = Math.max(limit.window, Math.max(32_768, agent.state.model.contextWindow / 2));
     agent.harness.subscribeCommits(publication => {
       // A generation that ended without an answer fails the run: one that failed, and one whose phase threw (faulted) or
       // that no installed definition could take (orphaned), which would otherwise end the run as if it had answered.
@@ -547,7 +536,6 @@ export class DurableAgent {
         sessionId: this.options.sessionId, onPayload: this.options.onPayload, onResponse: this.options.onResponse,
         onProviderStreamEvent: this.options.onProviderStreamEvent,
       });
-      let overflowEvent: import("@earendil-works/pi-ai").AssistantMessageEvent | undefined;
       for await (const event of events) {
         if (event.type === "start") {
           this.streamingMessage = event.partial;
@@ -556,31 +544,12 @@ export class DurableAgent {
           this.streamingMessage = event.partial;
           await this.emit({ type: "message_update", message: event.partial, assistantMessageEvent: event });
         }
-        // Pi may act on the terminal event before result() resolves. Persist its smaller window first.
-        if (event.type === "error" && isContextOverflow(event.error)) overflowEvent = event;
-        else stream.push(event);
+        stream.push(event);
       }
       const final = await events.result();
-      if (final.stopReason === "error" && isContextOverflow(final) && !/request_too_large|\b413\b|request (?:body |payload )?too large/i.test(final.errorMessage ?? "")) {
-        const sent = llm.reduce((tokens, message) => tokens + estimateMessageTokens(message), 0);
-        const window = Math.max(32_768, this.state.model.contextWindow / 2, Math.floor(Math.min(sent, this.overflowWindow, this.state.model.contextWindow, this.options.durable.contextWindow ?? Infinity) * 0.9));
-        if (window < this.overflowWindow) {
-          // Optional learning uses its own session: a failed write must not poison Pi's running session.
-          const storage = this.options.durable.storage;
-          const learning = createSession(new Proxy(storage, { get(target, key) {
-            if (key === "close") return async () => {};
-            const value = Reflect.get(target, key, target);
-            return typeof value === "function" ? value.bind(target) : value;
-          } }));
-          try {
-            await learning.commit(async tx => {
-              Object.assign(await tx.doc(ContextLimitDoc, this.conversation.id), { provider: this.state.model.provider, model: this.state.model.id, window });
-            }, context);
-          } catch {
-            // Still deliver the provider overflow so Pi can compact it.
-          } finally { await learning.close(context); }
-          this.overflowWindow = window;
-        }
+      if (final.stopReason === "error" && isContextOverflow(final)) {
+        const sent = Math.ceil(JSON.stringify(llm).length / 4);
+        this.overflowWindow = Math.min(this.overflowWindow, Math.max(1_000, Math.floor(sent * 0.9)));
       }
       // Pi commits an aborted response from its last throttled partial (`convertPartial`), which may be stale or
       // missing: the provider's own terminal message, with its usage and billing attempt, replaces it before Pi's
@@ -590,7 +559,6 @@ export class DurableAgent {
         const live = await tx.doc(LiveDoc, this.conversation.id);
         if (live.generation) live.generation.message = JSON.parse(JSON.stringify(final));
       }, context).catch(error => console.error(JSON.stringify({ type: "pi_aborted_response_write_failed", error: error instanceof Error ? error.message : String(error) })));
-      if (overflowEvent) stream.push(overflowEvent);
       stream.end(final);
     })().catch(error => {
       const message = { role: "assistant", content: [], api: this.state.model.api, provider: this.state.model.provider,
@@ -774,20 +742,6 @@ export class DurableAgent {
   prompt(message: AgentMessage | AgentMessage[] | string, images: ImageContent[] = []): Promise<void> {
     const messages = typeof message === "string" ? [{ role: "user", content: images.length ? [{ type: "text", text: message }, ...images] : message, timestamp: Date.now() } as AgentMessage] : Array.isArray(message) ? message : [message];
     return this.run(messages);
-  }
-  async compact(signal?: AbortSignal): Promise<void> {
-    signal?.throwIfAborted();
-    const task = await this.conversation.compact(undefined, context);
-    const abort = () => { void this.conversation.abort(context).catch(() => {}); };
-    signal?.addEventListener("abort", abort, { once: true });
-    if (signal?.aborted) abort();
-    let result;
-    try { result = await this.harness.waitForTask(task, context); }
-    finally { signal?.removeEventListener("abort", abort); }
-    signal?.throwIfAborted();
-    if (result.state.outcome.status !== "completed") throw new Error("Context compaction failed");
-    await this.flushEvents();
-    await this.reload();
   }
   continue(): Promise<void> { return this.run([]); }
   private run(messages: AgentMessage[]) {

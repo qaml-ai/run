@@ -79,13 +79,7 @@ const MAX_TOKENS: Record<string, Record<string, number>> = {
 };
 const limited = (model: Model<Api>): Model<Api> => {
   const most = MAX_TOKENS[model.provider]?.[model.id];
-  // Only Luna routes take the native Luna window; other models keep Pi's advertised window.
-  const match = /^(?:(?:~?openai)[/.])?(gpt-(?:6|5\.6)-luna)(?:-pro|-fast)?(?::(?:batch|nitro))?$/.exec(
-    model.id.replace(/^(?:global|us|eu|in)\./, ""));
-  const id = model.provider === "openrouter" && model.id === "~openai/gpt-luna-latest" ? "gpt-6-luna" : match?.[1];
-  const native = id ? piModel("openai", id) : undefined;
-  const window = Math.min(model.contextWindow, native?.contextWindow ?? Infinity);
-  return most || window < model.contextWindow ? { ...model, ...(most ? { maxTokens: most } : {}), contextWindow: window } : model;
+  return most ? { ...model, maxTokens: most } : model;
 };
 const priced = (model: Model<Api>): Model<Api> => {
   const openai = model.provider === AZURE ? piModel("openai", model.id) : undefined;
@@ -158,17 +152,16 @@ export function reasoningFloor(model: Model<Api>): ThinkingLevel | undefined {
 }
 
 /**
- * An agent's model with the catalog's prices, window and longest reply now: an agent keeps the model it was given,
- * so one made before a price changed (PRICES) would go on counting the old one, and one made before a longest reply was corrected
+ * An agent's model with the catalog's prices and longest reply now: an agent keeps the model it was given, so one made
+ * before a price changed (PRICES) would go on counting the old one, and one made before a longest reply was corrected
  * (MAX_TOKENS) would go on asking for it. A model the catalog doesn't have at the same endpoint (a tenant's endpoint or
  * provider, priced by the tenant) is as it was.
  */
 export function withCatalogPrices<T extends Model<Api>>(model: T): T {
-  const known = getModel(model.provider, model.id) ?? getModel(model.provider, model.id.replace(/:[a-z]+$/, ""));
+  const known = getModel(model.provider, model.id);
   if (!known || known.baseUrl !== model.baseUrl) return model;
-  const window = Math.min(model.contextWindow, known.contextWindow);
   const cost = JSON.stringify(known.cost) !== JSON.stringify(model.cost), most = known.maxTokens !== model.maxTokens;
-  return cost || most || window < model.contextWindow ? { ...model, contextWindow: window, ...(cost ? { cost: known.cost } : {}), ...(most ? { maxTokens: known.maxTokens } : {}) } : model;
+  return cost || most ? { ...model, ...(cost ? { cost: known.cost } : {}), ...(most ? { maxTokens: known.maxTokens } : {}) } : model;
 }
 
 /** Pi's models for a provider and those ADDED, as this runtime corrects them: no Bedrock base id that has inference profiles. */
