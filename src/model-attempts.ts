@@ -226,8 +226,6 @@ export class ModelAttempts {
         console.log(JSON.stringify({ type: "model_usage_missing", tenant, agent, attempt: id, kind: row.kind, provider: row.provider, model: row.model, host: usage.providerHost ?? null,
           completed, generation: !!row.generation_id, inputTokens, chars, platform: row.platform, billed: row.prepaid ? quote.amount : 0, ...(row.end_user ? { endUserRaw, held: held ?? null } : {}) }));
       }
-      // Provider reconciliation may refund an end user, but never debit them after their call ended.
-      if (reconciled && row.end_user) endUserRaw = Math.min(endUserRaw, Number(row.end_user_raw));
       if (row.totals && adjustment === 0 && Object.values(delta).every(value => value === 0)
         && row.state === (final ? "settled" : "estimated") && endUserRaw === Number(row.end_user_raw)) return;
       const revision = row.revision + 1;

@@ -418,7 +418,7 @@ test("reconciliation leaves an in-flight attempt for its real full-usage finish"
 });
 
 
-test("reconciliation never increases an end user's settled charge", async () => {
+test("real provider reconciliation can increase an end user's charge after the call", async () => {
   const { EndUserCredits } = await import("../src/end-user-credits.ts");
   const { db, account } = await setup();
   const credits = new EndUserCredits(db);
@@ -429,10 +429,15 @@ test("reconciliation never increases an end user's settled charge", async () => 
     endUser: { id: "person", bucket: "default" }, estimate: { inputTokens: 100, maxOutputTokens: 100, rates: { input: 5, output: 20 } } });
   await attempts.event("payg", "agent", true, true, { ...finish(id, 0.01), completed: false });
   const before = (await db.query("select end_user_raw from model_attempts where id=$1", [id])).rows[0].end_user_raw;
-  await attempts.settle(id, "payg", "agent", { input: 100, output: 10, providerCost: 0.2, providerCreditCost: 0 }, 0, true, true);
+  await attempts.event("payg", "agent", true, true, { type: "generation", id, generation: "gen-end-user-correction" });
+  await db.query("update model_attempts set updated_at=0,next_check_at=0 where id=$1", [id]);
+  await new ModelAttempts(db, account, async () => Response.json({ data: {
+    id: "gen-end-user-correction", total_cost: 0.2, generation_time: 1, finish_reason: "stop", native_tokens_prompt: 100, native_tokens_completion: 10,
+  } }), 0, undefined, credits).reconcile();
   const after = (await db.query("select end_user_raw,charge from model_attempts where id=$1", [id])).rows[0];
-  assert.equal(after.end_user_raw, before);
-  assert.equal(Number(after.charge), 200_000);
+  assert.ok(Number(after.end_user_raw) > Number(before));
+  assert.equal(Number(after.charge), 211_000, "provider cost plus platform funding");
+  assert.equal(Number(after.end_user_raw), Number(after.charge));
 });
 
 test("platform Azure and tenant provider base URLs are not gateway credentials", async t => {
