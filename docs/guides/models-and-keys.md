@@ -204,8 +204,8 @@ In Python, `await agents.runtime.set_scope_key("org_abc123", "openrouter", api_k
   its Messages API for prompt caching: the same rule as on a tenant's endpoint.
   Some models are served only by the OpenRouter hosts the platform lists for them
   (`provider.only`; DeepSeek V4.1 Flash: Fireworks, Together, Parasail,
-  CoreWeave and Nebius; 1017: Baseten, Parasail, Relace and DeepSeek; 1017:nitro: Parasail, Baseten and DeepSeek), and OpenRouter
-  balances load among those. An agent, definition or run with `dataCollection: "deny"`
+  CoreWeave and Nebius), and OpenRouter balances load among those. Any other
+  model, DeepSeek V4.1 Flash 1017 included, is OpenRouter's to route. An agent, definition or run with `dataCollection: "deny"`
   also asks OpenRouter for hosts that do not collect its data
   (`provider.data_collection: "deny"`): OpenRouter skips the providers whose data
   policy says they may train on it (for DeepSeek V4.1 Flash 1017, DeepSeek's own
