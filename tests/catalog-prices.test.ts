@@ -67,3 +67,31 @@ test("DeepSeek V4.1 Flash 1017 asks for at most what all its hosts serve (DeepIn
   const elsewhere = { ...getModel("openrouter", id)!, maxTokens: 943_718, baseUrl: "https://llm.example.com" };
   assert.equal(withCatalogPrices(elsewhere), elsewhere);
 });
+
+test("OpenRouter Luna and its routing and Pro variants keep the catalog window, including stored agents", () => {
+  const variants = getModels("openrouter").filter(model => model.id.startsWith("openai/gpt-6-luna") || model.id === "~openai/gpt-luna-latest");
+  assert.ok(variants.length >= 2);
+  for (const model of [...variants, resolveModel("openrouter/openai/gpt-6-luna:nitro")]) {
+    assert.equal(model.contextWindow, 1_050_000, model.id);
+    assert.equal(withCatalogPrices({ ...model, contextWindow: 1_050_000 }).contextWindow, 1_050_000, model.id);
+  }
+});
+
+
+test("all routes keep Pi's catalog window", async () => {
+  const { getModels: nativeModels } = await import("@earendil-works/pi-ai/compat");
+  for (const provider of ["openai", "openrouter", "azure", "vercel-ai-gateway", "cloudflare-ai-gateway", "amazon-bedrock", "github-copilot"]) {
+    for (const native of nativeModels(provider as never)) {
+      const model = getModel(provider, native.id)!;
+      assert.equal(model.contextWindow, native.contextWindow, `${provider}/${native.id}`);
+    }
+  }
+  for (const id of ["gpt-6-luna", "gpt-6-luna-pro", "gpt-5.6-luna", "gpt-5.6-luna-pro"]) for (const suffix of ["", ":batch", ":nitro"])
+    assert.equal(resolveModel(`openrouter/openai/${id}${suffix}`).contextWindow, getModel("openrouter", `openai/${id}`)!.contextWindow);
+});
+
+test("suffix fallback updates prices and maxTokens without shrinking a stored window", () => {
+  const model = { ...getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!, id: "deepseek/deepseek-v4.1-flash-1017:nitro", contextWindow: 2_000_000, maxTokens: 943_718 };
+  assert.equal(withCatalogPrices(model).maxTokens, 131_072);
+  assert.equal(withCatalogPrices(model).contextWindow, 2_000_000);
+});
