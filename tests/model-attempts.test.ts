@@ -89,7 +89,7 @@ test("reconciliation survives a lost host, includes BYOK cost, and runs concurre
   assert.equal((await db.query("select state from model_attempts where id=$1",[id])).rows[0].state,"settled");
 });
 
-test("authoritative reconciliation posts only the difference, including a refund; uncertainty stays pending", async () => {
+test("authoritative reconciliation posts only the difference, including a refund; stale failures without evidence settle", async () => {
   const { db, attempts } = await setup();
   const workspaces = new Workspaces(db);
   const original = await workspaces.create("payg", "Original"), moved = await workspaces.create("payg", "Moved");
@@ -113,7 +113,7 @@ test("authoritative reconciliation posts only the difference, including a refund
   await db.query("update model_attempts set updated_at=0,next_check_at=0 where id=$1",[pending]);
   await attempts.reconcile();
   const row=(await db.query("select state,last_error from model_attempts where id=$1",[pending])).rows[0];
-  assert.equal(row.state,"pending");assert.match(row.last_error,/Awaiting provider evidence/);
+  assert.equal(row.state,"settled");assert.equal(row.last_error,null);
   assert.equal(await total(db),-100000);
 });
 
@@ -476,4 +476,21 @@ test("a recorded direct credential is not reclassified when its scope becomes a 
   }, 0, async () => ({ baseUrl: "https://gateway.example" })).reconcile();
   assert.equal(fetched, true);
   assert.equal((await db.query("select totals from model_attempts where id=$1", [id])).rows[0].totals.cost, 0.01);
+});
+
+
+test("a stale direct OpenRouter failure without generation or usage settles at zero", async () => {
+  const { db, account, attempts } = await setup();
+  const id = await begin(attempts);
+  await attempts.event("payg", "agent", true, true, { type: "finish", id, usage: {}, chars: 0, completed: false });
+  const reconciler = new ModelAttempts(db, account, async () => { throw new Error("must not poll without a generation"); });
+  await reconciler.reconcile();
+  assert.equal((await db.query("select state from model_attempts where id=$1", [id])).rows[0].state, "pending", "wait for stale cutoff");
+  await db.query("update model_attempts set updated_at=0,next_check_at=0 where id=$1", [id]);
+  await reconciler.reconcile();
+  const row = (await db.query("select state,charge,last_error from model_attempts where id=$1", [id])).rows[0];
+  assert.equal(row.state, "settled");
+  assert.equal(Number(row.charge), 0);
+  assert.equal(row.last_error, null);
+  assert.equal(await total(db), 0);
 });

@@ -73,7 +73,7 @@ test("OpenRouter Luna and its routing and Pro variants keep the catalog window, 
   assert.ok(variants.length >= 2);
   for (const model of [...variants, resolveModel("openrouter/openai/gpt-6-luna:nitro")]) {
     assert.equal(model.contextWindow, 1_050_000, model.id);
-    assert.equal(withCatalogPrices({ ...model, contextWindow: 1_050_000 }).contextWindow, 1_050_000, model.id);
+    assert.equal(withCatalogPrices({ ...model, contextWindow: 272_000 }).contextWindow, 1_050_000, model.id);
   }
 });
 
@@ -90,8 +90,8 @@ test("all routes keep Pi's catalog window", async () => {
     assert.equal(resolveModel(`openrouter/openai/${id}${suffix}`).contextWindow, getModel("openrouter", `openai/${id}`)!.contextWindow);
 });
 
-test("suffix fallback updates prices and maxTokens without shrinking a stored window", () => {
+test("suffix fallback corrects prices, maxTokens and the stored window", () => {
   const model = { ...getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!, id: "deepseek/deepseek-v4.1-flash-1017:nitro", contextWindow: 2_000_000, maxTokens: 943_718 };
   assert.equal(withCatalogPrices(model).maxTokens, 131_072);
-  assert.equal(withCatalogPrices(model).contextWindow, 2_000_000);
+  assert.equal(withCatalogPrices(model).contextWindow, getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!.contextWindow);
 });

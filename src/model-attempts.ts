@@ -291,6 +291,11 @@ export class ModelAttempts {
           await this.db.query("update model_attempts set state='settled',last_error=null,updated_at=$2 where id=$1 and updated_at<$3", [row.id, Date.now(), Date.now()-ATTEMPT_STALE_MS]);
           continue;
         }
+        if (!row.generation_id && row.state === "pending" && !row.totals) {
+          // A stale attempt with neither a generation nor reported usage has nothing to reconcile or bill.
+          await this.settle(row.id, row.tenant, row.agent, { providerCost: 0, providerCreditCost: 0 }, 0, true, true, true);
+          continue;
+        }
         if (!row.generation_id) throw new Error("Awaiting provider evidence; missing OpenRouter generation ID");
         const candidates = [typeof scoped === "string" ? scoped : undefined, resolved?.key, this.accounts.tenants.platformKey("openrouter")];
         const key = candidates.find(value => value && hash(value) === row.key_hash);

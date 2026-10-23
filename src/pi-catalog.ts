@@ -152,7 +152,7 @@ export function reasoningFloor(model: Model<Api>): ThinkingLevel | undefined {
 }
 
 /**
- * An agent's model with the catalog's prices and longest reply now: an agent keeps the model it was given,
+ * An agent's model with the catalog's prices, context window and longest reply now: an agent keeps the model it was given,
  * so one made before a price changed (PRICES) would go on counting the old one, and one made before a longest reply was corrected
  * (MAX_TOKENS) would go on asking for it. A model the catalog doesn't have at the same endpoint (a tenant's endpoint or
  * provider, priced by the tenant) is as it was.
@@ -160,8 +160,8 @@ export function reasoningFloor(model: Model<Api>): ThinkingLevel | undefined {
 export function withCatalogPrices<T extends Model<Api>>(model: T): T {
   const known = getModel(model.provider, model.id) ?? getModel(model.provider, model.id.replace(/:[a-z]+$/, ""));
   if (!known || known.baseUrl !== model.baseUrl) return model;
-  const cost = JSON.stringify(known.cost) !== JSON.stringify(model.cost), most = known.maxTokens !== model.maxTokens;
-  return cost || most ? { ...model, ...(cost ? { cost: known.cost } : {}), ...(most ? { maxTokens: known.maxTokens } : {}) } : model;
+  const cost = JSON.stringify(known.cost) !== JSON.stringify(model.cost), most = known.maxTokens !== model.maxTokens, window = known.contextWindow !== model.contextWindow;
+  return cost || most || window ? { ...model, ...(cost ? { cost: known.cost } : {}), ...(most ? { maxTokens: known.maxTokens } : {}), ...(window ? { contextWindow: known.contextWindow } : {}) } : model;
 }
 
 /** Pi's models for a provider and those ADDED, as this runtime corrects them: no Bedrock base id that has inference profiles. */
