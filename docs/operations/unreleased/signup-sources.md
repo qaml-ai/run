@@ -1,4 +1,4 @@
-# Signups by source in Ops
+### Signups by source in Ops
 
 The Growth tab stacks daily signups by their first recorded source. The Sources table compares
 outside self-serve signups with accounts that made an agent, ran a model, worked on two or more
