@@ -38,8 +38,9 @@ resource "aws_acm_certificate_validation" "runtime" {
 
 # Only Cloudflare reaches the load balancer. Both hostnames are proxied (dns.tf, dns-primary.tf), so
 # Cloudflare's addresses are the only legitimate sources: nothing calls the ALB's own name (the deploy
-# script and the Route 53 health check go through Cloudflare). This keeps Cloudflare's protections from
-# being bypassed and lets the runtime trust CF-Connecting-IP for the client's address
+# script and the Route 53 health check go through Cloudflare). This restricts the network source, but
+# does not identify our Cloudflare account. Custom origin mTLS (origin-mtls.tf) supplies that check.
+# The runtime trusts CF-Connecting-IP for the client's address
 # (AGENT_TRUST_CF_CONNECTING_IP, ecs.tf), which its per-address rate limits key on. The ALB is IPv4
 # only, so only Cloudflare's IPv4 ranges matter. The list is read at each plan: a range Cloudflare adds
 # shows up as a rule to add. (The group's description predates this; changing it would replace the group.)
@@ -134,6 +135,14 @@ resource "aws_lb_listener" "https" {
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
   certificate_arn   = aws_acm_certificate_validation.runtime.certificate_arn
+
+  # Explicit off supports rollback without deleting the staged trust store.
+  # Verify (not passthrough) authenticates the client at the ALB itself.
+  mutual_authentication {
+    mode                             = var.origin_mtls_enforced ? "verify" : "off"
+    trust_store_arn                  = var.origin_mtls_enforced ? one(aws_lb_trust_store.origin[*].arn) : null
+    ignore_client_certificate_expiry = var.origin_mtls_enforced ? false : null
+  }
 
   default_action {
     type             = "forward"

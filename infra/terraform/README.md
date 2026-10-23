@@ -20,6 +20,10 @@ else is here.
 | `email.tf` | email channels, when `email_domain` is set: SES identity and receipt rule, DKIM/MX/DMARC records, inbound mail bucket, SNS topic and subscription, the task's send/read policy |
 | `ses-mail.tf` | all outgoing mail through SES, when `ses_mail_domain` is set: domain identity with Easy DKIM, MAIL FROM `bounce.<domain>`, a configuration set publishing bounces and complaints to an SNS topic, the task's `ses:SendEmail` as billing@, no-reply@ and accounts@ only; DNS added by hand (`tofu output ses_mail_dns_records`); `ses_mail_enabled` sends billing, Get Help and account mail through it, `ses_mail_feedback` subscribes the runtime to the topic; alarms on SES bounce and complaint rates and on failed sends |
 
+## Custom origin authentication
+
+See [origin-mtls.md](origin-mtls.md) for the staged custom Cloudflare Authenticated Origin Pulls rollout, validation and rollback. It is off by default; an IP allowlist alone does not identify our Cloudflare account.
+
 ## Prerequisites
 
 - OpenTofu >= 1.10 (`brew install opentofu`; the provider lock file is committed; run `tofu init`). Terraform >= 1.10 also works.
@@ -75,8 +79,7 @@ and the RDS instance also have deletion protection in AWS.
 
 - **Only Cloudflare reaches the ALB** (`alb.tf`): its security group admits 443
   and 80 from Cloudflare's IPv4 ranges alone (read from Cloudflare at each plan,
-  so a range it adds shows up as a rule to add), so nothing bypasses Cloudflare
-  and the runtime takes the client's address from `CF-Connecting-IP`
+  so a range it adds shows up as a rule to add), which limits traffic to Cloudflare's network but does not authenticate our account. Custom origin mTLS supplies that additional check. The runtime takes the client's address from `CF-Connecting-IP`
   (`AGENT_TRUST_CF_CONNECTING_IP`, which its per-address rate limits key on).
   Nothing calls the ALB's own DNS name: the deploy script, the Route 53 health
   check, Stripe, SNS and the channels' webhooks all use the hostnames. To reach a
