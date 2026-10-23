@@ -51,6 +51,8 @@ test("model and run errors are sorted into a few classes", () => {
   assert.equal(errorClass("502 Bad Gateway"), "provider_5xx");
   assert.equal(errorClass("fetch failed: ECONNRESET"), "network");
   assert.equal(errorClass("The runtime restarted during this request"), "runtime_restart");
+  for (const error of ["Compaction failed: Summarization failed: Network connection lost", "Summarization failed: 429", "Compaction failed: context window exceeded"])
+    assert.equal(errorClass(error), "compaction");
   assert.equal(errorClass("something else"), "other");
   assert.equal(errorClass(undefined), "none");
 });

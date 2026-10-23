@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { createAssistantMessageEventStream, getCurrentSystemMessage, fauxAssistantMessage, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
+import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { ContextLimitDoc, DurableAgent } from "../src/pi-durable/agent.ts";
 
 const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false,
@@ -109,13 +110,13 @@ test("a compaction's kept messages are counted as it left them, whatever was com
   assert.deepEqual(counted, [kept.at(-1)]);
 });
 
-test("a 400k-token Luna history compacts before the provider request", async t => {
+test("a 400k-token Luna history uses the catalog window without compaction", async t => {
   const { getModel, withCatalogPrices } = await import("../src/pi-catalog.ts");
   const luna = withCatalogPrices({ ...getModel("openrouter", "openai/gpt-6-luna")!, contextWindow: 1_050_000 });
   let summaries = 0, calls = 0;
   const agent = await DurableAgent.create({
     initialState: { model: luna, messages: [], tools: [] },
-    streamFn: () => { calls++; assert.ok(summaries > 0); return stream(fauxAssistantMessage("done")); },
+    streamFn: () => { calls++; assert.equal(summaries, 0); return stream(fauxAssistantMessage("done")); },
     durable: { storage: new MemoryStorage(), summaryStream: () => { summaries++; return stream(fauxAssistantMessage("summary")); } },
   });
   t.after(() => agent.close());
@@ -184,3 +185,70 @@ for (const byteRefusal of [false, true]) test(byteRefusal ? "byte-size refusals 
   assert.equal(failed, !byteRefusal);
   assert.equal(agent.state.errorMessage, undefined);
 });
+
+
+test("a 500k-token Luna history compacts in bounded chunks against a persisted 272k limit", async t => {
+  const { getModel } = await import("../src/pi-catalog.ts");
+  const luna = getModel("openrouter", "openai/gpt-6-luna")!;
+  const storage = new MemoryStorage();
+  const closeStorage = storage.close.bind(storage);
+  storage.close = async () => {};
+  t.after(() => closeStorage(BACKGROUND_CONTEXT));
+  const requests: any[][] = [];
+  const options: Parameters<typeof DurableAgent.create>[0] = {
+    initialState: { model: luna, messages: [], tools: [] },
+    streamFn: () => stream(fauxAssistantMessage("done")),
+    durable: { storage, summaryStream: (_model, view, options) => {
+      requests.push(view.messages);
+      const input = view.messages.reduce((sum, message) => sum + estimateMessageTokens(message as any), 0);
+      assert.ok(input + (options?.maxTokens ?? 0) + 512 <= 272_000, `request has ${input} input tokens`);
+      return stream(fauxAssistantMessage("retained earlier facts"));
+    } },
+  };
+  const seed = await DurableAgent.create(options);
+  await seed.replaceContext(Array.from({ length: 50 }, (_, i) => ({ role: "user", content: `${i}: ${"x".repeat(35_000)}`, timestamp: i })) as any);
+  await (seed as any).conversation.commit(async (tx: any) => {
+    Object.assign(await tx.doc(ContextLimitDoc, seed.conversationId), { provider: luna.provider, model: luna.id, window: 272_000 });
+  }, BACKGROUND_CONTEXT);
+  const id = seed.conversationId;
+  await seed.close();
+  const agent = await DurableAgent.create({ ...options, durable: { ...options.durable, conversationId: id } });
+  t.after(() => agent.close());
+  await agent.prompt("continue");
+  assert.ok(requests.length >= 2);
+  assert.ok(JSON.stringify(requests[1]).includes("retained earlier facts"));
+  assert.equal(agent.state.errorMessage, undefined);
+});
+
+for (const error of ["server_error", "OpenAI Responses stream ended before a terminal response event", "Network connection lost"]) {
+  for (const [size, output, recover] of [[300_000, 0, true], [200_000, 0, false], [300_000, 1, false]] as const) {
+    test(`Luna ${error}: ${size} prompt tokens, ${output} output tokens`, async t => {
+      let calls = 0, summaries = 0;
+      const agent = await DurableAgent.create({
+        initialState: { model: { ...model, id: "openai/gpt-6-luna", provider: "openrouter", contextWindow: 1_050_000 }, messages: [], tools: [] },
+        streamFn: () => {
+          if (++calls > 1) return stream(fauxAssistantMessage("done"));
+          const failed = { ...fauxAssistantMessage("", { stopReason: "error" }), errorMessage: error };
+          failed.usage.output = output;
+          return stream(failed);
+        },
+        durable: { storage: new MemoryStorage(), summaryStream: () => { summaries++; return stream(fauxAssistantMessage("summary")); } },
+      });
+      t.after(() => agent.close());
+      await agent.replaceContext(Array.from({ length: 30 }, (_, i) => ({ role: "user", content: "x".repeat(size * 3.5 / 30), timestamp: i })) as any);
+      await agent.prompt("continue");
+      const limit = await (agent as any).harness.snapshot(ContextLimitDoc, agent.conversationId, BACKGROUND_CONTEXT);
+      if (recover) {
+        assert.equal(calls, 2);
+        assert.ok(summaries > 0);
+        assert.ok(limit.window >= 270_000 && limit.window < 272_000, String(limit.window));
+        assert.equal(agent.state.errorMessage, undefined);
+      } else {
+        assert.equal(calls, 1);
+        assert.equal(summaries, 0);
+        assert.equal(limit, undefined);
+        assert.equal(agent.state.errorMessage, error);
+      }
+    });
+  }
+}
