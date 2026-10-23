@@ -719,13 +719,21 @@ export function createAgentHost(hostIO: HostIO) {
    */
   async function recoverFailedResponses(signal: AbortSignal) {
     const policy = config.retry ?? DEFAULT_RETRY;
+    let overflowRetried = false;
     for (let attempt = 1; ; attempt++) {
       const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
       if (signal.aborted || !last || last.role !== "assistant" || last.stopReason !== "error") return;
       // Its end user's credit refused it: asking again would be refused again.
       if (stopped?.code === END_USER_CREDIT) return;
-      // Pi compacts and asks again on an overflow itself: one that reaches here is past what compaction can do.
-      if (isContextOverflow(last, config.model.contextWindow)) return;
+      // Pi retries one overflow per generation. A second refusal learned a smaller window: compact once against it.
+      if (isContextOverflow(last, config.model.contextWindow)) {
+        if (overflowRetried) return;
+        overflowRetried = true;
+        await agent!.compact();
+        await agent!.continue();
+        attempt--;
+        continue;
+      }
       // Cut by this node's stale lease: made again at once, as its gate allows, and not counted as a provider failure.
       const interrupted = last.errorMessage === MODEL_INTERRUPTED;
       // A provider that cannot read an image in the history refuses every request carrying it, whether it calls that

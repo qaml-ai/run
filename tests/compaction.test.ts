@@ -229,7 +229,7 @@ test("a context overflow from the provider compacts and retries the turn once", 
     const result = await supervisor.request("overflow", "prompt", { text: turn(index) }, event => events.push(event));
     assert.equal(result.error, null, `turn ${index}`);
   }
-  assert.ok(events.some(event => event.type === "compaction_end" && event.reason === "overflow" && event.summarizedMessages > 0));
+  assert.ok(events.some(event => event.type === "compaction_end" && event.reason === "overflow" && event.summarizedMessages > 0), JSON.stringify(events.filter(event => event.type === "compaction_end")));
   const history = ((await supervisor.history("overflow")) as any[]);
   assert.equal(history.filter((message: any) => message.stopReason === "error").length, 0, "the rejected attempt is not history");
   assert.equal(history.length, 6);
@@ -549,4 +549,33 @@ test("an agent whose journal keeps more messages after its compaction than the h
   assert.ok(restarted.messages >= 10, "the agent started");
   const result = await supervisor.request("drifted", "prompt", { text: "After the drift" });
   assert.equal(result.error, null);
+});
+
+for (const fits of [true, false]) test(fits ? "a second overflow compacts against its newly learned limit and completes the turn" : "an irreducible overflow stops after one host recovery", { timeout: 20_000 }, async t => {
+  const fake = await provider(t, { overflowAboveChars: fits ? 24_000 : 1 });
+  const root = await mkdtemp(join(tmpdir(), "compaction-overflow-"));
+  const directory = join(root, "agents", "overflow-twice");
+  await mkdir(directory, { recursive: true });
+  // Old usage understates the imported history, so the provider reveals each smaller window.
+  const records: TranscriptRecord[] = Array.from({ length: 30 }, (_, index) => [
+    { t: "message", message: { role: "user", content: `old-${index} ${"x".repeat(8000)}`, timestamp: index * 2 } },
+    { t: "message", message: { role: "assistant", content: [{ type: "text", text: "ack" }], api: "openai-completions", provider: "openai", model: "fixture",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: index * 2 + 1 } },
+  ] as TranscriptRecord[]).flat();
+  await hostTranscriptSession({ sessionId: "overflow-twice", directory }, records);
+  const supervisor = new AgentSupervisor(join(root, "agents"), { hosting: process.env.AGENT_HOSTING as Hosting | undefined });
+  t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
+  await supervisor.start("overflow-twice", { model: fake.model(1_000_000), apiKey: "fixture", retry: { maxAttempts: 0, baseDelayMs: 1 } }, bridge);
+  const result = await supervisor.request("overflow-twice", "prompt", { text: "continue" });
+  if (!fits) {
+    assert.ok(result.error);
+    assert.ok(fake.chat().length <= 4, "native recovery and one host continuation are bounded");
+    return;
+  }
+  assert.equal(result.error, null);
+  assert.equal(fake.chat().length, 3, "two refused requests and one successful continuation");
+  assert.ok(text(fake.chat()[0]).length > 24_000);
+  assert.ok(text(fake.chat()[1]).length > 24_000);
+  assert.ok(text(fake.chat()[2]).length <= 24_000);
+  assert.equal(fake.summarizations().length, 2, "one native overflow compaction and one host recovery compaction");
 });

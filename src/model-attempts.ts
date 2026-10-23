@@ -51,12 +51,12 @@ export class ModelAttempts {
   readonly accounts: Accounts;
   readonly fetcher: typeof fetch;
   readonly retryMs: number;
-  readonly scopedKey?: (tenant: string, scope: string) => Promise<string | undefined>;
+  readonly scopedKey?: (tenant: string, scope: string) => Promise<string | { baseUrl: string } | undefined>;
   /** End users' credit: a begin naming its end user holds its estimate, and a settlement posts what it cost them. */
   readonly endUsers?: EndUserCredits;
   /** Calls metered for their end users, in flight on this node, by attempt id. */
   private readonly metered = new Map<string, Metered>();
-  constructor(db: Db, accounts: Accounts, fetcher: typeof fetch = network().fetch, retryMs = 0, scopedKey?: (tenant: string, scope: string) => Promise<string | undefined>, endUsers?: EndUserCredits) {
+  constructor(db: Db, accounts: Accounts, fetcher: typeof fetch = network().fetch, retryMs = 0, scopedKey?: (tenant: string, scope: string) => Promise<string | { baseUrl: string } | undefined>, endUsers?: EndUserCredits) {
     this.db = db; this.accounts = accounts; this.fetcher = fetcher; this.retryMs = retryMs; this.scopedKey = scopedKey; this.endUsers = endUsers;
   }
 
@@ -84,7 +84,7 @@ export class ModelAttempts {
       const inputTokens = Number(event.estimate?.inputTokens);
       await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at,end_user,end_user_bucket,estimated_input_tokens)
         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16) on conflict (id) do nothing`,
-        [event.id, tenant, agent, event.provider, event.model, event.kind, platform, catalogPriced, prepaid, event.keyHash, JSON.stringify(event.context ?? {}), event.at, Date.now() + 300_000,
+        [event.id, tenant, agent, event.provider, event.model, event.kind, platform, catalogPriced, prepaid, event.keyHash, JSON.stringify({ ...event.context, ...(event.reconciliationDisabled || event.keyHash === hash("") ? { reconciliationDisabled: event.reconciliationDisabled ?? "Empty provider credential has no reconciliation; estimate is final" } : {}) }), event.at, Date.now() + 300_000,
           metered ? metered.endUser : null, metered ? metered.bucket : null, Number.isFinite(inputTokens) && inputTokens > 0 ? Math.min(Math.round(inputTokens), 2_000_000_000) : null]);
       const row = (await this.db.query("select tenant,agent,provider,model from model_attempts where id=$1", [event.id])).rows[0];
       if (row.tenant !== tenant || row.agent !== agent || row.provider !== event.provider || row.model !== event.model) throw new Error("Model attempt identity mismatch");
@@ -168,8 +168,9 @@ export class ModelAttempts {
       }
       // A provider-reconciled or completed record is final. Delayed host deliveries cannot overwrite it.
       if (row.state === "settled" || (!reconciled && !completed && row.totals)) return;
+      const disabled = row.context?.reconciliationDisabled || (row.key_hash === hash("") ? "Empty provider credential has no reconciliation; estimate is final" : undefined);
       const evidence = chars > 0 || [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.providerCost].some(value => typeof value === "number" && value > 0);
-      if (!completed && !reconciled && !evidence) return; // Unknown is not a zero-cost final result.
+      if (!completed && !reconciled && !evidence && !disabled) return; // Unknown is not a zero-cost final result.
       // A call that reported nothing to bill it by (its usage never came: a stream that ended between its finish and its
       // usage), or that was cut short, is billed an estimate: the input the host estimated at its begin, and what it
       // streamed at two characters a token. It stays `estimated` where a provider's record may correct it (OpenRouter's);
@@ -179,8 +180,8 @@ export class ModelAttempts {
       const estimate = !reconciled && (missing || !completed) ? { chars, inputTokens, completed } : undefined;
       const pricing = row.platform && row.catalog_priced && !(reconciled && usage.providerCost === 0)
         ? platformUsage(usage, row.provider, row.model, estimate) : { usage, estimated: false };
-      const reconcilable = row.provider === "openrouter";
-      const final = reconciled || (completed && (missing ? !reconcilable : !pricing.estimated || typeof usage.providerCost === "number"));
+      const reconcilable = row.provider === "openrouter" && !disabled;
+      const final = reconciled || !!disabled || (completed && (missing ? !reconcilable : !pricing.estimated || typeof usage.providerCost === "number"));
       const quote = this.accounts.quoteModelUsage(tenant, agent, { provider: row.provider, model: row.model, kind: row.kind === "compaction" ? "compaction" : undefined, platform: row.platform, timestamp: Number(row.started_at), ...row.context, usage: pricing.usage });
       const previous = row.totals ?? zero;
       const delta = Object.fromEntries(Object.keys(zero).map(key => [key, quote.totals[key as keyof Totals] - (previous[key] ?? 0)])) as Totals;
@@ -243,8 +244,8 @@ export class ModelAttempts {
         if (event.legacy) Object.assign(event.legacy, facts);
       }
       await enqueueEvents(sql, quote.events);
-      await sql.query(`update model_attempts set state=$2,totals=$3,charge=$4,revision=$5,updated_at=$6,next_check_at=$7,last_error=null where id=$1`,
-        [id, final ? "settled" : "estimated", JSON.stringify(quote.totals), amount, revision, Date.now(), Date.now()+60_000]);
+      await sql.query(`update model_attempts set state=$2,totals=$3,charge=$4,revision=$5,updated_at=$6,next_check_at=$7,last_error=$8 where id=$1`,
+        [id, final ? "settled" : "estimated", JSON.stringify(quote.totals), amount, revision, Date.now(), Date.now()+60_000, disabled ?? null]);
     });
     this.accounts.invalidateModelUsage(tenant);
     // A committed debit must still wake automatic top-up, but its delivery cannot undo settlement.
@@ -269,13 +270,22 @@ export class ModelAttempts {
       if (this.stopping.signal.aborted) break;
       try {
         if (row.provider !== "openrouter") throw new Error("Awaiting provider evidence; provider has no per-request reconciliation adapter");
-        if (!row.generation_id) throw new Error("Awaiting provider evidence; missing OpenRouter generation ID");
         // Resolve tenant-owned keys too, but never send a key unless its fingerprint matches dispatch.
         const resolved = await this.accounts.providerKey(row.tenant, "openrouter");
         const scoped = row.context?.keyScope && this.scopedKey ? await this.scopedKey(row.tenant, row.context.keyScope) : undefined;
-        const candidates = [scoped, resolved?.key, this.accounts.tenants.platformKey("openrouter")];
+        const disabled = row.context?.reconciliationDisabled || (row.key_hash === hash("") || typeof scoped === "object"
+          ? "Gateway or empty credential has no direct provider reconciliation; estimate is final" : undefined);
+        if (disabled) {
+          // 2026-10-23: old gateway attempts have only an empty fingerprint or a scoped address. Keep any posted estimate.
+          await this.db.query("update model_attempts set context=context || $2::jsonb where id=$1", [row.id, JSON.stringify({ reconciliationDisabled: disabled })]);
+          if (!row.totals) await this.settle(row.id, row.tenant, row.agent, {}, 0, true, false);
+          await this.db.query("update model_attempts set state='settled',last_error=$2,updated_at=$3 where id=$1", [row.id, disabled, Date.now()]);
+          continue;
+        }
+        if (!row.generation_id) throw new Error("Awaiting provider evidence; missing OpenRouter generation ID");
+        const candidates = [typeof scoped === "string" ? scoped : undefined, resolved?.key, this.accounts.tenants.platformKey("openrouter")];
         const key = candidates.find(value => value && hash(value) === row.key_hash);
-        if (!key || hash(key) !== row.key_hash) throw new Error("Provider key changed; awaiting reconciliation with original account");
+        if (!key || hash(key) !== row.key_hash) throw new Error("Original provider credential is unavailable; awaiting reconciliation with its account");
         const response = await this.fetcher(`https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(row.generation_id)}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.any([AbortSignal.timeout(10_000), this.stopping.signal]) });
         if (!response.ok) throw new Error(`Provider lookup HTTP ${response.status}`);
         const { data } = await response.json() as any;

@@ -325,7 +325,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
         }
         return event;
       });
-    }, estimate, onRefused);
+    }, estimate, onRefused, !!credentials.baseUrl);
     const start = () => {
       const credentials = perCall?.();
       return credentials ? credentials.then(call) : call({ apiKey });

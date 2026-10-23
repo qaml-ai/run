@@ -19,10 +19,10 @@ const zeroUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tot
  * words. `onRefused` hears of a call refused or cut so, as it happens.
  */
 export async function attemptStream(model: Model<Api>, key: string, kind: "response" | "compaction", hook: ModelAttemptHook | undefined,
-  start: (sink: UsageSink, halt: AbortSignal) => AssistantMessageEventStream, estimate?: AttemptEstimate, onRefused?: (stop: CreditStop) => void): Promise<AssistantMessageEventStream> {
+  start: (sink: UsageSink, halt: AbortSignal) => AssistantMessageEventStream, estimate?: AttemptEstimate, onRefused?: (stop: CreditStop) => void, gateway = false): Promise<AssistantMessageEventStream> {
   const id = randomUUID(), at = Date.now();
   let ack: AttemptAck;
-  try { ack = attemptAck(await hook?.({ type: "begin", id, at, provider: model.provider, model: model.id, kind, keyHash: createHash("sha256").update(key).digest("hex"), ...(estimate ? { estimate } : {}) })); }
+  try { ack = attemptAck(await hook?.({ type: "begin", id, at, provider: model.provider, model: model.id, kind, keyHash: createHash("sha256").update(key).digest("hex"), ...(!key || gateway ? { reconciliationDisabled: "Gateway credential has no direct provider reconciliation; estimate is final" } : {}), ...(estimate ? { estimate } : {}) })); }
   catch { throw new Error(PERSISTENCE_FAILED); }
   if (ack.refused) {
     onRefused?.(ack.refused);

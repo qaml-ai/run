@@ -1,0 +1,3 @@
+OpenRouter models from OpenAI use the smaller native context window when one is listed. GPT-6 Luna and its Pro and routing variants compact within 272,000 tokens, including agents created before this correction. Context limits learned from provider overflows survive host restarts. A second overflow gets one more compaction and continuation before the turn gives up.
+
+Calls made through gateway credentials or without a provider key settle on their reported usage or final estimate. Existing OpenRouter gateway attempts settle on their next reconciliation check instead of repeatedly reporting that the provider key changed. Direct OpenRouter credentials still reconcile against the provider's generation record.

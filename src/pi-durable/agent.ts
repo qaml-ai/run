@@ -1,3 +1,4 @@
+import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -392,6 +393,17 @@ export class DurableAgent {
     agent.conversation = options.durable.conversationId === undefined ? await agent.harness.root(context) :
       (await agent.harness.conversation(options.durable.conversationId as ConversationId, context))!;
     if (!agent.conversation) throw new Error("Pi durable conversation does not exist");
+    // The learned limit survives hosts and compaction cuts; entries() also includes a fork's inherited journal.
+    let cursor;
+    do {
+      const page = await agent.conversation.entries({ order: "descending" }, 256, cursor, context);
+      for (const entry of page.items) if (entry.kind === "camel.context.limit") {
+        const data = entry.data as { provider?: string; model?: string; window?: number };
+        if (data.provider === agent.state.model.provider && data.model === agent.state.model.id && Number.isFinite(data.window) && data.window! > 0)
+          agent.overflowWindow = Math.min(agent.overflowWindow, data.window!);
+      }
+      cursor = page.next;
+    } while (cursor !== undefined);
     agent.harness.subscribeCommits(publication => {
       // A generation that ended without an answer fails the run: one that failed, and one whose phase threw (faulted) or
       // that no installed definition could take (orphaned), which would otherwise end the run as if it had answered.
@@ -536,6 +548,7 @@ export class DurableAgent {
         sessionId: this.options.sessionId, onPayload: this.options.onPayload, onResponse: this.options.onResponse,
         onProviderStreamEvent: this.options.onProviderStreamEvent,
       });
+      let overflowEvent: import("@earendil-works/pi-ai").AssistantMessageEvent | undefined;
       for await (const event of events) {
         if (event.type === "start") {
           this.streamingMessage = event.partial;
@@ -544,12 +557,20 @@ export class DurableAgent {
           this.streamingMessage = event.partial;
           await this.emit({ type: "message_update", message: event.partial, assistantMessageEvent: event });
         }
-        stream.push(event);
+        // Pi may act on the terminal event before result() resolves. Persist its smaller window first.
+        if (event.type === "error" && isContextOverflow(event.error)) overflowEvent = event;
+        else stream.push(event);
       }
       const final = await events.result();
       if (final.stopReason === "error" && isContextOverflow(final)) {
-        const sent = Math.ceil(JSON.stringify(llm).length / 4);
-        this.overflowWindow = Math.min(this.overflowWindow, Math.max(1_000, Math.floor(sent * 0.9)));
+        const sent = llm.reduce((tokens, message) => tokens + estimateMessageTokens(message), 0);
+        const window = Math.max(1_000, Math.floor(Math.min(sent, this.overflowWindow, this.state.model.contextWindow, this.options.durable.contextWindow ?? Infinity) * 0.9));
+        if (window < this.overflowWindow) {
+          await this.conversation.commit(tx => tx.appendEntry(this.conversation.id, {
+            kind: "camel.context.limit", data: { provider: this.state.model.provider, model: this.state.model.id, window },
+          }), context);
+          this.overflowWindow = window;
+        }
       }
       // Pi commits an aborted response from its last throttled partial (`convertPartial`), which may be stale or
       // missing: the provider's own terminal message, with its usage and billing attempt, replaces it before Pi's
@@ -559,6 +580,7 @@ export class DurableAgent {
         const live = await tx.doc(LiveDoc, this.conversation.id);
         if (live.generation) live.generation.message = JSON.parse(JSON.stringify(final));
       }, context).catch(error => console.error(JSON.stringify({ type: "pi_aborted_response_write_failed", error: error instanceof Error ? error.message : String(error) })));
+      if (overflowEvent) stream.push(overflowEvent);
       stream.end(final);
     })().catch(error => {
       const message = { role: "assistant", content: [], api: this.state.model.api, provider: this.state.model.provider,
@@ -742,6 +764,13 @@ export class DurableAgent {
   prompt(message: AgentMessage | AgentMessage[] | string, images: ImageContent[] = []): Promise<void> {
     const messages = typeof message === "string" ? [{ role: "user", content: images.length ? [{ type: "text", text: message }, ...images] : message, timestamp: Date.now() } as AgentMessage] : Array.isArray(message) ? message : [message];
     return this.run(messages);
+  }
+  async compact(): Promise<void> {
+    const task = await this.conversation.compact(undefined, context);
+    const result = await this.harness.waitForTask(task, context);
+    if (result.state.outcome.status !== "completed") throw new Error("Context compaction failed");
+    await this.flushEvents();
+    await this.reload();
   }
   continue(): Promise<void> { return this.run([]); }
   private run(messages: AgentMessage[]) {

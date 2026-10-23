@@ -185,7 +185,7 @@ test("missing provider records and rotated keys never finalize an unknown charge
   assert.equal((await db.query("select state from model_attempts")).rows[0].state,"pending");
   await db.query("update model_attempts set next_check_at=0,key_hash=$1",["0".repeat(64)]);
   await new ModelAttempts(db,account,async()=>{throw new Error("must not use a different key");}).reconcile();
-  assert.match((await db.query("select last_error from model_attempts")).rows[0].last_error,/key changed/);
+  assert.match((await db.query("select last_error from model_attempts")).rows[0].last_error,/Original provider credential is unavailable/);
   assert.equal(await total(db),0);
 });
 
@@ -311,4 +311,66 @@ test("Messages API native message IDs preserve the header generation through can
   await new ModelAttempts(f.db,account,async()=>Response.json({data:{id:"gen-messages-fixture",total_cost:0.01,generation_time:100,cancelled:true,native_tokens_prompt:100,native_tokens_completion:8}})).reconcile();
   const settled=(await f.db.query("select state,totals from model_attempts where id=$1",[row.id])).rows[0];
   assert.equal(settled.state,"settled");assert.equal(settled.totals.cost,0.01);
+});
+
+test("gateway and empty-key attempts finalize estimates; existing gateway rows stop reconciliation", async () => {
+  const { db, account, attempts } = await setup();
+  let lookups = 0;
+  const worker = new ModelAttempts(db, account, async () => { lookups++; throw new Error("gateway credentials must not reach OpenRouter"); }, 0,
+    async () => ({ baseUrl: "https://gateway.example/v1" }));
+  for (const legacy of [false, "empty", "gateway"]) {
+    const id = randomUUID();
+    await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: "anthropic/claude-opus-4.1", kind: "response", at: Date.now(),
+      keyHash: legacy === "gateway" ? keyHash : createHash("sha256").update("").digest("hex"), context: { keyScope: "hosted" },
+      estimate: { inputTokens: 100, maxOutputTokens: 100, rates: { input: 15, output: 75 } } });
+    await attempts.event("payg", "agent", true, true, { type: "generation", id, generation: `gen-gateway-${legacy}` });
+    await attempts.event("payg", "agent", true, true, { type: "finish", id, usage: {}, chars: 80, completed: true });
+    assert.equal((await db.query("select state from model_attempts where id=$1", [id])).rows[0].state, legacy === "gateway" ? "estimated" : "settled");
+    if (legacy) await db.query("update model_attempts set state='estimated',context=context-'reconciliationDisabled',next_check_at=0 where id=$1", [id]);
+    const before = await total(db);
+    await worker.reconcile();
+    const row = (await db.query("select state,last_error,checks from model_attempts where id=$1", [id])).rows[0];
+    assert.equal(row.state, "settled");
+    assert.match(row.last_error, /estimate is final/);
+    assert.equal(await total(db), before, "the existing estimate is preserved");
+    await db.query("update model_attempts set next_check_at=0 where id=$1", [id]);
+    await worker.reconcile();
+    assert.equal((await db.query("select checks from model_attempts where id=$1", [id])).rows[0].checks, row.checks);
+  }
+  assert.equal(lookups, 0);
+});
+
+test("a hosted-scope gateway generation settles without an OpenRouter credential", async t => {
+  const { explicitKeyStream } = await import("../src/compaction.ts");
+  const { Outbound } = await import("../src/outbound.ts");
+  const { normalizeContext } = await import("@earendil-works/pi-ai");
+  const { db, attempts } = await setup();
+  let count = 0;
+  const server = createServer(async (req, res) => {
+    for await (const _ of req) {}
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    const id = `gen-hosted-${++count}`;
+    res.write(`data: ${JSON.stringify({ id, choices: [{ index: 0, delta: { role: "assistant", content: "answer" }, finish_reason: null }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ id, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+    res.end("data: [DONE]\n\n");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  const baseUrl = `http://127.0.0.1:${(server.address() as any).port}/v1`;
+  for (const apiKey of ["", "gateway-only-fixture"]) {
+    const stream = explicitKeyStream(async () => ({ apiKey, baseUrl, platform: false }), undefined, undefined, undefined, undefined, new Outbound({ allowHttp: true, allow: ["127.0.0.1/32"] }),
+      event => attempts.event("payg", "agent", true, true, event.type === "begin" ? { ...event, context: { keyScope: "hosted" } } : event));
+    const events = await stream({ ...getModel("openrouter", "openai/gpt-6-luna")!, api: "openai-completions" }, normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 1 }] }), { apiKey: "scope-placeholder" });
+    const result = await events.result();
+    assert.equal(result.stopReason, "stop", result.errorMessage);
+  }
+  const rows = (await db.query("select state,generation_id,last_error,context from model_attempts")).rows;
+  assert.equal(rows.length, 2);
+  for (const row of rows) {
+    assert.equal(row.state, "settled");
+    assert.ok(row.generation_id);
+    assert.match(row.last_error, /Gateway credential.*estimate is final/);
+    assert.equal(row.context.keyScope, "hosted");
+  }
 });
