@@ -22,8 +22,6 @@ const InferredOverflowDoc = defineDoc({
   initial: () => ({ provider: "", model: "", at: 0 }),
   checkpointWhen: () => true,
 });
-// #410 capped Luna at 272k and learned 90% of that cap. Ignore only that exact legacy limit on load.
-const LEGACY_LUNA_LIMIT = Math.floor(272_000 * 0.9);
 
 interface DurableCursor { entryId: number; index: number }
 interface DurableMessage { message: AgentMessage; cursor: DurableCursor }
@@ -420,8 +418,7 @@ export class DurableAgent {
       (await agent.harness.conversation(options.durable.conversationId as ConversationId, context))!;
     if (!agent.conversation) throw new Error("Pi durable conversation does not exist");
     const limit = await agent.harness.snapshot(ContextLimitDoc, agent.conversation.id, context);
-    if (limit?.provider === agent.state.model.provider && limit.model === agent.state.model.id && Number.isFinite(limit.window) && limit.window > 0 &&
-      !(isLuna(agent.state.model) && agent.state.model.contextWindow > 272_000 && limit.window === LEGACY_LUNA_LIMIT))
+    if (limit?.provider === agent.state.model.provider && limit.model === agent.state.model.id && Number.isFinite(limit.window) && limit.window > 0)
       agent.overflowWindow = Math.max(limit.window, limitFloor(agent.state.model));
     agent.harness.subscribeCommits(publication => {
       // A generation that ended without an answer fails the run: one that failed, and one whose phase threw (faulted) or

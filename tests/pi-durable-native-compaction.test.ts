@@ -290,7 +290,7 @@ for (const elapsedHours of [1, 25]) test(`inferred Luna overflow evidence surviv
   assert.equal(limit?.window, elapsedHours === 1 ? 244_800 : undefined);
 });
 
-for (const window of [244_800, 244_799]) test(`loading a Luna learned limit ${window} ignores only the exact #410 cap`, async t => {
+for (const window of [244_800, 244_799]) test(`a learned Luna limit ${window} survives a restart`, async t => {
   const storage = new MemoryStorage();
   const closeStorage = storage.close.bind(storage);
   storage.close = async () => {};
@@ -307,5 +307,5 @@ for (const window of [244_800, 244_799]) test(`loading a Luna learned limit ${wi
   await seed.close();
   const agent = await DurableAgent.create({ ...options, durable: { storage, conversationId: id } });
   t.after(() => agent.close());
-  assert.equal((agent as any).overflowWindow, window === 244_800 ? Infinity : window);
+  assert.equal((agent as any).overflowWindow, window);
 });
