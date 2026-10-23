@@ -3,7 +3,7 @@ import { createAssistantMessageEventStream, type Api, type AssistantMessage, typ
 import { attemptAck, type AttemptAck, type AttemptEstimate, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
 import { PERSISTENCE_FAILED } from "./protocol.ts";
 
-/** How often a streaming call reports activity; also renews metered calls within the hold's ten-minute life. */
+/** How often a metered call that is still streaming reports, at least: well inside the hold's life (HOLD_MS, ten minutes). */
 export const RENEW_MS = 3 * 60_000;
 
 /** What a call's response says beyond Pi's message: the provider's cost (and credits), its generation id, and the host it was served by (`host`, OpenRouter's). */
@@ -19,10 +19,10 @@ const zeroUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tot
  * words. `onRefused` hears of a call refused or cut so, as it happens.
  */
 export async function attemptStream(model: Model<Api>, key: string, kind: "response" | "compaction", hook: ModelAttemptHook | undefined,
-  start: (sink: UsageSink, halt: AbortSignal) => AssistantMessageEventStream, estimate?: AttemptEstimate, onRefused?: (stop: CreditStop) => void, gateway = false): Promise<AssistantMessageEventStream> {
+  start: (sink: UsageSink, halt: AbortSignal) => AssistantMessageEventStream, estimate?: AttemptEstimate, onRefused?: (stop: CreditStop) => void): Promise<AssistantMessageEventStream> {
   const id = randomUUID(), at = Date.now();
   let ack: AttemptAck;
-  try { ack = attemptAck(await hook?.({ type: "begin", id, at, provider: model.provider, model: model.id, kind, keyHash: createHash("sha256").update(key).digest("hex"), reconciliationEligible: !!key && !gateway, ...(!key || gateway ? { reconciliationDisabled: "Gateway credential has no direct provider reconciliation; reported usage is final" } : {}), ...(estimate ? { estimate } : {}) })); }
+  try { ack = attemptAck(await hook?.({ type: "begin", id, at, provider: model.provider, model: model.id, kind, keyHash: createHash("sha256").update(key).digest("hex"), ...(estimate ? { estimate } : {}) })); }
   catch { throw new Error(PERSISTENCE_FAILED); }
   if (ack.refused) {
     onRefused?.(ack.refused);
@@ -47,8 +47,9 @@ export async function attemptStream(model: Model<Api>, key: string, kind: "respo
    * request for more in flight; why no more will come (`refusal`); and why the call was cut, once it is.
    */
   let streamed = 0, checkAt = ack.checkAtChars, stopAt = ack.stopAtChars, asking: Promise<void> | undefined, refusal: CreditStop | string | undefined, cut: string | undefined, asked = Date.now();
-  // A slow call reports activity while it is running, so reconciliation leaves it alone and any hold stays live.
-  const renewing = setInterval(() => { if (Date.now() - asked >= RENEW_MS && refusal === undefined && cut === undefined) void ask(); }, RENEW_MS / 4);
+  // A metered call that streams slowly (or thinks a long while before it writes) reports as time passes too, so its hold
+  // never lapses while it is still running.
+  const renewing = stopAt === undefined ? undefined : setInterval(() => { if (Date.now() - asked >= RENEW_MS && refusal === undefined && cut === undefined) void ask(); }, RENEW_MS / 4);
   renewing?.unref?.();
   /** Ask for more of the hold, without holding up the stream: only the line itself waits for the answer. */
   const ask = () => asking ??= hook!({ type: "progress", id, chars: streamed }).then(answer => {

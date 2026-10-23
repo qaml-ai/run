@@ -325,7 +325,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
         }
         return event;
       });
-    }, estimate, onRefused, !credentials.platform && (model.provider === "cloudflare-ai-gateway" || !!credentials.baseUrl && model.provider === "openrouter"));
+    }, estimate, onRefused);
     const start = () => {
       const credentials = perCall?.();
       return credentials ? credentials.then(call) : call({ apiKey });
