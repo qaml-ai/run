@@ -154,25 +154,31 @@ runbook. Otherwise that apply can restore the previous setting.
 
 ### Acquisition
 
-`GET /api/acquisition` (`src/admin-acquisition.ts`) reads where the window's sign-ups came from in the journey
-store's `journeys` report: the accounts active in the window's UTC days, with what the store knows of each one's
-first arrival. The runtime keeps none of this itself. It reads at most 20 pages of 25 accounts, for at most 15
-seconds; past that, `truncated` is true and the counts are of the accounts read.
+`GET /api/acquisition` (`src/admin-acquisition.ts`) starts with the same outside self-serve signup cohort
+as Growth. Staff and erased accounts are excluded. Signup and lifetime usage counts come from the runtime;
+the journey store's `journeys` report supplies first-touch attribution, joined by opaque account reference.
 
-- **Tracked sign-ups**: accounts the store says signed up in the window. The store knows only the sign-ups journey
-  events told it of: none from a browser that refused to be measured (nor, unless
-  `AGENT_JOURNEY_COLLECT_UNKNOWN=true`, from one that gave no answer), and none from before journey events were on.
-  So this is usually fewer than the Growth tab's sign-ups. Staff are left out only as far as the store leaves them
-  out.
-- **Sources**: each sign-up by its first arrival's source and medium. "No browser (API or MCP)" is an account made
-  without a browser; "Not captured" is one with no recorded source. For each source: sign-ups, how many have a first
-  completed run in the store (`activated_at`, at any time), and how many made a payment the store recorded in the
-  window.
-- **Campaigns** and **landing pages**: the ten with the most sign-ups.
-- **Coverage**: the times of the store's first and last events, so a window before them reads as unknown, not none.
+- **Sources**: arrivals on the configured sales-site host are grouped by their first landing page, including
+  individual blog posts. Referrals to the same sales page share one row, even if one came through Google and
+  another through a newsletter. Other hosts keep their recorded source and medium. The store supplies
+  `landing_host` and `landing_path`; older reports without a hostname keep their referral labels.
+- **Plugin acquisition**: the first OAuth grant within one hour of signup supplies the plugin label, including
+  accounts without journey records. Later connections do not rewrite acquisition.
+- **Usage by source**: signups, share, made an agent (or ran one), ran a model, median UTC days to first model
+  answer, active on two or more UTC days, and purchased credit. Counts include scheduled and channel runs,
+  use lifetime usage through today, and exclude standalone searches, voice and image calls.
+- **Daily chart**: the same source groups as the table. Small groups fold into Other; its hover lists each
+  page or source with signups that day, largest first. The chart's table view lists every source separately.
+- **Campaigns** and **landing pages**: the ten with the most signups in recorded attribution.
+- **Coverage**: the store's first and last event times. `tracked_signups` counts local cohort members returned
+  by the store, once per account; a tracked account may still have no captured source.
 
-`status` is `not_configured` where no journey store answers reports here (no `AGENT_JOURNEY_URL` or report
-secret), and `unavailable` where it could not be asked just now; the counts are then empty.
+At most 20 pages of 25 store accounts are read, for at most 15 seconds. Past that, `truncated` is true and
+unread sources stay Not captured. Accounts missing from reports remain in signup and usage totals.
+`status` is `not_configured` where no store answers reports and `unavailable` where it could not be asked;
+local counts and plugin labels remain available in both states. Missing attribution is never relabelled Direct.
+The page label is the first landing page recorded for that browser, which can differ from the page where it
+later clicked through to Run. Attribution that was never recorded cannot be reconstructed.
 
 ## Usage
 
@@ -361,7 +367,7 @@ A missing journey connection does not hide the database-backed product signals. 
 - **Staff by GitHub alone** are counted until journey events mark them internal.
 - **Paying or free is as of now.** Revenue's and Health's split of accounts uses whether an account has bought credit
   today, not when it was charged.
-- **Acquisition** knows only the sign-ups the journey store recorded, and reads at most 500 accounts a request.
+- **Acquisition sources** cover the journey records read, at most 500 accounts a request. Unread or missing sources remain Not captured; local signup and usage totals still include those accounts.
 
 ## API
 

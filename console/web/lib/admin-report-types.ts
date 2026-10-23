@@ -7,7 +7,7 @@
  * 422 range_too_long | report_too_large, 503 report_not_configured. */
 export type ReportRange = { start_date: string; end_date: string; time_zone: string };
 export type ReportRequest = ReportRange & { schema_version: 1; kind: 'signals' | 'journeys' | 'journey' | 'pages'; account_ref?: string; cursor?: string };
-export type Acquisition = { source: string | null; medium: string | null; campaign: string | null; landing_path: string | null; handoff_status: string; capture_quality: string };
+export type Acquisition = { source: string | null; medium: string | null; campaign: string | null; landing_path: string | null; landing_host?: string | null; handoff_status: string; capture_quality: string };
 export type JourneyRow = {
   account_ref: string; display_name: string | null; email: string | null;
   signup_at: string | null; last_active_at: string; events_in_range: number; activated_at: string | null;

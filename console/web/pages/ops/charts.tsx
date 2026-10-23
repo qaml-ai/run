@@ -81,7 +81,7 @@ function useActive(length: number, axis: "x" | "y" = "x") {
 
 const FOCUS_RING = "outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-card";
 
-export interface TipRow { value: string; label: string; color?: string }
+export interface TipRow { value: string; label: string; color?: string; muted?: boolean }
 
 /** The hover readout: the value first, strong, its series after; a short line of the series' colour keys it. */
 export function ChartTip({ title, rows, style, className }: { title: ReactNode; rows: TipRow[]; style?: CSSProperties; className?: string }) {
@@ -89,10 +89,10 @@ export function ChartTip({ title, rows, style, className }: { title: ReactNode; 
     <div role="presentation" className={cn("bg-popover text-popover-foreground pointer-events-none absolute z-20 min-w-32 border px-2.5 py-1.5 text-xs shadow-md", className)} style={style}>
       <div className="text-muted-foreground mb-1 whitespace-nowrap">{title}</div>
       {rows.map(row => (
-        <div key={row.label} className="flex items-center gap-2 whitespace-nowrap leading-5">
+        <div key={row.label} className={cn("flex items-center gap-2 whitespace-nowrap leading-5", row.muted && "text-muted-foreground/70")}>
           <span aria-hidden="true" className="block h-0.5 w-2.5 shrink-0" style={{ background: row.color ?? "transparent" }} />
           <span className="font-mono font-medium tabular-nums">{row.value}</span>
-          <span className="text-muted-foreground">{row.label}</span>
+          <span className={row.muted ? undefined : "text-muted-foreground"}>{row.label}</span>
         </div>
       ))}
     </div>
@@ -134,11 +134,13 @@ const COLUMN_HEIGHT = 184;
  * Columns over a band each (stacked when there are up to three series, the first at the bottom), a y axis of clean
  * ticks, and a readout per band. Counts by default; `format` and `axis` write values and ticks otherwise (dollars).
  */
-export function ColumnChart({ series, data, label, format = count, axis = compact, least = 1, height = COLUMN_HEIGHT, table }: {
+export function ColumnChart({ series, data, label, format = count, axis = compact, least = 1, height = COLUMN_HEIGHT, table, totalFirst = false }: {
   series: ColumnSeries[]; data: ColumnDatum[]; label: string; format?: (value: number) => string; axis?: (value: number) => string;
   least?: number; height?: number;
   /** The table view, when it should hold more than the drawn series (a split by sign-in method). */
   table?: { columns: string[]; rows: (string | number)[][] };
+  /** Lead the readout with the day's total, including when there is only one source. */
+  totalFirst?: boolean;
 }) {
   const [ref, width] = useWidth();
   const [active, setActive, focus] = useActive(data.length);
@@ -155,7 +157,11 @@ export function ColumnChart({ series, data, label, format = count, axis = compac
   const readout = active === null ? null : (() => {
     const datum = data[active];
     const rows: TipRow[] = series.map((entry, index) => ({ value: datum.values[index] === null ? "—" : format(datum.values[index]!), label: entry.label, color: entry.color }));
-    if (many) rows.push({ value: datum.values.every(value => value === null) ? "—" : format(totals[active]), label: "in all" });
+    if (many || totalFirst) {
+      const total = { value: datum.values.every(value => value === null) ? "—" : format(totals[active]), label: "in all" };
+      if (totalFirst) rows.unshift(total);
+      else rows.push(total);
+    }
     return { title: datum.title, rows: [...rows, ...(datum.more ?? [])] };
   })();
   const center = active === null ? 0 : plot.left + (active + 0.5) * band;
