@@ -736,6 +736,7 @@ export function createAgentHost(hostIO: HostIO) {
         catch {
           // Keep the provider's original error as the turn's outcome when recovery fails.
           await journal.push(last);
+          io.emit({ type: "message_end", message: last });
           return;
         }
         if (signal.aborted || await handingOff()) return;

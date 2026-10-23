@@ -16,6 +16,15 @@ export const ContextLimitDoc = defineDoc({
   checkpointWhen: () => true,
 });
 
+// Evidence is separate from the limit: one dropped stream must not pin future turns to a smaller window.
+const InferredOverflowDoc = defineDoc({
+  kind: "camel.context.inferred-overflow", version: 1, scope: "conversation", history: "latest", fork: "initial",
+  initial: () => ({ provider: "", model: "", at: 0 }),
+  checkpointWhen: () => true,
+});
+// #410 capped Luna at 272k and learned 90% of that cap. Ignore only that exact legacy limit on load.
+const LEGACY_LUNA_LIMIT = Math.floor(272_000 * 0.9);
+
 interface DurableCursor { entryId: number; index: number }
 interface DurableMessage { message: AgentMessage; cursor: DurableCursor }
 export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
@@ -116,7 +125,7 @@ const isLuna = (model: { id: string }) => /(?:^|[/.])gpt-(?:(?:6|5\.6)-luna(?:-p
 // Half the native window keeps learning useful below an aggregator's advertised million-token window.
 const limitFloor = (model: { id: string; contextWindow: number }) => Math.max(32_768,
   Math.min(model.contextWindow, isLuna(model) ? 272_000 : Infinity) / 2);
-const byteRefusal = (message: AssistantMessage) => /request_too_large|\b413\b|request (?:body |payload )?too large/i.test(message.errorMessage ?? "");
+const byteRefusal = (message: AssistantMessage) => /request_too_large|(?:^413\s|\b(?:status|HTTP)\s+413\b)|request (?:body |payload )?too large/i.test(message.errorMessage ?? "");
 
 const summaryOf = (message: AssistantMessage) => {
   const text = message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim();
@@ -134,11 +143,11 @@ function summaryChunks(messages: Message[], window: number, maxTokens: number): 
   const match = text?.match(/^<conversation>\n([\s\S]*)\n<\/conversation>\n\n([\s\S]*)$/);
   if (messages.length !== 2 || !match || !Number.isFinite(window)) return undefined;
   const [, conversation, prompt] = match;
-  const tokens = (value: string) => Math.ceil(value.length / 3.5);
+  const tokens = (value: string) => Math.ceil(value.length / 2.5);
   // Room for a part: the window less the answer, the prompts, and the summary carried in (bounded by the answer's size).
   const fixed = tokens(JSON.stringify(system)) + tokens(prompt) + 1_024;
-  if (fixed + tokens(conversation) + maxTokens <= window) return undefined;
-  const room = Math.floor((window - maxTokens - fixed - Math.max(maxTokens, 1_000)) * 3.5);
+  if (fixed + tokens(conversation) + maxTokens <= window && tokens(conversation) <= window / 2) return undefined;
+  const room = Math.floor(Math.min(window / 2, window - maxTokens - fixed - Math.max(maxTokens, 1_000)) * 2.5);
   if (room < 4_000) throw new Error("Summarization failed: effective context window is too small");
   const parts: string[] = [];
   let part = "";
@@ -151,7 +160,7 @@ function summaryChunks(messages: Message[], window: number, maxTokens: number): 
   }
   if (part) parts.push(part);
   return parts.map(content => (before?: string) => [system, { ...user, content: [{ type: "text", text:
-    `${before === undefined ? "" : `<previous-summary>\n${before.slice(0, Math.floor(Math.max(maxTokens, 1_000) * 3.5))}\n</previous-summary>\n\nThe summary above covers the conversation before this part. Summarize both together.\n\n`}<conversation>\n${content}\n</conversation>\n\n${prompt}` }] } as Message]);
+    `${before === undefined ? "" : `<previous-summary>\n${before.slice(0, Math.floor(Math.max(maxTokens, 1_000) * 2.5))}\n</previous-summary>\n\nThe summary above covers the conversation before this part. Summarize both together.\n\n`}<conversation>\n${content}\n</conversation>\n\n${prompt}` }] } as Message]);
 }
 
 /** Calls whose failure always fails Pi's Session: once a write is sent, whether it landed is unknown. */
@@ -411,7 +420,8 @@ export class DurableAgent {
       (await agent.harness.conversation(options.durable.conversationId as ConversationId, context))!;
     if (!agent.conversation) throw new Error("Pi durable conversation does not exist");
     const limit = await agent.harness.snapshot(ContextLimitDoc, agent.conversation.id, context);
-    if (limit?.provider === agent.state.model.provider && limit.model === agent.state.model.id && Number.isFinite(limit.window) && limit.window > 0)
+    if (limit?.provider === agent.state.model.provider && limit.model === agent.state.model.id && Number.isFinite(limit.window) && limit.window > 0 &&
+      !(isLuna(agent.state.model) && agent.state.model.contextWindow > 272_000 && limit.window === LEGACY_LUNA_LIMIT))
       agent.overflowWindow = Math.max(limit.window, limitFloor(agent.state.model));
     agent.harness.subscribeCommits(publication => {
       // A generation that ended without an answer fails the run: one that failed, and one whose phase threw (faulted) or
@@ -558,7 +568,7 @@ export class DurableAgent {
         onProviderStreamEvent: this.options.onProviderStreamEvent,
       });
       const sent = llm.reduce((tokens, message) => tokens + estimateMessageTokens(message), 0);
-      // An upstream that dropped an over-native-window Luna prompt: learn the native window at once, not 90% per failed turn.
+      // An upstream may have dropped an over-native-window Luna prompt. Recover now; require repeat evidence to learn it.
       let inferred = false;
       const overflow = (message: AssistantMessage) => {
         if (message.stopReason === "error" && !isContextOverflow(message) && !byteRefusal(message) && isLuna(this.state.model) && sent > 272_000 && message.usage.output === 0 &&
@@ -585,7 +595,7 @@ export class DurableAgent {
       const final = await events.result();
       if (final.stopReason === "error" && overflow(final) && !byteRefusal(final)) {
         const window = Math.max(limitFloor(this.state.model), Math.floor(Math.min(sent, inferred ? 272_000 : Infinity, this.overflowWindow, this.state.model.contextWindow, this.options.durable.contextWindow ?? Infinity) * 0.9));
-        if (window < this.overflowWindow) {
+        if (inferred || window < this.overflowWindow) {
           // Optional learning uses its own session: a failed write must not poison Pi's running session.
           const storage = this.options.durable.storage;
           const learning = createSession(new Proxy(storage, { get(target, key) {
@@ -595,6 +605,14 @@ export class DurableAgent {
           } }));
           try {
             await learning.commit(async tx => {
+              if (inferred) {
+                const evidence = await tx.doc(InferredOverflowDoc, this.conversation.id);
+                const now = Date.now();
+                const repeated = evidence.provider === this.state.model.provider && evidence.model === this.state.model.id &&
+                  evidence.at > 0 && now >= evidence.at && now - evidence.at <= 24 * 60 * 60 * 1_000;
+                Object.assign(evidence, { provider: this.state.model.provider, model: this.state.model.id, at: now });
+                if (!repeated) return;
+              }
               Object.assign(await tx.doc(ContextLimitDoc, this.conversation.id), { provider: this.state.model.provider, model: this.state.model.id, window });
             }, context);
           } catch {

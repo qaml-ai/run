@@ -30,7 +30,7 @@ const isSummarization = (body: Body) => text(body).includes("context summarizati
  * An OpenAI-compatible provider that reports no usage, like some proxies, unless `usage` is set. With `gated`,
  * summaries wait until `release()`; `inflight` counts summaries asked for and not yet answered.
  */
-async function provider(t: { after(fn: () => Promise<void>): void }, options: { overflowFirst?: number; failSummaryAt?: number; overflowAboveChars?: number; usage?: boolean; gated?: boolean; turnInput?: (body: Body) => number } = {}) {
+async function provider(t: { after(fn: () => Promise<void>): void }, options: { overflowFirst?: number; failSummaryAfterChats?: number; overflowAboveChars?: number; usage?: boolean; gated?: boolean; turnInput?: (body: Body) => number } = {}) {
   const requests: Body[] = [];
   let summaries = 0;
   let gate = Promise.withResolvers<void>();
@@ -45,7 +45,7 @@ async function provider(t: { after(fn: () => Promise<void>): void }, options: { 
       if (options.gated) await gate.promise;
       res.once("finish", () => state.inflight--);
     }
-    if (isSummarization(body) && options.failSummaryAt === requests.filter(isSummarization).length) {
+    if (isSummarization(body) && options.failSummaryAfterChats === requests.filter(request => !isSummarization(request)).length) {
       res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: "summary unavailable", type: "invalid_request_error" } }));
       return;
     }
@@ -557,7 +557,7 @@ test("an agent whose journal keeps more messages after its compaction than the h
 
 for (const outcome of ["fits", "irreducible", "summary-fails"]) test(outcome === "fits" ? "a second overflow compacts against its newly learned limit and completes the turn" : outcome === "summary-fails" ? "failed host overflow compaction preserves the original refusal" : "an irreducible overflow stops after one host recovery", { timeout: 20_000 }, async t => {
   const fits = outcome === "fits";
-  const fake = await provider(t, { overflowAboveChars: outcome === "irreducible" ? 1 : 100_000, overflowFirst: 2, ...(outcome === "summary-fails" ? { failSummaryAt: 2 } : {}) });
+  const fake = await provider(t, { overflowAboveChars: outcome === "irreducible" ? 1 : 100_000, overflowFirst: 2, ...(outcome === "summary-fails" ? { failSummaryAfterChats: 2 } : {}) });
   const root = await mkdtemp(join(tmpdir(), "compaction-overflow-"));
   const directory = join(root, "agents", "overflow-twice");
   await mkdir(directory, { recursive: true });
@@ -571,19 +571,24 @@ for (const outcome of ["fits", "irreducible", "summary-fails"]) test(outcome ===
   const supervisor = new AgentSupervisor(join(root, "agents"), { hosting: process.env.AGENT_HOSTING as Hosting | undefined });
   t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true }); });
   await supervisor.start("overflow-twice", { model: fake.model(65_536), apiKey: "fixture", retry: { maxAttempts: 0, baseDelayMs: 1 } }, bridge);
-  const result = await supervisor.request("overflow-twice", "prompt", { text: "continue" });
+  const events: any[] = [];
+  const result = await supervisor.request("overflow-twice", "prompt", { text: "continue" }, event => events.push(event));
   if (!fits) {
     assert.match(String(result.error), /maximum context length/);
     assert.ok(fake.chat().length <= 4, "native recovery and one host continuation are bounded");
     const history = await supervisor.history("overflow-twice") as any[];
     assert.equal(history.filter(message => message.stopReason === "error").length, 1, "only the final refusal remains in history");
+    if (outcome === "summary-fails") {
+      const lastRetraction = events.findLastIndex(event => event.type === "message_retracted");
+      assert.ok(events.slice(lastRetraction + 1).some(event => event.type === "message_end" && event.message.stopReason === "error"), "the restored refusal emits message_end");
+    }
     return;
   }
   assert.equal(result.error, null);
   assert.equal(fake.chat().length, 3, "two refusals and one successful host continuation");
   assert.ok(text(fake.chat()[0]).length > 100_000);
   assert.ok(text(fake.chat().at(-1)!).length <= 100_000);
-  assert.equal(fake.summarizations().length, 2);
+  assert.ok(fake.summarizations().length >= 2, "both recoveries summarize, with large prefixes split into chunks");
   const history = await supervisor.history("overflow-twice") as any[];
   assert.equal(history.filter(message => message.stopReason === "error").length, 0, "rejected attempts are not history");
 });

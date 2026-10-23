@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { createAssistantMessageEventStream, getCurrentSystemMessage, fauxAssistantMessage, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
-import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { ContextLimitDoc, DurableAgent } from "../src/pi-durable/agent.ts";
 
 const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false,
@@ -156,7 +155,7 @@ test("an overflow limit survives reopen and images are not counted as base64 tex
 });
 
 
-for (const byteRefusal of [false, true]) test(byteRefusal ? "byte-size refusals do not learn token limits" : "a failed optional limit commit still lets Pi compact the overflow", async t => {
+for (const byteRefusal of [false, "413 request_too_large: request too large", "status 413: maximum context length exceeded", "HTTP 413: maximum context length exceeded"] as const) test(byteRefusal ? "byte-size refusals do not learn token limits" : "a failed optional limit commit still lets Pi compact the overflow", async t => {
   const storage = new MemoryStorage();
   let failed = false, calls = 0, summaries = 0;
   const backend = new Proxy(storage, { get(target, key) {
@@ -172,7 +171,7 @@ for (const byteRefusal of [false, true]) test(byteRefusal ? "byte-size refusals 
   } });
   const agent = await DurableAgent.create({
     initialState: { model: { ...model, contextWindow: 65_536 }, messages: [], tools: [] },
-    streamFn: () => stream(++calls === 1 ? { ...fauxAssistantMessage("", { stopReason: "error" }), errorMessage: byteRefusal ? "413 request_too_large: request too large" : "maximum context length exceeded" } : fauxAssistantMessage("done")),
+    streamFn: () => stream(++calls === 1 ? { ...fauxAssistantMessage("", { stopReason: "error" }), errorMessage: byteRefusal || "maximum context length exceeded: 1,050,413 tokens" } : fauxAssistantMessage("done")),
     durable: { storage: backend, summaryStream: () => { summaries++; return stream(fauxAssistantMessage("summary")); } },
   });
   t.after(() => agent.close());
@@ -187,7 +186,7 @@ for (const byteRefusal of [false, true]) test(byteRefusal ? "byte-size refusals 
 });
 
 
-test("a 500k-token Luna history compacts in bounded chunks against a persisted 272k limit", async t => {
+test("a dense Luna history compacts in bounded chunks against a persisted 272k limit", async t => {
   const { getModel } = await import("../src/pi-catalog.ts");
   const luna = getModel("openrouter", "openai/gpt-6-luna")!;
   const storage = new MemoryStorage();
@@ -200,13 +199,16 @@ test("a 500k-token Luna history compacts in bounded chunks against a persisted 2
     streamFn: () => stream(fauxAssistantMessage("done")),
     durable: { storage, summaryStream: (_model, view, options) => {
       requests.push(view.messages);
-      const input = view.messages.reduce((sum, message) => sum + estimateMessageTokens(message as any), 0);
+      const texts = view.messages.map(message => typeof message.content === "string" ? message.content : message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n"));
+      const input = texts.reduce((sum, text) => sum + Math.ceil(text.length / 2.5), 0);
+      const part = texts.at(-1)!.match(/<conversation>\n([\s\S]*)\n<\/conversation>/)![1];
+      assert.ok(part.length / 2.5 <= 272_000 / 2, "each part uses at most half the effective window");
       assert.ok(input + (options?.maxTokens ?? 0) + 512 <= 272_000, `request has ${input} input tokens`);
       return stream(fauxAssistantMessage("retained earlier facts"));
     } },
   };
   const seed = await DurableAgent.create(options);
-  await seed.replaceContext(Array.from({ length: 50 }, (_, i) => ({ role: "user", content: `${i}: ${"x".repeat(35_000)}`, timestamp: i })) as any);
+  await seed.replaceContext(Array.from({ length: 50 }, (_, i) => ({ role: "user", content: `${i}: ${"漢字{\"key\":\"YWJjZGVm\"}".repeat(2_000)}`, timestamp: i })) as any);
   await (seed as any).conversation.commit(async (tx: any) => {
     Object.assign(await tx.doc(ContextLimitDoc, seed.conversationId), { provider: luna.provider, model: luna.id, window: 272_000 });
   }, BACKGROUND_CONTEXT);
@@ -215,7 +217,7 @@ test("a 500k-token Luna history compacts in bounded chunks against a persisted 2
   const agent = await DurableAgent.create({ ...options, durable: { ...options.durable, conversationId: id } });
   t.after(() => agent.close());
   await agent.prompt("continue");
-  assert.ok(requests.length >= 2);
+  assert.ok(requests.length >= 2, agent.state.errorMessage);
   assert.ok(JSON.stringify(requests[1]).includes("retained earlier facts"));
   assert.equal(agent.state.errorMessage, undefined);
 });
@@ -241,7 +243,7 @@ for (const error of ["server_error", "OpenAI Responses stream ended before a ter
       if (recover) {
         assert.equal(calls, 2);
         assert.ok(summaries > 0);
-        assert.equal(limit.window, Math.floor(272_000 * 0.9), "an inferred Luna overflow learns the native window at once");
+        assert.equal(limit, undefined, "a first inferred Luna overflow recovers without persisting a limit");
         assert.equal(agent.state.errorMessage, undefined);
       } else {
         assert.equal(calls, 1);
@@ -252,3 +254,58 @@ for (const error of ["server_error", "OpenAI Responses stream ended before a ter
     });
   }
 }
+
+for (const elapsedHours of [1, 25]) test(`inferred Luna overflow evidence survives reopen and expires after 24h (${elapsedHours}h)`, async t => {
+  const storage = new MemoryStorage();
+  const closeStorage = storage.close.bind(storage);
+  storage.close = async () => {};
+  t.after(() => closeStorage(BACKGROUND_CONTEXT));
+  let now = Date.now(), calls = 0;
+  t.mock.method(Date, "now", () => now);
+  const options: Parameters<typeof DurableAgent.create>[0] = {
+    initialState: { model: { ...model, id: "openai/gpt-6-luna", provider: "openrouter", contextWindow: 1_050_000 }, messages: [], tools: [] },
+    streamFn: () => {
+      if (++calls % 2 === 0) return stream(fauxAssistantMessage("done"));
+      const failed = { ...fauxAssistantMessage("", { stopReason: "error" }), errorMessage: "server_error" };
+      failed.usage.output = 0;
+      return stream(failed);
+    },
+    durable: { storage, summaryStream: () => stream(fauxAssistantMessage("summary")) },
+  };
+  const history = () => Array.from({ length: 30 }, (_, i) => ({ role: "user", content: "x".repeat(35_000), timestamp: i })) as any;
+  const first = await DurableAgent.create(options);
+  await first.replaceContext(history());
+  await first.prompt("continue");
+  assert.equal(calls, 2, first.state.errorMessage);
+  assert.equal(await (first as any).harness.snapshot(ContextLimitDoc, first.conversationId, BACKGROUND_CONTEXT), undefined);
+  const id = first.conversationId;
+  await first.close();
+  now += elapsedHours * 60 * 60 * 1_000;
+  const second = await DurableAgent.create({ ...options, durable: { ...options.durable, conversationId: id } });
+  t.after(() => second.close());
+  await second.replaceContext(history());
+  await second.prompt("continue");
+  assert.equal(calls, 4, second.state.errorMessage ?? "both failures compact and retry");
+  const limit = await (second as any).harness.snapshot(ContextLimitDoc, id, BACKGROUND_CONTEXT);
+  assert.equal(limit?.window, elapsedHours === 1 ? 244_800 : undefined);
+});
+
+for (const window of [244_800, 244_799]) test(`loading a Luna learned limit ${window} ignores only the exact #410 cap`, async t => {
+  const storage = new MemoryStorage();
+  const closeStorage = storage.close.bind(storage);
+  storage.close = async () => {};
+  t.after(() => closeStorage(BACKGROUND_CONTEXT));
+  const options: Parameters<typeof DurableAgent.create>[0] = {
+    initialState: { model: { ...model, id: "openai/gpt-6-luna", provider: "openrouter", contextWindow: 1_050_000 }, messages: [], tools: [] },
+    streamFn: () => stream(fauxAssistantMessage("done")), durable: { storage },
+  };
+  const seed = await DurableAgent.create(options);
+  await (seed as any).conversation.commit(async (tx: any) => {
+    Object.assign(await tx.doc(ContextLimitDoc, seed.conversationId), { provider: "openrouter", model: "openai/gpt-6-luna", window });
+  }, BACKGROUND_CONTEXT);
+  const id = seed.conversationId;
+  await seed.close();
+  const agent = await DurableAgent.create({ ...options, durable: { storage, conversationId: id } });
+  t.after(() => agent.close());
+  assert.equal((agent as any).overflowWindow, window === 244_800 ? Infinity : window);
+});
