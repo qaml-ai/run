@@ -353,7 +353,16 @@ resource "aws_ecs_service" "runtime" {
     container_port   = local.runtime_port
   }
 
-  depends_on = [aws_lb_listener.https]
+  dynamic "load_balancer" {
+    for_each = var.origin_mtls_parallel_attach ? [aws_lb_target_group.origin_mtls_parallel[0].arn] : []
+    content {
+      target_group_arn = load_balancer.value
+      container_name   = local.container_name
+      container_port   = local.runtime_port
+    }
+  }
+
+  depends_on = [aws_lb_listener.origin_mtls_parallel, aws_lb_listener.https]
 
   lifecycle {
     # infra/ecs-deploy.sh rolls new task definition revisions; autoscaling owns the count.

@@ -104,3 +104,83 @@ run "reject_unversioned_s3_object" {
   }
   expect_failures = [var.origin_mtls_ca_bucket]
 }
+
+run "parallel_origin_requires_ca" {
+  command = plan
+  plan_options { target = [aws_lb_listener.origin_mtls_parallel] }
+  variables { origin_mtls_parallel_enabled = true }
+  expect_failures = [var.origin_mtls_parallel_enabled]
+}
+run "parallel_attachment_requires_origin" {
+  command = plan
+  plan_options { target = [aws_lb_listener.origin_mtls_parallel] }
+  variables { origin_mtls_parallel_attach = true }
+  expect_failures = [var.origin_mtls_parallel_attach]
+}
+run "parallel_origin_leaves_original_listener_off" {
+  command = plan
+  plan_options { target = [aws_lb_listener.origin_mtls_parallel, aws_lb_listener.https] }
+  variables {
+    origin_mtls_ca_bucket        = "test-origin-ca"
+    origin_mtls_ca_key           = "origin-ca.pem"
+    origin_mtls_ca_version       = "v1"
+    origin_mtls_parallel_enabled = true
+  }
+  assert {
+    condition     = aws_lb_listener.origin_mtls_parallel[0].mutual_authentication[0].mode == "verify" && aws_lb_listener.https.mutual_authentication[0].mode == "off"
+    error_message = "The new origin must enforce mTLS without changing the original listener."
+  }
+  assert {
+    condition     = aws_lb.origin_mtls_parallel[0].connection_logs[0].enabled && aws_lb.origin_mtls_parallel[0].access_logs[0].enabled && !var.origin_mtls_parallel_attach
+    error_message = "Staging must enable TLS diagnostics and leave production services unattached."
+  }
+}
+
+run "edge_disabled_by_default" {
+  command = plan
+  plan_options { target = [cloudflare_load_balancer.origin_mtls] }
+  assert {
+    condition     = length(cloudflare_load_balancer.origin_mtls) == 0
+    error_message = "Defaults must not replace production DNS routing."
+  }
+}
+run "edge_requires_preparation" {
+  command = plan
+  plan_options { target = [cloudflare_load_balancer.origin_mtls] }
+  variables { origin_mtls_edge_enabled = true }
+  expect_failures = [var.origin_mtls_edge_enabled]
+}
+run "edge_rejects_invalid_weight" {
+  command = plan
+  plan_options { target = [cloudflare_load_balancer.origin_mtls] }
+  variables { origin_mtls_edge_weight = 1.01 }
+  expect_failures = [var.origin_mtls_edge_weight]
+}
+
+run "old_fallback_requires_full_green" {
+  command = plan
+  plan_options { target = [cloudflare_load_balancer.origin_mtls] }
+  variables { origin_mtls_original_fallback = false }
+  expect_failures = [var.origin_mtls_original_fallback]
+}
+
+run "prepared_edge_starts_disabled_on_original" {
+  command = plan
+  plan_options { target = [cloudflare_load_balancer.origin_mtls] }
+  variables {
+    origin_mtls_ca_bucket        = "test-origin-ca"
+    origin_mtls_ca_key           = "origin-ca.pem"
+    origin_mtls_ca_version       = "v1"
+    origin_mtls_parallel_enabled = true
+    origin_mtls_parallel_attach  = true
+    origin_mtls_edge_prepared    = true
+  }
+  assert {
+    condition     = alltrue([for lb in cloudflare_load_balancer.origin_mtls : !lb.enabled && lb.fallback_pool == cloudflare_load_balancer_pool.origin_mtls["blue"].id])
+    error_message = "Prepared edge routing must remain disabled with the original fallback."
+  }
+  assert {
+    condition     = cloudflare_load_balancer_monitor.origin_mtls["green"].probe_zone == "camelai.com" && length(cloudflare_load_balancer_monitor.origin_mtls["green"].header.Host) == 1 && cloudflare_load_balancer_monitor.origin_mtls["green"].header.Host[0] == var.origin_mtls_canary_hostname && !cloudflare_load_balancer_monitor.origin_mtls["green"].allow_insecure
+    error_message = "Green health probes must verify TLS with the AOP-enabled hostname."
+  }
+}
