@@ -43,6 +43,19 @@ test('computer ownership, sealed credentials, durable command retries and lifecy
   assert.equal(f.counts().creates, 2);
 });
 
+test('Browser Use exposes browser actions without host shell tools', async () => {
+  const f=await fixture();
+  await f.db.query("update computer_connections set provider='browser-use'");
+  const names=(await f.service.tools('alice','a')).map(t=>t.name);
+  assert.ok(names.includes('browser_evaluate'));
+  assert.ok(!names.includes('computer_exec'));
+  await f.service.call('alice','a','computer_start',{},'start');
+  await f.service.call('alice','a','browser_evaluate',{expression:'1+1'},'evaluate');
+  assert.equal(f.counts().executions,1);
+  await assert.rejects(f.service.call('alice','a','computer_exec',{command:'true'},'shell'),/not supported/);
+  await f.service.call('alice','a','computer_stop',{},'stop');
+});
+
 test('ambiguous commands do not replay after restarting the service', async () => {
   const f = await fixture();
   await f.service.call('alice', 'a', 'computer_start', {}, 'start');

@@ -28,7 +28,7 @@ export function ComputersPage() {
     }); }}>
       <label className="grid gap-1 text-sm">Agent<select className="h-10 border bg-background px-2" required value={agent} onChange={e => setAgent(e.target.value)}><option value="">Choose an agent</option>{agents.data?.filter(a => !connections.data?.some(c => c.agent === a.id)).map(a => <option key={a.id} value={a.id}>{a.name || a.id}</option>)}</select></label>
       <label className="grid gap-1 text-sm">Provider<select className="h-10 border bg-background px-2" value={provider} onChange={e => { setProvider(e.target.value); setKey(""); setTokenId(""); setProjectId(""); }}>
-        {["modal", "daytona", "boat", "e2b", "browserbase", "tunnel"].map(p => <option key={p} value={p}>{p === "tunnel" ? "Your computer · Cloudflare Tunnel" : p}</option>)}</select></label>
+        {["modal", "daytona", "boat", "e2b", "browserbase", "browser-use", "tunnel"].map(p => <option key={p} value={p}>{p === "tunnel" ? "Your computer · Cloudflare Tunnel" : p === "browser-use" ? "Browser Use" : p}</option>)}</select></label>
       {provider === "modal" && <label className="grid gap-1 text-sm">Token ID<Input autoComplete="off" required value={tokenId} onChange={e => setTokenId(e.target.value)} /></label>}
       {provider === "tunnel" && <label className="grid gap-1 text-sm">Tunnel HTTPS origin<Input type="url" required value={url} onChange={e => setUrl(e.target.value)} /></label>}
       <label className="grid gap-1 text-sm">{provider === "modal" ? "Token secret" : provider === "tunnel" ? "Connection token" : "API key"}<Input type="password" autoComplete="new-password" required value={apiKey} onChange={e => setKey(e.target.value)} /></label>

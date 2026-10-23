@@ -36,3 +36,58 @@ test('Boat uses isolated provisioning options, camelCase API fields and confirme
   await provider.close(ref);
   assert.equal(calls.at(-1)!.method,'GET');
 });
+
+test('Browser Use records allocation, limits the session and confirms stop through its browser API', async () => {
+  const calls: any[] = [];
+  let stopped = false;
+  const outbound = { async fetch(url: string, options: any) {
+    calls.push({url, ...options});
+    assert.equal(options.secrets['X-Browser-Use-API-Key'], 'test-key');
+    assert.equal(options.maxRedirects, 0);
+    if (options.method === 'POST') return Response.json({id:'browser-id',cdpUrl:'https://example.com/cdp',status:'active'});
+    if (options.method === 'PATCH') { stopped=true; return Response.json({status:'stopped'}); }
+    return Response.json({status:stopped ? 'stopped' : 'active'});
+  } } as unknown as Outbound;
+  const provider = await driver('browser-use', {apiKey:'test-key'}, outbound);
+  let allocated: unknown;
+  const ref = await provider.create('camelrun-id',61, async value => { allocated=value; });
+  assert.deepEqual(allocated,ref);
+  assert.deepEqual(JSON.parse(calls[0].body),{timeout:2,metadata:{camelrun:'camelrun-id'},proxyCountryCode:null,enableRecording:false});
+  await provider.close(ref);
+  await provider.close(ref);
+  assert.equal(calls.filter(c=>c.method==='PATCH').length,1);
+  assert.equal(calls[2].url,'https://api.browser-use.com/api/v4/browsers/browser-id');
+  assert.deepEqual(JSON.parse(calls[2].body),{action:'stop'});
+});
+
+test('Browser Use retains a created ID for cleanup even when the CDP URL is missing', async () => {
+  const outbound = {fetch:async()=>Response.json({id:'allocated'})} as unknown as Outbound;
+  const provider=await driver('browser-use',{apiKey:'test-key'},outbound);
+  let allocated: any;
+  await assert.rejects(provider.create('test',60,async ref=>{allocated=ref;}),/connection unavailable/);
+  assert.equal(allocated.id,'allocated');
+});
+
+
+test('Browserbase uses guarded requests without SDK length headers and confirms cleanup', async () => {
+  const calls: any[] = [];
+  let stopped = false;
+  const outbound = { async fetch(url: string, options: any) {
+    calls.push({url, ...options});
+    assert.equal(new Headers(options.headers).get('content-length'), null);
+    assert.equal(new Headers(options.headers).get('x-bb-api-key'), null);
+    assert.equal(options.secrets['X-BB-API-Key'], 'test-key');
+    assert.equal(options.maxRedirects, 0);
+    if (options.method === 'POST' && url.endsWith('/v1/sessions')) return Response.json({id:'session',connectUrl:'wss://example.com/cdp',status:'RUNNING'});
+    if (options.method === 'POST') { stopped = true; return Response.json({id:'session',status:'COMPLETED'}); }
+    return Response.json({id:'session',status:stopped ? 'COMPLETED' : 'RUNNING'});
+  } } as unknown as Outbound;
+  const provider = await driver('browserbase', {apiKey:'test-key'}, outbound);
+  let allocated: unknown;
+  const ref = await provider.create('camelrun-id', 180, async value => { allocated=value; });
+  assert.deepEqual(allocated,ref);
+  assert.deepEqual(JSON.parse(calls[0].body), {timeout:180,keepAlive:true,userMetadata:{camelrun:'camelrun-id'}});
+  await provider.close(ref);
+  assert.equal(stopped,true);
+  assert.equal(calls.at(-1).method,'GET');
+});

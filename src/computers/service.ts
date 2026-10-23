@@ -5,7 +5,7 @@ import { HttpError } from "../http.ts";
 import type { Outbound } from "../outbound.ts";
 import type { ToolDefinition } from "../protocol.ts";
 import { Workspaces } from "../workspaces.ts";
-import { driver, PROVIDERS, type Credentials, type DriverFactory, type ComputerDriver, type Provider, type Reference } from "./providers.ts";
+import { driver, isBrowserProvider, PROVIDERS, type Credentials, type DriverFactory, type ComputerDriver, type Provider, type Reference } from "./providers.ts";
 
 const id = () => `cmp_${randomUUID().replaceAll("-", "")}`;
 const parameters = (properties = {}, required: string[] = []) => ({ type: "object", additionalProperties: false, properties, required });
@@ -67,7 +67,7 @@ export class Computers {
   private async latest(connection: string, sql: any = this.options.db) { return (await sql.query("select * from computer_leases where connection=$1 order by sequence desc limit 1", [connection])).rows[0]; }
   async tools(tenant: string, agent: string) {
     const c = (await this.options.db.query("select provider from computer_connections where tenant=$1 and agent=$2", [tenant, agent])).rows[0];
-    return c ? [...COMMON, ...(c.provider === "browserbase" ? BROWSER : SHELL)] : [];
+    return c ? [...COMMON, ...(isBrowserProvider(c.provider) ? BROWSER : SHELL)] : [];
   }
   async status(tenant: string, agent: string) { const c = await this.connection(tenant, agent), session = publicLease(await this.latest(c.id)); return { connection: { ...publicConnection(c), session }, session }; }
   private async stop(connection: any, lease: any, sql: any) {
@@ -106,7 +106,7 @@ export class Computers {
     if (!COMPUTER_TOOLS.has(name)) throw new HttpError(400, "Unknown computer tool");
     return this.lock(tenant, agent, async sql => {
       const c = await this.connection(tenant, agent, sql);
-      if (!(c.provider === "browserbase" ? [...COMMON, ...BROWSER] : [...COMMON, ...SHELL]).some(t => t.name === name)) throw new HttpError(400, "Tool not supported by this computer");
+      if (!(isBrowserProvider(c.provider) ? [...COMMON, ...BROWSER] : [...COMMON, ...SHELL]).some(t => t.name === name)) throw new HttpError(400, "Tool not supported by this computer");
       const hash = createHash("sha256").update(JSON.stringify([name, args])).digest("hex");
       const old = (await sql.query("select * from computer_operations where connection=$1 and key=$2", [c.id, requestKey])).rows[0];
       if (old) {
@@ -143,7 +143,7 @@ export class Computers {
         const data = Buffer.from(JSON.stringify(args)).toString("base64");
         command = `python3 -c 'import json,base64,pathlib; d=json.loads(base64.b64decode("${data}")); p=pathlib.Path(d["path"]); ${name === "computer_write_file" ? 'p.parent.mkdir(parents=True,exist_ok=True); p.write_text(d["content"]); print("written")' : 'print(p.open().read(24000))'}'`;
       }
-      if (c.provider !== "browserbase" && (typeof command !== "string" || !command || command.length > 32000)) throw new HttpError(400, "Invalid command");
+      if (!isBrowserProvider(c.provider) && (typeof command !== "string" || !command || command.length > 32000)) throw new HttpError(400, "Invalid command");
       const timeout = args.timeoutSeconds ?? 60;
       if (!Number.isInteger(timeout) || timeout < 1 || timeout > 120) throw new HttpError(400, "Command timeout must be 1–120 seconds");
       await sql.query("insert into computer_commands(lease,key,input_hash,state,created_at,tenant) values($1,$2,$3,'pending',$4,$5)", [lease.id, requestKey, hash, this.now(), tenant]);

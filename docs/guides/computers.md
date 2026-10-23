@@ -23,6 +23,7 @@ removes the tools and stops the session before deleting credentials.
 | Boat | API token | Linux shell and files |
 | E2B | API key | Linux shell and files |
 | Browserbase | API key and optional project ID | Browser navigation, reading, clicking, filling and JavaScript |
+| Browser Use Cloud | API key | Browser navigation, reading, clicking, filling and JavaScript |
 | Cloudflare Tunnel | Runner HTTPS origin and connection token | Linux shell and files in your runner's Docker container |
 
 Use a Browserbase plan that supports keep-alive sessions. E2B and Browserbase
@@ -56,8 +57,11 @@ For a shell computer, a useful instruction is:
 > Stop the computer with computer_stop when done. Copy any results you need to
 > retain into the final answer before stopping.
 
+Browser Use Cloud uses its direct browser API; the model loop stays in camelRun.
+Sessions disable recording and the optional proxy by default.
+
 Shell computers offer `computer_exec`, `computer_read_file` and
-`computer_write_file`. Browserbase offers `browser_navigate`, `browser_read`,
+`computer_write_file`. Browserbase and Browser Use Cloud offer `browser_navigate`, `browser_read`,
 `browser_click`, `browser_fill` and `browser_evaluate`. Both offer
 `computer_start`, `computer_status` and `computer_stop`.
 

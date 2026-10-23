@@ -1,7 +1,8 @@
 import type { Outbound } from "../outbound.ts";
 
-export const PROVIDERS = ["modal", "daytona", "boat", "e2b", "browserbase", "tunnel"] as const;
+export const PROVIDERS = ["modal", "daytona", "boat", "e2b", "browserbase", "browser-use", "tunnel"] as const;
 export type Provider = typeof PROVIDERS[number];
+export const isBrowserProvider = (provider: string) => provider === "browserbase" || provider === "browser-use";
 export type Credentials = Record<string, string>;
 export type Reference = { id: string; [key: string]: unknown };
 export interface ComputerDriver {
@@ -18,6 +19,21 @@ export function boundedCommand(command: string) {
 }
 const shell = (args: Record<string, any>) => [boundedCommand(String(args.command)), Number(args.timeoutSeconds ?? 60)] as const;
 const output = (code: number, stdout: string, stderr = "") => ({ exitCode: code, stdout: stdout.slice(0, 24000), stderr: stderr.slice(0, 24000), truncated: stdout.length > 24000 || stderr.length > 24000 });
+
+async function browserCall(ref: Reference, operation: string, args: Record<string, any>) {
+  const { chromium } = await import("playwright-core");
+  const browser = await chromium.connectOverCDP(String(ref.connectUrl), { timeout: 15000 });
+  try {
+    const ctx = browser.contexts()[0], page = ctx.pages()[0] ?? await ctx.newPage();
+    page.setDefaultTimeout(15000);
+    if (operation === "browser_navigate") { if (!/^https?:\/\//.test(args.url)) throw new Error("HTTP(S) URL required"); await page.goto(args.url, { waitUntil: "domcontentloaded", timeout: 20000 }); }
+    else if (operation === "browser_click") await page.locator(args.selector).click();
+    else if (operation === "browser_fill") await page.locator(args.selector).fill(args.text);
+    else if (operation === "browser_evaluate") return await page.evaluate(args.expression);
+    else if (operation !== "browser_read") throw new Error("Unsupported browser operation");
+    return { url: page.url(), title: await page.title(), text: (await page.locator("body").innerText()).slice(0, 16000) };
+  } finally { await browser.close(); }
+}
 
 export type DriverFactory = (provider: Provider, credentials: Credentials, outbound: Outbound) => ComputerDriver | Promise<ComputerDriver>;
 
@@ -73,23 +89,17 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
   }
   if (provider === "browserbase") {
     const { default: Browserbase } = await import("@browserbasehq/sdk");
-    const client = new Browserbase({ apiKey: credentials.apiKey, maxRetries: 0 });
+    const client = new Browserbase({ apiKey: credentials.apiKey, maxRetries: 0, fetch: async (url, init) => {
+      // Normalize SDK headers and let the guarded transport compute the length.
+      const headers = new Headers(init?.headers as HeadersInit);
+      headers.delete("content-length");
+      headers.delete("x-bb-api-key");
+      return outbound.fetch(String(url), { method: init?.method, body: init?.body as BodyInit, signal: init?.signal, headers,
+        secrets: { "X-BB-API-Key": credentials.apiKey }, timeoutMs: 30000, maxBytes: 1024 * 1024, maxRedirects: 0 });
+    } });
     return {
       async create(id, seconds, allocated) { const s = await client.sessions.create({ ...(credentials.projectId ? { projectId: credentials.projectId } : {}), api_timeout: seconds, keepAlive: true, userMetadata: { camelrun: id } }); const ref = { id: s.id, connectUrl: s.connectUrl }; await allocated?.(ref); return ref; },
-      async call(ref, operation, args) {
-        const { chromium } = await import("playwright-core");
-        const browser = await chromium.connectOverCDP(String(ref.connectUrl), { timeout: 15000 });
-        try {
-          const ctx = browser.contexts()[0], page = ctx.pages()[0] ?? await ctx.newPage();
-          page.setDefaultTimeout(15000);
-          if (operation === "browser_navigate") { if (!/^https?:\/\//.test(args.url)) throw new Error("HTTP(S) URL required"); await page.goto(args.url, { waitUntil: "domcontentloaded", timeout: 20000 }); }
-          else if (operation === "browser_click") await page.locator(args.selector).click();
-          else if (operation === "browser_fill") await page.locator(args.selector).fill(args.text);
-          else if (operation === "browser_evaluate") return await page.evaluate(args.expression);
-          else if (operation !== "browser_read") throw new Error("Unsupported browser operation");
-          return { url: page.url(), title: await page.title(), text: (await page.locator("body").innerText()).slice(0, 16000) };
-        } finally { await browser.close(); }
-      },
+      call: browserCall,
       async close(ref) {
         try {
           if ((await client.sessions.retrieve(ref.id)).status !== "RUNNING") return;
@@ -97,6 +107,41 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
           for (const until = Date.now() + 30000; Date.now() < until;) { if ((await client.sessions.retrieve(ref.id)).status !== "RUNNING") return; await new Promise(r => setTimeout(r, 1000)); }
           throw new Error("Browser cleanup not confirmed");
         } catch (error) { if (!(error instanceof Browserbase.NotFoundError)) throw error; }
+      },
+    };
+  }
+  if (provider === "browser-use") {
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      const response = await outbound.fetch(`https://api.browser-use.com/api/v4${path}`, {
+        method, secrets: { "X-Browser-Use-API-Key": credentials.apiKey }, headers: { "Content-Type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }), timeoutMs: 30000, maxBytes: 1024 * 1024, maxRedirects: 0,
+      });
+      if (response.status === 404) { await response.body?.cancel(); return null; }
+      if (!response.ok) { await response.body?.cancel(); throw new Error(`Computer provider HTTP ${response.status}`); }
+      return await response.json() as any;
+    };
+    return {
+      async create(id, seconds, allocated) {
+        const value = await request("/browsers", "POST", { timeout: Math.ceil(seconds / 60), metadata: { camelrun: id }, proxyCountryCode: null, enableRecording: false });
+        if (!value || typeof value.id !== "string") throw new Error("Browser creation did not return an ID");
+        const ref = { id: value.id, connectUrl: value.cdpUrl };
+        await allocated?.(ref);
+        if (typeof ref.connectUrl !== "string" || !/^(https|wss):\/\//.test(ref.connectUrl)) throw new Error("Browser connection unavailable");
+        return ref;
+      },
+      call: browserCall,
+      async close(ref) {
+        const path = `/browsers/${encodeURIComponent(ref.id)}`;
+        const existing = await request(path);
+        if (!existing || existing.status === "stopped") return;
+        const result = await request(path, "PATCH", { action: "stop" });
+        if (!result || result.status === "stopped") return;
+        for (const until = Date.now() + 30000; Date.now() < until;) {
+          const current = await request(path);
+          if (!current || current.status === "stopped") return;
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        throw new Error("Browser cleanup not confirmed");
       },
     };
   }
