@@ -729,7 +729,16 @@ export function createAgentHost(hostIO: HostIO) {
       if (isContextOverflow(last, config.model.contextWindow)) {
         if (overflowRetried) return;
         overflowRetried = true;
-        await agent!.compact();
+        await journal.retract();
+        io.emit({ type: "message_retracted", index: journal.total });
+        if (signal.aborted || await handingOff()) return;
+        try { await agent!.compact(signal); }
+        catch {
+          // Keep the provider's original error as the turn's outcome when recovery fails.
+          await journal.push(last);
+          return;
+        }
+        if (signal.aborted || await handingOff()) return;
         await agent!.continue();
         attempt--;
         continue;

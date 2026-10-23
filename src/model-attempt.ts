@@ -8,7 +8,7 @@
  * acknowledgment asked to hear at.
  */
 export type ModelAttemptEvent =
-  | { type: "begin"; id: string; provider: string; model: string; kind: "response" | "compaction"; at: number; keyHash: string; reconciliationDisabled?: string; context?: Pick<import("./client-sessions/state.ts").UsageRecord, "requestId" | "actor" | "identity" | "keyScope">; estimate?: AttemptEstimate; endUser?: { id: string; bucket: string } }
+  | { type: "begin"; id: string; provider: string; model: string; kind: "response" | "compaction"; at: number; keyHash: string; reconciliationDisabled?: string; reconciliationEligible?: boolean; context?: Pick<import("./client-sessions/state.ts").UsageRecord, "requestId" | "actor" | "identity" | "keyScope">; estimate?: AttemptEstimate; endUser?: { id: string; bucket: string } }
   | { type: "generation"; id: string; generation: string }
   | { type: "progress"; id: string; chars: number }
   | { type: "finish"; id: string; usage: Record<string, any>; chars: number; completed: boolean };

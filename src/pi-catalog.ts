@@ -79,13 +79,12 @@ const MAX_TOKENS: Record<string, Record<string, number>> = {
 };
 const limited = (model: Model<Api>): Model<Api> => {
   const most = MAX_TOKENS[model.provider]?.[model.id];
-  // 2026-10-23: OpenRouter's advertised window can exceed the native provider's (Luna: 1.05M vs 272k).
-  // Routing suffixes select hosts; Luna Pro has no native entry and takes Luna's limit too.
-  const id = model.provider === "openrouter" && model.id.startsWith("openai/") ? model.id.slice(7).split(":")[0] : undefined;
-  const window = Math.min(model.contextWindow, ...(!id ? [] : ["openai", "azure"].flatMap(provider => {
-    const native = piModel(provider, id) ?? (id === "gpt-6-luna-pro" ? piModel(provider, "gpt-6-luna") : undefined);
-    return native ? [native.contextWindow] : [];
-  })));
+  // Only Luna routes take the native Luna window; other models keep Pi's advertised window.
+  const match = /^(?:(?:~?openai)[/.])?(gpt-(?:6|5\.6)-luna)(?:-pro|-fast)?(?::(?:batch|nitro))?$/.exec(
+    model.id.replace(/^(?:global|us|eu|in)\./, ""));
+  const id = model.provider === "openrouter" && model.id === "~openai/gpt-luna-latest" ? "gpt-6-luna" : match?.[1];
+  const native = id ? piModel("openai", id) : undefined;
+  const window = Math.min(model.contextWindow, native?.contextWindow ?? Infinity);
   return most || window < model.contextWindow ? { ...model, ...(most ? { maxTokens: most } : {}), contextWindow: window } : model;
 };
 const priced = (model: Model<Api>): Model<Api> => {

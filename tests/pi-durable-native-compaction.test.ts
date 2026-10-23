@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { MemoryStorage } from "@earendil-works/pi-durable";
 import { createAssistantMessageEventStream, getCurrentSystemMessage, fauxAssistantMessage, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
-import { DurableAgent } from "../src/pi-durable/agent.ts";
+import { ContextLimitDoc, DurableAgent } from "../src/pi-durable/agent.ts";
 
 const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false,
   input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1000 } as any;
@@ -128,7 +128,7 @@ test("an overflow limit survives reopen and images are not counted as base64 tex
   const storage = new MemoryStorage();
   let summaries = 0;
   const options = {
-    initialState: { model: { ...model, contextWindow: 1_050_000 }, messages: [], tools: [] },
+    initialState: { model: { ...model, contextWindow: 65_536 }, messages: [], tools: [] },
     streamFn: () => stream({ ...fauxAssistantMessage("", { stopReason: "error" }), errorMessage: "maximum context length exceeded" }),
     durable: { storage, summaryStream: () => { summaries++; return stream(fauxAssistantMessage("summary")); } },
   };
@@ -138,9 +138,8 @@ test("an overflow limit survives reopen and images are not counted as base64 tex
   const agent = await DurableAgent.create(options);
   await agent.prompt([{ role: "user", content: [{ type: "text", text: "x".repeat(40_000) }, { type: "image", data: "a".repeat(1_600_000), mimeType: "image/png" }], timestamp: 1 }] as any);
   const page = await storage.scanEntries({ conversationId: agent.conversationId }, 1000, undefined, BACKGROUND_CONTEXT);
-  const limits = page.items.filter(entry => entry.kind === "camel.context.limit").map(entry => (entry.data as any).window);
-  assert.ok(limits.length > 0);
-  assert.ok(Math.max(...limits) < 20_000, "image bytes do not inflate the learned window");
+  const limit = await (agent as any).harness.snapshot(ContextLimitDoc, agent.conversationId, BACKGROUND_CONTEXT);
+  assert.equal(limit.window, 32_768, "image bytes do not inflate the limit, and small refusals cannot shrink below the floor");
   const id = agent.conversationId;
   await agent.close();
   // Keep the backing store open while closing the first harness, as separate persistent handles would.
@@ -151,6 +150,37 @@ test("an overflow limit survives reopen and images are not counted as base64 tex
   });
   t.after(() => reopened.close());
   const before = summaries;
-  await reopened.prompt("y".repeat(50_000));
+  await reopened.prompt("y".repeat(150_000));
   assert.equal(calls, 1);
+});
+
+
+for (const byteRefusal of [false, true]) test(byteRefusal ? "byte-size refusals do not learn token limits" : "a failed optional limit commit still lets Pi compact the overflow", async t => {
+  const storage = new MemoryStorage();
+  let failed = false, calls = 0, summaries = 0;
+  const backend = new Proxy(storage, { get(target, key) {
+    if (key === "commit") return async (writes: any, context: any) => {
+      if (!byteRefusal && writes.some((write: any) => write.type === "document.create" && write.record?.kind === "camel.context.limit")) {
+        failed = true;
+        throw new Error("optional limit write failed");
+      }
+      return target.commit(writes, context);
+    };
+    const value = Reflect.get(target, key, target);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  const agent = await DurableAgent.create({
+    initialState: { model: { ...model, contextWindow: 65_536 }, messages: [], tools: [] },
+    streamFn: () => stream(++calls === 1 ? { ...fauxAssistantMessage("", { stopReason: "error" }), errorMessage: byteRefusal ? "413 request_too_large: request too large" : "maximum context length exceeded" } : fauxAssistantMessage("done")),
+    durable: { storage: backend, summaryStream: () => { summaries++; return stream(fauxAssistantMessage("summary")); } },
+  });
+  t.after(() => agent.close());
+  await agent.replaceContext(Array.from({ length: 12 }, (_, i) => [{ role: "user", content: "x".repeat(8_000), timestamp: i }, fauxAssistantMessage("ack")]).flat() as any);
+  await agent.prompt("hello");
+  assert.equal(calls, 2, agent.state.errorMessage);
+  assert.ok(summaries > 0);
+  const limit = await (agent as any).harness.snapshot(ContextLimitDoc, agent.conversationId, BACKGROUND_CONTEXT);
+  assert.equal(limit, undefined);
+  assert.equal(failed, !byteRefusal);
+  assert.equal(agent.state.errorMessage, undefined);
 });

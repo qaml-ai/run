@@ -19,6 +19,8 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * time its stream reaches the end of what it holds; it needs its input and at least MIN_OUTPUT_TOKENS of output to start.
  */
 export const HOLD_OUTPUT_TOKENS = 8_192;
+/** Past the runtime turn limit and its two overrun grace periods, a lost host cannot still be streaming. */
+export const ATTEMPT_STALE_MS = (Number(process.env.AGENT_MAX_RUN_SECONDS) || 7_200) * 1_000 + 120_000;
 /**
  * What a call holds of its output to start: about what a reply takes, not the most it may write (a model's whole max
  * output, held by each of a person's calls at once, refused their next call with credit left for it). A longer reply
@@ -80,11 +82,11 @@ export class ModelAttempts {
       const metered = event.endUser && this.endUsers ? await this.hold(tenant, platform, platform && catalogPriced, event) : undefined;
       if (metered && "refused" in metered) return { tracked: false, refused: metered.refused };
       const prepaid = await this.accounts.billing.mode(tenant) === "prepaid";
-      // The host's estimate of its input is kept: a call whose usage never comes is billed by it (`settle`).
+      // Keep the input estimate for calls with evidence of usage but no final token counts.
       const inputTokens = Number(event.estimate?.inputTokens);
       await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at,end_user,end_user_bucket,estimated_input_tokens)
         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16) on conflict (id) do nothing`,
-        [event.id, tenant, agent, event.provider, event.model, event.kind, platform, catalogPriced, prepaid, event.keyHash, JSON.stringify({ ...event.context, ...(event.reconciliationDisabled || event.keyHash === hash("") ? { reconciliationDisabled: event.reconciliationDisabled ?? "Empty provider credential has no reconciliation; estimate is final" } : {}) }), event.at, Date.now() + 300_000,
+        [event.id, tenant, agent, event.provider, event.model, event.kind, platform, catalogPriced, prepaid, event.keyHash, JSON.stringify({ ...event.context, ...(event.reconciliationEligible === undefined ? {} : { reconciliationEligible: event.reconciliationEligible }), ...(event.reconciliationDisabled || event.keyHash === hash("") ? { reconciliationDisabled: event.reconciliationDisabled ?? "Empty provider credential has no reconciliation; reported usage is final" } : {}) }), event.at, Date.now() + 300_000,
           metered ? metered.endUser : null, metered ? metered.bucket : null, Number.isFinite(inputTokens) && inputTokens > 0 ? Math.min(Math.round(inputTokens), 2_000_000_000) : null]);
       const row = (await this.db.query("select tenant,agent,provider,model from model_attempts where id=$1", [event.id])).rows[0];
       if (row.tenant !== tenant || row.agent !== agent || row.provider !== event.provider || row.model !== event.model) throw new Error("Model attempt identity mismatch");
@@ -92,7 +94,10 @@ export class ModelAttempts {
       this.metered.set(event.id, metered);
       return { tracked: true, ...lines(metered) };
     }
-    if (event.type === "progress") return this.progress(event.id, event.chars);
+    if (event.type === "progress") {
+      await this.db.query("update model_attempts set updated_at=$4 where id=$1 and tenant=$2 and agent=$3 and state<>'settled'", [event.id, tenant, agent, Date.now()]);
+      return this.progress(event.id, event.chars);
+    }
     if (event.type === "generation") {
       if (!/^gen-[a-zA-Z0-9-]{1,200}$/.test(event.generation)) return true;
       const result = await this.db.query(`update model_attempts set generation_id=$4, updated_at=$5,next_check_at=least(next_check_at,$5::bigint+60000) where id=$1 and tenant=$2 and agent=$3 and (generation_id is null or generation_id=$4) returning id`, [event.id, tenant, agent, event.generation, Date.now()]);
@@ -154,10 +159,11 @@ export class ModelAttempts {
     return { tracked: true, ...lines(metered) };
   }
 
-  async settle(id: string, tenant: string, agent: string, usage: Record<string, any>, chars: number, completed: boolean, reconciled: boolean) {
+  async settle(id: string, tenant: string, agent: string, usage: Record<string, any>, chars: number, completed: boolean, reconciled: boolean, staleOnly = false) {
     await transaction(this.db, async sql => {
       const row = (await sql.query("select * from model_attempts where id=$1 and tenant=$2 and agent=$3 for update", [id, tenant, agent])).rows[0];
       if (!row) throw new Error("Unknown model attempt");
+      if (staleOnly && Number(row.updated_at) >= Date.now() - ATTEMPT_STALE_MS) return;
       // The host's report ends the call: its end user's hold goes, spent or not (an outcome still unknown is posted when
       // it is known, as the tenant's charge is).
       // The end user's row first, as everything that touches their holds locks it (end-user-credits.ts).
@@ -168,9 +174,14 @@ export class ModelAttempts {
       }
       // A provider-reconciled or completed record is final. Delayed host deliveries cannot overwrite it.
       if (row.state === "settled" || (!reconciled && !completed && row.totals)) return;
-      const disabled = row.context?.reconciliationDisabled || (row.key_hash === hash("") ? "Empty provider credential has no reconciliation; estimate is final" : undefined);
+      const disabled = row.context?.reconciliationDisabled || (row.key_hash === hash("") ? "Empty provider credential has no reconciliation; reported usage is final" : undefined);
       const evidence = chars > 0 || [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.providerCost].some(value => typeof value === "number" && value > 0);
-      if (!completed && !reconciled && !evidence && !disabled) return; // Unknown is not a zero-cost final result.
+      if (!reconciled && !evidence) {
+        // Unknown is not a zero-cost final result. Unreconcilable failures have nothing to bill.
+        await sql.query("update model_attempts set updated_at=$2 where id=$1", [id, Date.now()]);
+        if (disabled) await sql.query("update model_attempts set state='settled',last_error=null where id=$1", [id]);
+        return;
+      }
       // A call that reported nothing to bill it by (its usage never came: a stream that ended between its finish and its
       // usage), or that was cut short, is billed an estimate: the input the host estimated at its begin, and what it
       // streamed at two characters a token. It stays `estimated` where a provider's record may correct it (OpenRouter's);
@@ -215,6 +226,8 @@ export class ModelAttempts {
         console.log(JSON.stringify({ type: "model_usage_missing", tenant, agent, attempt: id, kind: row.kind, provider: row.provider, model: row.model, host: usage.providerHost ?? null,
           completed, generation: !!row.generation_id, inputTokens, chars, platform: row.platform, billed: row.prepaid ? quote.amount : 0, ...(row.end_user ? { endUserRaw, held: held ?? null } : {}) }));
       }
+      // Provider reconciliation may refund an end user, but never debit them after their call ended.
+      if (reconciled && row.end_user) endUserRaw = Math.min(endUserRaw, Number(row.end_user_raw));
       if (row.totals && adjustment === 0 && Object.values(delta).every(value => value === 0)
         && row.state === (final ? "settled" : "estimated") && endUserRaw === Number(row.end_user_raw)) return;
       const revision = row.revision + 1;
@@ -245,7 +258,7 @@ export class ModelAttempts {
       }
       await enqueueEvents(sql, quote.events);
       await sql.query(`update model_attempts set state=$2,totals=$3,charge=$4,revision=$5,updated_at=$6,next_check_at=$7,last_error=$8 where id=$1`,
-        [id, final ? "settled" : "estimated", JSON.stringify(quote.totals), amount, revision, Date.now(), Date.now()+60_000, disabled ?? null]);
+        [id, final ? "settled" : "estimated", JSON.stringify(quote.totals), amount, revision, Date.now(), Date.now()+60_000, null]);
     });
     this.accounts.invalidateModelUsage(tenant);
     // A committed debit must still wake automatic top-up, but its delivery cannot undo settlement.
@@ -264,22 +277,20 @@ export class ModelAttempts {
   }
   private async check() {
     // The lease is only work distribution. Row locks and revisions enforce exactly-once posting even after expiry.
-    const rows = (await this.db.query(`with claimed as (select id from model_attempts where state<>'settled' and next_check_at<=$1 order by (provider='openrouter' and generation_id is not null) desc,next_check_at limit 25 for update skip locked)
-      update model_attempts a set next_check_at=$2,checks=checks+1 from claimed where a.id=claimed.id returning a.*`, [Date.now(), Date.now()+300_000])).rows;
+    const rows = (await this.db.query(`with claimed as (select id from model_attempts where state<>'settled' and next_check_at<=$1 and updated_at<$3 order by (provider='openrouter' and generation_id is not null) desc,next_check_at limit 25 for update skip locked)
+      update model_attempts a set next_check_at=$2,checks=checks+1 from claimed where a.id=claimed.id returning a.*`, [Date.now(), Date.now()+300_000, Date.now()-ATTEMPT_STALE_MS])).rows;
     for (const row of rows) {
       if (this.stopping.signal.aborted) break;
       try {
-        if (row.provider !== "openrouter") throw new Error("Awaiting provider evidence; provider has no per-request reconciliation adapter");
         // Resolve tenant-owned keys too, but never send a key unless its fingerprint matches dispatch.
-        const resolved = await this.accounts.providerKey(row.tenant, "openrouter");
+        const resolved = row.provider === "openrouter" ? await this.accounts.providerKey(row.tenant, "openrouter") : undefined;
         const scoped = row.context?.keyScope && this.scopedKey ? await this.scopedKey(row.tenant, row.context.keyScope) : undefined;
-        const disabled = row.context?.reconciliationDisabled || (row.key_hash === hash("") || typeof scoped === "object"
-          ? "Gateway or empty credential has no direct provider reconciliation; estimate is final" : undefined);
+        const disabled = row.context?.reconciliationDisabled || (row.key_hash === hash("") || row.context?.reconciliationEligible === undefined && !row.platform && typeof scoped === "object" || row.provider !== "openrouter"
+          ? "Provider credential has no direct reconciliation; reported usage is final" : undefined);
         if (disabled) {
           // 2026-10-23: old gateway attempts have only an empty fingerprint or a scoped address. Keep any posted estimate.
-          await this.db.query("update model_attempts set context=context || $2::jsonb where id=$1", [row.id, JSON.stringify({ reconciliationDisabled: disabled })]);
-          if (!row.totals) await this.settle(row.id, row.tenant, row.agent, {}, 0, true, false);
-          await this.db.query("update model_attempts set state='settled',last_error=$2,updated_at=$3 where id=$1", [row.id, disabled, Date.now()]);
+          await this.db.query("update model_attempts set context=context || $2::jsonb where id=$1 and updated_at<$3", [row.id, JSON.stringify({ reconciliationDisabled: disabled }), Date.now()-ATTEMPT_STALE_MS]);
+          await this.db.query("update model_attempts set state='settled',last_error=null,updated_at=$2 where id=$1 and updated_at<$3", [row.id, Date.now(), Date.now()-ATTEMPT_STALE_MS]);
           continue;
         }
         if (!row.generation_id) throw new Error("Awaiting provider evidence; missing OpenRouter generation ID");
@@ -295,10 +306,10 @@ export class ModelAttempts {
         const cost = data.total_cost + (data.is_byok ? data.upstream_inference_cost : 0);
         if (!Number.isFinite(cost) || cost < 0) throw new Error("Invalid provider cost");
         const prompt = Number(data.native_tokens_prompt) || 0, cached = Number(data.native_tokens_cached) || 0;
-        await this.settle(row.id, row.tenant, row.agent, { input: Math.max(0,prompt-cached), output: Number(data.native_tokens_completion)||0, cacheRead: cached, cacheWrite: 0, providerCost: cost, providerCreditCost: data.total_cost }, 0, true, true);
+        await this.settle(row.id, row.tenant, row.agent, { input: Math.max(0,prompt-cached), output: Number(data.native_tokens_completion)||0, cacheRead: cached, cacheWrite: 0, providerCost: cost, providerCreditCost: data.total_cost }, 0, true, true, true);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Provider reconciliation failed";
-        await this.db.query("update model_attempts set last_error=$2,next_check_at=$3 where id=$1 and state<>'settled'", [row.id, message, Date.now()+(row.provider !== "openrouter" || !row.generation_id ? 86_400_000 : Math.min(86_400_000,60_000*2**Math.min(row.checks,10)))]);
+        await this.db.query("update model_attempts set last_error=$2,next_check_at=$3 where id=$1 and state<>'settled' and updated_at<$4", [row.id, message, Date.now()+(row.provider !== "openrouter" || !row.generation_id ? 86_400_000 : Math.min(86_400_000,60_000*2**Math.min(row.checks,10))), Date.now()-ATTEMPT_STALE_MS]);
         console.error(JSON.stringify({ type: "model_attempt_unresolved", attempt: row.id, tenant: row.tenant, reason: message }));
       }
     }

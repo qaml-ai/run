@@ -76,3 +76,16 @@ test("OpenRouter Luna and its routing and Pro variants take the native 272k wind
     assert.equal(withCatalogPrices({ ...model, contextWindow: 1_050_000 }).contextWindow, 272_000, model.id);
   }
 });
+
+
+test("all Luna routes use the native cap and non-Luna OpenAI models keep Pi's window", async () => {
+  const { getModels: nativeModels } = await import("@earendil-works/pi-ai/compat");
+  for (const provider of ["openrouter", "azure", "vercel-ai-gateway", "cloudflare-ai-gateway", "amazon-bedrock", "github-copilot"]) {
+    for (const native of nativeModels(provider as never)) {
+      const model = getModel(provider, native.id)!;
+      assert.equal(model.contextWindow, native.id.includes("luna") ? Math.min(native.contextWindow, 272_000) : native.contextWindow, `${provider}/${native.id}`);
+    }
+  }
+  for (const id of ["gpt-6-luna", "gpt-6-luna-pro", "gpt-5.6-luna", "gpt-5.6-luna-pro"]) for (const suffix of ["", ":batch", ":nitro"])
+    assert.equal(resolveModel(`openrouter/openai/${id}${suffix}`).contextWindow, 272_000);
+});
