@@ -776,6 +776,7 @@ export class ClientSessions {
       session.catalogPriced = !!priced;
       // Its tool servers are listed (remote MCP servers connected to) before its host starts.
       session.hosted = session.header.mounts ?? [];
+      session.computerRevision = await this.options.sources?.computerRevision(session.header.tenant, session.header.id);
       const definitions = await steps.time("tools", tools.toolset(this.toolsContext, session));
       const { cpuMs, maxTimeoutMs } = await spend.codeLimits(this.spendContext, session.header.tenant);
       // Lost or given up while it got ready (its node fenced, or is leaving): it starts nothing. A host started now would
@@ -2068,7 +2069,15 @@ export class ClientSessions {
           await this.holdBusy(session, true);
           // Mounts changed since the agent started: it starts again, so this turn's prompt and tools describe them.
           if (session.hosted && canonical(session.hosted) !== canonical(session.header.mounts ?? []) && this.supervisor.agents.has(session.header.id) && !session.starting) await this.supervisor.stop(session.header.id);
-          await this.ensureStarted(session);
+          // A connection can change while the eager host startup is still in flight.
+          // Check after that startup settles too, before the model sees its tools.
+          for (let attempts = 0; ; attempts++) {
+            await this.ensureStarted(session);
+            const revision = await this.options.sources?.computerRevision(session.header.tenant, session.header.id);
+            if (session.computerRevision === revision) break;
+            await this.supervisor.stop(session.header.id);
+            if (attempts >= 2) throw new HttpError(503, "Computer connection changed while starting; retry");
+          }
         } catch (error) {
           // No room here for a run this node took over, or for any run while a live peer may have room the node lacks
           // (its count or memory): another node with room takes it (see `handBack`), rather than the run retrying here.

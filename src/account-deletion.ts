@@ -39,10 +39,12 @@ export interface AccountDeletionOptions {
   purgeAgents?(): Promise<void>;
   /** Write storage-usage deltas, so none for the tenant's deleted objects is written after its rows go. */
   flushStorageUsage?(): Promise<void>;
+  removeComputers?(tenant: string): Promise<void>;
 }
 
 /** Tables whose rows go with the tenant, by their `tenant` column (payment, ledger and anti-abuse records are not here). */
 const TENANT_TABLES = [
+  "computer_operations", "computer_commands", "computer_leases", "computer_connections",
   "schedule_deliveries", "workspace_usage", "workspace_assignments", "workspaces",
   "discord_setup_attempts", "discord_server_bindings",
   "console_sessions", "tenant_passwords", "account_email_links", "api_tokens", "oauth_grants", "provider_keys", "key_scope_providers", "model_providers", "definitions",
@@ -142,6 +144,7 @@ export class AccountDeletions {
       if (channels) await channels.remove(tenant, id, { managed: true });
       await db.query("delete from channel_conversations where channel = $1", [id]);
     }
+    await this.options.removeComputers?.(tenant);
     // Agents are revoked where they run, then purged (their logs, history, files' pins, schedules and threads).
     for (const id of await ids("select id from agents where tenant = $1 and not revoked")) await this.options.deleteAgent(id, tenant);
     // A purged agent's tombstone no longer names its tenant.

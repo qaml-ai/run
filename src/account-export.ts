@@ -79,6 +79,9 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
   const email = (await accounts.db.query("select email from tenant_passwords where tenant = $1", [tenant])).rows[0]?.email ?? null;
   yield* zip.file("account.json", json({ tenant, login: await accounts.identity(tenant) ?? null, email, createdAt: created === undefined ? null : Number(created), exportedAt: new Date().toISOString() }));
 
+  yield* zip.file("computers.json", json((await accounts.db.query("select id, agent, provider, lease_seconds, daily_seconds, created_at from computer_connections where tenant=$1", [tenant])).rows));
+  yield* zip.file("computer-sessions.json", json((await accounts.db.query("select id, agent, workspace, provider, state, created_at, expires_at, closed_at, error from computer_leases where tenant=$1 order by sequence", [tenant])).rows));
+
   yield* zip.file("workspaces.json", json((await accounts.db.query("select id, name, archived, created_at, updated_at from workspaces where tenant = $1 order by created_at, id", [tenant])).rows));
   yield* zip.file("workspace-assignments.json", json((await accounts.db.query("select kind, resource, workspace, assigned_at from workspace_assignments where tenant = $1 order by sequence", [tenant])).rows));
 

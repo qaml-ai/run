@@ -216,6 +216,7 @@ export type Session = {
   background?: Promise<BackgroundSpans | undefined>;
   /** Where each of the running agent's tools comes from, for its tool calls' spans. */
   toolSources?: Map<string, ToolSource>;
+  computerRevision?: string;
   /** The children the running run's calls started, by call id, which its tool calls name (an abort finds them by their rows: `stopDelegates`). */
   children?: Map<string, Child>;
   /** A stop waiting for the delegate children it aborted to end (`stopDelegates`): a run ending meanwhile waits too, so its usage counts them. */

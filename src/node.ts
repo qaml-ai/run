@@ -1,3 +1,4 @@
+import { Computers } from "./computers/service.ts";
 import { Workspaces } from "./workspaces.ts";
 import { anthropicFederationFromEnvironment } from "./anthropic-federation.ts";
 import { ModelAttempts } from "./model-attempts.ts";
@@ -455,7 +456,15 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   // Files sent to tools as URLs bound to their call, signed with the identity tokens' key (file-arguments.ts).
   const fileUrls = new FileUrls({ signer, get volumes() { return volumes; }, publicUrl: () => links.publicUrl });
-  const toolSources = new ToolSources({ accounts, mcp, outbound, signer, search, render, xSearch, get scheduler() { return scheduler; }, get volumes() { return volumes; }, fileUrls });
+  const computers = new Computers({ db, accounts, outbound: outbound.withoutOrigins() });
+  let sweepingComputers = false;
+  const computerTimer = setInterval(() => {
+    if (sweepingComputers) return;
+    sweepingComputers = true;
+    void computers.sweep().catch(() => console.error(JSON.stringify({ type: "computer_sweep_failed" }))).finally(() => { sweepingComputers = false; });
+  }, 30000);
+  computerTimer.unref();
+  const toolSources = new ToolSources({ computers, accounts, mcp, outbound, signer, search, render, xSearch, get scheduler() { return scheduler; }, get volumes() { return volumes; }, fileUrls });
   // Tenants' own OpenAI-compatible model providers.
   const modelProviders = new ModelProviders({ db, accounts, outbound });
   // A tenant of the tenants file may have its entry's maxDefinitions, else AGENT_MAX_DEFINITIONS_PER_TENANT; a self-serve one MAX_DEFINITIONS.
@@ -1073,7 +1082,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   void managedDiscord?.start().catch(error => console.error(JSON.stringify({ type: "discord_managed_start_failed", error: safeError(error) })));
   // Accounts being deleted, continued by whichever node claims each (and started at once on a request).
   const accountDeletions = new AccountDeletions({
-    db, accounts, storage, volumes, channels, stripe, deleteAgent: deleteAnywhere,
+    db, accounts, storage, volumes, channels, stripe, deleteAgent: deleteAnywhere, removeComputers: tenant => computers.removeTenant(tenant),
     purgeAgents: () => clients.sweep(), flushStorageUsage: () => storageUsage.flush(),
   });
   accountDeletions.start(config.schedulerIntervalMs);
@@ -1296,7 +1305,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     await rateLimits.run(tenant);
   };
-  app.route("/", api({ accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, telemetry, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, historyPage: historyPageAnywhere, verifyKeys: config.verifyKeys,
+  app.route("/", api({ computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, telemetry, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, historyPage: historyPageAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),
@@ -1596,6 +1605,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     clearInterval(tenantsTimer);
     clearInterval(loadTimer);
     clearInterval(sweepTimer);
+    clearInterval(computerTimer);
     clearInterval(purgeTimer);
     clearInterval(orphanTimer);
     clearInterval(childTimer);

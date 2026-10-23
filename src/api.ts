@@ -1,3 +1,5 @@
+import { computerRoutes } from "./computers/api.ts";
+import type { Computers } from "./computers/service.ts";
 import { workspaceRoutes } from "./workspaces-api.ts";
 import { Workspaces } from "./workspaces.ts";
 import { randomUUID } from "node:crypto";
@@ -62,6 +64,7 @@ import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState }
  * below are the OpenAPI document served at /v1/openapi.json.
  */
 export interface ApiContext {
+  computers?: Computers;
   accounts: Accounts;
   billingAlerts?: { service: BillingAlerts; emailEnabled: boolean };
   clients: ClientSessions;
@@ -1282,6 +1285,7 @@ export function api(context: ApiContext) {
   channelRoutes(route, () => context.channels);
   definitionRoutes(route, () => context);
   workspaceRoutes(route, () => accounts.db);
+  computerRoutes(route, () => context.computers);
   runRoutes(route, () => context);
   endUserRoutes(route, () => context.endUsers);
   route(createRoute({

@@ -1,5 +1,7 @@
 # Tools
 
+For native Linux computers and remote browsers, see [Computers](computers.md).
+
 An agent's tools are how it acts. This guide covers where they run, how to write
 them so a retry never does harm, and how the runtime tells a tool who a call is
 for. For the short version of where tools should run, see the table in
@@ -93,6 +95,10 @@ tool's exposure (**Tools the model gets**), and `GET /v1/agents/:id` its
 ## Attached tools: in your process
 
 Pass `tools` to `upsert` and this process serves them to the agent:
+
+For native Linux computers and remote browsers, use [Computers](computers.md).
+The [computer example](../../examples/computer/README.md) remains available if
+you want to run an attached adapter in your own process instead.
 
 ```ts
 const agent = await agents.upsert("ops", { model, instructions, tools: { refund } });

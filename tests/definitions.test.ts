@@ -366,7 +366,11 @@ test("apply reports each agent as updated, queued or failed", async t => {
   const definitions = new Definitions({ db: r.db });
   const definition = await definitions.create("alice", { name: "Reporting" });
   const agents: string[] = [];
-  for (let i = 0; i < 4; i++) agents.push((await r.call("/v1/agents", { body: { definition: definition.id } })).json.id);
+  for (let i = 0; i < 4; i++) {
+    const created = await r.call("/v1/agents", { body: { definition: definition.id } });
+    assert.equal(created.status, 201, created.text);
+    agents.push(created.json.id);
+  }
   const result = await definitions.apply(definition, async (agent, request) => {
     const index = agents.indexOf(agent);
     if (index === 3) throw new Error("Unreachable");

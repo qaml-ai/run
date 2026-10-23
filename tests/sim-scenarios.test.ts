@@ -85,15 +85,25 @@ test("a tenant's own maxAgents replaces the default limit, and an idle agent mak
   assert.equal((await sim.env.settle(create(TOKEN, "a3"))).status, 201, "alice's idle agent makes room under the default");
 });
 
-test("a session whose commit fails while its node still owns the agent gives the agent up, and the run resumes (seed 16)", async () => {
-  // First minimized from the first nightly (seed 2686), where a lost append acknowledgement failed the commit with the
-  // lease healthy; the faulted session used to stay loaded, holding its run open (and the agent refusing runs) until its
-  // node restarted. On Pi the same failure is a journal statement the database cancels (57014) while the node still
-  // owns the agent: minimized from seed 16 (the plan moves as the runtime's database calls change).
-  const plan: Plan = {"seed": "16", "nodes": ["a", "b"], "leaseTtlMs": 12000, "durationMs": 60000, "skews": {"a": 0, "b": 0}, "modelDelayMs": [50, 200], "buggify": false, "steps": [{"at": 0, "op": {"op": "create", "agent": 0, "node": "a"}}, {"at": 10, "op": {"op": "create", "agent": 1, "node": "a"}}, {"at": 20, "op": {"op": "create", "agent": 2, "node": "b"}}, {"at": 2702, "op": {"op": "prompt", "agent": 1, "run": 0, "node": "b"}}, {"at": 5621, "op": {"op": "crash", "node": "b"}}, {"at": 13758, "op": {"op": "prompt", "agent": 0, "run": 4, "node": "a"}}, {"at": 15028, "op": {"op": "prompt", "agent": 0, "run": 5, "node": "a", "key": "requestId"}}], "dbErrors": {"rate": 0.02, "codes": ["57014"]}};
-  const result = await runPlan(plan, { quiet: true });
-  assert.deepEqual(result.failures, []);
-  assert.ok(result.logs.some(log => log.line.includes('"session_fault_released"')), "the faulted session was released");
+test("a session whose commit fails while its node still owns the agent gives the agent up, and the run resumes", async t => {
+  // Inject at the first journal commit after the model answers. Counting seeded
+  // database calls lets unrelated background queries move this fault elsewhere.
+  let injected = false;
+  const sim = await Sim.create({ seed: 16, quiet: true, respond: () => {
+    (sim.db as SimDb).errors = { rate: 1, codes: ["57014"], only: /insert into log_records/, random: {
+      float: () => { if (injected) return 1; injected = true; return 0; }, int: () => 0,
+    } };
+    return { content: "recovered", delayMs: 100 };
+  } });
+  t.after(() => sim.close());
+  await sim.start("a");
+  const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
+  const id = await prompt(sim, "a", agent, "recover the failed journal commit");
+  const record = await outcome(sim, "a", agent, id);
+  assert.ok(injected, "the journal commit was refused");
+  assert.ok(sim.env.logs.some(log => log.line.includes('"session_fault_released"')), "the faulted session was released");
+  assert.equal(record.outcome.error, undefined, JSON.stringify(record.outcome));
+  assert.match(JSON.stringify(record.outcome), /recovered/, "the resumed run returned its saved result");
 });
 
 test("an abort that reaches a resumed turn before the agent has it settles the turn, so a fork holds it (seed 11188)", async () => {

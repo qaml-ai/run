@@ -1,4 +1,4 @@
-import { BarChart3, Bot, Boxes, CreditCard, FileCode, HardDrive, KeyRound, LayoutDashboard, MessageCircle, Rocket, Settings, SlidersHorizontal, type LucideIcon } from "lucide-react";
+import { BarChart3, Bot, Boxes, CreditCard, FileCode, HardDrive, KeyRound, LayoutDashboard, MessageCircle, Monitor, Rocket, Settings, SlidersHorizontal, type LucideIcon } from "lucide-react";
 
 export interface NavItem { to: string; label: string; icon: LucideIcon; sections: string[] }
 
@@ -17,6 +17,7 @@ export const WORKSPACE_NAV: NavItem[] = [
 export const ACCOUNT_NAV: NavItem[] = [
   { to: "channels", label: "Channels", icon: MessageCircle, sections: ["channels"] },
   { to: "volumes", label: "Volumes", icon: HardDrive, sections: ["volumes"] },
+  { to: "computers", label: "Computers", icon: Monitor, sections: ["computers"] },
   { to: "tokens", label: "API keys", icon: KeyRound, sections: ["tokens"] },
   { to: "models", label: "Models & keys", icon: SlidersHorizontal, sections: ["models"] },
   { to: "billing", label: "Billing", icon: CreditCard, sections: ["billing"] },

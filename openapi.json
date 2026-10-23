@@ -18390,6 +18390,814 @@
         }
       }
     },
+    "/v1/computers": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Computer connections; credentials are never returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "agent": {
+                        "type": "string"
+                      },
+                      "provider": {
+                        "type": "string",
+                        "enum": [
+                          "modal",
+                          "daytona",
+                          "boat",
+                          "e2b",
+                          "browserbase",
+                          "browser-use",
+                          "tunnel"
+                        ]
+                      },
+                      "leaseSeconds": {
+                        "type": "number"
+                      },
+                      "dailySeconds": {
+                        "type": "number"
+                      },
+                      "createdAt": {
+                        "type": "number"
+                      },
+                      "billing": {
+                        "type": "string",
+                        "enum": [
+                          "provider_account"
+                        ]
+                      },
+                      "session": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "provider": {
+                            "type": "string",
+                            "enum": [
+                              "modal",
+                              "daytona",
+                              "boat",
+                              "e2b",
+                              "browserbase",
+                              "browser-use",
+                              "tunnel"
+                            ]
+                          },
+                          "workspaceId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "starting",
+                              "active",
+                              "closing",
+                              "closed",
+                              "uncertain"
+                            ]
+                          },
+                          "recoveryRequired": {
+                            "type": "boolean"
+                          },
+                          "createdAt": {
+                            "type": "number"
+                          },
+                          "expiresAt": {
+                            "type": "number"
+                          },
+                          "closedAt": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "error": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "provider",
+                          "workspaceId",
+                          "state",
+                          "recoveryRequired",
+                          "createdAt",
+                          "expiresAt",
+                          "closedAt"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "agent",
+                      "provider",
+                      "leaseSeconds",
+                      "dailySeconds",
+                      "createdAt",
+                      "billing",
+                      "session"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "agent": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "modal",
+                      "daytona",
+                      "boat",
+                      "e2b",
+                      "browserbase",
+                      "browser-use",
+                      "tunnel"
+                    ]
+                  },
+                  "credentials": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "leaseSeconds": {
+                    "type": "integer",
+                    "minimum": 60,
+                    "maximum": 900,
+                    "default": 900
+                  },
+                  "dailySeconds": {
+                    "type": "integer",
+                    "minimum": 60,
+                    "maximum": 86400,
+                    "default": 3600
+                  }
+                },
+                "required": [
+                  "agent",
+                  "provider",
+                  "credentials"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Connect an agent to a provider. Compute is billed by that provider account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "agent": {
+                      "type": "string"
+                    },
+                    "provider": {
+                      "type": "string",
+                      "enum": [
+                        "modal",
+                        "daytona",
+                        "boat",
+                        "e2b",
+                        "browserbase",
+                        "browser-use",
+                        "tunnel"
+                      ]
+                    },
+                    "leaseSeconds": {
+                      "type": "number"
+                    },
+                    "dailySeconds": {
+                      "type": "number"
+                    },
+                    "createdAt": {
+                      "type": "number"
+                    },
+                    "billing": {
+                      "type": "string",
+                      "enum": [
+                        "provider_account"
+                      ]
+                    },
+                    "session": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string",
+                          "enum": [
+                            "modal",
+                            "daytona",
+                            "boat",
+                            "e2b",
+                            "browserbase",
+                            "browser-use",
+                            "tunnel"
+                          ]
+                        },
+                        "workspaceId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "starting",
+                            "active",
+                            "closing",
+                            "closed",
+                            "uncertain"
+                          ]
+                        },
+                        "recoveryRequired": {
+                          "type": "boolean"
+                        },
+                        "createdAt": {
+                          "type": "number"
+                        },
+                        "expiresAt": {
+                          "type": "number"
+                        },
+                        "closedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "error": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "provider",
+                        "workspaceId",
+                        "state",
+                        "recoveryRequired",
+                        "createdAt",
+                        "expiresAt",
+                        "closedAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "agent",
+                    "provider",
+                    "leaseSeconds",
+                    "dailySeconds",
+                    "createdAt",
+                    "billing",
+                    "session"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/computers/{id}": {
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stop sessions and remove credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "removed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "removed"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/computers/usage": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Compute session time grouped by provider and workspace, separate from model billing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "workspace": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "provider": {
+                        "type": "string",
+                        "enum": [
+                          "modal",
+                          "daytona",
+                          "boat",
+                          "e2b",
+                          "browserbase",
+                          "browser-use",
+                          "tunnel"
+                        ]
+                      },
+                      "sessions": {
+                        "type": "number"
+                      },
+                      "seconds": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "workspace",
+                      "provider",
+                      "sessions",
+                      "seconds"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/computer": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Connection and session status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connection": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "agent": {
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string",
+                          "enum": [
+                            "modal",
+                            "daytona",
+                            "boat",
+                            "e2b",
+                            "browserbase",
+                            "browser-use",
+                            "tunnel"
+                          ]
+                        },
+                        "leaseSeconds": {
+                          "type": "number"
+                        },
+                        "dailySeconds": {
+                          "type": "number"
+                        },
+                        "createdAt": {
+                          "type": "number"
+                        },
+                        "billing": {
+                          "type": "string",
+                          "enum": [
+                            "provider_account"
+                          ]
+                        },
+                        "session": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "provider": {
+                              "type": "string",
+                              "enum": [
+                                "modal",
+                                "daytona",
+                                "boat",
+                                "e2b",
+                                "browserbase",
+                                "browser-use",
+                                "tunnel"
+                              ]
+                            },
+                            "workspaceId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "state": {
+                              "type": "string",
+                              "enum": [
+                                "starting",
+                                "active",
+                                "closing",
+                                "closed",
+                                "uncertain"
+                              ]
+                            },
+                            "recoveryRequired": {
+                              "type": "boolean"
+                            },
+                            "createdAt": {
+                              "type": "number"
+                            },
+                            "expiresAt": {
+                              "type": "number"
+                            },
+                            "closedAt": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "error": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "provider",
+                            "workspaceId",
+                            "state",
+                            "recoveryRequired",
+                            "createdAt",
+                            "expiresAt",
+                            "closedAt"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "agent",
+                        "provider",
+                        "leaseSeconds",
+                        "dailySeconds",
+                        "createdAt",
+                        "billing",
+                        "session"
+                      ]
+                    },
+                    "session": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "provider": {
+                          "type": "string",
+                          "enum": [
+                            "modal",
+                            "daytona",
+                            "boat",
+                            "e2b",
+                            "browserbase",
+                            "browser-use",
+                            "tunnel"
+                          ]
+                        },
+                        "workspaceId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "starting",
+                            "active",
+                            "closing",
+                            "closed",
+                            "uncertain"
+                          ]
+                        },
+                        "recoveryRequired": {
+                          "type": "boolean"
+                        },
+                        "createdAt": {
+                          "type": "number"
+                        },
+                        "expiresAt": {
+                          "type": "number"
+                        },
+                        "closedAt": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "error": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "provider",
+                        "workspaceId",
+                        "state",
+                        "recoveryRequired",
+                        "createdAt",
+                        "expiresAt",
+                        "closedAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "connection",
+                    "session"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/computer/stop": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stop the agent's current computer session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "stopped": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "stopped"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/computer/confirm-cleanup": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "providerCleanupConfirmed": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  }
+                },
+                "required": [
+                  "providerCleanupConfirmed"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Confirm manual provider cleanup after a failed creation or cleanup",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "confirmed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "confirmed"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/runs": {
       "post": {
         "parameters": [
