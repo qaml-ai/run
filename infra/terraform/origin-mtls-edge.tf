@@ -92,10 +92,10 @@ resource "cloudflare_load_balancer" "origin_mtls" {
   steering_policy = "random"
   random_steering = {
     default_weight = 0
-    pool_weights = {
-      (cloudflare_load_balancer_pool.origin_mtls["green"].id) = var.origin_mtls_edge_weight
-      (cloudflare_load_balancer_pool.origin_mtls["blue"].id)  = 1 - var.origin_mtls_edge_weight
-    }
+    pool_weights = merge(
+      { (cloudflare_load_balancer_pool.origin_mtls["green"].id) = var.origin_mtls_edge_weight },
+      var.origin_mtls_original_fallback ? { (cloudflare_load_balancer_pool.origin_mtls["blue"].id) = 1 - var.origin_mtls_edge_weight } : {},
+    )
   }
   # No session-affinity cookie: the application already supports cross-node requests.
   session_affinity = "none"

@@ -184,3 +184,23 @@ run "prepared_edge_starts_disabled_on_original" {
     error_message = "Green health probes must verify TLS with the AOP-enabled hostname."
   }
 }
+
+run "excluded_original_is_not_a_fallback_or_weight" {
+  command = plan
+  plan_options { target = [cloudflare_load_balancer.origin_mtls] }
+  variables {
+    origin_mtls_ca_bucket         = "test-origin-ca"
+    origin_mtls_ca_key            = "origin-ca.pem"
+    origin_mtls_ca_version        = "v1"
+    origin_mtls_parallel_enabled  = true
+    origin_mtls_parallel_attach   = true
+    origin_mtls_edge_prepared     = true
+    origin_mtls_edge_enabled      = true
+    origin_mtls_edge_weight       = 1
+    origin_mtls_original_fallback = false
+  }
+  assert {
+    condition     = alltrue([for lb in cloudflare_load_balancer.origin_mtls : length(lb.default_pools) == 1 && lb.default_pools[0] == cloudflare_load_balancer_pool.origin_mtls["green"].id && lb.fallback_pool == cloudflare_load_balancer_pool.origin_mtls["green"].id && length(lb.random_steering.pool_weights) == 1])
+    error_message = "An excluded old origin must not receive default or fallback traffic or retain an unused weight."
+  }
+}
