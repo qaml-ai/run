@@ -558,9 +558,12 @@ export class DurableAgent {
         onProviderStreamEvent: this.options.onProviderStreamEvent,
       });
       const sent = llm.reduce((tokens, message) => tokens + estimateMessageTokens(message), 0);
+      // An upstream that dropped an over-native-window Luna prompt: learn the native window at once, not 90% per failed turn.
+      let inferred = false;
       const overflow = (message: AssistantMessage) => {
         if (message.stopReason === "error" && !isContextOverflow(message) && !byteRefusal(message) && isLuna(this.state.model) && sent > 272_000 && message.usage.output === 0 &&
           /server_error|stream ended before a terminal response event|Network connection lost/i.test(message.errorMessage ?? "")) {
+          inferred = true;
           // Pi recognizes explicit context errors. Keep the provider's explanation after that prefix.
           message.errorMessage = `maximum context length exceeded: ${message.errorMessage}`;
         }
@@ -581,7 +584,7 @@ export class DurableAgent {
       }
       const final = await events.result();
       if (final.stopReason === "error" && overflow(final) && !byteRefusal(final)) {
-        const window = Math.max(limitFloor(this.state.model), Math.floor(Math.min(sent, this.overflowWindow, this.state.model.contextWindow, this.options.durable.contextWindow ?? Infinity) * 0.9));
+        const window = Math.max(limitFloor(this.state.model), Math.floor(Math.min(sent, inferred ? 272_000 : Infinity, this.overflowWindow, this.state.model.contextWindow, this.options.durable.contextWindow ?? Infinity) * 0.9));
         if (window < this.overflowWindow) {
           // Optional learning uses its own session: a failed write must not poison Pi's running session.
           const storage = this.options.durable.storage;

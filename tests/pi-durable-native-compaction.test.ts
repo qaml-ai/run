@@ -221,7 +221,7 @@ test("a 500k-token Luna history compacts in bounded chunks against a persisted 2
 });
 
 for (const error of ["server_error", "OpenAI Responses stream ended before a terminal response event", "Network connection lost"]) {
-  for (const [size, output, recover] of [[300_000, 0, true], [200_000, 0, false], [300_000, 1, false]] as const) {
+  for (const [size, output, recover] of [[300_000, 0, true], [470_000, 0, true], [200_000, 0, false], [300_000, 1, false]] as const) {
     test(`Luna ${error}: ${size} prompt tokens, ${output} output tokens`, async t => {
       let calls = 0, summaries = 0;
       const agent = await DurableAgent.create({
@@ -241,7 +241,7 @@ for (const error of ["server_error", "OpenAI Responses stream ended before a ter
       if (recover) {
         assert.equal(calls, 2);
         assert.ok(summaries > 0);
-        assert.ok(limit.window >= 270_000 && limit.window < 272_000, String(limit.window));
+        assert.equal(limit.window, Math.floor(272_000 * 0.9), "an inferred Luna overflow learns the native window at once");
         assert.equal(agent.state.errorMessage, undefined);
       } else {
         assert.equal(calls, 1);
