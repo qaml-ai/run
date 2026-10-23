@@ -283,6 +283,8 @@ tofu import aws_cloudwatch_log_group.database_proxy /aws/rds/proxy/camelai-agent
     drains: it is one `task_protection_blocked` line, not counted. The `retiring` and `retired`
     lines can be found with a Logs Insights query:
     `filter type in ["retiring", "retired"]`.
+  - `-quota-rejected`: at least 5 agent-cap refusals in each of 3 consecutive
+    5-minute periods. Missing data does not breach.
   - `-database-cpu-credits`: the control database's CPU credits under 30 for 15 minutes;
   - `-database-memory`: its freeable memory under 256 MB for 15 minutes (it is about to swap: move to a larger
     `db_instance_class`).
@@ -296,6 +298,9 @@ tofu import aws_cloudwatch_log_group.database_proxy /aws/rds/proxy/camelai-agent
 
 - **Runtime metrics** (`observability.tf`, us-west-2, namespace `AgentRuntime`),
   among them:
+  - `-first-token-slow`: p90 `TimeToFirstTokenMs` over 60 seconds in each of
+    3 consecutive 5-minute periods, each with at least 20 samples. Periods with
+    fewer samples or missing data do not breach.
   - `-model-spend`: model spend, all tenants, over `spend_alarm_usd_per_hour`
     ($100) in an hour;
   - `-tenant-model-spend`: any one tenant's model spend over
