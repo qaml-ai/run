@@ -34,9 +34,6 @@ function deepseekRefusal(body: any): { httpStatus: number; message: string } | u
 }
 /** OpenRouter's routing is its own: no request of ours has a `provider` field (an order or sort turns off its load balancing). */
 const unrouted = (bodies: any[]) => assert.ok(bodies.every(body => !("provider" in body)), JSON.stringify(bodies.map(body => body.provider)));
-/** 1017's requests name its hosts (`provider.only`, pi-catalog.ts OPENROUTER_HOSTS), and nothing else of routing. */
-const HOSTS_1017 = ["baseten", "parasail", "relace", "deepseek", "fireworks", "deepinfra", "primeintellect", "crusoe", "inference-net"];
-const onlyHosts = (bodies: any[]) => { for (const body of bodies) assert.deepEqual(body.provider, { only: HOSTS_1017 }); };
 const assistants = (body: any) => body.messages.filter((message: any) => message.role === "assistant");
 
 test("DeepSeek's models on OpenRouter are called on Chat Completions, agents made on Responses included; others keep Responses", () => {
@@ -79,7 +76,7 @@ test("a Responses-era DeepSeek history replays as DeepSeek's own API takes it: e
   const [sent] = host.bodies;
   assert.deepEqual(assistants(sent).map((message: any) => message.reasoning_content), ["First sum.", ""], "the reasoning text, and an empty one where there was none");
   assert.deepEqual(assistants(sent).map((message: any) => message.content ?? null), [null, null], "no reasoning leaks into the reply text");
-  onlyHosts(host.bodies);
+  unrouted(host.bodies);
 });
 
 test("a multi-turn tool conversation, then a turn on DeepSeek's own endpoint: never refused", async t => {
@@ -97,7 +94,7 @@ test("a multi-turn tool conversation, then a turn on DeepSeek's own endpoint: ne
   assert.equal((await r.prompt(agent, "And again?")).outcome.result.reply, "Again.");
   assert.equal(host.bodies.length, 4, "no refusal, no retry");
   assert.deepEqual(assistants(host.bodies[3]).map((message: any) => message.reasoning_content), ["", "Now the second.", ""]);
-  onlyHosts(host.bodies);
+  unrouted(host.bodies);
 });
 
 test("if DeepSeek's endpoint refuses anyway, the same request is asked again: no host kept off, no order", async t => {
@@ -109,7 +106,7 @@ test("if DeepSeek's endpoint refuses anyway, the same request is asked again: no
   assert.equal((await r.prompt(agent, "Hi again")).outcome.result.reply, "Later.");
   assert.equal(host.bodies.length, 3, "one retry");
   assert.deepEqual(host.bodies[1], host.bodies[0], "the retry is the refused request as it was");
-  onlyHosts(host.bodies);
+  unrouted(host.bodies);
 });
 
 test("the refusal is its own error class (alarmed), retried on OpenRouter, not from a tenant's endpoint", () => {
