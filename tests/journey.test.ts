@@ -762,3 +762,14 @@ test("word of a refusal is delivered signed and waits for the store however long
   // No event went with it: the sign-up of a browser that refused is not activity.
   assert.deepEqual(store.deliveries, []);
 });
+
+
+test("returning browsers keep campaign touches even without a referrer", async t => {
+  const { arrive, touches, outbox } = await setup(t);
+  await arrive("/console/?utm_source=newsletter&utm_campaign=launch", { cookie: browserOf() });
+  assert.deepEqual((await touches()).map(row => row.touch.campaign), [{ utm_source: "newsletter", utm_campaign: "launch" }]);
+  assert.equal((await outbox()).length, 1);
+  await arrive("/console/?utm_source=art_secret", { cookie: browserOf() });
+  await arrive("/console/?utm_source=refused", { cookie: "camel_consent=denied" });
+  assert.equal((await touches()).length, 1, "invalid tags and refused consent do not record touches");
+});

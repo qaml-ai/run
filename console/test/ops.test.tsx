@@ -24,7 +24,9 @@ const growth = (days: number): AdminGrowth => ({
   median_days_to_first_run: 1, cohorts: [{ week: "2026-10-05", size: 10, active: [6, 3] }, { week: "2026-10-12", size: 4, active: [2] }],
 });
 const acquisition = (days: number): AdminAcquisition => ({
-  schema_version: 1, range: range(days), generated_at: NOW, status: "not_configured", tracked_signups: 0, sources: [], campaigns: [], landing_pages: [],
+  schema_version: 1, range: range(days), generated_at: NOW, status: "not_configured", tracked_signups: 0, sources: [{ source: "Not captured", medium: null, signups: 9, made_agent: 4, activated: 3, active_two_days: 2, paying: 1, median_days_to_first_run: 0 }], campaigns: [], landing_pages: [],
+  total: { source: "All", medium: null, signups: 9, made_agent: 4, activated: 3, active_two_days: 2, paying: 1, median_days_to_first_run: 0 },
+  daily: DATES.map((date, index) => ({ date, counts: [index + 2] })),
   truncated: false, coverage: { first_event_at: null, last_event_at: null },
 });
 const usage = (days: number): AdminUsage => ({
@@ -71,17 +73,19 @@ const revenue = (days: number): AdminRevenue => ({
 });
 
 let requests: string[] = [];
+let sourceReport: AdminAcquisition | undefined;
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOW));
   requests = [];
+  sourceReport = undefined;
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     requests.push(url);
     const { pathname, searchParams } = new URL(url, "http://ops.test");
     const days = Number(searchParams.get("days") ?? 30);
     if (pathname === "/api/me") return Response.json({ viewer: "ops@example.test" });
     if (pathname === "/api/growth") return Response.json(growth(days));
-    if (pathname === "/api/acquisition") return Response.json(acquisition(days));
+    if (pathname === "/api/acquisition") return Response.json(sourceReport ?? acquisition(days));
     if (pathname === "/api/mcp") return Response.json({
       schema_version: 1, range: range(days), generated_at: NOW,
       daily: [{ date: "2026-10-16", kind: "chatgpt", signups: 3, token_active_accounts: 2 }],
@@ -134,8 +138,8 @@ test("growth shows its headline figures, the takeaway, and why sources are missi
   expect(within(signups).getByText("+18%")).toBeTruthy();
   expect(within(screen.getByText("Activated", { selector: "dt" }).closest("div")!).getByText("56% of them ran a model")).toBeTruthy();
   // The journey store is not connected here: the card says so in plain words, never a zero.
-  const sources = await screen.findByText(/which this server is not connected to/);
-  expect(sources.textContent).toContain("AGENT_JOURNEY_URL");
+  const sources = (await screen.findAllByText(/Source reporting is not connected/))[0];
+  expect(sources.textContent).toContain("Signup and usage counts still include all outside accounts");
   expect(new URLSearchParams(location.search).get("tab")).toBe("growth");
   expect(new URLSearchParams(location.search).get("days")).toBe("30");
 });
@@ -143,14 +147,14 @@ test("growth shows its headline figures, the takeaway, and why sources are missi
 test("a chart's numbers can be read as a table", async () => {
   const user = userEvent.setup();
   page();
-  const card = (await screen.findByRole("heading", { name: "Sign-ups per day" })).closest("div.bg-card") as HTMLElement;
+  const card = (await screen.findByRole("heading", { name: "Sign-ups, by where they came from" })).closest("div.bg-card") as HTMLElement;
   await user.click(within(card).getAllByRole("button", { name: "Table view" })[0]);
   const table = within(card).getByRole("table");
   const rows = within(table).getAllByRole("row");
-  expect(rows[0].textContent).toBe("Day (UTC)Sign-upsGitHubGoogleEmail");
+  expect(rows[0].textContent).toBe("Day (UTC)Sign-upsNot captured");
   // Newest first, today marked as still going.
-  expect(rows[1].textContent).toBe("Oct 16 · today, so far4310");
-  expect(rows[3].textContent).toBe("Oct 142110");
+  expect(rows[1].textContent).toBe("Oct 16 · today, so far44");
+  expect(rows[3].textContent).toBe("Oct 1422");
 });
 
 test("an account opens from Top accounts and shows its agents' setup and the start of their prompts", async () => {
@@ -192,4 +196,40 @@ test("MCP plugins shows attribution and token activity with the shared range and
   await waitFor(() => expect((screen.getByRole("button", { name: "Refresh" }) as HTMLButtonElement).disabled).toBe(false));
   await user.click(screen.getByRole("button", { name: "Refresh" }));
   await waitFor(() => expect(requests.filter(path => path === "/api/mcp?days=30").length).toBe(before + 1));
+});
+
+
+test("sources show conversion rates and daily stacks retain every source in table view", async () => {
+  const user = userEvent.setup();
+  sourceReport = acquisition(30);
+  sourceReport.status = "ok";
+  sourceReport.sources = ["newsletter", "blog", "docs", "camelai.com/blog/ai-agent-memory", "camelai.com/blog/deploy-ai-agents", "camelai.com/", "ChatGPT plugin", "Not captured"].map((source, index) => ({
+    source, medium: null, signups: index + 1, made_agent: 1, activated: 1, active_two_days: 0, paying: 0, median_days_to_first_run: 0,
+  }));
+  sourceReport.total.signups = 36;
+  sourceReport.daily = [{ date: "2026-10-16", counts: [1, 2, 3, 4, 5, 6, 7, 8] }];
+  page();
+  const table = await screen.findByRole("table", { name: "Sign-ups of the last 30 days by source" });
+  expect(within(table).getByText("Active 2+ days")).toBeTruthy();
+  expect(within(table).getAllByRole("row")).toHaveLength(10);
+  const blog = within(table).getByText("blog").closest("tr")!;
+  expect(blog.textContent).toContain("1 (50%)");
+  const chart = screen.getByRole("heading", { name: "Sign-ups, by where they came from" }).closest("div.bg-card") as HTMLElement;
+  expect(within(chart).getByText("Other")).toBeTruthy();
+  expect(within(chart).getByText("ChatGPT plugin")).toBeTruthy();
+  within(chart).getByRole("group", { name: /Sign-ups by source:/ }).focus();
+  await user.keyboard("{End}");
+  const readout = within(chart).getByRole("presentation");
+  const readoutRows = Array.from(readout.children).slice(1);
+  expect(readoutRows[0].textContent).toBe("36in all");
+  expect(readoutRows.slice(-3).map(element => element.textContent)).toEqual([
+    "6/", "5/blog/deploy-ai-agents", "4/blog/ai-agent-memory",
+  ]);
+  expect(readoutRows.slice(-3).every(element => element.classList.contains("text-muted-foreground/70"))).toBe(true);
+  expect(chart.textContent).not.toContain("Other:");
+  expect(table.textContent).not.toContain("camelai.com");
+  await user.click(within(chart).getByRole("button", { name: "Table view" }));
+  const daily = within(chart).getByRole("table");
+  expect(within(daily).getByText("/")).toBeTruthy();
+  expect(within(daily).getByText("36")).toBeTruthy();
 });

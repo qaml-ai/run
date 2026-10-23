@@ -355,7 +355,6 @@ export class Journey {
       const referrer = from && from.host !== this.host && from.host !== url.hostname ? from : undefined;
       const param = url.searchParams.get("camel_handoff");
       const handoff = param && UUID.test(param) ? param.toLowerCase() : undefined;
-      if (browser.visitor && !referrer && !handoff) return {};
       const visitor = browser.visitor ?? randomUUID();
       const campaign: Record<string, string> = {};
       for (const key of CAMPAIGN_KEYS) {
@@ -363,6 +362,7 @@ export class Journey {
         // As the store reads them: printable, bounded, and nothing that looks like an address or a credential.
         if (value && /^[\x20-\x7e]{1,200}$/.test(value) && !/@|%40|art_|bearer\s|https?:\/\//i.test(value)) campaign[key] = value;
       }
+      if (browser.visitor && !referrer && !handoff && !Object.keys(campaign).length) return {};
       const site = referrer && this.siteHosts.has(referrer.host);
       const entry: JourneyEntry = site && /^\/docs(\/|$)/.test(referrer.path) ? "docs" : handoff || site ? "sales_site_link"
         : !referrer ? "none_observed" : /(^|\.)github\.com$/.test(referrer.host) ? "github" : ASSISTANT.test(referrer.host) ? "ai_assistant" : SEARCH.test(referrer.host) ? "search" : "other_referral";
