@@ -77,7 +77,63 @@ do not make the bucket public. No application task needs access to it.
    rollback ready. Do not leave the ALB in passthrough mode: the application
    does not validate forwarded client-certificate headers.
 
-## Apply and verify
+
+## Parallel origin rollout (preferred)
+
+The 2026-10-23 attempt to change the live listener caused transient origin errors
+and was rolled back. Short successful canaries were insufficient. Do not repeat
+that transition on the serving ALB.
+
+1. Set `origin_mtls_parallel_enabled=true`, with the existing pinned CA inputs.
+   Review a plan containing only new parallel ALB, target group, log bucket,
+   test certificate and test hostname resources. The new HTTPS listener starts
+   in verify mode; the existing ALB and production DNS stay unchanged. Access
+   and TLS connection logs have a 14-day retention policy.
+2. Test `origin_mtls_canary_hostname` through Cloudflare with custom per-hostname
+   AOP and Full (strict). Configure its certificate outside Terraform. Confirm
+   accepted and rejected client certificates against the new ALB. Provisioning
+   success does not mean every ALB node or Cloudflare edge has converged.
+3. For pre-attachment testing only, register current healthy task addresses in
+   the new group and record those seed addresses. Remove the manual seeds before
+   setting
+   `origin_mtls_parallel_attach=true`; the isolated endpoint may be unavailable
+   until the first ECS-managed target is healthy. This initiates an ECS rolling
+   deployment
+   with both target groups; it does not deploy another application image. Wait
+   for ECS COMPLETED and both target groups healthy. Verify no manual seed
+   addresses remain. ECS owns task registration after attachment.
+4. Soak the isolated path with real agent prompts, API calls, streaming, callbacks,
+   and repeated TLS connections. Monitor the original application too. Keep
+   application releases and unrelated settings changes out of this window.
+5. Cloudflare Load Balancing must be subscribed and accessible first. Set
+   `origin_mtls_edge_prepared=true` to create monitored blue/green pools and
+   disabled load balancers. Existing DNS records remain intact. Monitors use
+   `probe_zone` so AOP is included; the green monitor uses the isolated hostname.
+6. Enable custom AOP on every actual application hostname while the original
+   origin still accepts ordinary TLS. Verify convergence and health. Enable
+   scoped Full (strict) separately and verify again. Do not move traffic before
+   every destination can accept the configuration.
+7. Verify both pools healthy. Set `origin_mtls_edge_enabled=true` with
+   `origin_mtls_edge_weight=0`. This routes entirely to the original origin.
+   Increase weight in separately reviewed stages (for example .01, .1, .5, 1),
+   with a sustained soak and functional probes at each stage. Move one app at a
+   time. Disabling the edge load balancers restores existing DNS; this is not a
+   globally instantaneous rollback.
+8. Keep the old origin during the drain window. An old ALB with only an IP
+   allowlist remains a bypass of account-specific origin authentication even
+   when DNS points elsewhere. The migration is not security-complete until
+   the old origin also enforces the dedicated CA or stops forwarding to the
+   application. At 100% green, set `origin_mtls_original_fallback=false` before changing
+   the old listener. Allow existing connections to drain, then enforce its
+   dedicated CA and test it off the serving path. Only restore the original
+   fallback after that verification. Prove the final state before declaring
+   mTLS fully deployed.
+
+A zero weight is traffic configuration, not proof of zero old connections.
+Long-lived connections must drain before old ingress is changed or removed.
+Do not mirror mutating requests: use explicit synthetic transactions.
+
+## In-place controls (legacy; not the preferred rollout)
 
 Use the existing [plan/apply procedure](README.md#plan-and-apply). Fetch
 production's current `prod.auto.tfvars` first. Set the three CA inputs in that
