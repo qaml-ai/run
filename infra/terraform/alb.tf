@@ -84,7 +84,10 @@ resource "aws_lb" "runtime" {
   subnets            = data.aws_subnets.default.ids
   security_groups    = [aws_security_group.alb.id]
   # SSE streams heartbeat every few seconds; this only closes dead connections.
-  idle_timeout               = var.alb_idle_timeout
+  idle_timeout = var.alb_idle_timeout
+  # HTTP/1.1 from Cloudflare: one request per connection. Over h2, a cancelled ~1 MB history response left
+  # unread stalls every other request multiplexed on that connection (2026-10-23: 25-183 s chat loads).
+  enable_http2               = false
   drop_invalid_header_fields = true
   enable_deletion_protection = true
   tags                       = { Name = var.name }
