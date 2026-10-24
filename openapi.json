@@ -373,9 +373,10 @@
                   "refusal",
                   "auth",
                   "timeout",
+                  "image_limit",
                   "other"
                 ],
-                "description": "What kind of failure: billing (the provider's 402, a quota or budget used up), rate_limit (429), server (5xx, overloaded, the provider unreachable), refusal (the model declined, or a safety filter stopped it), auth (401, 403, no key), timeout (the provider's, or the model stream went quiet), other. Values may be added: treat an unknown one as other"
+                "description": "What kind of failure: billing (the provider's 402, a quota or budget used up), rate_limit (429), server (5xx, overloaded, the provider unreachable), refusal (the model declined, or a safety filter stopped it), auth (401, 403, no key), timeout (the provider's, or the model stream went quiet), image_limit (too many images or too much image data), other. Values may be added: treat an unknown one as other"
               },
               "providerStatus": {
                 "type": "integer",
@@ -8909,9 +8910,10 @@
               "refusal",
               "auth",
               "timeout",
+              "image_limit",
               "other"
             ],
-            "description": "What kind of failure: billing (the provider's 402, a quota or budget used up), rate_limit (429), server (5xx, overloaded, the provider unreachable), refusal (the model declined, or a safety filter stopped it), auth (401, 403, no key), timeout (the provider's, or the model stream went quiet), other. Values may be added: treat an unknown one as other"
+            "description": "What kind of failure: billing (the provider's 402, a quota or budget used up), rate_limit (429), server (5xx, overloaded, the provider unreachable), refusal (the model declined, or a safety filter stopped it), auth (401, 403, no key), timeout (the provider's, or the model stream went quiet), image_limit (too many images or too much image data), other. Values may be added: treat an unknown one as other"
           },
           "providerStatus": {
             "type": "integer",

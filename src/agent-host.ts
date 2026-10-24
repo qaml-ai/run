@@ -15,6 +15,7 @@ import { renderMessages, senderInput, stamp, type MessageSource } from "./sender
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, step, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } from "./compaction.ts";
+import { requestImageLimit } from "./request-images.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
 import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isImageRejection } from "./model-errors.ts";
@@ -602,12 +603,13 @@ export function createAgentHost(hostIO: HostIO) {
   async function hydrate(messages: Message[]): Promise<Message[]> {
     documents = false;
     const fitted = await fittedImages(messages, false);
+    const imageLimit = requestImageLimit(config.model);
     // What each block shown sends: a file's bytes (or why it is not shown), and the inline images within the budget.
     const sent = new Map<FileRef, Hydrated | Error>();
     const keptInline = new Set<string>();
     let images = 0, imageBytes = 0, imagesFull = false, documentBytes = 0;
     const fitsBudget = (bytes: number) => {
-      if (!imagesFull && images < FILE_LIMITS.requestImages && imageBytes + bytes <= FILE_LIMITS.requestImageBase64Bytes) {
+      if (!imagesFull && images < imageLimit && imageBytes + bytes <= FILE_LIMITS.requestImageBase64Bytes) {
         images++; imageBytes += bytes;
         return true;
       }

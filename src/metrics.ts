@@ -73,7 +73,7 @@ const CLASSES: [string, RegExp][] = [
   ["image_rejected", /failed to load image|cannot identify image|invalid image|could not process image|unable to process image|image could not be decoded|decode image/i],
   // A request carrying more image content than the provider takes (OpenRouter's 413 past 30 MB): the request's image
   // budget (agent-host.ts `hydrate`) is meant to keep under it, so one is a bug of ours, as reasoning_replay is.
-  ["image_limit", /image content cannot exceed|too many images|images? (is |are )?too (large|big)/i],
+  ["image_limit", /exceeded maximum number of images|image content cannot exceed|too many images|images? (is |are )?too (large|big)/i],
   // The model declined, or the provider's safety filter stopped it (pi-ai's words for each provider's stop reason).
   ["refusal", /^The model refused|content.?filter|^Provider stopped with: (sensitive|guardrail|content_filtered)/i],
   // A provider's 402, and a quota or budget used up, which some providers send as a 429: what pi-ai never retries.

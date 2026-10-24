@@ -592,3 +592,21 @@ for (const outcome of ["fits", "irreducible", "summary-fails"]) test(outcome ===
   const history = await supervisor.history("overflow-twice") as any[];
   assert.equal(history.filter(message => message.stopReason === "error").length, 0, "rejected attempts are not history");
 });
+
+test("a 60-image history is capped on the wire, including summary requests", async t => {
+  const fake = await provider(t);
+  const model = { ...fake.model(200_000), input: ["text", "image"] } as Model<Api>;
+  const messages = Array.from({ length: 60 }, (_, index) => ({ role: "user" as const, timestamp: index,
+    content: [{ type: "image" as const, mimeType: "image/png", data: Buffer.from(String(index)).toString("base64") }] }));
+  const before = structuredClone(messages);
+  for (const summary of [false, true]) {
+    const context = normalizeContext({ messages, ...(summary ? { systemPrompt: "context summarization assistant" } : {}) });
+    await (await explicitKeyStream()(model, context, { apiKey: "fixture" })).result();
+    const body = fake.requests.at(-1)!;
+    const sent = JSON.stringify(body);
+    assert.equal(body.messages.flatMap(message => Array.isArray(message.content) ? message.content : []).filter(part => part.type === "image_url").length, 40);
+    assert.match(sent, /image omitted: older than the last 40 images/);
+  }
+  assert.equal(fake.summarizations().length, 1);
+  assert.deepEqual(messages, before);
+});

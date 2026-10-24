@@ -179,7 +179,7 @@ const runFacts = {
 };
 /** How a failed model call failed (model-errors.ts `ModelFailure`): on a run's error, its run.failed webhook and its events. */
 export const ModelFailure = z.object({
-  errorClass: z.enum(MODEL_ERROR_CLASSES).openapi({ description: "What kind of failure: billing (the provider's 402, a quota or budget used up), rate_limit (429), server (5xx, overloaded, the provider unreachable), refusal (the model declined, or a safety filter stopped it), auth (401, 403, no key), timeout (the provider's, or the model stream went quiet), other. Values may be added: treat an unknown one as other" }),
+  errorClass: z.enum(MODEL_ERROR_CLASSES).openapi({ description: "What kind of failure: billing (the provider's 402, a quota or budget used up), rate_limit (429), server (5xx, overloaded, the provider unreachable), refusal (the model declined, or a safety filter stopped it), auth (401, 403, no key), timeout (the provider's, or the model stream went quiet), image_limit (too many images or too much image data), other. Values may be added: treat an unknown one as other" }),
   providerStatus: z.number().int().optional().openapi({ description: "The provider's HTTP status, when its error gives one" }),
   retryable: z.boolean().openapi({ description: "Whether the runtime retries such a failure itself (3 times, with backoff, on the same model). On a failed run: true means it was transient and its retries ran out, so trying again later, or another model, may work" }),
   model: z.string().openapi({ description: "The model that failed, as provider/model-id (an id of GET /v1/models)" }),

@@ -12,6 +12,7 @@ import { reasoningFloor, withOpenRouterHosts } from "./pi-catalog.ts";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { streamTimeouts, watchedStream, type Stall, type StreamTimeouts } from "./model-stream.ts";
 import { network } from "./node-context.ts";
+import { capRequestImages } from "./request-images.ts";
 import { MODEL_INTERRUPTED } from "./model-errors.ts";
 import { deepseekContext, deepseekTarget } from "./deepseek-replay.ts";
 
@@ -288,6 +289,8 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
   onRefused?: (stop: CreditStop) => void): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent's model, ${model.provider}/${model.id}; set one with PUT /v1/providers/${model.provider}/key, or move the agent to a model you can use (GET /v1/models?available=true)`);
+    // Includes Pi summary calls. Bound images before estimating or sending the request.
+    context = { ...context, messages: capRequestImages(context.messages, model) };
     const apiKey = options.apiKey;
     // A provider's stream that goes quiet is ended (model-stream.ts), and so is one the turn's abort or the lease reaches, at once.
     const limits = timeouts?.(model, options.reasoning ?? reasoningFloor(model)) ?? streamTimeouts(model, options.reasoning ?? reasoningFloor(model));

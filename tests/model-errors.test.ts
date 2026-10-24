@@ -92,6 +92,10 @@ test("image-load errors have a private metric class and a separate one-shot reco
     assert.equal(errorClass(message), "image_rejected");
     assert.equal(retriesModelError(failed(message), { ownEndpoint: false }), false);
   }
-  assert.equal(isImageRejection("too many images"), false);
+  assert.equal(isImageRejection("too many images"), true);
+  const limit = 'openrouter API error (400): {"message":"Provider returned error","metadata":{"raw":"Exceeded maximum number of images (50) allowed in the request."}}';
+  assert.equal(errorClass(limit), "image_limit");
+  assert.equal(isImageRejection(limit), true);
+  assert.equal(modelFailure(failed(limit), { ownEndpoint: false }).errorClass, "image_limit");
   assert.equal(isImageRejection("400 invalid request"), false);
 });
