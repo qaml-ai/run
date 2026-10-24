@@ -30,6 +30,51 @@ test("what the history index lacks is chunked at turn starts, under its bound; o
   assert.deepEqual(chunksOf({ from: 0, messages: sized, sizes: sized.map(message => JSON.stringify(message).length), turns: [0, 2] }).map(chunk => [chunk.start, chunk.messages.length, chunk.turns]), [[0, 2, [0]], [2, 2, [2]], [4, 2, []]]);
 });
 
+test("byte-bounded pages count UTF-8 and the envelope, preserve cursors, and keep oversized messages", async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "history-bytes-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const index = new HistoryIndex(db, fileStorage(root));
+  const agent = `client_${"b".repeat(40)}`;
+  await db.query("insert into agents (id, tenant, header, name, type, model, expires_at, revoked, revision) values ($1, 't', '{}', 'a', 'general', 'm', null, false, 1)", [agent]);
+  const messages = [user("old"), assistant("🙂".repeat(1400)), user("middle"), assistant("界".repeat(2000)), user("new"), assistant("x".repeat(20_000))];
+  const backlog = { from: 0, messages, turns: [0, 2, 4] };
+  const maxBytes = 16_384;
+  const size = (page: unknown) => Buffer.byteLength(JSON.stringify(page));
+  const check = async (tail?: typeof backlog) => {
+    const normal = await index.page(agent, { limit: 50 }, tail);
+    assert.deepEqual(normal.entries.map(entry => entry.message), messages, "the default still returns whole turns");
+    const seen: typeof normal.entries = [];
+    let before: number | undefined;
+    while (true) {
+      const page = await index.page(agent, { limit: 50, maxBytes, before }, tail);
+      assert.ok(page.entries.length);
+      assert.ok(size(page) <= maxBytes || page.entries.length === 1);
+      if (before === undefined) {
+        assert.deepEqual(page.entries.map(entry => entry.index), [5], "one oversized message is returned whole");
+        assert.equal(page.split, true);
+      }
+      seen.unshift(...page.entries);
+      if (page.next === null) break;
+      assert.equal(page.next, page.entries[0].index);
+      before = page.next;
+    }
+    assert.deepEqual(seen, normal.entries, "every message occurs exactly once across pages");
+    const exact = await index.page(agent, { limit: 50, before: 4 }, tail);
+    assert.equal((await index.page(agent, { limit: 50, before: 4, maxBytes: size(exact) }, tail)).entries.length, 4);
+    const smaller = await index.page(agent, { limit: 50, before: 4, maxBytes: size(exact) - 1 }, tail);
+    assert.equal(smaller.entries.length, 3, "one byte below the complete response drops its oldest message");
+    assert.ok(size(smaller) <= size(exact) - 1);
+    assert.equal(smaller.split, true);
+    assert.deepEqual((await index.page(agent, { limit: 50, before: 0, maxBytes }, tail)).entries, []);
+  };
+  await check(backlog);
+  await index.write(agent, undefined, { start: 0, messages: messages.slice(0, 4), turns: [0, 2] });
+  await check({ from: 4, messages: messages.slice(4), turns: [4] });
+  await index.write(agent, undefined, { start: 4, messages: messages.slice(4), turns: [4] });
+  await check();
+});
+
 test("history comes in pages of whole turns, newest first, from chunks rather than the log", async t => {
   const r = await runtime(t, body => {
     const last = body.messages.at(-1);
@@ -82,6 +127,31 @@ test("history comes in pages of whole turns, newest first, from chunks rather th
 
   // Another tenant's token gets no page.
   assert.equal((await r.call(`/v1/agents/${agent}/history?limit=3`, { token: OTHER_OPERATOR })).status, 404);
+});
+
+test("history maxBytes works alone on the API and through the SDK, with validated bounds", async t => {
+  const r = await runtime(t, () => ({ content: "界".repeat(2000) }));
+  const session = (await r.call("/v1/agents", { body: {} })).json;
+  for (let turn = 0; turn < 3; turn++) await r.prompt(session.id, `question ${turn}`);
+  const whole = (await r.call(`/v1/agents/${session.id}/history`)).json.messages;
+  const normal = await r.call(`/v1/agents/${session.id}/history?limit=50`);
+  assert.deepEqual(normal.json.entries.map((entry: any) => entry.message), whole);
+  const bounded = await r.call(`/v1/agents/${session.id}/history?maxBytes=16384`);
+  assert.equal(bounded.status, 200);
+  assert.ok(Buffer.byteLength(bounded.text) <= 16_384);
+  assert.ok(bounded.json.entries.length < normal.json.entries.length);
+  assert.equal(bounded.json.entries.at(-1).index, whole.length - 1);
+  const client = await new AgentRuntime({ url: r.base, apiKey: OPERATOR }).connectAgent(session, { tools: {} });
+  t.after(() => client.close());
+  assert.deepEqual(await client.historyPage({ maxBytes: 16_384 }), bounded.json);
+  const older = await client.historyPage({ maxBytes: 16_384, before: bounded.json.next });
+  assert.deepEqual([...older.entries, ...bounded.json.entries].map(entry => entry.message), whole);
+  for (const value of ["0", "16383", "4000001", "16384.5", "NaN", "Infinity", ""]) {
+    const invalid = await r.call(`/v1/agents/${session.id}/history?maxBytes=${value}`);
+    assert.equal(invalid.status, 400, value);
+    await assert.rejects(client.historyPage({ maxBytes: Number(value) }), /maxBytes/);
+  }
+  assert.equal((await r.call(`/v1/agents/${session.id}/history?maxBytes=4000000`)).status, 200);
 });
 
 test("the newest page has the running turn; an index behind reads the rest from the journal; purging removes its chunks", async t => {

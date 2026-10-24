@@ -17,14 +17,14 @@ export type HistoryEntry = { index: number; message: AgentMessage };
 /**
  * A page of history: whole turns, oldest first, ending where the request said (`before`) or at the
  * newest message. `next` is the `before` of the page older than this one, null at the start.
- * `split`: one turn alone was larger than a page, so this page starts inside it.
+ * `split`: this page starts inside a turn (a size bound can split turns between messages).
  */
 export type HistoryPage = { entries: HistoryEntry[]; next: number | null; total: number; split?: true };
 
 /** A chunk holds about this much; a turn larger than it is split between messages. */
 export const CHUNK_BYTES = 1_000_000;
 /** A page returns about this much at most, beyond its first turn. */
-const PAGE_BYTES = 4_000_000;
+export const PAGE_BYTES = 4_000_000;
 /** Chunk rows read at a time while looking for where a page starts. */
 const ROWS = 16;
 /** Chunks read from Storage at once. */
@@ -135,9 +135,10 @@ export class HistoryIndex {
   /**
    * The page of whole turns ending at `before` (default: the newest message), of at least `limit`
    * messages where the history has them and about PAGE_BYTES at most. `tail` is what the chunks do
-   * not have yet: the running agent's backlog.
+   * not have yet: the running agent's backlog. `maxBytes` limits the serialized UTF-8 page,
+   * keeping at least one message and allowing a page to start inside a turn.
    */
-  async page(agent: string, { before, limit }: { before?: number; limit: number }, tail?: Pick<Backlog, "from" | "messages" | "turns">): Promise<HistoryPage> {
+  async page(agent: string, { before, limit, maxBytes }: { before?: number; limit: number; maxBytes?: number }, tail?: Pick<Backlog, "from" | "messages" | "turns">): Promise<HistoryPage> {
     const indexed = (await this.indexed(agent)) ?? 0;
     // Chunks below the tail; any the running agent has written since it answered are in its tail too.
     const below = tail ? tail.from : indexed;
@@ -184,6 +185,23 @@ export class HistoryIndex {
       if (at >= start! && at < end) entries.push({ index: at, message });
     }));
     entries.sort((a, b) => a.index - b.index);
+    if (maxBytes !== undefined && entries.length) {
+      // Keep a suffix of the normal page. Count UTF-8 bytes of the response, including indexes,
+      // commas and the envelope; a message is indivisible, so the newest always survives.
+      const turns = new Set(pieces.flatMap(piece => piece.turns));
+      let first = entries.length - 1, entryBytes = 0;
+      for (let index = entries.length - 1; index >= 0; index--) {
+        const entry = entries[index];
+        const candidateBytes = entryBytes + Buffer.byteLength(JSON.stringify(entry)) + (entryBytes ? 1 : 0);
+        const envelope = { entries: [], next: entry.index > 0 ? entry.index : null, total, ...(!turns.has(entry.index) ? { split: true as const } : {}) };
+        if (index < entries.length - 1 && candidateBytes + Buffer.byteLength(JSON.stringify(envelope)) > maxBytes) break;
+        first = index;
+        entryBytes = candidateBytes;
+      }
+      const kept = entries.slice(first);
+      start = kept[0].index;
+      return { entries: kept, next: start > 0 ? start : null, total, ...(!turns.has(start) ? { split: true as const } : {}) };
+    }
     return { entries, next: start > 0 ? start : null, total, ...(split ? { split: true as const } : {}) };
   }
 

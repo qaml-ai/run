@@ -724,7 +724,10 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Runs._request("hi", mcp_servers=[server])["mcpServers"], [server])
         joined = await asyncio.gather(agent.client.request("status", idempotency_key="py-status"), agent.client.request("status", idempotency_key="py-status"))
         self.assertEqual(joined[0], joined[1])
-        page = await agent.history_page(limit=1)
+        page = await agent.history_page(limit=1, max_bytes=16384)
+        with self.assertRaises(AgentError) as refused:
+            await agent.history_page(max_bytes=16383)
+        self.assertEqual(refused.exception.status, 400)
         whole = await agent.history()
         self.assertIsInstance(whole, list, "the simple API's history is the list of messages")
         self.assertEqual(page["total"], len(whole))

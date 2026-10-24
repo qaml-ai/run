@@ -698,16 +698,17 @@ export function api(context: ApiContext) {
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/history",
     request: { params: agentId, query: z.object({
-      limit: z.string().optional().openapi({ description: "Page the history: at least this many messages (1 to 500, default 50) in whole turns, where there are that many. Without limit or before, the whole transcript" }),
+      limit: z.string().optional().openapi({ description: "Page the history: at least this many messages (1 to 500, default 50) in whole turns, where there are that many. Without limit, before or maxBytes, the whole transcript" }),
       before: z.string().optional().openapi({ description: "The page ends before this message index: a page's next" }),
+      maxBytes: z.string().optional().openapi({ description: "Maximum UTF-8 JSON response bytes (16384 to 4000000). Keeps the newest messages that fit, even inside a turn or below limit; always returns at least one message when available, even if oversized" }),
     }) },
     security: readers,
-    responses: { 200: { description: "With limit or before, a page of whole turns (HistoryPage); otherwise the whole transcript (History)", content: { "application/json": { schema: z.union([schema.HistoryPage, schema.History]) } } } },
+    responses: { 200: { description: "With limit, before or maxBytes, a page (HistoryPage); otherwise the whole transcript (History)", content: { "application/json": { schema: z.union([schema.HistoryPage, schema.History]) } } } },
   }), async c => {
-    const { before, limit } = c.req.query();
+    const { before, limit, maxBytes } = c.req.query();
     const tenant = c.var.principal.tenant, id = c.req.param("id")!, browser = c.var.principal.browser;
-    if (before !== undefined || limit !== undefined) {
-      const page = await clients.historyPageFor(id, tenant, { before, limit });
+    if (before !== undefined || limit !== undefined || maxBytes !== undefined) {
+      const page = await clients.historyPageFor(id, tenant, { before, limit, maxBytes });
       return json(c, 200, browser ? { ...page, entries: page.entries.map(entry => ({ ...entry, message: readableMessage(browser, entry.message) })) } : page);
     }
     const history = await clients.agentHistory(id, tenant) as { messages: unknown[] } | undefined;
