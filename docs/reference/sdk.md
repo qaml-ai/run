@@ -132,7 +132,7 @@ what changed without keeping a manifest. It is opaque: compare it, never parse i
 | `agent.run(text, options)` | `await agent.run(text, …)` | send a message, wait for the run: a `Run` |
 | `agent.stream(text, options)` | `agent.stream(text, …)` | the run as it happens: `for await` / `async for` over parts |
 | `agent.pendingInputs()` | `pending_inputs()` | inputs waiting on people, each with `answer()` |
-| `agent.history()`, `historyPage({ before, limit })` | `history()`, `history_page(before=, limit=)` | the whole history (a list of messages, oldest first), or a page of whole turns |
+| `agent.history()`, `historyPage({ before, limit, maxBytes })` | `history()`, `history_page(before=, limit=, max_bytes=)` | the whole history (a list of messages, oldest first), or a page of whole turns |
 | `agent.send(text, options)`, `agent.wait(id)` | `await send(text, …)`, `await wait(id)` | send a message without waiting: resolves once the runtime has taken it, with `{id, state}` (`POST …/prompt`'s 202); `wait(id)` is its `Run` later, from this process or another. For work queues and webhooks that should not hold a connection for the whole run |
 | `agent.steer(text, options)` | `steer(text, …)` | hand the running turn a message (else start one), answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}`. `wait: true` (`wait=True`) resolves with the run that took it instead, as `run(text, { whileRunning: "steer" })` |
 | `agent.configure({ model, instructions, thinkingLevel, tools, maxOutputTokens, temperature })` | `configure(…)` | change it between runs; `null` (`None`) removes `maxOutputTokens` or `temperature` |
@@ -596,11 +596,17 @@ Authorization, transactional writes and idempotency stay in your tools: use
 
 ### History in pages
 
-`historyPage({ limit, before })` (`GET /clients/:id/history?limit=50`) answers
+`historyPage({ limit, before, maxBytes })` (`GET /clients/:id/history?limit=50`) answers
 whole turns, oldest first, with at least `limit` messages where there are that
 many: `{ entries: [{ index, message }], next, total }`. Pass `next` as `before`
 for the page before it (`null` at the start). A settled page never changes, so it
-can be cached. `history()` answers the whole transcript.
+can be cached. `maxBytes` (Python: `max_bytes`) optionally bounds the UTF-8 JSON
+response to 16,384–4,000,000 bytes, including its envelope. It keeps the newest
+messages that fit, even if fewer than `limit`, and may split a turn between
+messages (`split: true`). It always returns at least one message when available;
+a single oversized message is returned whole. Pass `next` as `before` with the
+same byte bound to read older messages. `maxBytes` alone selects paging; without
+it, the existing whole-turn behavior is unchanged. `history()` answers the whole transcript.
 
 ### Portable use
 

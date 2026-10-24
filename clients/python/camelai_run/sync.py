@@ -530,8 +530,8 @@ class Agent:
         """Its whole history: every message, oldest first (history_page reads a page at a time)."""
         return self.client.history()["messages"]
 
-    def history_page(self, *, before=None, limit=50):
-        return self.client.history_page(before=before, limit=limit)
+    def history_page(self, *, before=None, limit=50, max_bytes=None):
+        return self.client.history_page(before=before, limit=limit, max_bytes=max_bytes)
 
     def steer(self, text, *, wait=False, **options):
         """A message for the running turn; returns a receipt {"id", "status", "steeredInto"?} as soon as the runtime has it.

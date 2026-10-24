@@ -34,7 +34,7 @@ import { actorInput, type AgentIdentity } from "./identity.ts";
 import { metadataInput, senderInput } from "./sender.ts";
 import { CodeGate, DEFAULT_CODE_CAPACITY } from "./codemode.ts";
 import { fileResponse, type FileRef } from "./files.ts";
-import { chunksOf, HistoryIndex, type HistoryPage } from "./history-pages.ts";
+import { chunksOf, HistoryIndex, PAGE_BYTES, type HistoryPage } from "./history-pages.ts";
 import { inputView, resolution, type Input, type Responder } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, safeError, Steps } from "./metrics.ts";
 import { inputSpans } from "./telemetry.ts";
@@ -1404,11 +1404,13 @@ export class ClientSessions {
    * A page of the agent's history (see HistoryIndex.page): settled messages from their chunks, and
    * what the running agent has not indexed yet from it.
    */
-  private async historyPage(session: Session | { header: { id: string; tenant: string }; unloaded: true }, query: { before?: string; limit?: string }): Promise<HistoryPage> {
+  private async historyPage(session: Session | { header: { id: string; tenant: string }; unloaded: true }, query: { before?: string; limit?: string; maxBytes?: string }): Promise<HistoryPage> {
     const before = query.before === undefined ? undefined : Number(query.before);
     const limit = query.limit === undefined ? 50 : Number(query.limit);
+    const maxBytes = query.maxBytes === undefined ? undefined : Number(query.maxBytes);
     if (before !== undefined && (!Number.isSafeInteger(before) || before < 0)) throw new HttpError(400, "before is a message index");
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new HttpError(400, "limit is 1 to 500 messages");
+    if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 16_384 || maxBytes > PAGE_BYTES)) throw new HttpError(400, `maxBytes is 16384 to ${PAGE_BYTES} bytes`);
     const id = session.header.id;
     // An agent still starting answers nothing yet: wait for it (or, should it fail, read the log).
     if (!("unloaded" in session)) await session.starting?.catch(() => {});
@@ -1418,11 +1420,11 @@ export class ClientSessions {
     // or work its last owner never indexed (a node that died). Nothing is indexed here; an agent's own process indexes
     // from where its index ends.
     if (!tail) tail = await this.supervisor.journalBacklog(id, (await this.historyIndex.indexed(id)) ?? 0, count => this.historyIndex.messages(id, count));
-    return this.historyIndex.page(id, { before, limit }, tail ?? undefined);
+    return this.historyIndex.page(id, { before, limit, maxBytes }, tail ?? undefined);
   }
 
   /** A tenant's view of a page of one agent's history. */
-  async historyPageFor(id: string, tenant: string, query: { before?: string; limit?: string }) {
+  async historyPageFor(id: string, tenant: string, query: { before?: string; limit?: string; maxBytes?: string }) {
     if (!await this.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
     if (this.unloaded(id)) return this.historyPage({ header: { id, tenant }, unloaded: true }, query);
     const session = await this.load(id);
@@ -1505,10 +1507,10 @@ export class ClientSessions {
       if (!await this.scheduler().remove(c.var.session.header.id, c.req.param("schedule"), c.var.session.claim)) throw new HttpError(404, "Unknown schedule");
       return json(c, 200, { deleted: true });
     });
-    // With `limit` or `before`, a page of whole turns; without, the whole transcript.
+    // With `limit`, `before` or `maxBytes`, a page; without, the whole transcript.
     app.get(`${agent}/history`, async c => {
-      const { before, limit } = c.req.query();
-      return json(c, 200, before !== undefined || limit !== undefined ? await this.historyPage(c.var.session, { before, limit }) : await this.history(c.var.session));
+      const { before, limit, maxBytes } = c.req.query();
+      return json(c, 200, before !== undefined || limit !== undefined || maxBytes !== undefined ? await this.historyPage(c.var.session, { before, limit, maxBytes }) : await this.history(c.var.session));
     });
     // The agent's files by the paths it sees them at (/workspace/...), for applications holding its token.
     app.get(`${agent}/files`, async c => {

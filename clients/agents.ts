@@ -698,7 +698,7 @@ export class Agent {
   /** The agent's whole history (`historyPage` reads a page at a time). */
   /** Its whole history: every message, oldest first (`historyPage` reads a page at a time). */
   async history(): Promise<RecordedMessage[]> { return (await this.client.history()).messages; }
-  historyPage(options: { before?: number; limit?: number } = {}): Promise<HistoryPage> { return this.client.historyPage(options); }
+  historyPage(options: { before?: number; limit?: number; maxBytes?: number } = {}): Promise<HistoryPage> { return this.client.historyPage(options); }
   /**
    * A message for the running turn, which reads it after its current step and answers with it in mind; with no turn
    * running, it starts one. Resolves as soon as the runtime has it, with a receipt: `accepted` (the turn reads it next),
