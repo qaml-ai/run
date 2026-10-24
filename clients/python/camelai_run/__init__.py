@@ -2283,7 +2283,7 @@ class Run:
     """A run of the agent: one message and everything the agent did about it. status: "completed" (it answered: text),
     "input_required" (it waits on people: inputs; answer them to resume it) or "failed" (error: {"code", "message",
     "uncertain"?}; agent.run raises RunError unless throw_on_error=False). When a model call failed it, error also has
-    "errorClass" (billing, rate_limit, server, refusal, auth, timeout, other), "providerStatus"?, "retryable" and "model"."""
+    "errorClass" (billing, rate_limit, server, refusal, auth, timeout, image_limit, other), "providerStatus"?, "retryable" and "model"."""
     id: str
     status: str
     # The final reply's text; "" when it said nothing (or failed first).

@@ -56,7 +56,7 @@ export interface PresentedFile { type: "file"; path: string; volume: string; ver
  * response's `message_end` and the retry events (`failure`). `errorClass` values may be added: treat an unknown one as "other".
  */
 export interface ModelFailure {
-  errorClass: "billing" | "rate_limit" | "server" | "refusal" | "auth" | "timeout" | "other" | (string & {});
+  errorClass: "billing" | "rate_limit" | "server" | "refusal" | "auth" | "timeout" | "image_limit" | "other" | (string & {});
   /** The provider's HTTP status, when its error gives one. */
   providerStatus?: number;
   /** Whether the runtime retries such a failure itself; on a failed run, true means its retries ran out. */

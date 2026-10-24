@@ -153,7 +153,7 @@ so you need not parse `message`:
 
 | Field | Meaning |
 | --- | --- |
-| `errorClass` | `billing` (the provider's 402, a quota or budget used up, even one sent as a 429), `rate_limit` (429), `server` (5xx, overloaded, the provider unreachable), `refusal` (the model declined, or the provider's safety filter stopped it), `auth` (401, 403, no key), `timeout` (the provider's, or the model stream went quiet), `other`. Classes may be added: treat an unknown one as `other` |
+| `errorClass` | `billing` (the provider's 402, a quota or budget used up, even one sent as a 429), `rate_limit` (429), `server` (5xx, overloaded, the provider unreachable), `refusal` (the model declined, or the provider's safety filter stopped it), `auth` (401, 403, no key), `timeout` (the provider's, or the model stream went quiet), `image_limit` (too many images or too much image data), `other`. Classes may be added: treat an unknown one as `other` |
 | `providerStatus` | The provider's HTTP status, when its error gives one |
 | `retryable` | Whether the runtime retries this kind of failure itself (3 times, with backoff, on the same model). On a failed run, `true` means it was transient and the retries ran out: trying again later, or with another model, may work. `false`: the same request will fail the same way. A model on your own endpoint ([custom models](../guides/custom-models.md)) is not retried by the runtime, except for a stalled stream, so its failures are `false` |
 | `model` | The model that failed, as `provider/model-id` (an id of `GET /v1/models`) |

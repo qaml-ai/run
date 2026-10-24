@@ -12,7 +12,7 @@ import { refusedReasoningReplay } from "./deepseek-replay.ts";
 /** Why a model request was cut by its node's stale lease. Retryable (a lost connection): it is made again once the lease is fresh, or by the agent's next owner. */
 export const MODEL_INTERRUPTED = "Model request interrupted: this node's connection to its cluster was lost; it is made again once the node's lease is renewed";
 
-export const MODEL_ERROR_CLASSES = ["billing", "rate_limit", "server", "refusal", "auth", "timeout", "other"] as const;
+export const MODEL_ERROR_CLASSES = ["billing", "rate_limit", "server", "refusal", "auth", "timeout", "image_limit", "other"] as const;
 export type ModelErrorClass = typeof MODEL_ERROR_CLASSES[number];
 
 /** A failed model response's facts, as a run's error, its `run.failed` webhook and its stream's events carry them. */
@@ -29,6 +29,7 @@ export interface ModelFailure {
 /** The metric classes (metrics.ts `errorClass`) as the API's fewer: what a caller would do differently for each. */
 const API_CLASSES: Record<string, ModelErrorClass> = {
   billing: "billing",
+  image_limit: "image_limit",
   rate_limit: "rate_limit",
   overloaded: "server",
   provider_5xx: "server",
@@ -86,7 +87,7 @@ export function modelFailure(message: Failed, context: FailureContext): ModelFai
   };
 }
 
-/** Match only the class; provider text can contain private input and must never be logged here. */
+/** Image decode or request-limit rejection: the host retries once without images. Never log provider text here. */
 export function isImageRejection(message: string | null | undefined): boolean {
-  return errorClass(message) === "image_rejected";
+  return ["image_rejected", "image_limit"].includes(errorClass(message));
 }

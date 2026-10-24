@@ -244,7 +244,37 @@ test("image containers must be complete, with PNG signatures and checksums check
   assert.equal(imageIntact(Buffer.concat([gif, Buffer.alloc(10)]), "image/gif"), true);
 });
 
-test("a provider rejecting intact images gets one request without images, for the rest of the turn only", async t => {
+test("a 60-image saved history is hydrated with only the newest 40 images", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "agent-image-cap-"));
+  const faux = registerFauxProvider({ tokensPerSecond: 1_000_000 });
+  t.after(async () => { faux.unregister(); await rm(directory, { recursive: true, force: true }); });
+  const storage = await openPiStorage({ sessionId: "agent", directory });
+  const png = (await picture(4, 3)).toString("base64");
+  const host = createAgentHost({
+    emit: () => {}, cancelTools: async () => null, runLimit: async () => undefined,
+    legacyLog: { read: async () => [], empty: async () => true }, piStorage: async () => storage,
+    tool: async () => { throw new Error("no tools"); }, file: async () => png,
+    modelAuth: async () => { throw new Error("no per-call credentials"); }, fs: async () => { throw new Error("no files"); },
+  });
+  t.after(async () => { await host.dispose(0); await storage.close(BACKGROUND_CONTEXT); });
+  const initialMessages = Array.from({ length: 60 }, (_, index) => ({ role: "user", timestamp: index + 1,
+    content: [{ type: "text", text: `shot ${index}` }, { type: "image", mimeType: "image/png", data: png }] }));
+  await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", initialMessages, tools: [] });
+  faux.setResponses([context => {
+    const users = context.messages.filter(message => message.role === "user");
+    const hasImage = (message: any) => message.content.some((part: any) => part.type === "image");
+    assert.equal(users.filter(hasImage).length, 40);
+    assert.ok(users.slice(0, 20).every(message => !hasImage(message)));
+    assert.ok(users.slice(20, 60).every(hasImage));
+    return fauxAssistantMessage("Seen.");
+  }]);
+  assert.equal((await host.handle("prompt", { text: "continue" })).error, null);
+  const stored = await journalMessages({ sessionId: "agent", directory });
+  assert.equal(stored.flatMap((message: any) => message.content ?? []).filter((part: any) => part.type === "image").length, 60);
+});
+
+for (const rejection of ["Failed to load image: cannot identify image file", "Exceeded maximum number of images (50) allowed in the request."])
+test(`a provider rejecting intact images (${rejection}) gets one request without images, for the rest of the turn only`, async t => {
   const directory = await mkdtemp(join(tmpdir(), "agent-image-retry-"));
   const faux = registerFauxProvider({ tokensPerSecond: 1_000_000 });
   t.after(async () => { faux.unregister(); await rm(directory, { recursive: true, force: true }); });
@@ -263,7 +293,7 @@ test("a provider rejecting intact images gets one request without images, for th
   const requests: any[] = [];
   const reject = (context: any) => {
     requests.push(context.messages);
-    if (JSON.stringify(context.messages).includes('"type":"image"')) return fauxAssistantMessage("", { stopReason: "error", errorMessage: "Failed to load image: cannot identify image file" });
+    if (JSON.stringify(context.messages).includes('"type":"image"')) return fauxAssistantMessage("", { stopReason: "error", errorMessage: rejection });
     return fauxAssistantMessage("Seen.");
   };
   faux.setResponses([reject, context => {

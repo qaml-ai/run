@@ -50,10 +50,11 @@ export const FILE_LIMITS = Object.freeze({
   documentBytes: 16 * 1024 * 1024, documentPages: 100,
   /**
    * Across one model request, newest first (agent-host.ts `hydrate`): PDFs up to `requestFileBytes` as stored; images,
-   * inline or from files, up to `requestImages` and `requestImageBase64Bytes` as sent (base64, after scaling down),
+   * inline or from files, up to `requestImages` (`requestAnthropicImages` for Anthropic) and
+   * `requestImageBase64Bytes` as sent (base64, after scaling down),
    * within OpenRouter's 30 MB of image content a request (past it, a 413). Older ones are described in text instead.
    */
-  requestFileBytes: 24 * 1024 * 1024, requestImages: 100, requestImageBase64Bytes: 20 * 1024 * 1024,
+  requestFileBytes: 24 * 1024 * 1024, requestImages: 40, requestAnthropicImages: 90, requestImageBase64Bytes: 20 * 1024 * 1024,
   /** File bytes the agent host keeps hydrated between model requests. */
   hydratedBytes: 32 * 1024 * 1024,
   /** Parsing untrusted files (in a worker of a parse job, parse-job.ts): input, time, memory and text out. */

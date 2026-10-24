@@ -360,7 +360,7 @@ with Agents() as agents:  # CAMELAI_API_KEY
   (`{ code: "end_user_credit", reason, bucket, endUser, message }`), else undefined.
 - `RunError extends AgentError`: a failed run, with `run`. When a model call failed it,
   `run.error` also has `errorClass` (`billing`, `rate_limit`, `server`, `refusal`, `auth`,
-  `timeout`, `other`), `providerStatus`, `retryable` and `model`: branch on those, not the
+  `timeout`, `image_limit`, `other`), `providerStatus`, `retryable` and `model`: branch on those, not the
   message ([Model failures](errors.md#model-failures)). `run.servedModel` (Python
   `run.served_model`) is the model that made its last response.
 
