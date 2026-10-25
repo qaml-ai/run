@@ -124,7 +124,7 @@ test("a 400k-token Luna history uses the catalog window without compaction", asy
   assert.equal(calls, 1);
 });
 
-for (const [output, below, above] of [[undefined, 900_000, 923_000], [32_000, 923_000, 1_019_000], [200_000, 890_000, 894_000]] as const) test(`native compaction reserves Luna output tokens (${output ?? "catalog"})`, async t => {
+for (const [output, below, above] of [[undefined, 900_000, 923_000], [32_000, 923_000, 1_019_000], [200_000, 890_000, 923_000]] as const) test(`native compaction reserves Luna output tokens (${output ?? "catalog"})`, async t => {
   let summaries = 0, compactions = 0;
   const agent = await DurableAgent.create({
     initialState: { model: { ...model, contextWindow: 1_050_000, maxTokens: 128_000 }, messages: [], tools: [] },

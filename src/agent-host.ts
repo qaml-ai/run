@@ -151,6 +151,7 @@ export function createAgentHost(hostIO: HostIO) {
     // A refused response stays private until recovery ends. Its retraction has no client-visible slot to remove.
     if (overflow) { refused = event; return; }
     if (event.type === "message_retracted" && refused) { refused = undefined; return; }
+    if (refused && event.type === "message_end") { hostIO.emit(refused); refused = undefined; }
     hostIO.emit(event);
   } };
   /** The agent's history and turn, in its Pi journal. */
@@ -1095,6 +1096,7 @@ export function createAgentHost(hostIO: HostIO) {
     const promptMessages = method === "prompt" ? userMessages(params) : undefined;
     busy = true;
     stopped = undefined;
+    refused = undefined;
     omitImages = false;
     output = undefined;
     forcing = { left: FORCED_OUTPUT_REQUESTS, reminding: false, last: false };

@@ -397,8 +397,9 @@ export class DurableAgent {
     };
     const window = () => Math.min(agent.state.model.contextWindow, options.durable.contextWindow ?? Infinity, agent.overflowWindow);
     const reserve = () => {
-      const cap = Math.floor(window() * 0.15);
-      return Math.max(Math.min(16_384, cap), Math.min(options.durable.maxOutputTokens ?? agent.state.model.maxTokens ?? 0, cap));
+      // The output the provider sets aside from the window, plus a margin for the chars/4 estimate.
+      const limit = agent.state.model.maxTokens || Infinity, output = Math.min(options.durable.maxOutputTokens ?? limit, limit);
+      return Math.min(Math.floor(window() * 0.15), (Number.isFinite(output) ? output : 0) + 16_384);
     };
     agent.harness = await Harness.open(storageGuard(options.durable.storage, options.durable.onStorageFailure), { registry, models: models as unknown as HarnessOptions["models"],
       // What Pi contains rather than throws (a faulted phase, a throwing hook or section, a dropped progress commit) is
