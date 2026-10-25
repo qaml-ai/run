@@ -227,7 +227,7 @@ export function observeTurns(model: () => { provider: string; id: string } | und
   let requested: number | undefined;
 
   function event(value: unknown) {
-    const event = value as { type?: string; message?: any; toolName?: string; isError?: boolean; result?: any };
+    const event = value as { type?: string; contextTokens?: { sent: number; window: number }; message?: any; toolName?: string; isError?: boolean; result?: any };
     if (event.type === "turn_start") {
       requested = clock();
       if (turn && turn.firstRequest === undefined) {
@@ -272,7 +272,7 @@ export function observeTurns(model: () => { provider: string; id: string } | und
           dimensions: { Provider: provider, Model: id, ErrorClass: errorClass(errorMessage || "error", stopReason) },
           rollups: [[], ["Provider", "Model"], ["ErrorClass"]],
           metrics: { ModelErrors: 1 },
-          properties: { error: safeError(errorMessage), ...(typeof host === "string" ? { host } : {}) },
+          properties: { error: safeError(errorMessage), ...(event.contextTokens ? { contextTokens: event.contextTokens } : {}), ...(typeof host === "string" ? { host } : {}) },
         });
       }
     } else if (event.type === "auto_retry_start") {
