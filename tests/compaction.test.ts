@@ -237,10 +237,30 @@ test("a context overflow from the provider compacts and retries the turn once", 
   const history = ((await supervisor.history("overflow")) as any[]);
   assert.equal(history.filter((message: any) => message.stopReason === "error").length, 0, "the rejected attempt is not history");
   assert.equal(history.length, 6);
-  // A subscriber folding the stream counts the same: the rejected attempt ended, and was taken back.
+  assert.equal(events.filter(event => event.type === "message_end" && event.message.stopReason === "error").length, 0, "recoverable refusals never become client answers");
+  // A subscriber folding the stream counts the same; private refusals have no visible slot.
   const ended = events.filter(event => event.type === "message_end").length;
   const retracted = events.filter(event => event.type === "message_retracted").length;
   assert.equal(ended - retracted, history.length);
+});
+
+test("a refused answer stays private while overflow compaction is pending", async t => {
+  const fake = await provider(t, { overflowFirst: 1, gated: true });
+  const supervisor = await fixture(t);
+  const initialMessages = Array.from({ length: 12 }, (_, index) => ({ role: "user" as const, content: turn(index), timestamp: index }));
+  await supervisor.start("pending-overflow", { model: fake.model(262_144), apiKey: "fixture", initialMessages }, bridge);
+  const events: any[] = [];
+  const pending = supervisor.request("pending-overflow", "prompt", { text: "continue" }, event => events.push(event));
+  await until(() => fake.state.inflight > 0, "overflow compaction is waiting for its summary");
+  assert.equal(events.filter(event => event.type === "message_end" && event.message.stopReason === "error").length, 0);
+  const releasing = setInterval(() => fake.release(), 10);
+  t.after(() => clearInterval(releasing));
+  fake.release();
+  const result = await pending;
+  clearInterval(releasing);
+  assert.equal(result.error, null);
+  assert.ok(events.some(event => event.type === "compaction_end" && event.reason === "overflow"));
+  assert.equal(events.filter(event => event.type === "message_end" && event.message.stopReason === "error").length, 0);
 });
 
 test("compaction summaries bill their tokens and cost to the tenant, apart from the agent's turns", async t => {
@@ -578,13 +598,13 @@ for (const outcome of ["fits", "irreducible", "summary-fails"]) test(outcome ===
     assert.ok(fake.chat().length <= 4, "native recovery and one host continuation are bounded");
     const history = await supervisor.history("overflow-twice") as any[];
     assert.equal(history.filter(message => message.stopReason === "error").length, 1, "only the final refusal remains in history");
-    if (outcome === "summary-fails") {
-      const lastRetraction = events.findLastIndex(event => event.type === "message_retracted");
-      assert.ok(events.slice(lastRetraction + 1).some(event => event.type === "message_end" && event.message.stopReason === "error"), "the restored refusal emits message_end");
-    }
+    const failures = events.filter(event => event.type === "message_end" && event.message.stopReason === "error");
+    assert.equal(failures.length, 1, "only the final unrecovered refusal is visible");
+    assert.equal(events.at(-1), failures[0], "the refusal is published after recovery ends");
     return;
   }
   assert.equal(result.error, null);
+  assert.equal(events.filter(event => event.type === "message_end" && event.message.stopReason === "error").length, 0);
   assert.equal(fake.chat().length, 3, "two refusals and one successful host continuation");
   assert.ok(text(fake.chat()[0]).length > 100_000);
   assert.ok(text(fake.chat().at(-1)!).length <= 100_000);

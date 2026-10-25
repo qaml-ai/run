@@ -46,6 +46,7 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
      */
     nativeSections?: boolean;
     contextWindow?: number;
+    maxOutputTokens?: number;
     summaryStream?: AgentOptions["streamFn"];
     onSummary?: (message: AssistantMessage) => void | Promise<void>;
     onCompaction?: (state: { summary: string; keptMessages: number; at: number; reason: "threshold" | "overflow" }) => void | Promise<void>;
@@ -236,6 +237,8 @@ export class DurableAgent {
    * after an overflow it compacts against this, as the legacy compactor kept about a fifth of the context.
    */
   private overflowWindow = Infinity;
+  private sentTokens = 0;
+  get contextTokens() { return { sent: this.sentTokens, window: Math.min(this.state.model.contextWindow, this.options.durable.contextWindow ?? Infinity, this.overflowWindow) }; }
   private errorMessage?: string;
   private lastTurn?: AssistantMessage;
   private lastTurnResults: ToolResultMessage[] = [];
@@ -393,20 +396,25 @@ export class DurableAgent {
       },
     };
     const window = () => Math.min(agent.state.model.contextWindow, options.durable.contextWindow ?? Infinity, agent.overflowWindow);
+    const reserve = () => {
+      // The output the provider sets aside from the window, plus a margin for the chars/4 estimate.
+      const limit = agent.state.model.maxTokens || Infinity, output = Math.min(options.durable.maxOutputTokens ?? limit, limit);
+      return Math.min(Math.floor(window() * 0.15), (Number.isFinite(output) ? output : 0) + 16_384);
+    };
     agent.harness = await Harness.open(storageGuard(options.durable.storage, options.durable.onStorageFailure), { registry, models: models as unknown as HarnessOptions["models"],
       // What Pi contains rather than throws (a faulted phase, a throwing hook or section, a dropped progress commit) is
       // otherwise silent.
       onReport: error => console.error(JSON.stringify({ type: "pi_report", error: error instanceof Error ? error.message : String(error) })),
       settings: { compaction: { enabled: true,
-        get reserveTokens() { return Math.min(16_384, Math.floor(window() * 0.15)); },
+        get reserveTokens() { return reserve(); },
         // The recent context a summary keeps, but never so much that what is fixed (the system prompt) and it fill the
         // window again within a quarter of it: then every turn would be summarized again (the legacy compactor waited
         // for that quarter too).
         get keepRecentTokens() {
-          const limit = window(), reserve = Math.min(16_384, Math.floor(limit * 0.15));
+          const limit = window(), reserved = reserve();
           const system = agent.messages.findLast(message => message.role === "system") ?? agent.leading();
           const fixed = system ? Math.ceil(JSON.stringify(system).length / 4) : 0;
-          return Math.max(1_000, Math.min(20_000, Math.floor(limit * 0.25), limit - reserve - fixed - Math.floor(limit / 4)));
+          return Math.max(1_000, Math.min(20_000, Math.floor(limit * 0.25), limit - reserved - fixed - Math.floor(limit / 4)));
         }, backgroundTokens: 0 },
         // Live answers and tool output stream to the host from the provider and the tool, not from these commits:
         // they only bound what a lost node's run keeps, so each costs a journal write once a second, not every 100 ms.
@@ -564,7 +572,7 @@ export class DurableAgent {
         sessionId: this.options.sessionId, onPayload: this.options.onPayload, onResponse: this.options.onResponse,
         onProviderStreamEvent: this.options.onProviderStreamEvent,
       });
-      const sent = llm.reduce((tokens, message) => tokens + estimateMessageTokens(message), 0);
+      const sent = this.sentTokens = llm.reduce((tokens, message) => tokens + estimateMessageTokens(message), 0);
       // An upstream may have dropped an over-native-window Luna prompt. Recover now; require repeat evidence to learn it.
       let inferred = false;
       const overflow = (message: AssistantMessage) => {

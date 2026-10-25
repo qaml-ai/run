@@ -142,7 +142,18 @@ export function createAgentHost(hostIO: HostIO) {
   let config: AgentConfig;
   // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
   const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
-  const io: HostIO = { ...hostIO, emit: event => { turns.event(event); hostIO.emit(event); } };
+  let refused: Parameters<HostIO["emit"]>[0] | undefined;
+  const io: HostIO = { ...hostIO, emit: value => {
+    let event = value as { type: string; message?: AssistantMessage; [key: string]: unknown };
+    const overflow = event.type === "message_end" && event.message?.role === "assistant" && event.message.stopReason === "error" && isContextOverflow(event.message);
+    if (overflow) event = { ...event, contextTokens: agent?.contextTokens };
+    turns.event(event);
+    // A refused response stays private until recovery ends. Its retraction has no client-visible slot to remove.
+    if (overflow) { refused = event; return; }
+    if (event.type === "message_retracted" && refused) { refused = undefined; return; }
+    if (refused && event.type === "message_end") { hostIO.emit(refused); refused = undefined; }
+    hostIO.emit(event);
+  } };
   /** The agent's history and turn, in its Pi journal. */
   let journal: HostJournal;
   /** How many of its messages the history index has (undefined: none is kept, or it could not be read at start). */
@@ -956,6 +967,7 @@ export function createAgentHost(hostIO: HostIO) {
         summaryStream,
         nativeSections: nativeSections(),
         get contextWindow() { return compactionModel().contextWindow; },
+        get maxOutputTokens() { return config.maxOutputTokens ?? undefined; },
         onSummary: message => io.emit({ type: "compaction_usage", provider: message.provider,
           model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
         onCompaction: async ({ keptMessages, reason }) => {
@@ -969,7 +981,8 @@ export function createAgentHost(hostIO: HostIO) {
           // The context as the agent held it when Pi compacted it: its history messages less those the summary keeps.
           const before = agent!.state.messages;
           const held = before.filter(message => message.role !== "system" && !isSummary(message)).length;
-          io.emit({ type: "compaction_end", reason, tokensBefore: contextTokens(before), keptMessages, summarizedMessages: Math.max(0, held - keptMessages) });
+          console.error(JSON.stringify({ type: "compaction_end", agent: config.id, reason, contextTokens: agent!.contextTokens }));
+          io.emit({ type: "compaction_end", contextTokens: agent!.contextTokens, reason, tokensBefore: contextTokens(before), keptMessages, summarizedMessages: Math.max(0, held - keptMessages) });
         },
       } });
       // What Pi settles for a run it was interrupted in is not history: the host closed that turn itself, above.
@@ -1083,6 +1096,7 @@ export function createAgentHost(hostIO: HostIO) {
     const promptMessages = method === "prompt" ? userMessages(params) : undefined;
     busy = true;
     stopped = undefined;
+    refused = undefined;
     omitImages = false;
     output = undefined;
     forcing = { left: FORCED_OUTPUT_REQUESTS, reminding: false, last: false };
@@ -1179,6 +1193,7 @@ export function createAgentHost(hostIO: HostIO) {
         ...(missing ? { error: `The model ended its turn without calling ${OUTPUT_TOOL}, so the run has no output in its schema`, code: "output_missing" } : {}),
       };
     } finally {
+      if (refused) { hostIO.emit(refused); refused = undefined; }
       // Steers sent for this turn that it did not take are taken back: each runs as a turn of its own.
       steerable = false;
       if (steers.some(steer => steer.whileRunning)) {

@@ -124,6 +124,28 @@ test("a 400k-token Luna history uses the catalog window without compaction", asy
   assert.equal(calls, 1);
 });
 
+for (const [output, below, above] of [[undefined, 900_000, 923_000], [32_000, 923_000, 1_019_000], [200_000, 890_000, 923_000]] as const) test(`native compaction reserves Luna output tokens (${output ?? "catalog"})`, async t => {
+  let summaries = 0, compactions = 0;
+  const agent = await DurableAgent.create({
+    initialState: { model: { ...model, contextWindow: 1_050_000, maxTokens: 128_000 }, messages: [], tools: [] },
+    streamFn: () => stream(fauxAssistantMessage("done")),
+    durable: { storage: new MemoryStorage(), maxOutputTokens: output,
+      summaryStream: () => { summaries++; return stream(fauxAssistantMessage("summary")); },
+      onCompaction: () => { compactions++; },
+    },
+  });
+  t.after(() => agent.close());
+  const history = (tokens: number) => Array.from({ length: 40 }, (_, i) => ({ role: "user", content: "x".repeat(tokens * 3.5 / 40), timestamp: i })) as any;
+  await agent.replaceContext(history(below));
+  await agent.prompt("continue");
+  assert.equal(compactions, 0, "context below the output reservation still fits");
+  await agent.replaceContext(history(above));
+  await agent.prompt("continue");
+  assert.equal(compactions, 1, "context crossing the output reservation compacts once");
+  assert.ok(summaries > 0);
+  assert.ok(agent.contextTokens.sent < 100_000, "retained context leaves headroom for another turn");
+});
+
 test("an overflow limit survives reopen and images are not counted as base64 text", async t => {
   const storage = new MemoryStorage();
   let summaries = 0;
