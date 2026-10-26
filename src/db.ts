@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createSecureContext, type SecureContext } from "node:tls";
 import pg from "pg";
 import { secretReader } from "./secrets.ts";
 import { sometimes } from "./assert.ts";
@@ -80,6 +81,21 @@ export function databaseUnavailable(error: unknown): boolean {
   return UNAVAILABLE_MESSAGES.test(error.message);
 }
 
+const secureContexts = new Map<string, SecureContext>();
+/**
+ * TLS for the database when AGENT_DATABASE_CA names a bundle: one SecureContext per bundle, made once and shared by every
+ * connection. Given `ca` instead, each connection pg opens (the pool's reconnect as they idle out) parses the whole bundle
+ * into a context of its own: ~0.9 MB of OpenSSL memory V8 does not count, so only a rare full GC frees it, and the
+ * allocator keeps what it frees. With the RDS bundle and pg's 10 s idle timeout, nodes' RSS grew ~1 GB a day.
+ */
+export function databaseTls(env = process.env): { secureContext: SecureContext; rejectUnauthorized: true } | undefined {
+  const path = env.AGENT_DATABASE_CA;
+  if (!path) return undefined;
+  let secureContext = secureContexts.get(path);
+  if (!secureContext) secureContexts.set(path, secureContext = createSecureContext({ ca: readFileSync(path, "utf8") }));
+  return { secureContext, rejectUnauthorized: true };
+}
+
 /**
  * The control-plane pool, from either
  * - AGENT_DATABASE_URL (development and tests), or
@@ -94,7 +110,7 @@ export async function databaseFromEnvironment(env = process.env): Promise<pg.Poo
   if (!Number.isInteger(max) || max < 1) throw new Error("AGENT_DATABASE_POOL_SIZE must be a positive integer");
   const queryTimeout = Number(env.AGENT_DATABASE_QUERY_TIMEOUT_MS ?? 30_000);
   if (!Number.isInteger(queryTimeout) || queryTimeout < 0) throw new Error("AGENT_DATABASE_QUERY_TIMEOUT_MS must be a non-negative integer");
-  const ssl = env.AGENT_DATABASE_CA ? { ca: readFileSync(env.AGENT_DATABASE_CA, "utf8"), rejectUnauthorized: true } : undefined;
+  const ssl = databaseTls(env);
   const common = { max, connectionTimeoutMillis: 10_000, keepAlive: true, ...(queryTimeout ? { query_timeout: queryTimeout } : {}), ...(ssl ? { ssl } : {}) };
   if (env.AGENT_DATABASE_URL) {
     const url = new URL(env.AGENT_DATABASE_URL);
@@ -127,7 +143,7 @@ const LIVENESS_MS = 30_000, LIVENESS_TIMEOUT_MS = 10_000;
  */
 export async function listenFromEnvironment(handlers: Record<string, (payload: string) => void>, env = process.env) {
   const channels = Object.keys(handlers);
-  const ssl = env.AGENT_DATABASE_CA ? { ca: readFileSync(env.AGENT_DATABASE_CA, "utf8"), rejectUnauthorized: true } : undefined;
+  const ssl = databaseTls(env);
   const secret = !env.AGENT_DATABASE_URL && env.AGENT_DATABASE_SECRET_ARN ? await secretReader(env.AGENT_DATABASE_SECRET_ARN, env) : undefined;
   const config = async (): Promise<pg.ClientConfig> => {
     if (env.AGENT_DATABASE_URL) {
