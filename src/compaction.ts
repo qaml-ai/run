@@ -213,7 +213,7 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
     return [target, callOptions.fetch || !FETCH_APIS.includes(target.api) ? callOptions : { ...callOptions, fetch: callFetch(sink) }];
   }
   const { apiKey, baseUrl, headers, region, bearer } = credentials;
-  if (model.provider === "azure" || model.api === "azure-openai-responses") return [model, azureOptions(model, options, credentials, modelHeaders, sink)];
+  if (model.provider === "azure" || model.api === "azure-openai-responses") return azureOptions(model, options, credentials, modelHeaders, sink);
   const fetchable = FETCH_APIS.includes(model.api);
   if (!apiKey && !fetchable) throw new Error(`A key scope entry without an apiKey cannot call ${model.provider}'s ${model.api} API`);
   const bedrock = model.api === "bedrock-converse-stream";
@@ -236,19 +236,21 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
 }
 
 /**
- * A call to the platform's Azure OpenAI resource (azure-openai.ts): Pi's Azure client, told the v1 API root, its version
+ * A call to the platform's Azure OpenAI resource (azure-openai.ts): Pi's Responses client takes the v1 API root, its version
  * and the model's deployment through its call's `env`, which it reads before the process's (so no AZURE_OPENAI_* of the
  * host's applies), over the node's network as every model call is. A model the resource has no deployment of is refused
- * before any request.
+ * before any request. Chat Completions takes the deployment as its model id and the key as an explicit header.
  */
-function azureOptions(model: Model<Api>, options: any, credentials: Credentials, modelHeaders: Record<string, string> | null | undefined, sink: UsageSink) {
-  // Deployments are of Responses API models only (azure-openai.ts): Azure's others (DeepSeek on its completions API) have none.
-  const deployment = model.api === "azure-openai-responses" && credentials.deployments && Object.hasOwn(credentials.deployments, model.id) ? credentials.deployments[model.id] : undefined;
+function azureOptions(model: Model<Api>, options: any, credentials: Credentials, modelHeaders: Record<string, string> | null | undefined, sink: UsageSink): [Model<Api>, any] {
+  const deployment = (model.api === "azure-openai-responses" || model.api === "openai-completions") && credentials.deployments && Object.hasOwn(credentials.deployments, model.id) ? credentials.deployments[model.id] : undefined;
   if (!credentials.baseUrl || !deployment) throw new Error(`No azure deployment is configured for ${model.provider}/${model.id} on this runtime; move the agent to a model you can use (GET /v1/models?available=true)`);
-  return {
+  if (model.api === "openai-completions") return [{ ...model, id: deployment, baseUrl: credentials.baseUrl }, {
+    ...options, apiKey: credentials.apiKey, headers: { ...options?.headers, ...modelHeaders, "api-key": credentials.apiKey }, fetch: callFetch(sink),
+  }];
+  return [model, {
     ...options, apiKey: credentials.apiKey, headers: { ...options?.headers, ...modelHeaders }, fetch: callFetch(sink),
     env: { AZURE_OPENAI_BASE_URL: credentials.baseUrl, AZURE_OPENAI_API_VERSION: AZURE_CHAT_API_VERSION, AZURE_OPENAI_DEPLOYMENT_NAME_MAP: `${model.id}=${deployment}` },
-  };
+  }];
 }
 
 /**

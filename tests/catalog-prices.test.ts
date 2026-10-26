@@ -113,3 +113,16 @@ test("suffix fallback corrects prices, maxTokens and the stored window", () => {
   assert.equal(withCatalogPrices(model).maxTokens, 131_072);
   assert.equal(withCatalogPrices(model).contextWindow, getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!.contextWindow);
 });
+
+
+test("Azure DeepSeek V4.1 Flash has its measured limits, Azure prices and Chat Completions compatibility", () => {
+  const model = getModel("azure", "deepseek-v4.1-flash")!;
+  assert.equal(model.name, "DeepSeek V4.1 Flash");
+  assert.equal(model.api, "openai-completions");
+  assert.equal(model.contextWindow, 1_048_576);
+  assert.equal(model.maxTokens, 131_072);
+  assert.deepEqual(model.input, ["text", "image"]);
+  assert.deepEqual(model.cost, { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0 });
+  assert.deepEqual(model.thinkingLevelMap, getModel("openrouter", "deepseek/deepseek-v4.1-flash")!.thinkingLevelMap);
+  assert.deepEqual(model.compat, { ...getModel("azure", "deepseek-v4-pro")!.compat, maxTokensField: "max_tokens" });
+});

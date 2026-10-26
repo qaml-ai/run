@@ -4,7 +4,7 @@
 # value) they stay on OpenAI, which is also Azure's fallback, and no azure model is offered.
 #
 # Usage: infra/azure-openai.sh <endpoint> [imageDeployment] [transcriptionDeployment] [models] [realtimeDeployment]   (reads the API key from stdin)
-#   models: catalog model ids and their deployments, as gpt-6-sol=sol-eastus2,gpt-6-luna (a bare id is its own name)
+#   models: catalog model ids and their deployments, as deepseek-v4.1-flash=DeepSeek-V4.1-Flash (a bare id is its own name; Responses or Chat Completions)
 #   realtimeDeployment: gpt-realtime-2.1's deployment (default gpt-realtime-2.1); "" keeps voice sessions on OpenAI
 #   e.g. az cognitiveservices account keys list -g oai -n migue-ma8lkatg-eastus2 --query key1 -o tsv \
 #          | infra/azure-openai.sh https://migue-ma8lkatg-eastus2.cognitiveservices.azure.com gpt-image-2.5-flare gpt-transcribe gpt-6-sol,gpt-6-luna gpt-realtime-2.1

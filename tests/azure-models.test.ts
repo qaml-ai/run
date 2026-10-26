@@ -1,10 +1,12 @@
 import { test } from "node:test";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { azureChatCredentials, azureOpenAIConfig } from "../src/azure-openai.ts";
+import { explicitKeyStream } from "../src/compaction.ts";
 import { getModel } from "../src/pi-catalog.ts";
 import { platformUsage } from "../src/platform-pricing.ts";
 import { micros } from "../src/pricing.ts";
@@ -39,7 +41,8 @@ async function fakeAzure(t: T, reply: (body: any, index: number) => Reply) {
     const next = reply(body, requests.length - 1);
     if ("status" in next) return void res.writeHead(next.status, { "Content-Type": "application/json", ...next.headers }).end(JSON.stringify({ error: next.error }));
     res.writeHead(200, { "Content-Type": "text/event-stream" });
-    for (const event of next.events) res.write(`event: ${(event as { type: string }).type}\ndata: ${JSON.stringify(event)}\n\n`);
+    for (const event of next.events) res.write(`data: ${JSON.stringify(event)}\n\n`);
+    res.write("data: [DONE]\n\n");
     res.end();
   });
   return { base, requests };
@@ -64,8 +67,8 @@ test("Azure chat deployments: a map of catalog model to deployment, or the envir
   assert.deepEqual(config({ "gpt-6.1-sol": "sol61" }).models, { "gpt-6.1-sol": "sol61" });
   assert.deepEqual(config({ "gpt-6.1-terra": "terra61" }).models, { "gpt-6.1-terra": "terra61" });
   assert.deepEqual(config("gpt-6.1-terra").models, { "gpt-6.1-terra": "gpt-6.1-terra" });
-  // Not an azure model on the Responses API (a typo, an OpenAI-only model, DeepSeek on Azure's completions API): left out.
-  assert.deepEqual(config("gpt-6-sol,gpt-6-sun,deepseek-v4-pro").models, { "gpt-6-sol": "gpt-6-sol" });
+  // Both Azure chat APIs are accepted; a model the catalog lacks is left out.
+  assert.deepEqual(config("gpt-6-sol,gpt-6-sun,deepseek-v4-pro,deepseek-v4.1-flash=DeepSeek-V4.1-Flash").models, { "gpt-6-sol": "gpt-6-sol", "deepseek-v4-pro": "deepseek-v4-pro", "deepseek-v4.1-flash": "DeepSeek-V4.1-Flash" });
   assert.equal(config("gpt-6-sun").models, undefined);
   for (const bad of ["gpt-6-sol=", "gpt-6-sol=a/b", ["gpt-6-sol"], { "gpt-6-sol": 1 }]) assert.throws(() => config(bad), /x: /, JSON.stringify(bad));
   assert.deepEqual(azureChatCredentials(config("gpt-6-sol")), { apiKey: "k", baseUrl: "https://camel.openai.azure.com/openai/v1", deployments: { "gpt-6-sol": "gpt-6-sol" } });
@@ -154,7 +157,7 @@ test("an azure model without a deployment, a refused key, a missing deployment a
   const record = await r.prompt(undeployed.json.id, "Hi", PAYG);
   assert.equal(record.outcome.result.code, "model_key_missing", JSON.stringify(record));
   assert.match(record.error, /No azure deployment is configured for azure\/gpt-5\.5 on this runtime/);
-  // Nor one of Azure's that is not on its Responses API, which no deployment can name.
+  // A Chat Completions model also needs an explicitly configured deployment.
   const deepseek = (await r.call("/v1/agents", { body: { model: "azure/deepseek-v4-pro" }, token: PAYG })).json.id;
   assert.equal((await r.prompt(deepseek, "Hi", PAYG)).outcome.result.code, "model_key_missing");
   assert.equal(azure.requests.length, before, "Azure was not called");
@@ -180,7 +183,7 @@ test("an azure model without a deployment, a refused key, a missing deployment a
 });
 
 test("scripts/azure-models-check.ts makes one minimal call per configured deployment and reports Azure's answer, never the key", async t => {
-  const azure = await fakeAzure(t, body => body.model === "missing" ? { status: 404, error: { code: "DeploymentNotFound", message: "The API deployment for this resource does not exist." } } : responses([message("ok")], { input_tokens: 12, output_tokens: 2 }));
+  const azure = await fakeAzure(t, body => body.model === "missing" ? { status: 404, error: { code: "DeploymentNotFound", message: "The API deployment for this resource does not exist." } } : body.model === "DeepSeek-V4.1-Flash" ? flashReply(false) : responses([message("ok")], { input_tokens: 12, output_tokens: 2 }));
   const run = (models: string, extra: string[] = []) => promisify(execFile)(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../scripts/azure-models-check.ts", import.meta.url)), ...extra], {
     env: { PATH: process.env.PATH, AGENT_AZURE_OPENAI_ENDPOINT: azure.base, AGENT_AZURE_OPENAI_API_KEY: KEY, AGENT_AZURE_OPENAI_MODELS: models },
   }).then(done => ({ code: 0, stdout: done.stdout, stderr: done.stderr }), (error: any) => ({ code: error.code as number, stdout: error.stdout as string, stderr: error.stderr as string }));
@@ -188,12 +191,67 @@ test("scripts/azure-models-check.ts makes one minimal call per configured deploy
   const dry = await run("gpt-6-sol=sol-eastus2", ["--dry-run"]);
   assert.equal(dry.code, 0, dry.stderr);
   assert.equal(azure.requests.length, 0);
-  const ok = await run("gpt-6-sol=sol-eastus2,gpt-6-luna=missing");
+  const ok = await run("gpt-6-sol=sol-eastus2,gpt-6-luna=missing,deepseek-v4.1-flash=DeepSeek-V4.1-Flash");
   assert.equal(ok.code, 1, "a deployment failed");
   const lines = ok.stdout.trim().split("\n").map(line => JSON.parse(line));
-  assert.deepEqual(lines.map(line => [line.model, line.deployment, !!line.ok]), [["azure/gpt-6-sol", "sol-eastus2", true], ["azure/gpt-6-luna", "missing", false]]);
+  assert.deepEqual(lines.map(line => [line.model, line.deployment, !!line.ok]), [["azure/gpt-6-sol", "sol-eastus2", true], ["azure/gpt-6-luna", "missing", false], ["azure/deepseek-v4.1-flash", "DeepSeek-V4.1-Flash", true]]);
   assert.deepEqual(lines[0].usage, { input: 12, output: 2, cacheRead: 0, usd: (12 * 2 + 2 * 10) / 1e6 });
   assert.match(lines[1].error, /deployment for this resource does not exist/);
-  assert.deepEqual(azure.requests.map(request => [request.body.model, request.body.max_output_tokens, request.apiKey]), [["sol-eastus2", 16, KEY], ["missing", 16, KEY]]);
+  assert.deepEqual(azure.requests.map(request => [request.body.model, request.body.max_output_tokens ?? request.body.max_tokens, request.apiKey]), [["sol-eastus2", 16, KEY], ["missing", 16, KEY], ["DeepSeek-V4.1-Flash", 16, KEY]]);
+  assert.equal(lines[2].api, "openai-completions");
+  assert.equal(lines[2].usage.usd, Number(flashCost.toFixed(6)));
   assert.ok(!ok.stdout.includes(KEY) && !ok.stderr.includes(KEY));
+});
+
+const flashUsage = { prompt_tokens: 2_000, completion_tokens: 300, total_tokens: 2_300, prompt_tokens_details: { cached_tokens: 1_200 } };
+const flashCost = (800 * 0.3 + 1_200 * 0.006 + 300 * 1.2) / 1e6;
+function flashReply(tool: boolean): Reply {
+  const chunk = (delta: object, finish_reason: string | null = null) => ({ id: "chatcmpl_flash", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }] });
+  return { events: [
+    chunk({ role: "assistant", reasoning_content: "I should calculate." }),
+    chunk(tool ? { tool_calls: [{ index: 0, id: "call_flash", type: "function", function: { name: "js_exec", arguments: '{"code":"return 6 * 7;"}' } }] } : { content: "42" }),
+    chunk({}, tool ? "tool_calls" : "stop"),
+    { id: "chatcmpl_flash", object: "chat.completion.chunk", choices: [], usage: flashUsage },
+  ] };
+}
+
+test("Azure Flash streams reasoning, a tool call and cached usage through Chat Completions", async t => {
+  const model = getModel("azure", "deepseek-v4.1-flash")!;
+  const azure = await fakeAzure(t, () => flashReply(true));
+  const config = azureOpenAIConfig({ endpoint: azure.base, apiKey: KEY, models: "deepseek-v4.1-flash=DeepSeek-V4.1-Flash" }, "test")!;
+  const stream = await explicitKeyStream(() => Promise.resolve(azureChatCredentials(config)))(model, normalizeContext({
+    messages: [{ role: "user", content: "Calculate.", timestamp: 0 }],
+    tools: [{ name: "js_exec", description: "Run code", parameters: { type: "object", properties: { code: { type: "string" } } } }],
+  }), { apiKey: "per-call", reasoning: "high" });
+  const reply = await stream.result();
+  assert.equal(reply.stopReason, "toolUse", reply.errorMessage);
+  assert.ok(reply.content.some(block => block.type === "thinking" && block.thinking === "I should calculate."));
+  assert.ok(reply.content.some(block => block.type === "toolCall" && block.name === "js_exec" && block.arguments.code === "return 6 * 7;"));
+  assert.deepEqual([reply.usage.input, reply.usage.output, reply.usage.cacheRead], [800, 300, 1_200]);
+  assert.ok(Math.abs(reply.usage.cost.total - flashCost) < 1e-12);
+  const request = azure.requests[0];
+  assert.deepEqual([request.path, request.apiKey, request.body.model, request.body.stream_options, request.body.reasoning_effort],
+    ["/openai/v1/chat/completions", KEY, "DeepSeek-V4.1-Flash", { include_usage: true }, "high"]);
+  assert.equal(request.body.reasoning, undefined);
+  assert.equal(request.body.max_tokens, 131_072);
+});
+
+test("Azure Flash uses platform credentials and catalog billing and replays reasoning with tool results", async t => {
+  const { r, azure } = await start(t, (_body, index) => flashReply(index === 0), "deepseek-v4.1-flash=DeepSeek-V4.1-Flash");
+  const listed = (await r.call("/v1/models?provider=azure&available=true", { token: PAYG })).json;
+  assert.deepEqual(listed.map((model: any) => model.id), ["azure/deepseek-v4.1-flash"]);
+  const agent = await r.call("/v1/agents", { body: { model: "azure/deepseek-v4.1-flash" }, token: PAYG });
+  assert.equal(agent.status, 201, agent.text);
+  const outcome = (await r.prompt(agent.json.id, "What is 6 * 7?", PAYG)).outcome;
+  assert.equal(outcome.result.reply, "42", JSON.stringify(outcome));
+  assert.equal(azure.requests.length, 2);
+  for (const request of azure.requests) assert.deepEqual([request.path, request.apiKey, request.body.model], ["/openai/v1/chat/completions", KEY, "DeepSeek-V4.1-Flash"]);
+  const replay = azure.requests[1].body.messages;
+  assert.ok(replay.some((message: any) => message.role === "assistant" && message.reasoning_content === "I should calculate." && message.tool_calls?.length));
+  assert.ok(replay.some((message: any) => message.role === "tool" && message.tool_call_id === "call_flash"));
+  await until(async () => (await r.call("/v1/billing", { token: PAYG })).json.balance === micros(10) - 2 * micros(flashCost), "Flash responses charged");
+  const recorded = await until(async () => { const usage = (await r.call("/v1/usage", { token: PAYG })).json; return usage.totals.platformResponses === 2 && usage; }, "Flash usage recorded");
+  assert.deepEqual([recorded.totals.input, recorded.totals.cacheRead, recorded.totals.output], [1_600, 2_400, 600]);
+  assert.ok(Math.abs(recorded.totals.platformCost - 2 * flashCost) < 1e-9);
+  assert.ok(!r.logs.some(line => line.includes(KEY)));
 });
