@@ -450,7 +450,7 @@ export function recordCredentialExchange(exchange: { tenant: string; agent: stri
 
 /**
  * A turn a node leaving the cluster handed off at a step boundary, as its next owner continues it (`turn_handed_off`):
- * why the node left (`retire`: a newer deploy; `drain`: SIGTERM), what was in flight when it began leaving (a model
+ * why the node left (`retire`: a newer deploy; `drain`: SIGTERM; `memory`: sustained memory pressure), what was in flight when it began leaving (a model
  * call or tool calls), how long the turn took to reach the boundary from then, and how long the turn then waited
  * for the next owner to continue it.
  */

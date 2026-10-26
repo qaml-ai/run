@@ -417,3 +417,78 @@ test("probeNode: a listening address is alive; a closed port is gone; an address
   assert.equal(await probeNode("http://no-such-node.invalid:8790"), true);
   assert.equal(await probeNode("first"), true);
 });
+
+test("memory retirement serializes competing nodes, requires a serving peer, and ends with the heartbeat", async t => {
+  const { db } = await testDatabase();
+  const a = new Ownership(db, { node: "http://memory-a" });
+  const b = new Ownership(db, { node: "http://memory-b" });
+  const c = new Ownership(db, { node: "http://memory-c" });
+  t.after(async () => { await a.close(); await b.close(); await c.close(); });
+  await a.start();
+  assert.equal(await a.retireForMemory(), false, "never the last live node");
+  await b.start();
+  const results = await Promise.all([a.retireForMemory(), b.retireForMemory()]);
+  assert.equal(results.filter(Boolean).length, 1);
+  const [winner, other] = results[0] ? [a, b] : [b, a];
+  await c.start();
+  assert.equal(await other.retireForMemory(), false, "guard held while the winner drains");
+  assert.equal(winner.draining, true);
+  await assert.rejects(winner.acquire("new-during-memory-drain"), /shutting down/);
+  await winner.close();
+  assert.equal(await other.retireForMemory(), false, "cooldown outlives the retiring heartbeat");
+  await db.query("update memory_retirement_guard set last_claim_at = now() - interval '10 minutes'");
+  await c.drain();
+  assert.equal(await other.retireForMemory(), false, "a draining peer cannot receive work");
+  await c.undrain();
+  assert.equal(await other.retireForMemory(), true, "guard released when the winner leaves");
+});
+
+test("an expired memory retirement is reaped and does not block a new claim after cooldown", async t => {
+  const { db } = await testDatabase();
+  const a = new Ownership(db, { node: "http://a" });
+  const b = new Ownership(db, { node: "http://b" });
+  t.after(async () => { await a.close(); await b.close(); });
+  await a.start();
+  await b.start();
+  await db.query(`insert into runtime_nodes (node, session, expires_at, memory_retiring, draining)
+    values ('http://expired', '00000000-0000-0000-0000-000000000001', now() - interval '1 millisecond', true, true)`);
+  await db.query("update memory_retirement_guard set last_claim_at = now() - interval '10 minutes'");
+  assert.equal(await a.retireForMemory(), true);
+  assert.equal((await db.query("select 1 from runtime_nodes where node = 'http://expired'")).rowCount, 0);
+});
+
+test("a peer publishes memory pressure on registration and renewal and cannot receive a memory retirement", async t => {
+  const { db } = await testDatabase();
+  let high = true;
+  const a = new Ownership(db, { node: "http://a" });
+  const b = new Ownership(db, { node: "http://b", memoryHigh: () => high });
+  t.after(async () => { await a.close(); await b.close(); });
+  await a.start();
+  await b.start();
+  assert.equal((await db.query("select memory_high from runtime_nodes where node = $1", [b.node])).rows[0].memory_high, true);
+  assert.equal(await a.retireForMemory(), false);
+  high = false;
+  await b.renew();
+  assert.equal((await db.query("select memory_high from runtime_nodes where node = $1", [b.node])).rows[0].memory_high, false);
+  assert.equal(await a.retireForMemory(), true);
+  await a.undrain();
+  assert.deepEqual((await db.query("select memory_retiring, draining from runtime_nodes where node = $1", [a.node])).rows[0], { memory_retiring: false, draining: false });
+});
+
+
+test("releasing a memory claim preserves drain and a deferred claim can retry", async t => {
+  const { db } = await testDatabase();
+  const a = new Ownership(db, { node: "http://a" });
+  const b = new Ownership(db, { node: "http://b" });
+  t.after(async () => { await a.close(); await b.close(); });
+  await a.start();
+  await b.start();
+  assert.equal(await a.retireForMemory(), true);
+  await a.releaseMemoryRetirement();
+  assert.deepEqual((await db.query("select memory_retiring, draining from runtime_nodes where node = $1", [a.node])).rows[0], { memory_retiring: false, draining: true });
+  await assert.rejects(a.acquire("new-agent"), /This node is shutting down; retry/);
+  assert.equal(await a.retireForMemory(true), false, "the cooldown still applies");
+  await db.query("update memory_retirement_guard set last_claim_at = now() - interval '10 minutes'");
+  assert.equal(await a.retireForMemory(), false, "ordinary claims cannot retire a draining node");
+  assert.equal(await a.retireForMemory(true), true);
+});

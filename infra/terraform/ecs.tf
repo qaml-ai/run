@@ -72,6 +72,7 @@ locals {
     AGENT_SERVICE_NAME = local.service_name
     # Inline agents share the task's memory: past about two thirds of it a task starts no more of them and hands new
     # work to a peer, below the -task-memory alarm (3 GB of 4) and well below the OOM kill.
+    AGENT_MEMORY_RETIRE_MS  = "600000"
     AGENT_MEMORY_HIGH_BYTES = tostring(floor(var.task_memory * 0.65) * 1048576)
     # Tenants whose agents' system sections are native Pi sections (the canary of the instructions section's move).
     AGENT_NATIVE_SECTIONS_TENANTS = var.agent_native_sections_tenants
@@ -185,7 +186,7 @@ resource "aws_iam_role_policy" "task" {
       {
         Sid      = "OwnTaskProtection"
         Effect   = "Allow"
-        Action   = ["ecs:UpdateTaskProtection", "ecs:GetTaskProtection"]
+        Action   = ["ecs:UpdateTaskProtection", "ecs:GetTaskProtection", "ecs:StopTask"]
         Resource = "arn:aws:ecs:${var.region}:${var.account_id}:task/${local.cluster_name}/*"
       },
       {

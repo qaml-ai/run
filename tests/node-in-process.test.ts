@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nodeConfig } from "../src/node-config.ts";
 import { createNode, nodeDeps, type RuntimeNode } from "../src/node.ts";
+import { Ownership } from "../src/ownership.ts";
 import type { Db } from "../src/db.ts";
 import { REAL_NETWORK, type Network } from "../src/node-context.ts";
 import { onFreePort, sha, token } from "./cluster-helpers.ts";
@@ -134,3 +135,183 @@ function recordingNetwork() {
   };
   return { calls, network };
 }
+
+for (const state of ["stop", "current", "waiting", "superseded", "unknown"] as const) test(`memory retirement uses ${state} and keeps HTTP alive until the first external signal`, { timeout: 60_000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), "agent-memory-retire-"));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const { db, url } = await testDatabase();
+  const nodes: RuntimeNode[] = [];
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  let fallback = false;
+  let stops = 0;
+  t.after(async () => { release.resolve(); for (const node of nodes) await node.close().catch(() => {}); });
+  const logs: any[] = [];
+  const log = console.log;
+  t.mock.method(console, "log", (line: string) => { try { logs.push(JSON.parse(line)); } catch {} log(line); });
+  for (const name of ["peer", "high"]) await onFreePort(async port => {
+    const config = nodeConfig({
+      PORT: String(port), AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,
+      AGENT_DATA_DIR: root, AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline",
+      AGENT_TENANT: "alice", AGENT_OPERATOR_TOKEN: token,
+      AGENT_SESSION_SECRET: "memory-retirement-test-session-secret", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
+      AGENT_MEMORY_HIGH_BYTES: name === "high" ? "1" : undefined, AGENT_MEMORY_RETIRE_MS: "1",
+    });
+    const deps = await nodeDeps(config);
+    if (name === "high") {
+      const query = deps.db.query.bind(deps.db);
+      deps.db.query = async (text, values) => {
+        if (text.startsWith("update runtime_nodes set draining = true")) { entered.resolve(); await release.promise; }
+        return query(text, values);
+      };
+    }
+    const check = Object.assign(async () => state === "stop" ? "current" as const : state === "unknown" ? "waiting" as const : state, {
+      stopTask: async () => { stops++; if (state !== "stop") throw new Error("AccessDenied"); },
+    });
+    const node = await createNode(config, { ...deps, supersession: async () => state === "unknown" ? undefined : check,
+      random: { float: () => 0, bytes: randomBytes }, memoryRetired: () => { fallback = true; } });
+    nodes.push(node);
+    await node.start();
+  });
+  const high = nodes[1];
+  if (!["stop", "current"].includes(state)) {
+    await until(() => logs.some(entry => entry.type === "node_memory_retire_deferred" && entry.node === high.node), "claim deferred", 45_000);
+    assert.deepEqual((await db.query("select memory_retiring, draining from runtime_nodes where node = $1", [high.node])).rows[0], { memory_retiring: false, draining: true });
+    assert.equal((await fetch(`${high.node}/healthz`)).status, 200);
+    assert.equal(stops, state === "unknown" ? 0 : 1);
+    release.resolve();
+    return;
+  }
+  await entered.promise;
+  assert.equal(stops, 1);
+  assert.equal((await fetch(`${high.node}/healthz`)).status, state === "stop" ? 200 : 503);
+  assert.equal((await db.query("select memory_retiring, draining from runtime_nodes where node = $1", [high.node])).rows[0].memory_retiring, true);
+  assert.ok(logs.some(entry => entry.type === "node_memory_retire" && entry.rssMb > 0 && entry.heldMs >= 1));
+  release.resolve();
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal((await fetch(`${high.node}/healthz`)).status, state === "stop" ? 200 : 503);
+  assert.equal((await db.query("select 1 from runtime_nodes where node = $1", [high.node])).rowCount, 1);
+  await high.drain("SIGTERM");
+  assert.equal(fallback, false, "an external signal never invokes the fallback exit");
+  assert.equal((await db.query("select 1 from runtime_nodes where node = $1", [high.node])).rowCount, 0);
+  assert.ok(logs.some(entry => entry.type === "drain_finished" && entry.node === high.node));
+  assert.equal((await fetch(`${nodes[0].node}/healthz`)).status, 200);
+});
+
+test("SIGTERM during a memory drain hands the running turn to a peer without cutting its step", { timeout: 30_000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), "agent-memory-signal-"));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const { db, url } = await testDatabase();
+  writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key" } } } }));
+  const release = Promise.withResolvers<void>();
+  const model = await fakeModel(t, (_body, index) => index === 0
+    ? { ...toolCall("js_exec", { code: "return 42" }), wait: release.promise }
+    : { role: "assistant", content: "finished on the peer" });
+  let high = false;
+  t.mock.method(process.memoryUsage, "rss", () => high ? 2 : 0);
+  const nodes: RuntimeNode[] = [];
+  t.after(async () => { release.resolve(); for (const node of nodes) await node.close().catch(() => {}); });
+  for (const name of ["peer", "high"]) await onFreePort(async port => {
+    const config = nodeConfig({
+      PORT: String(port), AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,
+      AGENT_DATA_DIR: root, AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline",
+      AGENT_TENANTS_FILE: join(root, "tenants.json"),
+      AGENT_SESSION_SECRET: "memory-retirement-test-session-secret", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
+      AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url,
+      AGENT_MEMORY_HIGH_BYTES: name === "high" ? "1" : undefined, AGENT_MEMORY_RETIRE_MS: "1",
+    });
+    const node = await createNode(config, { ...await nodeDeps(config), supersession: async () => async () => "current", random: { float: () => 0, bytes: randomBytes } });
+    nodes.push(node);
+    await node.start();
+  });
+  const [peer, retiring] = nodes;
+  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  const created = await (await fetch(`${retiring.node}/v1/agents`, { method: "POST", headers, body: JSON.stringify({ name: "memory-signal" }) })).json() as any;
+  const accepted = await (await fetch(`${retiring.node}/v1/agents/${created.id}/prompt`, { method: "POST", headers, body: JSON.stringify({ text: "go" }) })).json() as any;
+  await until(() => model.bodies.length === 1, "the first model step to start");
+  high = true;
+  await until(async () => (await fetch(`${retiring.node}/healthz`)).status === 503, "memory retirement to begin");
+  const drained = retiring.drain("SIGTERM");
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal((await fetch(`${retiring.node}/healthz`)).status, 503);
+  assert.equal(model.bodies.length, 1, "SIGTERM did not cut and retry the pending model step");
+  assert.equal((await db.query("select node from actor_owners where actor = $1", [created.id])).rows[0].node, retiring.node);
+  release.resolve();
+  await drained;
+  const record = await until(async () => {
+    const result = await (await fetch(`${peer.node}/v1/agents/${created.id}/requests/${accepted.id}`, { headers })).json() as any;
+    return result.state === "completed" && result;
+  }, "the handed-off turn to finish");
+  assert.equal(record.outcome.error, undefined, JSON.stringify(record));
+  assert.equal(record.outcome.result.reply, "finished on the peer");
+  assert.ok(record.handoffs.some((handoff: any) => handoff.reason === "memory"), JSON.stringify(record));
+  assert.equal((await db.query("select node from actor_owners where actor = $1", [created.id])).rows[0].node, peer.node);
+});
+
+for (const fails of [false, true]) test(`memory fallback exits ${fails ? 1 : 0} after the drain ${fails ? "fails" : "finishes"}`, { timeout: 30_000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), "agent-memory-fallback-"));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const { url } = await testDatabase();
+  const nodes: RuntimeNode[] = [];
+  t.after(async () => { for (const node of nodes) await node.close().catch(() => {}); });
+  const retired = Promise.withResolvers<number>();
+  for (const name of ["peer", "high"]) await onFreePort(async port => {
+    const config = nodeConfig({
+      PORT: String(port), AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,
+      AGENT_DATA_DIR: root, AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline",
+      AGENT_TENANT: "alice", AGENT_OPERATOR_TOKEN: token,
+      AGENT_SESSION_SECRET: "memory-retirement-test-session-secret", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
+      AGENT_MEMORY_HIGH_BYTES: name === "high" ? "1" : undefined, AGENT_MEMORY_RETIRE_MS: "1", AGENT_MEMORY_RETIRE_FALLBACK_MS: "100",
+    });
+    const deps = await nodeDeps(config);
+    if (name === "high" && fails) {
+      const end = deps.db.end.bind(deps.db);
+      deps.db.end = async () => { await end(); throw new Error("test drain failure"); };
+    }
+    const node = await createNode(config, { ...deps, supersession: async () => async () => "current", random: { float: () => 0, bytes: randomBytes }, memoryRetired: code => retired.resolve(code) });
+    nodes.push(node);
+    await node.start();
+  });
+  assert.equal(await retired.promise, fails ? 1 : 0);
+});
+
+
+test("SIGTERM during a memory claim releases the flag without undraining", { timeout: 30_000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), "agent-memory-bail-"));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const { db, url } = await testDatabase();
+  const nodes: RuntimeNode[] = [];
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  let signal: Promise<void> | undefined;
+  t.after(async () => { release.resolve(); for (const node of nodes) await node.close().catch(() => {}); });
+  const retire = Ownership.prototype.retireForMemory;
+  const drain = Ownership.prototype.drain;
+  const undrain = t.mock.method(Ownership.prototype, "undrain");
+  t.mock.method(Ownership.prototype, "drain", async function(this: Ownership) {
+    entered.resolve();
+    await release.promise;
+    await drain.call(this);
+  });
+  t.mock.method(Ownership.prototype, "retireForMemory", async function(this: Ownership, retry?: boolean) {
+    const claimed = await retire.call(this, retry);
+    if (claimed) { signal = nodes[1].drain("SIGTERM"); await entered.promise; }
+    return claimed;
+  });
+  for (const name of ["peer", "high"]) await onFreePort(async port => {
+    const config = nodeConfig({
+      PORT: String(port), AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,
+      AGENT_DATA_DIR: root, AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline",
+      AGENT_TENANT: "alice", AGENT_OPERATOR_TOKEN: token,
+      AGENT_SESSION_SECRET: "memory-retirement-test-session-secret", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
+      AGENT_MEMORY_HIGH_BYTES: name === "high" ? "1" : undefined, AGENT_MEMORY_RETIRE_MS: "1",
+    });
+    const node = await createNode(config, { ...await nodeDeps(config), random: { float: () => 0, bytes: randomBytes } });
+    nodes.push(node);
+    await node.start();
+  });
+  await entered.promise;
+  await until(async () => (await db.query("select memory_retiring from runtime_nodes where node = $1", [nodes[1].node])).rows[0]?.memory_retiring === false, "memory claim released");
+  assert.equal((await db.query("select draining from runtime_nodes where node = $1", [nodes[1].node])).rows[0].draining, true);
+  assert.equal(undrain.mock.callCount(), 0);
+  release.resolve();
+  await signal;
+});

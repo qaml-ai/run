@@ -6,7 +6,7 @@ import { setMetricService } from "./metrics.ts";
 // here: its signals, and exiting once the node has left the cluster.
 const config = nodeConfig(process.env);
 setMetricService(config.serviceName);
-const node = await createNode(config, await nodeDeps(config));
+const node = await createNode(config, { ...await nodeDeps(config), memoryRetired: code => process.exit(code) });
 process.on("SIGHUP", () => void node.reloadTenants());
 // The first signal drains; a second one stops waiting for running turns.
 let exiting = false;

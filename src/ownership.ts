@@ -38,6 +38,8 @@ export function underClaim<T>(db: Db, claim: Claim | undefined, work: (sql: Sql)
 
 /** Peers suspect a node whose last renewal began this many heartbeats ago (`reap`). */
 export const SUSPECT_RENEWALS = 3;
+/** Minimum time between memory retirement claims across the cluster. */
+export const MEMORY_RETIRE_COOLDOWN_MS = 600_000;
 /**
  * A node makes model and tool calls only while its last successful renewal began fewer than this many
  * heartbeats ago (`fresh`). The heartbeat left before peers suspect it covers the gap between a check
@@ -105,13 +107,14 @@ export class Ownership {
   private readonly reaped = new Set<(nodes: string[]) => void>();
   private reaping = false;
   private closed = false;
+  private readonly memoryHigh: () => boolean;
   draining = false;
 
   /**
    * `alive`, when given, says whether a peer whose heartbeat is late still runs (see `reap`); nodes use
    * `probeNode`. It must answer true unless the peer's process is certainly gone.
    */
-  constructor(db: Db, options: { node: string; ttlMs?: number; cacheMs?: number; alive?: (node: string) => Promise<boolean> }) {
+  constructor(db: Db, options: { node: string; ttlMs?: number; cacheMs?: number; alive?: (node: string) => Promise<boolean>; memoryHigh?: () => boolean }) {
     this.db = db;
     this.node = options.node;
     this.ttlMs = options.ttlMs ?? 90_000;
@@ -119,6 +122,7 @@ export class Ownership {
     this.heartbeatMs = Math.max(10, Math.min(Math.floor(this.ttlMs / 6), 3_000));
     this.freshMs = FRESH_RENEWALS * this.heartbeatMs;
     this.alive = options.alive;
+    this.memoryHigh = options.memoryHigh ?? (() => false);
   }
 
   async start() {
@@ -177,8 +181,8 @@ export class Ownership {
       const session = this.session;
       const started = clock().monotonic();
       await this.db.query(`
-        insert into runtime_nodes (node, session, expires_at) values ($1, $2, now() + $3 * interval '1 millisecond')
-        on conflict (node) do update set session = excluded.session, expires_at = excluded.expires_at, draining = false`, [this.node, session, this.ttlMs]);
+        insert into runtime_nodes (node, session, expires_at, memory_high) values ($1, $2, now() + $3 * interval '1 millisecond', $4)
+        on conflict (node) do update set session = excluded.session, expires_at = excluded.expires_at, draining = false, memory_retiring = false, memory_high = excluded.memory_high`, [this.node, session, this.ttlMs, this.memoryHigh()]);
       if (session !== this.session) return;
       this.registered = true;
       this.arm(started);
@@ -201,7 +205,7 @@ export class Ownership {
     try {
       if (buggify("ownership.renew.fails")) throw new Error("BUGGIFY: the heartbeat renewal failed");
       // Only a live heartbeat is renewed: one that expired, or that a peer ended (`reap`), may have lost its actors.
-      const { rowCount } = await this.db.query("update runtime_nodes set expires_at = now() + $3 * interval '1 millisecond' where node = $1 and session = $2 and expires_at > now()", [this.node, session, this.ttlMs]);
+      const { rowCount } = await this.db.query("update runtime_nodes set expires_at = now() + $3 * interval '1 millisecond', memory_high = $4 where node = $1 and session = $2 and expires_at > now()", [this.node, session, this.ttlMs, this.memoryHigh()]);
       if (session !== this.session) return;
       sometimes(!rowCount, "a renewal found its heartbeat ended");
       if (!rowCount) this.fence("heartbeat_replaced");
@@ -414,6 +418,31 @@ export class Ownership {
     return this.peers.nodes[Math.floor(random().float() * this.peers.nodes.length)];
   }
 
+  /** One memory retirement at a time, held by this node's heartbeat until it leaves or expires. A deferred claim retries while still draining. */
+  async retireForMemory(retry = false): Promise<boolean> {
+    if (!this.fresh() || (this.draining && !retry)) return false;
+    const claimed = await transaction(this.db, async sql => {
+      const { rows } = await sql.query("select pg_try_advisory_xact_lock(hashtext('node-memory-retirement')) as held");
+      if (!rows[0].held) return false;
+      if (!(await sql.query("select 1 from memory_retirement_guard where last_claim_at is null or last_claim_at <= now() - $1 * interval '1 millisecond'", [MEMORY_RETIRE_COOLDOWN_MS])).rowCount) return false;
+      await sql.query("delete from runtime_nodes where memory_retiring and expires_at <= now()");
+      if ((await sql.query("select 1 from runtime_nodes where memory_retiring and expires_at > now()")).rowCount) return false;
+      // Check again under the guard: the last peer may have begun leaving since livePeers().
+      if (!(await sql.query("select 1 from runtime_nodes where node <> $1 and not draining and not memory_high and expires_at > now()", [this.node])).rowCount) return false;
+      const updated = !!(await sql.query(`update runtime_nodes set memory_retiring = true, draining = true
+        where node = $1 and session = $2 and expires_at > now() and (not draining or $3)`, [this.node, this.session, retry])).rowCount;
+      if (updated) await sql.query("update memory_retirement_guard set last_claim_at = now()");
+      return updated;
+    });
+    if (claimed) this.draining = true;
+    return claimed;
+  }
+
+  /** Release only the memory claim; a concurrent or deferred drain must stay in place. */
+  async releaseMemoryRetirement() {
+    await this.db.query("update runtime_nodes set memory_retiring = false where node = $1 and session = $2", [this.node, this.session]);
+  }
+
   /** Stop taking actors, and tell peers to stop sending this node work. What it owns it keeps serving. */
   async drain() {
     this.draining = true;
@@ -424,7 +453,7 @@ export class Ownership {
   async undrain() {
     this.draining = false;
     this.forget();
-    await this.db.query("update runtime_nodes set draining = false where node = $1 and session = $2", [this.node, this.session]);
+    await this.db.query("update runtime_nodes set draining = false, memory_retiring = false where node = $1 and session = $2", [this.node, this.session]);
   }
 
   /** Leave the cluster: dropping the heartbeat frees every actor this node still names. */

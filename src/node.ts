@@ -26,6 +26,7 @@ import type { LogTail, Storage, StorageMeter } from "../shared/storage.ts";
 import { StorageUsage } from "./storage-usage.ts";
 import { postgresTail, sweepTails } from "./log-tail.ts";
 import { databaseFromEnvironment, listenFromEnvironment, migrate, type Db } from "./db.ts";
+import { MemoryRetirement } from "./memory-retirement.ts";
 import { network, REAL_CLOCK, REAL_NETWORK, REAL_RANDOM, runFor, type Clock, type Network, type Random } from "./node-context.ts";
 import { Ownership, probeNode } from "./ownership.ts";
 import { BusyAgents } from "./busy-agents.ts";
@@ -142,7 +143,9 @@ export type NodeDeps = {
    * On ECS, a check of whether a newer deployment of this task's service has replaced it (undefined off ECS). Looked up
    * once the node has started listening, so an ECS metadata fetch never delays that.
    */
-  supersession?: () => Promise<(() => Promise<"current" | "waiting" | "superseded">) | undefined>;
+  supersession?: () => Promise<((() => Promise<"current" | "waiting" | "superseded">) & { stopTask?: () => Promise<void> }) | undefined>;
+  /** Called only when the memory retirement fallback finishes draining. */
+  memoryRetired?: (code: number) => void;
   /** Managed Discord's credentials, read where the node sets up its channels (undefined: managed Discord is off). */
   managedDiscord?: () => Promise<ManagedDiscordSecrets | undefined>;
   /**
@@ -282,7 +285,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const distributed = !!deps.storage || storageDescriptor.kind === "s3" || !!(storageDescriptor.kind === "file" && storageDescriptor.shared);
   const node = nodeUrl(env, port, deps.address);
   // A peer whose heartbeat is late and whose address no longer accepts connections has died: its actors are freed at once.
-  const ownership = new Ownership(db, { node, ttlMs: leaseTtlMs, alive: peer => probeNode(peer) });
+  const ownership = new Ownership(db, { node, ttlMs: leaseTtlMs, alive: peer => probeNode(peer), memoryHigh: () => !!config.memoryHighBytes && process.memoryUsage.rss() > config.memoryHighBytes });
   await ownership.start();
   // Local files are this host's alone: a second node on the same database would serve agents and volumes whose
   // logs it cannot see, with nothing to fence its writes. Wait out a peer that may have just died, then refuse.
@@ -1138,7 +1141,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (!doc) return c.json({ type: "error", error: `Unknown document. The docs' index: ${origins.canonical}/llms.txt`, code: "NOT_FOUND" }, 404, { "Access-Control-Allow-Origin": "*" });
     return c.body(doc.body, 200, { "Content-Type": doc.type, "Cache-Control": skill ? "no-cache" : "public, max-age=300", "Access-Control-Allow-Origin": "*", "X-Robots-Tag": "noindex" });
   });
-  app.get("/healthz", c => draining ? c.json({ ok: false, draining: true }, 503) : c.json({ ok: true, ...(retiringSince !== undefined ? { retiring: true } : {}) }));
+  app.get("/healthz", c => (draining && (!memoryLeaving || memoryUnhealthy || externalLeave)) ? c.json({ ok: false, draining: true }, 503) : c.json({ ok: true, ...(retiringSince !== undefined ? { retiring: true } : {}) }));
   // Every 503 is worth retrying (capacity, an actor moving, this node draining), and so is a 429 (a
   // tenant at its agent quota, or an agent with too many queued requests) once work finishes; say when.
   app.use(async (c, next) => {
@@ -1442,6 +1445,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     });
     // As soon as it listens, as before: whether a newer deployment replaced this task (ECS only).
     void watchRetirement();
+    memoryRetirement.start();
   });
   // A bad tenants file or secret is rejected whole; the tenants loaded before stay in force.
   const reloadTenants = (announce: boolean) => tenants.reload().then(
@@ -1556,11 +1560,14 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   }, 1_000);
   workTimer.unref();
   let retireTimer: ReturnType<typeof setInterval> | undefined;
+  let ecsTask: ReturnType<NonNullable<NodeDeps["supersession"]>> | undefined;
   async function watchRetirement() {
-    const superseded = await deps.supersession?.().catch(error => { console.error(JSON.stringify({ type: "ecs_service_unavailable", error: errorText(error) })); return undefined; });
+    ecsTask = deps.supersession?.().catch(error => { console.error(JSON.stringify({ type: "ecs_service_unavailable", error: errorText(error) })); return undefined; });
+    const superseded = await ecsTask;
     if (!superseded || draining) return;
     retireTimer = setInterval(() => void superseded().then(async state => {
-      if (state !== "superseded" || retiringSince !== undefined || draining || !await ownership.peer()) return;
+      if (state !== "superseded" || retiringSince !== undefined || draining || memoryClaiming || memoryLeaving) return;
+      if (!await ownership.peer() || retiringSince !== undefined || draining || memoryClaiming || memoryLeaving) return;
       retiringSince = Date.now();
       console.log(JSON.stringify({ type: "retiring", node, inFlight: clients.inFlight(), agents: clients.sessions.size, volumes: volumes.size }));
       clients.draining = true;
@@ -1572,11 +1579,75 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     retireTimer.unref();
   }
 
+  let memoryLeaving = false;
+  let memoryUnhealthy = false;
+  let memoryDeferred = false;
+  let memoryClaiming = false;
+  let memoryFallback: ReturnType<typeof setTimeout> | undefined;
+  const finishMemoryDrain = Promise.withResolvers<void>();
+  const memoryRetirement = new MemoryRetirement({
+    ms: config.memoryRetireMs,
+    high: () => supervisor.memoryHigh,
+    acquire: async () => {
+      if (draining || retiringSince !== undefined) return false;
+      memoryClaiming = true;
+      try {
+        if (!(await ownership.livePeers()).length || draining || retiringSince !== undefined) return false;
+        const claimed = await ownership.retireForMemory(memoryDeferred);
+        if (claimed) memoryLeaving = true;
+        return claimed;
+      } finally { memoryClaiming = false; }
+    },
+    retire: async heldMs => {
+      if (draining || retiringSince !== undefined) {
+        memoryLeaving = false;
+        await ownership.releaseMemoryRetirement();
+        return;
+      }
+      const task = await ecsTask;
+      let stopped = false;
+      try {
+        if (task?.stopTask) { await task.stopTask(); stopped = true; }
+      } catch (error) {
+        console.error(JSON.stringify({ type: "node_memory_stop_failed", node, error: safeError(error) }));
+      }
+      if (!stopped) {
+        const state = await task?.().catch(error => {
+          console.error(JSON.stringify({ type: "ecs_service_check_failed", error: errorText(error) }));
+          return undefined;
+        });
+        if (state !== "current") {
+          memoryLeaving = false;
+          memoryDeferred = true;
+          await ownership.releaseMemoryRetirement();
+          console.log(JSON.stringify({ type: "node_memory_retire_deferred", node, state: state ?? "unknown" }));
+          return false;
+        }
+        memoryUnhealthy = true;
+      }
+      if (draining || retiringSince !== undefined) {
+        memoryLeaving = false;
+        await ownership.releaseMemoryRetirement();
+        return;
+      }
+      memoryFallback = setTimeout(() => {
+        finishMemoryDrain.resolve();
+        void draining!.then(() => deps.memoryRetired?.(0), error => {
+          console.error(JSON.stringify({ type: "node_memory_retire_failed", error: safeError(error) }));
+          deps.memoryRetired?.(1);
+        });
+      }, config.memoryRetireFallbackMs);
+      memoryFallback.unref();
+      console.log(JSON.stringify({ type: "node_memory_retire", node, via: stopped ? "stop_task" : "healthz", rssMb: Math.round(process.memoryUsage.rss() / 1_048_576), thresholdMb: Math.round(config.memoryHighBytes! / 1_048_576), heldMs }));
+      await leave("memory", config.drainMs);
+    },
+    failed: error => console.error(JSON.stringify({ type: "node_memory_retire_failed", error: safeError(error) })),
+  });
   /**
    * Leave the cluster without dropping work. ECS deregisters the task from the load
    * balancer, sends SIGTERM, and SIGKILLs after the task's stopTimeout. /healthz fails
-   * at once and this node takes no new agents or volumes: requests for ones it does
-   * not hold go to a live peer, or get 503 and Retry-After. With a live peer, each running
+   * at once (after SIGTERM for a memory StopTask). This node takes no new agents or
+   * volumes: requests for ones it does not hold go to a live peer, or get 503 and Retry-After. With a live peer, each running
    * turn finishes only the step it is in and is handed off at that boundary; alone, turns
    * finish. Either way it waits for up to AGENT_DRAIN_TIMEOUT_MS; runs that never began
    * stay queued for the next owner. Then everything is released (a step still running is
@@ -1584,10 +1655,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
    * clients reconnect to the next owner. A second signal (`drain` again, or `close`) stops waiting.
    */
   let drainDeadline = 0;
+  let externalLeave = false;
   let draining: Promise<void> | undefined;
   async function drain(signal: string) {
     const started = Date.now();
     console.log(JSON.stringify({ type: "drain_started", signal, node, inFlight: clients.inFlight(), agents: clients.sessions.size, volumes: volumes.size }));
+    memoryRetirement.stop();
     closing = true;
     for (const res of answering) endSocket(res);
     scheduler.stop();
@@ -1622,13 +1695,16 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     await step("drain", () => ownership.drain());
     // With a peer to continue them, running turns are handed off at their next step boundary, and idle agents (one waiting
     // on human input, say) move at once. Alone, the node lets its turns finish instead: nobody could go on with them now.
-    await step("hand-off", async () => { if (await ownership.peer()) clients.handOffTurns("drain"); });
+    await step("hand-off", async () => { if (await ownership.peer()) clients.handOffTurns(signal === "memory" ? "memory" : "drain"); });
     // A second signal may come at any moment, and the node stops waiting for its turns.
     if (buggify("drain.stop_waiting")) drainDeadline = 0;
     for (let tick = 0; clients.inFlight() && Date.now() < drainDeadline; tick++) {
       if (tick % 10 === 0) void clients.releaseIdle().catch(error => console.error(JSON.stringify({ type: "drain_release_failed", error: safeError(error) })));
       await new Promise(resolve => setTimeout(resolve, 100));
     }
+    // Keep serving long polls and renewing our heartbeat until ECS deregisters us and
+    // sends SIGTERM. Outside ECS the fallback releases this wait.
+    if (signal === "memory") await finishMemoryDrain.promise;
     const unfinished = clients.inFlight();
     sometimes(unfinished > 0, "a drain released turns still running");
     await step("agents", () => clients.close());
@@ -1671,6 +1747,16 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (failed) throw new Error("Drain finished with errors");
   }
   const leave = (signal: string, waitMs: number) => {
+    if (signal !== "memory") {
+      if (memoryFallback) clearTimeout(memoryFallback);
+      finishMemoryDrain.resolve();
+      if (draining) {
+        drainDeadline = memoryLeaving && !externalLeave ? Math.min(drainDeadline, Date.now() + waitMs) : 0;
+        externalLeave = true;
+        return draining;
+      }
+      externalLeave = true;
+    }
     if (draining) { drainDeadline = 0; return draining; }
     drainDeadline = Date.now() + waitMs;
     return draining = drain(signal);
@@ -1683,6 +1769,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     drain: (signal = "drain") => leave(signal, config.drainMs),
     drainWithin: (signal, waitMs) => {
       if (!draining) return leave(signal, Math.min(waitMs, config.drainMs));
+      if (memoryFallback) clearTimeout(memoryFallback);
+      finishMemoryDrain.resolve();
+      externalLeave = true;
       drainDeadline = Math.min(drainDeadline, Date.now() + waitMs);
       return draining;
     },

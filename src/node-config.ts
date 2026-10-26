@@ -53,6 +53,9 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   const maxAgents = positiveSetting("AGENT_MAX_AGENTS", 8);
   // Resident memory past which a node starts no more agents (supervisor.ts, memoryHighBytes); unset, only the count limits it.
   const memoryHighBytes = env.AGENT_MEMORY_HIGH_BYTES ? positiveSetting("AGENT_MEMORY_HIGH_BYTES", 1) : undefined;
+  const memoryRetireMs = Number(env.AGENT_MEMORY_RETIRE_MS ?? 0);
+  if (!Number.isInteger(memoryRetireMs) || memoryRetireMs < 0) throw new Error("AGENT_MEMORY_RETIRE_MS must be a non-negative integer");
+  const memoryRetireFallbackMs = positiveSetting("AGENT_MEMORY_RETIRE_FALLBACK_MS", 600_000);
   const loadIntervalMs = positiveSetting("AGENT_LOAD_INTERVAL_MS", 60_000);
   if (loadIntervalMs < 1000) throw new Error("AGENT_LOAD_INTERVAL_MS must be at least 1000");
   const maxAgentsPerTenant = positiveSetting("AGENT_MAX_AGENTS_PER_TENANT", Math.max(1, Math.ceil(maxAgents / 2)));
@@ -127,7 +130,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     publicUrlSet: !!env.AGENT_PUBLIC_URL,
     // Where browsers reach the runtime, as browser tokens say: AGENT_PUBLIC_URL unless set; empty for none.
     browserUrl: env.AGENT_BROWSER_URL?.replace(/\/+$/, ""),
-    maxAgents, memoryHighBytes, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, hosting, ignored, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs,
+    maxAgents, memoryHighBytes, memoryRetireMs, memoryRetireFallbackMs, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, hosting, ignored, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs,
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,

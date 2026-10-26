@@ -3286,7 +3286,8 @@
                   "type": "string",
                   "enum": [
                     "retire",
-                    "drain"
+                    "drain",
+                    "memory"
                   ]
                 },
                 "at": {
@@ -3298,7 +3299,7 @@
                 "at"
               ]
             },
-            "description": "Times a node leaving the cluster (retire: a newer deploy replaced it; drain: it was stopped) handed this run's turn off at a step boundary, and the next owner continued it with nothing lost. Not resumes"
+            "description": "Times a node leaving the cluster (retire: a newer deploy replaced it; drain: it was stopped; memory: sustained memory pressure) handed this run's turn off at a step boundary, and the next owner continued it with nothing lost. Not resumes"
           },
           "steeredInto": {
             "type": "string",
@@ -8828,7 +8829,8 @@
                   "type": "string",
                   "enum": [
                     "retire",
-                    "drain"
+                    "drain",
+                    "memory"
                   ]
                 },
                 "at": {

@@ -163,7 +163,7 @@ export class ClientSessions {
   draining = false;
   private releasing = false;
   /** Set while this node leaves the cluster with a peer to take its work (`handOffTurns`): running turns stop at their next step boundary. */
-  private handingOff?: { reason: "retire" | "drain"; since: number };
+  private handingOff?: { reason: "retire" | "drain" | "memory"; since: number };
   /** Agents being given up as this node leaves (`park`, `handOffAll`): in flight until they are released. */
   private readonly leavingWork = new Set<Promise<void>>();
   /** Stateless runs' sessions being made here, whose slots are reserved before their header is: not the tenant's agents. */
@@ -2561,7 +2561,7 @@ export class ClientSessions {
    * turn from its transcript with nothing lost. Queued runs and idle agents (one waiting on human input, say) move as
    * `releaseIdle` gives them up.
    */
-  handOffTurns(reason: "retire" | "drain" | undefined) {
+  handOffTurns(reason: "retire" | "drain" | "memory" | undefined) {
     if (!reason) {
       this.handingOff = undefined;
       for (const session of this.sessions.values()) session.handoffFrom = undefined;

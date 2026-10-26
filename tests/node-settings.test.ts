@@ -68,3 +68,15 @@ test("the host transcript's settings are ignored, and said so: every agent's his
   assert.deepEqual(nodeConfig(settings).ignored, Object.keys(settings));
   assert.deepEqual(nodeConfig({ ...settings, PATH: "/node/bin" }).agentEnv, { PATH: "/node/bin" });
 });
+
+test("memory retirement defaults to off, accepts zero, and rejects invalid windows", () => {
+  assert.equal(nodeConfig({}).memoryRetireMs, 0);
+  assert.equal(nodeConfig({}).memoryRetireFallbackMs, 600_000);
+  assert.equal(nodeConfig({ AGENT_MEMORY_RETIRE_FALLBACK_MS: "1234" }).memoryRetireFallbackMs, 1234);
+  assert.throws(() => nodeConfig({ AGENT_MEMORY_RETIRE_FALLBACK_MS: "0" }), /AGENT_MEMORY_RETIRE_FALLBACK_MS/);
+  assert.equal(nodeConfig({ AGENT_MEMORY_RETIRE_MS: "0" }).memoryRetireMs, 0);
+  assert.equal(nodeConfig({ AGENT_MEMORY_RETIRE_MS: "1234" }).memoryRetireMs, 1234);
+  for (const value of ["-1", "1.5", "NaN", "Infinity"]) {
+    assert.throws(() => nodeConfig({ AGENT_MEMORY_RETIRE_MS: value }), /AGENT_MEMORY_RETIRE_MS/);
+  }
+});
