@@ -4,6 +4,24 @@ import { getModel, getModels, withCatalogPrices } from "../src/pi-catalog.ts";
 import { platformUsage } from "../src/platform-pricing.ts";
 import { resolveModel } from "../src/session-config.ts";
 
+test("Terra costs half Sol's rates, including cache writes and the long-context tier on every provider", () => {
+  for (const provider of ["openai", "azure", "openrouter"]) {
+    const id = `${provider === "openrouter" ? "openai/" : ""}gpt-6.1-terra`;
+    assert.deepEqual(getModel(provider, id)!.cost, {
+      input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25,
+      tiers: [{ inputTokensAbove: 272_000, input: 2, output: 7.5, cacheRead: 0.1, cacheWrite: 2.5 }],
+    });
+    // Cached and written tokens count toward the input threshold too. Check both sides of it.
+    for (const input of [242_000, 242_001]) {
+      const { usage, known } = platformUsage({ input, output: 1_000, cacheRead: 20_000, cacheWrite: 10_000, cost: {} as Record<string, number> }, provider, id);
+      const long = input > 242_000;
+      const expected = (input * (long ? 2 : 1) + 1_000 * (long ? 7.5 : 5) + 20_000 * (long ? 0.1 : 0.05) + 10_000 * (long ? 2.5 : 1.25)) / 1e6;
+      assert.equal(known, true);
+      assert.ok(Math.abs(usage.cost.total - expected) < 1e-12, `${provider}: ${input}`);
+    }
+  }
+});
+
 test("Claude Sonnet 5.5 cache reads are priced at Anthropic's $0.10 per million, on Anthropic and Cloudflare's gateway", () => {
   for (const provider of ["anthropic", "cloudflare-ai-gateway"]) {
     const model = getModel(provider, "claude-sonnet-5-5")!;

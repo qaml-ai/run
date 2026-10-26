@@ -3,6 +3,11 @@ import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 
 const piCatalog = piGetModel as (provider: string, id: string) => Model<Api> | undefined;
 
+const TERRA_COST: Model<Api>["cost"] = {
+  input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25,
+  tiers: [{ inputTokensAbove: 272_000, input: 2, output: 7.5, cacheRead: 0.1, cacheWrite: 2.5 }],
+};
+
 /**
  * Models Pi's catalog does not have yet, by provider and id: each is the Pi entry it is a release of (`from`), with
  * what differs, checked against the provider's own model list. Drop each once Pi ships it (pi-ai 1.3.0 has none):
@@ -10,9 +15,20 @@ const piCatalog = piGetModel as (provider: string, id: string) => Model<Api> | u
  *   unversioned id does not point at. Same context (1,048,576), longest reply, images, reasoning and thinking levels as
  *   V4.1 Flash. Priced at OpenRouter's list price: $0.15 in, $0.60 out, $0.003 cache reads per million (it charges
  *   twice that on weekdays 01:00-04:00 and 06:00-10:00 UTC, and reports what it charged, which billing takes first).
+ * - GPT-6.1 Terra (2026-10-26): OpenRouter lists $1 in/$5 out/$0.05 cache reads per million, half Sol's. Each
+ *   provider's Sol entry otherwise (API, context window, reasoning, reply limit), with half Sol's cache-write price
+ *   and long-context rates at the same 272,000-token threshold. Sol's window, not OpenRouter's 1,050,000: a window
+ *   the provider does not grant is one it refuses at (Luna, 2026-10-26).
  */
 const ADDED: Record<string, Record<string, { from: string; name: string; cost: Model<Api>["cost"] }>> = {
+  openai: {
+    "gpt-6.1-terra": { from: "gpt-6.1-sol", name: "GPT-6.1 Terra", cost: TERRA_COST },
+  },
+  azure: {
+    "gpt-6.1-terra": { from: "gpt-6.1-sol", name: "GPT-6.1 Terra", cost: TERRA_COST },
+  },
   openrouter: {
+    "openai/gpt-6.1-terra": { from: "openai/gpt-6.1-sol", name: "OpenAI: GPT-6.1 Terra", cost: TERRA_COST },
     "deepseek/deepseek-v4.1-flash-1017": { from: "deepseek/deepseek-v4.1-flash", name: "DeepSeek: DeepSeek V4.1 Flash 1017", cost: { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 } },
   },
 };

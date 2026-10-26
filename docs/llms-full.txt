@@ -4710,6 +4710,10 @@ its history carries over. `?available=true` answers `[]` when your account has
 no key any model can use (a self-hosted runtime before its first key, say); that
 response's `X-Camelrun-Hint` header says how to set one.
 
+GPT-6.1 Terra is listed as `openai/gpt-6.1-terra`,
+`openrouter/openai/gpt-6.1-terra` and `azure/gpt-6.1-terra`, with GPT-6.1 Sol's
+context window on each. Azure requires an operator-configured deployment.
+
 Each model in the list says whether it streams tool-call arguments as it writes
 them (`toolCallStreaming`; the console's **Tool args** column). With `true`,
 `toolcall_delta` events arrive while the model writes a call's arguments, so a
@@ -4783,7 +4787,7 @@ profile. An inference profile's geography must include the key's region.
 ### Azure OpenAI
 
 The catalog's `azure/<model>` entries (`azure/gpt-6-sol`, `azure/gpt-6-luna`,
-`azure/gpt-6.1-sol`, …) are OpenAI's models on the platform's own Azure OpenAI
+`azure/gpt-6.1-sol`, `azure/gpt-6.1-terra`, …) are OpenAI's models on the platform's own Azure OpenAI
 resource. They are the platform's only: an account cannot set an Azure key
 (`GET /v1/providers` says `apiKey: false`), and an account on the platform's keys
 can use those the operator has deployed, which `GET /v1/models?available=true`

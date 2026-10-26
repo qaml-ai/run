@@ -62,6 +62,8 @@ test("Azure chat deployments: a map of catalog model to deployment, or the envir
   assert.equal(config(undefined).models, undefined, "none by default");
   assert.deepEqual(config("gpt-6-sol=sol-eastus2, gpt-6-luna").models, { "gpt-6-sol": "sol-eastus2", "gpt-6-luna": "gpt-6-luna" });
   assert.deepEqual(config({ "gpt-6.1-sol": "sol61" }).models, { "gpt-6.1-sol": "sol61" });
+  assert.deepEqual(config({ "gpt-6.1-terra": "terra61" }).models, { "gpt-6.1-terra": "terra61" });
+  assert.deepEqual(config("gpt-6.1-terra").models, { "gpt-6.1-terra": "gpt-6.1-terra" });
   // Not an azure model on the Responses API (a typo, an OpenAI-only model, DeepSeek on Azure's completions API): left out.
   assert.deepEqual(config("gpt-6-sol,gpt-6-sun,deepseek-v4-pro").models, { "gpt-6-sol": "gpt-6-sol" });
   assert.equal(config("gpt-6-sun").models, undefined);
@@ -70,7 +72,7 @@ test("Azure chat deployments: a map of catalog model to deployment, or the envir
 });
 
 test("an azure model is priced as OpenAI's of the same id, long-context tier included (Azure's Global Standard prices)", () => {
-  for (const id of ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-6.1-sol", "gpt-5.5", "gpt-5.4"]) {
+  for (const id of ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-5.5", "gpt-5.4"]) {
     assert.deepEqual(getModel("azure", id)!.cost, getModel("openai", id)!.cost, id);
     assert.ok(getModel("azure", id)!.cost.tiers?.length, `${id} has its long-context tier`);
   }
@@ -93,6 +95,8 @@ test("a tenant on the platform's keys runs azure models the platform deploys, th
   const listed = (await r.call("/v1/models?provider=azure", { token: PAYG })).json;
   const sol = listed.find((model: any) => model.id === "azure/gpt-6-sol");
   assert.deepEqual([sol.available, sol.api, sol.reasoning, sol.contextWindow, sol.cost.input, sol.toolCallStreaming], [true, "azure-openai-responses", true, 272_000, 2, "unknown"]);
+  const terra = listed.find((model: any) => model.id === "azure/gpt-6.1-terra");
+  assert.deepEqual([terra.available, terra.api, terra.contextWindow, terra.cost.input], [false, "azure-openai-responses", 272_000, 1]);
   assert.deepEqual(listed.filter((model: any) => model.available).map((model: any) => model.id).sort(), ["azure/gpt-6-luna", "azure/gpt-6-sol"]);
   assert.deepEqual((await r.call("/v1/models?provider=azure&available=true", { token: OWN })).json, []);
   const provider = (await r.call("/v1/providers", { token: PAYG })).json.find((entry: any) => entry.id === "azure");
