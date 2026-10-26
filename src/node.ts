@@ -1638,7 +1638,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
         });
       }, config.memoryRetireFallbackMs);
       memoryFallback.unref();
-      console.log(JSON.stringify({ type: "node_memory_retire", node, path: stopped ? "stop_task" : "healthz", rssMb: Math.round(process.memoryUsage.rss() / 1_048_576), thresholdMb: Math.round(config.memoryHighBytes! / 1_048_576), heldMs }));
+      console.log(JSON.stringify({ type: "node_memory_retire", node, via: stopped ? "stop_task" : "healthz", rssMb: Math.round(process.memoryUsage.rss() / 1_048_576), thresholdMb: Math.round(config.memoryHighBytes! / 1_048_576), heldMs }));
       await leave("memory", config.drainMs);
     },
     failed: error => console.error(JSON.stringify({ type: "node_memory_retire_failed", error: safeError(error) })),
