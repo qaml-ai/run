@@ -45,9 +45,14 @@ export async function supersession(env = process.env, describe?: (cluster: strin
   const service = env.AGENT_ECS_SERVICE;
   const own = `:task-definition/${task.Family}:${task.Revision}`;
   const started = task.PullStartedAt ? Date.parse(task.PullStartedAt) : undefined;
+  let stopTask: (() => Promise<void>) | undefined;
   if (!describe) {
-    const { DescribeServicesCommand, ECSClient } = await import("@aws-sdk/client-ecs");
+    const { DescribeServicesCommand, StopTaskCommand, ECSClient } = await import("@aws-sdk/client-ecs");
     const client = new ECSClient({ region: env.AWS_REGION ?? env.AWS_DEFAULT_REGION });
+    if (cluster && task.TaskARN) stopTask = async () => {
+      // A hung call would hold the cluster's one memory retirement until this node died.
+      await client.send(new StopTaskCommand({ cluster, task: task.TaskARN, reason: "camelRun memory retirement" }), { abortSignal: AbortSignal.timeout(10_000) });
+    };
     describe = async (cluster, service) => {
       const { services } = await client.send(new DescribeServicesCommand({ cluster, services: [service] }));
       return services?.[0]?.deployments?.find(deployment => deployment.status === "PRIMARY");
@@ -55,7 +60,7 @@ export async function supersession(env = process.env, describe?: (cluster: strin
   }
   // Since when, and by which deployment: a newer one starts the wait again.
   let since: { deployment: string; at: number } | undefined;
-  return async (): Promise<"current" | "waiting" | "superseded"> => {
+  const check = async (): Promise<"current" | "waiting" | "superseded"> => {
     const primary = await describe!(cluster, service);
     if (!primary?.taskDefinition) return "current";
     if (primary.taskDefinition.endsWith(own) && (started === undefined || !primary.createdAt || primary.createdAt.getTime() <= started)) {
@@ -67,6 +72,7 @@ export async function supersession(env = process.env, describe?: (cluster: strin
     const running = primary.runningCount === undefined || primary.desiredCount === undefined || primary.runningCount >= primary.desiredCount;
     return running || now() - since.at >= waitMs ? "superseded" : "waiting";
   };
+  return Object.assign(check, { stopTask });
 }
 
 /**

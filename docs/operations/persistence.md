@@ -71,7 +71,18 @@ the SDKs retry both. With `AGENT_MEMORY_HIGH_BYTES` set, a node whose resident
 memory is above it starts no agent (one idle agent is stopped, and the start gets
 503) and takes no orphaned work. A run refused by the node's own limits (count or
 memory) while a live peer exists is handed back: the agent unloads and a node with
-room resumes it, instead of the run retrying where there is none.
+room resumes it, instead of the run retrying where there is none. After sustained
+memory pressure, `AGENT_MEMORY_RETIRE_MS` (default 0, disabled; ECS sets 10 minutes,
+plus 0–10 minutes of per-node jitter) begins draining the node. It calls ECS StopTask
+on its own task, keeping health checks at 200 while ECS deregisters and replaces it.
+Apply the `ecs:StopTask` task-role permission in `infra/terraform/ecs.tf` for this path.
+If StopTask is unavailable or fails, health checks return 503 only when the deployment
+is current; otherwise it releases the memory claim without undraining and retries.
+SIGTERM joins the drain without cutting running turns. A live, non-draining peer below its memory threshold must exist. A
+cluster guard permits one memory retirement at a time and at least 10 minutes between
+claims. Without an external signal, `AGENT_MEMORY_RETIRE_FALLBACK_MS` (default 10
+minutes after the claim) finishes the drain and exits 0, or 1 if the drain fails.
+Turns handed to peers record `memory` in `handoffs[].reason`.
 
 **Busy agents per tenant, across the fleet.** An agent is busy while it has a run
 open (running or queued). Each tenant may have a number of agents busy at once on

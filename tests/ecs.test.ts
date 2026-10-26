@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "../src/ecs.ts";
+import { ECSClient, StopTaskCommand } from "@aws-sdk/client-ecs";
 import { tenantsFromEnvironment } from "../src/tenants.ts";
 import { runtimeSecrets } from "../src/secrets.ts";
 
@@ -299,4 +300,17 @@ test("runtime credentials including billing email load once from Secrets Manager
   values[arn("github-oauth")] = JSON.stringify({ clientId: "Iv1.fixture" });
   await assert.rejects(runtimeSecrets(env), /must hold \{clientId, clientSecret\}/);
   await assert.rejects(runtimeSecrets({ AGENT_SESSION_SECRET_ARN: arn("missing"), AWS_REGION: "us-west-2" }), /can't find the specified secret/);
+});
+
+
+test("memory retirement stops this task using the metadata cluster and ARN", async t => {
+  const task = { Cluster: "arn:aws:ecs:us-west-2:123456789012:cluster/runtime", TaskARN: "arn:aws:ecs:us-west-2:123456789012:task/runtime/own-task", Family: "runtime", Revision: "7" };
+  const endpoint = await fake(t, (_req, res) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(task)));
+  const commands: unknown[] = [];
+  t.mock.method(ECSClient.prototype, "send", async (command: unknown) => { commands.push(command); return {}; });
+  const check = (await supersession({ ECS_CONTAINER_METADATA_URI_V4: endpoint, AGENT_ECS_SERVICE: "runtime" }))!;
+  await check.stopTask!();
+  assert.equal(commands.length, 1);
+  assert.ok(commands[0] instanceof StopTaskCommand);
+  assert.deepEqual(commands[0].input, { cluster: task.Cluster, task: task.TaskARN, reason: "camelRun memory retirement" });
 });
