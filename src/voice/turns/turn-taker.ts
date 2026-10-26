@@ -173,6 +173,13 @@ export class TurnTaker {
     this.listeners.clear();
   }
 
+  /** Speakers it tracks, and VAD chunks waiting: for memory reports. */
+  sizes() {
+    let chunks = 0;
+    for (const s of this.speakers.values()) chunks += s.chunks.length;
+    return { turnSpeakers: this.speakers.size, vadChunks: chunks };
+  }
+
   /** Speakers with a turn open now. */
   get open() { let count = 0; for (const s of this.speakers.values()) if (s.turn) count++; return count; }
 

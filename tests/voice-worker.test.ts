@@ -126,6 +126,36 @@ test("speech plays through a media worker: the brain's PCM down, encoded and pla
   assert.equal(host.stats().workers, 1, "its worker ended; the spare waits");
 });
 
+test("a media worker's memory limit counts each byte once (Buffers are in `external` already), and its end logs what the worker held", { timeout: 120_000 }, async t => {
+  const fakes = workerFakes();
+  const host = new MediaHost({ transport: TRANSPORT, speaks: true, maxMb: 200, tickMs: 100, spare: 0 });
+  t.after(() => { fakes.close(); return host.close(); });
+  const crashed: string[] = [];
+  const logged: string[] = [];
+  t.mock.method(console, "error", (line: string) => { logged.push(String(line)); });
+  const guild = "100000000000000021";
+  host.factory()("vs_memory", { guildId: guild, channelId: "200000000000000021", userId: "300000000000000021", sessionId: "s", endpoint: "x", token: "t" },
+    { silenceMs: 200, ignoreUserIds: [], bargeIn: false, live: false },
+    { ready() {}, lost() {}, diagnostic() {}, speechStart() {}, pcm() {}, drop() {}, cut() {}, crashed: kind => { crashed.push(kind); } });
+  await until(() => fakes.reports.find(report => report.guild === guild && report.event === "connected"), "connected");
+  // 120 MB of Buffers: about 150 MB with the worker's own, under 200. Counted twice (external, then arrayBuffers, which
+  // external already includes), as it was, it read past 250 MB and the worker was ended for memory it did not have.
+  fakes.send({ guild, cmd: "hold", mb: 120 });
+  await until(() => host.stats().memoryMb >= 120, "the held memory reported");
+  await sleep(1_000);
+  assert.deepEqual(crashed, [], `not ended at ${host.stats().memoryMb} MB`);
+  assert.ok(host.stats().memoryMb < 200, `${host.stats().memoryMb} MB`);
+  // Past the limit, it is ended, and the log says what it held: Buffers (arrayBuffersMb), and the session's own count.
+  fakes.send({ guild, cmd: "hold", mb: 100 });
+  await until(() => crashed.length, "ended for memory", 30_000);
+  assert.deepEqual(crashed, ["memory_limit"]);
+  const line = logged.map(text => { try { return JSON.parse(text); } catch { return undefined; } }).find(entry => entry?.type === "voice_worker_crashed");
+  assert.match(line.reason, /^memory \d+ MB$/);
+  assert.ok(line.memory.arrayBuffersMb >= 200, JSON.stringify(line.memory));
+  assert.ok(line.memory.externalMb >= line.memory.arrayBuffersMb);
+  assert.equal(line.memory.sessions[0].heldMb >= 200, true, JSON.stringify(line.memory.sessions));
+});
+
 test("past maxWorkers, a session shares the worker holding fewest; that worker's crash is both sessions', and only theirs", { timeout: 120_000 }, async t => {
   const host = new MediaHost({ transport: TRANSPORT, speaks: true, maxWorkers: 2, tickMs: 200, spare: 0 });
   const { session, fakes, events } = await workerCluster(t, host);

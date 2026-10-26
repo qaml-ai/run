@@ -84,6 +84,13 @@ export class JitterBuffer<P extends Uint8Array = Uint8Array> {
     this.streams.delete(ssrc);
   }
 
+  /** SSRCs it tracks, and packets it holds: for memory reports. */
+  sizes() {
+    let held = 0;
+    for (const stream of this.streams.values()) held += stream.held.size;
+    return { jitterSsrcs: this.streams.size, jitterHeld: held };
+  }
+
   close() {
     for (const stream of this.streams.values()) clearTimeout(stream.timer);
     this.streams.clear();

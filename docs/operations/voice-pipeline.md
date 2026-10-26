@@ -65,9 +65,12 @@ numbers go into the isolation PR, and from them the default per-node cap (`AGENT
 
 ### Supervision
 
-- **Heartbeat.** The worker posts `tick` every 1 s with its heap, its external/ArrayBuffer bytes and the Opus WASM heap
-  (`opusStats`). If no tick arrives for 5 s (a stuck loop), or memory passes `AGENT_VOICE_WORKER_MAX_MB` (256 by default;
-  WASM memory is outside `resourceLimits`), the worker is terminated.
+- **Heartbeat.** The worker posts `tick` every 1 s with its heap and its external bytes (ArrayBuffers, Buffers and the
+  Opus WASM heap among them, each counted once: Node's `external` already includes `arrayBuffers`), and that memory
+  split with what each session holds, counted (`MediaSession.sizes`: streams, SSRCs, packets held, playbacks). If no
+  tick arrives for 5 s (a stuck loop), or heap plus external passes `AGENT_VOICE_WORKER_MAX_MB` (256 by default; WASM
+  memory is outside `resourceLimits`), the worker is terminated, and `voice_worker_crashed` carries the split
+  (`memory`) from its last tick.
 - **A worker that dies** (error, OOM, terminated, non-zero exit) fails each of its sessions with a crash:
   - A `voice_worker_crashed` log line and a `VoiceWorkerCrashes` metric.
   - A `voice.session.error` event for the tenant's webhooks:
@@ -117,7 +120,7 @@ Media → control:
 | `turn` | `TurnEvent` | voice-turns' events (`likely_end`, `turn_end`, `resume`, `barge_in`, `duck`, …), at their `at` |
 | `started` | `id, at` | The speech's first Opus packet went to the player |
 | `played` | `id, result, stats` | The speech ended: `done \| stopped \| error`, with `speech_played` stats |
-| `tick` | `heapMb, externalMb, opusHeapMb, sessions` | Heartbeat |
+| `tick` | `heapMb, externalMb, sessions, memory` | Heartbeat; `memory`: heap, external, ArrayBuffers, Opus heap and codecs, and each session's `sizes()` |
 
 Timestamps (`at`) come from `performance.timeOrigin + performance.now()` in the worker. They are on the same clock as
 the main thread's `Date.now()`, to within a millisecond.

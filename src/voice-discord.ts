@@ -315,6 +315,16 @@ export class DiscordVoice implements VoiceConnection {
     return { streams: [...this.listening].sort(), held: [...this.early.values()].reduce((sum, held) => sum + held.length, 0), heldSsrcs: this.early.size };
   }
 
+  /** What it holds now, counted: for the media worker's memory report (src/voice/media-worker.ts). */
+  sizes(): Record<string, number> {
+    const receiver = this.connection.receiver;
+    return {
+      streams: this.listening.size, subscriptions: receiver.subscriptions.size, ssrcs: (receiver.ssrcMap as unknown as { map?: Map<number, unknown> }).map?.size ?? -1,
+      earlySsrcs: this.early.size, earlyPackets: [...this.early.values()].reduce((sum, held) => sum + held.length, 0),
+      ...this.jitter.sizes(), lostBefore: this.lostBefore.size,
+    };
+  }
+
   /**
    * A speaker's stream, open for the session: their packets as they arrive, cut into utterances by the segmenter. One
    * that breaks (a packet that would not decrypt) is reopened by their next packet.

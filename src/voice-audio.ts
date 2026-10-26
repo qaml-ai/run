@@ -178,6 +178,13 @@ export class Segmenter {
   /** Speakers with speech not yet cut. */
   get open() { return this.speaking.size; }
 
+  /** Speakers it tracks, and the packets (and their bytes, with any PCM kept) it holds: for memory reports. */
+  sizes() {
+    let packets = 0, bytes = 0;
+    for (const speech of this.speaking.values()) for (const held of speech.held) { packets++; bytes += held.packet.byteLength + (held.pcm?.byteLength ?? 0); }
+    return { speakers: this.speaking.size, heldPackets: packets, heldBytes: bytes };
+  }
+
   packet(speaker: string, packet: Uint8Array, lost = 0) {
     if (silent(packet) || !packet.length) return;
     const now = clock().now();

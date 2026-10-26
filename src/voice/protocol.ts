@@ -19,6 +19,9 @@ export type TransportSpec = { module: string; export: string; options?: unknown 
 /** What a worker is started with (workerData). */
 export type MediaWorkerInit = { protocol: number; transport: TransportSpec; tickMs: number; /** A port to the node's turn models (src/voice/turns), transferred. */ models?: MessagePort };
 
+/** A media worker's memory, split, and what its sessions hold (counted), as its tick reports them. */
+export type WorkerMemory = { heapMb: number; heapTotalMb: number; externalMb: number; arrayBuffersMb: number; opusMb: number; opusCodecs: number; sessions: Record<string, number>[] };
+
 /** A cut, as it crosses: its packets in one buffer, by length. */
 export type WireCut = Omit<Cut, "packets"> & { packets: ArrayBuffer; lengths: number[] };
 
@@ -56,8 +59,13 @@ export type FromMedia =
   | { t: "turn"; session: string; event: TurnEvent }
   /** The worker's port to the turn models closed: it asks for another (`models`). */
   | { t: "models_lost" }
-  /** The worker's heartbeat: its isolate's heap, its other memory (ArrayBuffers, WebAssembly), the sessions it holds. */
-  | { t: "tick"; heapMb: number; externalMb: number; sessions: number }
+  /**
+   * The worker's heartbeat: its isolate's heap, its other memory (`external`: ArrayBuffers and WebAssembly memory with
+   * the rest, each counted once), the sessions it holds; and `memory`, that memory split (ArrayBuffers, Opus's
+   * WebAssembly heap, its live codecs) with what each session holds, counted (MediaSession.sizes), for the log of a
+   * worker ended for its memory.
+   */
+  | { t: "tick"; heapMb: number; externalMb: number; sessions: number; memory?: WorkerMemory }
   /** The worker cannot serve (a protocol mismatch, a transport that does not load). */
   | { t: "refused"; error: string };
 
