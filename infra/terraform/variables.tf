@@ -132,8 +132,9 @@ variable "service_cpu_target" {
 }
 
 variable "service_memory_target" {
-  type    = number
-  default = 70
+  description = "Average task memory (percent) autoscaling keeps the service at. Below the 65% at which a task refuses new agents (AGENT_MEMORY_HIGH_BYTES)."
+  type        = number
+  default     = 55
 }
 
 variable "container_insights" {
