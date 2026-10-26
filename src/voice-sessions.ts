@@ -80,6 +80,8 @@ export interface VoiceConnection {
   play?(packets: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): import("./voice-speech.ts").Playback;
   /** A session's event, for a transport whose far end shows them (a browser call's page). */
   notify?(event: Record<string, unknown>): void;
+  /** What it holds now, counted (streams, packets held, SSRCs tracked): a media worker's memory report names them. */
+  sizes?(): Record<string, number>;
   /**
    * Close the connection. `handoff`: another node takes the call next, with the same credentials, so the voice
    * service must not end its session (Discord's ends one whose socket closes normally: 4006 for the next node).

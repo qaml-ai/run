@@ -57,6 +57,13 @@ export class TurnSegmenter {
   /** Speakers with speech not yet cut. */
   get open() { return this.turns.open; }
 
+  /** Speakers it tracks, and the packets (and their bytes, with any PCM kept) it holds: for memory reports. */
+  sizes() {
+    let packets = 0, bytes = 0;
+    for (const s of this.speaking.values()) for (const held of s.held) { packets++; bytes += held.packet.byteLength + (held.pcm?.byteLength ?? 0); }
+    return { speakers: this.speaking.size, heldPackets: packets, heldBytes: bytes, ...this.turns.sizes() };
+  }
+
   packet(speaker: string, packet: Uint8Array) {
     if (!packet.length || (packet.length === 3 && packet[0] === 0xf8 && packet[1] === 0xff && packet[2] === 0xfe)) return;
     const live = this.options.live;

@@ -4,7 +4,7 @@ import type { VoiceCredentials, VoiceTransport } from "../voice-sessions.ts";
 import type { Playback } from "../voice-speech.ts";
 import { metricLine, safeError, writeMetricLine } from "../metrics.ts";
 import type { Media, MediaEvents, MediaFactory, MediaOptions } from "./media.ts";
-import { fromWireCut, MEDIA_PROTOCOL, own, type FromMedia, type MediaWorkerInit, type ToMedia, type TransportSpec } from "./protocol.ts";
+import { fromWireCut, MEDIA_PROTOCOL, own, type FromMedia, type MediaWorkerInit, type ToMedia, type TransportSpec, type WorkerMemory } from "./protocol.ts";
 
 /**
  * Voice media off the control thread (docs/operations/voice-pipeline.md, "Shape"): each session's media in a worker
@@ -53,8 +53,9 @@ class Shard {
   /** Sessions it was given in all: a shard full once does not take new ones, so a long-lived one is not reused forever. */
   given = 0;
   lastTick = Date.now();
-  /** Its heap and other memory at its last tick, as it reported them. */
+  /** Its heap and other memory at its last tick, as it reported them; and that memory split, for the log of its end. */
   mb = 0;
+  memory?: WorkerMemory;
   dead?: string;
   private readonly onDead: (shard: Shard, reason: string) => void;
 
@@ -86,7 +87,8 @@ class Shard {
     if (message.t === "tick") {
       this.lastTick = Date.now();
       this.mb = message.heapMb + message.externalMb;
-      if (message.heapMb + message.externalMb > maxMb) this.kill(`memory ${message.heapMb + message.externalMb} MB`);
+      this.memory = message.memory;
+      if (this.mb > maxMb) this.kill(`memory ${this.mb} MB`);
       return;
     }
     if (message.t === "refused") { this.kill(`refused: ${message.error}`); return; }
@@ -207,7 +209,9 @@ export class MediaHost {
     if (reason === "closed" || this.closed) return;
     const sessions = [...shard.sessions.values()];
     if (sessions.length) this.crashes++;
-    console.error(JSON.stringify({ type: "voice_worker_crashed", reason: reason.slice(0, 300), sessions: sessions.map(media => media.session) }));
+    // Ended for its memory: what it held then (counts and sizes, never audio), to tell which part grew.
+    const memory = reason.startsWith("memory") || /ERR_WORKER_OUT_OF_MEMORY/.test(reason) ? shard.memory : undefined;
+    console.error(JSON.stringify({ type: "voice_worker_crashed", reason: reason.slice(0, 300), sessions: sessions.map(media => media.session), ...(memory ? { memory } : {}) }));
     writeMetricLine(metricLine("voice_worker_crashed", { dimensions: {}, rollups: [[]], metrics: { VoiceWorkerCrashes: 1, VoiceWorkerCrashSessions: sessions.length } }));
     shard.sessions.clear();
     // The session (and its tenant's webhook) hears only what kind of failure it was; this log has the rest.

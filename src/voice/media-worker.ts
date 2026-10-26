@@ -2,6 +2,7 @@ import { parentPort, workerData } from "node:worker_threads";
 import type { VoiceTransport } from "../voice-sessions.ts";
 import type { Playback } from "../voice-speech.ts";
 import { safeError } from "../metrics.ts";
+import { opusStats } from "../opus.ts";
 import { MediaSession } from "./media.ts";
 import { MEDIA_PROTOCOL, own, wireCut, type FromMedia, type MediaWorkerInit, type ToMedia } from "./protocol.ts";
 import { clientFrom, TurnModelsUnavailable, type TurnModels } from "./turns/inference.ts";
@@ -67,15 +68,27 @@ async function start() {
     try { handle(transport, message); }
     catch (error) { post({ t: "diagnostic", session: message.session ?? "", event: "audio_failed", fields: { error: safeError(error), message: message.t } }); }
   });
+  const mb = (bytes: number) => Math.round(bytes / 1_048_576);
   const tick = () => {
     const memory = process.memoryUsage();
+    const opus = opusStats();
     // Who is in each call, when it changed: the session's empty-call check reads it.
     for (const [session, held] of sessions) {
       const others = held.media.others();
       const key = others ? [...others].sort().join(",") : "?";
       if (key !== held.others) { held.others = key; post({ t: "others", session, users: others ? [...others] : null }); }
     }
-    post({ t: "tick", heapMb: Math.round(memory.heapUsed / 1_048_576), externalMb: Math.round((memory.external + memory.arrayBuffers) / 1_048_576), sessions: sessions.size });
+    // `external` already counts ArrayBuffers (Buffers among them) and WebAssembly memory: each once.
+    post({
+      t: "tick", heapMb: mb(memory.heapUsed), externalMb: mb(memory.external), sessions: sessions.size,
+      memory: {
+        heapMb: mb(memory.heapUsed), heapTotalMb: mb(memory.heapTotal), externalMb: mb(memory.external), arrayBuffersMb: mb(memory.arrayBuffers),
+        opusMb: mb(opus.heapBytes), opusCodecs: opus.live, sessions: [...sessions.values()].map(held => {
+          // A report must never end the tick: a throw here would end the worker and every call on it.
+          try { return held.media.sizes(); } catch { return {}; }
+        }),
+      },
+    });
   };
   setInterval(tick, init.tickMs);
   tick();

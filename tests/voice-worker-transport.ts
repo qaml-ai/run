@@ -16,7 +16,9 @@ export type Command =
   | { guild: string; cmd: "talk"; speaker: string; seconds: number }
   | { guild: string; cmd: "send"; speaker: string; packets: Uint8Array[] }
   | { guild: string; cmd: "others"; users: string[] }
-  | { guild: string; cmd: "crash" | "oom" | "hang" };
+  | { guild: string; cmd: "crash" | "oom" | "hang" }
+  /** Hold `mb` more MB of Buffers (as audio held by a connection is), reported by its `sizes()`. */
+  | { guild: string; cmd: "hold"; mb: number };
 export type Report =
   | { guild: string; event: "connected"; thread: number }
   | { guild: string; event: "played"; packets: number }
@@ -25,7 +27,7 @@ export type Report =
 export function workerFakeTransport(options: { playEveryMs?: number } = {}): VoiceTransport {
   const channel = new BroadcastChannel(CHANNEL);
   channel.unref();
-  const connections = new Map<string, { handlers: VoiceHandlers; others?: string[]; closed: boolean }>();
+  const connections = new Map<string, { handlers: VoiceHandlers; others?: string[]; closed: boolean; held?: Buffer[] }>();
   const report = (message: Report) => channel.postMessage(message);
   // Real Opus packets: a tone, made once per worker.
   const encoder = new Opus(48_000, 2, "audio");
@@ -61,17 +63,19 @@ export function workerFakeTransport(options: { playEveryMs?: number } = {}): Voi
       case "crash": setTimeout(() => { throw new Error("voice test crash"); }, 0); return;
       case "oom": { const hoard: number[][] = []; for (;;) hoard.push(new Array(1_000_000).fill(1)); }
       case "hang": setTimeout(() => { for (;;) { /* never yields */ } }, 0); return;
+      case "hold": { connection.held ??= []; for (let i = 0; i < command.mb; i++) connection.held.push(Buffer.alloc(1_048_576, 1)); return; }
     }
   };
   return {
     speaks: true,
     connect(credentials: VoiceCredentials, handlers: VoiceHandlers): VoiceConnection {
-      const connection = { handlers, closed: false } as { handlers: VoiceHandlers; others?: string[]; closed: boolean };
+      const connection = { handlers, closed: false } as { handlers: VoiceHandlers; others?: string[]; closed: boolean; held?: Buffer[] };
       connections.set(credentials.guildId, connection);
       report({ guild: credentials.guildId, event: "connected", thread: threadId });
       return {
         update: () => {},
         others: () => connection.others,
+        sizes: () => ({ heldMb: connection.held?.length ?? 0 }),
         close: () => { connection.closed = true; connections.delete(credentials.guildId); report({ guild: credentials.guildId, event: "closed" }); },
         play(packets, started) {
           let stopped = false, count = 0;

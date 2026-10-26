@@ -102,7 +102,7 @@ export function inlineMedia(transport: VoiceTransport, models?: TurnModels): Med
 }
 
 /** What cuts a session's speakers into utterances: the energy Segmenter, or turn-taking's TurnSegmenter. */
-type Cutter = { packet(speaker: string, packet: Uint8Array, lost?: number): void; broken(speaker: string): void; flush(ended: "handoff" | "end" | "error"): void };
+type Cutter = { packet(speaker: string, packet: Uint8Array, lost?: number): void; broken(speaker: string): void; flush(ended: "handoff" | "end" | "error"): void; sizes(): Record<string, number> };
 
 /**
  * One session's media: its connection, a segmenter over its speakers, and playback. The same class runs inline and
@@ -194,6 +194,11 @@ export class MediaSession implements Media {
   }
 
   others() { return this.connection.others(); }
+
+  /** What it holds now, counted: the connection's, the segmenter's, playbacks. For the media worker's memory report. */
+  sizes(): Record<string, number> {
+    return { ...this.connection.sizes?.(), ...this.segmenter.sizes(), playing: this.playing.size, barged: this.barged.size };
+  }
 
   notify(event: Record<string, unknown>) { this.connection.notify?.(event); }
 
