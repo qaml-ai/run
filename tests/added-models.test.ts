@@ -9,6 +9,28 @@ import { fakeModel, runtime } from "./runtime-server.ts";
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const FLASH_1017 = "deepseek/deepseek-v4.1-flash-1017";
 
+test("GPT-6.1 Terra is listed on OpenAI, Azure and OpenRouter with Sol's capabilities and window", () => {
+  for (const provider of ["openai", "azure", "openrouter"]) {
+    const prefix = provider === "openrouter" ? "openai/" : "";
+    const id = `${prefix}gpt-6.1-terra`;
+    const sol = getModel(provider, `${prefix}gpt-6.1-sol`)!;
+    const model = getModel(provider, id)!;
+    assert.equal(getModels(provider).filter(entry => entry.id === id).length, 1);
+    assert.equal(model.name, `${provider === "openrouter" ? "OpenAI: " : ""}GPT-6.1 Terra`);
+    assert.equal(model.contextWindow, sol.contextWindow, "the window the provider grants Sol, not a larger one it refuses at");
+    assert.equal(model.maxTokens, 128_000);
+    assert.deepEqual([model.api, model.baseUrl, model.reasoning, model.input, model.thinkingLevelMap, model.compat, model.inputLimits],
+      [sol.api, sol.baseUrl, true, sol.input, sol.thinkingLevelMap, sol.compat, sol.inputLimits]);
+    assert.equal(reasoningFloor(model), "low");
+    const info = listModels(provider).find(entry => entry.id === `${provider}/${id}`)!;
+    assert.deepEqual([info.api, info.contextWindow, info.toolCallStreaming],
+      [provider === "azure" ? "azure-openai-responses" : "openai-responses", sol.contextWindow, "unknown"]);
+    const resolved = resolveModel(`${provider}/${id}`);
+    assert.equal(resolved.id, id);
+    assert.equal(resolved.api, info.api);
+  }
+});
+
 test("DeepSeek V4.1 Flash 1017 is OpenRouter's V4.1 Flash entry at its own id, name and list price", () => {
   const base = getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
   const model = getModel("openrouter", FLASH_1017)!;
