@@ -104,14 +104,18 @@ export function databaseTls(env = process.env): { secureContext: SecureContext; 
  * AGENT_DATABASE_CA names a PEM bundle, such as RDS's, to verify the server with.
  * AGENT_DATABASE_QUERY_TIMEOUT_MS bounds a query (default 30000; 0 for none), so a
  * connection that went dark in a failover fails the query instead of hanging it.
+ * AGENT_DATABASE_IDLE_TIMEOUT_MS is how long an idle connection stays open (default 60000; pg's own 10 s had the pool
+ * reconnecting, with a TLS handshake each time, all day).
  */
 export async function databaseFromEnvironment(env = process.env): Promise<pg.Pool> {
   const max = Number(env.AGENT_DATABASE_POOL_SIZE ?? 10);
   if (!Number.isInteger(max) || max < 1) throw new Error("AGENT_DATABASE_POOL_SIZE must be a positive integer");
   const queryTimeout = Number(env.AGENT_DATABASE_QUERY_TIMEOUT_MS ?? 30_000);
   if (!Number.isInteger(queryTimeout) || queryTimeout < 0) throw new Error("AGENT_DATABASE_QUERY_TIMEOUT_MS must be a non-negative integer");
+  const idleTimeout = Number(env.AGENT_DATABASE_IDLE_TIMEOUT_MS ?? 60_000);
+  if (!Number.isInteger(idleTimeout) || idleTimeout < 0) throw new Error("AGENT_DATABASE_IDLE_TIMEOUT_MS must be a non-negative integer");
   const ssl = databaseTls(env);
-  const common = { max, connectionTimeoutMillis: 10_000, keepAlive: true, ...(queryTimeout ? { query_timeout: queryTimeout } : {}), ...(ssl ? { ssl } : {}) };
+  const common = { max, connectionTimeoutMillis: 10_000, idleTimeoutMillis: idleTimeout, keepAlive: true, ...(queryTimeout ? { query_timeout: queryTimeout } : {}), ...(ssl ? { ssl } : {}) };
   if (env.AGENT_DATABASE_URL) {
     const url = new URL(env.AGENT_DATABASE_URL);
     // TLS settings in the URL would replace the ssl object when pg parses it.

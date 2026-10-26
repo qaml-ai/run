@@ -141,6 +141,7 @@ test("the connection takes a URL or a host and secret, verifies TLS against AGEN
   assert.equal((again.options.ssl as { secureContext?: unknown }).secureContext, ssl.secureContext);
   assert.equal(new URL(options.connectionString).search, "", "no TLS settings in the URL to override the ssl object");
   assert.equal(options.max, 4);
+  assert.equal(options.idleTimeoutMillis, 60_000, "idle connections stay a minute, not pg's 10 s");
 });
 
 test("a connection lost mid-transaction fails the transaction without crashing, and the pool reconnects", async t => {
