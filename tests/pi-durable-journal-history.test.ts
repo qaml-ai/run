@@ -5,7 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { JournalHistory, type HistoryBase } from "../src/pi-durable/history.ts";
 import { HOST_BOOTSTRAP_KIND, SESSION_CONVERSATION_ID as conversationId } from "../src/pi-durable/seed.ts";
-import { MARKER_KIND } from "../src/pi-durable/history.ts";
+import { MARKER_KIND, MESSAGES_READ_CHARS } from "../src/pi-durable/history.ts";
 
 type Draft = { native: string; message: unknown } | { marker: Record<string, unknown> };
 
@@ -145,4 +145,18 @@ test("journal history: a compaction is not history, and the response its overflo
   const history = (await JournalHistory.open(storage))!;
   assert.equal(history.total, 5, "the user message and the answer: no summary, no refused response");
   assert.deepEqual((await history.messagesFrom(3))!.map(message => (message as { role: string }).role), ["user", "assistant"]);
+});
+
+test("journal history: a read past MESSAGES_READ_CHARS fails, rather than taking it all into memory", async () => {
+  const big = "é".repeat(MESSAGES_READ_CHARS / 2);
+  const storage = await journal([
+    base(0),
+    { native: "pi.user", message: user(big) },
+    { native: "pi.user", message: user(big) },
+    { native: "pi.assistant", message: reply("done") },
+  ]);
+  const history = (await JournalHistory.open(storage))!;
+  assert.equal(history.total, 3);
+  await assert.rejects(history.messagesFrom(0), /past the \d+ one read takes/);
+  assert.equal((await history.messagesFrom(1))!.length, 2, "a read within the cap still answers");
 });

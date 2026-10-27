@@ -1312,14 +1312,14 @@ export class ClientSessions {
         and (a.resume_after is null or a.resume_after <= $1)
         and not exists (select from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now() where o.actor = a.id)
       order by random() limit $2`, [Date.now(), limit]);
-    let loaded = 0;
+    const loaded: string[] = [];
     for (const { id, tenant } of rows) {
       if (this.sessions.has(id) || this.loading.has(id) || !await this.canReserve(tenant)) continue;
-      try { if (await this.load(id)) loaded++; }
+      try { if (await this.load(id)) loaded.push(id); }
       catch (error) { if (!(error instanceof NotOwner)) await this.deferResume(id, error); }
     }
-    if (loaded) console.log(JSON.stringify({ type: "agents_resumed", count: loaded }));
-    return loaded;
+    if (loaded.length) console.log(JSON.stringify({ type: "agents_resumed", count: loaded.length, agents: loaded }));
+    return loaded.length;
   }
 
   /**
@@ -2551,6 +2551,11 @@ export class ClientSessions {
     let count = this.leavingWork.size;
     for (const session of this.sessions.values()) count += this.working(session);
     return count;
+  }
+
+  /** The agents with work running here: what a node near its heap limit names, to say whose work grew it. */
+  busyAgents(): string[] {
+    return [...this.sessions].flatMap(([id, session]) => this.working(session) ? [id] : []);
   }
 
   /**
