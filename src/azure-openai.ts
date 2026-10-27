@@ -94,26 +94,27 @@ function deploymentMap(given: unknown, source: string, name: string): Record<str
 /**
  * The chat models' deployments: an object of catalog model id to deployment name, or (as an environment variable) the
  * text `gpt-6-sol=sol-eastus2,gpt-6-luna`, where a model alone is deployed under its own name. Each must be one of
- * the catalog's `azure` models on the Responses API (scripts/azure-models-check.ts checks them). Undefined when there are none.
+ * the catalog's `azure` models on Responses or Chat Completions (scripts/azure-models-check.ts checks them).
+ * Undefined when there are none.
  */
 function chatDeployments(given: unknown, source: string): Record<string, string> | undefined {
   const deployments = deploymentMap(given, source, "models");
   if (!deployments) return undefined;
   const entries = Object.entries(deployments);
   // A model the catalog lacks (a typo, or one a Pi upgrade dropped) is left out and logged, rather than stop the runtime starting.
-  const offered = new Set(getModels("azure").filter(model => model.api === "azure-openai-responses").map(model => model.id));
+  const offered = new Set(getModels("azure").filter(model => model.api === "azure-openai-responses" || model.api === "openai-completions").map(model => model.id));
   const unknown = entries.filter(([id]) => !offered.has(id)).map(([id]) => id);
   if (unknown.length) console.error(JSON.stringify({ type: "azure_models_unknown", source, models: unknown }));
   const known = entries.filter(([id]) => offered.has(id));
   return known.length ? Object.fromEntries(known) as Record<string, string> : undefined;
 }
 
-/** Azure's v1 data-plane API, which serves the Responses API by deployment name in the body's `model`. */
+/** Azure's v1 data-plane API, which serves Responses and Chat Completions by deployment name in the body's `model`. */
 export const AZURE_CHAT_API_VERSION = "v1";
 
 /**
  * Credentials for the platform's calls to a chat model on Azure (compaction.ts `authorize`): the key, sent by Pi's
- * Azure client as the `api-key` header, the resource's v1 API root, and the deployments by model id. Separate from the
+ * clients as the `api-key` header, the resource's v1 API root, and the deployments by model id. Separate from the
  * media's `apiVersion`, which names a dated version for the deployment paths those use.
  */
 export function azureChatCredentials(azure: AzureOpenAI) {

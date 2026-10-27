@@ -1,8 +1,8 @@
 // Checks the platform's Azure OpenAI chat deployments (src/azure-openai.ts) after their settings are stored: for each
 // azure model configured (or those given with --only), one minimal call through the path the runtime uses
 // (explicitKeyStream with the credentials the runtime passes), asking for a one-word answer with the least output the
-// Responses API takes (16 tokens) and the least reasoning the model allows. Prints one JSON line per model: ok, or the
-// error as Azure gave it (401 key refused, 404 deployment missing, 429 rate limited, a content filter), and its tokens
+// Responses API takes (16 tokens, also used for Chat Completions) and the least reasoning the model allows.
+// Prints one JSON line per model: its API, ok or the error as Azure gave it (401 key refused, 404 deployment missing, 429 rate limited, a content filter), and its tokens
 // and cost at the catalog's prices. A run costs well under a cent per model.
 //
 //   node --experimental-strip-types scripts/azure-models-check.ts [--only gpt-6-sol,gpt-6-luna] [--dry-run]
@@ -37,13 +37,14 @@ const context: Context = { systemPrompt: "Answer with one word.", messages: [{ r
 let failed = false;
 for (const id of ids) {
   const deployment = credentials.deployments[id];
-  const line: Record<string, unknown> = { model: `azure/${id}`, deployment: deployment ?? null, endpoint: azure.endpoint };
+  const model = deployment ? resolveModel(`azure/${id}`) : undefined;
+  const line: Record<string, unknown> = { model: `azure/${id}`, deployment: deployment ?? null, endpoint: azure.endpoint, ...(model ? { api: model.api } : {}) };
   if (dryRun || !deployment) {
     if (!deployment) { failed = true; line.error = "not configured: no deployment for this model, or not an azure model in the catalog"; }
     console.log(JSON.stringify(line));
     continue;
   }
-  const model = resolveModel(`azure/${id}`);
+  if (!model) continue;
   const started = performance.now();
   // Each call takes its credentials as the runtime's agents do (`perCall`), so the key never reaches the options logged.
   const stream = explicitKeyStream(() => Promise.resolve(credentials))(model, context as never, { apiKey: "per-call", maxTokens: 16, reasoning: reasoningFloor(model), signal: AbortSignal.timeout(60_000) } as never);

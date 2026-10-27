@@ -15,16 +15,25 @@ const TERRA_COST: Model<Api>["cost"] = {
  *   unversioned id does not point at. Same context (1,048,576), longest reply, images, reasoning and thinking levels as
  *   V4.1 Flash. Priced at OpenRouter's list price: $0.15 in, $0.60 out, $0.003 cache reads per million (it charges
  *   twice that on weekdays 01:00-04:00 and 06:00-10:00 UTC, and reports what it charged, which billing takes first).
+ * - Azure DeepSeek V4.1 Flash: measured 2026-10-26 on version 2026-09-10 (preview), not OpenRouter's
+ *   2026-10-17 snapshot. Chat Completions serves tools, reasoning, images and cached input. Its 1,048,576-token
+ *   window includes output, sent as max_tokens. Azure Global retail per million: $0.30 input, $1.20 output,
+ *   $0.006 cached, no cache writes.
  * - GPT-6.1 Terra (2026-10-26): OpenRouter lists $1 in/$5 out/$0.05 cache reads per million, half Sol's. Each
  *   provider's Sol entry otherwise (API, context window, reasoning, reply limit), with half Sol's cache-write price
  *   and long-context rates at the same 272,000-token threshold. Sol's window, not OpenRouter's 1,050,000: a window
  *   the provider does not grant is one it refuses at (Luna, 2026-10-26).
  */
-const ADDED: Record<string, Record<string, { from: string; name: string; cost: Model<Api>["cost"] }>> = {
+const ADDED: Record<string, Record<string, { from: string; name: string; cost: Model<Api>["cost"] } & Partial<Pick<Model<Api>, "contextWindow" | "input" | "thinkingLevelMap" | "compat">>>> = {
   openai: {
     "gpt-6.1-terra": { from: "gpt-6.1-sol", name: "GPT-6.1 Terra", cost: TERRA_COST },
   },
   azure: {
+    "deepseek-v4.1-flash": {
+      from: "deepseek-v4-pro", name: "DeepSeek V4.1 Flash", input: ["text", "image"], contextWindow: 1_048_576,
+      cost: { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0 }, compat: { maxTokensField: "max_tokens" },
+      thinkingLevelMap: { off: "none", minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+    },
     "gpt-6.1-terra": { from: "gpt-6.1-sol", name: "GPT-6.1 Terra", cost: TERRA_COST },
   },
   openrouter: {
@@ -35,7 +44,9 @@ const ADDED: Record<string, Record<string, { from: string; name: string; cost: M
 const added = (provider: string, id: string): Model<Api> | undefined => {
   const entry = ADDED[provider]?.[id];
   const base = entry && !piCatalog(provider, id) ? piCatalog(provider, entry.from) : undefined;
-  return base && { ...base, id, name: entry!.name, cost: entry!.cost };
+  if (!base || !entry) return undefined;
+  const { from, ...overrides } = entry;
+  return { ...base, ...overrides, id, ...(overrides.compat ? { compat: { ...base.compat, ...overrides.compat } } : {}) };
 };
 const piModel = (provider: string, id: string): Model<Api> | undefined => piCatalog(provider, id) ?? added(provider, id);
 
@@ -88,9 +99,11 @@ const AZURE = "azure";
  * maxTokens, and OpenRouter routes it only to the hosts that serve that much: 1017's 943,718 (V4.1 Flash's longest
  * endpoint, which ADDED copies) leaves out DeepSeek's own endpoint (393,216), Baseten's (262,144), DeepInfra's,
  * Prime Intellect's and InferenceNet's (131,072), so 1017 asks for 131,072, which every host of its full context
- * serves. V4.1 Flash keeps Pi's: its hosts serve that much.
+ * serves. V4.1 Flash keeps Pi's: its hosts serve that much. Azure Flash has no separate output cap (measured
+ * 2026-10-26), but input plus max_tokens must fit its window; default to 131,072 there too.
  */
 const MAX_TOKENS: Record<string, Record<string, number>> = {
+  azure: { "deepseek-v4.1-flash": 131_072 },
   openrouter: { "deepseek/deepseek-v4.1-flash-1017": 131_072 },
 };
 const limited = (model: Model<Api>): Model<Api> => {
