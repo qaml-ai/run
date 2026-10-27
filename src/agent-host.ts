@@ -24,7 +24,7 @@ import { filesRefused, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
 import { describeFile, documentPayload, FILE_LIMITS, IMAGE_PAST_BUDGET, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
-import { observeTurns, recordCodeExecution } from "./metrics.ts";
+import { observeContextMetrics, observeTurns, recordCodeExecution, recordContextRange, recordToolResultSize } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
 import { clock } from "./node-context.ts";
@@ -161,10 +161,15 @@ export function freshView(messages: AgentMessage[], fresh?: AgentMessage): Agent
 export function createAgentHost(hostIO: HostIO) {
   let agent: DurableAgent | undefined;
   let config: AgentConfig;
+  const contextMetrics = observeContextMetrics(() => config?.id);
+  let reportContextRange = true;
   // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
   const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
   let refused: Parameters<HostIO["emit"]>[0] | undefined;
   const io: HostIO = { ...hostIO, emit: value => {
+    // Both Pi's native results and results settled/resumed by the host reach message_end after commit.
+    const committed = value as { type: string; message?: ToolResultMessage };
+    if (committed.type === "message_end" && committed.message?.role === "toolResult") recordToolResultSize(config.id, committed.message);
     let event = value as { type: string; message?: AssistantMessage; [key: string]: unknown };
     const overflow = event.type === "message_end" && event.message?.role === "assistant" && event.message.stopReason === "error" && isContextOverflow(event.message);
     if (overflow) event = { ...event, contextTokens: agent?.contextTokens };
@@ -867,7 +872,12 @@ export function createAgentHost(hostIO: HostIO) {
       if (!piStorage) throw new Error("The agent's Pi durable storage is not open");
       const contextLimit = config.contextRangeMaxBytes ?? CONTEXT_RANGE_MAX_BYTES;
       const contextError = async () => {
-        const { bytes } = await contextRangeSize(piStorage, SESSION_CONVERSATION_ID);
+        const range = await contextRangeSize(piStorage, SESSION_CONVERSATION_ID);
+        if (reportContextRange) {
+          recordContextRange(config.id, range);
+          reportContextRange = false;
+        }
+        const { bytes } = range;
         return bytes > contextLimit ? contextRangeMessage(bytes, contextLimit) : undefined;
       };
       const requireContextSize = async () => {
@@ -990,6 +1000,7 @@ export function createAgentHost(hostIO: HostIO) {
       agent = await DurableAgent.create({ ...agentOptions, durable: {
         storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: journal.history.latest, written: () => journal.written,
         leading: () => leading(agent ? undefined : tools.map(toToolDeclaration)), view: messages => freshView(messages, fresh),
+        onContextRequest: (held, sent) => contextMetrics.request(held, sent),
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own
         // writes fails. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
         onStorageFailure: error => { journal.failed ??= error; },
@@ -1127,6 +1138,8 @@ export function createAgentHost(hostIO: HostIO) {
     }
     const promptMessages = method === "prompt" ? userMessages(params) : undefined;
     busy = true;
+    contextMetrics.reset();
+    reportContextRange = true;
     stopped = undefined;
     refused = undefined;
     omitImages = false;

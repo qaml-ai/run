@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
-import { deliveryLine, errorClass, metricLine, observeTurns, recordEventMetrics, recordWatchRefused, setMetricService, setMetricSink, timedStorage, webhookBacklogLine } from "../src/metrics.ts";
+import { deliveryLine, errorClass, metricLine, observeContextMetrics, observeTurns, recordContextRange, recordToolResultSize, recordEventMetrics, recordWatchRefused, setMetricService, setMetricSink, timedStorage, webhookBacklogLine } from "../src/metrics.ts";
 import { webhookEvent } from "../src/webhooks.ts";
 
 /** Capture the metric lines written while `fn` runs. */
@@ -14,6 +14,76 @@ async function captured(fn: () => unknown | Promise<unknown>) {
 
 /** The metric names and dimension sets CloudWatch would extract from an EMF line. */
 const directive = (line: any) => line._aws.CloudWatchMetrics[0];
+
+test("context metrics use only ServiceName, with agent ids as properties", async () => {
+  setMetricService("runtime-test");
+  let lines: any[];
+  try {
+    lines = await captured(() => {
+      observeContextMetrics(() => "agent-private").request(60_000, 20_000);
+      recordContextRange("agent-private", { bytes: 123_456, entries: 789 });
+      recordToolResultSize("agent-private", { details: { text: "é" }, content: [
+        { type: "image", data: "YWJj" }, { type: "image", data: "ZA==" }, { type: "text", data: "not an image" },
+      ] });
+    });
+  } finally { setMetricService(undefined); }
+  for (const line of lines!) {
+    assert.deepEqual(directive(line).Dimensions, [["ServiceName"]]);
+    assert.equal(line.agent, "agent-private");
+    assert.equal(directive(line).Namespace, "AgentRuntime");
+  }
+  assert.equal(lines![0].held_tokens, 60_000);
+  assert.equal(lines![0].sent_tokens, 20_000);
+  assert.equal(lines![0].held_sent_ratio, 3);
+  assert.deepEqual(directive(lines![0]).Metrics, [
+    { Name: "held_tokens", Unit: "Count" }, { Name: "sent_tokens", Unit: "Count" }, { Name: "held_sent_ratio", Unit: "None" },
+  ]);
+  assert.equal(lines![1].context_range_bytes, 123_456);
+  assert.equal(lines![1].context_range_entries, 789);
+  assert.equal(lines![2].tool_result_details_bytes, Buffer.byteLength(JSON.stringify({ text: "é" })));
+  assert.equal(lines![2].tool_result_inline_image_bytes, 8);
+  for (const [line, names] of [[lines![1], ["context_range_bytes"]], [lines![2], ["tool_result_details_bytes", "tool_result_inline_image_bytes"]]] as const)
+    for (const name of names) assert.equal(directive(line).Metrics.find((metric: any) => metric.Name === name).Unit, "Bytes");
+  assert.ok(!JSON.stringify(lines!).includes("not an image"));
+  assert.ok(!JSON.stringify(lines!).includes("YWJj"));
+  assert.ok(!JSON.stringify(lines!).includes("é"));
+});
+
+test("divergence requires both strict thresholds and warns once per host run", async () => {
+  const metrics = observeContextMetrics(() => "a1");
+  const lines = await captured(() => {
+    metrics.request(50_000, 1);
+    metrics.request(60_000, 15_000);
+    metrics.request(60_001, 15_000);
+    metrics.request(100_000, 1);
+    metrics.reset();
+    metrics.request(60_001, 15_000);
+  });
+  assert.equal(lines.filter(line => line.type === "context_request").length, 5);
+  assert.deepEqual(lines.filter(line => line.type === "context_divergence"), [
+    { type: "context_divergence", agent: "a1", held: 60_001, sent: 15_000 },
+    { type: "context_divergence", agent: "a1", held: 60_001, sent: 15_000 },
+  ]);
+});
+
+test("zero sent tokens omit an undefined ratio but still detect divergence", async () => {
+  const lines = await captured(() => observeContextMetrics(() => "a1").request(50_001, 0));
+  assert.equal(lines[0].held_tokens, 50_001);
+  assert.equal(lines[0].sent_tokens, 0);
+  assert.ok(!("held_sent_ratio" in lines[0]));
+  assert.ok(!directive(lines[0]).Metrics.some((metric: any) => metric.Name === "held_sent_ratio"));
+  assert.equal(lines[1].type, "context_divergence");
+});
+
+test("tool sizes count JSON null, omit absent details, and ignore file references", async () => {
+  const lines = await captured(() => {
+    recordToolResultSize("a1", { content: [{ type: "file", data: "reference" }] });
+    recordToolResultSize("a1", { details: null, content: [] });
+  });
+  assert.equal(lines[0].tool_result_details_bytes, 0);
+  assert.equal(lines[0].tool_result_inline_image_bytes, 0);
+  assert.equal(lines[1].tool_result_details_bytes, 4);
+});
 
 test("a metric line is CloudWatch EMF: namespace AgentRuntime, ServiceName in every dimension set, values at the root", () => {
   const line = JSON.parse(metricLine("turn_metrics", {

@@ -39,6 +39,8 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     leading?: () => AgentMessage | undefined;
     /** What a request sends of Pi's context (a turn that sees no history: from its own first message). */
     view?: (messages: AgentMessage[]) => AgentMessage[];
+    /** Telemetry only: Pi's held context before view/conversion, and the request sent. */
+    onContextRequest?: (held: number, sent: number) => void;
     /**
      * Render the host's system sections as native Pi sections (the `camel` extension's `section()`), rather than give
      * them to Pi's generation in place of its agent's. A host section named `instructions` (Pi's own) is then left out:
@@ -238,6 +240,7 @@ export class DurableAgent {
    */
   private overflowWindow = Infinity;
   private sentTokens = 0;
+  private heldTokenEstimates = new WeakMap<Message, number>();
   get contextTokens() { return { sent: this.sentTokens, window: Math.min(this.state.model.contextWindow, this.options.durable.contextWindow ?? Infinity, this.overflowWindow) }; }
   private errorMessage?: string;
   private lastTurn?: AssistantMessage;
@@ -552,6 +555,18 @@ export class DurableAgent {
       const signal = own && native ? AbortSignal.any([own, native]) : own ?? native;
       signal?.throwIfAborted();
       await this.emit({ type: "turn_start" });
+      // Immutable Pi messages: reuse estimates by identity. The estimator reads string lengths (images have a
+      // fixed token estimate); only new assistant tool arguments/system tool schemas need JSON serialization.
+      // Do this before originals, view and hydration so hidden history remains visible to telemetry.
+      let held = 0;
+      if (this.options.durable.onContextRequest) for (const message of nativeMessages ?? this.messages as Message[]) {
+        let tokens = this.heldTokenEstimates.get(message);
+        if (tokens === undefined) {
+          tokens = estimateMessageTokens(message);
+          this.heldTokenEstimates.set(message, tokens);
+        }
+        held += tokens;
+      }
       let messages = this.messages;
       // Preserve Camel's original input metadata (sender, file refs) while Pi
       // supplies its bounded model context, including the persisted summary.
@@ -573,6 +588,7 @@ export class DurableAgent {
         onProviderStreamEvent: this.options.onProviderStreamEvent,
       });
       const sent = this.sentTokens = llm.reduce((tokens, message) => tokens + estimateMessageTokens(message), 0);
+      this.options.durable.onContextRequest?.(held, sent);
       // An upstream may have dropped an over-native-window Luna prompt. Recover now; require repeat evidence to learn it.
       let inferred = false;
       const overflow = (message: AssistantMessage) => {
