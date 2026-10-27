@@ -166,10 +166,11 @@ export class HostJournal {
           const id = await this.storage.mintId<EntryId>();
           if (record.t === "message") {
             const message = record.message;
+            const { content, ...metadata } = message.role === "user" ? message : { content: undefined };
             // An answer to a call that waited on a person replaces Pi's input-required placeholder in its context.
             const placeholder = message.role === "toolResult" ? await this.placeholder(message.toolCallId) : undefined;
             writes.push({ type: "entry", value: { id, conversationId, ...(message.role === "user"
-              ? { kind: HOST_USER_KIND, data: json({ message }) as never, model: json([{ role: "user", content: message.content, timestamp: message.timestamp }]) as never }
+              ? { kind: HOST_USER_KIND, data: json({ message: metadata }) as never, model: json([{ role: "user", content, timestamp: message.timestamp }]) as never }
               : { kind: HOST_MESSAGE_KIND, model: json([message]) as never, ...(placeholder ? { edits: [{ target: placeholder, action: "omit" as const }] } : {}) }) } });
             const requestId = message.role === "user" ? (message as { requestId?: string }).requestId : undefined;
             if (requestId && !await this.storage.submissionByRequest(conversationId, requestId, context)) writes.push({ type: "submission", value: {

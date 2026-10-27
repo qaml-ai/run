@@ -140,8 +140,9 @@ export async function seedJournal(options: {
         if (index) body.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: SESSION_CONVERSATION_ID, kind: MARKER_KIND, data: { t: "turn", active: false, total: before + index } } });
         body.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: SESSION_CONVERSATION_ID, kind: MARKER_KIND, data: { t: "turn", active: true, total: before + index } } });
       }
+      const { content, ...metadata } = message.role === "user" ? message : { content: undefined };
       body.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: SESSION_CONVERSATION_ID, ...(message.role === "user"
-        ? { kind: HOST_USER_KIND, data: payload({ message }), model: payload([{ role: "user", content: message.content, timestamp: message.timestamp }]) as never }
+        ? { kind: HOST_USER_KIND, data: payload({ message: metadata }), model: payload([{ role: "user", content, timestamp: message.timestamp }]) as never }
         : { kind: HOST_MESSAGE_KIND, model: payload([message]) as never }) } });
     }
     if (headAt === messages.length) checkpoint();

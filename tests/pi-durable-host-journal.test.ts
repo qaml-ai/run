@@ -34,6 +34,9 @@ test("seeding the same source again finds it seeded; another session's or source
   await assert.rejects(seedJournal({ storage, sessionId: "test", model: [system as never], messages: [] }), /seed conflict/);
   const journal = (await HostJournal.open(storage))!;
   assert.equal(journal.total, 1, "an import's messages are history");
+  assert.deepEqual(await journal.history.messagesFrom(0), messages);
+  const entry = (await storage.scanEntries({ conversationId: 1 as never, order: "ascending" }, 100, undefined, context)).items.find(entry => entry.kind === "camel.user")!;
+  assert.equal(Object.hasOwn((entry.data as any).message, "content"), false, "seeded prompts also store content once");
   assert.ok(await journal.hasRequest("r"), "and its requests are taken");
   const empty = new MemoryStorage();
   empty.commit = async () => { throw new Error("disk full"); };

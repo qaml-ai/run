@@ -33,6 +33,8 @@ test("a prompt with output ends on a final_output call that fits its schema, whi
   assert.equal(record.error, undefined, JSON.stringify(record));
   assert.deepEqual(record.outcome.result.output, { sentiment: "positive", score: 0.9 });
   assert.equal(record.outcome.result.reply, "Here it is.");
+  const history = (await r.call(`/v1/agents/${id}/history`)).json.messages;
+  assert.deepEqual(history.at(-1).details, { output: { sentiment: "positive", score: 0.9 } }, "final_output remains available from stored history");
   // The model got the schema as the tool's parameters ($schema dropped), and the bad answer's errors.
   assert.deepEqual(outputTool(r.model.bodies[0]).parameters, SCHEMA);
   assert.match(toolResults(r.model.bodies[1]).at(-1), /Validation failed for tool "final_output"/);

@@ -180,3 +180,47 @@ test("a direct tool's large result is cut for the model, as js_exec's output is,
   assert.match(toolResults(r.model.bodies[before + 1]).at(-1), /in \/workspace\/tool-results\/1-call_big\.txt: read it in parts with fs\.readFile in js_exec/);
   assert.match(toolResults(r.model.bodies[2]).at(-1), /100000/, "the whole result is in the file");
 });
+
+test("history and forks keep capped tool details and deduplicated prompts without changing model content", async t => {
+  const details = { value: "é".repeat(9_000) };
+  const small = { value: "kept" };
+  const server = await mcpServer(t, {
+    large: () => ({ content: [{ type: "text", text: "large result" }], structuredContent: details, isError: true }),
+    small: () => ({ content: [{ type: "text", text: "small result" }], structuredContent: small }),
+  });
+  const r = await runtime(t, (_body, index) => [
+    toolCall("tools__large", {}, "large"),
+    toolCall("tools__small", {}, "small"),
+    toolCall("js_exec", { code: 'text("x".repeat(40000))', maxOutputCharacters: 50000 }, "code"),
+    { role: "assistant", content: "done" },
+  ][index] ?? { role: "assistant", content: "continued" }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Details", mcpServers: [{ name: "tools", url: server.url, exposure: "direct" }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id as string;
+  await r.prompt(agent, "unique prompt", undefined, { from: { id: "sender", name: "Sender" }, metadata: { label: "kept" } });
+  const history = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
+  const results = history.filter((message: any) => message.role === "toolResult");
+  assert.deepEqual(results[0].details, { truncated: true, path: "/workspace/tool-results/1-large.json" });
+  assert.equal(results[0].isError, true);
+  assert.deepEqual(results[1].details, small);
+  assert.deepEqual(results[2].details, { truncated: true, path: "/workspace/tool-results/5-code.json" });
+  assert.equal(results[2].content[0].text, "x".repeat(40000), "js_exec's larger content allowance is unchanged");
+  assert.equal(toolResults(r.model.bodies[1]).at(-1), "large result");
+  assert.equal(toolResults(r.model.bodies[2]).at(-1), "small result");
+  assert.equal(toolResults(r.model.bodies[3]).at(-1), "x".repeat(40000));
+  assert.deepEqual(history[0].from, { id: "sender", name: "Sender" });
+  assert.deepEqual(history[0].metadata, { label: "kept" });
+  const entries = (await r.db.query("select record from pi_durable_entries where session_id = $1 and record::jsonb->>'kind' = 'camel.user'", [agent])).rows.map((row: any) => typeof row.record === "string" ? JSON.parse(row.record) : row.record);
+  assert.equal(entries.length, 1);
+  assert.equal(Object.hasOwn(entries[0].data.message, "content"), false);
+  assert.deepEqual(entries[0].model[0].content, history[0].content);
+  const volume = (await r.call(`/v1/agents/${agent}`)).json.mounts[0].volumeId;
+  const saved = await r.call(`/v1/volumes/${volume}/files/tool-results/1-large.json`);
+  assert.deepEqual(JSON.parse(saved.text), details);
+  const code = await r.call(`/v1/volumes/${volume}/files/tool-results/5-code.json`);
+  assert.deepEqual(JSON.parse(code.text).output, ["x".repeat(40000)]);
+  const fork = await r.call(`/v1/agents/${agent}/fork`, { body: {} });
+  assert.equal(fork.status, 201, fork.text);
+  assert.deepEqual((await r.call(`/v1/agents/${fork.json.id}/history`)).json.messages, history);
+  await r.prompt(fork.json.id, "continue");
+  assert.ok(JSON.stringify(r.model.bodies.at(-1)).includes("unique prompt"));
+});

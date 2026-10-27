@@ -453,18 +453,35 @@ export function createAgentHost(hostIO: HostIO) {
     const text = content.filter(part => part.type === "text").map(part => part.text as string).join("\n");
     const limit = SANDBOX_LIMITS.outputCharacters;
     if (text.length <= limit) return content;
-    // Saved where the agent can read it: with its file tools, or fs in js_exec.
-    const readable = config.fileTools !== false || config.codeMode !== false;
-    const mount = readable ? scratchMount(config.mounts) : undefined;
-    // Named by the message that made the call too: providers may give calls in different turns the same id.
-    const at = (await made(toolCallId)).messageIndex;
-    const path = mount && `${mount.path}/tool-results/${at !== undefined ? `${at}-` : ""}${toolCallId.replace(/[^A-Za-z0-9_.-]/g, "_")}.txt`;
     const whole = Buffer.from(text, "utf8");
-    const saved = path ? await io.fs("writeFile", { path, text: whole.length > FILE_LIMITS.scriptFileBytes ? whole.subarray(0, FILE_LIMITS.scriptFileBytes).toString("utf8") : text }).then(() => true, () => false) : false;
+    const path = await saveToolResult(toolCallId, text);
+    const saved = !!path;
     // Read with what the agent has: its file tools, or, without them (fileTools: false), fs in js_exec.
     const how = config.fileTools === false ? "with fs.readFile in js_exec" : "with read (offset and length)";
     const where = saved ? ` The whole result${whole.length > FILE_LIMITS.scriptFileBytes ? ` (its first ${FILE_LIMITS.scriptFileBytes.toLocaleString("en-US")} bytes)` : ""} is in ${path}: read it in parts ${how}.` : " Ask the tool for less.";
     return [...content.filter(part => part.type !== "text"), { type: "text", text: `${text.slice(0, limit)}\n\n[Result cut at ${limit.toLocaleString("en-US")} of ${text.length.toLocaleString("en-US")} characters.${where}]` }];
+  }
+
+  /** Save large results beside their text, using the same call identity and workspace limits. */
+  async function saveToolResult(toolCallId: string, text: string, extension = "txt"): Promise<string | undefined> {
+    const readable = config.fileTools !== false || config.codeMode !== false;
+    const mount = readable ? scratchMount(config.mounts) : undefined;
+    // Named by the message that made the call too: providers may give calls in different turns the same id.
+    const at = (await made(toolCallId)).messageIndex;
+    const path = mount && `${mount.path}/tool-results/${at !== undefined ? `${at}-` : ""}${toolCallId.replace(/[^A-Za-z0-9_.-]/g, "_")}.${extension}`;
+    const whole = Buffer.from(text, "utf8");
+    const saved = path ? await io.fs("writeFile", { path, text: whole.length > FILE_LIMITS.scriptFileBytes ? whole.subarray(0, FILE_LIMITS.scriptFileBytes).toString("utf8") : text }).then(() => true, () => false) : false;
+    return saved ? path : undefined;
+  }
+
+  async function cappedDetails(toolCallId: string, details: unknown, limit = 16 * 1024): Promise<unknown> {
+    if (details === undefined) return undefined;
+    const text = JSON.stringify(details);
+    const bytes = Buffer.byteLength(text, "utf8");
+    if (bytes <= limit) return details;
+    // Never label a partial JSON file as the whole value.
+    const path = bytes <= FILE_LIMITS.scriptFileBytes ? await saveToolResult(toolCallId, text, "json") : undefined;
+    return { truncated: true, ...(path ? { path } : {}) };
   }
 
   /** The tools the model calls directly: those declared direct, or every one without js_exec (codeMode: false). */
@@ -490,9 +507,9 @@ export function createAgentHost(hostIO: HostIO) {
           if (tool.resultFormat === "content") {
             if (!value || !Array.isArray(value.content) || value.content.some((part: any) => !part || !(part.type === "text" && typeof part.text === "string" || part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string" || validFileRef(part)))) throw new Error("Invalid content tool result");
             // A failed call (an MCP tool's isError, an OpenAPI operation's HTTP error) is an error result that keeps its content and details.
-            return { ...value, content: await capped(toolCallId, (await fittedImages([value]))[0].content), isError: value.isError === true };
+            return { ...value, content: await capped(toolCallId, (await fittedImages([value]))[0].content), details: await cappedDetails(toolCallId, value.details), isError: value.isError === true };
           }
-          return { content: await capped(toolCallId, [{ type: "text", text: JSON.stringify(value) ?? "null" }]), details: value };
+          return { content: await capped(toolCallId, [{ type: "text", text: JSON.stringify(value) ?? "null" }]) };
         },
       }));
   }
@@ -519,7 +536,7 @@ export function createAgentHost(hostIO: HostIO) {
             },
           });
           // details keeps the output as events streamed it, for clients that render it.
-          return { content: [{ type: "text", text: presentResult({ ...result, returned }, request.maxOutputCharacters) }], details: result };
+          return { content: [{ type: "text", text: presentResult({ ...result, returned }, request.maxOutputCharacters) }], details: await cappedDetails(id, result, 32 * 1024) };
         } finally { await io.cancelTools(); }
       },
     };
