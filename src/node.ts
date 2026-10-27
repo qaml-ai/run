@@ -20,7 +20,7 @@ import { StorageGc } from "./storage-gc.ts";
 import { modelHeadersInput, resolveModel, sessionConfig } from "./session-config.ts";
 import { ClientSessions, ORPHANS_CHANNEL } from "./client-sessions.ts";
 import { runSessionOf, type RunSettings, type SessionHooks } from "./client-sessions/state.ts";
-import { spendInput } from "./client-sessions/spend.ts";
+import { ADMIN_RUN_LIMITS, spendInput } from "./client-sessions/spend.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import type { LogTail, Storage, StorageMeter } from "../shared/storage.ts";
 import { StorageUsage } from "./storage-usage.ts";
@@ -887,7 +887,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     spendLimit: tenant => accounts.runLimit(tenant),
     runLimitsFor: async tenant => {
       const set = await accounts.billing.runLimits(tenant), none = tenants.has(tenant);
-      return { maxResponses: set.maxResponses ?? (none ? Infinity : runLimits.maxResponses), maxSeconds: set.maxSeconds ?? (none ? Infinity : runLimits.maxSeconds) };
+      return { maxResponses: set.maxResponses ?? (none ? (config.adminRunLimits ?? ADMIN_RUN_LIMITS).maxResponses : runLimits.maxResponses), maxSeconds: set.maxSeconds ?? (none ? (config.adminRunLimits ?? ADMIN_RUN_LIMITS).maxSeconds : runLimits.maxSeconds) };
     },
     codeLimitsFor: tenant => accounts.billing.codeLimits(tenant),
     runRate: tenant => rateLimits.run(tenant),

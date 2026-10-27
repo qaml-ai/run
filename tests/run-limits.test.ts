@@ -39,7 +39,7 @@ test("a run stops at its agent's limit of model responses with stopped turn_limi
   await until(async () => (await r.call(`/v1/agents/${id}`)).json.runLimits === null, "the run limits to be removed");
 });
 
-test("self-serve tenants get the runtime's maximums (or the operator's per tenant); admin tenants none unless their entry sets one", { timeout: 120_000 }, async t => {
+test("self-serve tenants get the runtime's maximums (or the operator's per tenant); admin tenants the admin backstop unless their entry sets one", { timeout: 120_000 }, async t => {
   const tenantsFile = {
     tenants: {
       // Like chiridion-prod: an unbilled admin tenant, with no run limits of its own.
@@ -50,9 +50,9 @@ test("self-serve tenants get the runtime's maximums (or the operator's per tenan
   };
   // Each agent's model calls tools until its turn has 12 tool results, then answers.
   const r = await runtime(t, (body: any, index) => body.messages.filter((message: any) => message.role === "tool").length >= 12
-    ? { role: "assistant", content: "done", usage: { prompt_tokens: 10, completion_tokens: 1 } } : looping(body, index), { AGENT_MAX_RUN_RESPONSES: "4", AGENT_BILLING_ADMINS: "alice" }, tenantsFile);
+    ? { role: "assistant", content: "done", usage: { prompt_tokens: 10, completion_tokens: 1 } } : looping(body, index), { AGENT_MAX_RUN_RESPONSES: "4", AGENT_ADMIN_MAX_RUN_RESPONSES: "20", AGENT_BILLING_ADMINS: "alice" }, tenantsFile);
 
-  // The admin tenant's long run is not stopped: 13 responses, past the runtime's 4.
+  // The admin tenant's long run is not stopped at the runtime's 4: 13 responses, within its backstop of 20.
   const admin = (await r.call("/v1/agents", { body: {} })).json;
   const long = await r.prompt(admin.id, "go");
   assert.equal(long.outcome.result.stopped, undefined);
@@ -80,6 +80,15 @@ test("self-serve tenants get the runtime's maximums (or the operator's per tenan
   const raised = (await r.call("/v1/agents", { body: {}, token })).json;
   assert.equal((await r.prompt(raised.id, "go", token)).outcome.result.error, "This run stopped at its limit of 6 model responses. Send another message to continue");
   assert.equal(r.model.bodies.length, 28);
+});
+
+test("an admin tenant's runaway run stops at the admin backstop", { timeout: 120_000 }, async t => {
+  const tenantsFile = { tenants: { alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" } } }, platformKeys: { openrouter: "fixture-platform-key" } };
+  // A model that never stops calling tools (2026-10-27: one ran 25 hours for an admin tenant, which had no limit).
+  const r = await runtime(t, looping, { AGENT_MAX_RUN_RESPONSES: "4", AGENT_ADMIN_MAX_RUN_RESPONSES: "6", AGENT_BILLING_ADMINS: "alice" }, tenantsFile);
+  const agent = (await r.call("/v1/agents", { body: {} })).json;
+  assert.equal((await r.prompt(agent.id, "go")).outcome.result.error, "This run stopped at its limit of 6 model responses. Send another message to continue");
+  assert.equal(r.model.bodies.length, 6);
 });
 
 test("a definition's run limits reach its agents, and an agent's own stay when the definition is applied", async t => {

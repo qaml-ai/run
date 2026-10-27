@@ -53,6 +53,8 @@ export const END_USER_CHARGE_RETRY_MS = 5 * 60_000;
 export const dollars = (usd: number) => `$${Number(usd.toFixed(6))}`;
 /** The runtime's default maximums for one run, which an agent's own `runLimits` may lower (ClientSessionsOptions.runLimitsFor). */
 export const RUN_LIMITS: Readonly<Required<Pick<RunLimits, "maxResponses" | "maxSeconds">>> = Object.freeze({ maxResponses: 1_000, maxSeconds: 2 * 3_600 });
+/** An admin tenant's run backstop, unless its entry sets its own: a runaway's, not a long run's (see node-config.ts). */
+export const ADMIN_RUN_LIMITS: Readonly<Required<Pick<RunLimits, "maxResponses" | "maxSeconds">>> = Object.freeze({ maxResponses: 1_000, maxSeconds: 4 * 3_600 });
 export const duration = (seconds: number) => {
   const [count, unit] = seconds % 3_600 === 0 ? [seconds / 3_600, "hour"] : seconds % 60 === 0 ? [seconds / 60, "minute"] : [seconds, "second"];
   return `${count} ${unit}${count === 1 ? "" : "s"}`;
