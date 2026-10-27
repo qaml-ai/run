@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { HttpError } from "./http.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Storage } from "../shared/storage.ts";
 import { underClaim, type Claim } from "./ownership.ts";
@@ -23,6 +24,8 @@ export type HistoryPage = { entries: HistoryEntry[]; next: number | null; total:
 
 /** A chunk holds about this much; a turn larger than it is split between messages. */
 export const CHUNK_BYTES = 1_000_000;
+/** Full-history reads may load at most this many stored UTF-8 bytes. */
+export const FULL_HISTORY_READ_BYTES = 64 * 1024 * 1024;
 /** A page returns about this much at most, beyond its first turn. */
 export const PAGE_BYTES = 4_000_000;
 /** Chunk rows read at a time while looking for where a page starts. */
@@ -208,6 +211,8 @@ export class HistoryIndex {
   /** Every message the chunks hold, from the first up to (not including) `end`, in order: a full history's settled part. */
   async messages(agent: string, end: number): Promise<AgentMessage[]> {
     const { rows } = await this.db.query("select start, count, bytes, turns, hash from agent_history_chunks where agent = $1 and start < $2 order by start", [agent, end]);
+    const bytes = (rows as Row[]).reduce((sum, row) => sum + row.bytes, 0);
+    if (bytes > FULL_HISTORY_READ_BYTES) throw new HttpError(413, `History is ${bytes} bytes; full-history reads and forks are limited to ${FULL_HISTORY_READ_BYTES} bytes. Read it in pages with limit/before/maxBytes.`);
     const loaded = await mapLimit(rows as Row[], READS, row => this.read(agent, row));
     return loaded.flat().slice(0, end);
   }

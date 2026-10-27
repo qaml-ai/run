@@ -1,3 +1,4 @@
+import { HttpError } from "../http.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Cursor, DocumentId, EntryId, EntryRecord, Storage, StorageWrite } from "@earendil-works/pi-durable";
@@ -314,7 +315,7 @@ export class JournalHistory {
   async messagesFrom(from: number, to = this.total): Promise<AgentMessage[] | undefined> {
     if (from < this.heldFrom || from > to || to > this.total) return undefined;
     const chars = this.sizesFrom(from, to).reduce((sum, size) => sum + size, 0);
-    if (chars > MESSAGES_READ_CHARS) throw new Error(`History messages ${from} to ${to} are ${chars} characters, past the ${MESSAGES_READ_CHARS} one read takes`);
+    if (chars > MESSAGES_READ_CHARS) throw new HttpError(413, `History messages ${from} to ${to} are ${chars} characters, past the ${MESSAGES_READ_CHARS} one read takes. Full-history reads and forks are limited; read it in pages with limit/before/maxBytes.`);
     const messages: AgentMessage[] = [];
     const entries = new Map<number, ReturnType<typeof durableEntryMessages>>();
     const slots = this.slots.slice(from - this.heldFrom, to - this.heldFrom);

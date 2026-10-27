@@ -5,11 +5,15 @@ import { tmpdir } from "node:os";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { DocumentId, EntryId } from "@earendil-works/pi-durable";
+import { baseWrites, JournalHistory } from "../src/pi-durable/history.ts";
+import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { boundaries, chunksOf, HistoryIndex } from "../src/history-pages.ts";
+import { boundaries, chunksOf, FULL_HISTORY_READ_BYTES, HistoryIndex } from "../src/history-pages.ts";
 import { fileStorage } from "../shared/storage.ts";
 import { testDatabase } from "./database.ts";
 import { AgentRuntime } from "../clients/typescript.ts";
@@ -28,6 +32,30 @@ test("what the history index lacks is chunked at turn starts, under its bound; o
   const big = "x".repeat(400_000);
   const sized = [user(big), assistant(big), user(big), assistant(big), assistant(big), assistant(big)];
   assert.deepEqual(chunksOf({ from: 0, messages: sized, sizes: sized.map(message => JSON.stringify(message).length), turns: [0, 2] }).map(chunk => [chunk.start, chunk.messages.length, chunk.turns]), [[0, 2, [0]], [2, 2, [2]], [4, 2, []]]);
+});
+
+test("full history checks all chunk bytes before reading any blob", async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "history-cap-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const storage = fileStorage(root);
+  const index = new HistoryIndex(db, storage);
+  const agent = `client_${"c".repeat(40)}`;
+  await db.query("insert into agents (id, tenant, header, name, type, model, expires_at, revoked, revision) values ($1, 't', '{}', 'a', 'general', 'm', null, false, 1)", [agent]);
+  await index.write(agent, undefined, { start: 0, messages: [user("first")], turns: [0] });
+  await index.write(agent, undefined, { start: 1, messages: [user("second")], turns: [1] });
+  let reads = 0;
+  const read = storage.readBlob.bind(storage);
+  storage.readBlob = key => { reads++; return read(key); };
+  // Each chunk fits alone, but together they exceed the cap.
+  await db.query("update agent_history_chunks set bytes = $2 where agent = $1", [agent, FULL_HISTORY_READ_BYTES / 2 + 1]);
+  await assert.rejects(index.messages(agent, 2), { status: 413, message: `History is ${FULL_HISTORY_READ_BYTES + 2} bytes; full-history reads and forks are limited to ${FULL_HISTORY_READ_BYTES} bytes. Read it in pages with limit/before/maxBytes.` });
+  assert.equal(reads, 0);
+  assert.deepEqual(await index.messages(agent, 1), [user("first")], "only selected rows count");
+  assert.equal(reads, 1);
+  await db.query("update agent_history_chunks set bytes = $2 where agent = $1", [agent, FULL_HISTORY_READ_BYTES / 2]);
+  assert.deepEqual(await index.messages(agent, 2), [user("first"), user("second")], "the exact cap is allowed");
+  assert.equal(reads, 3);
 });
 
 test("byte-bounded pages count UTF-8 and the envelope, preserve cursors, and keep oversized messages", async t => {
@@ -127,6 +155,39 @@ test("history comes in pages of whole turns, newest first, from chunks rather th
 
   // Another tenant's token gets no page.
   assert.equal((await r.call(`/v1/agents/${agent}/history?limit=3`, { token: OTHER_OPERATOR })).status, 404);
+});
+
+test("oversized indexed histories return 413 for unloaded reads, runs and forks while pages work", async t => {
+  const r = await runtime(t, () => ({ content: "done" }), { AGENT_IDLE_MS: "1000" });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(agent, "first");
+  const run = (await r.call("/v1/runs", { body: { input: "one run", wait: true } })).json;
+  const runAgent = `client_${run.id.slice("run_".length)}`;
+  for (const id of [agent, runAgent]) {
+    await until(async () => await indexedOf(r, id) === 2, "the stopped agent to index its messages", 20_000);
+    // Move the journal base past the indexed messages, as a long-lived agent's rebase does.
+    const storage = await openPiStorage({ sessionId: id, directory: join(r.root, "agents", id), db: r.db });
+    try {
+      const history = (await JournalHistory.openAny(storage))!;
+      const document = await JournalHistory.baseDocument(storage);
+      await storage.commit(baseWrites(await storage.mintId<EntryId>(), history.settledBase()!, {
+        id: document ?? await storage.mintId<DocumentId>(), create: !document,
+      }), BACKGROUND_CONTEXT);
+    } finally { await storage.close(BACKGROUND_CONTEXT); }
+    await r.db.query("update agent_history_chunks set bytes = $2 where agent = $1", [id, FULL_HISTORY_READ_BYTES + 1]);
+    if (id === runAgent) continue; // Ephemeral runs are read through /v1/runs, not agent routes.
+    const full = await r.call(`/v1/agents/${id}/history`);
+    assert.equal(full.status, 413, full.text);
+    assert.match(full.text, /limit\/before\/maxBytes/);
+    const page = await r.call(`/v1/agents/${id}/history?limit=1&maxBytes=16384`);
+    assert.equal(page.status, 200, page.text);
+    assert.equal(page.json.entries.at(-1).index, 1);
+  }
+  const messages = await r.call(`/v1/runs/${run.id}/messages`);
+  assert.equal(messages.status, 413, messages.text);
+  const fork = await r.call(`/v1/agents/${agent}/fork`, { body: { key: "oversized-fork" } });
+  assert.equal(fork.status, 413, fork.text);
+  assert.match(fork.text, /forks/);
 });
 
 test("history maxBytes works alone on the API and through the SDK, with validated bounds", async t => {

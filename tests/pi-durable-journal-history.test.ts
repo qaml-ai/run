@@ -157,6 +157,10 @@ test("journal history: a read past MESSAGES_READ_CHARS fails, rather than taking
   ]);
   const history = (await JournalHistory.open(storage))!;
   assert.equal(history.total, 3);
-  await assert.rejects(history.messagesFrom(0), /past the \d+ one read takes/);
+  await assert.rejects(history.messagesFrom(0), error => {
+    assert.equal((error as { status: number }).status, 413);
+    assert.match((error as Error).message, /past the \d+ one read takes/);
+    return true;
+  });
   assert.equal((await history.messagesFrom(1))!.length, 2, "a read within the cap still answers");
 });
