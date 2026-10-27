@@ -5007,6 +5007,79 @@
         },
         "additionalProperties": false
       },
+      "ContextReset": {
+        "type": "object",
+        "properties": {
+          "reset": {
+            "type": "boolean",
+            "description": "false: the agent has no context yet (it never ran), and nothing was written"
+          },
+          "keptMessages": {
+            "type": "integer",
+            "description": "History messages the new context kept after the summary"
+          },
+          "before": {
+            "type": "object",
+            "properties": {
+              "entries": {
+                "type": "integer",
+                "description": "Journal entries in the context's range"
+              },
+              "bytes": {
+                "type": "integer",
+                "description": "Their serialized bytes, as AGENT_CONTEXT_RANGE_MAX_BYTES counts them"
+              }
+            },
+            "required": [
+              "entries",
+              "bytes"
+            ],
+            "description": "The context's range before the reset"
+          },
+          "after": {
+            "type": "object",
+            "properties": {
+              "entries": {
+                "type": "integer",
+                "description": "Journal entries in the context's range"
+              },
+              "bytes": {
+                "type": "integer",
+                "description": "Their serialized bytes, as AGENT_CONTEXT_RANGE_MAX_BYTES counts them"
+              }
+            },
+            "required": [
+              "entries",
+              "bytes"
+            ],
+            "description": "The context's range after it"
+          }
+        },
+        "required": [
+          "reset",
+          "keptMessages",
+          "before",
+          "after"
+        ]
+      },
+      "ContextResetInput": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "description": "What the agent is told of its earlier conversation, as a compaction summary. Default: that the operator reset it on this date because it was too large to load, and that its full history remains in its history and files"
+          },
+          "keepMessages": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20,
+            "description": "How many of the latest history messages the new context keeps after the summary (0 to 20, default 0). It never starts on a tool result whose call it does not keep"
+          }
+        },
+        "additionalProperties": false
+      },
       "Upload": {
         "type": "object",
         "properties": {
@@ -13907,6 +13980,73 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Aborted"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{id}/context/reset": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContextResetInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The agent's context is replaced: its system message, a summary and its last keepMessages history messages, written without loading the context it replaces. Its history (GET /v1/agents/{id}/history), files and configuration are unchanged; its next run starts from the new context. A run whose context was too large to load (context_too_large) runs again after it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContextReset"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "AGENT_BUSY: a run is active or queued; abort it or wait for it to end. context_too_large: the new context would itself be too large; keep fewer messages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }

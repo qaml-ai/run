@@ -578,6 +578,8 @@ export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subp
 export type MountInput = Mount | { workspace: true; path?: string } | { workspace: false };
 /** Where a fork came from: the agent, and the history index of its last message the fork began with (null: none). */
 export interface ForkedFrom { agentId: string; atMessage: number | null }
+/** What `resetContext` did: the context's range (journal entries and their bytes) before and after it. */
+export interface ContextReset { reset: boolean; keptMessages: number; before: { entries: number; bytes: number }; after: { entries: number; bytes: number } }
 /**
  * A fork's options. `key`: the fork's own key, so a retry returns the same fork (default: one made up, and a day's
  * lifetime, as createAgent's). `atMessage`: where its history ends, a history index (that message, and the tool
@@ -1660,6 +1662,15 @@ export class AgentRuntime {
         ...(options.modelHeaders !== undefined ? { modelHeaders: options.modelHeaders } : {}),
       }, true);
     return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, forkedFrom: answer.forkedFrom };
+  }
+  /**
+   * Replace an agent's model context with its system message, a summary (`summary`, or a note that the operator reset
+   * it) and its last `keepMessages` history messages (0 to 20, default 0), without loading the old one: how an agent
+   * whose runs fail with `context_too_large` runs again. Its history, files and configuration stay. Refused (409
+   * AGENT_BUSY) while a run is active or queued; a retry is safe.
+   */
+  resetContext(agentId: string, options: { summary?: string; keepMessages?: number } = {}): Promise<ContextReset> {
+    return this.transport.json(`/v1/agents/${encodeURIComponent(agentId)}/context/reset`, this.operator(), "POST", options, true);
   }
   /** An existing agent's credentials, by its id or the key it was made with, its configuration untouched (404 when there is none). */
   /** An existing agent's credentials, by key or id, with its `configHash`. */

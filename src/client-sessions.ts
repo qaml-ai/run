@@ -8,7 +8,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type { AgentConfig, ToolDefinition } from "./protocol.ts";
-import { errorText, CONTEXT_TOO_LARGE, NOT_MIGRATED, PERSISTENCE_FAILED } from "./protocol.ts";
+import { errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, NOT_MIGRATED, PERSISTENCE_FAILED } from "./protocol.ts";
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { withCatalogPrices } from "./pi-catalog.ts";
@@ -1396,6 +1396,35 @@ export class ClientSessions {
     const cancelled = await this.stop(session, queued, children);
     if (this.options.inputs) await humanInput.cancelInputs(this.inputsContext, session, "aborted");
     return { cancelled };
+  }
+
+  /**
+   * Reset an idle agent's Pi context (POST /v1/agents/:id/context/reset): its host is stopped if it runs, and a new
+   * checkpoint (its system message, a summary, its last `keepMessages` history messages) is written to its journal
+   * without loading the context it replaces (pi-durable/reset.ts). Its history and history index stay as they were.
+   * Refused (409 AGENT_BUSY) while a run is open or queued; queued behind nothing, a run sent meanwhile waits for it.
+   */
+  async resetContext(id: string, tenant: string, input: { summary?: string; keepMessages?: number }) {
+    if (!await this.owns(id, tenant)) throw new HttpError(404, "Agent not found");
+    const session = await this.load(id);
+    if (!session) throw new HttpError(404, "Agent not found");
+    await session.starting?.catch(() => {});
+    // A run open or queued (a run just ended may still be publishing its response: that is no reason to refuse).
+    if (session.running.size) throw new HttpError(409, "A run is active or queued on this agent; abort it or wait for it to end, then reset", "AGENT_BUSY");
+    const reset = session.runs.then(async () => {
+      // Its host holds the context it loaded: it starts again from the reset one.
+      if (this.supervisor.agents.has(id) || this.supervisor.starting.has(id)) await this.supervisor.stop(id);
+      return this.supervisor.resetContext(id, session.claim, { ...input, limit: this.options.contextRangeMaxBytes ?? CONTEXT_RANGE_MAX_BYTES, settled: (end, from) => this.historyIndex.messages(id, end, from) }).catch(error => {
+        // Started again meanwhile (a steer or a configuration starts it at once): its host has the context now.
+        if (errorText(error) === "Agent is running") throw new HttpError(409, "The agent started while it was being reset; try again", "AGENT_BUSY");
+        throw error;
+      });
+    });
+    session.runs = reset.then(() => {}, () => {});
+    const result = await reset;
+    console.log(JSON.stringify({ type: "context_reset", agent: id, tenant, keepMessages: input.keepMessages ?? 0, ...result ? { keptMessages: result.keptMessages, bytesBefore: result.before.bytes, bytesAfter: result.after.bytes } : { empty: true } }));
+    return result ? { reset: true as const, keptMessages: result.keptMessages, before: result.before, after: result.after }
+      : { reset: false as const, keptMessages: 0, before: { entries: 0, bytes: 0 }, after: { entries: 0, bytes: 0 } };
   }
 
   /**

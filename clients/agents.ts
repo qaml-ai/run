@@ -12,7 +12,7 @@
 import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
   type AgentFiles, type Builtin, type DelegateSettings, type InlineMcpServer, type RecordedMessage, type AgentInput, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
-  type ForkedFrom, type ForkOptions, type MountInput, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile, type SteerReceipt,
+  type ContextReset, type ForkedFrom, type ForkOptions, type MountInput, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile, type SteerReceipt,
   type RunFrame, type RunInputPart, type RunRequest, type StatelessRun, type CreditReason,
 } from "./typescript.ts";
 import type { AgentEvent, ModelFailure, ThinkingLevel } from "./types.ts";
@@ -730,6 +730,15 @@ export class Agent {
   fork(options: ForkOptions & Pick<AgentConfig, "tools" | "mcp" | "onEvent" | "onInput" | "onError" | "onConnection" | "takeover" | "attach" | "connection"> = {}): Promise<Agent> {
     if (!this.agents) throw new AgentError("fork needs the Agents this agent came from (agents.upsert, get or agent)");
     return this.agents.fork(this.id, options);
+  }
+  /**
+   * Replace its model context with its system message, a summary and its last `keepMessages` history messages (0 to
+   * 20, default 0), without loading the old one: how an agent whose runs fail with `context_too_large` runs again. Its
+   * history, files and configuration stay. Refused (409 AGENT_BUSY) while a run is active or queued.
+   */
+  resetContext(options: { summary?: string; keepMessages?: number } = {}): Promise<ContextReset> {
+    if (!this.agents) throw new AgentError("resetContext needs the Agents this agent came from (agents.upsert, get or agent)");
+    return this.agents.runtime.resetContext(this.id, options);
   }
   /** Wake the agent later with a message (`text`), or run `code`; `everySeconds` (at least 60) repeats it. */
   schedule(input: Parameters<AgentClient["schedule"]>[0]) { return this.client.schedule(input); }

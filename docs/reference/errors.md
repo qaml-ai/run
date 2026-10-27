@@ -45,6 +45,8 @@ retry.
 | 409 | `VOICE_SPEAK_DISABLED` | The voice session listens only (`brain: "listen"`) and never speaks |
 | 409 | `APPLICATION_CONNECTED` | Another connection serves this agent's tools; connect with `?takeover=true` to replace it |
 | 409 | `APPLICATION_NOT_CONNECTED` | The agent's tools need its application and none is connected; connect it, or send `allowDisconnected: true` |
+| 409 | `AGENT_BUSY` | A context reset while a run is active or queued; abort it or wait for it to end, then reset |
+| 409 | `context_too_large` | A context reset would leave a context still too large to load; keep fewer messages or give a shorter summary |
 | 409 | `FORK_POINT_RUNNING` | A fork's `atMessage` is in a turn that has not ended (running, or waiting on a person); fork at an earlier message, or once it ends |
 | 409 | `REPLAY_GAP` | The Last-Event-ID is behind the buffer; read `/state` (or ask for a snapshot) and continue from its cursor |
 | 409 | `CONFLICT` | Another conflict, named in the message |
@@ -119,6 +121,7 @@ A run ends in one of three ways: it answered, it waits on people
 | `output_invalid` | (the SDKs only) | The output fit the JSON Schema the runtime checked, but not the zod or pydantic schema the SDK parsed it with (a refinement or validator the JSON Schema cannot say) |
 | `spend_limit` | `result.stopped: "spend_limit"` | A spend limit stopped the turn after the response that crossed it (its tool calls ran), or refused the run as it came to start in the queue. `result.limit` says which: `run` (the run's own `spendLimit`), `agent`, `tenant` (the monthly cap) or `credit` (prepaid credit spent). Raise that limit and send the next message |
 | `turn_limit` | `result.stopped: "turn_limit"` | The run made as many model responses (1,000 by default) or ran as long (2 hours) as its [run limits](../guides/models-and-keys.md#run-limits) allow; the turn stopped after that response's tool calls. Send another message to continue, or raise the agent's `runLimits` |
+| `context_too_large` | `result.code` (with `result.error`) | The agent's stored context (since its last compaction) is past what a run can load, 128 MiB by default ([limits](limits.md#runs-and-requests)): the run failed before the model, or stopped mid-turn (`result.stopped: "turn_limit"`). Every run fails the same way until its context is reset: `POST /v1/agents/:id/context/reset` (see [Long conversations](../concepts.md#long-conversations)), which keeps its history and files |
 | `end_user_credit` | `result.stopped: "spend_limit"`, `limit: "end_user"`, `reason`, `bucket`, `endUser` | The run's [end user](../guides/end-user-credits.md) may not spend more: the run was refused as it came to start in the queue, a model call was refused, or one was cut where its hold ended mid-reply (what streamed is kept). `reason` is one of the [credit reasons](#end-user-credit-reasons). Not retried. Grant them credit and send the next message |
 | `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent was deleted, or code execution failed |
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |

@@ -625,6 +625,19 @@ class _RuntimeCalls:
             body["ttlSeconds"] = 86400
         return self._rest("POST", f"/v1/agents/{_path(agent_id)}/fork", body)
 
+    def reset_context(self, agent_id, *, summary=None, keep_messages=None):
+        """Replace an agent's model context with its system message, a summary (`summary`, or a note that the operator
+        reset it) and its last `keep_messages` history messages (0 to 20, default 0), without loading the old one: how an
+        agent whose runs fail with context_too_large runs again. Its history, files and configuration stay. Returns
+        {"reset", "keptMessages", "before", "after"} (each range's {"entries", "bytes"}). AgentError with status 409 (code
+        AGENT_BUSY) while a run is active or queued; a retry is safe."""
+        body = {}
+        if summary is not None:
+            body["summary"] = summary
+        if keep_messages is not None:
+            body["keepMessages"] = keep_messages
+        return self._rest("POST", f"/v1/agents/{_path(agent_id)}/context/reset", body)
+
     def agent_credentials(self, key_or_id):
         """An existing agent's credentials ({"id", "token", "expiresAt"}), by its id or the key it was made with, its
         configuration untouched. AgentError with status 404 when there is none."""
@@ -2700,6 +2713,14 @@ class Agent:
         return await self._agents.fork(self.id, key=key, name=name, at_message=at_message, ttl_seconds=ttl_seconds, subject=subject, context=context,
                                        instructions_append=instructions_append, model_headers=model_headers, tools=tools,
                                        on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover)
+
+    async def reset_context(self, *, summary=None, keep_messages=None):
+        """Replace its model context with its system message, a summary and its last `keep_messages` history messages,
+        without loading the old one: how an agent whose runs fail with context_too_large runs again (see
+        AgentRuntime.reset_context). Its history, files and configuration stay."""
+        if self._agents is None:
+            raise AgentError("reset_context needs the Agents this agent came from (agents.upsert, get or agent)")
+        return await self._agents.runtime.reset_context(self.id, summary=summary, keep_messages=keep_messages)
 
     async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None):
         """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it. history is deprecated and ignored."""

@@ -139,6 +139,7 @@ what changed without keeping a manifest. It is opaque: compare it, never parse i
 | `agent.schedule({ text, inSeconds, at, everySeconds, calendar, email })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
 | `agent.files` | `agent.files` | `list`, `download`, `upload`, `link` by the paths the agent sees |
 | `agent.abort({ queued })` | `abort(queued=)` | stop the agent: its running turn, and the runs queued behind it (each fails with code `cancelled`); `queued: "keep"` stops the running turn only. Resolves with `{aborted, cancelled}` |
+| `agent.resetContext({ summary, keepMessages })` | `reset_context(summary=, keep_messages=)` | replace what the model is sent with its system message, a summary and its last `keepMessages` messages (0 to 20), without loading the old context: how an agent whose runs fail with `context_too_large` runs again ([Long conversations](../concepts.md#long-conversations)). History and files stay. Resolves with `{reset, keptMessages, before, after}`; also `runtime.resetContext(agentId, …)` |
 | `agent.fork({ key, name, atMessage, ttlSeconds })` | `fork(key=, name=, at_message=, ttl_seconds=)` | a new agent with its configuration, a copy of its history and of its files: see [Forking](#agentforkoptions) |
 | `agent.delete()` | `delete()` | delete it, its history and files |
 | `agent.close()` | `close()` | close this process's connection |

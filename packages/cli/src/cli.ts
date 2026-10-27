@@ -34,6 +34,11 @@ Agents (an agent is its key or its id, client_…)
                                    A new agent with its configuration, history and files; --at ends the
                                    history at a message index or a request id (default: the last turn
                                    that ended). With --key it lives until deleted, without it a day
+  agents reset-context <agent> [--summary text] [--keep n]
+                                   Replace its model context with its system message, a summary and its
+                                   last n history messages (0 to 20, default 0), without loading the old
+                                   one: for an agent whose runs fail with context_too_large. Its history
+                                   and files stay
   agents delete <agent> --yes      Stop it and purge its history and files
   run <agent> <message…> [--wait s] [--no-wait] [--from user] [--steer] [--allow-disconnected] [--traceparent tp]
   runs get <agent> <requestId> [--wait s]
@@ -84,7 +89,7 @@ const OPTIONS = {
   wait: { type: "string" }, "no-wait": { type: "boolean" }, from: { type: "string" }, steer: { type: "boolean" }, "allow-disconnected": { type: "boolean" }, "request-id": { type: "string" },
   limit: { type: "string" }, key: { type: "string" }, text: { type: "string" }, in: { type: "string" }, at: { type: "string" }, every: { type: "string" }, history: { type: "string" },
   traceparent: { type: "string" }, header: { type: "string", multiple: true }, protocol: { type: "string" }, "sample-rate": { type: "string" },
-  content: { type: "boolean" }, "no-content": { type: "boolean" }, stateless: { type: "boolean" },
+  content: { type: "boolean" }, "no-content": { type: "boolean" }, stateless: { type: "boolean" }, summary: { type: "string" }, keep: { type: "string" },
 } as const;
 
 type Flags = ReturnType<typeof parseArgs<{ options: typeof OPTIONS; allowPositionals: true }>>["values"];
@@ -274,6 +279,13 @@ async function agents(args: string[], flags: Flags, api: () => Api, print: (valu
       const forked = await client.call("POST", `/v1/agents/${enc(await client.agentId(target))}/fork`, { ...(flags.key ? { key: flags.key } : {}), ...(flags.name ? { name: flags.name } : {}), ...(at !== undefined ? { atMessage: at } : {}) });
       const { token: _token, ...shown } = forked;
       print(shown, () => `${flags.key ?? "Fork"}: ${forked.id} (from ${target}${forked.forkedFrom.atMessage === null ? ", no history" : ` through message ${forked.forkedFrom.atMessage}`})`);
+      return 0;
+    }
+    case "reset-context": {
+      if (!target) throw new UsageError("Usage: camelrun agents reset-context <agent> [--summary text] [--keep n]");
+      if (flags.keep !== undefined && !/^\d+$/.test(flags.keep)) throw new UsageError("--keep is a number of messages, 0 to 20");
+      const reset = await client.call("POST", `/v1/agents/${enc(await client.agentId(target))}/context/reset`, { ...(flags.summary !== undefined ? { summary: flags.summary } : {}), ...(flags.keep !== undefined ? { keepMessages: Number(flags.keep) } : {}) });
+      print(reset, () => reset.reset ? `Reset ${target}'s context: ${reset.before.bytes} bytes to ${reset.after.bytes}, keeping ${reset.keptMessages} messages` : `${target} has no context yet; nothing to reset`);
       return 0;
     }
     case "delete": {

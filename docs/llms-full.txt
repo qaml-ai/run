@@ -339,6 +339,18 @@ and the request again. Summaries are billed like model responses (`kind:
 "compaction"` in usage) and count against spend limits; one made between runs
 belongs to no run. An agent compacts one summary at a time.
 
+A context can still grow too large to load: a run that loops on large tool
+results past its run limits, say. Past 128 MiB of stored context the agent's
+runs fail with code `context_too_large`, and it runs again only after its
+context is reset: `POST /v1/agents/:id/context/reset` (`agent.resetContext()`,
+`reset_context()`, `camelrun agents reset-context`) replaces what the model is
+sent with the agent's system message, a summary (`summary`, or a note that the
+operator reset it) and its last `keepMessages` messages (0 to 20, default 0,
+never starting on a tool result). It does not load the old context to do it.
+History, files and configuration stay; a reset is refused (409 `AGENT_BUSY`)
+while a run is active or queued, and is safe to repeat. Any agent can be reset
+this way, to start it over without losing its history.
+
 ## Forking
 
 A **fork** is a new agent made from an existing one: the same configuration
@@ -6646,6 +6658,7 @@ what changed without keeping a manifest. It is opaque: compare it, never parse i
 | `agent.schedule({ text, inSeconds, at, everySeconds, calendar, email })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
 | `agent.files` | `agent.files` | `list`, `download`, `upload`, `link` by the paths the agent sees |
 | `agent.abort({ queued })` | `abort(queued=)` | stop the agent: its running turn, and the runs queued behind it (each fails with code `cancelled`); `queued: "keep"` stops the running turn only. Resolves with `{aborted, cancelled}` |
+| `agent.resetContext({ summary, keepMessages })` | `reset_context(summary=, keep_messages=)` | replace what the model is sent with its system message, a summary and its last `keepMessages` messages (0 to 20), without loading the old context: how an agent whose runs fail with `context_too_large` runs again ([Long conversations](https://run.camelai.com/docs/concepts.md#long-conversations)). History and files stay. Resolves with `{reset, keptMessages, before, after}`; also `runtime.resetContext(agentId, …)` |
 | `agent.fork({ key, name, atMessage, ttlSeconds })` | `fork(key=, name=, at_message=, ttl_seconds=)` | a new agent with its configuration, a copy of its history and of its files: see [Forking](https://run.camelai.com/docs/reference/sdk.md#agentforkoptions) |
 | `agent.delete()` | `delete()` | delete it, its history and files |
 | `agent.close()` | `close()` | close this process's connection |
@@ -7577,6 +7590,7 @@ its id (`def_…`).
 | `agents create <key> [--definition d] [--model m] [--prompt text]` | an agent outside a manifest |
 | `agents configure <agent> [--model m] [--prompt text] [--prompt-append text] [--thinking level]` | change one agent between its runs |
 | `agents fork <agent> [--key k] [--name n] [--at message]` | a new agent with its configuration, history and files ([Forking](https://run.camelai.com/docs/concepts.md#forking)); `--at` ends the history at a message index or a request id |
+| `agents reset-context <agent> [--summary text] [--keep n]` | replace its model context with its system message, a summary and its last n messages (0 to 20), without loading the old one: for an agent whose runs fail with `context_too_large` ([Long conversations](https://run.camelai.com/docs/concepts.md#long-conversations)). History and files stay |
 | `agents delete <agent> --yes` | stop an agent and purge its history and files |
 | `run <agent> <message…>` | send a message and print the reply |
 | `runs get <agent> <requestId> [--wait s]` | a run's result |
@@ -8269,7 +8283,7 @@ reading them and sending them input do not count; only runs do.
 | Provider retries within a turn | 3 attempts, backing off from 2 s (overload, rate limits, 5xx, dropped streams); context overflow is not retried |
 | Model responses in one run | 1,000, compaction summaries included; `runLimits.maxResponses` lowers it for an agent or a definition, and the operator sets the maximum (`AGENT_MAX_RUN_RESPONSES`, or per tenant `maxRunResponses`; admin tenants 1,000 (`AGENT_ADMIN_MAX_RUN_RESPONSES`) unless their entry sets one). At it, the turn stops before its next model request: `stopped: "turn_limit"` |
 | A run's time | 2 hours from when it began, checked before each model request; `runLimits.maxSeconds` lowers it, the operator sets the maximum (`AGENT_MAX_RUN_SECONDS`, or per tenant `maxRunSeconds`; admin tenants 4 hours (`AGENT_ADMIN_MAX_RUN_SECONDS`) unless set). `stopped: "turn_limit"` too; send another message to continue. A turn still inside one model request or tool call 60 s past its limit is aborted there, and its agent stopped at 120 s |
-| Pi context range | 128 MiB of stored journal entries from the latest compaction head to the tail, including entries hidden from model messages. The operator sets `AGENT_CONTEXT_RANGE_MAX_BYTES`. An oversized range fails host startup with `context_too_large`, without loading it or retrying a node-loss resume. A live run checks before each model request, then stops with `stopped: "turn_limit"` and code `context_too_large`. History and abort remain available; use a new agent with a summary, or ask the operator to raise the bound. This is a serialized-byte bound, not a heap-memory limit. |
+| Pi context range | 128 MiB of stored journal entries from the latest compaction head to the tail, including entries hidden from model messages. The operator sets `AGENT_CONTEXT_RANGE_MAX_BYTES`. An oversized range fails host startup with `context_too_large`, without loading it or retrying a node-loss resume. A live run checks before each model request, then stops with `stopped: "turn_limit"` and code `context_too_large`. History and abort remain available. To run it again, reset its context (`POST /v1/agents/:id/context/reset`, see [Long conversations](https://run.camelai.com/docs/concepts.md#long-conversations)): it keeps its history and files, and starts from a summary; or ask the operator to raise the bound. This is a serialized-byte bound, not a heap-memory limit. |
 | A quiet model stream | a model request that sends nothing before its first token (text, thinking or a tool call) for 120 s (300 s for a reasoning model at `thinkingLevel` high and up), or nothing for 45 s once it streams, is ended as stalled and retried like other transient failures; keep-alives do not count. `runLimits.firstTokenSeconds` and `runLimits.idleSeconds` set an agent's or definition's own (1 to 3,600); the operator sets the runtime's (`AGENT_MODEL_FIRST_TOKEN_SECONDS`, `AGENT_MODEL_IDLE_SECONDS`). Past every retry the run fails with code `model_stream_stalled` |
 | Wait | none beyond a run's time limit; a turn waiting on people (`input_required`) is not running, and may wait for days. The SDKs have no default timeout |
 | `Idempotency-Key` header (any other POST) | 1–255 characters; its answer is kept for 24 hours |
@@ -8482,6 +8496,8 @@ retry.
 | 409 | `VOICE_SPEAK_DISABLED` | The voice session listens only (`brain: "listen"`) and never speaks |
 | 409 | `APPLICATION_CONNECTED` | Another connection serves this agent's tools; connect with `?takeover=true` to replace it |
 | 409 | `APPLICATION_NOT_CONNECTED` | The agent's tools need its application and none is connected; connect it, or send `allowDisconnected: true` |
+| 409 | `AGENT_BUSY` | A context reset while a run is active or queued; abort it or wait for it to end, then reset |
+| 409 | `context_too_large` | A context reset would leave a context still too large to load; keep fewer messages or give a shorter summary |
 | 409 | `FORK_POINT_RUNNING` | A fork's `atMessage` is in a turn that has not ended (running, or waiting on a person); fork at an earlier message, or once it ends |
 | 409 | `REPLAY_GAP` | The Last-Event-ID is behind the buffer; read `/state` (or ask for a snapshot) and continue from its cursor |
 | 409 | `CONFLICT` | Another conflict, named in the message |
@@ -8556,6 +8572,7 @@ A run ends in one of three ways: it answered, it waits on people
 | `output_invalid` | (the SDKs only) | The output fit the JSON Schema the runtime checked, but not the zod or pydantic schema the SDK parsed it with (a refinement or validator the JSON Schema cannot say) |
 | `spend_limit` | `result.stopped: "spend_limit"` | A spend limit stopped the turn after the response that crossed it (its tool calls ran), or refused the run as it came to start in the queue. `result.limit` says which: `run` (the run's own `spendLimit`), `agent`, `tenant` (the monthly cap) or `credit` (prepaid credit spent). Raise that limit and send the next message |
 | `turn_limit` | `result.stopped: "turn_limit"` | The run made as many model responses (1,000 by default) or ran as long (2 hours) as its [run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits) allow; the turn stopped after that response's tool calls. Send another message to continue, or raise the agent's `runLimits` |
+| `context_too_large` | `result.code` (with `result.error`) | The agent's stored context (since its last compaction) is past what a run can load, 128 MiB by default ([limits](https://run.camelai.com/docs/reference/limits.md#runs-and-requests)): the run failed before the model, or stopped mid-turn (`result.stopped: "turn_limit"`). Every run fails the same way until its context is reset: `POST /v1/agents/:id/context/reset` (see [Long conversations](https://run.camelai.com/docs/concepts.md#long-conversations)), which keeps its history and files |
 | `end_user_credit` | `result.stopped: "spend_limit"`, `limit: "end_user"`, `reason`, `bucket`, `endUser` | The run's [end user](https://run.camelai.com/docs/guides/end-user-credits.md) may not spend more: the run was refused as it came to start in the queue, a model call was refused, or one was cut where its hold ended mid-reply (what streamed is kept). `reason` is one of the [credit reasons](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons). Not retried. Grant them credit and send the next message |
 | `runtime_error` | `outcome.error` (no `result`) | The runtime could not carry the run out: e.g. the agent was deleted, or code execution failed |
 | (any, with `uncertain`) | `outcome.uncertain: true` | A restart cut the run short where it could not resume (a code execution, or a turn resumed twice already): its tool calls may or may not have taken effect. Check before retrying |
