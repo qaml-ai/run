@@ -51,7 +51,7 @@ test("system messages keep their place in Pi's context across retractions and re
   const reloaded = (await HostJournal.open(storage))!;
   assert.deepEqual(await reloaded.history.messagesFrom(0), [user("u0"), user("u1"), user("u2")]);
   // In Pi's context, where it was declared.
-  const harness = await Harness.open(storage, { registry: createRegistry(), models: { getModel: () => undefined } as never }, context);
+  const harness = await Harness.open(storage, { registry: createRegistry(), models: { getModel: () => undefined, getAuth: () => undefined } as never }, context);
   try {
     const view = await (await harness.root(context)).context(context);
     assert.deepEqual(view.messages.map(message => message.role === "system" ? `system:${JSON.stringify((message as SystemMessage).sections ?? message.content)}` : (message as { content: string }).content),

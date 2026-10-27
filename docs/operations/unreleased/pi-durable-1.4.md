@@ -22,3 +22,10 @@ at the top level, 1.3.0 inside pi-durable; there is now one copy).
   https://pi.dev` and `X-OpenRouter-Title: pi`, plus NVIDIA and OpenCode origin headers. The runtime sets `identity: {
   attribution: null }`, so it sends none of these (as before). `User-Agent` stays pi-ai's default `pi/<version> (…)`,
   as with 1.1.0.
+- **pi-ai catalog moves from 1.1.0 to 1.4.0.** Models the platform prices itself keep their overrides
+  (`src/pi-catalog.ts`). Dropped because Pi now has them: Anthropic Sonnet 5.5 cache reads at $0.10, OpenRouter Gemini
+  3.8 Flash at list price, and the added OpenRouter DeepSeek V4.1 Flash 1017 entry (same list price). Changes agents will
+  see: OpenRouter DeepSeek V4.1 Flash's longest reply drops from 943,718 to 393,216 (DeepSeek's own endpoint); Anthropic
+  `claude-sonnet-4-5` has a 200,000 window, not 1,000,000; many OpenRouter list prices moved (for example
+  `openai/gpt-5.6-sol` doubled, and `deepseek/deepseek-v4-pro`). OpenRouter calls are still billed what OpenRouter reports;
+  catalog prices drive estimates, holds and calls that report nothing.

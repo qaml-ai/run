@@ -57,9 +57,9 @@ test("retryable is exactly the rule the host retried by before: pi-ai's transien
       assert.equal(modelFailure(message, context).retryable, retriesModelError(message, context));
     }
   }
-  // An overflow pi-ai's retry patterns match (its "500" matches 250000): reported as not retryable, as the host never retries it.
+  // An overflow (pi-ai before 1.4 matched its "500" in 250000 as retryable): reported as not retryable, as the host never retries it.
   const overflow = failed("400 prompt is too long: 250000 tokens > 200000 maximum");
-  assert.ok(isContextOverflow(overflow) && isRetryableAssistantError(overflow));
+  assert.ok(isContextOverflow(overflow));
   assert.equal(modelFailure(overflow, { ownEndpoint: false }).retryable, false);
   // On a tenant's own endpoint (which retried already) a 429 is not retried here, nor reported retryable; a stall is.
   assert.equal(modelFailure(failed("429 Too Many Requests"), { ownEndpoint: true }).retryable, false);

@@ -10,11 +10,8 @@ const TERRA_COST: Model<Api>["cost"] = {
 
 /**
  * Models Pi's catalog does not have yet, by provider and id: each is the Pi entry it is a release of (`from`), with
- * what differs, checked against the provider's own model list. Drop each once Pi ships it (pi-ai 1.3.0 has none):
- * - OpenRouter's DeepSeek V4.1 Flash 1017 (deepseek/deepseek-v4.1-flash-20261017), the 2026-10-17 snapshot, which the
- *   unversioned id does not point at. Same context (1,048,576), longest reply, images, reasoning and thinking levels as
- *   V4.1 Flash. Priced at OpenRouter's list price: $0.15 in, $0.60 out, $0.003 cache reads per million (it charges
- *   twice that on weekdays 01:00-04:00 and 06:00-10:00 UTC, and reports what it charged, which billing takes first).
+ * what differs, checked against the provider's own model list. Drop each once Pi ships it (pi-ai 1.4.0 has none of
+ * these; it ships OpenRouter's DeepSeek V4.1 Flash 1017 at the list price this runtime used):
  * - Azure DeepSeek V4.1 Flash: measured 2026-10-26 on version 2026-09-10 (preview), not OpenRouter's
  *   2026-10-17 snapshot. Chat Completions serves tools, reasoning, images and cached input. Its 1,048,576-token
  *   window includes output, sent as max_tokens. Azure Global retail per million: $0.30 input, $1.20 output,
@@ -38,7 +35,6 @@ const ADDED: Record<string, Record<string, { from: string; name: string; cost: M
   },
   openrouter: {
     "openai/gpt-6.1-terra": { from: "openai/gpt-6.1-sol", name: "OpenAI: GPT-6.1 Terra", cost: TERRA_COST },
-    "deepseek/deepseek-v4.1-flash-1017": { from: "deepseek/deepseek-v4.1-flash", name: "DeepSeek: DeepSeek V4.1 Flash 1017", cost: { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 } },
   },
 };
 const added = (provider: string, id: string): Model<Api> | undefined => {
@@ -69,21 +65,20 @@ for (const { id } of piGetModels(BEDROCK as never) as Model<Api>[]) {
 }
 /**
  * Prices Pi's catalog has wrong, by provider and id, checked against the provider's own pricing. Drop each once Pi
- * ships the fix (pi-ai 1.1.0 still has them):
+ * ships the fix (pi-ai 1.4.0 still has them):
  * - Claude Sonnet 5.5 cache reads are $0.10 per million tokens (0.05x input, platform.claude.com/docs pricing), not
- *   $0.20. Cloudflare's AI Gateway passes Anthropic's prices through. Bedrock's price for it is not published: left.
+ *   $0.20. Pi 1.4.0 fixed its `anthropic` entry; Cloudflare's AI Gateway passes Anthropic's prices through and Pi's
+ *   entry there still says $0.20. Bedrock's price for it is not published: left.
  * - OpenRouter models the platform's apps run on, at OpenRouter's list price (GET /api/v1/models, 2026-10-17): Pi's
  *   are another moment's, or a rate OpenRouter charges only some hours (DeepSeek V4.1 Flash's $0.30/$1.20 is its
  *   weekday-peak rate, twice the list price). A call is billed what OpenRouter reports it charged; these price
  *   estimates and holds, and a call that reports nothing.
  */
 const PRICES: Record<string, Record<string, Partial<Model<Api>["cost"]>>> = {
-  anthropic: { "claude-sonnet-5-5": { cacheRead: 0.1 } },
   "cloudflare-ai-gateway": { "claude-sonnet-5-5": { cacheRead: 0.1 } },
   openrouter: {
     "deepseek/deepseek-v4.1-flash": { input: 0.15, output: 0.6, cacheRead: 0.003 },
     "moonshotai/kimi-k3": { input: 0.304, output: 11.936, cacheRead: 0.21 },
-    "google/gemini-3.8-flash": { input: 0.825, output: 4.125, cacheRead: 0.0825 },
     "z-ai/glm-5.3": { input: 0.079, output: 4.8, cacheRead: 0.078 },
   },
 };
