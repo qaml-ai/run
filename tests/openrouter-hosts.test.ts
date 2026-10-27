@@ -7,7 +7,7 @@ import { fakeModel, runtime, toolCall } from "./runtime-server.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const HOSTS = ["fireworks", "together", "parasail", "coreweave", "nebius"];
-const HOSTS_1017 = ["morph", "deepseek", "together"];
+const HOSTS_1017 = ["morph", "deepseek", "together", "inference-net", "makora", "atlas-cloud"];
 const FLASH = getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
 const FLASH_1017 = getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!;
 /** Never an order or sort: either turns off OpenRouter's load balancing. Nor an ignore, a quantization or anything else. */
@@ -52,7 +52,7 @@ test("an agent's calls send their model's hosts: V4.1 Flash five, 1017 three wit
   onlyOnly(host.bodies);
 });
 
-test("1017:nitro resolves as 1017 does (catalog, price, 131,072, Chat Completions, 1017's hosts) and is sent with its variant", async t => {
+test("1017:nitro resolves as 1017 does (catalog, price, 131,072, Chat Completions, 1017's hosts) and is sent as 1017: no throughput sort", async t => {
   const nitro = resolveModel(`openrouter/${FLASH_1017.id}:nitro`);
   assert.deepEqual([nitro.id, nitro.api, nitro.maxTokens, nitro.contextWindow], [`${FLASH_1017.id}:nitro`, "openai-completions", 131_072, 1_048_576]);
   assert.deepEqual(nitro.cost, FLASH_1017.cost);
@@ -65,7 +65,10 @@ test("1017:nitro resolves as 1017 does (catalog, price, 131,072, Chat Completion
   const agent = (await r.call("/v1/agents", { body: { model: `openrouter/${FLASH_1017.id}:nitro`, keyScope: "hosted", thinkingLevel: "high" } })).json.id;
   assert.equal((await r.prompt(agent, "Hi")).outcome.result.reply, "Fast.");
   const [sent] = host.bodies;
-  assert.equal(sent.model, `${FLASH_1017.id}:nitro`, "the variant goes to OpenRouter as given: its throughput sort");
+  assert.equal(sent.model, FLASH_1017.id, "the variant is dropped (NO_ROUTING_VARIANTS): routed among its hosts by price");
+  assert.equal((withOpenRouterHosts(nitro, { model: nitro.id }) as any).model, FLASH_1017.id);
+  assert.equal((withOpenRouterHosts(getModel("openrouter", "deepseek/deepseek-v4.1-flash")!, { model: "deepseek/deepseek-v4.1-flash:nitro" }) as any).model,
+    "deepseek/deepseek-v4.1-flash:nitro", "another model's variant is sent as given");
   assert.deepEqual(sent.provider, { only: HOSTS_1017 }, "and 1017's hosts, nothing else of routing");
   assert.equal(sent.reasoning?.effort, "high");
   assert.ok((sent.max_completion_tokens ?? sent.max_tokens) <= 131_072);
