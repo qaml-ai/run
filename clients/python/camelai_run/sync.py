@@ -184,6 +184,17 @@ class AgentClient(_AgentCalls):
     def __repr__(self):
         return f"AgentClient(id={self.id!r})"
 
+    def history(self):
+        """All messages, oldest first, collected one bounded page at a time: {"messages"}."""
+        pages, before = [], None
+        while True:
+            page = self.history_page(before=before, limit=100, max_bytes=4_000_000)
+            pages.append([entry["message"] for entry in page["entries"]])
+            if page["next"] is None:
+                break
+            before = page["next"]
+        return {"messages": [message for page in reversed(pages) for message in page]}
+
     def _http(self, suffix, method="GET", body=None, retry=True, timeout=None):
         return _http_sync(self.http, self.base, self.path + suffix, self.session["token"], method, body, retry, timeout=timeout)
 

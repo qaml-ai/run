@@ -391,10 +391,10 @@ export class AgentSupervisor {
 
   /**
    * The agent's history from absolute index `from` on, and where its turns began, without its process: the journal's,
-   * after what comes before what it holds (`settled`: the history index's first messages; without it, or before the
+   * after what comes before what it holds (`settled`: the history index's messages in [from, end); without it, or before the
    * index reaches it, the retired host transcript's records). Undefined for an agent with no journal.
    */
-  async journalBacklog(id: string, from: number, settled?: (count: number) => Promise<AgentMessage[]>): Promise<{ from: number; messages: AgentMessage[]; turns: number[] } | undefined> {
+  async journalBacklog(id: string, from: number, settled?: (end: number, from: number) => Promise<AgentMessage[]>): Promise<{ from: number; messages: AgentMessage[]; turns: number[] } | undefined> {
     if (!await hasPiStorage(this.piLocation(id))) {
       // Only a legacy log: a session from before Pi, which no release imports any more.
       const legacy = this.legacyLog(id);
@@ -420,8 +420,8 @@ export class AgentSupervisor {
       const held = history.heldFrom;
       let before: AgentMessage[] = [], turns: number[] = [];
       if (from < held) {
-        const indexed = settled ? await settled(held) : [];
-        if (indexed.length >= held) before = indexed.slice(from, held);
+        const indexed = settled ? await settled(held, from) : [];
+        if (indexed.length >= held - from) before = indexed.slice(0, held - from);
         else {
           const legacy = this.legacyLog(id);
           try {

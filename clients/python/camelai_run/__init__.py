@@ -1603,10 +1603,6 @@ class _AgentCalls:
     """An agent's calls that are one request each, with its own token, shared by the async AgentClient and the
     synchronous one (camelai_run.sync): each returns what self._http (or self.request) returns."""
 
-    def history(self):
-        """The agent's whole history: {"messages"}. history_page reads a page at a time."""
-        return self._http("/history")
-
     def history_page(self, *, before=None, limit=50, max_bytes=None):
         """The page of whole turns ending before `before` (default: the newest message), with at least `limit`
         messages where there are that many: {"entries": [{"index", "message"}], "next", "total"}.
@@ -1718,6 +1714,17 @@ class AgentClient(_AgentCalls):
 
     def __repr__(self):
         return f"AgentClient(id={self.id!r})"
+
+    async def history(self):
+        """All messages, oldest first, collected one bounded page at a time: {"messages"}."""
+        pages, before = [], None
+        while True:
+            page = await self.history_page(before=before, limit=100, max_bytes=4_000_000)
+            pages.append([entry["message"] for entry in page["entries"]])
+            if page["next"] is None:
+                break
+            before = page["next"]
+        return {"messages": [message for page in reversed(pages) for message in page]}
 
     async def _http(self, suffix, method="GET", body=None, retry=True, timeout=None):
         return await _http(self.http, self.base, self.path + suffix, self.session["token"], method, body, retry, timeout=timeout)
