@@ -2809,8 +2809,9 @@ export class ClientSessions {
     await this.spendWrite(session, 0)?.().catch(error => console.error(JSON.stringify({ type: "agent_spend_write_failed", agent: session.header.id, error: safeError(error) })));
     // Runs left open are its next owner's to count.
     await this.releaseBusy(session, true);
-    // A graceful hand-off is not a failed sweep load, even before the two-minute reset.
-    if (!session.fault && session.sweepResetAt !== undefined) await this.resetSweep(session).catch(() => {});
+    // A graceful hand-off is not a failed sweep load, even before the two-minute reset; a memory one may be the agent's
+    // doing (as on 2026-10-27), so it keeps the backoff.
+    if (!session.fault && session.sweepResetAt !== undefined && this.handingOff?.reason !== "memory") await this.resetSweep(session).catch(() => {});
     if (session.claim) await this.options.ownership!.release(session.claim).catch(() => {});
     // Runs left open (a drain's or a retirement's): peers sweep at once rather than at their next interval.
     const node = this.options.ownership?.node;
