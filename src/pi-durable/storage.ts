@@ -74,7 +74,7 @@ type PgExecutor = {
  * `transaction(work, advance)` locks the session's metadata row by taking the next commit sequence: `metadata.next_seq`
  * is then the transaction's own, and `next_id` is at least `advance.nextId`. Without `advance` it only locks the row.
  */
-type PgDatabase = PgExecutor & { retryMs: number; transaction<T>(work: (sql: PgExecutor, metadata: MetadataRow | undefined) => Promise<T>, advance?: { nextId: number }): Promise<T>; close(): Promise<void> };
+type PgDatabase = PgExecutor & { retryMs: number; slowAll<T>(timeoutMs: number, query: string, ...params: unknown[]): Promise<T[]>; transaction<T>(work: (sql: PgExecutor, metadata: MetadataRow | undefined) => Promise<T>, advance?: { nextId: number }): Promise<T>; close(): Promise<void> };
 /**
  * Run `work` again while the database is unreachable (a failover, a network fault), for up to `retryMs`, as the log tail
  * repeats its appends. `settled`, given the failure, says whether the work landed anyway (its answer was lost).
@@ -114,6 +114,15 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim, retryMs = 0)
         all: (text, ...params) => timedStorage(() => whileUnavailable(retryMs, () => pool.all(text, ...params))),
         run: (text, ...params) => timedStorage(() => whileUnavailable(retryMs, () => pool.run(text, ...params))),
         retryMs,
+        // A read that may outlast the pool's query timeout: the server ends it at `timeoutMs` (statement_timeout), and
+        // the client waits a little past that for its answer, so a read we gave up on never keeps scanning. Never run
+        // again: a second attempt would only scan as long.
+        slowAll: <T>(timeoutMs: number, text: string, ...params: unknown[]) => timedStorage(() => transaction(db, async sql => {
+            await sql.query(`set local statement_timeout = ${Math.floor(timeoutMs)}`);
+            let n = 1;
+            const config = { text: text.replace(/\?/g, () => `$${++n}`), values: [sessionId, ...params], query_timeout: timeoutMs + 5_000 };
+            return (await (sql as unknown as { query(config: { text: string; values: unknown[]; query_timeout: number }): Promise<{ rows: T[] }> }).query(config)).rows;
+        }, { rerun: false })),
         transaction: (work, advance) => timedStorage(() => transaction(db, async sql => {
             // Serializes mutations by session, including separate handles on this node. One statement checks the
             // claim (its ownership row FOR SHARE, as underClaim does: a takeover waits until this commits, and a claim
@@ -233,15 +242,16 @@ export async function openPiStorage(options: { sessionId: string; directory: str
             return { entries: Number(row!.entries), bytes: Number(row!.bytes) };
         };
         sized.contextSystemRows = async conversationId => {
-            const rows = await database.all<{ id: number; head: number | null; marker: number | null; system: string; omits: string }>(`${range}
+            const rows = await database.all<{ id: number; head: number | null; marker: number | null; system: string; omits: string; replaces: string }>(`${range}
                 SELECT e.id, e.head, (SELECT id FROM marker) AS marker,
                   (SELECT json_group_array(json(m.value)) FROM json_each(e.record, '$.model') m WHERE json_extract(m.value, '$.role') = 'system') AS system,
-                  (SELECT json_group_array(json_extract(x.value, '$.target')) FROM json_each(e.record, '$.edits') x WHERE json_extract(x.value, '$.action') = 'omit') AS omits
+                  (SELECT json_group_array(json_extract(x.value, '$.target')) FROM json_each(e.record, '$.edits') x WHERE json_extract(x.value, '$.action') = 'omit') AS omits,
+                  (SELECT json_group_array(json_extract(x.value, '$.target')) FROM json_each(e.record, '$.edits') x WHERE json_extract(x.value, '$.action') = 'replace') AS replaces
                 FROM lineage l JOIN entries e ON e.conversation_id = l.id
                 AND e.id >= coalesce((SELECT head FROM marker), 0) AND e.id <= l.upper_id
-                WHERE instr(e.record, '"role":"system"') > 0 ORDER BY e.id`, conversationId);
+                WHERE instr(e.record, '"role":"system"') > 0 OR instr(e.record, '"edits":[') > 0 ORDER BY e.id`, conversationId);
             return rows.map(row => ({ id: Number(row.id), head: row.head ?? undefined, marker: row.marker ?? undefined,
-                system: JSON.parse(row.system), omits: (JSON.parse(row.omits) as unknown[]).map(Number) }));
+                system: JSON.parse(row.system), omits: (JSON.parse(row.omits) as unknown[]).map(Number), replaces: (JSON.parse(row.replaces) as unknown[]).map(Number) }));
         };
         if (!options.committing) return storage;
         const commit = storage.commit.bind(storage);
@@ -381,10 +391,13 @@ export async function contextRangeSize(storage: Storage, conversationId: Convers
 }
 
 /**
- * A range entry whose record names a system message: its system messages (`system`, in order), the entries its edits
- * omit (`omits`), whether it is a head marker (`head`), and the range's newest marker (`marker`).
+ * A range entry whose record names a system message or has edits: its system messages (`system`, in order), the
+ * entries its edits omit (`omits`) and replace (`replaces`), whether it is a head marker (`head`), and the range's
+ * newest marker (`marker`).
  */
-export type ContextSystemRow = { id: number; head?: number; marker?: number; system: SystemMessage[]; omits: number[] };
+export type ContextSystemRow = { id: number; head?: number; marker?: number; system: SystemMessage[]; omits: number[]; replaces: number[] };
+/** How long the database may scan a context's records for its system messages before it gives up (statement_timeout). */
+export const CONTEXT_SYSTEM_TIMEOUT_MS = 120_000;
 export type ContextSystemReader = { contextSystemRows(conversationId: ConversationId): Promise<ContextSystemRow[]> };
 /** The context's system messages, read without loading the range: none of its other messages leave the database. */
 export async function contextSystemRows(storage: Storage, conversationId: ConversationId): Promise<ContextSystemRow[]> {
@@ -893,20 +906,22 @@ export class PostgresPiStorage implements Storage {
      */
     async contextSystemRows(conversationId: ConversationId): Promise<ContextSystemRow[]> {
         return this.admitRead(async () => {
-            const rows = await this.db.all<{ id: string; head: string | null; marker: string | null; system: string; omits: string }>(`${this.rangeCte()}
+            const rows = await this.db.slowAll<{ id: string; head: string | null; marker: string | null; system: string; omits: string; replaces: string }>(CONTEXT_SYSTEM_TIMEOUT_MS, `${this.rangeCte()}
                 SELECT e.id, e.head, (SELECT id FROM marker) AS marker,
                   (SELECT coalesce(json_agg(m), '[]'::json) FROM json_array_elements(CASE json_typeof(r.v->'model') WHEN 'array' THEN r.v->'model' END) m
                     WHERE m->>'role' = 'system')::text AS system,
                   (SELECT coalesce(json_agg(x->'target'), '[]'::json) FROM json_array_elements(CASE json_typeof(r.v->'edits') WHEN 'array' THEN r.v->'edits' END) x
-                    WHERE x->>'action' = 'omit')::text AS omits
+                    WHERE x->>'action' = 'omit')::text AS omits,
+                  (SELECT coalesce(json_agg(x->'target'), '[]'::json) FROM json_array_elements(CASE json_typeof(r.v->'edits') WHEN 'array' THEN r.v->'edits' END) x
+                    WHERE x->>'action' = 'replace')::text AS replaces
                 FROM lineage l JOIN ${this.schema.tables.entries} e
                   ON e.session_id = $1 AND e.conversation_id = l.id
                   AND e.id >= coalesce((SELECT head FROM marker), 0) AND e.id <= l.upper_id
                 CROSS JOIN LATERAL (SELECT CASE WHEN pg_input_is_valid(e.record, 'json') THEN e.record::json END AS v) r
-                WHERE strpos(e.record, '"role":"system"') > 0
+                WHERE strpos(e.record, '"role":"system"') > 0 OR strpos(e.record, '"edits":[') > 0
                 ORDER BY e.id`, conversationId);
             return rows.map(row => ({ id: Number(row.id), head: row.head === null ? undefined : Number(row.head), marker: row.marker === null ? undefined : Number(row.marker),
-                system: JSON.parse(row.system), omits: (JSON.parse(row.omits) as unknown[]).map(Number) }));
+                system: JSON.parse(row.system), omits: (JSON.parse(row.omits) as unknown[]).map(Number), replaces: (JSON.parse(row.replaces) as unknown[]).map(Number) }));
         });
     }
 
