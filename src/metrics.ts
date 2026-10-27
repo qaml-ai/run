@@ -10,7 +10,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { WebhookEvent } from "./webhooks.ts";
 import { errorText } from "./protocol.ts";
 
-type Unit = "Count" | "Milliseconds" | "None";
+type Unit = "Count" | "Milliseconds" | "Bytes" | "None";
 type Value = number | [number, Unit];
 
 let sink = (line: string) => console.log(line);
@@ -57,6 +57,46 @@ export function metricLine(
 
 function emit(type: string, line: Parameters<typeof metricLine>[1]) {
   sink(metricLine(type, line));
+}
+
+/** Host-run scope: retries and additional model calls share one divergence warning. */
+export function observeContextMetrics(agent: () => string | undefined) {
+  let warned = false;
+  return {
+    reset() { warned = false; },
+    request(held: number, sent: number) {
+      emit("context_request", {
+        dimensions: {}, rollups: [[]],
+        metrics: { held_tokens: held, sent_tokens: sent, held_sent_ratio: sent > 0 ? [held / sent, "None"] : undefined },
+        properties: { agent: agent() },
+      });
+      if (!warned && held > 50_000 && held > 4 * sent) {
+        warned = true;
+        sink(JSON.stringify({ type: "context_divergence", agent: agent(), held, sent }));
+      }
+    },
+  };
+}
+
+/** Reuses the range guard's two scalars; never reads the journal for telemetry. */
+export function recordContextRange(agent: string, range: { bytes: number; entries: number }) {
+  emit("context_range", {
+    dimensions: {}, rollups: [[]],
+    metrics: { context_range_bytes: [range.bytes, "Bytes"], context_range_entries: range.entries },
+    properties: { agent },
+  });
+}
+
+/** Stored JSON details and inline base64 payload bytes, not decoded image bytes or file references. */
+export function recordToolResultSize(agent: string, result: { details?: unknown; content: readonly { type: string; data?: unknown }[] }) {
+  const details = result.details === undefined ? undefined : JSON.stringify(result.details);
+  const images = result.content.reduce((bytes, part) => bytes +
+    (part.type === "image" && typeof part.data === "string" ? Buffer.byteLength(part.data) : 0), 0);
+  emit("tool_result_size", {
+    dimensions: {}, rollups: [[]],
+    metrics: { tool_result_details_bytes: [details === undefined ? 0 : Buffer.byteLength(details), "Bytes"], tool_result_inline_image_bytes: [images, "Bytes"] },
+    properties: { agent },
+  });
 }
 
 const CLASSES: [string, RegExp][] = [

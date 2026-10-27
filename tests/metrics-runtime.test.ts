@@ -29,6 +29,19 @@ test("a running runtime (inline hosting, as on ECS) writes metric lines: each tu
   assert.equal(turn.ToolErrors, 1, "the unknown tool's call failed");
   assert.ok(turn.TimeToFirstTokenMs >= 0 && turn.TurnDurationMs >= turn.TimeToFirstTokenMs);
   assert.ok(lines().some(line => line.type === "tool_failed" && line.toolName === "no_such_tool"));
+  const context = lines().filter(line => line.type === "context_request" && line.agent === agent);
+  assert.equal(context.length, 2, "one context metric per model request");
+  for (const line of context) {
+    assert.ok(line.held_tokens > 0 && line.sent_tokens > 0);
+    assert.equal(line.held_sent_ratio, line.held_tokens / line.sent_tokens);
+    assert.deepEqual(line._aws.CloudWatchMetrics[0].Dimensions, [["ServiceName"]]);
+  }
+  const ranges = lines().filter(line => line.type === "context_range" && line.agent === agent);
+  assert.equal(ranges.length, 2, "one at host load and one at the run's first request");
+  assert.ok(ranges[1].context_range_bytes > 0 && ranges[1].context_range_entries > 0);
+  const results = lines().filter(line => line.type === "tool_result_size" && line.agent === agent);
+  assert.equal(results.length, 1, "one metric for the committed unavailable-tool result");
+  assert.equal(results[0].tool_result_inline_image_bytes, 0);
 
   const runs = await until(() => lines().filter(line => line.type === "run_events").reduce((sum, line) => sum + (line.RunsCompleted ?? 0), 0) >= 1 && lines().filter(line => line.type === "run_events"), "run_events");
   assert.ok(runs.every(line => line.Tenant === "alice"), JSON.stringify(runs.map(line => line.Tenant)));

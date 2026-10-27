@@ -264,11 +264,27 @@ dimension sets listed:
 | `run_events` | run events are written to the outbox | `RunsStarted`, `RunsResumed`, `RunsCompleted`, `RunsInputRequired`, `RunsSpendLimited`, `RunsTurnLimited`, `RunsFailed`, `RunsUncertain` | `Tenant` |
 | `run_failed` | the same, per failed run | `RunsFailedByClass` | `ErrorClass`, `Tenant`+`ErrorClass` |
 | `model_cost` | usage events are written | `ModelCostUsd`, `ModelUsageEvents` | `Tenant`, `Provider`+`Model` |
+| `context_request` | each Pi model request | `held_tokens`, `sent_tokens`, `held_sent_ratio` | |
+| `context_range` | host load and the first model request of each run, from the existing size guard | `context_range_bytes`, `context_range_entries` | |
+| `tool_result_size` | each committed tool result | `tool_result_details_bytes`, `tool_result_inline_image_bytes` | |
 | `webhook_delivered` / `webhook_failed` | a delivery succeeds / fails | `WebhooksDelivered`, `WebhookDeliveryLagMs`, `WebhookAttempts` / `WebhooksFailed` | `Kind` (endpoint, usage) |
 | `webhook_backlog` | every minute, from each node (read with Maximum) | `WebhookBacklog`, `WebhookOldestPendingMs` | |
 | `code_execution` | a js_exec execution (or `execute`) ends; properties `tenant`, `timeoutMs` (what it got) and `requestedTimeoutMs` | `CodeExecutions`, `CodeDurationMs`, `CodeCpuMs` (guest CPU, when it finished) | `ErrorClass` (none, cpu_limit, guest_limit, timeout_tool, timeout_waiting_worker, timeout, aborted, worker_exited, memory, tool_limit, syntax, guest_error) |
 | `watch_refused` | an event stream subscriber is refused (429) at a limit | `WatchersRefused` | `Scope` (agent, tenant, node), `Tenant` |
 | `tool_credential_exchange` | a tool server's credential is fetched from a tenant's exchange (auth `exchange`), or the server refuses one (`rejected`); never the credential | `CredentialExchanges`, `CredentialExchangeMs` | `Outcome` (fetched, unreachable, blocked, timeout, unavailable, refused, invalid_response, expired, rejected), `Tenant` |
+
+Context metrics have only the `ServiceName` dimension; agent ids are plain log fields. Both token
+counts use Pi's `estimateMessageTokens`: held counts Pi's messages before the host's view and
+conversion, sent counts the final request. Held estimates are cached by message identity: each
+request walks the message list, but unchanged messages reuse their estimates. This adds no SQL
+or serialization of the whole context. New tool arguments and system tool schemas may be serialized
+by the estimator. `held_sent_ratio` is held / sent, omitted when sent is zero. `context_divergence`
+logs `agent`, `held` and `sent` at most once per host run when held > 4 × sent and held > 50,000.
+It resets for each prompt, continue or resume, including a run resumed on another node.
+Range bytes count serialized journal entries, including hidden entries. Tool result sizes count
+UTF-8 bytes of JSON `details` (zero when absent) and inline base64 image payloads, not decoded
+images or file references. Contents are never logged. Details are serialized once per committed
+result for this measurement; image payload sizes need no serialization.
 
 `ErrorClass` is one of rate_limit, overloaded, context_overflow, auth, billing, refusal, timeout,
 stream_stalled, provider_5xx, network, runtime_restart, image_limit (a provider refusing a request's image

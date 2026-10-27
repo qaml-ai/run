@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { MemoryStorage, StorageRequestError, type Storage } from "@earendil-works/pi-durable";
 import { createAssistantMessageEventStream, fauxAssistantMessage, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentMessage, AgentOptions, AgentTool } from "@earendil-works/pi-agent-core";
-import { DurableAgent, recoverDurableMessages } from "../src/pi-durable/agent.ts";
+import { DurableAgent, recoverDurableMessages, type DurableAgentOptions } from "../src/pi-durable/agent.ts";
+import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { randomUUID } from "node:crypto";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
@@ -15,7 +16,7 @@ const answer = (text: string) => ({ ...fauxAssistantMessage(text), provider: mod
 const call = (...names: string[]) => ({ ...fauxAssistantMessage(names.map((name, i) => fauxToolCall(name, {}, { id: `call-${i}` })), { stopReason: "toolUse" }), provider: model.provider, model: model.id });
 const user = (text: string) => ({ role: "user" as const, content: text, timestamp: 1 });
 
-async function fixture(responses: AssistantMessage[], options: Partial<AgentOptions> = {}, supplied: Storage = new MemoryStorage()) {
+async function fixture(responses: AssistantMessage[], options: Partial<AgentOptions> = {}, supplied: Storage = new MemoryStorage(), durable: Partial<DurableAgentOptions["durable"]> = {}) {
   const events: any[] = [], requests: any[] = [];
   const agent = await DurableAgent.create({
     initialState: { model, messages: [], tools: [] },
@@ -30,7 +31,7 @@ async function fixture(responses: AssistantMessage[], options: Partial<AgentOpti
       });
       return stream;
     },
-    ...options, durable: { storage: supplied },
+    ...options, durable: { storage: supplied, ...durable },
   });
   agent.subscribe(event => { events.push(event); });
   return { agent, events, requests, storage: supplied };
@@ -38,6 +39,29 @@ async function fixture(responses: AssistantMessage[], options: Partial<AgentOpti
 
 const tool = (name: string, execute: AgentTool["execute"] = async () => ({ content: [{ type: "text", text: "found" }], details: { saved: true } })): AgentTool => ({
   name, label: name, description: name, parameters: { type: "object", properties: {} }, execute,
+});
+
+test("context telemetry estimates held before view and sent after conversion on every request", async t => {
+  const expectedHeld: number[] = [], measured: { held: number; sent: number }[] = [];
+  const fake = await fixture([answer("Old reply"), call("read"), answer("Done")], {
+    initialState: { model, messages: [], tools: [tool("read")] },
+    convertToLlm: messages => messages.map(message => message.role === "user" ? { ...message, content: "hydrated request" } : message) as any,
+  }, new MemoryStorage(), {
+    view: messages => {
+      expectedHeld.push(messages.reduce((sum, message) => sum + estimateMessageTokens(message as any), 0));
+      return [messages.findLast(message => message.role === "user")!];
+    },
+    onContextRequest: (held, sent) => measured.push({ held, sent }),
+  });
+  t.after(() => fake.agent.close());
+  await fake.agent.prompt("old history ".repeat(200));
+  await fake.agent.prompt("current task");
+  assert.equal(measured.length, 3);
+  assert.deepEqual(measured.map(item => item.held), expectedHeld);
+  assert.deepEqual(measured.map(item => item.sent), fake.requests.map(request =>
+    request.messages.reduce((sum: number, message: any) => sum + estimateMessageTokens(message), 0)));
+  assert.ok(measured.every(item => item.held > item.sent));
+  assert.ok(measured[2].held > measured[1].held, "committed tool calls and results contribute to the next request");
 });
 
 test("Pi adapter executes native durable generations/tools and projects cursor-addressed original input", async t => {
