@@ -139,16 +139,18 @@ export function freshView(messages: AgentMessage[], fresh?: AgentMessage): Agent
   let view = messages;
   if (fresh) {
     const at = messages.findLastIndex(message => message.role === "user" && sameMessage(message, fresh));
-    let tail = messages.slice(at);
+    let start = at, tail = messages.slice(at);
     if (at < 0) {
-      const summary = messages.findLastIndex(isSummary);
+      // A summary made during this turn (not an older one, should `fresh` be missed for another reason).
+      const summary = messages.findLastIndex(message => isSummary(message) && (message.timestamp ?? 0) >= fresh.timestamp);
       // Without a summary, a later user message is the only surviving turn marker we can trust. Older turns stay hidden.
       const marker = messages.findLastIndex(message => message.role === "user" && message.timestamp > fresh.timestamp);
-      tail = [fresh, ...messages.slice(summary >= 0 ? summary : marker >= 0 ? marker : messages.length)];
+      start = summary >= 0 ? summary : marker >= 0 ? marker : messages.length;
+      tail = [fresh, ...messages.slice(start)];
     }
-    view = [getCurrentSystemMessage(at < 0 ? messages : messages.slice(0, at))!, ...tail].filter(Boolean);
+    view = [getCurrentSystemMessage(messages.slice(0, start))!, ...tail].filter(Boolean);
   }
-  if (!view.some(message => message.role === "user")) throw new Error(`${CONTEXT_LOST}: The model request has no user message; the turn's task was lost`);
+  if (!view.some(message => message.role === "user" || isSummary(message))) throw new Error(`${CONTEXT_LOST}: The model request has no user message; the turn's task was lost`);
   return view;
 }
 
