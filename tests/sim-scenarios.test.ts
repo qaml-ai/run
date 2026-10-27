@@ -345,3 +345,26 @@ test("an abort during node-loss backoff settles immediately and resets the count
   assert.deepEqual(row, { turn_resumes: 0, resume_failures: 0, resume_after: null });
   assert.deepEqual(sim.hooks.violations, []);
 });
+
+test("a sweep load held for two minutes clears only its sweep backoff", async t => {
+  const sim = await Sim.create({ seed: 313, respond: () => ({ stall: true }),
+    env: { AGENT_LEASE_TTL_MS: "3000", AGENT_ORPHAN_SWEEP_MS: "1000" } });
+  t.after(() => sim.close());
+  await sim.start("a");
+  const agent = (await sim.call("a", "/v1/agents", { body: {} })).json.id;
+  await prompt(sim, "a", agent, "keep running");
+  await sim.until(() => sim.model.served.length === 1, "initial model dispatch");
+  sim.crash("a");
+  await sim.start("b");
+  await sim.until(() => sim.model.served.length === 2, "the sweep to resume the turn");
+  const row = async () => (await sim.db.query("select sweep_failures, sweep_after, turn_resumes, resume_failures from agents where id = $1", [agent])).rows[0];
+  assert.equal((await row()).sweep_failures, 1);
+  await sim.advance(110_000);
+  assert.equal((await row()).sweep_failures, 1, "a load alone does not reset crash backoff");
+  await sim.advance(15_000);
+  const held = await row();
+  assert.equal(held.sweep_failures, 0);
+  assert.equal(held.sweep_after, null);
+  assert.equal(held.turn_resumes, 1);
+  assert.equal(held.resume_failures, 1, "a healthy load does not reset turn accounting");
+});

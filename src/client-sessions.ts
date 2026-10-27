@@ -120,6 +120,8 @@ const MAX_RESUME_DELAY_MS = 60 * 60_000;
  * about a minute, and the orphan sweep carried it to the next node. Remove once a load's crash backs off on its own.
  */
 const QUARANTINED_AGENTS = new Set(["client_81a8592ec04afc691356500c1fe912d0ebd17a3d"]);
+/** How long a loaded agent must stay up before its sweep backoff clears. */
+const RESUME_HELD_MS = 2 * 60_000;
 /** How often an idle watcher's agent is checked for an owner elsewhere, should its load's notice be missed. */
 const IDLE_CHECK_MS = 20_000;
 
@@ -304,21 +306,23 @@ export class ClientSessions {
     return owner !== ownership.node ? owner : undefined;
   }
 
-  private load(id: string): Promise<Session | undefined> {
+  private load(id: string, sweep = false): Promise<Session | undefined> {
     if (QUARANTINED_AGENTS.has(id)) return Promise.reject(new HttpError(503, "This agent is quarantined: loading it takes nodes down"));
     const loaded = this.sessions.get(id);
     if (loaded) return Promise.resolve(loaded);
     let loading = this.loading.get(id);
     if (!loading) {
-      loading = this.read(id).finally(() => this.loading.delete(id));
+      loading = this.read(id, sweep).finally(() => this.loading.delete(id));
       this.loading.set(id, loading);
     }
     return loading;
   }
 
-  private async read(id: string): Promise<Session | undefined> {
-    const stored = await this.readHeader(id);
-    if (!stored || stored.value.purged) return undefined;
+  private async read(id: string, sweep: boolean): Promise<Session | undefined> {
+    if (!sweep) {
+      const stored = await this.readHeader(id);
+      if (!stored || stored.value.purged) return undefined;
+    }
     // A closed node loads nothing: it would hold the agent with no one to run or release it (`close` has unloaded its agents).
     if (this.closed) throw new HttpError(503, "This node is stopping; retry");
     // Take ownership before reading the journal, so no other node appends meanwhile.
@@ -329,7 +333,21 @@ export class ClientSessions {
       if ("owner" in acquired) throw new NotOwner(acquired.owner);
       claim = acquired.claim;
     }
-    try { return await this.loadOwned(id, claim); }
+    try {
+      if (sweep) {
+        // Reserve before reading the header or journal: a load that kills the node leaves no error to back off on.
+        const reserved = await underClaim(this.db, claim, sql => sql.query(`update agents set sweep_failures = sweep_failures + 1,
+            sweep_after = $2 + least($3 * power(2, least(sweep_failures, 30))::bigint, $4)
+          where id = $1 and (sweep_after is null or sweep_after <= $2)`, [id, Date.now(), this.sweepMs, MAX_RESUME_DELAY_MS]));
+        if (!reserved.rowCount) {
+          if (claim) await ownership!.release(claim);
+          return undefined;
+        }
+      }
+      const session = await this.loadOwned(id, claim);
+      if (!session && claim) await ownership!.release(claim);
+      return session;
+    }
     catch (error) { if (claim) await ownership!.release(claim).catch(() => {}); throw error; }
   }
 
@@ -377,7 +395,9 @@ export class ClientSessions {
     if (!resumed.length) await this.resetResumes(session);
     if (claim && !this.options.ownership!.holds(claim)) throw new HttpError(503, "This node lost ownership of the agent; retry");
     if (this.closed) throw new HttpError(503, "This node is stopping; retry");
+    if (!queued.length && !resumed.length) await this.resetSweep(session);
     this.sessions.set(id, session);
+    if (queued.length || resumed.length) session.sweepResetAt = Date.now() + RESUME_HELD_MS;
     events.loaded(this.eventContext, session);
     for (const record of ended) {
       this.publish(session, { type: "response", id: record.id, outcome: record.outcome! });
@@ -1288,6 +1308,10 @@ export class ClientSessions {
       [id, now, this.sweepMs, MAX_RESUME_DELAY_MS]).catch(() => ({ rows: [] as { resume_failures: number }[] }));
     if (rows[0]) console.error(JSON.stringify({ type: "agent_resume_failed", agent: id, failures: rows[0].resume_failures, error: safeError(error) }));
   }
+  private resetSweep(session: Session) {
+    session.sweepResetAt = undefined;
+    return underClaim(this.db, session.claim, sql => sql.query("update agents set sweep_failures = 0, sweep_after = null where id = $1 and (sweep_failures <> 0 or sweep_after is not null)", [session.header.id]));
+  }
   private resetResumes(session: Session) {
     return underClaim(this.db, session.claim, sql => sql.query("update agents set turn_resumes = 0, resume_failures = 0, resume_after = null where id = $1 and (turn_resumes <> 0 or resume_failures <> 0 or resume_after is not null)", [session.header.id]));
   }
@@ -1316,12 +1340,13 @@ export class ClientSessions {
       select a.id, a.tenant from agents a
       where a.pending_runs and not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at > $1)
         and (a.resume_after is null or a.resume_after <= $1)
+        and (a.sweep_after is null or a.sweep_after <= $1)
         and not exists (select from actor_owners o join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now() where o.actor = a.id)
       order by random() limit $2`, [Date.now(), limit]);
     const loaded: string[] = [];
     for (const { id, tenant } of rows) {
       if (this.sessions.has(id) || this.loading.has(id) || !await this.canReserve(tenant)) continue;
-      try { if (await this.load(id)) loaded.push(id); }
+      try { if (await this.load(id, true)) loaded.push(id); }
       catch (error) { if (!(error instanceof NotOwner)) await this.deferResume(id, error); }
     }
     if (loaded.length) console.log(JSON.stringify({ type: "agents_resumed", count: loaded.length, agents: loaded }));
@@ -2219,7 +2244,7 @@ export class ClientSessions {
       try { await this.commit(session, true); }
       catch { return; /* The fault is reported to every later request. */ }
       if (run) {
-        try { await this.resetResumes(session); }
+        try { await this.resetResumes(session); await this.resetSweep(session); }
         catch (error) { this.fail(session, error, "journal"); return; }
         this.hook("runEnded", session, completed);
         // A background child's run: its ending goes to its parent now (a sweep delivers it should this node be lost first).
@@ -2707,6 +2732,9 @@ export class ClientSessions {
     const idleMs = this.options.idleMs ?? 5 * 60_000;
     for (const session of this.sessions.values()) {
       const id = session.header.id;
+      if (session.sweepResetAt !== undefined && now >= session.sweepResetAt) {
+        void this.resetSweep(session).catch(error => console.error(JSON.stringify({ type: "sweep_reset_failed", agent: id, error: safeError(error) })));
+      }
       // An agent still starting (being made, say) expires at the next tick after: stopping it now would fail its start.
       if (!session.header.revoked && expired(session.header.expiresAt, now) && !session.starting) {
         void this.remove(id).then(() => this.supervisor.stop(id)).catch(() => {});
