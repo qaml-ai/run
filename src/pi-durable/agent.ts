@@ -5,7 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, InboxDoc, LiveDoc, StorageRequestError, createRegistry, createSession, defineDoc, section,
+  GenerationTask, Harness, InboxDoc, LiveDoc, createRegistry, createSession, defineDoc, section,
   type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage, type TaskId,
 } from "@earendil-works/pi-durable";
 
@@ -46,8 +46,8 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     onSummary?: (message: AssistantMessage) => void | Promise<void>;
     onCompaction?: (state: { summary: string; keptMessages: number; at: number; reason: "threshold" | "overflow" }) => void | Promise<void>;
     /**
-     * A storage call failed (past the Storage's own retries). Pi's Session is then failed for good, and closes the
-     * Storage: the host must be given up and reopened from what was committed.
+     * Pi's Session failed (`session_failed`: a storage call failed past the Storage's own retries, by Pi's rule) and closed
+     * the Storage: the host must be given up and reopened from what was committed.
      */
     onStorageFailure?: (error: unknown) => void;
   };
@@ -161,33 +161,6 @@ function summaryChunks(messages: Message[], window: number, maxTokens: number): 
   if (part) parts.push(part);
   return parts.map(content => (before?: string) => [system, { ...user, content: [{ type: "text", text:
     `${before === undefined ? "" : `<previous-summary>\n${before.slice(0, Math.floor(Math.max(maxTokens, 1_000) * 2.5))}\n</previous-summary>\n\nThe summary above covers the conversation before this part. Summarize both together.\n\n`}<conversation>\n${content}\n</conversation>\n\n${prompt}` }] } as Message]);
-}
-
-/** Calls whose failure always fails Pi's Session: once a write is sent, whether it landed is unknown. */
-const WRITES = new Set<PropertyKey>(["commit", "mintId", "mintIds"]);
-
-/**
- * `storage`, telling `onFailure` of a call that failed Pi's Session, by Pi's own rule: any failed write, and a failed
- * read unless the request was invalid (`StorageRequestError`) or its caller cancelled it. Those fail only that call.
- */
-function storageGuard(storage: Storage, onFailure?: (error: unknown) => void): Storage {
-  if (!onFailure) return storage;
-  return new Proxy(storage, { get(target, key) {
-    const value = Reflect.get(target, key, target);
-    if (typeof value !== "function" || key === "close") return typeof value === "function" ? value.bind(target) : value;
-    return (...args: unknown[]) => {
-      const failed = (error: unknown) => {
-        const exempt = !WRITES.has(key) && (error instanceof StorageRequestError ||
-          args.some(arg => (arg as { abortSignal?: AbortSignal } | undefined)?.abortSignal?.aborted));
-        if (!exempt) onFailure(error);
-        throw error;
-      };
-      try {
-        const result = value.apply(target, args);
-        return result instanceof Promise ? result.catch(failed) : result;
-      } catch (error) { return failed(error); }
-    };
-  } });
 }
 
 export async function recoverDurableMessages(storage: Pick<Storage, "scanEntries">, conversationId: ConversationId | number, after?: DurableCursor): Promise<DurableMessage[]> {
@@ -406,13 +379,14 @@ export class DurableAgent {
       return Math.min(Math.floor(window() * 0.15), (Number.isFinite(output) ? output : 0) + 16_384);
     };
     agent.compactAt = () => window() - reserve();
-    agent.harness = await Harness.open(storageGuard(options.durable.storage, options.durable.onStorageFailure), { registry, models: models as unknown as HarnessOptions["models"],
+    agent.harness = await Harness.open(options.durable.storage, { registry, models: models as unknown as HarnessOptions["models"],
       // Pi 1.4 attributes every request to pi by default (OpenRouter `HTTP-Referer: https://pi.dev` and
       // `X-OpenRouter-Title: pi`, NVIDIA and OpenCode origin headers): requests are the tenant's, so send none.
       identity: { attribution: null },
       // What Pi contains rather than throws (a faulted phase, a throwing hook or section, a dropped progress commit) is
       // otherwise silent.
       onReport: (error, info) => {
+        if (info?.type === "session_failed") options.durable.onStorageFailure?.(error);
         if (info?.type === "task_parked" && info.task.kind === original.name) agent.parked.add(info.task.id);
         console.error(JSON.stringify({ type: "pi_report", ...info ? { report: info.type } : {},
           ...info && "task" in info && info.task ? { task: info.task.kind, taskId: info.task.id } : {},
