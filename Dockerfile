@@ -85,11 +85,19 @@ RUN groupadd --gid 1001 sandbox \
  && useradd --uid 1001 --gid 1001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin sandbox \
  && mkdir -p /data && chown node:node /data && chmod 700 /data
 COPY --from=launcher /agent-launcher /usr/local/bin/agent-launcher
+# jemalloc for the runtime's node process (LD_PRELOAD below; the launcher's confined processes get no environment,
+# and agent processes get theirs from agentProcessEnv). With glibc, memory a voice media worker thread allocated
+# stays in that thread's arena after the thread is ended (a worker killed at AGENT_VOICE_WORKER_MAX_MB): measured,
+# 32 kills left the process at 713 MB against 80 at the start; with jemalloc, 144 against 100.
+RUN apt-get update && apt-get install -y --no-install-recommends libjemalloc2 && rm -rf /var/lib/apt/lists/* \
+ && ln -s "$(find /usr/lib -name libjemalloc.so.2 | head -1)" /usr/local/lib/libjemalloc.so.2 \
+ && LD_PRELOAD=/usr/local/lib/libjemalloc.so.2 node -e 'if (!require("node:fs").readFileSync("/proc/self/maps", "utf8").includes("libjemalloc")) throw new Error("jemalloc did not load")'
 # No startup snapshot of our own: measured, it saved nothing over V8's built-in one (bench/v8-exec-*.json).
 COPY --from=v8exec /v8-exec /usr/local/bin/v8-exec
 # No USER: the launcher starts as root, then runs the runtime as node (uid 1000) and each
 # confined process as a uid of its own. The runtime refuses to start without the launcher.
 ENV NODE_ENV=production \
+    LD_PRELOAD=/usr/local/lib/libjemalloc.so.2 \
     HOME=/home/node \
     AGENT_SANDBOX_REQUIRED=1 \
     AGENT_DATA_DIR=/data \
