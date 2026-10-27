@@ -364,17 +364,25 @@ export class DurableAgent {
       [name, async (...args: Parameters<typeof compaction.phases.select>) => {
         const [record, runtime, ctx] = args;
         const wrapped = new Proxy(runtime, { get(target, key) {
-          if (key === "commit") return (fn: Parameters<typeof runtime.commit>[0], commitContext: typeof ctx) => target.commit(async (tx, current) => {
-            const aside = await tx.doc(ContextAsideDoc, runtime.conversationId);
-            const writes = new Proxy(tx, { get(target, key) {
-              if (key === "appendEntry") return (id: ConversationId, entry: EntryDraft) =>
-                target.appendEntry(id, entry.kind === "pi.compaction" && aside.task
-                  ? { ...entry, model: [JSON.parse(aside.task), ...entry.model ?? []], data: { ...entry.data as object, message: JSON.parse(aside.task) } } : entry);
-              const value = Reflect.get(target, key, target);
-              return typeof value === "function" ? value.bind(target) : value;
-            } });
-            return fn(writes, current);
-          }, commitContext);
+          if (key === "commit") return async (fn: Parameters<typeof runtime.commit>[0], commitContext: typeof ctx) => {
+            const aside = await target.snapshot(ContextAsideDoc, runtime.conversationId, commitContext);
+            if (!aside?.task) return target.commit(fn, commitContext);
+            const pin = (entry: EntryDraft): EntryDraft => entry.kind === "pi.compaction" && !(entry.data as { message?: unknown } | undefined)?.message
+              ? { ...entry, model: [JSON.parse(aside.task!), ...entry.model ?? []], data: { ...entry.data as object, message: JSON.parse(aside.task!) } } : entry;
+            return target.commit(async (tx, current) => {
+              const writes = new Proxy(tx, { get(target, key) {
+                if (key === "appendEntry") return (id: ConversationId, entry: EntryDraft) =>
+                  target.appendEntry(id, pin(entry));
+                const value = Reflect.get(target, key, target);
+                return typeof value === "function" ? value.bind(target) : value;
+              } });
+              const result = await fn(writes, current);
+              // Conversation-owned compaction may queue a write instead of appending it now.
+              const inbox = await tx.doc(InboxDoc, runtime.conversationId);
+              for (const item of inbox.items) if (item.mode === "write" && item.entry?.kind === "pi.compaction") item.entry = pin(item.entry as unknown as EntryDraft) as never;
+              return result;
+            }, commitContext);
+          };
           const value = Reflect.get(target, key, target);
           return typeof value === "function" ? value.bind(target) : value;
         } });

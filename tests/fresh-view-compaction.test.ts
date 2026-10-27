@@ -96,3 +96,42 @@ test("short fixture journals send identical messages with a view or a checkpoint
   }
   assert.deepEqual(requests[1], requests[0]);
 });
+
+for (const checkpoint of [false, true]) test(`idle compaction ${checkpoint ? "pins a suspended none-run's task" : "does not create an aside for flag-off agents"}`, async t => {
+  const storage = new MemoryStorage();
+  let window = 262_144, calls = 0;
+  const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false,
+    input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: window, maxTokens: 1000 } as any;
+  const requests: any[] = [];
+  const agent = await DurableAgent.create({
+    initialState: { model, tools: [{ name: "read", label: "Read", description: "Read", parameters: { type: "object" },
+      execute: async () => ({ content: [{ type: "text", text: "payload ".repeat(1000) }], details: calls === 12 ? { inputRequired: true } : null }) }] },
+    finishTurn: ({ toolResults }) => toolResults.some(result => (result.details as any)?.inputRequired) ? { action: "end" } : undefined,
+    streamFn: (_model, view) => {
+      requests.push(structuredClone(view.messages));
+      return stream(fauxAssistantMessage(calls++ < 12 ? [fauxToolCall("read", {}, { id: `read-${calls}` })] : "Finished", { stopReason: calls <= 12 ? "toolUse" : "stop" }));
+    },
+    durable: { storage, leading: () => system, get contextWindow() { return window; },
+      summaryStream: () => stream(fauxAssistantMessage("IDLE-SUMMARY: reading progress")) },
+  });
+  t.after(() => agent.close());
+  await agent.replaceContext([system]);
+  await agent.prompt(user("PRE-STREAK", 1));
+  calls = 0;
+  if (checkpoint) await agent.historyContext(fresh, system);
+  await agent.prompt(fresh);
+  window = 8192;
+  await agent.compact();
+  const context = (await import("@earendil-works/chord/context")).BACKGROUND_CONTEXT;
+  const docs = await storage.scanDocuments({ scope: { kind: "conversation", conversationId: agent.conversationId }, kind: "camel.context.aside", at: "current" }, 1, undefined, context);
+  if (!checkpoint) { assert.equal(docs.items.length, 0); return; }
+  assert.ok(JSON.stringify(agent.state.messages).includes("IDLE-SUMMARY"));
+  assert.ok(agent.state.messages.some(message => message.role === "user" && message.content === fresh.content));
+  await agent.continue();
+  assert.ok(requests.at(-1).some((message: any) => message.role === "user" && message.content === fresh.content));
+  await agent.historyContext();
+  const restored = JSON.stringify(agent.state.messages);
+  assert.match(restored, /History-none run.*Read all records for TASK-42/);
+  assert.match(restored, /Final reply: Finished/);
+  assert.doesNotMatch(restored, /IDLE-SUMMARY/);
+});
