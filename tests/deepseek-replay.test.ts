@@ -32,11 +32,8 @@ function deepseekRefusal(body: any): { httpStatus: number; message: string } | u
   }
   return undefined;
 }
-/**
- * OpenRouter's routing is its own beyond a model's hosts (pi-catalog.ts OPENROUTER_HOSTS): a request of ours has at most
- * a `provider.only`, never an order or sort (either turns off its load balancing).
- */
-const unrouted = (bodies: any[]) => assert.ok(bodies.every(body => !("provider" in body) || JSON.stringify(Object.keys(body.provider)) === '["only"]'), JSON.stringify(bodies.map(body => body.provider)));
+/** OpenRouter's routing is its own: no request of ours has a `provider` field (an order or sort turns off its load balancing). */
+const unrouted = (bodies: any[]) => assert.ok(bodies.every(body => !("provider" in body)), JSON.stringify(bodies.map(body => body.provider)));
 const assistants = (body: any) => body.messages.filter((message: any) => message.role === "assistant");
 
 test("DeepSeek's models on OpenRouter are called on Chat Completions, agents made on Responses included; others keep Responses", () => {
