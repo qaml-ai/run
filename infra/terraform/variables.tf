@@ -179,6 +179,8 @@ variable "runtime_env" {
     # against its credit, with the free limits (the Free usage tier, AGENT_FREE_HOURLY_SPEND_USD) until it buys some.
     AGENT_OPEN_SIGNUP = "true"
     AGENT_HOSTING     = "inline"
+    # Pi-native history-none checkpoints (plans/pi-native-context.md P3): canary tenants first, then "*".
+    AGENT_PI_CONTEXT_TENANTS = "miguel"
     # Operator tenants that may post manual credit adjustments (POST /v1/billing/adjustments).
     AGENT_BILLING_ADMINS = "miguel"
   }
