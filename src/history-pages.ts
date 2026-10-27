@@ -208,13 +208,13 @@ export class HistoryIndex {
     return { entries, next: start > 0 ? start : null, total, ...(split ? { split: true as const } : {}) };
   }
 
-  /** Every message the chunks hold, from the first up to (not including) `end`, in order: a full history's settled part. */
-  async messages(agent: string, end: number): Promise<AgentMessage[]> {
-    const { rows } = await this.db.query("select start, count, bytes, turns, hash from agent_history_chunks where agent = $1 and start < $2 order by start", [agent, end]);
+  /** Messages in [from, end), in order. The byte cap counts every overlapping chunk read. */
+  async messages(agent: string, end: number, from = 0): Promise<AgentMessage[]> {
+    const { rows } = await this.db.query("select start, count, bytes, turns, hash from agent_history_chunks where agent = $1 and start < $2 and start + count > $3 order by start", [agent, end, from]);
     const bytes = (rows as Row[]).reduce((sum, row) => sum + row.bytes, 0);
     if (bytes > FULL_HISTORY_READ_BYTES) throw new HttpError(413, `History is ${bytes} bytes; full-history reads and forks are limited to ${FULL_HISTORY_READ_BYTES} bytes. Read it in pages with limit/before/maxBytes.`);
     const loaded = await mapLimit(rows as Row[], READS, row => this.read(agent, row));
-    return loaded.flat().slice(0, end);
+    return loaded.flatMap((messages, index) => messages.slice(Math.max(0, from - rows[index].start), end - rows[index].start));
   }
 
   private async read(agent: string, row: Row): Promise<AgentMessage[]> {

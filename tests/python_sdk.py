@@ -1783,6 +1783,50 @@ class ReconnectHintTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(await self.reconnects(False), 0.24)
 
 
+class HistoryPagingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_history_collects_bounded_pages_async_and_sync(self):
+        session = {"id": "client_" + "a" * 40, "token": "t"}
+        messages = [{"role": "user", "content": str(index)} for index in range(5)]
+        for empty in (False, True):
+            seen = []
+
+            def handle(request):
+                self.assertEqual(request.method, "GET")
+                self.assertTrue(request.url.path.endswith("/history"))
+                query = dict(request.url.params)
+                self.assertEqual(query.pop("limit"), "100")
+                self.assertEqual(query.pop("maxBytes"), "4000000")
+                before = query.pop("before", None)
+                self.assertEqual(query, {})
+                seen.append(before)
+                end = int(before) if before is not None else len(messages)
+                start = max(0, end - 2)
+                return httpx.Response(200, json={
+                    "entries": [] if empty else [{"index": index, "message": messages[index]} for index in range(start, end)],
+                    "next": None if empty or start == 0 else start,
+                    "total": 0 if empty else len(messages),
+                })
+
+            client = AgentClient("https://runtime.example", session, [], attach=False)
+            await client.http.aclose()
+            client.http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+            try:
+                self.assertEqual(await client.history(), {"messages": [] if empty else messages})
+            finally:
+                await client.http.aclose()
+            expected = [None] if empty else [None, "3", "1"]
+            self.assertEqual(seen, expected)
+            seen.clear()
+            client = sync.AgentClient("https://runtime.example", session)
+            client.http.close()
+            client.http = httpx.Client(transport=httpx.MockTransport(handle))
+            try:
+                self.assertEqual(client.history(), {"messages": [] if empty else messages})
+            finally:
+                client.http.close()
+            self.assertEqual(seen, expected)
+
+
 class VersionTest(unittest.TestCase):
     def test_version_is_pyprojects(self):
         import camelai_run

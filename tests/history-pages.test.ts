@@ -58,6 +58,54 @@ test("full history checks all chunk bytes before reading any blob", async t => {
   assert.equal(reads, 3);
 });
 
+test("ranged history reads select overlapping chunks and cap their bytes before reading", async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "history-range-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const storage = fileStorage(root);
+  const index = new HistoryIndex(db, storage);
+  const agent = `client_${"d".repeat(40)}`;
+  await db.query("insert into agents (id, tenant, header, name, type, model, expires_at, revoked, revision) values ($1, 't', '{}', 'a', 'general', 'm', null, false, 1)", [agent]);
+  const messages = [user("old"), assistant("old"), user("middle"), assistant("middle"), user("new")];
+  await index.write(agent, undefined, { start: 0, messages: messages.slice(0, 2), turns: [0] });
+  await index.write(agent, undefined, { start: 2, messages: messages.slice(2, 4), turns: [2] });
+  await index.write(agent, undefined, { start: 4, messages: messages.slice(4), turns: [4] });
+  await db.query("update agent_history_chunks set bytes = $2 where agent = $1 and start in (0, 4)", [agent, FULL_HISTORY_READ_BYTES + 1]);
+  const reads: string[] = [];
+  const read = storage.readBlob.bind(storage);
+  storage.readBlob = key => { reads.push(key); return read(key); };
+  assert.deepEqual(await index.messages(agent, 3, 2), messages.slice(2, 3));
+  assert.deepEqual(await index.messages(agent, 4, 3), messages.slice(3, 4));
+  assert.equal(reads.length, 2, "only the overlapping chunk is read, including partial ranges");
+  await assert.rejects(index.messages(agent, 4, 1), { status: 413 });
+  assert.equal(reads.length, 2, "an oversized range reads no blobs");
+});
+
+test("a page behind the journal base reads only its missing indexed range", async t => {
+  const r = await runtime(t, () => ({ content: "done" }), { AGENT_IDLE_MS: "1000" });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(agent, "first");
+  await until(async () => await indexedOf(r, agent) === 2, "the first turn to be indexed separately", 20_000);
+  await r.prompt(agent, "second");
+  await until(async () => await indexedOf(r, agent) === 4, "the stopped agent to index its messages", 20_000);
+  const storage = await openPiStorage({ sessionId: agent, directory: join(r.root, "agents", agent), db: r.db });
+  try {
+    const history = (await JournalHistory.openAny(storage))!;
+    const document = await JournalHistory.baseDocument(storage);
+    await storage.commit(baseWrites(await storage.mintId<EntryId>(), history.settledBase()!, {
+      id: document ?? await storage.mintId<DocumentId>(), create: !document,
+    }), BACKGROUND_CONTEXT);
+  } finally { await storage.close(BACKGROUND_CONTEXT); }
+  // The marker lags the journal base, but another writer has already stored the missing chunk.
+  await r.db.query("update agent_history_index set indexed = 2 where agent = $1", [agent]);
+  await r.db.query("update agent_history_chunks set bytes = $2 where agent = $1 and start = 0", [agent, FULL_HISTORY_READ_BYTES + 1]);
+  const page = await r.call(`/v1/agents/${agent}/history?limit=1&maxBytes=16384`);
+  assert.equal(page.status, 200, page.text);
+  assert.equal(page.json.total, 4);
+  assert.deepEqual(page.json.entries.map((entry: any) => entry.index), [0, 1, 2, 3]);
+  assert.equal((await r.call(`/v1/agents/${agent}/history`)).status, 413);
+});
+
 test("byte-bounded pages count UTF-8 and the envelope, preserve cursors, and keep oversized messages", async t => {
   const { db } = await testDatabase();
   const root = await mkdtemp(join(tmpdir(), "history-bytes-"));
@@ -222,6 +270,7 @@ test("the newest page has the running turn; an index behind reads the rest from 
   }, { AGENT_IDLE_MS: "1000" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   await r.prompt(agent, "first");
+  await until(async () => await indexedOf(r, agent) === 2, "the first turn to be indexed separately", 20_000);
   await r.prompt(agent, "second");
   // An index behind what the agent's runs reported (its stop could not write the last chunks) reads the rest from the
   // journal; the agent's next start indexes it.

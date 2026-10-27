@@ -1448,7 +1448,7 @@ export class ClientSessions {
     // is read from the journal, beside its owner: an index behind (a stop that could not write its last chunks), none yet,
     // or work its last owner never indexed (a node that died). Nothing is indexed here; an agent's own process indexes
     // from where its index ends.
-    if (!tail) tail = await this.supervisor.journalBacklog(id, (await this.historyIndex.indexed(id)) ?? 0, count => this.historyIndex.messages(id, count));
+    if (!tail) tail = await this.supervisor.journalBacklog(id, (await this.historyIndex.indexed(id)) ?? 0, (end, from) => this.historyIndex.messages(id, end, from));
     return this.historyIndex.page(id, { before, limit, maxBytes }, tail ?? undefined);
   }
 
