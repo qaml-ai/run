@@ -263,7 +263,7 @@ dimension sets listed:
 | `model_error` | a model response fails (retried or not) | `ModelErrors` | `Provider`+`Model`, `ErrorClass` |
 | `run_events` | run events are written to the outbox | `RunsStarted`, `RunsResumed`, `RunsCompleted`, `RunsInputRequired`, `RunsSpendLimited`, `RunsTurnLimited`, `RunsFailed`, `RunsUncertain` | `Tenant` |
 | `run_failed` | the same, per failed run | `RunsFailedByClass` | `ErrorClass`, `Tenant`+`ErrorClass` |
-| `model_cost` | usage events are written | `ModelCostUsd`, `ModelUsageEvents` | `Tenant`, `Provider`+`Model` |
+| `model_cost` | usage events are written, a line per tenant, model and serving host; properties `host` (OpenRouter's, else unknown), `inputTokens` (uncached), `cacheReadTokens`, `cacheWriteTokens`, `outputTokens` | `ModelCostUsd`, `ModelUsageEvents` | `Tenant`, `Provider`+`Model` |
 | `context_request` | each Pi model request | `held_tokens`, `sent_tokens`, `held_sent_ratio` | |
 | `context_range` | host load and the first model request of each run, from the existing size guard | `context_range_bytes`, `context_range_entries` | |
 | `tool_result_size` | each committed tool result | `tool_result_details_bytes`, `tool_result_inline_image_bytes` | |

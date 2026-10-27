@@ -23,7 +23,11 @@ import { deliveryLine, recordEventMetrics, writeMetricLine } from "./metrics.ts"
 export const EVENT_TYPES = ["run.started", "run.completed", "run.failed", "input.requested", "input.resolved", "usage.recorded", "billing.balance.low", "billing.balance.depleted", "billing.topup.receipt", "billing.topup.declined", "billing.topup.action_required", "billing.topup.no_card", "billing.topup.limit", "billing.topup.reconcile", "end_user.balance.low", "end_user.credit.exhausted", "end_user.credit.granted", "end_user.credit.refunded", "end_user.credit.adjusted", "end_user.allowance.low", "voice.session.started", "voice.session.ended", "voice.session.error", "voice.utterance", "voice.speech.started", "voice.speech.ended"] as const;
 export type EventType = typeof EVENT_TYPES[number];
 /** An event for the tenant's endpoints; `legacy` is a usage event's body for the usage webhook. */
-export type WebhookEvent = { id: string; type: EventType; tenant: string; created: number; data: Record<string, unknown>; legacy?: UsageEvent };
+/**
+ * `host`: for a model response, the host OpenRouter routed it to (`usage.providerHost`). For metrics only (`model_cost`):
+ * deliveries carry `data` alone.
+ */
+export type WebhookEvent = { id: string; type: EventType; tenant: string; created: number; data: Record<string, unknown>; legacy?: UsageEvent; host?: string };
 /** A usage event as the usage webhook sends it. */
 export type UsageEvent = {
   id: string; agent: string; requestId: string | null; tenant: string; subject: string; actor: string | null; context: Record<string, unknown>;
@@ -105,7 +109,8 @@ export function usageEvent(tenant: string, agent: string, message: UsageRecord):
     ...(typeof usage.reasoning === "number" ? { reasoning: usage.reasoning } : {}), ...(transcription || speech ? { audioSeconds: message.audioSeconds ?? 0 } : {}), ...(image ? { images: message.images ?? 0 } : {}), cost: usageCost(usage),
   };
   const at = message.timestamp ?? Date.now();
-  const event = webhookEvent("usage.recorded", tenant, { agentId: agent || null, ...facts, at });
+  const host = typeof usage.providerHost === "string" && usage.providerHost ? usage.providerHost : undefined;
+  const event = { ...webhookEvent("usage.recorded", tenant, { agentId: agent || null, ...facts, at }), ...(host ? { host } : {}) };
   // The older usage webhook carries model responses only, as it always has.
   return transcription || speech || image ? event : { ...event, legacy: { id: randomUUID(), agent, tenant, ...facts, subject: facts.subject ?? agent, kind: facts.kind as UsageEvent["kind"], at } };
 }
