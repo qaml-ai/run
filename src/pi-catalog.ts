@@ -139,13 +139,30 @@ const OPENROUTER_HOSTS: Record<string, string[]> = {
   "deepseek/deepseek-v4.1-flash": ["fireworks", "together", "parasail", "coreweave", "nebius"],
 };
 
-/** The OpenRouter hosts a model may be served by (OPENROUTER_HOSTS), or undefined: OpenRouter's choice. */
+/**
+ * Host variants: `<model id>:<variant>` is its model served only by the variant's hosts (`provider.only`), sent to
+ * OpenRouter as the model's own id (OpenRouter knows no such suffix). An agent opts in by its model, so one slice of
+ * agents can try a host while every other agent of the model routes as before. Only `only`, never `order` or `sort`.
+ * - `:morph` (2026-10-27): Morph's fp8 endpoint alone, a canary of its price and cache hits against `:nitro`
+ *   (plans/deepseek-provider-spend.md). One host: a 429 there has nowhere else to go, so canary slices only.
+ */
+const OPENROUTER_HOST_VARIANTS: Record<string, string[]> = {
+  morph: ["morph"],
+};
+const hostVariant = (id: string): { base: string; only: string[] } | undefined => {
+  const match = /^(.+):([a-z]+)$/.exec(id);
+  const only = match && Object.hasOwn(OPENROUTER_HOST_VARIANTS, match[2]) ? OPENROUTER_HOST_VARIANTS[match[2]] : undefined;
+  return match && only ? { base: match[1], only } : undefined;
+};
+
+/** The OpenRouter hosts a model may be served by (a host variant's, else OPENROUTER_HOSTS), or undefined: OpenRouter's choice. */
 export function openRouterHosts(id: string): string[] | undefined {
-  return OPENROUTER_HOSTS[id] ?? OPENROUTER_HOSTS[id.replace(/:[a-z]+$/, "")];
+  return hostVariant(id)?.only ?? OPENROUTER_HOSTS[id] ?? OPENROUTER_HOSTS[id.replace(/:[a-z]+$/, "")];
 }
 
 /**
- * An OpenRouter request of the platform's catalog with its model's hosts (`provider.only`) and, when its agent asks
+ * An OpenRouter request of the platform's catalog with its model's hosts (`provider.only`; a host variant's model sent as
+ * its base id) and, when its agent asks
  * (`dataCollection: "deny"`), only hosts that do not collect its data (`provider.data_collection`): OpenRouter skips the
  * providers whose data policy says they may train on it. Both are filters, so load balancing stays on; any other
  * `provider` routing the request has is kept. Nothing is added by default. Any other request is as it was.
@@ -154,8 +171,12 @@ export function withOpenRouterHosts(model: Model<Api>, payload: unknown, dataCol
   if (model.provider !== "openrouter" || !payload || typeof payload !== "object") return payload;
   const only = openRouterHosts(model.id);
   if (!only && !dataCollection) return payload;
-  const request = payload as { provider?: Record<string, unknown> };
-  return { ...request, provider: { ...(only ? { only } : {}), ...request.provider, ...(dataCollection ? { data_collection: dataCollection } : {}) } };
+  const request = payload as { model?: unknown; provider?: Record<string, unknown> };
+  const variant = hostVariant(model.id);
+  return {
+    ...request, ...(variant && request.model === model.id ? { model: variant.base } : {}),
+    provider: { ...(only ? { only } : {}), ...request.provider, ...(dataCollection ? { data_collection: dataCollection } : {}) },
+  };
 }
 
 /** Pi's model, as this runtime corrects it: a Bedrock base id that has inference profiles is its profile's. */

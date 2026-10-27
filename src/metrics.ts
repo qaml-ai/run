@@ -400,14 +400,18 @@ export function recordBillingFailure(failure: { tenant: string; keyOwner: "platf
 export function recordEventMetrics(events: WebhookEvent[]) {
   const runs = new Map<string, Record<string, number>>();
   const failures = new Map<string, number>();
-  const costs = new Map<string, { usd: number; events: number }>();
+  const costs = new Map<string, { usd: number; events: number; input: number; cacheRead: number; cacheWrite: number; output: number }>();
   for (const event of events) {
     const data = event.data as any;
     if (event.type === "usage.recorded") {
-      const key = JSON.stringify([event.tenant, String(data.provider ?? "unknown"), String(data.model ?? "unknown")]);
-      const cost = costs.get(key) ?? { usd: 0, events: 0 };
+      const key = JSON.stringify([event.tenant, String(data.provider ?? "unknown"), String(data.model ?? "unknown"), event.host ?? "unknown"]);
+      const cost = costs.get(key) ?? { usd: 0, events: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
       cost.usd += Number(data.cost?.usd) || 0;
       cost.events++;
+      cost.input += Number(data.input) || 0;
+      cost.cacheRead += Number(data.cacheRead) || 0;
+      cost.cacheWrite += Number(data.cacheWrite) || 0;
+      cost.output += Number(data.output) || 0;
       costs.set(key, cost);
       continue;
     }
@@ -432,10 +436,13 @@ export function recordEventMetrics(events: WebhookEvent[]) {
     emit("run_failed", { dimensions: { Tenant: tenant, ErrorClass: error }, rollups: [["ErrorClass"], ["Tenant", "ErrorClass"]], metrics: { RunsFailedByClass: count } });
   }
   for (const [key, cost] of costs) {
-    const [tenant, provider, model] = JSON.parse(key);
+    const [tenant, provider, model, host] = JSON.parse(key);
+    // Its tokens and the host that served them (OpenRouter's, else "unknown") are fields, not dimensions: counts and
+    // names only, so $/1M and cache hits by host read from logs. inputTokens is uncached input, as Pi counts it.
     emit("model_cost", {
       dimensions: { Tenant: tenant, Provider: provider, Model: model }, rollups: [[], ["Tenant"], ["Provider", "Model"]],
       metrics: { ModelCostUsd: [Math.round(cost.usd * 1e6) / 1e6, "None"], ModelUsageEvents: cost.events },
+      properties: { host, inputTokens: cost.input, cacheReadTokens: cost.cacheRead, cacheWriteTokens: cost.cacheWrite, outputTokens: cost.output },
     });
   }
 }

@@ -67,3 +67,25 @@ test("1017:nitro resolves as 1017 does (catalog, price, 131,072, Chat Completion
   assert.equal(sent.reasoning?.effort, "high");
   assert.ok((sent.max_completion_tokens ?? sent.max_tokens) <= 131_072);
 });
+
+test("1017:morph is 1017 served by Morph alone: sent as 1017 with provider.only morph, priced and resolved as 1017", async t => {
+  const morph = resolveModel(`openrouter/${FLASH_1017.id}:morph`);
+  assert.deepEqual([morph.id, morph.api, morph.maxTokens], [`${FLASH_1017.id}:morph`, "openai-completions", 131_072]);
+  assert.deepEqual(morph.cost, FLASH_1017.cost);
+  assert.deepEqual(openRouterHosts(morph.id), ["morph"]);
+  assert.equal(openRouterHosts(`${FLASH_1017.id}:nitro`), undefined, ":nitro is untouched");
+  const request = { model: morph.id, messages: [] };
+  assert.deepEqual(withOpenRouterHosts(morph, request), { model: FLASH_1017.id, messages: [], provider: { only: ["morph"] } });
+  assert.deepEqual((withOpenRouterHosts(morph, request, "deny") as any).provider, { only: ["morph"], data_collection: "deny" });
+
+  const host = await fakeModel(t, () => ({ role: "assistant", content: "Morph." }));
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: host.url } });
+  const agent = (await r.call("/v1/agents", { body: { model: `openrouter/${FLASH_1017.id}:morph`, keyScope: "hosted", thinkingLevel: "high" } })).json.id;
+  assert.equal((await r.prompt(agent, "Hi")).outcome.result.reply, "Morph.");
+  const [sent] = host.bodies;
+  assert.equal(sent.model, FLASH_1017.id, "OpenRouter knows no :morph suffix");
+  assert.deepEqual(sent.provider, { only: ["morph"] });
+  assert.ok(Array.isArray(sent.messages), "Chat Completions (deepseek-replay.ts)");
+  onlyOnly(host.bodies);
+});
