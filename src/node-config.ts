@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Hosting } from "./supervisor.ts";
 import { MAX_RESUMES } from "./client-sessions.ts";
-import { RUN_LIMITS } from "./client-sessions/spend.ts";
+import { ADMIN_RUN_LIMITS, RUN_LIMITS } from "./client-sessions/spend.ts";
 import { STREAM_TIMEOUTS } from "./model-stream.ts";
 import { TOOL_DEADLINES } from "./tool-servers.ts";
 import { codeCapacity } from "./codemode.ts";
@@ -90,10 +90,15 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   const toolTimeoutMs = Number(env.AGENT_TOOL_TIMEOUT_MS ?? 15_000);
   if (!Number.isInteger(toolTimeoutMs) || toolTimeoutMs < 1 || toolTimeoutMs > 15 * 60_000) throw new Error("AGENT_TOOL_TIMEOUT_MS must be an integer between 1 and 900000");
   // The most one run of a self-serve tenant's agents may take, whatever its agent sets (runLimits): model responses, and
-  // seconds from when it began. A tenant's own maxRunResponses and maxRunSeconds replace them; admin tenants have none unless set.
+  // seconds from when it began. A tenant's own maxRunResponses and maxRunSeconds replace them; admin tenants get adminRunLimits unless set.
   const runLimits = { maxResponses: Number(env.AGENT_MAX_RUN_RESPONSES ?? RUN_LIMITS.maxResponses), maxSeconds: Number(env.AGENT_MAX_RUN_SECONDS ?? RUN_LIMITS.maxSeconds) };
   if (!Number.isSafeInteger(runLimits.maxResponses) || runLimits.maxResponses < 1) throw new Error("AGENT_MAX_RUN_RESPONSES must be a positive integer");
   if (!Number.isSafeInteger(runLimits.maxSeconds) || runLimits.maxSeconds < 1) throw new Error("AGENT_MAX_RUN_SECONDS must be a positive integer");
+  // An admin tenant's backstop, unless its entry sets its own: far past any run seen (99.9% end within 25 minutes and
+  // ~100 responses; the longest, 92 minutes), so only a runaway meets it. 2026-10-27 one ran 25 hours and 71k messages.
+  const adminRunLimits = { maxResponses: Number(env.AGENT_ADMIN_MAX_RUN_RESPONSES ?? ADMIN_RUN_LIMITS.maxResponses), maxSeconds: Number(env.AGENT_ADMIN_MAX_RUN_SECONDS ?? ADMIN_RUN_LIMITS.maxSeconds) };
+  if (!Number.isSafeInteger(adminRunLimits.maxResponses) || adminRunLimits.maxResponses < 1) throw new Error("AGENT_ADMIN_MAX_RUN_RESPONSES must be a positive integer");
+  if (!Number.isSafeInteger(adminRunLimits.maxSeconds) || adminRunLimits.maxSeconds < 1) throw new Error("AGENT_ADMIN_MAX_RUN_SECONDS must be a positive integer");
   // How long a model request may go quiet before it fails as stalled and is retried (model-stream.ts): before its first
   // token, and between events once it streams. An agent's runLimits (firstTokenSeconds, idleSeconds) set its own.
   const streamTimeouts = { firstTokenMs: Number(env.AGENT_MODEL_FIRST_TOKEN_SECONDS ?? STREAM_TIMEOUTS.firstTokenMs / 1000) * 1000, idleMs: Number(env.AGENT_MODEL_IDLE_SECONDS ?? STREAM_TIMEOUTS.idleMs / 1000) * 1000 };
@@ -130,7 +135,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     publicUrlSet: !!env.AGENT_PUBLIC_URL,
     // Where browsers reach the runtime, as browser tokens say: AGENT_PUBLIC_URL unless set; empty for none.
     browserUrl: env.AGENT_BROWSER_URL?.replace(/\/+$/, ""),
-    maxAgents, memoryHighBytes, memoryRetireMs, memoryRetireFallbackMs, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, hosting, ignored, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs,
+    maxAgents, memoryHighBytes, memoryRetireMs, memoryRetireFallbackMs, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, hosting, ignored, toolTimeoutMs, runLimits, adminRunLimits, streamTimeouts, runRetentionSeconds, idleMs,
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,
