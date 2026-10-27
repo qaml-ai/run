@@ -25,7 +25,7 @@ export type Inspection = { media: Media; text?: string; truncated?: boolean };
  */
 export type Fitted = { data: Buffer; mimeType: string; width: number; height: number } | { omitted: string; transient?: true };
 
-const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const none = (reason: string): Inspection => ({ media: { kind: "none", reason } });
 /** A recognizable image with no readable header is damaged too (including a partial PNG signature). */
 const imageLike = (data: Buffer) => data.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47])) ||

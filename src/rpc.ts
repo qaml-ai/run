@@ -60,6 +60,7 @@ export function agentProcessEnv(env: NodeJS.ProcessEnv): Record<string, string> 
     ...(env.AGENT_SANDBOX_DIR ? { AGENT_SANDBOX_DIR: env.AGENT_SANDBOX_DIR } : {}),
     ...Object.fromEntries(OUTBOUND_ENV.filter(name => env[name] !== undefined).map(name => [name, env[name]!])),
     ...(env.AGENT_NATIVE_SECTIONS_TENANTS ? { AGENT_NATIVE_SECTIONS_TENANTS: env.AGENT_NATIVE_SECTIONS_TENANTS } : {}),
+    ...(env.AGENT_PI_IMAGE_REFS_TENANTS ? { AGENT_PI_IMAGE_REFS_TENANTS: env.AGENT_PI_IMAGE_REFS_TENANTS } : {}),
     ...(env.AGENT_SERVICE_NAME ? { AGENT_SERVICE_NAME: env.AGENT_SERVICE_NAME } : {}),
   };
 }

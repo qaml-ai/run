@@ -34,6 +34,8 @@ export function tenantList(name: string, value: string | undefined): string[] {
   if (tenants.some(tenant => !/^[a-z0-9][a-z0-9-]{0,39}$/.test(tenant))) throw new Error(`${name} must be * or comma-separated tenant ids`);
   return [...new Set(tenants)];
 }
+/** AGENT_PI_IMAGE_REFS_TENANTS (`tenantList`). */
+export const imageRefsTenants = (value: string | undefined) => tenantList("AGENT_PI_IMAGE_REFS_TENANTS", value);
 /** AGENT_NATIVE_SECTIONS_TENANTS (`tenantList`). */
 export const nativeSectionsTenants = (value: string | undefined) => tenantList("AGENT_NATIVE_SECTIONS_TENANTS", value);
 
@@ -149,6 +151,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     sandboxRequired: env.AGENT_SANDBOX_REQUIRED === "1",
     // Tenants whose agents' system sections are native Pi sections, `*` for every tenant (AGENT_NATIVE_SECTIONS_TENANTS).
     nativeSectionsTenants: nativeSectionsTenants(env.AGENT_NATIVE_SECTIONS_TENANTS),
+    imageRefsTenants: imageRefsTenants(env.AGENT_PI_IMAGE_REFS_TENANTS),
     // What its agent processes are told of these settings.
     agentEnv: agentProcessEnv(env),
     systemPrompt: env.AGENT_SYSTEM_PROMPT,

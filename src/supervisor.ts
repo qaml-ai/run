@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { agentProcessEnv, childProcess, type Rpc } from "./rpc.ts";
 import type { AgentConfig, CallContext, ToolBridge } from "./protocol.ts";
+import type { FileRef } from "./files.ts";
 import type { RequestMethod } from "../shared/client-protocol.ts";
 import type { ChildProcess } from "node:child_process";
 import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
@@ -65,6 +66,8 @@ type SupervisorOptions = {
   modelOutbound?: Outbound;
   /** Tenants whose inline agents' system sections are native Pi sections (agent processes get it in `agentEnv`). */
   nativeSectionsTenants?: string[];
+  /** Tenants whose inline agents keep inline images as workspace files (agent processes get it in `agentEnv`). */
+  imageRefsTenants?: string[];
   /** Shared Pi records use the same database and ownership claim as the session. */
   db?: Db;
 };
@@ -245,6 +248,7 @@ export class AgentSupervisor {
     // A supervisor given its tenant lists directly (tests) tells its agent processes, as a node's agentEnv does.
     const lists = {
       ...(this.options.nativeSectionsTenants?.length && !this.options.agentEnv?.AGENT_NATIVE_SECTIONS_TENANTS ? { AGENT_NATIVE_SECTIONS_TENANTS: this.options.nativeSectionsTenants.join(",") } : {}),
+      ...(this.options.imageRefsTenants?.length && !this.options.agentEnv?.AGENT_PI_IMAGE_REFS_TENANTS ? { AGENT_PI_IMAGE_REFS_TENANTS: this.options.imageRefsTenants.join(",") } : {}),
     };
     const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, Object.keys(lists).length
       ? { ...this.options.agentEnv ?? agentProcessEnv(process.env), ...lists } : this.options.agentEnv);
@@ -274,6 +278,7 @@ export class AgentSupervisor {
       if (method === "run-limit") return (await handle.bridge.runLimit?.()) ?? null;
       if (method === "search") return this.search(handle, params);
       if (method === "file") return this.file(handle, params);
+      if (method === "save-image") return this.saveImage(handle, params);
       if (method === "model-auth") return this.modelAuth(handle);
       if (method === "model-attempt") return handle.bridge.modelAttempt?.(params) ?? false;
       if (method === "fs") return this.dispatchFs(handle, params);
@@ -362,6 +367,11 @@ export class AgentSupervisor {
   private file(handle: Handle, ref: unknown) {
     if (!handle.bridge.file) throw new Error("Files are not available to this agent");
     return handle.bridge.file(ref);
+  }
+
+  private saveImage(handle: Handle, image: unknown) {
+    if (!handle.bridge.saveImage) throw new Error("Files are not available to this agent");
+    return handle.bridge.saveImage(image);
   }
 
   /** An agent's history index operations; without an index, `indexed` is null and nothing is written. */
@@ -458,12 +468,14 @@ export class AgentSupervisor {
       runLimit: async () => handle.bridge.runLimit?.(),
       search: async query => structuredClone(await this.search(handle, structuredClone(query))),
       file: ref => this.file(handle, structuredClone(ref)),
+      saveImage: async image => structuredClone(await this.saveImage(handle, structuredClone(image))) as FileRef,
       modelAuth: () => this.modelAuth(handle),
       modelAttempt: event => handle.bridge.modelAttempt?.(structuredClone(event)) ?? Promise.resolve(false),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
       codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),
       ...(this.options.codeExecutor ? { codeExecutor: this.options.codeExecutor } : {}),
       ...(this.options.nativeSectionsTenants?.length ? { nativeSectionsTenants: this.options.nativeSectionsTenants } : {}),
+      ...(this.options.imageRefsTenants?.length ? { imageRefsTenants: this.options.imageRefsTenants } : {}),
       ...(this.options.modelOutbound ? { modelOutbound: this.options.modelOutbound } : {}),
       lease: async () => { await handle.bridge.lease?.(); },
       history: { indexed: () => this.historyRequest(handle, { op: "indexed" }), write: chunk => this.historyRequest(handle, { op: "write", chunk: structuredClone(chunk) }) },

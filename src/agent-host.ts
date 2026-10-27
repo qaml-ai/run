@@ -82,6 +82,8 @@ export interface HostIO {
   search?(query: SearchQuery): Promise<SearchHit[]>;
   /** A file reference's bytes as base64, read by the supervisor: the agent holds no storage access. */
   file(ref: FileRef): Promise<string>;
+  /** An inline image saved to the agent's writable mount by the supervisor, as a file reference (`savesImages`). */
+  saveImage?(image: { data: string; mimeType: string }): Promise<FileRef>;
   /** Credentials for one model call of an agent whose key is resolved per call: an identity token the supervisor signs, or its key scope's entry. */
   modelAuth(): Promise<Credentials>;
   modelAttempt?: ModelAttemptHook;
@@ -97,6 +99,8 @@ export interface HostIO {
   lease?(): Promise<void>;
   /** Tenants whose agents' system sections are native Pi sections (AGENT_NATIVE_SECTIONS_TENANTS; `*`: every tenant). */
   nativeSectionsTenants?: string[];
+  /** Tenants whose agents keep inline images as workspace files (AGENT_PI_IMAGE_REFS_TENANTS; `*`: every tenant). */
+  imageRefsTenants?: string[];
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number> };
 }
@@ -362,6 +366,8 @@ export function createAgentHost(hostIO: HostIO) {
     }
   }
 
+  /** Whether the agent keeps inline images by reference (`savesImages`): its tenant is in AGENT_PI_IMAGE_REFS_TENANTS (or `*`). */
+  const imageRefs = () => !!io.imageRefsTenants && (io.imageRefsTenants.includes("*") || io.imageRefsTenants.includes(config.tenant ?? ""));
   /** Whether the agent's system sections are native Pi sections: its tenant is in AGENT_NATIVE_SECTIONS_TENANTS (or `*`). */
   const nativeSections = () => !!io.nativeSectionsTenants && (io.nativeSectionsTenants.includes("*") || io.nativeSectionsTenants.includes(config.tenant ?? ""));
 
@@ -604,14 +610,54 @@ export function createAgentHost(hostIO: HostIO) {
     return "omitted" in fitted ? { type: "text", text: `[image omitted: ${fitted.omitted}]` } : { type: "image", data: fitted.data.toString("base64"), mimeType: fitted.mimeType };
   }
 
-  /** Messages with their image blocks as a request may carry them (`fittedBlock`); the same messages when none needs it. */
+  /**
+   * Messages with their image blocks as a request may carry them (`fittedBlock`); the same messages when none needs it.
+   * Written to the journal by an agent that keeps images by reference (`savesImages`), each fitted image is saved as a file.
+   */
   async function fittedImages<T extends object>(messages: T[], writing = true): Promise<T[]> {
     return Promise.all(messages.map(async message => {
       const content = (message as { content?: unknown }).content;
       if (!Array.isArray(content) || !content.some(block => block?.type === "image")) return message;
-      const fitted = await Promise.all(content.map(block => block?.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string" ? fittedBlock(block, writing) : block));
+      const saving = writing && savesImages();
+      const fitted = await Promise.all(content.map(async block => {
+        if (block?.type !== "image" || typeof block.data !== "string" || typeof block.mimeType !== "string") return block;
+        const fit = await fittedBlock(block, writing);
+        return saving ? savedImage(fit) : fit;
+      }));
       return fitted.every((block, index) => block === content[index]) ? message : { ...message, content: fitted };
     }));
+  }
+
+  /**
+   * Whether images the journal is written with are kept by reference (AGENT_PI_IMAGE_REFS_TENANTS): Pi's context then holds a
+   * few hundred bytes per image instead of up to megabytes of base64, which its token estimate (and so compaction) does
+   * not see. Requests load the file (`hydrate`), so the model gets the same image after a line naming its file. An agent
+   * without a writable mount keeps its images inline.
+   */
+  let unsaved = false;
+  function savesImages() {
+    if (!imageRefs() || !io.saveImage) return false;
+    if (scratchMount(config.mounts)) return true;
+    if (!unsaved) console.log(JSON.stringify({ type: "image_kept_inline", agent: config.id, reason: "no writable mount" }));
+    unsaved = true;
+    return false;
+  }
+
+  /** A fitted image as the journal keeps it (`savesImages`): a reference to the file it is saved as, or as it is if it does not fit yet or cannot be saved. */
+  async function savedImage<T extends { type: string; data?: string; mimeType?: string }>(block: T): Promise<T | FileRef> {
+    if (block.type !== "image" || block.mimeType === "application/pdf") return block;
+    const bytes = Buffer.from(block.data!, "base64");
+    const header = imageHeader(bytes);
+    // One that failed to fit only for now stays inline, for requests to try again (`fittedBlock`).
+    if (!header || !fits(header.width, header.height, bytes.length)) return block;
+    try {
+      const ref = await io.saveImage!({ data: block.data!, mimeType: block.mimeType! });
+      if (validFileRef(ref)) return ref;
+      throw new Error("Invalid file reference");
+    } catch (error) {
+      console.error(JSON.stringify({ type: "image_save_failed", agent: config.id, error: errorText(error) }));
+      return block;
+    }
   }
 
   /**

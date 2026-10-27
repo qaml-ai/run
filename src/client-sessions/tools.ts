@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ToolDefinition } from "../protocol.ts";
 import { errorText, scratchMount } from "../protocol.ts";
 import type { ClientEvent } from "../../shared/client-protocol.ts";
@@ -9,7 +10,7 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { compose, toolCallKey, ToolFailure, type ToolCallCode, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "../tool-servers.ts";
 import { searchTools as searchCatalog, type SearchQuery } from "../tool-search.ts";
 import { declaredType, FILE_LIMITS, safeName, validFileRef, type FileRef } from "../files.ts";
-import { fileRef } from "../inspect.ts";
+import { fileRef, IMAGE_TYPES } from "../inspect.ts";
 import { resolve as resolveMount, type ToolContext } from "../volume-tools.ts";
 import { argumentsHash } from "../inputs.ts";
 import { safeError } from "../metrics.ts";
@@ -402,6 +403,26 @@ export async function fsCall(ctx: ToolsContext, session: Session, op: string, ar
   if (!["readFile", "writeFile", "stat", "list", "remove"].includes(op)) throw new Error("Unknown fs call");
   await ctx.beforeEffect(session);
   return ctx.options.volumes.tool(toolContext(ctx, session), `fs.${op}`, args, signal);
+}
+
+/**
+ * An inline image of a message or tool result, saved to the agent's writable mount as attachments/<sha256>.<ext> and
+ * referred to as the transcript does: the journal keeps the reference, not the bytes (AGENT_PI_IMAGE_REFS_TENANTS,
+ * agent-host.ts `savesImages`). Named by its content, so the same image is one file. The tenant's storage limit does not
+ * refuse it: the image was taken in already, and only moves out of the agent's context.
+ */
+export async function saveImage(ctx: ToolsContext, session: Session, image: unknown): Promise<FileRef> {
+  const { data, mimeType } = (image ?? {}) as { data?: unknown; mimeType?: unknown };
+  if (typeof data !== "string" || typeof mimeType !== "string" || !IMAGE_TYPES.includes(mimeType)) throw new Error("Invalid image");
+  const bytes = Buffer.from(data, "base64");
+  if (!bytes.length || bytes.length > FILE_LIMITS.imageBytes) throw new Error("Invalid image");
+  const volumes = ctx.options.volumes, mounts = session.header.mounts ?? [];
+  const mount = scratchMount(VolumeService.markWorkspace(session.header.id, mounts));
+  if (!volumes || !mount) throw new Error("This agent has no writable mount to save images to");
+  const target = resolveMount(mounts, `${mount.path}/attachments/${createHash("sha256").update(bytes).digest("hex")}.${mimeType.slice("image/".length)}`)!;
+  const tenant = session.header.tenant;
+  const saved = await volumes.put(tenant, target.mount.volumeId, target.path, bytes, { contentType: mimeType, by: session.header.id, uncounted: true });
+  return fileRef(volumes, tenant, session.header.id, target.mount.volumeId, target.show(saved.path), { ...saved, contentType: saved.contentType! });
 }
 
 /** A referenced file's bytes for the agent's model request, as base64 (only sizes a model can be shown). */

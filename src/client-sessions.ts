@@ -827,6 +827,7 @@ export class ClientSessions {
         },
         call: (name, args, signal, context) => tools.callTool(this.toolsContext, session, { name, args, signal, ...context }),
         file: ref => tools.fileData(this.toolsContext, session, ref),
+        saveImage: image => tools.saveImage(this.toolsContext, session, image),
         modelAuth: () => configuration.modelAuth(this.configurationContext, session),
         modelAttempt: async event => {
           if (event.type === "begin" && session.header.revoked) return Promise.reject(new Error("Session revoked"));

@@ -112,6 +112,21 @@ handling for safe runtime delegation. Temporary human-wait results remain outsid
 completed public history. Session purge removes the native journal; account deletion
 also removes its receipt records after the normal accounting flush.
 
+## Images by reference
+
+For tenants in `AGENT_PI_IMAGE_REFS_TENANTS`, an inline image a message or tool result
+brings (a prompt's `message`, an application tool's content, an MCP image that was
+not saved) enters the journal as a file reference, not base64. The host fits it as
+before, then the supervisor saves it to the agent's writable mount as
+`attachments/<sha256>.<ext>` and pins its chunks to the agent. Each request loads it
+through the same path as attached files (`hydrate`): the model gets the same bytes
+after a line naming the file, `[File /workspace/attachments/… (image/png, 22 KB)]`.
+Past the request's image budget, or after an image refusal, the line says why it is
+not shown. These writes are not refused by the tenant's storage limit, though their
+chunks are metered like any file. An agent without a writable mount, an image that
+has not been fitted yet, or a failed save keeps the image inline (`image_kept_inline`,
+`image_save_failed` logs). Journals written before keep their inline images.
+
 ## Local validation
 
 The tests cover retiring every shape above (tests/fixtures/host-transcript.ts writes

@@ -41,6 +41,8 @@ export interface ToolBridge {
   search?(query: SearchQuery): Promise<SearchHit[]>;
   /** A file reference's bytes (base64), for a model request that shows the file. */
   file?(ref: unknown): Promise<string>;
+  /** An inline image (`{data, mimeType}`) saved to the agent's writable mount, as a file reference (AGENT_PI_IMAGE_REFS_TENANTS). */
+  saveImage?(image: unknown): Promise<unknown>;
   /** Credentials for one model call, for an agent whose key is `IDENTITY_KEY` or `SCOPE_KEY`. */
   modelAuth?(): Promise<Credentials>;
   /** Durable provider-call identity and usage, acknowledged before dispatch/completion. */

@@ -740,10 +740,10 @@ export class VolumeService {
   }
 
   /** Store content as chunks (from any node) and return what `commit` needs. */
-  async store(tenant: string, source: Uint8Array | AsyncIterable<Uint8Array>, limit = VOLUME_LIMITS.fileBytes) {
+  async store(tenant: string, source: Uint8Array | AsyncIterable<Uint8Array>, limit = VOLUME_LIMITS.fileBytes, uncounted = false) {
     // Checked once, then against what this write adds: content already stored (the same chunks) still counts, so
-    // a write near the limit may be refused that would have stored nothing new.
-    const quota = await this.options.quota?.(tenant);
+    // a write near the limit may be refused that would have stored nothing new. An `uncounted` write is not checked.
+    const quota = uncounted ? undefined : await this.options.quota?.(tenant);
     if (quota && quota.used >= quota.limit) throw storageFull(quota);
     const chunks: string[] = [];
     let size = 0;
@@ -778,9 +778,10 @@ export class VolumeService {
   /**
    * Save bytes (or a stream of them, a chunk at a time) to a path in a volume, from any node: its
    * content type is `contentType` when that says something, else sniffed from its first bytes and
-   * name. `ifMatch` makes it conditional on a version (0: must not exist); `by` records who wrote it.
+   * name. `ifMatch` makes it conditional on a version (0: must not exist); `by` records who wrote it. `uncounted`: the
+   * tenant's storage limit does not refuse it (an image the runtime moves out of an agent's context: agent-host.ts `savesImages`).
    */
-  async put(tenant: string, id: string, path: string, source: Uint8Array | AsyncIterable<Uint8Array>, options: { contentType?: string; ifMatch?: number; by?: string; limit?: number } = {}): Promise<{ path: string } & FileEntry> {
+  async put(tenant: string, id: string, path: string, source: Uint8Array | AsyncIterable<Uint8Array>, options: { contentType?: string; ifMatch?: number; by?: string; limit?: number; uncounted?: boolean } = {}): Promise<{ path: string } & FileEntry> {
     let head = source instanceof Uint8Array ? Buffer.from(source.subarray(0, 512)) : Buffer.alloc(0);
     const peek = async function* (stream: AsyncIterable<Uint8Array>) {
       for await (const data of stream) {
@@ -788,7 +789,7 @@ export class VolumeService {
         yield data;
       }
     };
-    const stored = await this.store(tenant, source instanceof Uint8Array ? source : peek(source), options.limit);
+    const stored = await this.store(tenant, source instanceof Uint8Array ? source : peek(source), options.limit, options.uncounted);
     const contentType = declaredType(options.contentType) ?? sniffContentType(head, path);
     return this.call(id, tenant, "commit", { path, ...stored, contentType, ...(options.ifMatch !== undefined ? { ifMatch: options.ifMatch } : {}), ...(options.by ? { by: options.by } : {}) });
   }
