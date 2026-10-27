@@ -185,7 +185,10 @@ export class AgentSupervisor {
     if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent is running");
     if (!await hasPiStorage(this.piLocation(id))) return undefined;
     const storage = await openPiStorage({ ...this.piLocation(id), ...(claim ? { claim } : {}) });
-    try { return await resetContext(storage, options); }
+    // A host started meanwhile (a steer or a configuration starts one outside the agent's runs), or on its way, loads
+    // the old context: checked again right before the write.
+    const idle = () => { if (this.agents.has(id) || this.starting.has(id) || this.unhosted.has(id)) throw new Error("Agent is running"); };
+    try { return await resetContext(storage, { ...options, beforeCommit: idle }); }
     finally { await storage.close(BACKGROUND_CONTEXT); }
   }
 

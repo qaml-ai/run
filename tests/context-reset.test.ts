@@ -12,6 +12,7 @@ import { currentSystemMessage, keptTail, resetContext } from "../src/pi-durable/
 import { seedJournal, SESSION_CONVERSATION_ID as root } from "../src/pi-durable/seed.ts";
 import { contextRangeSize, openPiStorage } from "../src/pi-durable/storage.ts";
 import { COMPACTION_SUMMARY_PREFIX } from "../src/pi-harness/messages.ts";
+import { AgentSupervisor } from "../src/supervisor.ts";
 import { testDatabase } from "./database.ts";
 import { OTHER_OPERATOR, runtime, toolCall, until } from "./runtime-server.ts";
 
@@ -54,13 +55,16 @@ for (const backend of ["sqlite", "postgres"] as const) test(`${backend} resets a
   const messages = [user("first"), assistant(["c1"]), result("c1", big), assistant(["c2"]), result("c2", big), assistant([], "done")];
   await seedJournal({ storage, sessionId: "reset-test", model: [leading], messages });
   // A configuration change since: Pi's context holds it after the checkpoint, and the reset keeps it.
-  const ids = [await storage.mintId(), await storage.mintId(), await storage.mintId(), await storage.mintId()] as EntryId[];
+  const ids = [await storage.mintId(), await storage.mintId(), await storage.mintId(), await storage.mintId(), await storage.mintId(), await storage.mintId()] as EntryId[];
   await storage.commit([
     { type: "entry", value: { id: ids[0], conversationId: root, kind: "camel.system", model: [system({ sections: { environment: "env v2" }, toolsRemoved: [{ name: "old" }] })] as never } },
     // An entry an edit omits counts for nothing, and a tool result's text naming a system message is not one.
     { type: "entry", value: { id: ids[1], conversationId: root, kind: "camel.system", model: [system({ sections: { omitted: "never" } })] as never } },
     { type: "entry", value: { id: ids[2], conversationId: root, kind: "pi.system", model: [system({ sections: { output: "json" } })] as never, edits: [{ target: ids[1], action: "omit" }] } as never },
     { type: "entry", value: { id: ids[3], conversationId: root, kind: "camel.context.message", model: [{ ...result("c0", "echo"), details: { role: "system", sections: { echoed: "no" } } }] as never } },
+    // An omit from an entry that names no system message counts too.
+    { type: "entry", value: { id: ids[4], conversationId: root, kind: "camel.system", model: [system({ sections: { dropped: "later" } })] as never } },
+    { type: "entry", value: { id: ids[5], conversationId: root, kind: "camel.context.message", model: [user("plain")] as never, edits: [{ target: ids[4], action: "omit" }] } as never },
   ], context);
   const before = await contextRangeSize(storage, root);
   assert.ok(before.bytes > 80_000);
@@ -90,7 +94,7 @@ for (const backend of ["sqlite", "postgres"] as const) test(`${backend} resets a
   assert.deepEqual(checkpoint[0].model, [folded]);
   const summary = checkpoint[1].model![0] as { role: string; content: { text: string }[] };
   assert.equal(summary.role, "user");
-  assert.equal(summary.content[0].text, `${COMPACTION_SUMMARY_PREFIX}Earlier conversation was reset by the operator on 2026-10-27 because it was too large to load; the full history remains in the agent's history and files.\n</summary>`);
+  assert.equal(summary.content[0].text, `${COMPACTION_SUMMARY_PREFIX}Earlier conversation was reset by the operator on 2026-10-27; the full history remains in the agent's history and files.\n</summary>`);
 
   // The history is as it was: the checkpoint's entries are not history.
   const again = await JournalHistory.openAny(storage);
@@ -192,4 +196,35 @@ test("kept messages before the journal's base come from the history index, and n
   // An index that lacks some of them: only what the journal holds.
   assert.equal((await resetContext(storage, { limit: 1 << 20, keepMessages: 3, settled: async () => [] })).keptMessages, 1);
   assert.deepEqual((await kept()).map(message => message.role), ["assistant"]);
+});
+
+test("a reset refuses a context with replace edits, and writes nothing when its caller's last check fails", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "context-reset-checks-"));
+  const storage = await openPiStorage({ sessionId: "reset-checks", directory });
+  t.after(async () => { await storage.close(context); await rm(directory, { recursive: true, force: true }); });
+  await seedJournal({ storage, sessionId: "reset-checks", model: [system({ content: "BASE" })], messages: [user("one"), assistant([], "two")] });
+  const marker = async () => (await storage.findLatestHeadMarker(root, undefined, context))!.id;
+  const first = await marker();
+  await assert.rejects(resetContext(storage, { limit: 1 << 20, beforeCommit: () => { throw new Error("Agent is running"); } }), /Agent is running/);
+  assert.equal(await marker(), first, "nothing was written");
+  const id = await storage.mintId();
+  await storage.commit([{ type: "entry", value: { id, conversationId: root, kind: "camel.context.message", model: [user("x")] as never, edits: [{ target: first, action: "replace", messages: [] }] } as never }], context);
+  await assert.rejects(currentSystemMessage(storage), /replace edits/);
+});
+
+test("the supervisor refuses a reset when a host started while it ran", async t => {
+  const root2 = await mkdtemp(join(tmpdir(), "context-reset-supervisor-"));
+  const supervisor = new AgentSupervisor(root2, {});
+  const storage = await openPiStorage({ sessionId: "raced", directory: join(root2, "raced") });
+  t.after(async () => { await supervisor.close(); await rm(root2, { recursive: true, force: true }); });
+  await seedJournal({ storage, sessionId: "raced", model: [system({ content: "BASE" })], before: { total: 3 }, messages: [assistant([], "four")] });
+  const first = (await storage.findLatestHeadMarker(root, undefined, context))!.id;
+  await storage.close(context);
+  // A steer starts a host during the reset (its history read is a moment in the middle).
+  const settled = async () => { supervisor.starting.add("raced"); return []; };
+  await assert.rejects(supervisor.resetContext("raced", undefined, { limit: 1 << 20, keepMessages: 3, settled }), /Agent is running/);
+  supervisor.starting.delete("raced");
+  const reopened = await openPiStorage({ sessionId: "raced", directory: join(root2, "raced") });
+  assert.equal((await reopened.findLatestHeadMarker(root, undefined, context))!.id, first, "nothing was written");
+  await reopened.close(context);
 });

@@ -14,7 +14,7 @@ export const RESET_KEEP_MAX = 20;
 /** The longest summary a reset takes, in characters. */
 export const RESET_SUMMARY_MAX = 65_536;
 
-export const defaultResetSummary = (now: number) => `Earlier conversation was reset by the operator on ${new Date(now).toISOString().slice(0, 10)} because it was too large to load; the full history remains in the agent's history and files.`;
+export const defaultResetSummary = (now: number) => `Earlier conversation was reset by the operator on ${new Date(now).toISOString().slice(0, 10)}; the full history remains in the agent's history and files.`;
 
 /**
  * The context's current system message: its system messages folded (`getCurrentSystemMessage`) as Pi derives them,
@@ -23,6 +23,8 @@ export const defaultResetSummary = (now: number) => `Earlier conversation was re
  */
 export async function currentSystemMessage(storage: Storage, conversationId: ConversationId = SESSION_CONVERSATION_ID): Promise<SystemMessage | undefined> {
   const rows = await contextSystemRows(storage, conversationId);
+  // Nothing writes replace edits today; one would change what the context holds in a way this read does not follow.
+  if (rows.some(row => row.replaces.length)) throw new Error("The context holds replace edits, which a reset cannot read its system message past");
   const omitted = new Set(rows.flatMap(row => row.omits));
   const marker = rows[0]?.marker;
   const messages = rows.filter(row => !omitted.has(row.id) && (row.head === undefined || row.id === marker)).flatMap(row => row.system);
@@ -46,7 +48,7 @@ export type ContextReset = { keptMessages: number; before: ContextRangeSize; aft
  * index are untouched: the checkpoint's entries are not history. Refused (409) while the journal holds a turn open, and
  * when the new context would itself be past `limit` bytes. The caller holds the agent's claim, and no host runs it.
  */
-export async function resetContext(storage: Storage, options: { summary?: string; keepMessages?: number; limit: number; now?: number; settled?: (end: number, from: number) => Promise<AgentMessage[]> }): Promise<ContextReset> {
+export async function resetContext(storage: Storage, options: { summary?: string; keepMessages?: number; limit: number; now?: number; settled?: (end: number, from: number) => Promise<AgentMessage[]>; beforeCommit?: () => void }): Promise<ContextReset> {
   const { limit, now = Date.now() } = options;
   const keepMessages = options.keepMessages ?? 0;
   const before = await contextRangeSize(storage, SESSION_CONVERSATION_ID);
@@ -72,6 +74,8 @@ export async function resetContext(storage: Storage, options: { summary?: string
   // As the storage serializes them: a reset that would leave a context the next run could not load writes nothing.
   const bytes = writes.reduce((sum, write) => sum + Buffer.byteLength(JSON.stringify(write.type === "entry" ? write.value : "")), 0);
   if (bytes > limit) throw new HttpError(409, `The reset context would be ${bytes} bytes, past the ${limit} bytes a run can load; keep fewer messages or give a shorter summary`, CONTEXT_TOO_LARGE);
+  // The caller's last check (no host started meanwhile), right before the write.
+  options.beforeCommit?.();
   await storage.commit(writes, context);
   return { keptMessages: kept.length, before, after: await contextRangeSize(storage, SESSION_CONVERSATION_ID) };
 }
