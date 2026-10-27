@@ -28,4 +28,8 @@ at the top level, 1.3.0 inside pi-durable; there is now one copy).
   see: OpenRouter DeepSeek V4.1 Flash's longest reply drops from 943,718 to 393,216 (DeepSeek's own endpoint); Anthropic
   `claude-sonnet-4-5` has a 200,000 window, not 1,000,000; many OpenRouter list prices moved (for example
   `openai/gpt-5.6-sol` doubled, and `deepseek/deepseek-v4-pro`). OpenRouter calls are still billed what OpenRouter reports;
-  catalog prices drive estimates, holds and calls that report nothing.
+  catalog prices drive estimates, holds and calls that report nothing. Claude Haiku 5.5 can now turn thinking off
+  (pi-ai 1.3.0 fix), so a call that asks for no reasoning on it sends none instead of the minimum level. Pi removed
+  `openai-codex/gpt-5.5` and `gpt-5.3-codex-spark`, which the Codex backend rejects for ChatGPT accounts, and some old
+  OpenRouter ids such as `anthropic/claude-sonnet-4`, `deepseek/deepseek-r1` and `qwen/qwen3-max`. New agents
+  cannot name a removed model; existing agents keep the model they were created with.

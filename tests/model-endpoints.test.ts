@@ -147,12 +147,12 @@ test("a Codex model on a tenant's endpoint gets the ChatGPT backend's own reques
   const r = await runtime(t, () => ({ role: "assistant", content: "platform model" }), {}, tenantsWith(endpoint.url));
   assert.equal((await r.call("/v1/end-user-settings", { method: "PATCH", body: { enabled: true } })).status, 200);
   // No allowance or balance: subscription responses and their compaction still run.
-  const agent = (await r.call("/v1/agents", { body: { model: "chiridion/openai-codex/gpt-5.5", thinkingLevel: "high", subject: "subscription-person" } })).json.id;
+  const agent = (await r.call("/v1/agents", { body: { model: "chiridion/openai-codex/gpt-5.6-sol", thinkingLevel: "high", subject: "subscription-person" } })).json.id;
   assert.equal((await r.prompt(agent, "6 times 7?")).outcome.result.reply, "42.");
 
   // The Codex Responses API at <endpoint>/openai-codex, over SSE, stateless, as Pi's Codex client sends it.
   const [first, second] = endpoint.requests;
-  assert.deepEqual([first.path, first.body.model, first.body.store, first.body.stream, first.body.include], ["/agent-runtime/llm/openai-codex/codex/responses", "gpt-5.5", false, true, ["reasoning.encrypted_content"]]);
+  assert.deepEqual([first.path, first.body.model, first.body.store, first.body.stream, first.body.include], ["/agent-runtime/llm/openai-codex/codex/responses", "gpt-5.6-sol", false, true, ["reasoning.encrypted_content"]]);
   const keys = createLocalJWKSet((await r.call("/.well-known/jwks.json", { token: null })).json);
   for (const { headers } of endpoint.requests) {
     assert.equal(headers.authorization, `Bearer ${headers["x-agent-runtime-identity"]}`);
@@ -172,7 +172,7 @@ test("a Codex model on a tenant's endpoint gets the ChatGPT backend's own reques
   assert.equal(summarizing.headers.authorization, `Bearer ${summarizing.headers["x-agent-runtime-identity"]}`);
   assert.match(JSON.stringify(summarizing.body.input), /summar/i);
   const usage = (await r.call("/v1/usage")).json;
-  const rows = usage.days.filter((entry: any) => entry.model === "chiridion/openai-codex/gpt-5.5");
+  const rows = usage.days.filter((entry: any) => entry.model === "chiridion/openai-codex/gpt-5.6-sol");
   assert.ok(rows.some((entry: any) => entry.kind === "compaction") && rows.every((entry: any) => entry.cost === 0 && entry.platformCost === 0), JSON.stringify(usage));
   assert.ok(rows.reduce((sum: number, entry: any) => sum + entry.input, 0) >= 265_010, JSON.stringify(usage));
   const person = (await r.call("/v1/end-users/subscription-person")).json;
