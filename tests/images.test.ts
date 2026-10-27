@@ -328,8 +328,10 @@ test(`a provider rejecting intact images (${rejection}) gets one request without
   // Old file references are checked too, even when their saved dimensions fit.
   faux.setResponses([reject, reject]);
   const broken = { ...file, path: "/broken.png", chunks: ["b".repeat(64)] };
-  assert.equal((await host.handle("prompt", { text: "broken file", history: "none", files: [broken] })).error, null);
-  assert.equal(requests.length, 8, "a damaged file is omitted before the provider sees it");
+  assert.equal((await host.handle("prompt", { text: "broken file", files: [broken] })).error, null);
+  // The damaged file is omitted from the first request (the history's intact images make the provider refuse it, so
+  // the turn falls back once).
+  assert.equal(requests.length, 9, "one fallback");
   assert.ok(JSON.stringify(requests[7]).includes("/broken.png"));
   assert.ok(JSON.stringify(requests[7]).includes(`image omitted: ${IMAGE_DAMAGED}`));
 });

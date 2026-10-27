@@ -35,7 +35,7 @@ wait out `Retry-After` and retry. `GET /v1/billing` has the account's run limit
 - An upsert whose configuration equals the agent's (the same `configHash`) is
   not an agent create: deploying 50 unchanged agents counts nothing. A fork
   counts, `atMessage: 0` included: it makes an agent (and a copy of its
-  workspace). For a run without the history, send `history: "none"` instead.
+  workspace). For a run without the history, use a [stateless run](../guides/stateless-runs.md) (`POST /v1/runs`) instead.
 - **Headers.** Answers that count against `agent_creates` (creates, upserts,
   forks) or `runs` (`POST /v1/agents/{id}/prompt`, and the SDKs' requests)
   carry `X-RateLimit-Limit` (the account's limit a minute),

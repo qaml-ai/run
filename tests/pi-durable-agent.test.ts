@@ -41,16 +41,17 @@ const tool = (name: string, execute: AgentTool["execute"] = async () => ({ conte
   name, label: name, description: name, parameters: { type: "object", properties: {} }, execute,
 });
 
-test("context telemetry estimates held before view and sent after conversion on every request", async t => {
+test("context telemetry estimates held before preparation and sent after conversion on every request", async t => {
   const expectedHeld: number[] = [], measured: { held: number; sent: number }[] = [];
   const fake = await fixture([answer("Old reply"), call("read"), answer("Done")], {
     initialState: { model, messages: [], tools: [tool("read")] },
     convertToLlm: messages => messages.map(message => message.role === "user" ? { ...message, content: "hydrated request" } : message) as any,
-  }, new MemoryStorage(), {
-    view: messages => {
-      expectedHeld.push(messages.reduce((sum, message) => sum + estimateMessageTokens(message as any), 0));
-      return [messages.findLast(message => message.role === "user")!];
+    // A request that sends less than Pi holds: only the latest user message.
+    prepareRequest: async ({ context }) => {
+      expectedHeld.push(context.messages.reduce((sum, message) => sum + estimateMessageTokens(message as any), 0));
+      return { context: { ...context, messages: [context.messages.findLast(message => message.role === "user")!] } };
     },
+  }, new MemoryStorage(), {
     onContextRequest: (held, sent) => measured.push({ held, sent }),
   });
   t.after(() => fake.agent.close());

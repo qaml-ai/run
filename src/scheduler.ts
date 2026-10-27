@@ -2,6 +2,7 @@ import { calendarInput, nextCalendar, type Calendar } from "./calendar.ts";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import type { Db } from "./db.ts";
+import { historyNoneIgnored } from "./history-none.ts";
 import { HttpError } from "./http.ts";
 import { underClaim, type Claim } from "./ownership.ts";
 
@@ -23,11 +24,11 @@ import { underClaim, type Claim } from "./ownership.ts";
  * agent then changes none of its schedules.
  */
 /**
- * A wake-up either prompts the agent (`text`) or runs sandboxed code with its tools (`code`). A prompt with history
- * "none" shows the model only the system prompt and the text, as a prompt's `history: "none"` does.
+ * A wake-up either prompts the agent (`text`) or runs sandboxed code with its tools (`code`). Every wake-up sees the
+ * agent's history: a schedule's `history: "none"` (stored by earlier releases, or still sent) is accepted and ignored.
  */
 export interface Schedule {
-  id: string; agent: string; tenant: string; text?: string; code?: string; history?: "none";
+  id: string; agent: string; tenant: string; text?: string; code?: string;
   dueAt: number; everySeconds?: number; calendar?: Calendar; email?: ScheduleEmail; createdAt: number;
   /** Occurrences in a row whose delivery was given up, and why the latest attempt failed: until a delivery succeeds. */
   failures?: number; lastError?: string; lastErrorAt?: number;
@@ -51,7 +52,7 @@ export const MIN_REPEAT_SECONDS = 60;
 const COLUMNS = "id, agent, tenant, text, code, history, due_at, every_seconds, calendar, email, created_at, failures, last_error, last_error_at";
 const schedule = (row: any): Schedule => ({
   id: row.id, agent: row.agent, tenant: row.tenant, ...(row.calendar ? { calendar: row.calendar } : {}), ...(row.email ? { email: row.email } : {}), ...(row.text !== null ? { text: row.text } : {}), ...(row.code !== null ? { code: row.code } : {}),
-  ...(row.history === "none" ? { history: "none" as const } : {}), dueAt: row.due_at, ...(row.every_seconds !== null ? { everySeconds: row.every_seconds } : {}), createdAt: row.created_at,
+  dueAt: row.due_at, ...(row.every_seconds !== null ? { everySeconds: row.every_seconds } : {}), createdAt: row.created_at,
   ...(row.failures ? { failures: row.failures } : {}), ...(row.last_error !== null ? { lastError: row.last_error, lastErrorAt: Number(row.last_error_at) } : {}),
 });
 
@@ -89,14 +90,16 @@ export class Scheduler {
     if ((input.text === undefined) === (input.code === undefined) || typeof content !== "string" || !content.trim() || content.length > 32_000) throw new Error("Give exactly one of text or code (1–32000 characters)");
     if (!Number.isFinite(input.dueAt)) throw new Error("A schedule needs a due time");
     if (input.everySeconds !== undefined && (!Number.isInteger(input.everySeconds) || input.everySeconds < MIN_REPEAT_SECONDS)) throw new Error(`everySeconds must be an integer of at least ${MIN_REPEAT_SECONDS}`);
-    if (input.history !== undefined && (!["full", "none"].includes(input.history) || (input.history === "none" && input.text === undefined))) throw new Error('history is "full" or "none", for a schedule with text');
+    // Deprecated and ignored: every wake-up sees the agent's history.
+    if (input.history !== undefined && !["full", "none"].includes(input.history)) throw new Error('history is "full" or "none" (deprecated: ignored, every wake-up sees the agent\'s history)');
     const { history, ...rest } = input;
-    const created: Schedule = { id: randomUUID(), ...rest, ...(history === "none" ? { history } : {}), dueAt: Math.round(input.dueAt), createdAt: Date.now() };
+    if (history === "none") historyNoneIgnored(input.agent, input.tenant, "schedule");
+    const created: Schedule = { id: randomUUID(), ...rest, dueAt: Math.round(input.dueAt), createdAt: Date.now() };
     await underClaim(this.db, claim, async sql => {
       await sql.query("select pg_advisory_xact_lock(hashtext($1))", [`schedules:${input.agent}`]);
       if ((await sql.query("select count(*) as count from schedules where agent = $1", [input.agent])).rows[0].count >= 100) throw new Error("An agent can have at most 100 schedules");
-      await sql.query("insert into schedules (id, agent, tenant, text, code, history, due_at, every_seconds, created_at, calendar, email) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-        [created.id, created.agent, created.tenant, created.text ?? null, created.code ?? null, created.history ?? null, created.dueAt, created.everySeconds ?? null, created.createdAt, created.calendar ?? null, created.email ?? null]);
+      await sql.query("insert into schedules (id, agent, tenant, text, code, due_at, every_seconds, created_at, calendar, email) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        [created.id, created.agent, created.tenant, created.text ?? null, created.code ?? null, created.dueAt, created.everySeconds ?? null, created.createdAt, created.calendar ?? null, created.email ?? null]);
     });
     return created;
   }
@@ -136,7 +139,11 @@ export class Scheduler {
         select id from schedules where due_at <= $1 and (claimed_until is null or claimed_until <= now())
         order by due_at limit ${CLAIM_BATCH} for update skip locked)
       returning ${COLUMNS}, attempts`, [now, claim, CLAIM_TIMEOUT_MS]);
-    return rows.map(row => ({ ...schedule(row), claim, attempts: row.attempts }));
+    return rows.map(row => {
+      // Stored by an earlier release: ignored, and logged to find the schedules still carrying it.
+      if (row.history === "none") historyNoneIgnored(row.agent, row.tenant, "schedule");
+      return { ...schedule(row), claim, attempts: row.attempts };
+    });
   }
 
   /** Deliver a claimed wake-up, then move it to its next occurrence or drop it. Only the claim holder advances it. */

@@ -42,7 +42,7 @@ Then follow the recipe for the answer:
 | 1. Support agent | https://run.camelai.com/docs/guides/tools.md: tools from this project's own functions (step 3 below) |
 | 2. Chat in your web app | https://run.camelai.com/docs/frontend.md: `npm create @camelai/run-app` for a new app, or `createAgentHandler` and `@camelai/run-react` in this one |
 | 3. Discord or Slack bot | https://run.camelai.com/docs/guides/channels.md: a definition, then a channel that uses it |
-| 4. Scheduled worker | https://run.camelai.com/docs/concepts.md#waking-later: `agent.client.schedule({ text, everySeconds })` (with `history: "none"` when each run stands alone, so the context does not grow), or the `schedule` built-in |
+| 4. Scheduled worker | https://run.camelai.com/docs/concepts.md#waking-later: `agent.client.schedule({ text, everySeconds })`, or the `schedule` built-in |
 | 5. Other | what they describe, from this file and https://run.camelai.com/llms.txt |
 
 Ask nothing else: choose the rest yourself (the language from the project, the agent's key, its instructions, the
@@ -186,8 +186,8 @@ asyncio.run(main())
   429 `BUSY_AGENT_LIMIT`, which says what the next tier unlocks. Runs are limited to 240 a minute on free credit (600
   paid). Creating agents is limited only against abuse (600 a minute; an `upsert` of an unchanged configuration does
   not count). Past a limit, calls get 429 (the SDKs wait and retry); responses carry `X-RateLimit-Remaining` and
-  `-Reset`. Make one agent per user or conversation and reuse it; for independent one-off questions, run them on one
-  agent with `history: "none"` (the model sees only the instructions and that message). See
+  `-Reset`. Make one agent per user or conversation and reuse it; for independent one-off questions, use stateless runs (`agents.run({ instructions, input })`, `POST /v1/runs`:
+  https://run.camelai.com/docs/guides/stateless-runs.md), which keep no agent. See
   https://run.camelai.com/docs/reference/limits.md#rate-limits.
 - **Tool-less agents.** An agent that only answers (a classifier, a judge, a one-line reply) needs no runtime tools:
   `upsert(key, { instructions, codeMode: false, fileTools: false })` drops `js_exec` and the runtime's tool rules, so

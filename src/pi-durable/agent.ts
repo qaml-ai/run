@@ -37,9 +37,7 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
      * yet (the first after a compaction, before Pi writes its baseline), and the fixed part of the recent context kept.
      */
     leading?: () => AgentMessage | undefined;
-    /** What a request sends of Pi's context (a turn that sees no history: from its own first message). */
-    view?: (messages: AgentMessage[]) => AgentMessage[];
-    /** Telemetry only: Pi's held context before view/conversion, and the request sent. */
+    /** Telemetry only: Pi's held context before conversion, and the request sent. */
     onContextRequest?: (held: number, sent: number) => void;
     /**
      * Render the host's system sections as native Pi sections (the `camel` extension's `section()`), rather than give
@@ -557,7 +555,7 @@ export class DurableAgent {
       await this.emit({ type: "turn_start" });
       // Immutable Pi messages: reuse estimates by identity. The estimator reads string lengths (images have a
       // fixed token estimate); only new assistant tool arguments/system tool schemas need JSON serialization.
-      // Do this before originals, view and hydration so hidden history remains visible to telemetry.
+      // Do this before originals and hydration so hidden history remains visible to telemetry.
       let held = 0;
       if (this.options.durable.onContextRequest) for (const message of nativeMessages ?? this.messages as Message[]) {
         let tokens = this.heldTokenEstimates.get(message);
@@ -573,8 +571,6 @@ export class DurableAgent {
       if (nativeMessages) messages = this.originals(nativeMessages);
       // Pi's working context already excludes archived bodies.
       this.messages = [...messages];
-      // A turn that sees no history sends only what the host's view of it keeps.
-      if (this.options.durable.view) messages = this.options.durable.view(messages);
       const prepared = await this.options.prepareRequest?.({ context: { messages, tools: this.tools }, model: this.state.model,
         thinkingLevel: this.state.thinkingLevel }, signal);
       if (prepared?.context) messages = prepared.context.messages;

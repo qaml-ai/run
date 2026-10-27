@@ -421,12 +421,3 @@ test("a history tail is the journal's: what Pi committed is in it at once", asyn
   const tail = await host.handle("historyTail", {});
   assert.deepEqual(tail.messages.map((message: AgentMessage) => message.role), ["user", "assistant", "assistant"]);
 });
-
-test("a continued context without a user task fails with context_lost before calling the model", async t => {
-  const fake = await setup(t);
-  const { host } = await fake.start({ initialMessages: [result("lost", "lookup", "orphaned tool result")] });
-  const outcome = await host.handle("continue", {});
-  assert.equal(outcome.code, "context_lost");
-  assert.match(outcome.error, /no user message/);
-  assert.equal(fake.faux.state.callCount, 0, "no provider request is sent");
-});

@@ -9,7 +9,7 @@ import {
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { CONTEXT_LOST, errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
+import { errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
@@ -134,26 +134,6 @@ const stopFields = (stop: Partial<RunStop>) => ({
   ...(stop.bucket ? { bucket: stop.bucket } : {}), ...(stop.endUser ? { endUser: stop.endUser } : {}),
 });
 
-/** A fresh turn retains its task and, after compaction, only the latest summary and what follows it. */
-export function freshView(messages: AgentMessage[], fresh?: AgentMessage): AgentMessage[] {
-  let view = messages;
-  if (fresh) {
-    const at = messages.findLastIndex(message => message.role === "user" && sameMessage(message, fresh));
-    let start = at, tail = messages.slice(at);
-    if (at < 0) {
-      // A summary made during this turn (not an older one, should `fresh` be missed for another reason).
-      const summary = messages.findLastIndex(message => isSummary(message) && (message.timestamp ?? 0) >= fresh.timestamp);
-      // Without a summary, a later user message is the only surviving turn marker we can trust. Older turns stay hidden.
-      const marker = messages.findLastIndex(message => message.role === "user" && message.timestamp > fresh.timestamp);
-      start = summary >= 0 ? summary : marker >= 0 ? marker : messages.length;
-      tail = [fresh, ...messages.slice(start)];
-    }
-    view = [getCurrentSystemMessage(messages.slice(0, start))!, ...tail].filter(Boolean);
-  }
-  if (!view.some(message => message.role === "user" || isSummary(message))) throw new Error(`${CONTEXT_LOST}: The model request has no user message; the turn's task was lost`);
-  return view;
-}
-
 /**
  * One agent: its Pi loop, its history and turn in Pi's journal (HostJournal), and retries. It runs in its own process
  * (agent-child.ts) or inline in a worker hosting many agents.
@@ -211,8 +191,6 @@ export function createAgentHost(hostIO: HostIO) {
   let indexing = Promise.resolve();
   /** About how much of the history the index lacks, in bytes, as messages end: a pass reads the journal only past a chunk. */
   let unindexed = 0;
-  /** The first user message of a running turn that sees no history (a prompt's `history: "none"`): its requests send from there (`freshView`). */
-  let fresh: AgentMessage | undefined;
   /** Whether the running turn can still take a steer sent `whileRunning` (see `steer`). */
   let steerable = false;
   /** Steering messages not yet taken, in order; `whileRunning` ones are taken back if the turn ends without them. */
@@ -286,15 +264,6 @@ export function createAgentHost(hostIO: HostIO) {
   /** The leading system message the agent's configuration makes: a new agent's Pi context starts with it. */
   function leading(tools: Tool[] = agent!.state.tools.map(toToolDeclaration)): SystemMessage {
     return leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
-  }
-
-  /**
-   * A continued or resumed turn sees no history when its latest user message says so (`freshView`): that message, and
-   * undefined otherwise.
-   */
-  async function freshTurn(): Promise<AgentMessage | undefined> {
-    const first = (await journal.since(message => message.role === "user"))[0];
-    return (first as { history?: string } | undefined)?.history === "none" ? first : undefined;
   }
 
   /**
@@ -698,27 +667,23 @@ export function createAgentHost(hostIO: HostIO) {
 
   /**
    * The user messages a request adds: given whole, or as text and attached files; marked with its sender (if any), request
-   * and metadata, and a prompt's `history: "none"` (only the runtime marks it: see `freshTurn`). A sub-agent's notification
-   * (`notice`, only the runtime sends one) is marked with its source and the runtime's metadata instead.
+   * and metadata. A sub-agent's notification (`notice`, only the runtime sends one) is marked with its source and the
+   * runtime's metadata instead.
    */
   function userMessages(params: Record<string, any>): AgentMessage[] {
     const notice = params.notice as { source: MessageSource; metadata: Record<string, unknown> } | undefined;
     const marks = notice ? { requestId: params.requestId, metadata: notice.metadata, source: notice.source } : { from: senderInput(params.from), requestId: params.requestId, metadata: params.metadata };
-    const marked = (messages: AgentMessage[]) => messages.map(message => {
-      const { history: _history, ...rest } = message as AgentMessage & { history?: string };
-      return (params.history === "none" ? { ...rest, history: "none" } : rest) as AgentMessage;
-    });
     if (params.message !== undefined) {
       const messages = (Array.isArray(params.message) ? params.message : [params.message]) as AgentMessage[];
       validateUserMessages(messages);
-      return marked(stamp(messages, marks));
+      return stamp(messages, marks);
     }
     const files = params.files ?? [];
     if (!Array.isArray(files) || files.length > FILE_LIMITS.attachments || !files.every(validFileRef)) throw new Error("Invalid attached files");
     // A voice message may be only its audio: its transcript is the message.
     const text = typeof params.text === "string" && params.text.trim() ? params.text : undefined;
     if (!text && !files.some((file: FileRef) => file.transcript)) throw new Error("Prompt text is required");
-    return marked(stamp([{ role: "user", content: [...text ? [{ type: "text", text }] : [], ...files], timestamp: Date.now() } as AgentMessage], marks));
+    return stamp([{ role: "user", content: [...text ? [{ type: "text", text }] : [], ...files], timestamp: Date.now() } as AgentMessage], marks);
   }
 
   /**
@@ -999,7 +964,7 @@ export function createAgentHost(hostIO: HostIO) {
       await requireContextSize();
       agent = await DurableAgent.create({ ...agentOptions, durable: {
         storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: journal.history.latest, written: () => journal.written,
-        leading: () => leading(agent ? undefined : tools.map(toToolDeclaration)), view: messages => freshView(messages, fresh),
+        leading: () => leading(agent ? undefined : tools.map(toToolDeclaration)),
         onContextRequest: (held, sent) => contextMetrics.request(held, sent),
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own
         // writes fails. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
@@ -1172,7 +1137,6 @@ export function createAgentHost(hostIO: HostIO) {
           await journal.setActive(false);
           return { messages: journal.total, error: null, ...(journal.awaiting.length ? { stopped: "input_required" } : {}) };
         }
-        fresh = await freshTurn();
         if (active.signal.aborted) return await abortedBeforeLoop();
         // The answered calls were this run's step: a node leaving hands the turn off before the model is asked.
         if (await handingOff()) return handedOff();
@@ -1184,7 +1148,6 @@ export function createAgentHost(hostIO: HostIO) {
           if (await handingOff()) return handedOff();
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
-        fresh = await freshTurn();
         await agent.continue();
       }
       else {
@@ -1207,7 +1170,6 @@ export function createAgentHost(hostIO: HostIO) {
         }
         // Images enter the journal as requests carry them: scaled down once here, not on every request after.
         const messages = await fittedImages(promptMessages!);
-        if (params.history === "none") fresh = messages[0];
         await agent.prompt(messages);
       }
       await unforced(active.signal);
@@ -1232,7 +1194,7 @@ export function createAgentHost(hostIO: HostIO) {
       const missing = !given && !error && !stopped && agent.state.tools.some(tool => tool.name === OUTPUT_TOOL);
       // Why it failed, when the remedy is the caller's (a key) or worth telling apart: a model whose stream went quiet past
       // every retry, or a run aborted (stopped by its caller).
-      const failure = error ? error.startsWith(`${CONTEXT_LOST}:`) ? { code: CONTEXT_LOST } : modelKeyFailure(error, config.model) ?? (isStalled(error) ? { code: "model_stream_stalled" } : active.signal.aborted || last?.stopReason === "aborted" ? { code: "aborted" } : {}) : {};
+      const failure = error ? modelKeyFailure(error, config.model) ?? (isStalled(error) ? { code: "model_stream_stalled" } : active.signal.aborted || last?.stopReason === "aborted" ? { code: "aborted" } : {}) : {};
       return {
         messages: journal.total, ...answered, error, ...failure, ...(stopped ?? {}), ...(given ? { output: given.value } : {}),
         ...(missing ? { error: `The model ended its turn without calling ${OUTPUT_TOOL}, so the run has no output in its schema`, code: "output_missing" } : {}),
@@ -1246,7 +1208,6 @@ export function createAgentHost(hostIO: HostIO) {
         steers = steers.filter(steer => !steer.whileRunning);
         for (const steer of steers) agent.steer(steer.message);
       }
-      fresh = undefined;
       await io.cancelTools();
       active = undefined;
       busy = false;

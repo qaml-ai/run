@@ -79,25 +79,13 @@ A `Run` has:
 | `files` | files the run wrote |
 | `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent; `imageCostUsd`, what its `generate_image` calls cost |
 
-### Runs without the history
+### Independent questions
 
-`history: "none"` (Python `history="none"`) runs a message as a new
-conversation would: the model sees the agent's instructions and tools as they
-are now, and this message, not the messages before it. One agent can then answer
-many independent questions without making an agent for each (creates are
-[rate limited](reference/limits.md#rate-limits); runs far less).
-
-```ts
-const run = await agent.run("Is a hot dog a sandwich?", { history: "none", output: Verdict });
-```
-
-The run is still recorded in the agent's history, its user message marked
-`history: "none"`, for audit and for the console. Runs that do not say `none`
-see it as they see any other message. Such a run is never compacted after, since
-it read nothing to compact; a later run with the whole history compacts first if
-it must. It is for a prompt that starts its own turn, not `whileRunning: "steer"`.
-Resumed after a person answers it, or continued on another node, the run stays
-without the history.
+Every run of an agent sees its history; compaction keeps what the model reads
+bounded. For many independent questions (a classifier, a judge), use
+[stateless runs](guides/stateless-runs.md) (`agents.run({ instructions, input })`,
+`POST /v1/runs`): each is a configuration and an input, with no agent kept and
+nothing carried over. `history: "none"` on a prompt is deprecated and ignored.
 
 `run()` has no timeout: runs can take minutes, and a run waiting on a person can
 wait for days. Pass an `AbortSignal` (Python: `timeout=`) to stop waiting; the
@@ -177,7 +165,7 @@ const earlier = await agent.fork({ atMessage: 4 }); // history through message 4
 
 A fork is an agent like any other: it counts toward your agents and their
 storage, and against the `agent_creates` rate limit (`atMessage: 0` included).
-To run one message without the history, send it with `history: "none"` instead. The copy costs only storage; its history and files share stored content
+To answer one message without the history, use a [stateless run](guides/stateless-runs.md) instead. The copy costs only storage; its history and files share stored content
 with the source. Over REST it is `POST /v1/agents/{id}/fork` with `{key?, name?,
 atMessage?, ttlSeconds?, subject?, context?, systemPromptAppend?, modelHeaders?}` (the key may be
 the `Idempotency-Key` header instead);
@@ -287,12 +275,9 @@ at, everySeconds })`, or the `schedule` built-in for the agent to set its own), 
 a [channel](guides/channels.md) (Slack, Telegram, Discord), or by your own code
 from a [webhook](guides/webhooks.md).
 
-A repeating schedule's wake-ups are turns of the agent, so by default each one
-reads all the history before it, and a daily agent's context grows every day.
-`history: "none"` on a text schedule wakes it with only the system prompt and the
-text, as a prompt's `history: "none"` does: the runs are still recorded,
-but no wake-up pays to read the ones before it. Write the text to say everything
-the run needs.
+A repeating schedule's wake-ups are turns of the agent: each one sees the
+history before it, and compaction keeps what the model reads bounded as it
+grows. (A schedule's `history: "none"` is deprecated and ignored.)
 
 A wake-up the runtime cannot deliver (the agent is busy at its account's limit,
 say) is tried again 1, 5 and 15 minutes later, then given up; a refusal a retry

@@ -1167,7 +1167,7 @@ removed and `AGENT_SANDBOX_SOCKETS` is now `AGENT_SANDBOX_DIR`. Migrations 050 t
 
 - A prompt's `history: "none"` shows the model the system prompt (as it stands) and that message only.
   The run is recorded as usual (its user message carries `history: "none"`) and later runs see it; no
-  background compaction follows such a run. See [Runs without the history](../concepts.md#runs-without-the-history).
+  background compaction follows such a run.
 - Structured output forces `final_output` with the provider's own `tool_choice`: from the first request
   when it is the model's only tool, and on the output reminder otherwise; never with Anthropic thinking on;
   a provider that refuses it is asked again unforced; at most three forced requests a run
