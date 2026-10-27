@@ -24,7 +24,7 @@ import { filesRefused, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
 import { describeFile, documentPayload, FILE_LIMITS, IMAGE_PAST_BUDGET, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
-import { observeContextMetrics, observeTurns, recordCodeExecution, recordContextRange, recordToolResultSize } from "./metrics.ts";
+import { observeContextMetrics, observeTurns, recordCodeExecution, recordContextRange, recordToolResultSize, safeError } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
 import { clock } from "./node-context.ts";
@@ -163,6 +163,8 @@ export function createAgentHost(hostIO: HostIO) {
   let config: AgentConfig;
   const contextMetrics = observeContextMetrics(() => config?.id);
   let reportContextRange = true;
+  /** Why the agent's Pi context range is too large to load (#433's size check, without reading it), if it is (set at init). */
+  let contextError: () => Promise<string | undefined>;
   // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
   const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
   let refused: Parameters<HostIO["emit"]>[0] | undefined;
@@ -871,7 +873,7 @@ export function createAgentHost(hostIO: HostIO) {
       const piStorage = await io.piStorage?.();
       if (!piStorage) throw new Error("The agent's Pi durable storage is not open");
       const contextLimit = config.contextRangeMaxBytes ?? CONTEXT_RANGE_MAX_BYTES;
-      const contextError = async () => {
+      contextError = async () => {
         const range = await contextRangeSize(piStorage, SESSION_CONVERSATION_ID);
         if (reportContextRange) {
           recordContextRange(config.id, range);
@@ -1153,7 +1155,7 @@ export function createAgentHost(hostIO: HostIO) {
       if (method === "continue" && params?.landOnly) {
         const { stopped: why, message: said } = params.landOnly as RunStop;
         const done = await abortedBeforeLoop();
-        await compactLanded();
+        await compactLanded([]);
         return { ...done, error: said, stopped: why, ...stopFields(params.landOnly) };
       }
       if (method === "prompt") await useOutput(params.output?.schema);
@@ -1203,7 +1205,7 @@ export function createAgentHost(hostIO: HostIO) {
             io.emit({ type: "message_end", message });
           }
           await journal.setActive(false);
-          await compactLanded();
+          await compactLanded(messages);
           const { stopped: why, message: said } = params.landOnly as RunStop;
           return { messages: journal.total, error: said, stopped: why, ...stopFields(params.landOnly) };
         }
@@ -1256,8 +1258,12 @@ export function createAgentHost(hostIO: HostIO) {
     }
   }
 
-  /** Messages landed without a turn: past Pi's threshold, its compaction starts (a failed start is only logged). */
-  const compactLanded = () => agent!.compactLanded().catch(error => console.error(JSON.stringify({ type: "compaction_start_failed", agent: config.id, error: errorText(error) })));
+  /** Messages landed without a turn: past Pi's threshold, its compaction starts, if the range is small enough to load (a failed start is only logged). */
+  const compactLanded = (landed: AgentMessage[]) => agent!.compactLanded(landed, async () => {
+    const error = await contextError();
+    if (error) console.error(JSON.stringify({ type: "compaction_skipped", agent: config.id, error }));
+    return !error;
+  }).catch(error => console.error(JSON.stringify({ type: "compaction_start_failed", agent: config.id, error: safeError(error) })));
   /** Between runs no run's stream carries a compaction's events: they go as the agent's background work, billed as such. */
   const emitCompaction = (event: Record<string, unknown>) => io.emit(busy ? event : { ...event, background: true });
 

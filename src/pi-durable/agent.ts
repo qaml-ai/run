@@ -242,6 +242,9 @@ export class DurableAgent {
   private sentTokens = 0;
   /** Where Pi compacts before a request: the window less its reserve (set in `create`). */
   private compactAt = () => Infinity;
+  /** `compactLanded`'s last measure of the context plus what landed since (none: measure again), and when it may next start a compaction after one failed. */
+  private landedTokens?: number;
+  private landedRetryAt = 0;
   private heldTokenEstimates = new WeakMap<Message, number>();
   get contextTokens() { return { sent: this.sentTokens, window: Math.min(this.state.model.contextWindow, this.options.durable.contextWindow ?? Infinity, this.overflowWindow) }; }
   private errorMessage?: string;
@@ -853,15 +856,25 @@ export class DurableAgent {
     await this.reload();
   }
   /**
-   * Pi checks its threshold only as it prepares a request: messages that land without a turn get the same check here,
-   * and past it Pi's own compaction, unless one is listed. Resolves once it is started, not once it has summarized.
+   * Pi checks its threshold only as it prepares a request: messages that land without a turn (`landed`) get the same
+   * check here, and past it Pi's own compaction, unless one is listed (then restarted, if a closed host left it). The
+   * context is read only once the last measure plus what landed since crosses the threshold, and only if `fits` (the
+   * range's size, without reading it). Resolves once the compaction is started, not once it has summarized.
    */
-  async compactLanded() {
+  async compactLanded(landed: AgentMessage[], fits: () => Promise<boolean>) {
     const live = await this.harness.snapshot(LiveDoc, this.conversation.id, context);
-    if (live?.compactions || live?.run || estimateContextTokens((await this.conversation.context(context)).messages).tokens <= this.compactAt()) return;
+    if (live?.compactions) return this.harness.resume();
+    if (live?.run || Date.now() < this.landedRetryAt) return;
+    if (this.landedTokens !== undefined) this.landedTokens += landed.reduce((sum, message) => sum + estimateMessageTokens(message as Message), 0);
+    if (this.landedTokens !== undefined && this.landedTokens <= this.compactAt() || !await fits()) return;
+    this.landedTokens = estimateContextTokens((await this.conversation.context(context)).messages).tokens;
+    if (this.landedTokens <= this.compactAt()) return;
+    this.landedTokens = undefined;
     // Its summarizer is the model a run configures, which an agent that has had no run yet lacks.
     await this.syncContext();
-    await this.conversation.compact(undefined, context);
+    const task = await this.conversation.compact(undefined, context);
+    // A summarizer that fails (a bad key, a refused payment) is not asked again on every landing.
+    void this.harness.waitForTask(task, context).then(settled => { if (settled.state.outcome.status !== "completed") this.landedRetryAt = Date.now() + 300_000; }, () => {});
   }
   continue(): Promise<void> { return this.run([]); }
   private run(messages: AgentMessage[]) {
@@ -880,6 +893,8 @@ export class DurableAgent {
     try {
       // A run starts on the summary of a compaction `compactLanded` started, rather than compacting the same context again.
       for (const { taskId } of (await this.harness.snapshot(LiveDoc, this.conversation.id, context))?.compactions ?? []) await this.harness.waitForTask(taskId, context);
+      if (this.signal?.aborted) return;
+      this.landedTokens = undefined;
       await this.syncContext();
       // Brand-new sessions have no native cursor. Start at the context marker,
       // rather than scanning a potentially huge imported archive at agent_end.

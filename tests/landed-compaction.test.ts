@@ -21,10 +21,12 @@ const WINDOW = 8192, THRESHOLD = 8192 - 1228;
 const STOP = { stopped: "spend_limit", message: "Out of credit: the message is in history, but no turn ran" };
 const notice = (index: number) => ({ text: `Notice ${index}: ${"the sub-agent reported progress on its task. ".repeat(10)}`, landOnly: STOP });
 
-async function setup(t: { after(fn: () => unknown): void }, summarize: (index: number) => Promise<string> | string = index => `SUMMARY-${index}`) {
+async function setup(t: { after(fn: () => unknown): void }, summarize: (index: number) => Promise<string> | string = index => `SUMMARY-${index}`, init: Record<string, unknown> = {}) {
   const directory = await mkdtemp(join(tmpdir(), "landed-compaction-"));
   const faux = registerFauxProvider({ tokensPerSecond: 1_000_000 });
-  const storage = await openPiStorage({ sessionId: "agent", directory });
+  const storages: PiStorage[] = [];
+  const open = async () => { storages.push(await openPiStorage({ sessionId: "agent", directory })); return storages.at(-1)!; };
+  const storage = await open();
   const events: any[] = [], requests: Message[][] = [];
   let summaries = 0, summarizing = 0, overlapping = 0;
   // Summaries and turns share the faux queue: each call answers by what it was asked. A small window splits one
@@ -43,15 +45,24 @@ async function setup(t: { after(fn: () => unknown): void }, summarize: (index: n
     emit: event => events.push(event),
     tool: async () => "ok", cancelTools: async () => null, runLimit: async () => undefined,
     legacyLog: { read: async () => [], empty: async () => true },
-    piStorage: async () => storage,
+    piStorage: async () => storages.at(-1),
     file: async () => { throw new Error("no files"); },
     modelAuth: async () => { throw new Error("no per-call credentials"); },
     fs: async () => { throw new Error("no files"); },
   };
-  const host = createAgentHost(io);
-  await host.handle("init", { id: "agent", directory, model: { ...faux.getModel(), contextWindow: WINDOW, maxTokens: 1000 }, apiKey: "fixture", tools: [] });
-  t.after(async () => { await host.dispose(0); await storage.close(context); faux.unregister(); await rm(directory, { recursive: true, force: true }); });
-  return { host, storage, events, requests, summaries: () => summaries, overlapping: () => overlapping };
+  const hosts = new Set<ReturnType<typeof createAgentHost>>();
+  /** A host over the agent's storage, as a node starting it; `stop` closes one, as a node leaving mid-summary. */
+  const start = async (reopen = false) => {
+    if (reopen) await open();
+    const host = createAgentHost(io);
+    hosts.add(host);
+    await host.handle("init", { id: "agent", directory, model: { ...faux.getModel(), contextWindow: WINDOW, maxTokens: 1000 }, apiKey: "fixture", tools: [], ...init });
+    return host;
+  };
+  const stop = async (host: ReturnType<typeof createAgentHost>) => { hosts.delete(host); await host.dispose(0); };
+  const host = await start();
+  t.after(async () => { for (const host of hosts) await host.dispose(0); for (const opened of storages) await opened.close(context).catch(() => {}); faux.unregister(); await rm(directory, { recursive: true, force: true }); });
+  return { host, start, stop, storage, current: () => storages.at(-1)!, events, requests, summaries: () => summaries, overlapping: () => overlapping };
 }
 
 /** Pi's context now: its newest head marker and the entries from its head on (no edits here), with their token estimate. */
@@ -148,4 +159,41 @@ test("a turn starting while a landed compaction runs waits for its summary inste
   assert.match(JSON.stringify(requests[0]), /What happened\?/);
   // The summary landed during the turn: its usage is the run's, on its stream.
   assert.ok(events.some(event => event.type === "compaction_usage"));
+});
+
+test("a compaction a closed host left listed is restarted by the next landing", async t => {
+  const hold = new Promise<string>(() => {});
+  const { host, start, stop, storage, current, summaries, events } = await setup(t, index => index === 1 ? hold : `SUMMARY-${index}`);
+  for (let index = 0; !summaries(); index++) {
+    assert.ok(index < 200, "the landings crossed the threshold");
+    await host.handle("prompt", notice(index));
+    if ((await held(storage)).tokens > THRESHOLD) await until(async () => summaries() > 0, "the summary request");
+  }
+  await stop(host);
+  const next = await start(true);
+  assert.deepEqual(await compactions(current()), []);
+  await next.handle("prompt", notice(1000));
+  await until(async () => (await compactions(current())).length === 1, "the restarted compaction placed");
+  assert.ok(events.some(event => event.type === "compaction_end"));
+});
+
+test("a summarizer that fails is not asked again on every landing", async t => {
+  const { host, summaries, storage } = await setup(t, () => { throw new Error("402 payment required"); });
+  for (let index = 0; index < 120; index++) {
+    await host.handle("prompt", notice(index));
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+  assert.equal(summaries(), 1);
+  assert.deepEqual(await compactions(storage), []);
+});
+
+test("a range too large to load is never read for a landing: no compaction, logged", async t => {
+  const logged: string[] = [];
+  const log = console.error;
+  console.error = (...args: unknown[]) => { logged.push(args.join(" ")); };
+  t.after(() => { console.error = log; });
+  const { host, summaries } = await setup(t, undefined, { contextRangeMaxBytes: 20_000 });
+  for (let index = 0; index < 80; index++) await host.handle("prompt", notice(index));
+  assert.equal(summaries(), 0);
+  assert.ok(logged.some(line => line.includes('"type":"compaction_skipped"') && line.includes("context")), "the skip is logged");
 });
