@@ -394,3 +394,31 @@ test("Pi adapter's model requests carry no pi attribution (no OpenRouter/NVIDIA/
   const headers = getIdentityHeaders({ provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1" } as any, identity);
   assert.deepEqual(Object.keys(headers), ["User-Agent"]);
 });
+
+test("a request that sends less than Pi holds starts Pi's compaction in the background, once a run", async t => {
+  let agent!: DurableAgent, summaries = 0;
+  const summary = { ...fauxAssistantMessage("Summary of the long history."), provider: model.provider, model: model.id };
+  const fake = await fixture([answer("One"), answer("Two"), answer("Three"), call("read"), answer("Done")], {
+    initialState: { model, messages: [], tools: [tool("read")] },
+    // As the host's image budget does: each request of the last run leaves out part of what Pi holds.
+    convertToLlm: messages => { if (compacting) agent.compactSoon(); return messages as any; },
+  }, new MemoryStorage(), {
+    summaryStream: () => {
+      summaries++;
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => { stream.push({ type: "done", reason: "stop", message: summary }); stream.end(summary); });
+      return stream;
+    },
+  });
+  agent = fake.agent;
+  t.after(() => agent.close());
+  let compacting = false;
+  for (const text of ["first", "second", "third"]) await agent.prompt(`${text} ${"long history ".repeat(2_000)}`);
+  compacting = true;
+  await agent.prompt("current task");
+  await agent.waitForIdle();
+  const compacted = async () => (await fake.storage.scanEntries({ conversationId: agent.conversationId, order: "ascending" }, 1000, undefined, BACKGROUND_CONTEXT)).items.some(entry => entry.kind === "pi.compaction");
+  for (let tries = 0; tries < 100 && !await compacted(); tries++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(await compacted(), true, "Pi compacted what the requests left out");
+  assert.equal(summaries, 1, "one compaction for the run's two requests");
+});

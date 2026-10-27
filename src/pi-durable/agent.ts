@@ -217,6 +217,8 @@ export class DurableAgent {
   /** `compactLanded`'s last measure of the context plus what landed since (none: measure again), and when it may next start a compaction after one failed. */
   private landedTokens?: number;
   private landedRetryAt = 0;
+  /** Whether this run has started a compaction for a request that sent less than Pi holds (`compactSoon`). */
+  private compactedShort = false;
   private heldTokenEstimates = new WeakMap<Message, number>();
   get contextTokens() { return { sent: this.sentTokens, window: Math.min(this.state.model.contextWindow, this.options.durable.contextWindow ?? Infinity, this.overflowWindow) }; }
   private errorMessage?: string;
@@ -853,11 +855,24 @@ export class DurableAgent {
     // A summarizer that fails (a bad key, a refused payment) is not asked again on every landing.
     void this.harness.waitForTask(task, context).then(settled => { if (settled.state.outcome.status !== "completed") this.landedRetryAt = Date.now() + 300_000; }, () => {});
   }
+  /**
+   * A request sent less than Pi's context (older images left out of it): Pi reads its usage as the size of the whole
+   * context, so it would not compact what it holds. Pi's compaction starts in the background instead, once a run, unless
+   * one is listed; its summary is placed at the next boundary.
+   */
+  compactSoon() {
+    if (this.compactedShort) return;
+    this.compactedShort = true;
+    void (async () => {
+      if ((await this.harness.snapshot(LiveDoc, this.conversation.id, context))?.compactions) return;
+      await this.conversation.compact(undefined, context);
+    })().catch(error => console.error(JSON.stringify({ type: "compaction_start_failed", error: error instanceof Error ? error.message : String(error) })));
+  }
   continue(): Promise<void> { return this.run([]); }
   private run(messages: AgentMessage[]) {
     if (this.closed) return Promise.reject(new Error("Agent is closed"));
     if (this.running) return Promise.reject(new Error("Agent is already processing"));
-    this.controller = new AbortController(); this.errorMessage = undefined; this.eventError = undefined; this.stoppedByFinishTurn = false;
+    this.controller = new AbortController(); this.errorMessage = undefined; this.eventError = undefined; this.stoppedByFinishTurn = false; this.compactedShort = false;
     this.running = this.runInner(messages).finally(() => { this.controller = undefined; this.running = undefined; });
     return this.running;
   }

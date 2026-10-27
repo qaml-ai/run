@@ -661,6 +661,8 @@ export function createAgentHost(hostIO: HostIO) {
       if (kind === "image" && !(data instanceof Error) && "data" in data && !fitsBudget(data.data.length)) continue;
       sent.set(block, data);
     }
+    // Inline images left out send less than Pi holds, so its compaction would not see them: they are compacted instead.
+    if (blocks.some(({ block, key }) => block.type === "image" && !keptInline.has(key))) agent!.compactSoon();
     return fitted.map((message, index) => {
       const past = (block: { type: string }, at: number) => block.type === "image" && !keptInline.has(`${index}:${at}`);
       if (!Array.isArray(message.content) || !message.content.some((block, at) => (block.type as string) === "file" || past(block, at))) return message;
