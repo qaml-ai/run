@@ -115,11 +115,6 @@ const FOLD_AFTER_RECORDS = 2048;
 
 /** The longest a load of an agent with work left is put off (see `defer`). */
 const MAX_RESUME_DELAY_MS = 60 * 60_000;
-/**
- * Agents no node loads, by hand: 2026-10-27 from 13:00Z this one's work ran each node that loaded it out of heap in
- * about a minute, and the orphan sweep carried it to the next node. Remove once a load's crash backs off on its own.
- */
-const QUARANTINED_AGENTS = new Set(["client_81a8592ec04afc691356500c1fe912d0ebd17a3d"]);
 /** How long a loaded agent must stay up before its sweep backoff clears. */
 const RESUME_HELD_MS = 2 * 60_000;
 /** How often an idle watcher's agent is checked for an owner elsewhere, should its load's notice be missed. */
@@ -307,7 +302,6 @@ export class ClientSessions {
   }
 
   private load(id: string, sweep = false): Promise<Session | undefined> {
-    if (QUARANTINED_AGENTS.has(id)) return Promise.reject(new HttpError(503, "This agent is quarantined: loading it takes nodes down"));
     const loaded = this.sessions.get(id);
     if (loaded) return Promise.resolve(loaded);
     let loading = this.loading.get(id);
