@@ -41,7 +41,7 @@ function RefCard({ mounts, file, caption }: { mounts?: Mount[]; file: Pick<FileR
 const files = (content: Message["content"]) => parts(content).filter(part => part.type === "file") as unknown as FileRef[];
 const json = (value: string) => { try { return JSON.parse(value); } catch { return undefined; } };
 
-function Conversation({ messages, mounts, onFork }: { messages: Message[]; mounts?: Mount[]; onFork?: (index: number) => void }) {
+function Conversation({ messages, indexes, mounts, onFork }: { messages: Message[]; indexes?: number[]; mounts?: Mount[]; onFork?: (index: number) => void }) {
   if (!messages.length) return <EmptyState icon={<Send />} title="No messages yet">Prompts sent by your app, or from the “Try it” tab, appear here.</EmptyState>;
   // present_file's result names the file's type and size; its call has the caption.
   const presented = new Map(messages.filter(message => message.role === "toolResult" && message.toolName === "present_file" && !message.isError)
@@ -80,7 +80,7 @@ function Conversation({ messages, mounts, onFork }: { messages: Message[]; mount
               ) : null)}
             {message.stopReason === "error" && <ErrorAlert error={message.errorMessage ?? "The model call failed"} title="Model error" />}
             {onFork && message.stopReason !== "error" && text(message.content) && (
-              <Button variant="ghost" size="xs" className="text-muted-foreground self-start" onClick={() => onFork(index)}><GitFork />Fork from here</Button>
+              <Button variant="ghost" size="xs" className="text-muted-foreground self-start" onClick={() => onFork(indexes?.[index] ?? index)}><GitFork />Fork from here</Button>
             )}
           </div>
         );
@@ -339,7 +339,7 @@ export function ForkDialog({ agent, atMessage, onClose }: { agent: AgentDetail; 
 
 export function AgentPage({ id }: { id: string }) {
   const agent = useApi<AgentDetail>(`/v1/agents/${id}`, 5_000);
-  const history = useApi<{ messages: Message[] }>(`/v1/agents/${id}/history`, agent.data?.running ? 3_000 : undefined);
+  const history = useApi<{ entries: { index: number; message: Message }[] }>(`/v1/agents/${id}/history?limit=100&maxBytes=4000000`, agent.data?.running ? 3_000 : undefined);
   const [error, setError] = useState<string>();
   const directory = useWorkspaceDirectory();
   /** The fork dialog, open: from the last finished turn, or from a message. */
@@ -378,7 +378,7 @@ export function AgentPage({ id }: { id: string }) {
           <TabsTrigger value="config">Configuration</TabsTrigger>
           <TabsTrigger value="schedules">Schedules</TabsTrigger>
         </TabsList>
-        <TabsContent value="conversation" className="pt-4"><ErrorAlert error={history.error} />{history.data ? <Conversation messages={history.data.messages} mounts={data.mounts} onFork={atMessage => setForking({ atMessage })} /> : <Skeleton className="h-40 w-full" />}</TabsContent>
+        <TabsContent value="conversation" className="pt-4"><ErrorAlert error={history.error} />{history.data ? <Conversation messages={history.data.entries.map(entry => entry.message)} indexes={history.data.entries.map(entry => entry.index)} mounts={data.mounts} onFork={atMessage => setForking({ atMessage })} /> : <Skeleton className="h-40 w-full" />}</TabsContent>
         <TabsContent value="requests" className="pt-4"><Requests requests={data.requests} mounts={data.mounts} /></TabsContent>
         <TabsContent value="try" className="pt-4"><TryIt agentId={id} onDone={() => { void history.reload(); void agent.reload(); }} /></TabsContent>
         <TabsContent value="files" className="pt-4"><Files mounts={data.mounts} /></TabsContent>

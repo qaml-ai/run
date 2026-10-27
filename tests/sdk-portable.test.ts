@@ -172,3 +172,35 @@ test("a file's version comes from X-File-Version, whatever a proxy made of its E
   const runtime = new AgentRuntime({ apiKey: "operator", fetch: async () => new Response("bytes", { headers: { ETag: 'W/"2"', "X-File-Version": "2" } }) });
   assert.equal((await runtime.volume(`vol_${"c".repeat(24)}`).read("report.md")).version, 2);
 });
+
+test("history collects bounded pages in chronological order with unchanged message values", async t => {
+  const newest = { role: "user", content: "newest", timestamp: 3 };
+  const oldest = { role: "user", content: "oldest", timestamp: 1 };
+  const cursors: (string | null)[] = [];
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/history")) {
+      assert.equal(url.searchParams.get("limit"), "100");
+      assert.equal(url.searchParams.get("maxBytes"), "4000000");
+      const before = url.searchParams.get("before");
+      cursors.push(before);
+      return Response.json(before === null
+        ? { entries: [{ index: 1, message: newest }], next: 1, total: 2 }
+        : { entries: [{ index: 0, message: oldest }], next: null, total: 2 });
+    }
+    if (url.pathname.endsWith("/events")) {
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n"));
+          init?.signal?.addEventListener("abort", () => controller.close(), { once: true });
+        },
+      }), { headers: { "Content-Type": "text/event-stream" } });
+    }
+    assert.ok(url.pathname.endsWith("/state"));
+    return Response.json({ cursor: 0, calls: [], requests: [] });
+  };
+  const client = await new AgentRuntime({ fetch: fetcher }).connectAgent(session, { tools: {} });
+  t.after(() => client.close());
+  assert.deepEqual(await client.history(), { messages: [oldest, newest] });
+  assert.deepEqual(cursors, [null, "1"]);
+});

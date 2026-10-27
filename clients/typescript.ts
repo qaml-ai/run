@@ -2457,7 +2457,18 @@ export class AgentClient {
     }
     return attached;
   }
-  history(): Promise<AgentHistory> { return this.http("/history"); }
+  /** All messages, oldest first, collected one bounded page at a time. Use historyPage for large histories. */
+  async history(): Promise<AgentHistory> {
+    const pages: RecordedMessage[][] = [];
+    let before: number | undefined;
+    while (true) {
+      const page = await this.historyPage({ before, limit: 100, maxBytes: 4_000_000 });
+      pages.push(page.entries.map(entry => entry.message));
+      if (page.next === null) break;
+      before = page.next;
+    }
+    return { messages: pages.reverse().flat() };
+  }
   /**
    * The page of whole turns ending before `before` (default: the newest message, the running turn's
    * included), with at least `limit` messages (default 50) where there are that many. It reads only
