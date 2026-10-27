@@ -1012,7 +1012,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     db, node, emailEnabled: !!scheduleMailConfig, canEmail: canScheduleEmail,
     deliver: async (schedule, requestId) => {
       // Schedules run unattended: without the application, its tools' calls fail as not connected.
-      const request = schedule.code !== undefined ? { method: "execute", params: { code: schedule.code, allowDisconnected: true } } : { method: "prompt", params: { text: schedule.calendar ? calendarPrompt(schedule.text!, schedule.calendar, schedule.dueAt) : schedule.text!, ...(schedule.history ? { history: schedule.history } : {}), allowDisconnected: true } };
+      const request = schedule.code !== undefined ? { method: "execute", params: { code: schedule.code, allowDisconnected: true } } : { method: "prompt", params: { text: schedule.calendar ? calendarPrompt(schedule.text!, schedule.calendar, schedule.dueAt) : schedule.text!, allowDisconnected: true } };
       await submitAnywhere(schedule.agent, schedule.tenant, { id: requestId, ...request });
     },
     also: now => clients.expireInputs(now),

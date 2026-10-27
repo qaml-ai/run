@@ -1620,7 +1620,7 @@ class _AgentCalls:
         return self._http("/metadata", "POST", {"name": name, "type": type})
 
     def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None):
-        """Wake this agent later with a prompt (text) or sandboxed code; every_seconds (>= 60) repeats it. history="none" wakes it with only the system prompt and the text."""
+        """Wake this agent later with a prompt (text) or sandboxed code; every_seconds (>= 60) repeats it. history is deprecated and ignored: every wake-up sees the agent's history."""
         body = {key: value for key, value in {"text": text, "code": code, "history": history, "at": at, "inSeconds": in_seconds, "everySeconds": every_seconds, "calendar": calendar, "email": email}.items() if value is not None}
         return self._http("/schedules", "POST", body, retry=False)
 
@@ -2129,7 +2129,7 @@ class AgentClient(_AgentCalls):
         the message to a running turn, and returns with that turn's outcome (steer_message returns as soon as the turn has it). `spend_limit` ({"usd": n}) is this run's own budget:
         it ends before its next model request once it has spent that; the agent's spend limit is unchanged. `output`
         ({"schema": a JSON Schema for an object}) asks for structured output: the run ends with an answer that fits it, as "output".
-        history="none" shows the model only the instructions (and tools) and this message, not the agent's history before it.
+        `history` is deprecated and ignored: every run sees the agent's history (use Agents.run for a stateless run).
         `run_limits` ({"maxResponses"?, "maxSeconds"?}) are this run's own limits, lowering the agent's.
         `traceparent` (a W3C trace context) makes the run continue the caller's trace when the tenant exports telemetry."""
         result = await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
@@ -2595,9 +2595,8 @@ class Agent:
         instance of the model); a run that ends without one fails (code "output_missing"). Not with while_running="steer".
         `traceparent` (a W3C trace context, "00-<trace-id>-<span-id>-<flags>") makes the run's spans continue that trace
         when the tenant exports telemetry (runtime.telemetry.set); it is not part of the run's idempotency.
-        history="none" shows the model only the instructions (and tools) and this message, as a new conversation would, without
-        making an agent: for many independent questions to one agent. The run is still recorded in the history, and later runs
-        without it see it. Not with while_running="steer". `run_limits` ({"maxResponses"?, "maxSeconds"?}) are this run's own
+        `history` is deprecated and ignored: every run sees the agent's history (use Agents.run for a stateless run).
+        `run_limits` ({"maxResponses"?, "maxSeconds"?}) are this run's own
         limits, lowering the agent's: at one, it ends with stopped "turn_limit". With end-user credits on, a run its subject's credit
         stops fails with code "end_user_credit"."""
         return await self._run(text, idempotency_key or str(uuid.uuid4()), user=user, files=files, metadata=metadata, timeout=timeout,
@@ -2703,7 +2702,7 @@ class Agent:
                                        on_event=on_event, on_input=on_input, on_error=on_error, attach=attach, takeover=takeover)
 
     async def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None, history=None, calendar=None, email=None):
-        """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it. history="none" wakes it without its history."""
+        """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it. history is deprecated and ignored."""
         return await self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds, history=history, calendar=calendar, email=email)
 
     async def schedules(self):

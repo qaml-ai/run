@@ -582,10 +582,12 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         run = await agent.run("Second question", history="none", output={"type": "object", "properties": {"yes": {"type": "boolean"}}, "required": ["yes"]})
         self.assertEqual(run.output, {"yes": True})
         body = self.bodies[-1]
-        # Only the run's own message; final_output is the only tool, so it is forced from the first request.
+        # history="none" is still accepted, and ignored: the run sees the first question too. final_output is the only
+        # tool, so it is forced from the first request.
         users = [message for message in body["messages"] if message["role"] == "user"]
-        self.assertEqual(len(users), 1)
-        self.assertIn("Second question", json.dumps(users[0]))
+        self.assertEqual(len(users), 2)
+        self.assertIn("First question", json.dumps(users[0]))
+        self.assertIn("Second question", json.dumps(users[1]))
         self.assertEqual([item["function"]["name"] for item in body["tools"]], ["final_output"])
         self.assertEqual(body["tool_choice"], {"type": "function", "function": {"name": "final_output"}})
         self.assertNotIn("js_exec", json.dumps(body))

@@ -239,9 +239,8 @@ export interface RunOptions {
    */
   output?: OutputSchema;
   /**
-   * What the model sees of the agent's history: "full" (default), or "none": only the instructions (and tools) and this
-   * message, as a new conversation would, without making an agent. The run is still recorded in the history, and later
-   * runs without "none" see it. For many independent questions to one agent. Not with whileRunning: "steer".
+   * @deprecated Ignored: every run sees the agent's history (Pi's compaction keeps its context bounded). For a run
+   * without it, use `agents.run({ instructions, input })` (POST /v1/runs).
    */
   history?: "full" | "none";
   /**

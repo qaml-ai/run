@@ -163,8 +163,6 @@ The same fields are on the `run.failed` webhook, and as `failure` on the stream'
 out). A request record has them as `outcome.result.modelError`. They are the classes the runtime counts in its
 metrics and the same rule it retries by, so they agree with what it did.
 
-A run fails with code `context_lost` if its model request contains no user message. The runtime stops the turn before calling the model.
-
 A run's `servedModel` (and `run.completed`'s, `run.failed`'s) is the model that made its last response, as
 `provider/model-id`; retries ask the same model.
 

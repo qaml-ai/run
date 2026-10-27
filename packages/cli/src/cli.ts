@@ -47,7 +47,7 @@ Stateless runs (a configuration and a message in, the result out; nothing carrie
   inputs [agent]                   Questions and approvals waiting on someone
   answer <agent> <inputId> <value> true/false, text, JSON, or "decline"
   schedules list <agent>
-  schedules add <agent> --text t (--in s | --at iso) [--every s] [--history none]
+  schedules add <agent> --text t (--in s | --at iso) [--every s]
   schedules delete <agent> <scheduleId>
 
 Definitions (a definition is its key or its id, def_…)
@@ -213,7 +213,7 @@ export async function main(argv: string[], io: Io = { out: text => process.stdou
         const result = await ops.answer(api(), agent, inputId, value, { from: flags.from, wait: waitSeconds(flags) });
         return "requestId" in result ? printRun(result, print, io) : (print(result, () => result.note), 0);
       }
-      case "schedules": return await schedules(args, flags, api, print);
+      case "schedules": return await schedules(args, flags, api, print, io.err);
       case "telemetry": return await telemetry(args, flags, api, print, io);
       default: throw new UsageError(`Unknown command: ${command}. Run camelrun --help`);
     }
@@ -313,7 +313,7 @@ async function definitions(args: string[], flags: Flags, api: () => Api, print: 
   }
 }
 
-async function schedules(args: string[], flags: Flags, api: () => Api, print: (value: unknown, human?: () => string) => void) {
+async function schedules(args: string[], flags: Flags, api: () => Api, print: (value: unknown, human?: () => string) => void, warn: (text: string) => void) {
   const [sub, agent, scheduleId] = args;
   if (!agent) throw new UsageError("Usage: camelrun schedules list|add|delete <agent> …");
   const client = api();
@@ -325,8 +325,10 @@ async function schedules(args: string[], flags: Flags, api: () => Api, print: (v
       return 0;
     }
     case "add": {
-      if (!flags.text || (!flags.in && !flags.at)) throw new UsageError("Usage: camelrun schedules add <agent> --text t (--in seconds | --at iso) [--every seconds] [--history none]");
-      const body = { text: flags.text, ...(flags.in ? { inSeconds: Number(flags.in) } : { at: flags.at }), ...(flags.every ? { everySeconds: Number(flags.every) } : {}), ...(flags.history ? { history: flags.history } : {}) };
+      if (!flags.text || (!flags.in && !flags.at)) throw new UsageError("Usage: camelrun schedules add <agent> --text t (--in seconds | --at iso) [--every seconds]");
+      // Deprecated and ignored: every wake-up sees the agent's history.
+      if (flags.history !== undefined) warn("Warning: --history is deprecated and ignored: every wake-up sees the agent's history.");
+      const body = { text: flags.text, ...(flags.in ? { inSeconds: Number(flags.in) } : { at: flags.at }), ...(flags.every ? { everySeconds: Number(flags.every) } : {}) };
       const created = await client.call("POST", `/v1/agents/${enc(id)}/schedules`, body);
       print(created, () => `${created.id}: due ${new Date(created.dueAt).toISOString()}`);
       return 0;

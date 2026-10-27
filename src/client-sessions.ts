@@ -49,6 +49,7 @@ import * as delegation from "./client-sessions/delegation.ts";
 import * as childSessions from "./client-sessions/children.ts";
 import * as humanInput from "./client-sessions/inputs.ts";
 import { dollars } from "./client-sessions/spend.ts";
+import { historyNoneIgnored } from "./history-none.ts";
 import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type HistoryTail, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun, failureClass } from "./client-sessions/state.ts";
 
 const has = (object: object, key: string) => Object.hasOwn(object, key);
@@ -1705,9 +1706,12 @@ export class ClientSessions {
     if (params.runLimits !== undefined && MODEL_RUNS.includes(body.method) && (!params.runLimits || typeof params.runLimits !== "object" || Object.keys(params.runLimits).some(key => key !== "maxResponses" && key !== "maxSeconds") || runLimitsInput(params.runLimits) === null)) throw new HttpError(400, "runLimits is {maxResponses?, maxSeconds?}, for a model run (prompt, continue)");
     // An output schema shapes the turn a prompt starts: a steer joins one already running.
     if (params.output !== undefined && (body.method !== "prompt" || params.whileRunning === "steer")) throw new HttpError(400, "output is for a prompt that starts its own turn (not whileRunning: steer)");
-    // So is what the model sees of the history before it: all of it (full), or none (the system prompt and this message alone).
-    if (params.history !== undefined && (body.method !== "prompt" || params.whileRunning === "steer" || !["full", "none"].includes(params.history))) throw new HttpError(400, 'history is "full" or "none", for a prompt that starts its own turn (not whileRunning: steer)');
-    if (params.history === "full") delete params.history;
+    // Deprecated and ignored: every run sees the agent's history (Pi's compaction bounds it); POST /v1/runs has none.
+    if (params.history !== undefined) {
+      if (!["full", "none"].includes(params.history)) throw new HttpError(400, 'history is "full" or "none" (deprecated: ignored, every run sees the agent\'s history)');
+      if (params.history === "none") historyNoneIgnored(session.header.id, session.header.tenant, "prompt");
+      delete params.history;
+    }
     if (params.whileRunning === "queue") delete params.whileRunning;
     if (body.method === "abort" && (Object.keys(params).some(key => key !== "queued" && key !== "children") || ![undefined, "cancel", "keep"].includes(params.queued) || ![undefined, "abort", "keep"].includes(params.children))) {
       throw new HttpError(400, "An abort takes { queued?: \"cancel\" | \"keep\", children?: \"abort\" | \"keep\" }: whether the runs queued behind the running one are cancelled too (the default) or kept, and whether its running background sub-agents are aborted too (the default) or kept");

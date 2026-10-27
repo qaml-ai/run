@@ -11,7 +11,6 @@ For example, `POST /v1/agents/{id}/schedules`:
 ```json
 {
   "text": "Research today's developments, save the report, and return the complete report with source links.",
-  "history": "none",
   "calendar": {
     "time": "08:00",
     "timeZone": "America/Chicago",

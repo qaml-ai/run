@@ -15,5 +15,4 @@ removed: apply with this release's image, never before it. Migration 084 drops t
 
 What the model is sent changes in two places, for the same content: after a Pi compaction, requests carry Pi's own
 compacted context (its summary and kept messages, after its system message with every section in effect) rather
-than the host's copy of it; and a prompt with `history: "none"` is cut to its own messages in each request, while
-Pi's context (and the compaction threshold it measures) keeps the whole history.
+than the host's copy of it.

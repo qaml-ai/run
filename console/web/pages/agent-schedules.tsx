@@ -15,7 +15,7 @@ export function AgentSchedules({ agentId }: { agentId: string }) {
  async function write(action:()=>Promise<unknown>){setBusy(true);setError(undefined);try{await action();await schedules.reload();await deliveries.reload();}catch(e){setError(e);}finally{setBusy(false);}}
  return <div className="space-y-6">
   <ErrorAlert error={error??schedules.error??deliveries.error}/>
-  <form className="max-w-2xl space-y-3" onSubmit={e=>{e.preventDefault();void write(async()=>{await api(`${base}/schedules`,{body:{text,history:"none",calendar:{time,timeZone:zone,...(cadence==="weekdays"?{daysOfWeek:[1,2,3,4,5]}:{})},...(to?{email:{to,subject,format}}:{})}});setText("");});}}>
+  <form className="max-w-2xl space-y-3" onSubmit={e=>{e.preventDefault();void write(async()=>{await api(`${base}/schedules`,{body:{text,calendar:{time,timeZone:zone,...(cadence==="weekdays"?{daysOfWeek:[1,2,3,4,5]}:{})},...(to?{email:{to,subject,format}}:{})}});setText("");});}}>
    <h2 className="text-lg font-medium">Add a schedule</h2>
    <Label htmlFor="schedule-prompt">What should the agent do?</Label><Textarea id="schedule-prompt" value={text} onChange={e=>setText(e.target.value)} required maxLength={32000}/>
    <div className="flex flex-wrap gap-3"><label>Repeat<select aria-label="Repeat" className="block h-9 border bg-background px-2" value={cadence} onChange={e=>setCadence(e.target.value)}><option value="daily">Daily</option><option value="weekdays">Weekdays</option></select></label>

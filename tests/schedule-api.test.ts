@@ -8,7 +8,7 @@ test("calendar schedules and owner-configured email round trip through the API w
  const r=await runtime(t,()=>({role:"assistant",content:"done"}),{AGENT_ACCOUNT_EMAIL_FROM:"reports@example.com"});
  const a=(await r.call("/v1/agents",{body:{}})).json.id;
  const path=`/v1/agents/${a}/schedules`;
- const c=await r.call(path,{body:{text:"Write a report",history:"none",calendar:{time:"08:00",timeZone:"America/Chicago",daysOfWeek:[1,2,3,4,5]},email:{to:"reader@example.com",subject:"Research",format:"html"}}});
+ const c=await r.call(path,{body:{text:"Write a report",calendar:{time:"08:00",timeZone:"America/Chicago",daysOfWeek:[1,2,3,4,5]},email:{to:"reader@example.com",subject:"Research",format:"html"}}});
  assert.equal(c.status,201,JSON.stringify(c.json));assert.equal(c.json.calendar.time,"08:00");assert.equal(c.json.email.to,"reader@example.com");assert.equal(c.json.email.format,"html");
  assert.equal((await r.call(path,{body:{text:"Report",inSeconds:60,email:{to:"reader@example.com",subject:"Report",format:"pdf"}}})).status,400);
  assert.equal((await r.call(path)).json.length,1);

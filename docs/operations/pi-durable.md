@@ -31,9 +31,8 @@ reads the journal from there. Request deduplication uses Pi's indexed submission
 A run's working context is Pi's own; nothing checks the host's in again. A new
 agent's context starts with its leading system message, as a checkpoint
 (`camel.legacy.context`); one with no history yet rebuilds it there when its
-configuration changes. A prompt with `history: "none"` sends its requests from its
-own first message (with the system message as it stands then), while Pi's context
-keeps the whole history.
+configuration changes. Every request sends Pi's context as it stands (a prompt's
+deprecated `history: "none"` is ignored).
 
 Full history, export and fork read the history index, then the journal past it.
 
