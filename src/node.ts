@@ -1455,7 +1455,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const tenantsTimer = tenants.source === "secret" ? setInterval(() => void reloadTenants(false), 60_000) : undefined;
   tenantsTimer?.unref();
 
-  // Load for autoscaling, as a CloudWatch metric extracted from the log line.
+  // Load for autoscaling, as a CloudWatch metric extracted from the log line. Past HEAP_NAMES_AGENTS_BYTES of heap it
+  // also names the agents with work running, so a node that runs out of heap says whose work it was doing.
+  const HEAP_NAMES_AGENTS_BYTES = 1024 * 1_048_576;
   let loadReading = false;
   let lastBacklogSample = 0;
   const loadTimer = setInterval(() => {
@@ -1470,7 +1472,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
         heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers,
         ...cgroup,
         ...(media ? { voiceSessions: media.sessions, voiceWorkers: media.workers, voiceWorkerBytes: media.memoryMb * 1_048_576 } : {}),
-      }, config.serviceName, { node, retiring: retiringSince !== undefined }));
+      }, config.serviceName, { node, retiring: retiringSince !== undefined, ...(memory.heapUsed > HEAP_NAMES_AGENTS_BYTES ? { busyAgents: clients.busyAgents() } : {}) }));
     }).catch(error => console.error(JSON.stringify({ type: "node_load_failed", error: safeError(error) })))
       .finally(() => { loadReading = false; });
     // Every node reports the shared outboxes' backlog: read it with Maximum.

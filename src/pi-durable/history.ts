@@ -34,6 +34,11 @@ type Snapshot = { total: number; piCursor?: At; active: boolean; turnStart: numb
 
 /** How far back a refresh looks for an entry committed after a later one: more than either writer has in flight. */
 const REORDER_WINDOW = 128;
+/**
+ * The most message JSON (in characters) one read of the history takes into memory: past it the read fails, rather than
+ * the node running out of heap (2026-10-27: reads of whole running turns took nodes to their 2 GB limit, one after another).
+ */
+export const MESSAGES_READ_CHARS = 64 * 1024 * 1024;
 
 /** Whether an entry can hold history messages (`durableEntryMessages` reads only these). */
 const nativeKind = (entry: EntryRecord) => !!entry.model?.length && entry.kind !== "camel.legacy.context" && entry.kind !== "camel.context.message" && entry.kind !== HOST_SYSTEM_KIND;
@@ -308,6 +313,8 @@ export class JournalHistory {
    */
   async messagesFrom(from: number, to = this.total): Promise<AgentMessage[] | undefined> {
     if (from < this.heldFrom || from > to || to > this.total) return undefined;
+    const chars = this.sizesFrom(from, to).reduce((sum, size) => sum + size, 0);
+    if (chars > MESSAGES_READ_CHARS) throw new Error(`History messages ${from} to ${to} are ${chars} characters, past the ${MESSAGES_READ_CHARS} one read takes`);
     const messages: AgentMessage[] = [];
     const entries = new Map<number, ReturnType<typeof durableEntryMessages>>();
     const slots = this.slots.slice(from - this.heldFrom, to - this.heldFrom);
