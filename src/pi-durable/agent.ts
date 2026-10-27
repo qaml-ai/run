@@ -256,6 +256,8 @@ export class DurableAgent {
   private lastTurn?: AssistantMessage;
   private lastTurnResults: ToolResultMessage[] = [];
   private stoppedByFinishTurn = false;
+  /** Generations Pi 1.4's crash-loop guard parked at open (`task_parked`): cut off `restartLimit` times without progress. */
+  private parked = new Set<TaskId>();
   private closed = false;
   private closing?: Promise<void>;
   steeringMode: "all" | "one-at-a-time";
@@ -377,6 +379,9 @@ export class DurableAgent {
     // policy and provider instrumentation. Summaries omit run-only output settings.
     const models = {
       getModel: () => ({ ...agent.state.model, contextWindow: window() }),
+      // Pi 1.4 wraps the host's Models to add its request identity and binds `getAuth` while wrapping. Credentials come
+      // from the host's own resolver (getApiKey), so nothing in Pi should ask this object for them.
+      getAuth: () => { throw new Error("camelRun resolves model credentials itself"); },
       streamSimple: (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => agent.stream(streamOptions, view.messages),
       completeSimple: async (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => {
         await agent.flushEvents();
@@ -416,9 +421,17 @@ export class DurableAgent {
     };
     agent.compactAt = () => window() - reserve();
     agent.harness = await Harness.open(storageGuard(options.durable.storage, options.durable.onStorageFailure), { registry, models: models as unknown as HarnessOptions["models"],
+      // Pi 1.4 attributes every request to pi by default (OpenRouter `HTTP-Referer: https://pi.dev` and
+      // `X-OpenRouter-Title: pi`, NVIDIA and OpenCode origin headers): requests are the tenant's, so send none.
+      identity: { attribution: null },
       // What Pi contains rather than throws (a faulted phase, a throwing hook or section, a dropped progress commit) is
       // otherwise silent.
-      onReport: error => console.error(JSON.stringify({ type: "pi_report", error: error instanceof Error ? error.message : String(error) })),
+      onReport: (error, info) => {
+        if (info?.type === "task_parked" && info.task.kind === original.name) agent.parked.add(info.task.id);
+        console.error(JSON.stringify({ type: "pi_report", ...info ? { report: info.type } : {},
+          ...info && "task" in info && info.task ? { task: info.task.kind, taskId: info.task.id } : {},
+          error: error instanceof Error ? error.message : String(error) }));
+      },
       settings: { compaction: { enabled: true,
         get reserveTokens() { return reserve(); },
         // The recent context a summary keeps, but never so much that what is fixed (the system prompt) and it fill the
@@ -900,6 +913,22 @@ export class DurableAgent {
       if (this.signal?.aborted) return;
       this.landedTokens = undefined;
       await this.syncContext();
+      // A run whose generation Pi parked would never run again and keep the conversation busy: end it (its abort handler
+      // settles what it left open). Resuming it fails the run; new input runs after it.
+      if (this.parked.size) {
+        const live = await this.harness.snapshot(LiveDoc, this.conversation.id, context);
+        const parked = live?.run !== undefined && this.parked.has(live.run.taskId);
+        this.parked.clear();
+        if (parked) {
+          await this.conversation.abort(context);
+          await this.conversation.waitForIdle(context);
+          await this.flushEvents();
+          if (!messages.length) {
+            this.errorMessage = "The turn was cut off by repeated node failures without progress, and was not resumed again";
+            return;
+          }
+        }
+      }
       // Brand-new sessions have no native cursor. Start at the context marker,
       // rather than scanning a potentially huge imported archive at agent_end.
       start ??= await latestDurableCursor(this.options.durable.storage, this.conversation.id);
