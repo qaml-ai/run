@@ -31,7 +31,7 @@ test("GPT-6.1 Terra is listed on OpenAI, Azure and OpenRouter with Sol's capabil
   }
 });
 
-test("DeepSeek V4.1 Flash 1017 is OpenRouter's V4.1 Flash entry at its own id, name and list price", () => {
+test("DeepSeek V4.1 Flash 1017 is Pi's OpenRouter entry at its own id, name and list price", () => {
   const base = getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
   const model = getModel("openrouter", FLASH_1017)!;
   assert.equal(model.id, FLASH_1017);
@@ -44,9 +44,8 @@ test("DeepSeek V4.1 Flash 1017 is OpenRouter's V4.1 Flash entry at its own id, n
   assert.equal((model.compat as { thinkingFormat?: string }).thinkingFormat, "openrouter");
   // It can reason not at all: a call asking for none gets none.
   assert.equal(reasoningFloor(model), undefined);
-  // Only OpenRouter has it, and only once.
+  // Listed once: pi-ai 1.4.0 ships it, so the runtime adds none of its own.
   assert.equal(getModels("openrouter").filter(entry => entry.id === FLASH_1017).length, 1);
-  assert.equal(getModel("vercel-ai-gateway", FLASH_1017), undefined);
 });
 
 test("GET /v1/models lists it, unmeasured for tool-call streaming, and a response on it costs its list price", () => {

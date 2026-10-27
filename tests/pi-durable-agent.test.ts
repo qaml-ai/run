@@ -331,3 +331,66 @@ for (const dedupe of [false, true]) test(`Pi input writes preserve rollback cont
   if (!dedupe) assert.deepEqual((entry.data as any).message, input, "previous reader takes data.message whole");
   assert.deepEqual((await fake.agent.recoverMessages())[0].message, input);
 });
+
+test("Pi adapter ends a resumed run whose generation Pi parked after repeated crashes, instead of waiting on it forever", { timeout: 20_000 }, async () => {
+  const { db } = await testDatabase(), sessionId = randomUUID();
+  const open = () => openPiStorage({ sessionId, directory: "unused", db });
+  let requests = 0;
+  const hanging = (storage: Storage) => DurableAgent.create({
+    initialState: { model, messages: [], tools: [] },
+    // Every request "kills the node": it never answers, and the next node opens the session while it is running.
+    streamFn: () => { requests++; return createAssistantMessageEventStream(); },
+    durable: { storage },
+  });
+  const reports: string[] = [];
+  const report = console.error;
+  console.error = (line: unknown) => { if (typeof line === "string" && line.includes("pi_report")) reports.push(line); };
+  const agents: DurableAgent[] = [];
+  try {
+    const first = await hanging(await open());
+    agents.push(first);
+    void first.prompt(user("Go")).catch(() => {});
+    while (requests < 1) await new Promise(resolve => setTimeout(resolve, 5));
+    // Pi's default restartLimit is 5: four more nodes resume the turn and are lost in the same request.
+    for (let lost = 1; lost < 5; lost++) {
+      const next = await hanging(await open());
+      agents.push(next);
+      void next.continue().catch(() => {});
+      while (requests < lost + 1) await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    const last = await hanging(await open());
+    agents.push(last);
+    assert.ok(reports.some(line => JSON.parse(line).report === "task_parked"), "Pi parked the generation at open");
+    await last.continue();
+    assert.equal(requests, 5, "the parked generation sent no request");
+    assert.match(last.state.errorMessage ?? "", /cut off by repeated node failures/);
+    // The conversation is free again: new input runs.
+    const fresh = await fixture([answer("back")], {}, await open());
+    agents.push(fresh.agent);
+    await fresh.agent.prompt(user("Again"));
+    assert.equal(fresh.agent.state.errorMessage, undefined);
+  } finally {
+    console.error = report;
+    for (const agent of agents.reverse()) await agent.close(100).catch(() => {});
+  }
+});
+
+test("Pi adapter's model requests carry no pi attribution (no OpenRouter/NVIDIA/OpenCode origin headers)", async () => {
+  const { getIdentityHeaders } = await import("@earendil-works/pi-ai/utils/identity");
+  let identity: any;
+  const agent = await DurableAgent.create({
+    initialState: { model, messages: [], tools: [] },
+    streamFn: (_model, _context, options) => {
+      identity = (options as any)?.identity;
+      const response = answer("ok"), stream = createAssistantMessageEventStream();
+      queueMicrotask(() => { stream.push({ type: "done", reason: "stop", message: response }); stream.end(response); });
+      return stream;
+    },
+    durable: { storage: new MemoryStorage() },
+  });
+  await agent.prompt(user("Hi"));
+  await agent.close();
+  assert.equal(identity?.attribution, null);
+  const headers = getIdentityHeaders({ provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1" } as any, identity);
+  assert.deepEqual(Object.keys(headers), ["User-Agent"]);
+});
