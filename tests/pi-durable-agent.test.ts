@@ -422,3 +422,23 @@ test("a request that sends less than Pi holds starts Pi's compaction in the back
   assert.equal(await compacted(), true, "Pi compacted what the requests left out");
   assert.equal(summaries, 1, "one compaction for the run's two requests");
 });
+
+test("a prompt of several messages under one request id sends them all in its first request, and is recorded once", async t => {
+  const fake = await fixture([answer("Both")]);
+  t.after(() => fake.agent.close());
+  const one = { ...user("one"), requestId: "r-1" } as AgentMessage, two = { ...user("two"), requestId: "r-1" } as AgentMessage;
+  await fake.agent.prompt([one, two]);
+  assert.deepEqual(fake.requests[0].messages.filter((message: any) => message.role === "user").map((message: any) => message.content), ["one", "two"]);
+  assert.deepEqual((await fake.agent.recoverMessages()).map(item => item.message).slice(0, 2), [one, two]);
+  assert.ok(await fake.storage.submissionByRequest(fake.agent.conversationId, "r-1", BACKGROUND_CONTEXT));
+});
+
+test("steers given while no run is active go in with the next run's input, before its first request", async t => {
+  const fake = await fixture([answer("Done")]);
+  t.after(() => fake.agent.close());
+  fake.agent.steer(user("held one"));
+  fake.agent.steer(user("held two"));
+  await fake.agent.prompt("Start");
+  assert.deepEqual(fake.requests[0].messages.filter((message: any) => message.role === "user").map((message: any) => message.content), ["Start", "held one", "held two"]);
+  assert.equal(fake.agent.hasQueuedMessages(), false);
+});
