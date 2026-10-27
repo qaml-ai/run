@@ -192,6 +192,8 @@ export type Session = {
   /** A header write failed with the database unreachable, so the stored revision is unknown. */
   unsettled?: boolean;
   lastActive: number;
+  /** Clear the sweep backoff after this load has held until here. */
+  sweepResetAt?: number;
   /** Whether the agent's current model key is the platform's, not the tenant's own. */
   platformKey?: boolean;
   /** Whether the tenant pays for responses on the platform's keys (prepaid): they are priced from the catalog (`billable`). */

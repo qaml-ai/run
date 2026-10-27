@@ -116,3 +116,54 @@ test("a full node's sweep leaves an orphaned turn for a node with room, and neve
   assert.equal(resumed.resumes, 1, "handing it back spent no resume");
   await until(async () => (await c.db.query("select pending_runs from agents where id = $1", [orphan])).rows[0].pending_runs === false, "its unload, with nothing open, to clear its mark", 20_000);
 });
+
+test("a node killed just after a sweep load leaves growing backoff for the next node", { timeout: 120_000 }, async t => {
+  const c = await cluster(t);
+  const first = Promise.withResolvers<void>();
+  t.after(() => first.resolve());
+  let finish = false;
+  const model = await fakeModel(t, async (_body, index) => {
+    if (index === 0) { await first.promise; return { role: "assistant", content: "first done" }; }
+    return finish ? { role: "assistant", content: "done" } : undefined;
+  });
+  const sweepMs = 10_000;
+  const env = { ...model.env, ...LEASE, AGENT_ORPHAN_SWEEP_MS: String(sweepMs) };
+  let node = await c.start("a", env);
+  const call = (path: string, body?: unknown) => fetch(node.url + path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(response => response.json() as Promise<any>);
+  const agent = (await call("/v1/agents", {})).id as string;
+  await call(`/v1/agents/${agent}/prompt`, { text: "first", requestId: "first" });
+  await until(() => model.bodies.length === 1, "the first run to start");
+  await call(`/v1/agents/${agent}/prompt`, { text: "queued", requestId: "queued" });
+  const closed = once(node.child, "close");
+  node.child.kill("SIGTERM");
+  await until(() => node.logs.some(entry => entry.type === "drain_started"), "A to drain");
+  first.resolve();
+  await closed;
+  const row = async () => (await c.db.query("select sweep_failures, sweep_after, turn_resumes, resume_failures from agents where id = $1", [agent])).rows[0];
+  node = await c.start("b", env);
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await until(() => node.logs.some(entry => entry.type === "agents_resumed" && entry.agents.includes(agent)), `sweep load ${attempt}`, 35_000);
+    await until(() => model.bodies.length === attempt + 1, `model call after sweep load ${attempt}`);
+    const reserved = await row();
+    assert.equal(reserved.sweep_failures, attempt);
+    assert.equal(reserved.turn_resumes, attempt - 1, "the queued run's first start is not a turn resume");
+    assert.equal(reserved.resume_failures, attempt - 1, "sweep attempts do not alter turn backoff");
+    const deadline = Number(reserved.sweep_after);
+    const remaining = deadline - Date.now();
+    assert.ok(remaining > sweepMs * 2 ** (attempt - 1) - 3_000, `attempt ${attempt} reserved its growing delay: ${remaining}`);
+    node.child.kill("SIGKILL");
+    await once(node.child, "close");
+    node = await c.start(`next-${attempt}`, env);
+    await until(async () => !await c.liveOwner(agent), "the dead owner to expire");
+    assert.ok(Date.now() < deadline, "the next node has time to sweep before backoff expires");
+    await sleep(500);
+    assert.notEqual(await c.owner(agent), node.url, "a sweep before the deadline cannot load the agent");
+    assert.equal((await row()).sweep_failures, attempt, "a skipped sweep consumes no attempt");
+    if (attempt === 2) finish = true;
+    await until(() => node.logs.some(entry => entry.type === "agents_resumed" && entry.agents.includes(agent)), "the next sweep to load after backoff", 35_000);
+    assert.ok(Date.now() >= deadline, "the next load waited for the reserved deadline");
+  }
+  await until(async () => (await call(`/v1/agents/${agent}/state`)).requests.find((request: any) => request.id === "queued")?.state === "completed", "the run to finish");
+  await until(async () => (await row()).sweep_failures === 0, "a clean end to reset sweep backoff");
+  assert.equal((await row()).sweep_after, null);
+});
