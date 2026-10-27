@@ -120,6 +120,18 @@ and the request again. Summaries are billed like model responses (`kind:
 "compaction"` in usage) and count against spend limits; one made between runs
 belongs to no run. An agent compacts one summary at a time.
 
+A context can still grow too large to load: a run that loops on large tool
+results past its run limits, say. Past 128 MiB of stored context the agent's
+runs fail with code `context_too_large`, and it runs again only after its
+context is reset: `POST /v1/agents/:id/context/reset` (`agent.resetContext()`,
+`reset_context()`, `camelrun agents reset-context`) replaces what the model is
+sent with the agent's system message, a summary (`summary`, or a note that the
+operator reset it) and its last `keepMessages` messages (0 to 20, default 0,
+never starting on a tool result). It does not load the old context to do it.
+History, files and configuration stay; a reset is refused (409 `AGENT_BUSY`)
+while a run is active or queued, and is safe to repeat. Any agent can be reset
+this way, to start it over without losing its history.
+
 ## Forking
 
 A **fork** is a new agent made from an existing one: the same configuration

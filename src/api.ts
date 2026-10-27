@@ -152,7 +152,7 @@ const OAUTH_ROUTES = [
   /^GET \/v1\/(?:me|models|providers|inputs|usage|billing|billing\/ledger)$/,
   /^(?:GET|POST) \/v1\/agents$/,
   /^(?:GET|DELETE) \/v1\/agents\/[^/]+$/,
-  /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|schedule-deliveries|state|uploads\/[^/]+\/[^/]+)$/,
+  /^(?:GET|POST|PUT|PATCH|DELETE) \/v1\/agents\/[^/]+\/(?:abort|configuration|context\/reset|events|fork|history|inputs|inputs\/[^/]+|mounts|prompt|requests\/[^/]+|schedules|schedules\/[^/]+|schedule-deliveries|state|uploads\/[^/]+\/[^/]+)$/,
   /^(?:GET|POST|PATCH|DELETE) \/v1\/definitions(?:\/[^/]+(?:\/agents)?)?$/,
   /^POST \/v1\/(?:transcriptions|images|speech)$/,
   /^(?:POST \/v1\/runs|(?:GET|DELETE) \/v1\/runs\/[^/]+|GET \/v1\/runs\/[^/]+\/(?:events|messages)|POST \/v1\/runs\/[^/]+\/abort)$/,
@@ -730,6 +730,16 @@ export function api(context: ApiContext) {
     const { queued, children } = parse(schema.AbortInput, await readJson(c.req.raw.body, 1024, {}));
     const stopped = await clients.abortAgent(c.req.param("id")!, c.var.principal.tenant, queued, children);
     return json(c, 200, { aborted: true, cancelled: stopped ? stopped.cancelled : [] });
+  });
+  route(createRoute({
+    method: "post", path: "/v1/agents/{id}/context/reset", request: { params: agentId, body: { ...content(schema.ContextResetInput), required: false } },
+    responses: {
+      200: reply("The agent's context is replaced: its system message, a summary and its last keepMessages history messages, written without loading the context it replaces. Its history (GET /v1/agents/{id}/history), files and configuration are unchanged; its next run starts from the new context. A run whose context was too large to load (context_too_large) runs again after it", schema.ContextReset),
+      409: reply("AGENT_BUSY: a run is active or queued; abort it or wait for it to end. context_too_large: the new context would itself be too large; keep fewer messages", schema.ApiError),
+    },
+  }), async c => {
+    const input = parse(schema.ContextResetInput, await readJson(c.req.raw.body, 256 * 1024, {}));
+    return json(c, 200, await clients.resetContext(c.req.param("id")!, c.var.principal.tenant, input));
   });
   route(createRoute({ method: "post", path: "/v1/agents/{id}/prompt", request: { params: agentId, headers: traceHeaders, body: content(schema.PromptInput) }, responses: { 202: { ...reply("The accepted request", schema.RequestRecord), headers: rateLimited("Runs") } } }), async c => {
     // Room for inline files (FILE_LIMITS.inlineBytes, as base64); larger ones are uploaded first.

@@ -105,6 +105,12 @@ test("the CLI deploys a manifest, runs its agent, and manages agents and definit
   assert.equal((await run("history", "scratch-fork")).json.messages.length, 2);
   assert.equal((await run("agents", "fork", "scratch", "--key", "scratch-fork")).json.id, forked.json.id, "the same key is the same fork");
 
+  const reset = await run("agents", "reset-context", "scratch-fork", "--keep", "1", "--summary", "Started over.");
+  assert.equal(reset.code, 0, reset.err);
+  assert.deepEqual([reset.json.reset, reset.json.keptMessages], [true, 1]);
+  assert.equal((await run("history", "scratch-fork")).json.messages.length, 2, "its history stays");
+  assert.match((await run("agents", "reset-context", "scratch-fork", "--keep", "x")).err, /--keep/);
+
   const refused = await run("agents", "delete", "scratch");
   assert.equal(refused.code, 1);
   assert.match(refused.err, /--yes/);

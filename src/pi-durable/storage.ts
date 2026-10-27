@@ -18,6 +18,7 @@ import { LostClaim, underClaim, type Claim } from "../ownership.ts";
 import { databaseRetryable, databaseUnavailable, transaction, type Db, type Sql } from "../db.ts";
 import { clock } from "../node-context.ts";
 import { timedStorage } from "../metrics.ts";
+import type { SystemMessage } from "@earendil-works/pi-ai";
 
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { apply, type Op } from "@earendil-works/chord/delta";
@@ -213,21 +214,34 @@ export async function openPiStorage(options: { sessionId: string; directory: str
         // preserving our durable-before-publish contract across host power loss.
         await database.exec("PRAGMA synchronous = FULL");
         const storage = await SqliteStorage.open(database);
-        (storage as unknown as Storage & ContextRangeSizer).contextRangeSize = async conversationId => {
-            const row = await database.get<{ entries: number; bytes: number }>(`
+        const range = `
                 WITH RECURSIVE lineage AS (
                     SELECT id, record, 9223372036854775807 AS upper_id, 0 AS depth FROM conversations WHERE id = ?
                     UNION ALL
                     SELECT c.id, c.record, min(l.upper_id, json_extract(l.record, '$.parent.at')), l.depth + 1
                     FROM lineage l JOIN conversations c ON c.id = json_extract(l.record, '$.parent.conversationId')
                 ), marker AS (
-                    SELECT e.head FROM lineage l JOIN entries e ON e.conversation_id = l.id
+                    SELECT e.id, e.head FROM lineage l JOIN entries e ON e.conversation_id = l.id
                     WHERE e.head IS NOT NULL AND e.id <= l.upper_id ORDER BY l.depth, e.id DESC LIMIT 1
-                )
+                )`;
+        const sized = storage as unknown as Storage & ContextRangeSizer & ContextSystemReader;
+        sized.contextRangeSize = async conversationId => {
+            const row = await database.get<{ entries: number; bytes: number }>(`${range}
                 SELECT count(*) AS entries, coalesce(sum(length(CAST(e.record AS BLOB))), 0) AS bytes
                 FROM lineage l JOIN entries e ON e.conversation_id = l.id
                 AND e.id >= coalesce((SELECT head FROM marker), 0) AND e.id <= l.upper_id`, conversationId);
             return { entries: Number(row!.entries), bytes: Number(row!.bytes) };
+        };
+        sized.contextSystemRows = async conversationId => {
+            const rows = await database.all<{ id: number; head: number | null; marker: number | null; system: string; omits: string }>(`${range}
+                SELECT e.id, e.head, (SELECT id FROM marker) AS marker,
+                  (SELECT json_group_array(json(m.value)) FROM json_each(e.record, '$.model') m WHERE json_extract(m.value, '$.role') = 'system') AS system,
+                  (SELECT json_group_array(json_extract(x.value, '$.target')) FROM json_each(e.record, '$.edits') x WHERE json_extract(x.value, '$.action') = 'omit') AS omits
+                FROM lineage l JOIN entries e ON e.conversation_id = l.id
+                AND e.id >= coalesce((SELECT head FROM marker), 0) AND e.id <= l.upper_id
+                WHERE instr(e.record, '"role":"system"') > 0 ORDER BY e.id`, conversationId);
+            return rows.map(row => ({ id: Number(row.id), head: row.head ?? undefined, marker: row.marker ?? undefined,
+                system: JSON.parse(row.system), omits: (JSON.parse(row.omits) as unknown[]).map(Number) }));
         };
         if (!options.committing) return storage;
         const commit = storage.commit.bind(storage);
@@ -364,6 +378,19 @@ export async function contextRangeSize(storage: Storage, conversationId: Convers
     const sized = storage as Storage & Partial<ContextRangeSizer>;
     if (!sized.contextRangeSize) throw new Error("Pi storage cannot measure its context range");
     return sized.contextRangeSize(conversationId);
+}
+
+/**
+ * A range entry whose record names a system message: its system messages (`system`, in order), the entries its edits
+ * omit (`omits`), whether it is a head marker (`head`), and the range's newest marker (`marker`).
+ */
+export type ContextSystemRow = { id: number; head?: number; marker?: number; system: SystemMessage[]; omits: number[] };
+export type ContextSystemReader = { contextSystemRows(conversationId: ConversationId): Promise<ContextSystemRow[]> };
+/** The context's system messages, read without loading the range: none of its other messages leave the database. */
+export async function contextSystemRows(storage: Storage, conversationId: ConversationId): Promise<ContextSystemRow[]> {
+    const reader = storage as Storage & Partial<ContextSystemReader>;
+    if (!reader.contextSystemRows) throw new Error("Pi storage cannot read its context's system messages");
+    return reader.contextSystemRows(conversationId);
 }
 
 /** A storage that lists a conversation's entry IDs without reading their records (PostgresPiStorage). */
@@ -829,11 +856,9 @@ export class PostgresPiStorage implements Storage {
 		return rows.map(row => Number(row.id));
 	}
 
-    /** Pi scans from the newest visible marker's head (not its ID), including fork ancestors up to their fork point. */
-    async contextRangeSize(conversationId: ConversationId): Promise<ContextRangeSize> {
-        return this.admitRead(async () => {
-            const row = await this.db.get<{ entries: string; bytes: string }>(`
-                WITH RECURSIVE lineage AS (
+    /** The fork lineage and its newest visible head marker (`marker`: its ID and head), as Pi derives a context range. */
+    private rangeCte() {
+        return `WITH RECURSIVE lineage AS (
                     SELECT id, record::jsonb AS value, 9223372036854775807::bigint AS upper_id, 0 AS depth
                     FROM ${this.schema.tables.conversations} WHERE session_id = $1 AND id = ?
                     UNION ALL
@@ -841,17 +866,47 @@ export class PostgresPiStorage implements Storage {
                     FROM lineage l JOIN ${this.schema.tables.conversations} c
                       ON c.session_id = $1 AND c.id = (l.value->'parent'->>'conversationId')::bigint
                 ), marker AS (
-                    SELECT h.head FROM lineage l CROSS JOIN LATERAL (
-                        SELECT e.head FROM ${this.schema.tables.entries} e
+                    SELECT h.id, h.head FROM lineage l CROSS JOIN LATERAL (
+                        SELECT e.id, e.head FROM ${this.schema.tables.entries} e
                         WHERE e.session_id = $1 AND e.conversation_id = l.id AND e.id <= l.upper_id AND e.head IS NOT NULL
                         ORDER BY e.id DESC LIMIT 1
                     ) h ORDER BY l.depth LIMIT 1
-                )
+                )`;
+    }
+
+    /** Pi scans from the newest visible marker's head (not its ID), including fork ancestors up to their fork point. */
+    async contextRangeSize(conversationId: ConversationId): Promise<ContextRangeSize> {
+        return this.admitRead(async () => {
+            const row = await this.db.get<{ entries: string; bytes: string }>(`${this.rangeCte()}
                 SELECT count(*) AS entries, coalesce(sum(octet_length(e.record)), 0) AS bytes
                 FROM lineage l JOIN ${this.schema.tables.entries} e
                   ON e.session_id = $1 AND e.conversation_id = l.id
                   AND e.id >= coalesce((SELECT head FROM marker), 0) AND e.id <= l.upper_id`, conversationId);
             return { entries: Number(row!.entries), bytes: Number(row!.bytes) };
+        });
+    }
+
+    /**
+     * The system messages of the range `contextRangeSize` measures (`ContextSystemRow`), selected in the database: a
+     * record is parsed only when its text names a system message, and only its system messages and omit targets come back.
+     * As json, not jsonb: jsonb sorts object keys, and a system message's sections render in their order.
+     */
+    async contextSystemRows(conversationId: ConversationId): Promise<ContextSystemRow[]> {
+        return this.admitRead(async () => {
+            const rows = await this.db.all<{ id: string; head: string | null; marker: string | null; system: string; omits: string }>(`${this.rangeCte()}
+                SELECT e.id, e.head, (SELECT id FROM marker) AS marker,
+                  (SELECT coalesce(json_agg(m), '[]'::json) FROM json_array_elements(CASE json_typeof(r.v->'model') WHEN 'array' THEN r.v->'model' END) m
+                    WHERE m->>'role' = 'system')::text AS system,
+                  (SELECT coalesce(json_agg(x->'target'), '[]'::json) FROM json_array_elements(CASE json_typeof(r.v->'edits') WHEN 'array' THEN r.v->'edits' END) x
+                    WHERE x->>'action' = 'omit')::text AS omits
+                FROM lineage l JOIN ${this.schema.tables.entries} e
+                  ON e.session_id = $1 AND e.conversation_id = l.id
+                  AND e.id >= coalesce((SELECT head FROM marker), 0) AND e.id <= l.upper_id
+                CROSS JOIN LATERAL (SELECT CASE WHEN pg_input_is_valid(e.record, 'json') THEN e.record::json END AS v) r
+                WHERE strpos(e.record, '"role":"system"') > 0
+                ORDER BY e.id`, conversationId);
+            return rows.map(row => ({ id: Number(row.id), head: row.head === null ? undefined : Number(row.head), marker: row.marker === null ? undefined : Number(row.marker),
+                system: JSON.parse(row.system), omits: (JSON.parse(row.omits) as unknown[]).map(Number) }));
         });
     }
 

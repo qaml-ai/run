@@ -396,6 +396,20 @@ export const Aborted = z.object({
   aborted: z.literal(true),
   cancelled: z.array(z.string()).openapi({ description: "The ids of the queued runs the stop cancelled" }),
 }).openapi("Aborted");
+export const ContextResetInput = z.strictObject({
+  summary: z.string().min(1).max(65_536).optional().openapi({ description: "What the agent is told of its earlier conversation, as a compaction summary. Default: that the operator reset it on this date because it was too large to load, and that its full history remains in its history and files" }),
+  keepMessages: z.number().int().min(0).max(20).optional().openapi({ description: "How many of the latest history messages the new context keeps after the summary (0 to 20, default 0). It never starts on a tool result whose call it does not keep" }),
+}).openapi("ContextResetInput");
+const ContextRangeSize = z.object({
+  entries: z.number().int().openapi({ description: "Journal entries in the context's range" }),
+  bytes: z.number().int().openapi({ description: "Their serialized bytes, as AGENT_CONTEXT_RANGE_MAX_BYTES counts them" }),
+});
+export const ContextReset = z.object({
+  reset: z.boolean().openapi({ description: "false: the agent has no context yet (it never ran), and nothing was written" }),
+  keptMessages: z.number().int().openapi({ description: "History messages the new context kept after the summary" }),
+  before: ContextRangeSize.openapi({ description: "The context's range before the reset" }),
+  after: ContextRangeSize.openapi({ description: "The context's range after it" }),
+}).openapi("ContextReset");
 export const PromptInput = z.object({
   text: z.string({ error: SEND_TEXT }).optional().openapi({ description: "The message. It may be left out when the message attaches audio, whose transcript is then the message" }),
   actor: z.string().optional().openapi({ description: "Who is acting in this turn (a user id in your app): `act` in its tools' identity tokens" }),

@@ -89,6 +89,7 @@ its id (`def_…`).
 | `agents create <key> [--definition d] [--model m] [--prompt text]` | an agent outside a manifest |
 | `agents configure <agent> [--model m] [--prompt text] [--prompt-append text] [--thinking level]` | change one agent between its runs |
 | `agents fork <agent> [--key k] [--name n] [--at message]` | a new agent with its configuration, history and files ([Forking](../concepts.md#forking)); `--at` ends the history at a message index or a request id |
+| `agents reset-context <agent> [--summary text] [--keep n]` | replace its model context with its system message, a summary and its last n messages (0 to 20), without loading the old one: for an agent whose runs fail with `context_too_large` ([Long conversations](../concepts.md#long-conversations)). History and files stay |
 | `agents delete <agent> --yes` | stop an agent and purge its history and files |
 | `run <agent> <message…>` | send a message and print the reply |
 | `runs get <agent> <requestId> [--wait s]` | a run's result |

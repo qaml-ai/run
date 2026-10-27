@@ -571,6 +571,13 @@ class Agent:
         return self._agents.fork(self.id, key=key, name=name, at_message=at_message, ttl_seconds=ttl_seconds, subject=subject, context=context,
                                  instructions_append=instructions_append, model_headers=model_headers)
 
+    def reset_context(self, *, summary=None, keep_messages=None):
+        """Replace its model context with its system message, a summary and its last `keep_messages` history messages,
+        without loading the old one (see camelai_run.AgentRuntime.reset_context)."""
+        if self._agents is None:
+            raise AgentError("reset_context needs the Agents this agent came from (agents.upsert, get or agent)")
+        return self._agents.runtime.reset_context(self.id, summary=summary, keep_messages=keep_messages)
+
     def schedule(self, *, text=None, code=None, at=None, in_seconds=None, every_seconds=None):
         """Wake the agent later with a message (text), or run code; every_seconds (at least 60) repeats it."""
         return self.client.schedule(text=text, code=code, at=at, in_seconds=in_seconds, every_seconds=every_seconds)

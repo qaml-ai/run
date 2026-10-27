@@ -4,6 +4,7 @@ import { JournalHistory } from "./pi-durable/history.ts";
 import { HostJournal } from "./pi-durable/host-journal.ts";
 import { legacyHistory, recordsHistory, retiredRecords, type RetiredRecord } from "./pi-durable/retired-host.ts";
 import { journalForkCut, type JournalForkCut } from "./pi-durable/fork.ts";
+import { resetContext, type ContextReset } from "./pi-durable/reset.ts";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
@@ -168,6 +169,22 @@ export class AgentSupervisor {
       const journal = await HostJournal.open(storage);
       return journal ? await closeInterruptedTurn(journal) : false;
     } finally { await storage.close(BACKGROUND_CONTEXT); await legacy.close(); }
+  }
+
+  /**
+   * Reset a stopped agent's Pi context (pi-durable/reset.ts) under its owner's `claim`, without starting it: a new
+   * checkpoint at its journal's tail, written without loading the range it replaces. Undefined for an agent with no
+   * journal yet (nothing to reset).
+   */
+  async resetContext(id: string, claim: Claim | undefined, options: { summary?: string; keepMessages?: number; limit: number; settled?: (end: number, from: number) => Promise<AgentMessage[]> }): Promise<ContextReset | undefined> {
+    if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
+    await this.stopping.get(id);
+    // A running agent's host holds its context; it is stopped first.
+    if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent is running");
+    if (!await hasPiStorage(this.piLocation(id))) return undefined;
+    const storage = await openPiStorage({ ...this.piLocation(id), ...(claim ? { claim } : {}) });
+    try { return await resetContext(storage, options); }
+    finally { await storage.close(BACKGROUND_CONTEXT); }
   }
 
   /** Delete a stopped agent's native journal, legacy log and local directory. Reuse a caller's purge transaction. */
