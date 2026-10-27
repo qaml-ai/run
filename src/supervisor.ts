@@ -64,8 +64,6 @@ type SupervisorOptions = {
   agentEnv?: Record<string, string>;
   /** The outbound policy inline agents' model calls go through (agent processes get it in `agentEnv`). */
   modelOutbound?: Outbound;
-  /** Tenants whose inline agents' system sections are native Pi sections (agent processes get it in `agentEnv`). */
-  nativeSectionsTenants?: string[];
   /** Omit duplicate user content only after all rollback readers support it. */
   dedupeUserEntries?: boolean;
   /** Shared Pi records use the same database and ownership claim as the session. */
@@ -267,7 +265,6 @@ export class AgentSupervisor {
     // A supervisor given its tenant lists directly (tests) tells its agent processes, as a node's agentEnv does.
     const lists = {
       ...(this.options.dedupeUserEntries !== undefined ? { AGENT_PI_DEDUPE_USER_ENTRIES: String(this.options.dedupeUserEntries) } : {}),
-      ...(this.options.nativeSectionsTenants?.length && !this.options.agentEnv?.AGENT_NATIVE_SECTIONS_TENANTS ? { AGENT_NATIVE_SECTIONS_TENANTS: this.options.nativeSectionsTenants.join(",") } : {}),
     };
     const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, Object.keys(lists).length
       ? { ...this.options.agentEnv ?? agentProcessEnv(process.env), ...lists } : this.options.agentEnv);
@@ -487,7 +484,6 @@ export class AgentSupervisor {
       codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),
       dedupeUserEntries: this.options.dedupeUserEntries,
       ...(this.options.codeExecutor ? { codeExecutor: this.options.codeExecutor } : {}),
-      ...(this.options.nativeSectionsTenants?.length ? { nativeSectionsTenants: this.options.nativeSectionsTenants } : {}),
       ...(this.options.modelOutbound ? { modelOutbound: this.options.modelOutbound } : {}),
       lease: async () => { await handle.bridge.lease?.(); },
       history: { indexed: () => this.historyRequest(handle, { op: "indexed" }), write: chunk => this.historyRequest(handle, { op: "write", chunk: structuredClone(chunk) }) },

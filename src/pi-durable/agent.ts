@@ -39,12 +39,6 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     leading?: () => AgentMessage | undefined;
     /** Telemetry only: Pi's held context before conversion, and the request sent. */
     onContextRequest?: (held: number, sent: number) => void;
-    /**
-     * Render the host's system sections as native Pi sections (the `camel` extension's `section()`), rather than give
-     * them to Pi's generation in place of its agent's. A host section named `instructions` (Pi's own) is then left out:
-     * hosts declare it again under a key of their own.
-     */
-    nativeSections?: boolean;
     dedupeUserEntries?: boolean;
     contextWindow?: number;
     maxOutputTokens?: number;
@@ -270,13 +264,13 @@ export class DurableAgent {
     if (this.sectionKeys !== undefined && JSON.stringify(Object.keys(this.sections())) !== this.sectionKeys) this.installTools();
   }
   /**
-   * The host's system sections as its working set holds them: hosts write their own system messages. Pi renders the
-   * section `instructions` itself, from a conversation's instructions, so a host's own section of that name (an older
-   * one, which the host declares again under a key of its own) is not rendered here.
+   * The host's system sections as its working set holds them (hosts write their own system messages), or as its
+   * configuration makes them where the working set shows none. Pi renders the section `instructions` itself, from a
+   * conversation's instructions, so a host's own section of that name (an older one, which the host declares again under
+   * a key of its own) is not rendered here.
    */
   private sections(): Record<string, string> {
-    if (!this.options.durable.nativeSections) return {};
-    return Object.fromEntries(Object.entries(getCurrentSystemMessage(this._messages)?.sections ?? {})
+    return Object.fromEntries(Object.entries(getCurrentSystemMessage(this._messages)?.sections ?? this.leading()?.sections ?? {})
       .filter((entry): entry is [string, string] => entry[1] !== null && entry[0] !== "instructions"));
   }
 
@@ -311,15 +305,7 @@ export class DurableAgent {
       prepare: async (...args: Parameters<typeof original.phases.prepare>) => {
         const [record, runtime, taskContext] = args;
         await agent.placeQueued(record.id, runtime, taskContext);
-        // Without native sections, Camel's sections are given to Pi as its agent's: an empty native section registry
-        // would remove application instructions and duplicate the checkpoint's tools.
-        const sections = agent.options.durable.nativeSections ? undefined : getCurrentSystemMessage((await runtime.context(runtime.conversationId, taskContext)).messages)?.sections ??
-          getCurrentSystemMessage(agent.messages)?.sections ?? agent.leading()?.sections ?? {};
         const prepared = new Proxy(runtime, { get(target, key) {
-          if (key === "agent" && sections) return async (ctx: typeof taskContext) => ({ ...await target.agent(ctx),
-            sections: Object.entries(sections).filter(([, value]) => value !== null).map(([key, value]) =>
-              ({ key, tag: false, render: async () => value! })),
-          });
           if (key === "context") return async (...params: Parameters<typeof runtime.context>) => {
             const current = await target.context(...params);
             return current.head?.kind === "camel.legacy.context" ? { ...current, head: undefined } : current;

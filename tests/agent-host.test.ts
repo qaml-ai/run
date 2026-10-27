@@ -40,7 +40,7 @@ async function setup(t: Context) {
     { name: "fetch", description: "Fetch something, alongside other calls", parameters: { type: "object" }, exposure: "direct", executionMode: "parallel" },
   ];
   /** A host over the agent's Pi storage, as a node starting the agent: `call` answers its tools. */
-  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[]; tenant?: string; nativeSectionsTenants?: string[]; history?: HostIO["history"] } = {}) {
+  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[]; tenant?: string; history?: HostIO["history"] } = {}) {
     const events: any[] = [];
     const opened = await openPiStorage({ sessionId: "agent", directory });
     const storage = options.storage?.(opened) ?? opened;
@@ -55,7 +55,6 @@ async function setup(t: Context) {
       modelAuth: async () => { throw new Error("no per-call credentials"); },
       fs: async () => { throw new Error("no files"); },
       ...(options.history ? { history: options.history } : {}),
-      ...(options.nativeSectionsTenants ? { nativeSectionsTenants: options.nativeSectionsTenants } : {}),
     };
     const host = createAgentHost(io);
     const init = await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", tools, ...(options.tenant ? { tenant: options.tenant } : {}), ...(options.resume ? { resume: true } : {}), ...(options.initialMessages ? { initialMessages: options.initialMessages } : {}) });
@@ -308,26 +307,25 @@ test("a conversation a later release re-keyed to the application section keeps t
   assert.equal(getSystemMessageText(getCurrentSystemMessage(seen as never)!).split(instructions).length - 1, 1, "the instructions appear once");
 });
 
-test("native sections are per tenant: a conversation of a listed tenant is re-keyed to application with the same prompt text; others keep instructions", async t => {
+test("a conversation still under the old instructions key is re-keyed to application as it loads, its instructions sent once", async t => {
   const fake = await setup(t);
-  const prompts: string[] = [], keys: string[][] = [];
-  const capture = (reply: string) => (context: any) => {
-    const system = getCurrentSystemMessage(context.messages)!;
-    prompts.push(getSystemMessageText(system)); keys.push(Object.keys(system.sections ?? {}));
-    return answer(reply);
-  };
-  const first = await fake.start({ tenant: "bots", nativeSectionsTenants: ["someone-else"] });
+  const instructions = applicationInstructions();
+  const leading = { role: "system", content: "Runtime rules.", sections: { instructions }, timestamp: 0 } as SystemMessage;
+  await hostTranscriptSession({ sessionId: "agent", directory: fake.directory }, [
+    { t: "system", message: leading, leading: true }, { t: "turn", active: true },
+    { t: "message", message: user("earlier") }, { t: "message", message: answer("Earlier answer.") }, { t: "turn", active: false },
+  ]);
+  const { host } = await fake.start();
+  const seen: AgentMessage[][] = [];
+  const capture = (reply: string) => (context: any) => { seen.push(context.messages); return answer(reply); };
   fake.respond(capture("One."), capture("Two."));
-  await first.host.handle("prompt", { text: "one" });
-  await first.host.handle("prompt", { text: "two" });
-  await first.host.dispose(0);
-  assert.deepEqual(keys.at(-1), ["instructions", "environment"], "a tenant not listed keeps today's key");
-  const second = await fake.start({ tenant: "bots", nativeSectionsTenants: ["bots"] });
-  fake.respond(capture("Three."), capture("Four."));
-  await second.host.handle("prompt", { text: "three" });
-  await second.host.handle("prompt", { text: "four" });
-  assert.deepEqual(keys.slice(2), [["application", "environment"], ["application", "environment"]], "re-keyed as it loads");
-  assert.deepEqual(new Set(prompts).size, 1, "the model is sent the same prompt text throughout");
+  await host.handle("prompt", { text: "one" });
+  await host.handle("prompt", { text: "two" });
+  for (const messages of seen) {
+    const system = getCurrentSystemMessage(messages as never)!;
+    assert.deepEqual(Object.keys(system.sections ?? {}), ["application", "environment"]);
+    assert.equal(getSystemMessageText(system).split(instructions).length - 1, 1, "the instructions appear once");
+  }
 });
 
 test("a session's host transcript is retired once, at its first load: a base where it stood, and an earlier release refuses it", async t => {

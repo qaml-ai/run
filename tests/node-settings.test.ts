@@ -54,15 +54,6 @@ test("the configured resume limit applies to the same run, while a clean handoff
   assert.equal(loadDecision({ ...request, handedOff: { step: "model", boundaryWaitMs: 0 } }, 1), "resume");
 });
 
-test("the native sections allow-list is off unless set, trims tenant ids, and is checked before the node starts", () => {
-  for (const value of [undefined, "", "  "]) assert.deepEqual(nodeConfig({ AGENT_NATIVE_SECTIONS_TENANTS: value }).nativeSectionsTenants, []);
-  assert.deepEqual(nodeConfig({ AGENT_NATIVE_SECTIONS_TENANTS: " camel-bots, bob,camel-bots " }).nativeSectionsTenants, ["camel-bots", "bob"]);
-  assert.deepEqual(nodeConfig({ AGENT_NATIVE_SECTIONS_TENANTS: " * " }).nativeSectionsTenants, ["*"]);
-  for (const value of ["*,alice", "alice,", ",alice", "Alice", "camel_bots", "bad tenant", "a/b", "a".repeat(41)]) {
-    assert.throws(() => nodeConfig({ AGENT_NATIVE_SECTIONS_TENANTS: value }), /AGENT_NATIVE_SECTIONS_TENANTS/);
-  }
-});
-
 test("the host transcript's settings are ignored, and said so: every agent's history is its Pi journal", () => {
   const settings = { AGENT_HISTORY_BACKLOG_BYTES: "100000", AGENT_PI_DUAL_READ: "log", AGENT_PI_DUAL_WRITE: "1", AGENT_PI_HISTORY_SOURCE_TENANTS: "camel_bots" };
   assert.deepEqual(nodeConfig(settings).ignored, Object.keys(settings));
