@@ -9,7 +9,7 @@ import {
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
+import { CONTEXT_LOST, errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
@@ -133,6 +133,26 @@ const stopFields = (stop: Partial<RunStop>) => ({
   ...(stop.limit ? { limit: stop.limit } : {}), ...(stop.reason ? { reason: stop.reason } : {}),
   ...(stop.bucket ? { bucket: stop.bucket } : {}), ...(stop.endUser ? { endUser: stop.endUser } : {}),
 });
+
+/** A fresh turn retains its task and, after compaction, only the latest summary and what follows it. */
+export function freshView(messages: AgentMessage[], fresh?: AgentMessage): AgentMessage[] {
+  let view = messages;
+  if (fresh) {
+    const at = messages.findLastIndex(message => message.role === "user" && sameMessage(message, fresh));
+    let start = at, tail = messages.slice(at);
+    if (at < 0) {
+      // A summary made during this turn (not an older one, should `fresh` be missed for another reason).
+      const summary = messages.findLastIndex(message => isSummary(message) && (message.timestamp ?? 0) >= fresh.timestamp);
+      // Without a summary, a later user message is the only surviving turn marker we can trust. Older turns stay hidden.
+      const marker = messages.findLastIndex(message => message.role === "user" && message.timestamp > fresh.timestamp);
+      start = summary >= 0 ? summary : marker >= 0 ? marker : messages.length;
+      tail = [fresh, ...messages.slice(start)];
+    }
+    view = [getCurrentSystemMessage(messages.slice(0, start))!, ...tail].filter(Boolean);
+  }
+  if (!view.some(message => message.role === "user" || isSummary(message))) throw new Error(`${CONTEXT_LOST}: The model request has no user message; the turn's task was lost`);
+  return view;
+}
 
 /**
  * One agent: its Pi loop, its history and turn in Pi's journal (HostJournal), and retries. It runs in its own process
@@ -261,17 +281,6 @@ export function createAgentHost(hostIO: HostIO) {
   /** The leading system message the agent's configuration makes: a new agent's Pi context starts with it. */
   function leading(tools: Tool[] = agent!.state.tools.map(toToolDeclaration)): SystemMessage {
     return leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
-  }
-
-  /**
-   * What a request of a turn that sees no history sends (a prompt's history: "none", which its user message records):
-   * the system message as it stands there (the leading one with every change since), then the turn's own messages, from
-   * its first. Its messages are still history, which later turns see. Every request sends the whole context otherwise.
-   */
-  function freshView(messages: AgentMessage[]): AgentMessage[] {
-    if (!fresh) return messages;
-    const at = messages.findLastIndex(message => message.role === "user" && sameMessage(message, fresh));
-    return [getCurrentSystemMessage(at < 0 ? messages : messages.slice(0, at))!, ...at < 0 ? [] : messages.slice(at)].filter(Boolean);
   }
 
   /**
@@ -980,7 +989,7 @@ export function createAgentHost(hostIO: HostIO) {
       await requireContextSize();
       agent = await DurableAgent.create({ ...agentOptions, durable: {
         storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: journal.history.latest, written: () => journal.written,
-        leading: () => leading(agent ? undefined : tools.map(toToolDeclaration)), view: freshView,
+        leading: () => leading(agent ? undefined : tools.map(toToolDeclaration)), view: messages => freshView(messages, fresh),
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own
         // writes fails. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
         onStorageFailure: error => { journal.failed ??= error; },
@@ -1210,7 +1219,7 @@ export function createAgentHost(hostIO: HostIO) {
       const missing = !given && !error && !stopped && agent.state.tools.some(tool => tool.name === OUTPUT_TOOL);
       // Why it failed, when the remedy is the caller's (a key) or worth telling apart: a model whose stream went quiet past
       // every retry, or a run aborted (stopped by its caller).
-      const failure = error ? modelKeyFailure(error, config.model) ?? (isStalled(error) ? { code: "model_stream_stalled" } : active.signal.aborted || last?.stopReason === "aborted" ? { code: "aborted" } : {}) : {};
+      const failure = error ? error.startsWith(`${CONTEXT_LOST}:`) ? { code: CONTEXT_LOST } : modelKeyFailure(error, config.model) ?? (isStalled(error) ? { code: "model_stream_stalled" } : active.signal.aborted || last?.stopReason === "aborted" ? { code: "aborted" } : {}) : {};
       return {
         messages: journal.total, ...answered, error, ...failure, ...(stopped ?? {}), ...(given ? { output: given.value } : {}),
         ...(missing ? { error: `The model ended its turn without calling ${OUTPUT_TOOL}, so the run has no output in its schema`, code: "output_missing" } : {}),

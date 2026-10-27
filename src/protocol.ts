@@ -66,6 +66,8 @@ export const CONTEXT_RANGE_MAX_BYTES = 128 * 1024 * 1024;
 export const CONTEXT_TOO_LARGE = "context_too_large";
 export const contextRangeMessage = (bytes: number, max: number) =>
   `This agent's context since its last compaction is ${bytes} bytes, past the ${max} bytes a run can load; start a new agent with a summary of the history, or ask the operator to raise AGENT_CONTEXT_RANGE_MAX_BYTES.`;
+/** A model request lost every user message, so the turn must fail before calling the provider. */
+export const CONTEXT_LOST = "context_lost";
 /** A host refused an agent whose history is still only in the legacy format, which no release imports any more. */
 export const NOT_MIGRATED = "AGENT_NOT_MIGRATED";
 export const IDENTITY_KEY = "agent-runtime:identity-token";
