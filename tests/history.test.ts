@@ -7,6 +7,7 @@ import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durab
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { HostJournal } from "../src/pi-durable/host-journal.ts";
 import { seedJournal } from "../src/pi-durable/seed.ts";
+import { durableEntryMessages } from "../src/pi-durable/agent.ts";
 
 test("interrupted-turn recovery preserves settled native results and marks only missing tool ids unknown", () => {
   const messages = [
@@ -30,10 +31,10 @@ test("scoped callers can submit user text and images but never assistant or tool
 });
 
 /** A new session's journal, as a host seeds it, and its HostJournal. */
-async function journal() {
+async function journal(dedupeUserEntries = false) {
   const storage = new MemoryStorage();
   await seedJournal({ storage, sessionId: "test", model: [{ role: "system", content: "base", timestamp: 0 }] });
-  return { storage, journal: (await HostJournal.open(storage))! };
+  return { storage, journal: (await HostJournal.open(storage, dedupeUserEntries))! };
 }
 
 test("system messages keep their place in Pi's context across retractions and reloads, and never enter history", async t => {
@@ -73,4 +74,27 @@ test("calls awaiting human input stay open across a reload, and leave the wait o
   await reloaded.await(["approve"], true);
   await reloaded.push({ role: "toolResult", toolCallId: "ask", toolName: "ask_user", content: [{ type: "text", text: "{}" }], isError: false, timestamp: 2 } as AgentMessage);
   assert.deepEqual(reloaded.awaiting, []);
+});
+
+test("host user entries store content once and read both old and deduplicated messages", async t => {
+  const { storage, journal: host } = await journal(true);
+  t.after(() => storage.close(context));
+  const message = { role: "user", content: [{ type: "text", text: "question" }], timestamp: 7, from: { id: "sender" }, metadata: { tag: "kept" }, requestId: "request" } as Extract<AgentMessage, { role: "user" }>;
+  await host.push(message);
+  const page = await storage.scanEntries({ conversationId: 1 as never, order: "ascending" }, 100, undefined, context);
+  const entry = page.items.find(entry => entry.kind === "camel.user")!;
+  assert.equal(Object.hasOwn((entry.data as any).message, "content"), false);
+  assert.deepEqual(entry.model![0].content, message.content);
+  assert.deepEqual(await (await HostJournal.open(storage))!.history.messagesFrom(0), [message]);
+  assert.deepEqual(durableEntryMessages({ ...entry, data: { message } as never })[0].message, message, "legacy entries still read their original content");
+});
+
+test("default host writes remain readable by the previous release", async t => {
+  const { storage, journal: host } = await journal();
+  t.after(() => storage.close(context));
+  const message = { role: "user", content: "rollback safe", timestamp: 1 } as AgentMessage;
+  await host.push(message);
+  const entry = (await storage.scanEntries({ conversationId: 1 as never, order: "ascending" }, 100, undefined, context)).items.find(entry => entry.kind === "camel.user")!;
+  // The previous reader takes data.message whole, without falling back to model content.
+  assert.deepEqual((entry.data as any).message, message);
 });

@@ -65,6 +65,8 @@ type SupervisorOptions = {
   modelOutbound?: Outbound;
   /** Tenants whose inline agents' system sections are native Pi sections (agent processes get it in `agentEnv`). */
   nativeSectionsTenants?: string[];
+  /** Omit duplicate user content only after all rollback readers support it. */
+  dedupeUserEntries?: boolean;
   /** Shared Pi records use the same database and ownership claim as the session. */
   db?: Db;
 };
@@ -165,7 +167,7 @@ export class AgentSupervisor {
       const index = options.index;
       const indexed = index ? await index.indexed() : null;
       await HostJournal.retire(storage, { ...(index && indexed !== null ? { indexed, index: (from, messages, turns) => writeChunks(index, from, messages, turns) } : {}), legacy: () => legacy.read() });
-      const journal = await HostJournal.open(storage);
+      const journal = await HostJournal.open(storage, this.options.dedupeUserEntries);
       return journal ? await closeInterruptedTurn(journal) : false;
     } finally { await storage.close(BACKGROUND_CONTEXT); await legacy.close(); }
   }
@@ -244,6 +246,7 @@ export class AgentSupervisor {
   private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, legacy: AppendLog<RetiredRecord>, durable?: PiStorage) {
     // A supervisor given its tenant lists directly (tests) tells its agent processes, as a node's agentEnv does.
     const lists = {
+      ...(this.options.dedupeUserEntries !== undefined ? { AGENT_PI_DEDUPE_USER_ENTRIES: String(this.options.dedupeUserEntries) } : {}),
       ...(this.options.nativeSectionsTenants?.length && !this.options.agentEnv?.AGENT_NATIVE_SECTIONS_TENANTS ? { AGENT_NATIVE_SECTIONS_TENANTS: this.options.nativeSectionsTenants.join(",") } : {}),
     };
     const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, Object.keys(lists).length
@@ -462,6 +465,7 @@ export class AgentSupervisor {
       modelAttempt: event => handle.bridge.modelAttempt?.(structuredClone(event)) ?? Promise.resolve(false),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
       codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),
+      dedupeUserEntries: this.options.dedupeUserEntries,
       ...(this.options.codeExecutor ? { codeExecutor: this.options.codeExecutor } : {}),
       ...(this.options.nativeSectionsTenants?.length ? { nativeSectionsTenants: this.options.nativeSectionsTenants } : {}),
       ...(this.options.modelOutbound ? { modelOutbound: this.options.modelOutbound } : {}),

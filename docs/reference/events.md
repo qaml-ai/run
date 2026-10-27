@@ -225,6 +225,17 @@ Messages (`message` fields, and history) are one of:
 | `toolResult` | `toolCallId`, `toolName`, `content` (text and image blocks), `details?`, `isError`, `timestamp`, `durationMs?` (how long the tool ran) |
 | `system` | `content`: instructions the runtime added (a changed configuration, a compaction summary) |
 
+Tool results keep their model-visible `content`. Direct JSON results do not repeat that value in `details`.
+Other direct-tool `details` are kept up to 16 KiB of JSON; js_exec details up to 32 KiB.
+Larger values become `{ truncated: true, path? }`. When a writable workspace is available and the JSON fits the
+700 KiB file-write limit, `path` names the full value in `tool-results/<call>.json`. Otherwise the value is dropped
+and `path` is absent. Drops past 700 KiB log `tool_details_dropped` with only the agent, tool and byte count.
+Input-required markers and structured `final_output` results are preserved.
+
+User entries keep content in both the original and model message by default for rollback compatibility.
+`AGENT_PI_DEDUPE_USER_ENTRIES=true` opts into storing it only in the model message. Readers accept both formats;
+leave the flag off until those readers are deployed everywhere and older releases are no longer rollback targets.
+
 ### Tools
 
 | Type | Fields | When |

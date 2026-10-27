@@ -11,6 +11,7 @@ setMetricSink(line => process.stderr.write(`${line}\n`));
 setMetricService(process.env.AGENT_SERVICE_NAME);
 const rpc = parentRpc();
 const host = createAgentHost({
+  dedupeUserEntries: process.env.AGENT_PI_DEDUPE_USER_ENTRIES === "true",
   emit: event => rpc.send({ type: "event", event }),
   tool: (name, args, call) => rpc.request("tool", { name, args, ...call }),
   cancelTools: () => rpc.request("cancel-tools"),

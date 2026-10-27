@@ -45,6 +45,7 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
      * hosts declare it again under a key of their own.
      */
     nativeSections?: boolean;
+    dedupeUserEntries?: boolean;
     contextWindow?: number;
     maxOutputTokens?: number;
     summaryStream?: AgentOptions["streamFn"];
@@ -91,10 +92,16 @@ export function piOrdered(messages: readonly AgentMessage[]): AgentMessage[] {
   return ordered;
 }
 
+/** Read both full user messages and entries with content stored only in Pi's model message. */
+function originalUser(entry: EntryRecord): AgentMessage | undefined {
+  const message = entry.kind === "camel.user" ? (entry.data as { message?: Extract<AgentMessage, { role: "user" }> } | undefined)?.message : undefined;
+  return message && { ...message, content: message.content ?? entry.model?.[0]?.content } as AgentMessage;
+}
+
 /** The messages a journal entry adds to the agent's history: its native messages, as the host's history holds them. */
 export function durableEntryMessages(entry: EntryRecord): DurableMessage[] {
   if (!nativeKinds.has(entry.kind)) return [];
-  const original = entry.kind === "camel.user" ? (entry.data as { message?: AgentMessage } | undefined)?.message : undefined;
+  const original = originalUser(entry);
   const diagnostics = (entry.data as { diagnostics?: { code?: string }[] } | undefined)?.diagnostics ?? [];
   const uncertain = diagnostics.some(item => item.code === "aborted" || item.code === "interrupted" || item.code === "abandoned");
   return (original ? [original] : entry.model ?? []).map((message, index) => ({
@@ -442,7 +449,7 @@ export class DurableAgent {
       for (const change of entries) if (change.type === "entry") {
         const entry = change.value;
         if (entry.kind === "camel.user" && entry.model?.[0]?.role === "user") {
-          const original = (entry.data as { message?: AgentMessage } | undefined)?.message;
+          const original = originalUser(entry);
           if (original) agent.originalInputs.set(entry.id, { native: entry.model[0], message: original });
         }
         if (nativeKinds.has(entry.kind) && entry.model?.length) agent.advanceCursor({ entryId: entry.id, index: entry.model.length - 1 });
@@ -496,7 +503,7 @@ export class DurableAgent {
   async reload() {
     const view = await this.conversation.context(context);
     for (const entry of view.entries) if (entry.kind === "camel.user" && entry.model?.[0]?.role === "user" && !this.originalInputs.has(entry.id)) {
-      const original = (entry.data as { message?: AgentMessage } | undefined)?.message;
+      const original = originalUser(entry);
       if (original) this.originalInputs.set(entry.id, { native: entry.model[0], message: original });
     }
     this.messages = this.originals(view.messages as Message[]);
@@ -778,11 +785,12 @@ export class DurableAgent {
       await this.conversation.commit(tx => tx.appendEntry(this.conversation.id, { kind: "camel.message", model: [message] as never }), context);
       return undefined;
     }
+    const { content, ...metadata } = message;
     const key = JSON.stringify(message), refs = this.inputRefs.get(key) ?? [];
     refs.push(message); this.inputRefs.set(key, refs);
     try {
-      return await this.conversation.submit({ type: "input", ...((message as { requestId?: string }).requestId ? { requestId: (message as unknown as { requestId: string }).requestId } : {}), content: message.content as never, whenBusy,
-        entry: { kind: "camel.user", data: { message } as never } }, context);
+      return await this.conversation.submit({ type: "input", ...((message as { requestId?: string }).requestId ? { requestId: (message as unknown as { requestId: string }).requestId } : {}), content: content as never, whenBusy,
+        entry: { kind: "camel.user", data: { message: this.options.durable.dedupeUserEntries ? metadata : message } as never } }, context);
     } catch (error) {
       const at = refs.indexOf(message); if (at >= 0) refs.splice(at, 1);
       if (!refs.length) this.inputRefs.delete(key);
