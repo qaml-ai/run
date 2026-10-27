@@ -94,7 +94,8 @@ test("a live range stops with context_too_large and does not retry the model", {
   const run = await r.prompt(agent.id, "go");
   assert.equal(run.outcome.result.code, "context_too_large", JSON.stringify(run));
   assert.equal(run.outcome.result.stopped, "turn_limit");
-  assert.equal(r.model.bodies.length, 20, "the 21st request is stopped before contacting the provider");
+  // Every request checks: the first past 64 KiB (~8 KiB of tool result a step) is stopped before it reaches the provider.
+  assert.equal(r.model.bodies.length, 4, "the request past the bound is stopped before contacting the provider");
   await until(async () => !(await r.db.query("select pending_runs from agents where id = $1", [agent.id])).rows[0].pending_runs, "the idle agent to clear pending work");
 });
 

@@ -62,7 +62,7 @@ export interface ToolBridge {
 /** How an error says the agent's storage failed a write: nothing more is written until a reload reads what it holds. */
 export const PERSISTENCE_FAILED = "Session persistence failed";
 /** The most serialized journal data a host may load as Pi context. */
-export const CONTEXT_RANGE_MAX_BYTES = 256 * 1024 * 1024;
+export const CONTEXT_RANGE_MAX_BYTES = 128 * 1024 * 1024;
 export const CONTEXT_TOO_LARGE = "context_too_large";
 export const contextRangeMessage = (bytes: number, max: number) =>
   `This agent's context since its last compaction is ${bytes} bytes, past the ${max} bytes a run can load; start a new agent with a summary of the history, or ask the operator to raise AGENT_CONTEXT_RANGE_MAX_BYTES.`;

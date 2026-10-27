@@ -160,7 +160,6 @@ export function createAgentHost(hostIO: HostIO) {
   /** How many of its messages the history index has (undefined: none is kept, or it could not be read at start). */
   let indexedTo: number | undefined;
   let busy = false;
-  let contextChecks = 0;
   let active: AbortController | undefined;
   /** Why the current run ended early: a spend limit, tool calls waiting on a person's input, or a hand-off (its node is leaving). */
   let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string; limit?: RunStop["limit"]; reason?: string; bucket?: string; endUser?: string } | undefined;
@@ -925,10 +924,9 @@ export function createAgentHost(hostIO: HostIO) {
           tools, messages: [],
           thinkingLevel: config.thinkingLevel ?? "off",
         },
-        // SQL returns only two scalars. Check the first request and then once every 20 requests;
-        // this covers hidden range entries too, without reserializing the in-memory context.
+        // SQL returns only two scalars, so every request checks: one step's tool results (up to ~8 MiB a js_exec)
+        // can't carry the range far past the bound. It covers hidden range entries too, without reserializing the context.
         prepareRequest: async () => {
-          if (contextChecks++ % 20 !== 0) return;
           const message = await contextError();
           if (!message) return;
           stopped = { stopped: "turn_limit", code: CONTEXT_TOO_LARGE, error: message };
@@ -1121,7 +1119,6 @@ export function createAgentHost(hostIO: HostIO) {
     const promptMessages = method === "prompt" ? userMessages(params) : undefined;
     busy = true;
     stopped = undefined;
-    contextChecks = 0;
     refused = undefined;
     omitImages = false;
     output = undefined;
