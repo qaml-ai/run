@@ -1027,7 +1027,7 @@ export function createAgentHost(hostIO: HostIO) {
         // A turn handed off at a step boundary goes on elsewhere: for its subscribers it has not ended.
         if (event.type === "agent_end" && stopped?.stopped === "handoff") return;
         // A call waiting on input has no result yet: the journal keeps it open instead (`awaiting`).
-        if (event.type === "message_end" && event.message.role === "user") steers = steers.filter(steer => steer.message !== event.message);
+        if (event.type === "message_end" && event.message.role === "user") steers = steers.filter(steer => !sameInput(steer.message, event.message));
         // Pi's journal holds each finished message as Pi commits it; streaming deltas are never persisted.
         if (event.type === "message_end" && !(event.message.role === "toolResult" && (event.message.details as { inputRequired?: boolean } | undefined)?.inputRequired)) {
           unindexed += JSON.stringify(event.message).length;
@@ -1104,7 +1104,7 @@ export function createAgentHost(hostIO: HostIO) {
       // A stop of the agent (not just its turn): messages held for the turn or the next one are dropped too, so nothing runs after it.
       if (params?.clearQueued) {
         steers = [];
-        agent.clearAllQueues();
+        agent.clearSteeringQueue();
       }
       active?.abort();
       agent.abort();
@@ -1242,6 +1242,10 @@ export function createAgentHost(hostIO: HostIO) {
   }).catch(error => console.error(JSON.stringify({ type: "compaction_start_failed", agent: config.id, error: safeError(error) })));
   /** Between runs no run's stream carries a compaction's events: they go as the agent's background work, billed as such. */
   const emitCompaction = (event: Record<string, unknown>) => io.emit(busy ? event : { ...event, background: true });
+
+  /** Whether the user message Pi committed is `sent`, as the journal keeps it. */
+  const sameInput = (sent: AgentMessage, committed: AgentMessage) => sent.timestamp === committed.timestamp &&
+    JSON.stringify((sent as { content?: unknown }).content) === JSON.stringify((committed as { content?: unknown }).content);
 
   /** Whether the current run stopped for a hand-off (a function, so the check is not narrowed away across awaits). */
   const handedOffHere = () => stopped?.stopped === "handoff";

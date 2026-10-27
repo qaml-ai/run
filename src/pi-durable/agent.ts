@@ -5,7 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, InboxDoc, LiveDoc, createRegistry, createSession, defineDoc, section,
+  GenerationTask, Harness, LiveDoc, createRegistry, createSession, defineDoc, section,
   type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage, type TaskId,
 } from "@earendil-works/pi-durable";
 
@@ -197,11 +197,12 @@ export class DurableAgent {
   private events = Promise.resolve();
   private eventError?: unknown;
   private pending = new Set<string>();
-  private steering: AgentMessage[] = [];
-  /** A run's input beyond its first message: placed with it, before the run's first model request. */
-  private batch: AgentMessage[] = [];
-  private followups: AgentMessage[] = [];
-  private inputRefs = new Map<string, AgentMessage[]>();
+  /**
+   * Steers not given to Pi yet: one goes to Pi's inbox as a tool round ends, which places it at that boundary, or starts
+   * the next run after an answer; a run starts with all of them after its input. Never left in Pi's inbox, where an abort
+   * would withdraw it and keep its request id.
+   */
+  private queued: AgentMessage[] = [];
   private originalInputs = new Map<number, { native: Message; message: AgentMessage }>();
   private _latestCursor?: DurableCursor;
   private streamingMessage?: AgentMessage;
@@ -229,8 +230,6 @@ export class DurableAgent {
   private parked = new Set<TaskId>();
   private closed = false;
   private closing?: Promise<void>;
-  steeringMode: "all" | "one-at-a-time";
-  followUpMode: "all" | "one-at-a-time";
 
   private get messages() { return this._messages; }
   /** Pi's context as the agent last read it, with the run's messages since; a change of its system section keys reinstalls the `camel` extension's sections. */
@@ -252,8 +251,6 @@ export class DurableAgent {
   private constructor(options: DurableAgentOptions) {
     this.options = options;
     this.tools = [...options.initialState?.tools ?? []];
-    this.steeringMode = options.steeringMode ?? "one-at-a-time";
-    this.followUpMode = options.followUpMode ?? "one-at-a-time";
     const self = this;
     this.state = {
       model: options.initialState!.model!, thinkingLevel: options.initialState?.thinkingLevel ?? "off",
@@ -279,7 +276,6 @@ export class DurableAgent {
     const task = { definition: { ...original, phases: { ...original.phases,
       prepare: async (...args: Parameters<typeof original.phases.prepare>) => {
         const [record, runtime, taskContext] = args;
-        await agent.placeQueued(record.id, runtime, taskContext);
         const prepared = new Proxy(runtime, { get(target, key) {
           if (key === "context") return async (...params: Parameters<typeof runtime.context>) => {
             const current = await target.context(...params);
@@ -320,7 +316,7 @@ export class DurableAgent {
             }, taskContext);
             return;
           }
-          await agent.submitQueues("steer");
+          await agent.submitSteer();
         }
         return original.phases.tools(...args);
       },
@@ -409,7 +405,7 @@ export class DurableAgent {
         // they only bound what a lost node's run keeps, so each costs a journal write once a second, not every 100 ms.
         progress: { partialIntervalMs: 1_000, outputIntervalMs: 1_000 },
         retry: { enabled: false }, toolExecution: options.toolExecution ?? "parallel",
-        steeringMode: agent.steeringMode, followUpMode: agent.followUpMode, contextRetentionMs: 0 },
+        steeringMode: options.steeringMode ?? "one-at-a-time", contextRetentionMs: 0 },
     }, context);
     agent.conversation = options.durable.conversationId === undefined ? await agent.harness.root(context) :
       (await agent.harness.conversation(options.durable.conversationId as ConversationId, context))!;
@@ -506,12 +502,6 @@ export class DurableAgent {
 
   private async committedMessage({ message, cursor }: DurableMessage) {
     this.advanceCursor(cursor);
-    if (message.role === "user") {
-      const key = JSON.stringify(message), refs = this.inputRefs.get(key);
-      const original = refs?.shift();
-      if (original) message = original;
-      if (refs?.length === 0) this.inputRefs.delete(key);
-    }
     this.messages.push(message);
     if (message.role === "assistant") {
       this.lastTurn = message; this.lastTurnResults = [];
@@ -732,13 +722,16 @@ export class DurableAgent {
     this.originalInputs.clear();
   }
 
-  steer(message: AgentMessage) { this.steering.push(message); }
-  followUp(message: AgentMessage) { this.followups.push(message); }
-  clearSteeringQueue() { this.steering = []; }
-  clearFollowUpQueue() { this.followups = []; }
-  clearAllQueues() { this.clearSteeringQueue(); this.clearFollowUpQueue(); }
-  hasQueuedMessages() { return this.steering.length > 0 || this.followups.length > 0; }
-  peekQueuedMessages() { return this.steering.length ? this.steering.slice(0, this.steeringMode === "all" ? undefined : 1) : this.followups.slice(0, this.followUpMode === "all" ? undefined : 1); }
+  /** Before a run takes input, steers wait for it; while it runs, they go to Pi's inbox, placed at its next boundary. */
+  steer(message: AgentMessage) { this.queued.push(message); }
+  clearSteeringQueue() { this.queued = []; }
+  hasQueuedMessages() { return this.queued.length > 0; }
+  peekQueuedMessages() { return this.queued.slice(0, 1); }
+  /** The next steer as Pi input (`whenBusy: "steer"`): placed at the running round's boundary, or starting a run. */
+  private async submitSteer() {
+    const message = this.queued.shift();
+    if (message) await this.submitMessage(message, "steer", (message as { requestId?: string }).requestId);
+  }
   abort() { if (this.controller) { this.errorMessage ??= "Agent run aborted"; this.controller.abort(); void this.conversation.abort(context).catch(() => {}); } }
   async waitForIdle() { await this.running; }
   close(timeoutMs = 5_000): Promise<void> {
@@ -761,59 +754,20 @@ export class DurableAgent {
     return this.closing;
   }
 
-  private async submitMessage(message: AgentMessage, whenBusy: "steer" | "followUp" = "steer") {
+  /**
+   * A user message as Pi input (`steer`: placed now, starting a run, or at the busy run's next boundary), or `write`: an
+   * entry placed now, for a run's input before its last message. `requestId` only on the first message of a request: Pi
+   * takes a request's later submissions for its first.
+   */
+  private async submitMessage(message: AgentMessage, mode: "steer" | "write", requestId: string | undefined) {
     if (message.role !== "user") {
       await this.conversation.commit(tx => tx.appendEntry(this.conversation.id, { kind: "camel.message", model: [message] as never }), context);
       return undefined;
     }
     const { content, ...metadata } = message;
-    const key = JSON.stringify(message), refs = this.inputRefs.get(key) ?? [];
-    refs.push(message); this.inputRefs.set(key, refs);
-    try {
-      return await this.conversation.submit({ type: "input", ...((message as { requestId?: string }).requestId ? { requestId: (message as unknown as { requestId: string }).requestId } : {}), content: content as never, whenBusy,
-        entry: { kind: "camel.user", data: { message: this.options.durable.dedupeUserEntries ? metadata : message } as never } }, context);
-    } catch (error) {
-      const at = refs.indexOf(message); if (at >= 0) refs.splice(at, 1);
-      if (!refs.length) this.inputRefs.delete(key);
-      throw error;
-    }
-  }
-  /**
-   * Before a model request, as the legacy loop polls its steering queue: the run's remaining input and the queued steers
-   * enter the context now, rather than at Pi's next boundary (after the response). They are submitted as Pi queues busy
-   * input, then placed as Pi's boundary places them: an entry each, the submission placed and made one of the run's inputs.
-   */
-  private async placeQueued(taskId: TaskId, runtime: Parameters<typeof GenerationTask.definition.phases.prepare>[1],
-    taskContext: Parameters<typeof GenerationTask.definition.phases.prepare>[2]) {
-    const messages = [...this.batch.splice(0), ...this.steering.splice(0, this.steeringMode === "all" ? this.steering.length : 1)];
-    if (!messages.length) return;
-    const ids = new Set<number>();
-    for (const message of messages) {
-      const submission = await this.submitMessage(message, "steer");
-      if (submission !== undefined) ids.add(submission.id);
-    }
-    if (!ids.size) return;
-    await runtime.commit(async tx => {
-      const live = await tx.doc(LiveDoc, runtime.conversationId);
-      if (live.run?.taskId !== taskId) return undefined;
-      const items = (await tx.doc(InboxDoc, runtime.conversationId)).items;
-      for (let index = 0; index < items.length;) {
-        const item = items[index];
-        if (item.mode !== "steer" || !ids.has(item.id)) { index++; continue; }
-        const entry = await tx.appendEntry(runtime.conversationId, { ...(item.entry ?? { kind: "pi.user" }),
-          model: [{ role: "user", content: item.content, timestamp: runtime.now() }] } as never);
-        tx.placeSubmission(item.id, entry.id);
-        live.run.inputs.push(item.id);
-        items.splice(index, 1);
-      }
-      return undefined;
-    }, taskContext);
-  }
-  private async submitQueues(which: "steer" | "followUp") {
-    const queue = which === "steer" ? this.steering : this.followups;
-    const mode = which === "steer" ? this.steeringMode : this.followUpMode;
-    const selected = queue.splice(0, mode === "all" ? queue.length : 1);
-    for (const message of selected) await this.submitMessage(message, which);
+    const entry = { kind: "camel.user", data: { message: this.options.durable.dedupeUserEntries ? metadata : message } as never };
+    return this.conversation.submit({ ...(requestId ? { requestId } : {}), ...mode === "steer" ? { type: "input", content: content as never, whenBusy: "steer", entry }
+      : { type: "write", entry: { ...entry, model: [{ role: "user", content, timestamp: Date.now() }] as never } } }, context);
   }
 
   prompt(message: AgentMessage | AgentMessage[] | string, images: ImageContent[] = []): Promise<void> {
@@ -907,11 +861,15 @@ export class DurableAgent {
       // Brand-new sessions have no native cursor. Start at the context marker,
       // rather than scanning a potentially huge imported archive at agent_end.
       start ??= await latestDurableCursor(this.options.durable.storage, this.conversation.id);
-      if (messages.length) {
-        // The rest of the input goes in before the first model request (`placeQueued`), as one prompt.
-        this.batch = messages.slice(1);
-        await this.submitMessage(messages[0]);
-      } else {
+      // The run's input with the steers that waited for it, in one context before the first model request: each placed now,
+      // the last as the input that starts the run.
+      const input = [...messages, ...this.queued.splice(0)], requests = new Set<string>();
+      for (const [index, message] of input.entries()) {
+        const requestId = (message as { requestId?: string }).requestId;
+        await this.submitMessage(message, index < input.length - 1 ? "write" : "steer", requestId && !requests.has(requestId) ? requestId : undefined);
+        if (requestId) requests.add(requestId);
+      }
+      if (!input.length) {
         const live = await this.harness.snapshot(LiveDoc, this.conversation.id, context);
         if (!live?.run) {
           await this.conversation.commit(async tx => {
@@ -931,12 +889,11 @@ export class DurableAgent {
           this.lastTurn = undefined;
           if (decision?.action === "end") this.stoppedByFinishTurn = true;
         }
-        if (this.signal?.aborted || this.stoppedByFinishTurn || !this.hasQueuedMessages()) break;
-        await this.submitQueues(this.steering.length ? "steer" : "followUp");
+        if (this.signal?.aborted || this.stoppedByFinishTurn || !this.queued.length) break;
+        // A steer given as the run answered goes on in a run of its own.
+        await this.submitSteer();
       }
     } finally {
-      // Input of a run aborted before its first request is withdrawn, as Pi withdraws queued input on abort.
-      this.batch = [];
       await this.flushEvents();
       const added = await this.recoverMessages(start);
       await this.emit({ type: "agent_end", messages: added.map(item => item.message) });
