@@ -95,8 +95,6 @@ export interface HostIO {
   modelOutbound?: Outbound;
   /** Wait until the node may act for the agent (its lease is fresh), before each model request and js_exec; rejects once it lost the agent. */
   lease?(): Promise<void>;
-  /** Tenants whose agents' system sections are native Pi sections (AGENT_NATIVE_SECTIONS_TENANTS; `*`: every tenant). */
-  nativeSectionsTenants?: string[];
   /** Omit duplicate user content only after all rollback readers support it. */
   dedupeUserEntries?: boolean;
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
@@ -267,7 +265,7 @@ export function createAgentHost(hostIO: HostIO) {
 
   /** The leading system message the agent's configuration makes: a new agent's Pi context starts with it. */
   function leading(tools: Tool[] = agent!.state.tools.map(toToolDeclaration)): SystemMessage {
-    return leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
+    return leadingSystemMessage(config, tools);
   }
 
   /**
@@ -286,17 +284,16 @@ export function createAgentHost(hostIO: HostIO) {
     }
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
     let current = getCurrentSystemMessage(messages)?.sections ?? {};
-    // Native sections take the instructions under `application`; so does a conversation that already has them there.
-    const native = nativeSections(), instructions = native || APPLICATION in current ? APPLICATION : INSTRUCTIONS;
-    // Sections under the old key are removed and every section declared again in order: a section declared later is
-    // placed after the others, so re-keying one alone would move the application's instructions after the environment.
+    // Pi reserves `instructions`: sections under that old key are removed and every section declared again in order, as
+    // a section declared later is placed after the others, so re-keying one alone would move the application's
+    // instructions after the environment.
     const cleared: SystemMessage[] = [];
-    if (native && INSTRUCTIONS in current) {
+    if (INSTRUCTIONS in current) {
       cleared.push({ role: "system", content: "", timestamp: Date.now(), sections: Object.fromEntries(Object.keys(current).map(name => [name, null])) });
       current = {};
     }
     const wanted = {
-      [instructions]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
+      [APPLICATION]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
       [OUTPUT]: tools.some(tool => tool.name === OUTPUT_TOOL) ? OUTPUT_INSTRUCTIONS : null,
     };
     const sections = Object.fromEntries(Object.entries(wanted).filter(([name, text]) => (current[name] ?? null) !== text));
@@ -334,9 +331,6 @@ export function createAgentHost(hostIO: HostIO) {
       io.emit({ type: "message_end", message });
     }
   }
-
-  /** Whether the agent's system sections are native Pi sections: its tenant is in AGENT_NATIVE_SECTIONS_TENANTS (or `*`). */
-  const nativeSections = () => !!io.nativeSectionsTenants && (io.nativeSectionsTenants.includes("*") || io.nativeSectionsTenants.includes(config.tenant ?? ""));
 
   /** Whether each model call asks the supervisor for its credentials. */
   const perCall = () => config.apiKey === IDENTITY_KEY || config.apiKey === SCOPE_KEY;
@@ -828,7 +822,7 @@ export function createAgentHost(hostIO: HostIO) {
       console.error(JSON.stringify({ type: "legacy_session_not_imported", agent: config.id, tenant: config.tenant, reason: legacy }));
       throw new Error(`${NOT_MIGRATED}: this agent's history is in the legacy format (${legacy === "not_on_pi" ? "its Pi host generation is missing or disabled" : "only its legacy transcript holds it"}), which this release no longer imports. This release cannot start it; nothing was changed`);
     }
-    const leadingSystem = leadingSystemMessage(config, tools, nativeSections() ? APPLICATION : INSTRUCTIONS);
+    const leadingSystem = leadingSystemMessage(config, tools);
     // Pi's context starts with the leading system message: before the history it was created with (`initialMessages`), or
     // with that history's summary, at its cut.
     let messages: AgentMessage[] = [], head: AgentMessage[] = [leadingSystem], headAt = 0;
@@ -994,7 +988,6 @@ export function createAgentHost(hostIO: HostIO) {
         // Summaries share credential/network gates but not the run's output
         // schema, temperature or max-output settings.
         summaryStream,
-        nativeSections: nativeSections(),
         get contextWindow() { return compactionModel().contextWindow; },
         get maxOutputTokens() { return config.maxOutputTokens ?? undefined; },
         onSummary: message => emitCompaction({ type: "compaction_usage", provider: message.provider,

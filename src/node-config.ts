@@ -23,20 +23,6 @@ import { MULTI_AGENT_LIMITS } from "./multi-agent.ts";
  */
 export type NodeConfig = ReturnType<typeof nodeConfig>;
 
-/**
- * A tenant allow-list setting: `*` (every tenant) or comma-separated tenant ids; unset or empty, none. Checked at start,
- * so a misspelled id fails the node rather than gating no one.
- */
-export function tenantList(name: string, value: string | undefined): string[] {
-  if (!value?.trim()) return [];
-  if (value.trim() === "*") return ["*"];
-  const tenants = value.split(",").map(item => item.trim());
-  if (tenants.some(tenant => !/^[a-z0-9][a-z0-9-]{0,39}$/.test(tenant))) throw new Error(`${name} must be * or comma-separated tenant ids`);
-  return [...new Set(tenants)];
-}
-/** AGENT_NATIVE_SECTIONS_TENANTS (`tenantList`). */
-export const nativeSectionsTenants = (value: string | undefined) => tenantList("AGENT_NATIVE_SECTIONS_TENANTS", value);
-
 /** A comma-separated setting's items, trimmed; none when unset. */
 const list = (value: string | undefined) => (value ?? "").split(",").map(item => item.trim()).filter(Boolean);
 
@@ -151,8 +137,6 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     v8: v8Settings(env),
     codeCapacity: codeCapacity(env),
     sandboxRequired: env.AGENT_SANDBOX_REQUIRED === "1",
-    // Tenants whose agents' system sections are native Pi sections, `*` for every tenant (AGENT_NATIVE_SECTIONS_TENANTS).
-    nativeSectionsTenants: nativeSectionsTenants(env.AGENT_NATIVE_SECTIONS_TENANTS),
     // What its agent processes are told of these settings.
     agentEnv: agentProcessEnv(env),
     systemPrompt: env.AGENT_SYSTEM_PROMPT,

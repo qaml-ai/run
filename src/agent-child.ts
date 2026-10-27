@@ -28,7 +28,6 @@ const host = createAgentHost({
   legacyLog: { read: () => rpc.request("legacy-log", { op: "read" }), empty: () => rpc.request("legacy-log", { op: "empty" }) },
   piStorage: async () => await rpc.request("pi-storage", { method: "available" }) ? remotePiStorage(request => rpc.request("pi-storage", request)) : undefined,
   // This process's environment is the node's settings for it (agentProcessEnv).
-  ...(process.env.AGENT_NATIVE_SECTIONS_TENANTS ? { nativeSectionsTenants: process.env.AGENT_NATIVE_SECTIONS_TENANTS.split(",").map(item => item.trim()).filter(Boolean) } : {}),
 });
 
 /** A turn to run js_exec, held by the supervisor (which counts the tenant's across the node) until given back. */
