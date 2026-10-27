@@ -112,6 +112,8 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
       text: { type: "string", minLength: 1, maxLength: 32_000, description: "The message you will receive" },
       calendar: { type: "object", additionalProperties: false, required: ["time", "timeZone"], properties: { time: { type: "string" }, timeZone: { type: "string" }, daysOfWeek: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 } } } },
       inSeconds: { type: "number", minimum: 0 }, at: { type: "string", description: "ISO 8601 time" }, everySeconds: { type: "integer", minimum: 60 },
+      // Accepted so callers that still send it do not fail, as the HTTP API and MCP add_schedule do.
+      history: { type: "string", enum: ["full", "none"], description: "Ignored; every run sees the agent's history" },
     } },
   },
   list_schedules: {

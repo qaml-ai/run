@@ -58,7 +58,7 @@ test("an agent schedules, lists and cancels its own wake-ups, and wakes up", asy
     const answered = body.messages.at(-1).role === "tool";
     if (answered) return { role: "assistant", content: "noted" };
     if (text === "remind me") return toolCall("schedule", { text: "check the oven", inSeconds: 1 });
-    if (text === "every hour") return toolCall("schedule", { text: "hourly check", inSeconds: 3600, everySeconds: 3600 });
+    if (text === "every hour") return toolCall("schedule", { text: "hourly check", inSeconds: 3600, everySeconds: 3600, history: "none" });
     if (text === "what is scheduled") return toolCall("list_schedules", {});
     if (text.startsWith("cancel ")) return toolCall("cancel_schedule", { id: text.slice(7) });
     return { role: "assistant", content: `heard: ${text}` };
@@ -74,6 +74,7 @@ test("an agent schedules, lists and cancels its own wake-ups, and wakes up", asy
   await r.prompt(agent, "every hour");
   const hourly = JSON.parse(toolResults(r.model.bodies.at(-1)).at(-1));
   assert.equal(hourly.everySeconds, 3600);
+  assert.equal(hourly.history, undefined, "history is accepted and ignored, not refused or stored");
   await r.prompt(agent, "what is scheduled");
   assert.deepEqual(JSON.parse(toolResults(r.model.bodies.at(-1)).at(-1)).schedules.map((entry: any) => entry.id), [hourly.id], "the one-off wake-up is gone once delivered");
   await r.prompt(agent, `cancel ${hourly.id}`);
