@@ -430,6 +430,31 @@ async function nearLimit(t: { after(fn: () => Promise<void>): void }, fake: Awai
   return background;
 }
 
+for (const hosting of ["inline", "process"] as const) test(`messages landing without a turn past the threshold compact in the background, billed as background work (${hosting})`, async t => {
+  const fake = await provider(t, { usage: true });
+  const root = await mkdtemp(join(tmpdir(), "landed-compaction-"));
+  const supervisor = new AgentSupervisor(join(root, "agents"), { runtime: process.env.AGENT_RUNTIME, hosting });
+  t.after(async () => { await supervisor.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
+  const background: any[] = [];
+  await supervisor.start("stopped", { model: fake.model(8000), apiKey: "fixture" }, { ...bridge, background: (event: any) => background.push(event) } as never);
+  // A credit-stopped agent's notices: each lands in history, and no model is asked for a turn.
+  const landOnly = { stopped: "spend_limit", message: "Out of credit" };
+  for (let index = 0; index < 12; index++) {
+    const landed = await supervisor.request("stopped", "prompt", { text: small(index), landOnly });
+    assert.equal(landed.stopped, "spend_limit");
+  }
+  await until(() => background.some(event => event.type === "compaction_end"), "the landed messages compacted");
+  await until(() => fake.state.inflight === 0, "the summaries answered");
+  assert.equal(fake.chat().length, 0, "no turn ran");
+  assert.equal(fake.state.maxInflight, 1, "one summary at a time");
+  assert.ok(background.some(event => event.type === "compaction_usage" && event.usage), "its usage reaches the bridge, which bills it");
+  assert.ok(background.every(event => event.background === true));
+  // The next turn starts on the summary.
+  assert.equal((await supervisor.request("stopped", "prompt", { text: "AFTER" })).error, null);
+  assert.match(text(fake.chat().at(-1)!), /SUMMARY-MARKER-[0-9]+[\s\S]*AFTER/);
+  assert.doesNotMatch(text(fake.chat().at(-1)!), /TURN-0 /);
+});
+
 test("usage a response reported before the summary was written does not count against the context that replaced it", () => {
   const usage = (input: number) => ({ input, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: input + 10, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
   const answer = (timestamp: number, input: number) => ({ role: "assistant", content: [{ type: "text", text: "ok" }], api: "openai-completions", provider: "openai", model: "fixture", stopReason: "stop", usage: usage(input), timestamp }) as any;

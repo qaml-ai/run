@@ -1010,7 +1010,7 @@ export function createAgentHost(hostIO: HostIO) {
         nativeSections: nativeSections(),
         get contextWindow() { return compactionModel().contextWindow; },
         get maxOutputTokens() { return config.maxOutputTokens ?? undefined; },
-        onSummary: message => io.emit({ type: "compaction_usage", provider: message.provider,
+        onSummary: message => emitCompaction({ type: "compaction_usage", provider: message.provider,
           model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
         onCompaction: async ({ keptMessages, reason }) => {
           // Pi compacts after a context overflow with the refused response in its journal: as the legacy loop did, that
@@ -1024,7 +1024,7 @@ export function createAgentHost(hostIO: HostIO) {
           const before = agent!.state.messages;
           const held = before.filter(message => message.role !== "system" && !isSummary(message)).length;
           console.error(JSON.stringify({ type: "compaction_end", agent: config.id, reason, contextTokens: agent!.contextTokens }));
-          io.emit({ type: "compaction_end", contextTokens: agent!.contextTokens, reason, tokensBefore: contextTokens(before), keptMessages, summarizedMessages: Math.max(0, held - keptMessages) });
+          emitCompaction({ type: "compaction_end", contextTokens: agent!.contextTokens, reason, tokensBefore: contextTokens(before), keptMessages, summarizedMessages: Math.max(0, held - keptMessages) });
         },
       } });
       // What Pi settles for a run it was interrupted in is not history: the host closed that turn itself, above.
@@ -1153,6 +1153,7 @@ export function createAgentHost(hostIO: HostIO) {
       if (method === "continue" && params?.landOnly) {
         const { stopped: why, message: said } = params.landOnly as RunStop;
         const done = await abortedBeforeLoop();
+        await compactLanded();
         return { ...done, error: said, stopped: why, ...stopFields(params.landOnly) };
       }
       if (method === "prompt") await useOutput(params.output?.schema);
@@ -1202,6 +1203,7 @@ export function createAgentHost(hostIO: HostIO) {
             io.emit({ type: "message_end", message });
           }
           await journal.setActive(false);
+          await compactLanded();
           const { stopped: why, message: said } = params.landOnly as RunStop;
           return { messages: journal.total, error: said, stopped: why, ...stopFields(params.landOnly) };
         }
@@ -1253,6 +1255,11 @@ export function createAgentHost(hostIO: HostIO) {
       if (method !== "execute") void index();
     }
   }
+
+  /** Messages landed without a turn: past Pi's threshold, its compaction starts (a failed start is only logged). */
+  const compactLanded = () => agent!.compactLanded().catch(error => console.error(JSON.stringify({ type: "compaction_start_failed", agent: config.id, error: errorText(error) })));
+  /** Between runs no run's stream carries a compaction's events: they go as the agent's background work, billed as such. */
+  const emitCompaction = (event: Record<string, unknown>) => io.emit(busy ? event : { ...event, background: true });
 
   /** Whether the current run stopped for a hand-off (a function, so the check is not narrowed away across awaits). */
   const handedOffHere = () => stopped?.stopped === "handoff";
