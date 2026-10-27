@@ -133,24 +133,28 @@ test("forks before and after a history-none checkpoint keep their own context", 
   const id = (await r.call("/v1/agents", { body: {} })).json.id;
   await r.prompt(id, "BEFORE-CHECKPOINT");
   await r.prompt(id, "AFTER-CHECKPOINT", undefined, { history: "none" });
-  for (const atMessage of [1, 3]) {
+  await r.prompt(id, "LATER-CHECKPOINT", undefined, { history: "none" });
+  for (const atMessage of [1, 3, 5]) {
     const fork = await r.call(`/v1/agents/${id}/fork`, { body: { atMessage } });
     assert.equal(fork.status, 201, fork.text);
     await r.prompt(fork.json.id, "fork task");
     const texts = userTexts(r.model.bodies.at(-1)).join("\n");
-    assert.match(texts, atMessage === 1 ? /BEFORE-CHECKPOINT/ : /AFTER-CHECKPOINT/);
-    assert.doesNotMatch(texts, atMessage === 1 ? /AFTER-CHECKPOINT/ : /BEFORE-CHECKPOINT/);
+    assert.match(texts, /BEFORE-CHECKPOINT/);
+    if (atMessage === 1) assert.doesNotMatch(texts, /AFTER-CHECKPOINT/);
+    else assert.match(texts, /History-none run\nPrompt:.*AFTER-CHECKPOINT[\s\S]*Final reply: done/);
+    if (atMessage === 5) assert.match(texts, /LATER-CHECKPOINT/);
+    else assert.doesNotMatch(texts, /LATER-CHECKPOINT/);
   }
 });
 
-for (const mode of ["continue", "resume"]) test(`a none-run ${mode}s on another node and later restores the streak`, { timeout: 90_000 }, async t => {
+for (const mode of ["continue", "resume"]) test(`a none-run ${mode}s after flag removal and later restores and closes the streak`, { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const ask = { questions: [{ question: "Proceed?", header: "Confirm", options: [{ label: "Yes" }, { label: "No" }] }] };
   const model = await clusterModel(t, (_body, index) => index === 1
     ? mode === "continue" ? undefined : { role: "assistant", tool_calls: [{ index: 0, id: "ask", type: "function", function: { name: "ask_user", arguments: JSON.stringify(ask) } }] }
     : { role: "assistant", content: `answer ${index}` });
   const env = { ...model.env, AGENT_PI_CONTEXT_TENANTS: "*", AGENT_DRAIN_TIMEOUT_MS: "500" };
-  const a = await c.start("a", env), b = await c.start("b", env);
+  const a = await c.start("a", env), b = await c.start("b", { ...env, AGENT_PI_CONTEXT_TENANTS: "" });
   const api = async (base: string, path: string, body?: unknown) => {
     const response = await fetch(base + path, { method: body === undefined ? "GET" : "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     assert.ok(response.ok, await response.clone().text());
@@ -175,4 +179,8 @@ for (const mode of ["continue", "resume"]) test(`a none-run ${mode}s on another 
   await wait(b.url, (await api(b.url, `/v1/agents/${agent}/prompt`, { text: "normal again" })).id);
   assert.match(JSON.stringify(model.bodies[3]), /PRIVATE-PRE-STREAK/);
   assert.match(JSON.stringify(model.bodies[3]), /Final reply: answer 2/);
+  const aside = (await c.db.query(`select r.content from pi_durable_documents d
+    join pi_durable_document_revisions r on r.session_id = d.session_id and r.document_id = d.id
+    where d.session_id = $1 and d.kind = '"camel.context.aside"' order by r.seq desc limit 1`, [agent])).rows[0];
+  assert.deepEqual(JSON.parse(aside.content).runs, []);
 });

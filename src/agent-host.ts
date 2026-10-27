@@ -1201,6 +1201,7 @@ export function createAgentHost(hostIO: HostIO) {
           await agent.historyContext(params.history === "none" ? messages[0] : undefined, leading());
           await declareConfiguration(true);
         } else if (params.history === "none") fresh = messages[0];
+        else if (await agent.historyContext()) await declareConfiguration(true);
         await agent.prompt(messages);
       }
       await unforced(active.signal);

@@ -25,11 +25,20 @@ const obsolete = `with head as (
 select e.id, octet_length(e.record) as bytes from pi_durable_entries e, head
 where e.session_id = $1 and e.conversation_id = 1 and e.id < head.start
   and ${json("e.record")}->>'kind' in ('camel.legacy.context', 'camel.context.message', 'pi.system')
-  -- A history-none streak still needs its pre-streak context and older runs for restore.
+  -- Keep the pre-streak context and only runs whose digest has not been stored yet.
   and not exists (select 1 from pi_durable_documents d
     join lateral (select r.content from pi_durable_document_revisions r where r.session_id = d.session_id and r.document_id = d.id and r.kind = 'base' order by r.seq desc limit 1) r on true
     where d.session_id = $1 and d.kind = '"camel.context.aside"' and d.retired_at is null
-      and jsonb_array_length(${json("r.content")}->'runs') > 0)`;
+      and jsonb_array_length(${json("r.content")}->'runs') > 0
+      and ((e.id <= (${json("r.content")}->>'before')::bigint
+        and e.id >= coalesce((select coalesce(p.head, p.id) from pi_durable_entries p
+          where p.session_id = $1 and p.conversation_id = 1 and p.head is not null
+            and p.id <= (${json("r.content")}->>'before')::bigint order by p.id desc limit 1), 0))
+        or exists (select 1 from jsonb_array_elements_text(${json("r.content")}->'runs') run(id)
+          where not (coalesce(${json("r.content")}->'digests', '{}'::jsonb) ? run.id)
+            and e.id >= run.id::bigint
+            and e.id < coalesce((select min(next.id::bigint) from jsonb_array_elements_text(${json("r.content")}->'runs') next(id)
+              where next.id::bigint > run.id::bigint), 9223372036854775807))))`;
 
 /** Stage 1: context checkpoints superseded by a newer head. */
 const CHECKPOINTS: ReclaimStage = { name: "checkpoints", entries: obsolete };

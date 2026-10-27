@@ -4,6 +4,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Cursor, EntryId, EntryRecord, Storage } from "@earendil-works/pi-durable";
 import { convertToLlm } from "../pi-harness/messages.ts";
 import { piOrdered } from "./agent.ts";
+import { boundedDigests, runDigest, type ContextAside } from "./context-aside.ts";
 import type { At, JournalHistory } from "./history.ts";
 import { SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
 
@@ -72,9 +73,9 @@ export function forkCount(history: Pick<JournalHistory, "total" | "active" | "tu
  * through `at` (each entry's messages as its newest edit leaves them; later head markers' own messages left out),
  * settled as Pi settles them (`piOrdered`).
  */
-export async function contextAt(storage: Pick<Storage, "scanEntries" | "findLatestHeadMarker">, at: At): Promise<Message[]> {
+export async function contextAt(storage: Pick<Storage, "scanEntries" | "findLatestHeadMarker">, at: At, historical = false): Promise<Message[]> {
   const end = Number.isSafeInteger(at.entryId) && at.entryId < Number.MAX_SAFE_INTEGER ? at.entryId as EntryId : undefined;
-  const head = await storage.findLatestHeadMarker(conversationId, undefined, context);
+  const head = await storage.findLatestHeadMarker(conversationId, historical ? end : undefined, context);
   if (head && end !== undefined && end < (head.head ?? head.id)) {
     throw new ForkBeforeHead();
   }
@@ -104,16 +105,29 @@ export async function contextAt(storage: Pick<Storage, "scanEntries" | "findLate
  * retained head, or the journal base (whose messages have no cursor), it starts from raw kept history, which Pi
  * compacts on the first turn as needed.
  */
-export async function journalForkCut(storage: Pick<Storage, "scanEntries" | "findLatestHeadMarker">, history: JournalHistory, messages: readonly AgentMessage[], at?: number | string): Promise<JournalForkCut> {
+export async function journalForkCut(storage: Pick<Storage, "scanEntries" | "findLatestHeadMarker" | "scanDocuments" | "document">, history: JournalHistory, messages: readonly AgentMessage[], at?: number | string): Promise<JournalForkCut> {
   if (messages.length !== history.total) throw new Error(`The agent's history has ${messages.length} messages, its journal ${history.total}`);
   // Turn starts the journal records, and before its base, where user messages begin them.
   const turns = [...new Set([...userTurns(messages.slice(0, history.baseTotal)), ...history.turnsFrom(0)])].sort((a, b) => a - b);
   const count = forkCount(history, messages, turns, at);
   const kept = messages.slice(0, count);
   if (!count) return { through: null, messages: [], turns: [], model: [] };
+  const docs = await storage.scanDocuments({ scope: { kind: "conversation", conversationId }, kind: "camel.context.aside", at: "current" }, 1, undefined, context);
+  const aside = docs.items[0] && (await storage.document(docs.items[0].id, "current", context))?.value as ContextAside | undefined;
+  const cursor = history.cursorAt(count - 1);
+  if (aside?.runs.length && cursor && cursor.entryId > (aside.before ?? 0)) {
+    // Build only the runs visible at this cut. The source may have completed more runs since.
+    const starts = kept.flatMap((message, index) => (message as { history?: string }).history === "none" &&
+      (history.cursorAt(index)?.entryId ?? 0) > (aside.before ?? 0) ? [index] : []);
+    if (starts.length) {
+      const pre = aside.before === undefined ? [] : await contextAt(storage, { entryId: aside.before, index: -1 }, true);
+      const digest = boundedDigests(starts.map((start, i) => runDigest(kept[start], kept.slice(start, starts[i + 1]))).reverse());
+      return { through: count - 1, messages: [...kept], turns: turns.filter(turn => turn < count), model: [...pre, ...convertToLlm(digest)] };
+    }
+  }
   // Pi's context just before the next history message: with what the journal holds between (a compaction or a
   // checkpoint that summarizes what the fork keeps, an import's summary at its cut), never anything after.
-  const cursor = history.cursorAt(count - 1), next = history.cursorAt(count);
+  const next = history.cursorAt(count);
   let through = !cursor ? undefined : !next ? { entryId: Number.MAX_SAFE_INTEGER, index: -1 } : next.index > 0 ? { entryId: next.entryId, index: next.index - 1 } : { entryId: next.entryId - 1, index: -1 };
   // A none-run's checkpoint belongs to its following prompt, not the preceding fork point.
   if (through && cursor && next && (messages[count] as { history?: string })?.history === "none") {

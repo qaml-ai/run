@@ -8,6 +8,8 @@ import type { EntryId, StorageWrite } from "@earendil-works/pi-durable";
 import type { Db } from "../src/db.ts";
 import { HOST_TRANSCRIPT, reclaimCheckpoints, reclaimHostTranscripts, reclaimSession, type ReclaimSession } from "../src/pi-durable/reclaim.ts";
 import { PostgresPiStorage } from "../src/pi-durable/storage.ts";
+import { createAssistantMessageEventStream, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { DurableAgent } from "../src/pi-durable/agent.ts";
 import { contextAt } from "../src/pi-durable/fork.ts";
 import { testDatabase } from "./database.ts";
 import { lastUser, runtime, until } from "./runtime-server.ts";
@@ -57,17 +59,62 @@ test("stage 1 CLI defaults to dry-run, sizes exact rows, and writes nothing; app
   assert.equal((await reclaimCheckpoints(db, { apply: true, session }, () => {})).sessions, 0, "repeat run has nothing to reclaim");
 });
 
-test("checkpoint reclaim waits until a history-none streak has restored its context", async () => {
+test("checkpoint reclaim protects the pre-streak range and only runs without stored digests", async () => {
   const { db, session, before } = await fixture();
   const storage = await PostgresPiStorage.open(db, session);
   await storage.commit([{ type: "document.create", record: { id: 200 as never, kind: "camel.context.aside",
     scope: { kind: "conversation", conversationId: 1 as never }, history: "latest", fork: "current" },
-    content: { version: 1, kind: "base", value: { before: 10, runs: [20] } } }], context);
+    content: { version: 1, kind: "base", value: { before: 3, runs: [4] } } }], context);
   assert.equal((await reclaimCheckpoints(db, { apply: true, session }, () => {})).rows, 0);
   assert.deepEqual(await snapshot(db, session), before);
+  await storage.commit([{ type: "document.change", id: 200 as never,
+    content: { version: 1, kind: "base", value: { before: 3, runs: [4], digests: { 4: "saved" } } } }], context);
+  assert.equal((await reclaimCheckpoints(db, { apply: true, session }, () => {})).rows, 1, "the digested run can be reclaimed while the streak is open");
+  assert.deepEqual(await snapshot(db, session), before.filter(row => Number(row.id) !== 4));
   await storage.commit([{ type: "document.change", id: 200 as never, content: { version: 1, kind: "base", value: { runs: [] } } }], context);
-  assert.equal((await reclaimCheckpoints(db, { apply: true, session }, () => {})).rows, 3);
+  assert.equal((await reclaimCheckpoints(db, { apply: true, session }, () => {})).rows, 2);
   await storage.close(context);
+});
+
+test("200 none-runs bound the aside, reclaim checkpoints, and restore without reading each run", { timeout: 60_000 }, async t => {
+  const { db } = await database;
+  const session = randomUUID();
+  await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ($1, 'test', '{}', 1, 'test', 'test', 'test')", [session]);
+  const storage = await PostgresPiStorage.open(db, session);
+  let reads = 0;
+  const scan = storage.scanEntries.bind(storage);
+  storage.scanEntries = (...args) => { reads++; return scan(...args); };
+  const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false,
+    input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100_000, maxTokens: 1000 } as any;
+  const agent = await DurableAgent.create({ initialState: { model }, streamFn: () => {
+    const events = createAssistantMessageEventStream();
+    queueMicrotask(() => { const message = fauxAssistantMessage("done"); events.push({ type: "done", reason: "stop", message }); events.end(message); });
+    return events;
+  }, durable: { storage } });
+  t.after(() => agent.close());
+  const system = { role: "system", content: "Instructions", timestamp: 0 } as const;
+  await agent.replaceContext([system]);
+  await agent.prompt("PRE-STREAK");
+  for (let i = 0; i < 200; i++) {
+    const task = { role: "user", content: `RUN-${i}: ` + "x".repeat(2000), timestamp: i } as const;
+    await agent.historyContext(task, system);
+    await agent.prompt(task);
+  }
+  const doc = (await storage.scanDocuments({ scope: { kind: "conversation", conversationId: agent.conversationId }, kind: "camel.context.aside", at: "current" }, 1, undefined, context)).items[0];
+  const aside = (await storage.document(doc.id, "current", context))!.value as any;
+  assert.ok(aside.runs.length < 40, `${aside.runs.length} retained runs`);
+  assert.ok(JSON.stringify(aside).length < 75_000);
+  assert.equal(Object.keys(aside.digests).length, aside.runs.length);
+  assert.ok((await reclaimSession(db, session, true)).rows > 150, "old none checkpoints are reclaimable with an open streak");
+  reads = 0;
+  await agent.historyContext();
+  assert.ok(reads <= 4, `${reads} context scans on restore`);
+  assert.ok((agent as any).originalInputs.size < 40);
+  const restored = JSON.stringify(agent.state.messages);
+  assert.match(restored, /PRE-STREAK/);
+  assert.match(restored, /RUN-199/);
+  assert.doesNotMatch(restored, /RUN-0:/);
+  assert.deepEqual((await storage.document(doc.id, "current", context))!.value.runs, []);
 });
 
 test("records holding a NUL (a binary file read as text) neither stop a run nor change what it selects", async () => {

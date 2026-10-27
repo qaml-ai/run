@@ -3,7 +3,7 @@ import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, Age
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
-import { renderMessages } from "../sender.ts";
+import { boundedDigests, runDigest, type ContextAside } from "./context-aside.ts";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
   CompactionTask, GenerationTask, Harness, InboxDoc, LiveDoc, StorageRequestError, createRegistry, createSession, defineDoc, section,
@@ -20,7 +20,7 @@ export const ContextLimitDoc = defineDoc({
 /** A history-none streak's boundary and current task survive compaction and node hand-off. */
 const ContextAsideDoc = defineDoc({
   kind: "camel.context.aside", version: 1, scope: "conversation", history: "latest", fork: "current",
-  initial: (): { before?: number; runs: number[]; task?: string } => ({ runs: [] }),
+  initial: (): ContextAside => ({ runs: [] }),
   checkpointWhen: () => true,
 });
 
@@ -754,40 +754,54 @@ export class DurableAgent {
 
   /** Start a none-run, or restore pre-streak context and a bounded newest-first digest. */
   async historyContext(task?: AgentMessage, leading?: AgentMessage) {
-    const aside = await this.harness.snapshot(ContextAsideDoc, this.conversation.id, context);
+    const aside = structuredClone(await this.harness.snapshot(ContextAsideDoc, this.conversation.id, context)) as ContextAside | undefined;
     if (task) {
       const tail = (await this.options.durable.storage.scanEntries({ conversationId: this.conversation.id }, 1, undefined, context)).items[0]?.id;
       await this.checkpointContext([leading!], { before: tail, task: JSON.stringify(task) });
       this.messages = [leading!];
     } else if (aside?.runs.length) {
       const pre = aside.before === undefined ? undefined : await this.conversation.context(context, { at: aside.before as never });
-      const digest: AgentMessage[] = [];
-      let remaining = 20_000;
-      for (let i = aside.runs.length - 1; i >= 0 && remaining > 0; i--) {
-        const end = i + 1 === aside.runs.length ? undefined : (await this.options.durable.storage.scanEntries({
-          conversationId: this.conversation.id, maxEntryId: (aside.runs[i + 1] - 1) as never,
-        }, 1, undefined, context)).items[0]?.id;
-        const view = await this.conversation.context(context, end === undefined ? undefined : { at: end });
-        const messages = renderMessages(this.originals(view.messages, view.entries));
-        const prompt = messages.find(message => message.role === "user");
-        const reply = messages.findLast(message => message.role === "assistant");
-        const text = (message: AgentMessage | undefined) => !message || !("content" in message) ? "" : typeof message.content === "string" ? message.content :
-          message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
-        // Keep the reply or structured output, without reasoning or intermediate tool calls.
-        const final = text(reply) || JSON.stringify(reply?.content.flatMap(part => part.type === "toolCall" && part.name === "final_output" ? [part.arguments] : [])[0] ?? "");
-        const chars = Math.max(0, (remaining - 32) * 3);
-        const input = text(prompt), output = final;
-        const inputChars = Math.min(input.length, Math.max(chars - output.length, Math.floor(chars / 2)));
-        const content = `History-none run\nPrompt: ${input.slice(0, inputChars)}\nFinal reply: ${output.slice(0, chars - inputChars)}`;
-        const message: AgentMessage = { role: "user", content, timestamp: 0 };
-        const tokens = estimateMessageTokens(message);
-        if (tokens > remaining) break;
-        digest.push(message); remaining -= tokens;
-        if (inputChars < input.length || chars - inputChars < output.length) break;
-      }
+      await this.storeRunDigests(aside);
+      const digest = boundedDigests([...aside.runs].reverse().map(id => aside.digests![id]));
       await this.checkpointContext([...this.originals(pre?.messages ?? [], pre?.entries), ...digest], null);
       await this.reload();
+      return true;
     }
+    return false;
+  }
+
+  /** Older checkpoints have only run IDs. Convert them once, then keep bounded digest text. */
+  private async storeRunDigests(aside: ContextAside) {
+    aside.digests ??= {};
+    for (let i = aside.runs.length - 1; i >= 0; i--) {
+      const id = aside.runs[i];
+      if (aside.digests[id] !== undefined) continue;
+      const next = aside.runs[i + 1];
+      const end = next === undefined ? undefined : (await this.options.durable.storage.scanEntries({
+        conversationId: this.conversation.id, maxEntryId: (next - 1) as never,
+      }, 1, undefined, context)).items[0]?.id;
+      const view = await this.conversation.context(context, end === undefined ? undefined : { at: end as never });
+      const prompt = i === aside.runs.length - 1 && aside.task ? JSON.parse(aside.task) : view.messages.find(message => message.role === "user");
+      aside.digests[id] = runDigest(prompt, view.messages);
+      if (boundedDigests(aside.runs.slice(i).reverse().map(id => aside.digests![id])).length < aside.runs.length - i) break;
+    }
+    const contents: string[] = [];
+    for (const id of [...aside.runs].reverse()) {
+      if (aside.digests[id] === undefined) break;
+      contents.push(aside.digests[id]);
+    }
+    const kept = boundedDigests(contents);
+    aside.runs = kept.length ? aside.runs.slice(-kept.length) : [];
+    aside.digests = Object.fromEntries(aside.runs.map(id => [id, aside.digests![id]]));
+  }
+
+  private async finishHistoryRun() {
+    const aside = structuredClone(await this.harness.snapshot(ContextAsideDoc, this.conversation.id, context)) as ContextAside | undefined;
+    if (!aside?.runs.length) return;
+    aside.digests ??= {};
+    aside.digests[aside.runs.at(-1)!] = runDigest(aside.task ? JSON.parse(aside.task) : undefined, this.messages);
+    await this.storeRunDigests(aside);
+    await this.conversation.commit(async tx => Object.assign(await tx.doc(ContextAsideDoc, this.conversation.id), aside), context);
   }
 
   private async checkpointContext(messages: AgentMessage[], aside?: { before?: number; task: string } | null) {
@@ -801,7 +815,7 @@ export class DurableAgent {
       });
       if (aside !== undefined) {
         const doc = await tx.doc(ContextAsideDoc, this.conversation.id);
-        if (aside === null) { delete doc.before; delete doc.task; doc.runs = []; }
+        if (aside === null) { delete doc.before; delete doc.task; delete doc.digests; doc.runs = []; }
         else {
           if (!doc.runs.length) doc.before = aside.before;
           doc.runs.push(checkpoint.id);
@@ -968,6 +982,7 @@ export class DurableAgent {
       this.batch = [];
       await this.flushEvents();
       const added = await this.recoverMessages(start);
+      await this.finishHistoryRun();
       await this.emit({ type: "agent_end", messages: added.map(item => item.message) });
     }
   }
