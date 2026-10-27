@@ -203,6 +203,8 @@ export class DurableAgent {
    * would withdraw it and keep its request id.
    */
   private queued: AgentMessage[] = [];
+  /** Steers only for the run they were given in (`steer(message, true)`): dropped when it ends without taking them. */
+  private runOnly = new WeakSet<AgentMessage>();
   private originalInputs = new Map<number, { native: Message; message: AgentMessage }>();
   private _latestCursor?: DurableCursor;
   private streamingMessage?: AgentMessage;
@@ -268,10 +270,10 @@ export class DurableAgent {
   static async create(options: DurableAgentOptions): Promise<DurableAgent> {
     const agent = new DurableAgent(options);
     agent.installTools();
-    // The public task definition is pinned to 1.3.0. Its preparation preserves Camel's positional system
-    // sections and complete context checkpoints; its post-tools policy
-    // boundary ensures Camel's finishTurn runs after every result commits,
-    // including rejected and unavailable calls and sequential tool rounds.
+    // Pi's generation task with two changes, pinned to its 1.4 phases: preparation does not take a context checkpoint
+    // (`camel.legacy.context`) for a head marker, and the end of a tool round asks the host whether the run ends
+    // (`finishTurn`: a call waiting for input, final_output, a run or spend limit, a hand-off). Pi ends a run after a round
+    // only when every result asks it to (`control.terminate`), and its `afterTools` hook cannot end one.
     const original = GenerationTask.definition;
     const task = { definition: { ...original, phases: { ...original.phases,
       prepare: async (...args: Parameters<typeof original.phases.prepare>) => {
@@ -291,20 +293,7 @@ export class DurableAgent {
         if (!record.state.checkpoint.pending.length) {
           await agent.flushEvents();
           const checkpoint = record.state.checkpoint;
-          const entry = await runtime.entry(checkpoint.assistant, taskContext);
-          const assistant = entry?.model?.[0] as AssistantMessage;
-          const live = await runtime.snapshot(LiveDoc, runtime.conversationId, taskContext);
-          const results: ToolResultMessage[] = [];
-          for (const slot of live?.tools ?? []) if (slot.entry !== undefined) {
-            const result = await runtime.entry(slot.entry, taskContext);
-            if (result?.model?.[0]?.role === "toolResult") results.push(result.model[0] as ToolResultMessage);
-          }
-          const decision = await agent.options.finishTurn?.({ message: assistant, toolResults: results,
-            context: { messages: agent.messages, tools: agent.tools }, newMessages: agent.messages }, agent.signal);
-          await agent.emit({ type: "turn_end", message: assistant, toolResults: results });
-          agent.lastTurn = undefined;
-          if (decision?.action === "end") {
-            agent.stoppedByFinishTurn = true;
+          if (await agent.endTurn()) {
             await runtime.commit(async tx => {
               const live = await tx.doc(LiveDoc, runtime.conversationId);
               if (live.run?.taskId === record.id) {
@@ -672,10 +661,26 @@ export class DurableAgent {
           });
         } catch (error) { result = { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], details: undefined, isError: true }; }
         return { output: result.content, ...(result.details === undefined ? {} : { details: result.details }), isError: result.isError,
-          ...(result.structuredContent === undefined ? {} : { structuredOutput: result.structuredContent }),
+          ...(result.structuredContent === undefined || !tool.outputSchema ? {} : { structuredOutput: result.structuredContent }),
           ...(result.usage === undefined ? {} : { usage: result.usage }), ...(result.terminate ? { control: { terminate: true } } : {}) };
       },
     })) });
+  }
+
+  /**
+   * The turn that just ended (its response and the round's results, in call order) as the host decides on it
+   * (`finishTurn`), then told as `turn_end`: whether the host ends the run.
+   */
+  private async endTurn() {
+    const message = this.lastTurn;
+    if (!message) return false;
+    this.lastTurn = undefined;
+    const calls = message.content.flatMap(part => part.type === "toolCall" ? [part.id] : []);
+    const toolResults = [...this.lastTurnResults].sort((a, b) => calls.indexOf(a.toolCallId) - calls.indexOf(b.toolCallId));
+    const decision = await this.options.finishTurn?.({ message, toolResults, context: { messages: this.messages, tools: this.tools }, newMessages: this.messages }, this.signal);
+    await this.emit({ type: "turn_end", message, toolResults });
+    if (decision?.action === "end") this.stoppedByFinishTurn = true;
+    return decision?.action === "end";
   }
 
   async recoverMessages(after?: DurableCursor) { return recoverDurableMessages(this.options.durable.storage, this.conversation.id, after); }
@@ -723,7 +728,9 @@ export class DurableAgent {
   }
 
   /** Before a run takes input, steers wait for it; while it runs, they go to Pi's inbox, placed at its next boundary. */
-  steer(message: AgentMessage) { this.queued.push(message); }
+  steer(message: AgentMessage, runOnly = false) { if (runOnly) this.runOnly.add(message); this.queued.push(message); }
+  /** Drop the steers given only for the run that ended (`steer(message, true)`) that it did not take. */
+  dropRunSteers() { this.queued = this.queued.filter(message => !this.runOnly.has(message)); }
   clearSteeringQueue() { this.queued = []; }
   hasQueuedMessages() { return this.queued.length > 0; }
   peekQueuedMessages() { return this.queued.slice(0, 1); }
@@ -882,13 +889,7 @@ export class DurableAgent {
       while (true) {
         await this.conversation.waitForIdle(context);
         await this.flushEvents();
-        if (this.lastTurn) {
-          const decision = await this.options.finishTurn?.({ message: this.lastTurn, toolResults: this.lastTurnResults,
-            context: { messages: this.messages, tools: this.tools }, newMessages: this.messages }, this.signal);
-          await this.emit({ type: "turn_end", message: this.lastTurn, toolResults: this.lastTurnResults });
-          this.lastTurn = undefined;
-          if (decision?.action === "end") this.stoppedByFinishTurn = true;
-        }
+        await this.endTurn();
         if (this.signal?.aborted || this.stoppedByFinishTurn || !this.queued.length) break;
         // A steer given as the run answered goes on in a run of its own.
         await this.submitSteer();
