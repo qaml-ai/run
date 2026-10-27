@@ -97,6 +97,8 @@ export interface HostIO {
   lease?(): Promise<void>;
   /** Tenants whose agents' system sections are native Pi sections (AGENT_NATIVE_SECTIONS_TENANTS; `*`: every tenant). */
   nativeSectionsTenants?: string[];
+  /** Tenants using Pi checkpoints for history-none runs. */
+  piContextTenants?: string[];
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number> };
 }
@@ -357,6 +359,7 @@ export function createAgentHost(hostIO: HostIO) {
     }
   }
 
+  const piContext = () => !!io.piContextTenants && (io.piContextTenants.includes("*") || io.piContextTenants.includes(config.tenant ?? ""));
   /** Whether the agent's system sections are native Pi sections: its tenant is in AGENT_NATIVE_SECTIONS_TENANTS (or `*`). */
   const nativeSections = () => !!io.nativeSectionsTenants && (io.nativeSectionsTenants.includes("*") || io.nativeSectionsTenants.includes(config.tenant ?? ""));
 
@@ -989,7 +992,7 @@ export function createAgentHost(hostIO: HostIO) {
       await requireContextSize();
       agent = await DurableAgent.create({ ...agentOptions, durable: {
         storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: journal.history.latest, written: () => journal.written,
-        leading: () => leading(agent ? undefined : tools.map(toToolDeclaration)), view: messages => freshView(messages, fresh),
+        leading: () => leading(agent ? undefined : tools.map(toToolDeclaration)), view: piContext() ? undefined : messages => freshView(messages, fresh),
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own
         // writes fails. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
         onStorageFailure: error => { journal.failed ??= error; },
@@ -1159,7 +1162,7 @@ export function createAgentHost(hostIO: HostIO) {
           await journal.setActive(false);
           return { messages: journal.total, error: null, ...(journal.awaiting.length ? { stopped: "input_required" } : {}) };
         }
-        fresh = await freshTurn();
+        if (!piContext()) fresh = await freshTurn();
         if (active.signal.aborted) return await abortedBeforeLoop();
         // The answered calls were this run's step: a node leaving hands the turn off before the model is asked.
         if (await handingOff()) return handedOff();
@@ -1171,7 +1174,7 @@ export function createAgentHost(hostIO: HostIO) {
           if (await handingOff()) return handedOff();
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
-        fresh = await freshTurn();
+        if (!piContext()) fresh = await freshTurn();
         await agent.continue();
       }
       else {
@@ -1194,7 +1197,10 @@ export function createAgentHost(hostIO: HostIO) {
         }
         // Images enter the journal as requests carry them: scaled down once here, not on every request after.
         const messages = await fittedImages(promptMessages!);
-        if (params.history === "none") fresh = messages[0];
+        if (piContext()) {
+          await agent.historyContext(params.history === "none" ? messages[0] : undefined, leading());
+          await declareConfiguration(true);
+        } else if (params.history === "none") fresh = messages[0];
         await agent.prompt(messages);
       }
       await unforced(active.signal);

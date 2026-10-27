@@ -4009,7 +4009,7 @@
               "full",
               "none"
             ],
-            "description": "What the model sees of the agent's history in this run. full (default): all of it. none: only the system prompt (instructions, tools) and this message, as a new conversation would, without making an agent. The run is still recorded in the history (its user message carries history: \"none\"), and later runs that do not say none see it. Not with whileRunning: steer"
+            "description": "What the model sees of the agent's history in this run. full (default): all of it. none: only the system prompt (instructions, tools) and this message, as a new conversation would, without making an agent. The run is still recorded in the history (its user message carries history: \"none\"), and later runs that do not say none see it. With the Pi context checkpoint canary enabled, later runs see the pre-streak context plus a newest-first digest of none-run prompts and final replies within 20k estimated tokens; older runs remain in API history. Not with whileRunning: steer"
           },
           "metadata": {
             "type": "object",

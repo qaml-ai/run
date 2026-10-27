@@ -114,7 +114,12 @@ export async function journalForkCut(storage: Pick<Storage, "scanEntries" | "fin
   // Pi's context just before the next history message: with what the journal holds between (a compaction or a
   // checkpoint that summarizes what the fork keeps, an import's summary at its cut), never anything after.
   const cursor = history.cursorAt(count - 1), next = history.cursorAt(count);
-  const through = !cursor ? undefined : !next ? { entryId: Number.MAX_SAFE_INTEGER, index: -1 } : next.index > 0 ? { entryId: next.entryId, index: next.index - 1 } : { entryId: next.entryId - 1, index: -1 };
+  let through = !cursor ? undefined : !next ? { entryId: Number.MAX_SAFE_INTEGER, index: -1 } : next.index > 0 ? { entryId: next.entryId, index: next.index - 1 } : { entryId: next.entryId - 1, index: -1 };
+  // A none-run's checkpoint belongs to its following prompt, not the preceding fork point.
+  if (through && cursor && next && (messages[count] as { history?: string })?.history === "none") {
+    const head = await storage.findLatestHeadMarker(conversationId, through.entryId as EntryId, context);
+    if ((head?.data as { historyNone?: boolean } | undefined)?.historyNone && head!.id > cursor.entryId) through = cursor;
+  }
   if (through) {
     try {
       const model = await contextAt(storage, through);

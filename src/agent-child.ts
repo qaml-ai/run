@@ -28,6 +28,7 @@ const host = createAgentHost({
   piStorage: async () => await rpc.request("pi-storage", { method: "available" }) ? remotePiStorage(request => rpc.request("pi-storage", request)) : undefined,
   // This process's environment is the node's settings for it (agentProcessEnv).
   ...(process.env.AGENT_NATIVE_SECTIONS_TENANTS ? { nativeSectionsTenants: process.env.AGENT_NATIVE_SECTIONS_TENANTS.split(",").map(item => item.trim()).filter(Boolean) } : {}),
+  ...(process.env.AGENT_PI_CONTEXT_TENANTS ? { piContextTenants: process.env.AGENT_PI_CONTEXT_TENANTS.split(",").map(item => item.trim()).filter(Boolean) } : {}),
 });
 
 /** A turn to run js_exec, held by the supervisor (which counts the tenant's across the node) until given back. */

@@ -65,6 +65,7 @@ type SupervisorOptions = {
   modelOutbound?: Outbound;
   /** Tenants whose inline agents' system sections are native Pi sections (agent processes get it in `agentEnv`). */
   nativeSectionsTenants?: string[];
+  piContextTenants?: string[];
   /** Shared Pi records use the same database and ownership claim as the session. */
   db?: Db;
 };
@@ -245,6 +246,7 @@ export class AgentSupervisor {
     // A supervisor given its tenant lists directly (tests) tells its agent processes, as a node's agentEnv does.
     const lists = {
       ...(this.options.nativeSectionsTenants?.length && !this.options.agentEnv?.AGENT_NATIVE_SECTIONS_TENANTS ? { AGENT_NATIVE_SECTIONS_TENANTS: this.options.nativeSectionsTenants.join(",") } : {}),
+      ...(this.options.piContextTenants?.length && !this.options.agentEnv?.AGENT_PI_CONTEXT_TENANTS ? { AGENT_PI_CONTEXT_TENANTS: this.options.piContextTenants.join(",") } : {}),
     };
     const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, Object.keys(lists).length
       ? { ...this.options.agentEnv ?? agentProcessEnv(process.env), ...lists } : this.options.agentEnv);
@@ -464,6 +466,7 @@ export class AgentSupervisor {
       codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),
       ...(this.options.codeExecutor ? { codeExecutor: this.options.codeExecutor } : {}),
       ...(this.options.nativeSectionsTenants?.length ? { nativeSectionsTenants: this.options.nativeSectionsTenants } : {}),
+      ...(this.options.piContextTenants?.length ? { piContextTenants: this.options.piContextTenants } : {}),
       ...(this.options.modelOutbound ? { modelOutbound: this.options.modelOutbound } : {}),
       lease: async () => { await handle.bridge.lease?.(); },
       history: { indexed: () => this.historyRequest(handle, { op: "indexed" }), write: chunk => this.historyRequest(handle, { op: "write", chunk: structuredClone(chunk) }) },

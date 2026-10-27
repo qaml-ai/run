@@ -27,8 +27,9 @@ test("fresh views keep the latest native or imported summary, and fall back to a
   assert.throws(() => freshView([system]), /context_lost:.*no user message/);
 });
 
-test("a history-none turn still sends its task and summary after threshold compaction removes its first message", async t => {
+test("a checkpointed history-none turn keeps its task in Pi through repeated threshold compaction", async t => {
   let reading = false, calls = 0, compactions = 0;
+  const storage = new MemoryStorage();
   const requests: any[] = [];
   const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false,
     input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1000 } as any;
@@ -40,8 +41,7 @@ test("a history-none turn still sends its task and summary after threshold compa
       const content = reading && calls++ < 12 ? [fauxToolCall("read", {}, { id: `read-${calls}` })] : "Finished";
       return stream({ ...fauxAssistantMessage(content, { stopReason: typeof content === "string" ? "stop" : "toolUse" }), provider: model.provider, model: model.id });
     },
-    durable: { storage: new MemoryStorage(), leading: () => system,
-      view: messages => freshView(messages, reading ? fresh : undefined),
+    durable: { storage, leading: () => system,
       summaryStream: () => stream({ ...fauxAssistantMessage("SUMMARY-42: Continue reading records."), provider: model.provider, model: model.id }),
       onCompaction: () => { compactions++; },
     },
@@ -50,15 +50,49 @@ test("a history-none turn still sends its task and summary after threshold compa
   await agent.prompt(user("PRIVATE-PRE-TURN", 1));
   requests.length = 0;
   reading = true;
+  await agent.historyContext(fresh, system);
   await agent.prompt(fresh);
   assert.equal(agent.state.errorMessage, undefined);
-  assert.ok(compactions > 0, "the turn crossed the native threshold");
-  assert.ok(!agent.state.messages.some(message => message.role === "user" && message.content === fresh.content), "compaction removed the original task");
+  assert.ok(compactions > 1, "the turn crossed the native threshold");
+  assert.ok(agent.state.messages.some(message => message.role === "user" && message.content === fresh.content), "the checkpoint retains the original task");
   const compacted = requests.filter(view => JSON.stringify(view).includes("SUMMARY-42"));
   assert.ok(compacted.length > 0, "a model request followed compaction");
   for (const view of requests) {
     assert.ok(view.messages.some((message: any) => message.role === "user" && message.content === fresh.content), "every request retains the task");
     assert.ok(!JSON.stringify(view).includes("PRIVATE-PRE-TURN"), "pre-turn history stays hidden");
   }
+  const context = (await import("@earendil-works/chord/context")).BACKGROUND_CONTEXT;
+  const head = await storage.findLatestHeadMarker(agent.conversationId, undefined, context);
+  const held = await storage.scanEntries({ conversationId: agent.conversationId, minEntryId: head!.head }, 256, undefined, context);
+  assert.ok(JSON.stringify(held.items).length < 40_000, "retained range stays bounded after many tool rounds");
   assert.ok(compacted.some(view => view.messages.some((message: any) => message.role === "toolResult")), "the summary retains subsequent tool results");
+  await agent.historyContext();
+  await agent.prompt(user("Normal turn", 100));
+  assert.match(JSON.stringify(requests.at(-1)), /PRIVATE-PRE-TURN/);
+  assert.match(JSON.stringify(requests.at(-1)), /History-none run.*Read all records for TASK-42/);
+  assert.match(JSON.stringify(requests.at(-1)), /Final reply: Finished/);
+  assert.doesNotMatch(JSON.stringify(requests.at(-1)), /SUMMARY-42|payload/);
+});
+
+
+test("short fixture journals send identical messages with a view or a checkpoint", async t => {
+  const requests: any[][] = [];
+  for (const checkpoint of [false, true]) {
+    const bodies: any[] = [];
+    const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false,
+      input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1000 } as any;
+    let running = false;
+    const agent = await DurableAgent.create({ initialState: { model },
+      streamFn: (_model, view) => { bodies.push(structuredClone(view.messages)); return stream({ ...fauxAssistantMessage("Done"), provider: model.provider, model: model.id }); },
+      durable: { storage: new MemoryStorage(), leading: () => system, view: checkpoint ? undefined : messages => freshView(messages, running ? fresh : undefined) },
+    });
+    t.after(() => agent.close());
+    await agent.replaceContext([system]);
+    await agent.prompt(user("Old task", 1));
+    running = true;
+    if (checkpoint) await agent.historyContext(fresh, system);
+    await agent.prompt(fresh);
+    requests.push(bodies.at(-1));
+  }
+  assert.deepEqual(requests[1], requests[0]);
 });

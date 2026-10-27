@@ -35,6 +35,17 @@ configuration changes. A prompt with `history: "none"` sends its requests from i
 own first message (with the system message as it stands then), while Pi's context
 keeps the whole history.
 
+For tenants in `AGENT_PI_CONTEXT_TENANTS` (`*` means all; empty is the old behavior),
+a none-run instead starts a Pi context checkpoint. Compaction keeps its first
+user message verbatim in the summary head, and bounds the rest of its context.
+The `camel.context.aside` document records the pre-streak tail and checkpoints.
+The next normal turn restores the pre-streak context through Pi's `context({at})`
+and adds each run's prompt and final reply, newest first, within 20k estimated
+tokens. An oversized digest is truncated; older runs remain in API history.
+Checkpoints and the aside document commit together. A node continuing or resuming
+the run reads the same context from storage. Checkpoint reclaim retains the copies
+needed by an open streak until restore clears the aside document.
+
 Full history, export and fork read the history index, then the journal past it.
 
 ## Sessions from before the host transcript's removal

@@ -57,6 +57,19 @@ test("stage 1 CLI defaults to dry-run, sizes exact rows, and writes nothing; app
   assert.equal((await reclaimCheckpoints(db, { apply: true, session }, () => {})).sessions, 0, "repeat run has nothing to reclaim");
 });
 
+test("checkpoint reclaim waits until a history-none streak has restored its context", async () => {
+  const { db, session, before } = await fixture();
+  const storage = await PostgresPiStorage.open(db, session);
+  await storage.commit([{ type: "document.create", record: { id: 200 as never, kind: "camel.context.aside",
+    scope: { kind: "conversation", conversationId: 1 as never }, history: "latest", fork: "current" },
+    content: { version: 1, kind: "base", value: { before: 10, runs: [20] } } }], context);
+  assert.equal((await reclaimCheckpoints(db, { apply: true, session }, () => {})).rows, 0);
+  assert.deepEqual(await snapshot(db, session), before);
+  await storage.commit([{ type: "document.change", id: 200 as never, content: { version: 1, kind: "base", value: { runs: [] } } }], context);
+  assert.equal((await reclaimCheckpoints(db, { apply: true, session }, () => {})).rows, 3);
+  await storage.close(context);
+});
+
 test("records holding a NUL (a binary file read as text) neither stop a run nor change what it selects", async () => {
   // jsonb refuses \u0000, and json's ->> too: one such record anywhere stopped the first dry run in production.
   const { db, session, before } = await fixture("PK\u0003\u0004\u0000 \\u0000 \\\u0000");

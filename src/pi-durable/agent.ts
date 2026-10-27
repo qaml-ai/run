@@ -3,16 +3,24 @@ import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, Age
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
+import { renderMessages } from "../sender.ts";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, InboxDoc, LiveDoc, StorageRequestError, createRegistry, createSession, defineDoc, section,
-  type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage, type TaskId,
+  CompactionTask, GenerationTask, Harness, InboxDoc, LiveDoc, StorageRequestError, createRegistry, createSession, defineDoc, section,
+  type EntryDraft, type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage, type TaskId,
 } from "@earendil-works/pi-durable";
 
 /** Small latest-value document: loading an agent never scans its journal for a limit. */
 export const ContextLimitDoc = defineDoc({
   kind: "camel.context.limit", version: 1, scope: "conversation", history: "latest", fork: "current",
   initial: (): { provider: string; model: string; window: number } => ({ provider: "", model: "", window: 0 }),
+  checkpointWhen: () => true,
+});
+
+/** A history-none streak's boundary and current task survive compaction and node hand-off. */
+const ContextAsideDoc = defineDoc({
+  kind: "camel.context.aside", version: 1, scope: "conversation", history: "latest", fork: "current",
+  initial: (): { before?: number; runs: number[]; task?: string } => ({ runs: [] }),
   checkpointWhen: () => true,
 });
 
@@ -349,13 +357,36 @@ export class DurableAgent {
         return original.phases.tools(...args);
       },
     } } };
+    // Pi chooses the cut and writes the summary. Keep the current none-run's task in that same head,
+    // so a crash cannot leave a compacted context without it. The rest of the range still shrinks normally.
+    const compaction = CompactionTask.definition;
+    const compactTask = { definition: { ...compaction, phases: Object.fromEntries(Object.entries(compaction.phases).map(([name, phase]) =>
+      [name, async (...args: Parameters<typeof compaction.phases.select>) => {
+        const [record, runtime, ctx] = args;
+        const wrapped = new Proxy(runtime, { get(target, key) {
+          if (key === "commit") return (fn: Parameters<typeof runtime.commit>[0], commitContext: typeof ctx) => target.commit(async (tx, current) => {
+            const aside = await tx.doc(ContextAsideDoc, runtime.conversationId);
+            const writes = new Proxy(tx, { get(target, key) {
+              if (key === "appendEntry") return (id: ConversationId, entry: EntryDraft) =>
+                target.appendEntry(id, entry.kind === "pi.compaction" && aside.task
+                  ? { ...entry, model: [JSON.parse(aside.task), ...entry.model ?? []], data: { ...entry.data as object, message: JSON.parse(aside.task) } } : entry);
+              const value = Reflect.get(target, key, target);
+              return typeof value === "function" ? value.bind(target) : value;
+            } });
+            return fn(writes, current);
+          }, commitContext);
+          const value = Reflect.get(target, key, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        } });
+        return (phase as typeof compaction.phases.select)(record, wrapped, ctx);
+      }])) } };
     const registry: RegistryReader = {
       subscribe: listener => agent.registry.subscribe(listener),
       snapshot: () => {
         const snapshot = agent.registry.snapshot();
         return new Proxy(snapshot, { get(target, key) {
-          if (key === "task") return (name: string) => name === original.name ? task : target.task(name);
-          if (key === "tasks") return () => target.tasks().map(item => item.definition.name === original.name ? task : item);
+          if (key === "task") return (name: string) => name === original.name ? task : name === compaction.name ? compactTask : target.task(name);
+          if (key === "tasks") return () => target.tasks().map(item => item.definition.name === original.name ? task : item.definition.name === compaction.name ? compactTask : item);
           const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
         } }) as RegistrySnapshot;
       },
@@ -440,7 +471,7 @@ export class DurableAgent {
         .sort((a, b) => (a as { value: EntryRecord }).value.id - (b as { value: EntryRecord }).value.id);
       for (const change of entries) if (change.type === "entry") {
         const entry = change.value;
-        if (entry.kind === "camel.user" && entry.model?.[0]?.role === "user") {
+        if (entry.model?.[0]?.role === "user") {
           const original = (entry.data as { message?: AgentMessage } | undefined)?.message;
           if (original) agent.originalInputs.set(entry.id, { native: entry.model[0], message: original });
         }
@@ -475,13 +506,13 @@ export class DurableAgent {
     const keptMessages = view.contributions.reduce((count, messages, index) => count +
       (view.entries[index].id === view.head?.id ? 0 : messages.filter(message => message.role !== "system" &&
         !(message.role === "toolResult" && (message.details as { inputRequired?: boolean } | undefined)?.inputRequired)).length), 0);
-    let summary = (entry.model ?? []).map(message => typeof message.content === "string" ? message.content :
+    let summary = (entry.model?.slice(-1) ?? []).map(message => typeof message.content === "string" ? message.content :
       message.content.filter(part => part.type === "text").map(part => part.text).join("\n")).join("\n");
     if (summary.startsWith(COMPACTION_SUMMARY_PREFIX) && summary.endsWith(COMPACTION_SUMMARY_SUFFIX)) {
       summary = summary.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length);
     }
     const reason = (entry.data as { reason?: string } | undefined)?.reason === "overflow" ? "overflow" : "threshold";
-    await this.options.durable.onCompaction?.({ summary, keptMessages, at: entry.model?.[0]?.timestamp ?? Date.now(), reason });
+    await this.options.durable.onCompaction?.({ summary, keptMessages, at: entry.model?.at(-1)?.timestamp ?? Date.now(), reason });
   }
 
   get signal() { return this.controller?.signal; }
@@ -494,7 +525,7 @@ export class DurableAgent {
    */
   async reload() {
     const view = await this.conversation.context(context);
-    for (const entry of view.entries) if (entry.kind === "camel.user" && entry.model?.[0]?.role === "user" && !this.originalInputs.has(entry.id)) {
+    for (const entry of view.entries) if (entry.model?.[0]?.role === "user" && !this.originalInputs.has(entry.id)) {
       const original = (entry.data as { message?: AgentMessage } | undefined)?.message;
       if (original) this.originalInputs.set(entry.id, { native: entry.model[0], message: original });
     }
@@ -647,7 +678,11 @@ export class DurableAgent {
   }
 
   /** Pi's context with each submitted input replaced by Camel's original message. */
-  private originals(nativeMessages: Message[]): AgentMessage[] {
+  private originals(nativeMessages: readonly Message[], entries: readonly EntryRecord[] = []): AgentMessage[] {
+    for (const entry of entries) {
+      const message = (entry.data as { message?: AgentMessage } | undefined)?.message;
+      if (message && entry.model?.[0]?.role === "user") this.originalInputs.set(entry.id, { native: entry.model[0], message });
+    }
     const originals = new Map<string, AgentMessage[]>();
     for (const item of this.originalInputs.values()) {
       const key = JSON.stringify(item.native), queue = originals.get(key) ?? [];
@@ -717,16 +752,65 @@ export class DurableAgent {
     this.messages = [...messages];
   }
 
-  private async checkpointContext(messages: AgentMessage[]) {
+  /** Start a none-run, or restore pre-streak context and a bounded newest-first digest. */
+  async historyContext(task?: AgentMessage, leading?: AgentMessage) {
+    const aside = await this.harness.snapshot(ContextAsideDoc, this.conversation.id, context);
+    if (task) {
+      const tail = (await this.options.durable.storage.scanEntries({ conversationId: this.conversation.id }, 1, undefined, context)).items[0]?.id;
+      await this.checkpointContext([leading!], { before: tail, task: JSON.stringify(task) });
+      this.messages = [leading!];
+    } else if (aside?.runs.length) {
+      const pre = aside.before === undefined ? undefined : await this.conversation.context(context, { at: aside.before as never });
+      const digest: AgentMessage[] = [];
+      let remaining = 20_000;
+      for (let i = aside.runs.length - 1; i >= 0 && remaining > 0; i--) {
+        const end = i + 1 === aside.runs.length ? undefined : (await this.options.durable.storage.scanEntries({
+          conversationId: this.conversation.id, maxEntryId: (aside.runs[i + 1] - 1) as never,
+        }, 1, undefined, context)).items[0]?.id;
+        const view = await this.conversation.context(context, end === undefined ? undefined : { at: end });
+        const messages = renderMessages(this.originals(view.messages, view.entries));
+        const prompt = messages.find(message => message.role === "user");
+        const reply = messages.findLast(message => message.role === "assistant");
+        const text = (message: AgentMessage | undefined) => !message || !("content" in message) ? "" : typeof message.content === "string" ? message.content :
+          message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
+        // Keep the reply or structured output, without reasoning or intermediate tool calls.
+        const final = text(reply) || JSON.stringify(reply?.content.flatMap(part => part.type === "toolCall" && part.name === "final_output" ? [part.arguments] : [])[0] ?? "");
+        const chars = Math.max(0, (remaining - 32) * 3);
+        const input = text(prompt), output = final;
+        const inputChars = Math.min(input.length, Math.max(chars - output.length, Math.floor(chars / 2)));
+        const content = `History-none run\nPrompt: ${input.slice(0, inputChars)}\nFinal reply: ${output.slice(0, chars - inputChars)}`;
+        const message: AgentMessage = { role: "user", content, timestamp: 0 };
+        const tokens = estimateMessageTokens(message);
+        if (tokens > remaining) break;
+        digest.push(message); remaining -= tokens;
+        if (inputChars < input.length || chars - inputChars < output.length) break;
+      }
+      await this.checkpointContext([...this.originals(pre?.messages ?? [], pre?.entries), ...digest], null);
+      await this.reload();
+    }
+  }
+
+  private async checkpointContext(messages: AgentMessage[], aside?: { before?: number; task: string } | null) {
     const model = contextMessages(messages);
     await this.conversation.commit(async tx => {
       // Keep message boundaries: Pi cannot select a compaction cut inside one
       // entry containing the whole previous conversation.
-      await tx.appendEntry(this.conversation.id, {
+      const checkpoint = await tx.appendEntry(this.conversation.id, {
         kind: "camel.legacy.context", head: "self", model: structuredClone(model.slice(0, 1)) as never,
+        ...(aside ? { data: { historyNone: true } } : {}),
       });
-      for (const message of model.slice(1)) await tx.appendEntry(this.conversation.id, {
+      if (aside !== undefined) {
+        const doc = await tx.doc(ContextAsideDoc, this.conversation.id);
+        if (aside === null) { delete doc.before; delete doc.task; doc.runs = []; }
+        else {
+          if (!doc.runs.length) doc.before = aside.before;
+          doc.runs.push(checkpoint.id);
+          doc.task = aside.task;
+        }
+      }
+      for (const [index, message] of model.slice(1).entries()) await tx.appendEntry(this.conversation.id, {
         kind: "camel.context.message", model: [structuredClone(message)] as never,
+        ...(message.role === "user" ? { data: { message: messages[index + 1] } as never } : {}),
       });
     }, context);
     this.originalInputs.clear();
