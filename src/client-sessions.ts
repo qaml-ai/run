@@ -314,6 +314,10 @@ export class ClientSessions {
     if (!loading) {
       loading = this.read(id, sweep).finally(() => this.loading.delete(id));
       this.loading.set(id, loading);
+    } else if (!sweep) {
+      // A shared sweep may decline its reservation after another node moved the deadline.
+      // Acting requests still load the agent, without the sweep's backoff.
+      return loading.then(session => session ?? this.load(id));
     }
     return loading;
   }
@@ -2805,6 +2809,8 @@ export class ClientSessions {
     await this.spendWrite(session, 0)?.().catch(error => console.error(JSON.stringify({ type: "agent_spend_write_failed", agent: session.header.id, error: safeError(error) })));
     // Runs left open are its next owner's to count.
     await this.releaseBusy(session, true);
+    // A graceful hand-off is not a failed sweep load, even before the two-minute reset.
+    if (!session.fault && session.sweepResetAt !== undefined) await this.resetSweep(session).catch(() => {});
     if (session.claim) await this.options.ownership!.release(session.claim).catch(() => {});
     // Runs left open (a drain's or a retirement's): peers sweep at once rather than at their next interval.
     const node = this.options.ownership?.node;
