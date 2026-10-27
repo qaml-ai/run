@@ -273,7 +273,7 @@ test("run and usage events: counted by tenant as they are written, with runtime 
 
 test("model_cost: tokens and the serving host as fields, a line per host, never a dimension", async () => {
   const usage = (host: string | undefined, input: number, cacheRead: number, output: number, usd: number) => ({
-    ...webhookEvent("usage.recorded", "camel-bots", { agentId: "a", provider: "openrouter", model: "deepseek/deepseek-v4.1-flash-1017:nitro", input, output, cacheRead, cacheWrite: 0, cost: { usd, source: "provider" } }),
+    ...webhookEvent("usage.recorded", "camel-bots", { agentId: "a", provider: "openrouter", model: "deepseek/deepseek-v4.1-flash-1017:morph", input, output, cacheRead, cacheWrite: 0, cost: { usd, source: "provider" } }),
     ...(host ? { host } : {}),
   });
   const lines = await captured(() => recordEventMetrics([usage("Morph", 1000, 99_000, 500, 0.001), usage("Morph", 2000, 98_000, 300, 0.002), usage("Together", 500, 9_500, 100, 0.003), usage(undefined, 10, 0, 1, 0.0001)]));
