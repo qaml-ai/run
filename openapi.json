@@ -3121,7 +3121,7 @@
               },
               "class": {
                 "type": "string",
-                "description": "How it failed, never its text: a stop (spend_limit, turn_limit, agent_loop_limit), the runtime's code (aborted, resume_limit, model_stream_stalled…), runtime_restart, runtime_error or model_error. Its request's outcome has the message"
+                "description": "How it failed, never its text: a stop (spend_limit, turn_limit, agent_loop_limit), the runtime's code (aborted, resume_limit, context_too_large, model_stream_stalled…), runtime_restart, runtime_error or model_error. Its request's outcome has the message"
               }
             },
             "required": [
@@ -3388,7 +3388,7 @@
             "type": "boolean"
           }
         },
-        "description": "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, spend_limit, agent_loop_limit (a sub-agent's notification landed without a turn: its chain reached its wake cap), output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate or spawn_agent call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, and result.usage.imageCostUsd what its generate_image calls spent. result.servedModel is the model that made its last response (provider/model-id); result.modelError, when a model call failed it, says how: {errorClass, providerStatus?, retryable, model} (ModelFailure)"
+        "description": "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, context_too_large (its stored Pi context range exceeds the runtime byte limit), spend_limit, agent_loop_limit (a sub-agent's notification landed without a turn: its chain reached its wake cap), output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate or spawn_agent call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, and result.usage.imageCostUsd what its generate_image calls spent. result.servedModel is the model that made its last response (provider/model-id); result.modelError, when a model call failed it, says how: {errorClass, providerStatus?, retryable, model} (ModelFailure)"
       },
       "AgentInput": {
         "type": "object",
@@ -8866,7 +8866,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable: model_error, runtime_error, output_missing, spend_limit, turn_limit, end_user_credit, aborted…"
+            "description": "Stable: model_error, runtime_error, output_missing, spend_limit, turn_limit, context_too_large, end_user_credit, aborted…"
           },
           "message": {
             "type": "string"

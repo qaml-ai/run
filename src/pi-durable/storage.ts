@@ -213,6 +213,22 @@ export async function openPiStorage(options: { sessionId: string; directory: str
         // preserving our durable-before-publish contract across host power loss.
         await database.exec("PRAGMA synchronous = FULL");
         const storage = await SqliteStorage.open(database);
+        (storage as unknown as Storage & ContextRangeSizer).contextRangeSize = async conversationId => {
+            const row = await database.get<{ entries: number; bytes: number }>(`
+                WITH RECURSIVE lineage AS (
+                    SELECT id, record, 9223372036854775807 AS upper_id, 0 AS depth FROM conversations WHERE id = ?
+                    UNION ALL
+                    SELECT c.id, c.record, min(l.upper_id, json_extract(l.record, '$.parent.at')), l.depth + 1
+                    FROM lineage l JOIN conversations c ON c.id = json_extract(l.record, '$.parent.conversationId')
+                ), marker AS (
+                    SELECT e.head FROM lineage l JOIN entries e ON e.conversation_id = l.id
+                    WHERE e.head IS NOT NULL AND e.id <= l.upper_id ORDER BY l.depth, e.id DESC LIMIT 1
+                )
+                SELECT count(*) AS entries, coalesce(sum(length(CAST(e.record AS BLOB))), 0) AS bytes
+                FROM lineage l JOIN entries e ON e.conversation_id = l.id
+                AND e.id >= coalesce((SELECT head FROM marker), 0) AND e.id <= l.upper_id`, conversationId);
+            return { entries: Number(row!.entries), bytes: Number(row!.bytes) };
+        };
         if (!options.committing) return storage;
         const commit = storage.commit.bind(storage);
         storage.commit = async (writes, context) => {
@@ -307,7 +323,7 @@ export async function deletePiStorage(sql: Sql, sessionId: string): Promise<void
     for (const table of Object.values(TABLES).reverse()) await sql.query(`delete from ${table} where session_id = $1`, [sessionId]);
 }
 
-const STORAGE_METHODS = ["commit", "mintId", "mintIds", "entryIds", "conversation", "scanConversations", "entry", "findLatestHeadMarker", "scanEntries", "task", "scanTasks", "submission", "scanSubmissions", "submissionByRequest", "findDocument", "document", "scanDocuments", "close"] as const;
+const STORAGE_METHODS = ["commit", "mintId", "mintIds", "entryIds", "contextRangeSize", "conversation", "scanConversations", "entry", "findLatestHeadMarker", "scanEntries", "task", "scanTasks", "submission", "scanSubmissions", "submissionByRequest", "findDocument", "document", "scanDocuments", "close"] as const;
 export type PiStorageMethod = typeof STORAGE_METHODS[number];
 export type PiStorageRequest = { method: PiStorageMethod; args: unknown[]; undefinedArgs?: number[] };
 /** The supervisor is the only process that holds the database/file handle and its claim. */
@@ -322,6 +338,11 @@ export async function storageRequest(storage: Storage, request: PiStorageRequest
         for (let index = 0; index < count; index++) ids.push(await storage.mintId());
         return ids;
     }
+    if (request.method === "contextRangeSize") {
+        const [conversationId] = request.args as number[];
+        if (!Number.isSafeInteger(conversationId)) throw new Error("Invalid Pi storage argument");
+        return contextRangeSize(storage, conversationId as ConversationId);
+    }
     if (request.method === "entryIds") {
         const [conversationId, minId, maxId] = request.args as number[];
         if (![conversationId, minId, maxId].every(Number.isSafeInteger)) throw new Error("Invalid Pi storage argument");
@@ -335,7 +356,16 @@ export async function storageRequest(storage: Storage, request: PiStorageRequest
     }
     return method.apply(storage, request.method === "mintId" ? [] : [...args, BACKGROUND_CONTEXT]);
 }
-/** Contexts are process-local; the owner attaches its background context to each dispatched operation. */
+/** Serialized bytes in the visible range Pi retains, including entries hidden from model messages. */
+export type ContextRangeSize = { entries: number; bytes: number };
+export type ContextRangeSizer = { contextRangeSize(conversationId: ConversationId): Promise<ContextRangeSize> };
+/** No scan fallback: a guard must not load the very range it is protecting against. */
+export async function contextRangeSize(storage: Storage, conversationId: ConversationId): Promise<ContextRangeSize> {
+    const sized = storage as Storage & Partial<ContextRangeSizer>;
+    if (!sized.contextRangeSize) throw new Error("Pi storage cannot measure its context range");
+    return sized.contextRangeSize(conversationId);
+}
+
 /** A storage that lists a conversation's entry IDs without reading their records (PostgresPiStorage). */
 export type EntryIdLister = { entryIds(conversationId: ConversationId, minId: number, maxId: number): Promise<number[]> };
 
@@ -355,9 +385,10 @@ export async function entryIds(storage: Pick<Storage, "scanEntries"> & Partial<E
     return ids;
 }
 
+/** Contexts are process-local; the owner attaches its background context to each dispatched operation. */
 export function remotePiStorage(request: (request: PiStorageRequest) => Promise<unknown>): Storage {
     return Object.fromEntries(STORAGE_METHODS.map(method => [method, (...args: unknown[]) => {
-        if (method !== "mintId" && method !== "mintIds" && method !== "entryIds") args.pop();
+        if (method !== "mintId" && method !== "mintIds" && method !== "entryIds" && method !== "contextRangeSize") args.pop();
         const undefinedArgs = args.flatMap((value, index) => value === undefined ? [index] : []);
         return request({ method, args, ...(undefinedArgs.length ? { undefinedArgs } : {}) });
     }])) as unknown as Storage;
@@ -797,6 +828,32 @@ export class PostgresPiStorage implements Storage {
 		);
 		return rows.map(row => Number(row.id));
 	}
+
+    /** Pi scans from the newest visible marker's head (not its ID), including fork ancestors up to their fork point. */
+    async contextRangeSize(conversationId: ConversationId): Promise<ContextRangeSize> {
+        return this.admitRead(async () => {
+            const row = await this.db.get<{ entries: string; bytes: string }>(`
+                WITH RECURSIVE lineage AS (
+                    SELECT id, record::jsonb AS value, 9223372036854775807::bigint AS upper_id, 0 AS depth
+                    FROM ${this.schema.tables.conversations} WHERE session_id = $1 AND id = ?
+                    UNION ALL
+                    SELECT c.id, c.record::jsonb, least(l.upper_id, (l.value->'parent'->>'at')::bigint), l.depth + 1
+                    FROM lineage l JOIN ${this.schema.tables.conversations} c
+                      ON c.session_id = $1 AND c.id = (l.value->'parent'->>'conversationId')::bigint
+                ), marker AS (
+                    SELECT h.head FROM lineage l CROSS JOIN LATERAL (
+                        SELECT e.head FROM ${this.schema.tables.entries} e
+                        WHERE e.session_id = $1 AND e.conversation_id = l.id AND e.id <= l.upper_id AND e.head IS NOT NULL
+                        ORDER BY e.id DESC LIMIT 1
+                    ) h ORDER BY l.depth LIMIT 1
+                )
+                SELECT count(*) AS entries, coalesce(sum(octet_length(e.record)), 0) AS bytes
+                FROM lineage l JOIN ${this.schema.tables.entries} e
+                  ON e.session_id = $1 AND e.conversation_id = l.id
+                  AND e.id >= coalesce((SELECT head FROM marker), 0) AND e.id <= l.upper_id`, conversationId);
+            return { entries: Number(row!.entries), bytes: Number(row!.bytes) };
+        });
+    }
 
 	private async readEntriesAscending(
 		query: EntryQuery,
