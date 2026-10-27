@@ -131,16 +131,17 @@ const corrected = (found: Model<Api> | undefined): Model<Api> | undefined => {
  * `order` sent every DeepSeek V4.1 Flash call to one slow fp4 host). Each name is an OpenRouter provider slug
  * (GET /api/v1/providers), all of the provider's endpoints for the model.
  * - DeepSeek V4.1 Flash (Miguel, 2026-10-18): fp8 or full-precision hosts of the full context; none of the fp4 ones.
- * - DeepSeek V4.1 Flash 1017, `:nitro` too (Miguel, 2026-10-27): Morph, DeepSeek's own endpoint and Together, and the
+ * - DeepSeek V4.1 Flash 1017, `:nitro` too (Miguel, 2026-10-27): DeepSeek's own endpoint and Together, and the
  *   fp8 hosts with a clean record on it in our logs (7 days to 10-27: errors, time to first token): InferenceNet,
  *   Makora, AtlasCloud. Left out: fp4 hosts (2026-10-18), hosts of unstated precision, DeepInfra (2% errors), GMICloud
- *   (refusals), Parasail, Novita, SiliconFlow, Crusoe and Nebius (slow first tokens), and hosts we have no record of.
+ *   (refusals), Parasail, Novita, SiliconFlow, Crusoe and Nebius (slow first tokens), hosts we have no record of, and
+ *   Morph (dropped 10-27 after an hour on the list: its $0.015/M cached reads made it the dearest per call, and slowest).
  *   Agents with `dataCollection: "deny"` lose DeepSeek's endpoint (OpenRouter filters it). From 2026-10-23 to 10-27
  *   it had none (OpenRouter's choice among all hosts).
  */
 const OPENROUTER_HOSTS: Record<string, string[]> = {
   "deepseek/deepseek-v4.1-flash": ["fireworks", "together", "parasail", "coreweave", "nebius"],
-  "deepseek/deepseek-v4.1-flash-1017": ["morph", "deepseek", "together", "inference-net", "makora", "atlas-cloud"],
+  "deepseek/deepseek-v4.1-flash-1017": ["deepseek", "together", "inference-net", "makora", "atlas-cloud"],
 };
 /**
  * Models whose OpenRouter routing variants (`:nitro`, a throughput sort) are sent as the model itself: routed among its
