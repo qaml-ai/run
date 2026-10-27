@@ -45,6 +45,7 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
      * hosts declare it again under a key of their own.
      */
     nativeSections?: boolean;
+    dedupeUserEntries?: boolean;
     contextWindow?: number;
     maxOutputTokens?: number;
     summaryStream?: AgentOptions["streamFn"];
@@ -91,7 +92,7 @@ export function piOrdered(messages: readonly AgentMessage[]): AgentMessage[] {
   return ordered;
 }
 
-/** User metadata is stored once, with its content in Pi's model message. Older entries also kept content in data. */
+/** Read both full user messages and entries with content stored only in Pi's model message. */
 function originalUser(entry: EntryRecord): AgentMessage | undefined {
   const message = entry.kind === "camel.user" ? (entry.data as { message?: Extract<AgentMessage, { role: "user" }> } | undefined)?.message : undefined;
   return message && { ...message, content: message.content ?? entry.model?.[0]?.content } as AgentMessage;
@@ -789,7 +790,7 @@ export class DurableAgent {
     refs.push(message); this.inputRefs.set(key, refs);
     try {
       return await this.conversation.submit({ type: "input", ...((message as { requestId?: string }).requestId ? { requestId: (message as unknown as { requestId: string }).requestId } : {}), content: content as never, whenBusy,
-        entry: { kind: "camel.user", data: { message: metadata } as never } }, context);
+        entry: { kind: "camel.user", data: { message: this.options.durable.dedupeUserEntries ? metadata : message } as never } }, context);
     } catch (error) {
       const at = refs.indexOf(message); if (at >= 0) refs.splice(at, 1);
       if (!refs.length) this.inputRefs.delete(key);

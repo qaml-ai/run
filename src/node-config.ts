@@ -88,6 +88,10 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   // Settings of what was removed: the legacy engine, and the host transcript (every agent's history is its Pi journal).
   const ignored = ["AGENT_ENGINE", "AGENT_PI_CANARY_AGENTS", "AGENT_PI_CANARY_TENANTS", "AGENT_PI_SWEEP", "AGENT_HISTORY_BACKLOG_BYTES",
     "AGENT_PI_DUAL_READ", "AGENT_PI_DUAL_WRITE", "AGENT_PI_HISTORY_SOURCE_TENANTS"].filter(name => env[name] !== undefined);
+  const dedupeUserEntries = env.AGENT_PI_DEDUPE_USER_ENTRIES === "true";
+  if (env.AGENT_PI_DEDUPE_USER_ENTRIES !== undefined && !["true", "false"].includes(env.AGENT_PI_DEDUPE_USER_ENTRIES)) {
+    throw new Error("AGENT_PI_DEDUPE_USER_ENTRIES must be true or false");
+  }
   const toolTimeoutMs = Number(env.AGENT_TOOL_TIMEOUT_MS ?? 15_000);
   if (!Number.isInteger(toolTimeoutMs) || toolTimeoutMs < 1 || toolTimeoutMs > 15 * 60_000) throw new Error("AGENT_TOOL_TIMEOUT_MS must be an integer between 1 and 900000");
   const contextRangeMaxBytes = Number(env.AGENT_CONTEXT_RANGE_MAX_BYTES ?? CONTEXT_RANGE_MAX_BYTES);
@@ -138,7 +142,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     publicUrlSet: !!env.AGENT_PUBLIC_URL,
     // Where browsers reach the runtime, as browser tokens say: AGENT_PUBLIC_URL unless set; empty for none.
     browserUrl: env.AGENT_BROWSER_URL?.replace(/\/+$/, ""),
-    maxAgents, memoryHighBytes, memoryRetireMs, memoryRetireFallbackMs, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, hosting, ignored, toolTimeoutMs, contextRangeMaxBytes, runLimits, adminRunLimits, streamTimeouts, runRetentionSeconds, idleMs,
+    maxAgents, memoryHighBytes, memoryRetireMs, memoryRetireFallbackMs, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, hosting, ignored, dedupeUserEntries, toolTimeoutMs, contextRangeMaxBytes, runLimits, adminRunLimits, streamTimeouts, runRetentionSeconds, idleMs,
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,

@@ -320,3 +320,14 @@ test("Pi adapter reports only the storage failures that fail Pi's Session", asyn
   assert.equal(failures.length, 1);
   await agent.close().catch(() => {});
 });
+
+for (const dedupe of [false, true]) test(`Pi input writes preserve rollback content unless deduplication is enabled (${dedupe})`, async t => {
+  const fake = await fixture([answer("Done")], {}, new MemoryStorage(), { dedupeUserEntries: dedupe });
+  t.after(() => fake.agent.close());
+  const input = user("rollback safe");
+  await fake.agent.prompt(input);
+  const entry = (await fake.storage.scanEntries({ conversationId: fake.agent.conversationId, order: "ascending" }, 100, undefined, BACKGROUND_CONTEXT)).items.find(entry => entry.kind === "camel.user")!;
+  assert.equal(Object.hasOwn((entry.data as any).message, "content"), !dedupe);
+  if (!dedupe) assert.deepEqual((entry.data as any).message, input, "previous reader takes data.message whole");
+  assert.deepEqual((await fake.agent.recoverMessages())[0].message, input);
+});

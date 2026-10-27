@@ -97,6 +97,8 @@ export interface HostIO {
   lease?(): Promise<void>;
   /** Tenants whose agents' system sections are native Pi sections (AGENT_NATIVE_SECTIONS_TENANTS; `*`: every tenant). */
   nativeSectionsTenants?: string[];
+  /** Omit duplicate user content only after all rollback readers support it. */
+  dedupeUserEntries?: boolean;
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number> };
 }
@@ -474,11 +476,12 @@ export function createAgentHost(hostIO: HostIO) {
     return saved ? path : undefined;
   }
 
-  async function cappedDetails(toolCallId: string, details: unknown, limit = 16 * 1024): Promise<unknown> {
+  async function cappedDetails(toolCallId: string, tool: string, details: unknown, limit = 16 * 1024): Promise<unknown> {
     if (details === undefined) return undefined;
     const text = JSON.stringify(details);
     const bytes = Buffer.byteLength(text, "utf8");
     if (bytes <= limit) return details;
+    if (bytes > FILE_LIMITS.scriptFileBytes) console.warn(JSON.stringify({ type: "tool_details_dropped", agent: config.id, tool, bytes }));
     // Never label a partial JSON file as the whole value.
     const path = bytes <= FILE_LIMITS.scriptFileBytes ? await saveToolResult(toolCallId, text, "json") : undefined;
     return { truncated: true, ...(path ? { path } : {}) };
@@ -507,7 +510,7 @@ export function createAgentHost(hostIO: HostIO) {
           if (tool.resultFormat === "content") {
             if (!value || !Array.isArray(value.content) || value.content.some((part: any) => !part || !(part.type === "text" && typeof part.text === "string" || part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string" || validFileRef(part)))) throw new Error("Invalid content tool result");
             // A failed call (an MCP tool's isError, an OpenAPI operation's HTTP error) is an error result that keeps its content and details.
-            return { ...value, content: await capped(toolCallId, (await fittedImages([value]))[0].content), details: await cappedDetails(toolCallId, value.details), isError: value.isError === true };
+            return { ...value, content: await capped(toolCallId, (await fittedImages([value]))[0].content), details: await cappedDetails(toolCallId, tool.name, value.details), isError: value.isError === true };
           }
           return { content: await capped(toolCallId, [{ type: "text", text: JSON.stringify(value) ?? "null" }]) };
         },
@@ -536,7 +539,7 @@ export function createAgentHost(hostIO: HostIO) {
             },
           });
           // details keeps the output as events streamed it, for clients that render it.
-          return { content: [{ type: "text", text: presentResult({ ...result, returned }, request.maxOutputCharacters) }], details: await cappedDetails(id, result, 32 * 1024) };
+          return { content: [{ type: "text", text: presentResult({ ...result, returned }, request.maxOutputCharacters) }], details: await cappedDetails(id, "js_exec", result, 32 * 1024) };
         } finally { await io.cancelTools(); }
       },
     };
@@ -815,7 +818,7 @@ export function createAgentHost(hostIO: HostIO) {
   async function open(storage: PiStorage, tools: Tool[]): Promise<HostJournal> {
     if (await HostJournal.retire(storage, { ...(io.history && indexedTo !== undefined ? { indexed: indexedTo, index: async (from, messages, turns) => indexedTo = await writeIndex(from, messages, turns) } : {}),
       legacy: () => io.legacyLog.read() })) console.log(JSON.stringify({ type: "host_transcript_retired", agent: config.id, tenant: config.tenant }));
-    const opened = await HostJournal.open(storage);
+    const opened = await HostJournal.open(storage, io.dedupeUserEntries);
     if (opened) return opened;
     const legacy = await storage.conversation(SESSION_CONVERSATION_ID, BACKGROUND_CONTEXT) ? "not_on_pi"
       : await io.legacyLog.empty() ? undefined : "legacy_log";
@@ -836,8 +839,8 @@ export function createAgentHost(hostIO: HostIO) {
         headAt = imported.compaction.cut;
       }
     }
-    await seedJournal({ storage, sessionId: config.id, model: convertToLlm(head), messages, headAt });
-    const seeded = await HostJournal.open(storage);
+    await seedJournal({ storage, dedupeUserEntries: io.dedupeUserEntries, sessionId: config.id, model: convertToLlm(head), messages, headAt });
+    const seeded = await HostJournal.open(storage, io.dedupeUserEntries);
     if (!seeded) throw new Error("The agent's Pi storage was seeded without its journal history");
     return seeded;
   }
@@ -980,7 +983,7 @@ export function createAgentHost(hostIO: HostIO) {
       };
       await requireContextSize();
       agent = await DurableAgent.create({ ...agentOptions, durable: {
-        storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: journal.history.latest, written: () => journal.written,
+        storage: piStorage, dedupeUserEntries: io.dedupeUserEntries, conversationId: SESSION_CONVERSATION_ID, cursor: journal.history.latest, written: () => journal.written,
         leading: () => leading(agent ? undefined : tools.map(toToolDeclaration)),
         onContextRequest: (held, sent) => contextMetrics.request(held, sent),
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own

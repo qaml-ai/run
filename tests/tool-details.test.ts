@@ -17,6 +17,8 @@ test("details caps count UTF-8 bytes, drop duplicate JSON, and survive missing o
     const faux = registerFauxProvider({ tokensPerSecond: 1_000_000 });
     const storage = await openPiStorage({ sessionId: "agent", directory });
     const writes: string[] = [];
+    const warnings: string[] = [];
+    t.mock.method(console, "warn", (line: string) => warnings.push(line));
     const values = [
       { content: [{ type: "text", text: "at limit" }], details: "x".repeat(16 * 1024 - 2) },
       { content: [{ type: "text", text: "over limit" }], details: "é".repeat(8192) },
@@ -45,6 +47,7 @@ test("details caps count UTF-8 bytes, drop duplicate JSON, and survive missing o
     assert.equal(run.error, null);
     const results = (await journalMessages({ sessionId: "agent", directory })).filter(message => message.role === "toolResult");
     assert.equal(results.length, 4);
+    assert.deepEqual(warnings.map(line => JSON.parse(line)), [{ type: "tool_details_dropped", agent: "agent", tool: "content", bytes: 800_002 }]);
     assert.equal(results[0].details, "x".repeat(16 * 1024 - 2));
     assert.deepEqual(results[1].details, { truncated: true });
     assert.deepEqual(results[2].details, { truncated: true });

@@ -36,7 +36,7 @@ test("seeding the same source again finds it seeded; another session's or source
   assert.equal(journal.total, 1, "an import's messages are history");
   assert.deepEqual(await journal.history.messagesFrom(0), messages);
   const entry = (await storage.scanEntries({ conversationId: 1 as never, order: "ascending" }, 100, undefined, context)).items.find(entry => entry.kind === "camel.user")!;
-  assert.equal(Object.hasOwn((entry.data as any).message, "content"), false, "seeded prompts also store content once");
+  assert.deepEqual((entry.data as any).message, messages[0], "default seeds remain readable by the previous release");
   assert.ok(await journal.hasRequest("r"), "and its requests are taken");
   const empty = new MemoryStorage();
   empty.commit = async () => { throw new Error("disk full"); };
@@ -163,4 +163,14 @@ test("a retraction of a message before the base (the running turn's) takes back 
   // The same, read again from the journal.
   assert.deepEqual((await (await HostJournal.open(storage))!.history.messagesFrom(0))!, messages);
   await storage.close(context);
+});
+
+test("seeded user entries deduplicate only when enabled", async t => {
+  const storage = new MemoryStorage();
+  t.after(() => storage.close(context));
+  const message = user("deduplicated");
+  await seedJournal({ storage, sessionId: "test", model: [system as never], messages: [message], dedupeUserEntries: true });
+  const entry = (await storage.scanEntries({ conversationId: 1 as never, order: "ascending" }, 100, undefined, context)).items.find(entry => entry.kind === "camel.user")!;
+  assert.equal(Object.hasOwn((entry.data as any).message, "content"), false);
+  assert.deepEqual(await (await HostJournal.open(storage))!.history.messagesFrom(0), [message]);
 });

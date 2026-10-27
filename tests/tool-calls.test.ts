@@ -193,7 +193,7 @@ test("history and forks keep capped tool details and deduplicated prompts withou
     toolCall("tools__small", {}, "small"),
     toolCall("js_exec", { code: 'text("x".repeat(40000))', maxOutputCharacters: 50000 }, "code"),
     { role: "assistant", content: "done" },
-  ][index] ?? { role: "assistant", content: "continued" }, LOCAL);
+  ][index] ?? { role: "assistant", content: "continued" }, { ...LOCAL, AGENT_PI_DEDUPE_USER_ENTRIES: "true" });
   const definition = (await r.call("/v1/definitions", { body: { name: "Details", mcpServers: [{ name: "tools", url: server.url, exposure: "direct" }] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id as string;
   await r.prompt(agent, "unique prompt", undefined, { from: { id: "sender", name: "Sender" }, metadata: { label: "kept" } });
