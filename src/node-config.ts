@@ -1,3 +1,4 @@
+import { CONTEXT_RANGE_MAX_BYTES } from "./protocol.ts";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Hosting } from "./supervisor.ts";
@@ -89,6 +90,8 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     "AGENT_PI_DUAL_READ", "AGENT_PI_DUAL_WRITE", "AGENT_PI_HISTORY_SOURCE_TENANTS"].filter(name => env[name] !== undefined);
   const toolTimeoutMs = Number(env.AGENT_TOOL_TIMEOUT_MS ?? 15_000);
   if (!Number.isInteger(toolTimeoutMs) || toolTimeoutMs < 1 || toolTimeoutMs > 15 * 60_000) throw new Error("AGENT_TOOL_TIMEOUT_MS must be an integer between 1 and 900000");
+  const contextRangeMaxBytes = Number(env.AGENT_CONTEXT_RANGE_MAX_BYTES ?? CONTEXT_RANGE_MAX_BYTES);
+  if (!Number.isSafeInteger(contextRangeMaxBytes) || contextRangeMaxBytes < 1) throw new Error("AGENT_CONTEXT_RANGE_MAX_BYTES must be a positive safe integer");
   // The most one run of a self-serve tenant's agents may take, whatever its agent sets (runLimits): model responses, and
   // seconds from when it began. A tenant's own maxRunResponses and maxRunSeconds replace them; admin tenants get adminRunLimits unless set.
   const runLimits = { maxResponses: Number(env.AGENT_MAX_RUN_RESPONSES ?? RUN_LIMITS.maxResponses), maxSeconds: Number(env.AGENT_MAX_RUN_SECONDS ?? RUN_LIMITS.maxSeconds) };
@@ -135,7 +138,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     publicUrlSet: !!env.AGENT_PUBLIC_URL,
     // Where browsers reach the runtime, as browser tokens say: AGENT_PUBLIC_URL unless set; empty for none.
     browserUrl: env.AGENT_BROWSER_URL?.replace(/\/+$/, ""),
-    maxAgents, memoryHighBytes, memoryRetireMs, memoryRetireFallbackMs, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, hosting, ignored, toolTimeoutMs, runLimits, adminRunLimits, streamTimeouts, runRetentionSeconds, idleMs,
+    maxAgents, memoryHighBytes, memoryRetireMs, memoryRetireFallbackMs, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, hosting, ignored, toolTimeoutMs, contextRangeMaxBytes, runLimits, adminRunLimits, streamTimeouts, runRetentionSeconds, idleMs,
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,

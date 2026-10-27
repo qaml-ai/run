@@ -61,6 +61,11 @@ export interface ToolBridge {
 /** The `apiKey` of an agent whose model is on its tenant's own endpoint: each call gets a fresh identity token instead (`ToolBridge.modelAuth`). */
 /** How an error says the agent's storage failed a write: nothing more is written until a reload reads what it holds. */
 export const PERSISTENCE_FAILED = "Session persistence failed";
+/** The most serialized journal data a host may load as Pi context. */
+export const CONTEXT_RANGE_MAX_BYTES = 256 * 1024 * 1024;
+export const CONTEXT_TOO_LARGE = "context_too_large";
+export const contextRangeMessage = (bytes: number, max: number) =>
+  `This agent's context since its last compaction is ${bytes} bytes, past the ${max} bytes a run can load; start a new agent with a summary of the history, or ask the operator to raise AGENT_CONTEXT_RANGE_MAX_BYTES.`;
 /** A host refused an agent whose history is still only in the legacy format, which no release imports any more. */
 export const NOT_MIGRATED = "AGENT_NOT_MIGRATED";
 export const IDENTITY_KEY = "agent-runtime:identity-token";
@@ -108,6 +113,8 @@ export interface AgentConfig {
   retry?: { maxAttempts: number; baseDelayMs: number };
   /** The runtime's timeouts for a model stream that goes quiet (model-stream.ts), set by the runtime; an agent's `runLimits` may set its own. */
   streamTimeouts?: { firstTokenMs?: number; idleMs?: number };
+  /** Runtime bound on the serialized Pi context range, including entries hidden from model messages. */
+  contextRangeMaxBytes?: number;
   /** A run that began elsewhere will resume: leave an interrupted turn open to continue it. */
   resume?: boolean;
   /** The agent's tenant, set by the runtime, for its metric lines. */

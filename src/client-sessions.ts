@@ -8,7 +8,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type { AgentConfig, ToolDefinition } from "./protocol.ts";
-import { errorText, NOT_MIGRATED, PERSISTENCE_FAILED } from "./protocol.ts";
+import { errorText, CONTEXT_TOO_LARGE, NOT_MIGRATED, PERSISTENCE_FAILED } from "./protocol.ts";
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { withCatalogPrices } from "./pi-catalog.ts";
@@ -806,7 +806,7 @@ export class ClientSessions {
       // Lost or given up while it got ready (its node fenced, or is leaving): it starts nothing. A host started now would
       // serve an owner that is gone, and whoever loads the agent next would find it and take it for theirs, still starting.
       if (session.fault || session.leaving) throw session.fault ?? new Error("Agent stopped");
-      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, model: withCatalogPrices(session.header.config.model), apiKey, mounts: VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
+      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, model: withCatalogPrices(session.header.config.model), apiKey, mounts: VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), contextRangeMaxBytes: this.options.contextRangeMaxBytes, ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
         definitions,
         codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await spend.codeLimits(this.spendContext, session.header.tenant)).concurrent, signal),
         runLimit: async () => {
@@ -877,6 +877,7 @@ export class ClientSessions {
       recordStart(steps, { tenant: session.header.tenant, agent: id, error: safeError(error) });
       // Its history is only in the legacy format (agent-host.ts `open`): the caller is told why it cannot run.
       const text = errorText(error);
+      if (text.startsWith(`${CONTEXT_TOO_LARGE}: `)) throw new HttpError(409, text.slice(CONTEXT_TOO_LARGE.length + 2), CONTEXT_TOO_LARGE);
       if (text.includes(NOT_MIGRATED)) throw new HttpError(409, text.slice(text.indexOf(NOT_MIGRATED)), NOT_MIGRATED);
       throw error;
     })
@@ -2200,7 +2201,8 @@ export class ClientSessions {
     catch (error) {
       // A limit that refused the run as it left the queue: its result is coded as a stop at that limit mid-run is.
       const stop = spend.refusalStop(error);
-      value = stop ? { result: { error: errorText(error), ...stop } } : { error: errorText(error) };
+      value = (error as { code?: string })?.code === CONTEXT_TOO_LARGE ? { result: { error: errorText(error), code: CONTEXT_TOO_LARGE } }
+        : stop ? { result: { error: errorText(error), ...stop } } : { error: errorText(error) };
       // Its host's journal failed a write: only a reload knows what it holds, so the agent is given up as a fault of
       // the session's own would, and the turn goes on from storage, not from this host's memory.
       if (errorText(error).startsWith(PERSISTENCE_FAILED)) this.fail(session, error, "transcript");

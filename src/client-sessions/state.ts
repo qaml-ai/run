@@ -300,6 +300,7 @@ export interface ClientSessionOptions {
   retry?: AgentConfig["retry"];
   /** How long a model request may go quiet before it fails as stalled (model-stream.ts); an agent's runLimits may set its own. */
   streamTimeouts?: AgentConfig["streamTimeouts"];
+  contextRangeMaxBytes?: number;
   /** How far past its time limit a run may get before it is aborted (twice this: its agent stopped); RUN_OVERRUN_MS by default. */
   runOverrunMs?: number;
   /** Durable wake-ups for agents (`/clients/:id/schedules`). */

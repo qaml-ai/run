@@ -9,7 +9,7 @@ import {
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { errorText, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
+import { errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
@@ -31,6 +31,7 @@ import { clock } from "./node-context.ts";
 import { usageMissing } from "./platform-pricing.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
 import { DurableAgent, type DurableAgentOptions } from "./pi-durable/agent.ts";
+import { contextRangeSize } from "./pi-durable/storage.ts";
 import { HostJournal } from "./pi-durable/host-journal.ts";
 import type { RetiredRecord } from "./pi-durable/retired-host.ts";
 import { seedJournal, SESSION_CONVERSATION_ID } from "./pi-durable/seed.ts";
@@ -159,6 +160,7 @@ export function createAgentHost(hostIO: HostIO) {
   /** How many of its messages the history index has (undefined: none is kept, or it could not be read at start). */
   let indexedTo: number | undefined;
   let busy = false;
+  let contextChecks = 0;
   let active: AbortController | undefined;
   /** Why the current run ended early: a spend limit, tool calls waiting on a person's input, or a hand-off (its node is leaving). */
   let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string; limit?: RunStop["limit"]; reason?: string; bucket?: string; endUser?: string } | undefined;
@@ -736,8 +738,8 @@ export function createAgentHost(hostIO: HostIO) {
     for (let attempt = 1; ; attempt++) {
       const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
       if (signal.aborted || !last || last.role !== "assistant" || last.stopReason !== "error") return;
-      // Its end user's credit refused it: asking again would be refused again.
-      if (stopped?.code === END_USER_CREDIT) return;
+      // Credit or the context bound refused it: asking again would be refused again.
+      if (stopped?.code === END_USER_CREDIT || stopped?.code === CONTEXT_TOO_LARGE) return;
       // Pi retries one overflow per generation. A second refusal learned a smaller window: compact once against it.
       if (isContextOverflow(last, config.model.contextWindow)) {
         if (overflowRetried) return;
@@ -855,6 +857,17 @@ export function createAgentHost(hostIO: HostIO) {
       indexedTo = (io.history ? await io.history.indexed().catch(() => null) : null) ?? undefined;
       const piStorage = await io.piStorage?.();
       if (!piStorage) throw new Error("The agent's Pi durable storage is not open");
+      const contextLimit = config.contextRangeMaxBytes ?? CONTEXT_RANGE_MAX_BYTES;
+      const contextError = async () => {
+        const { bytes } = await contextRangeSize(piStorage, SESSION_CONVERSATION_ID);
+        return bytes > contextLimit ? contextRangeMessage(bytes, contextLimit) : undefined;
+      };
+      const requireContextSize = async () => {
+        const message = await contextError();
+        if (message) throw new Error(`${CONTEXT_TOO_LARGE}: ${message}`);
+      };
+      // Check before even opening the host journal, and before either Pi reload path can scan its range.
+      await requireContextSize();
       // Tools first: a new agent's Pi context starts with the leading system message they make.
       jsExec = codeTool();
       const tools = [...config.codeMode === false ? [] : [jsExec], ...directAgentTools(config.tools)];
@@ -912,6 +925,16 @@ export function createAgentHost(hostIO: HostIO) {
           tools, messages: [],
           thinkingLevel: config.thinkingLevel ?? "off",
         },
+        // SQL returns only two scalars. Check the first request and then once every 20 requests;
+        // this covers hidden range entries too, without reserializing the in-memory context.
+        prepareRequest: async () => {
+          if (contextChecks++ % 20 !== 0) return;
+          const message = await contextError();
+          if (!message) return;
+          stopped = { stopped: "turn_limit", code: CONTEXT_TOO_LARGE, error: message };
+          io.emit({ type: "turn_limit_reached", message });
+          throw new Error(message);
+        },
         getApiKey: () => config.apiKey,
         // Only the tenant's explicit key, never provider keys from the process environment. A model on the
         // tenant's own endpoint gets a fresh identity token for each call, and a key scope's agent its scope's current key.
@@ -956,6 +979,7 @@ export function createAgentHost(hostIO: HostIO) {
         sessionId: config.id,
         toolExecution: "parallel",
       };
+      await requireContextSize();
       agent = await DurableAgent.create({ ...agentOptions, durable: {
         storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: journal.history.latest, written: () => journal.written,
         leading: () => leading(agent ? undefined : tools.map(toToolDeclaration)), view: freshView,
@@ -988,6 +1012,7 @@ export function createAgentHost(hostIO: HostIO) {
       // What Pi settles for a run it was interrupted in is not history: the host closed that turn itself, above.
       await journal.refresh();
       const latest = journal.history.latest, before = agent.latestCursor;
+      await requireContextSize();
       const cursor = await agent.discardInterruptedRun();
       if (cursor && !sameCursor(cursor, before)) await journal.skip(cursor, latest);
       agent.subscribe(async event => {
@@ -1096,6 +1121,7 @@ export function createAgentHost(hostIO: HostIO) {
     const promptMessages = method === "prompt" ? userMessages(params) : undefined;
     busy = true;
     stopped = undefined;
+    contextChecks = 0;
     refused = undefined;
     omitImages = false;
     output = undefined;
