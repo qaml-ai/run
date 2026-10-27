@@ -2771,8 +2771,7 @@ export class ClientSessions {
     const run = [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began);
     const overrunMs = this.options.runOverrunMs ?? RUN_OVERRUN_MS;
     if (!run || now - run.began! < overrunMs) return;
-    // The run's own limit (the agent's runLimits, within the runtime's), as `turnLimit` counts it: not only the runtime's,
-    // which an admin tenant does not have at all.
+    // The run's own limit (the agent's runLimits, within the runtime's or an admin tenant's backstop), as `turnLimit` counts it.
     const maxSeconds = await spend.maxSeconds(this.spendContext, session, run.id);
     const over = now - run.began! - maxSeconds * 1000;
     const id = session.header.id;
