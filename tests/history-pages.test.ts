@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Db } from "../src/db.ts";
-import { HistoryIndex } from "../src/history-pages.ts";
+import { AgentHistory } from "../src/history-pages.ts";
 import { HostJournal } from "../src/pi-durable/host-journal.ts";
 import { JournalHistory } from "../src/pi-durable/history.ts";
 import { seedJournal } from "../src/pi-durable/seed.ts";
@@ -36,7 +36,7 @@ async function agentWith(db: Db, root: string, agent: string, archive: { message
 }
 
 /** Every page, newest first, then joined oldest first: each message once, at its index. */
-async function allPages(index: HistoryIndex, agent: string, options: { limit: number; maxBytes?: number }) {
+async function allPages(index: AgentHistory, agent: string, options: { limit: number; maxBytes?: number }) {
   const pages = [];
   for (let before: number | null | undefined; before !== null;) {
     const page = await index.page(agent, { ...options, ...(before !== undefined ? { before } : {}) });
@@ -46,20 +46,11 @@ async function allPages(index: HistoryIndex, agent: string, options: { limit: nu
   return pages;
 }
 
-/** A history index chunk (history from before the journal: a retired host transcript's, an import's), as its writer left it. */
-async function chunk(db: Db, storage: Storage, agent: string, start: number, messages: AgentMessage[], turns: number[]) {
-  const body = Buffer.from(JSON.stringify(messages));
-  const hash = createHash("sha256").update(body).digest("hex").slice(0, 32);
-  await storage.writeBlob(`sessions/${agent}/history/${start}-${messages.length}-${hash}`, body);
-  await db.query("insert into agent_history_chunks (agent, start, count, bytes, turns, hash) values ($1, $2, $3, $4, $5, $6)", [agent, start, messages.length, body.length, turns, hash]);
-  await db.query("insert into agent_history_index (agent, indexed) values ($1, $2) on conflict (agent) do update set indexed = excluded.indexed", [agent, start + messages.length]);
-}
-
 test("pages by ordinal hold the journal's history: whole turns, newest first, each message once, across a fork's archive and the journal", async t => {
   const { db } = await testDatabase();
   const root = await mkdtemp(join(tmpdir(), "history-pages-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const index = new HistoryIndex(db, fileStorage(root));
+  const index = new AgentHistory(db);
   const archive = [user("a"), assistant("A"), user("b"), assistant("B1"), assistant("B2")];
   const { storage } = await agentWith(db, root, "client_pages", { messages: archive, turns: [0, 2] }, [[user("c"), assistant("C")], [user("d"), assistant("D1"), assistant("D2"), assistant("D3")]]);
   const history = (await JournalHistory.openAny(storage))!;
@@ -85,35 +76,11 @@ test("pages by ordinal hold the journal's history: whole turns, newest first, ea
   await storage.close(BACKGROUND_CONTEXT);
 });
 
-test("history before the first placed message is read from the history index's chunks, until it moves into Pi", async t => {
-  const { db } = await testDatabase();
-  const root = await mkdtemp(join(tmpdir(), "history-chunks-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const blobs = fileStorage(root);
-  const index = new HistoryIndex(db, blobs);
-  const old = [user("old 1"), assistant("O1"), user("old 2"), assistant("O2")];
-  // A session retired from its host transcript: four messages in the index, its journal from there.
-  const { storage } = await agentWith(db, root, "client_chunks", undefined, [[user("new"), assistant("N")]], 4);
-  await chunk(db, blobs, "client_chunks", 0, old.slice(0, 2), [0]);
-  // The index's last chunk may run past the base (it indexed what the journal holds too): only what is before it counts.
-  await chunk(db, blobs, "client_chunks", 2, [...old.slice(2), user("new")], [2, 4]);
-  const whole = [...old, user("new"), assistant("N")];
-  assert.deepEqual(await index.messages("client_chunks"), whole);
-  assert.deepEqual(await index.allTurns("client_chunks"), [0, 2, 4]);
-  const pages = await allPages(index, "client_chunks", { limit: 1 });
-  assert.deepEqual(pages.map(page => page.entries.map(entry => entry.index)), [[0, 1], [2, 3], [4, 5]]);
-  assert.deepEqual(pages.flatMap(page => page.entries.map(entry => entry.message)), whole);
-  // An index short of the base is not papered over.
-  await db.query("delete from agent_history_chunks where agent = 'client_chunks' and start = 2");
-  await assert.rejects(index.messages("client_chunks"), /does not hold messages 0 to 4/);
-  await storage.close(BACKGROUND_CONTEXT);
-});
-
 test("every read is bounded before it reads: past its byte limit it is refused (413), nothing loaded", async t => {
   const { db } = await testDatabase();
   const root = await mkdtemp(join(tmpdir(), "history-bounds-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const index = new HistoryIndex(db, fileStorage(root));
+  const index = new AgentHistory(db);
   const { storage } = await agentWith(db, root, "client_bounds", undefined, [[user("x".repeat(4000)), assistant("y".repeat(4000))]]);
   let loads = 0;
   const query = db.query.bind(db);
@@ -130,7 +97,7 @@ test("an agent placed before ordinals is placed at its first read", async t => {
   const { db } = await testDatabase();
   const root = await mkdtemp(join(tmpdir(), "history-lazy-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const index = new HistoryIndex(db, fileStorage(root));
+  const index = new AgentHistory(db);
   const { storage } = await agentWith(db, root, "client_lazy", undefined, [[user("q"), assistant("a")]]);
   await db.query("update pi_durable_entries set msg_from = null, msg_count = null, msg_skip = 0, turn_start = false where session_id = 'client_lazy'");
   await db.query("update pi_durable_metadata set history_next = null, history_last_id = null where session_id = 'client_lazy'");
@@ -144,7 +111,7 @@ test("byte-bounded pages count UTF-8 and the envelope, preserve cursors, and kee
   const { db } = await testDatabase();
   const root = await mkdtemp(join(tmpdir(), "history-bytes-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const index = new HistoryIndex(db, fileStorage(root));
+  const index = new AgentHistory(db);
   const agent = `client_${"b".repeat(40)}`;
   const messages = [user("old"), assistant("🙂".repeat(1400)), user("middle"), assistant("界".repeat(2000)), user("new"), assistant("x".repeat(20_000))];
   const { storage } = await agentWith(db, root, agent, { messages: messages.slice(0, 4), turns: [0, 2] }, [messages.slice(4)]);
@@ -216,7 +183,6 @@ test("history comes in pages of whole turns, newest first, from Pi storage where
   // The same once the idle agent has stopped: nothing is indexed, pages are read from Pi storage.
   await until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the idle agent to stop", 20_000);
   await check();
-  assert.equal((await r.db.query("select count(*)::int as count from agent_history_chunks where agent = $1", [agent])).rows[0].count, 0, "no history index chunks are written");
 
   // The SDK pages the same way, with the agent's own token.
   const client = await new AgentRuntime({ url: r.base, apiKey: OPERATOR }).connectAgent(session, { tools: {} });

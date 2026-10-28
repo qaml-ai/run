@@ -3,7 +3,7 @@
 Stage 1 removes obsolete context copies from Postgres. An operator runs this command with the runtime's
 `AGENT_DATABASE_URL`, or `AGENT_DATABASE_HOST` and `AGENT_DATABASE_SECRET_ARN` settings (including its usual TLS settings).
 Deploy the history-fallback change to all readers before applying reclaim. Forks before the newest retained
-context head use raw messages from the history index and journal; later forks use Pi's retained context.
+context head use raw messages from the history; later forks use Pi's retained context.
 
 Start with a read-only inventory (dry run is also the default):
 
@@ -64,10 +64,8 @@ node --experimental-strip-types scripts/ops/reclaim-checkpoints.ts --stage host-
 node --experimental-strip-types scripts/ops/reclaim-checkpoints.ts --stage host-transcript --apply
 ```
 
-Only a session whose retirement is recorded (a `camel.host.disabled` entry with `retired: "journal"`) and whose history
-index holds every message before what its journal holds (`agent_history_index.indexed` at least its newest base
-marker's `total`, less the running turn's messages the marker keeps) is selected: nothing reads its host records any
-more. Sessions not loaded since that release keep their host transcript until they are, and a later run picks them up.
+Only a session whose retirement is recorded (a `camel.host.disabled` entry with `retired: "journal"`) is selected: its
+history before the journal is archive entries in its Pi storage, and nothing reads its host records any more. Sessions not loaded since that release keep their host transcript until they are, and a later run picks them up.
 The generation marker (`camel.host.bootstrap`), the `camel.host.disabled` entry, the base marker and its document, and
 every `pi_durable_record_ids` row stay, so a release from #374 on still refuses such a session as newer.
 Rollback below the host transcript's removal is no longer supported.

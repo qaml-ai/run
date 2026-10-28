@@ -22,9 +22,8 @@ waited on a person, messages that land without a turn) as native entries
 Pi's context, never history), and its retractions, turns, calls left waiting and
 skips as `camel.history.marker` entries; a retraction or skip also takes its
 messages out of Pi's context with an `omit` edit. `JournalHistory`
-(`src/pi-durable/history.ts`) reads the history back from a base marker: the
-messages before it are the history index's. Once a session's history has grown
-256 messages past its base and the index holds all of it, the next turn's end
+(`src/pi-durable/history.ts`) reads the live turn's state back from a base marker.
+Once a session's history has grown 256 messages past its base, the next turn's end
 writes a new base (the `camel.history.base` document names the newest), so a load
 reads the journal from there. Request deduplication uses Pi's indexed submissions.
 
@@ -34,7 +33,7 @@ agent's context starts with its leading system message, as a checkpoint
 configuration changes. Every request sends Pi's context as it stands (a prompt's
 deprecated `history: "none"` is ignored).
 
-Full history, export and fork read the history index, then the journal past it.
+Full history, export and fork read the history by ordinal (see History ordinals).
 
 ## Sessions from before the host transcript's removal
 
@@ -73,8 +72,8 @@ it or by the migration sweep (both now removed). Those imports wrote:
   base, initial history, context checkpoint and request IDs (`seedJournal`).
 - An import too large to copy (more than 64 MiB or 200,000 records) left its records
   in the session's legacy log (`archive: "legacy-log"` on the marker and the
-  generation). New forks put their copied history into the history index, then
-  seed their Pi context; they do not write a legacy log.
+  generation). New forks put their copied history into their Pi storage as
+  archive entries, then seed their Pi context; they do not write a legacy log.
 - Imports from before #322 have archive blocks (`camel.legacy.record`) and their
   host generation, if a host adopted them, after the archive.
 
@@ -112,7 +111,6 @@ an entry (Pi storage a refused start opened and left empty is none):
 | Count | What it is |
 | --- | --- |
 | `unretired_host_transcripts` | A `camel.host.snapshot` document whose latest revision is not the retirement's (`retired: "journal"`, written in the commit with the `camel.host.disabled` entry): an enabled host transcript, or one a rollback disabled. Found by the document, so imports before #322, whose host generation comes after their archive, count too. |
-| `retired_index_short` | A host session (a host generation among its first three entries, or a host document) retired, but the history index holds less than the newest journal base's `total` less its `kept` (or there is no base or no index row): history reads still need the retired records. |
 | `pi_without_journal_history` | A journal with no `camel.history.base` document and no `camel.history.marker` entry: legacy format only, read from the legacy log. |
 | `pi_without_base_document` | A journal with no `camel.history.base` document. Every session seeded or retired since #374 has one, so this is a superset of the one above: it also counts journals with history markers but no base marker the readers could open. |
 | `no_pi_with_legacy_log_rows` | No journal, and the legacy log (`sessions/<id>/transcript`) still has hot `log_records` rows. |
@@ -152,9 +150,9 @@ reads (pages, the full history, export, fork, a context reset's kept messages) f
 messages by ordinal from these (`src/history-pages.ts`), on any node, bounded in bytes
 before they read; an agent not placed yet is placed at its first read. A fork's copied
 history is a run of `camel.history.archive` entries before its base (`data.messages`
-placed at `data.start`, one per turn, never in Pi's context). Messages before an
-agent's first placed one (retired host transcripts' and older forks') are read from
-the history index's chunks until they move into Pi storage. A turn's end moves the
+placed at `data.start`, one per turn, never in Pi's context); so is history from
+before an agent's journal (retired host transcripts', imports', older forks'), moved
+from the history index, which is gone (migration 095). A turn's end moves the
 journal base on every 256 messages, so a load reads the journal from near its end.
 
 `PostgresPiStorage.commit` places each entry as it commits, under the session's
@@ -168,49 +166,9 @@ session starts placed (`history_next` 0); sessions from before ordinals start
 unplaced (null), and a base or retract that does not match logs
 `history_ordinal_mismatch`.
 
-`POST /v1/operations/history-ordinals` (platform operator only, as legacy coverage)
-places every unplaced agent: a dry run unless the body says `dryRun: false`. It
-walks agents in id order, 500 at a time, for about 20 s per call (`budgetMs`, at
-most 25000) and answers `next` to go on from (a dry run's cursor goes on as a dry
-run). Each agent is placed under its session's metadata lock (its commits wait),
-from its first base marker on, reading its entries 250 at a time with their records
-parsed in Postgres (a page with a record Postgres will not parse as jsonb, a `\u0000` or a lone surrogate escape, is read and parsed on the node a record at a time), every statement stopped after 20 s; an
-agent with more than `maxEntries` session entries (200,000 by default, at most
-2,000,000) is reported `too_large`, not read. Placing is idempotent: a placed agent
-whose newest session entry is placed is `current`; one with entries written since
-by a release that did not place them (`stale`, during the deploy) is placed again.
-Result codes: `placed`/`would_place`, `current`, `no_journal`, `no_base` (entries but
-no base marker: refused by loads anyway), `too_large`, `irregular` (a later base
-that does not stand where the history does, or an entry whose messages are not one
-run: left for a person, `error` says where), `failed`. Calls are logged as
-`history_ordinals_called`.
-
-`GET /v1/operations/history-ordinals-coverage` walks the same way and counts agents:
-`placed`, `unplaced` (Pi storage, never placed), `stale`, `no_journal` (no Pi
-storage), `agents_total`; `gate.ready` once the walk is complete with `unplaced` and
-`stale` at 0, `examples` up to 20 ids per nonzero bucket. Each batch is one
-read-only transaction of index probes per agent (its metadata row and newest
-session entry), statements stopped after 20 s; calls are logged as
-`history_ordinals_coverage_viewed`. One ordinals call at a time per node (429).
-
-## History archive move
-
-History from before an agent's journal (retired host transcripts' and imports' messages, forks made before archive
-entries) is in the history index's chunks until it moves into the agent's Pi storage as `camel.history.archive` entries
-(`src/history-archive.ts`), after which the index goes. `POST /v1/operations/history-archive` (platform operator only)
-moves it: a dry run unless the body says `dryRun: false`. It walks agents in id order, 500 at a time, for about 20 s per
-call (`budgetMs`, at most 25000) with a cursor (a dry run's goes on as a dry run). For each agent whose journal's first
-message is past what archive entries hold, the index's chunks before it are read from Storage one at a time (about
-1 MB each, its hash checked), split per turn, and committed in one Pi commit per chunk, placed at their ordinals; a
-chunk whose first message an archive entry holds is skipped, so a call stopped by its budget, or a crash, leaves whole
-chunks moved and the next call goes on. Agents a live node holds, or with runs open or Pi tasks unfinished, are
-`skipped_busy` for a later call. Codes: `moved`/`would_move`, `current`, `skipped_busy`, `short` (the index's chunks do
-not hold every message before the journal's: for a person), `unplaced`, `no_journal`, `failed`. Calls are logged as
-`history_archive_called`.
-
-`GET /v1/operations/history-archive-coverage` counts agents `archived` (Pi storage holds every message), `pending`,
-`short`, `unplaced` and `no_journal`; `gate.ready` once the walk is complete with `pending`, `short` and `unplaced` at 0.
-History reads use archive entries once they hold every message before the journal's, and the index's chunks until then.
+An agent's ordinals were filled once by an operator walk (`POST /v1/operations/history-ordinals`, since removed); an
+agent not placed yet (a skip marker unplaces one) is placed at its next history read (`fillOrdinals`, from its first base,
+under its metadata lock, records parsed in Postgres a page at a time, at most 20,000 entries; else 503).
 
 ## Persistence and billing
 

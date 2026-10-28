@@ -8,7 +8,6 @@ import type { ConversationId, EntryId } from "@earendil-works/pi-durable";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { fileStorage } from "../shared/storage.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
-import { HistoryIndex } from "../src/history-pages.ts";
 import { seedWithoutGeneration } from "./fixtures/pi-seed-before-322.ts";
 import { hasPiStorage, openPiStorage } from "../src/pi-durable/storage.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";

@@ -64,7 +64,7 @@ test("records holding a NUL (a binary file read as text) neither stop a run nor 
   assert.equal((await reclaimCheckpoints(db, { session }, () => {})).rows, 3);
   await reclaimCheckpoints(db, { apply: true, session }, () => {});
   assert.deepEqual(await snapshot(db, session), before.filter(row => ![2, 3, 4].includes(Number(row.id))));
-  const host = await hostTranscriptSession({ retired: true, indexed: 3, content: "PK\u0000" });
+  const host = await hostTranscriptSession({ retired: true, content: "PK\u0000" });
   await reclaimHostTranscripts(host.db, { apply: true, session: host.session }, () => {});
   assert.deepEqual(await kinds(host.db, host.session), ["camel.legacy.migration", "camel.host.bootstrap", "camel.user", "camel.history.marker", "camel.host.disabled"]);
 });
@@ -234,13 +234,12 @@ test("stage 1 bounds a run by session limit and resumes across completed session
 /**
  * A session as a release before the host transcript's removal wrote it, then as its first load without it retired it
  * (`retired`): host records, archive blocks (an import's from before #322 too), the snapshot document, the base marker
- * and its document; and how much of its history the index holds (`indexed`).
+ * and its document.
  */
-async function hostTranscriptSession(options: { retired: boolean; indexed: number; content?: string }) {
+async function hostTranscriptSession(options: { retired: boolean; content?: string }) {
   const { db } = await database;
   const session = randomUUID();
   await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ($1, 'test', '{}', 1, 'test', 'test', 'test')", [session]);
-  await db.query("insert into agent_history_index (agent, indexed) values ($1, $2)", [session, options.indexed]);
   const storage = await PostgresPiStorage.open(db, session);
   const entry = (id: number, kind: string, data?: Record<string, unknown>) => ({ type: "entry" as const, value: { id: id as EntryId, conversationId: 1 as never, kind, ...(data ? { data: data as never } : {}) } });
   const writes: StorageWrite[] = [{ type: "conversation", value: { id: 1 as never } },
@@ -260,7 +259,7 @@ const kinds = async (db: Db, session: string) => (await db.query("select (record
 const documents = async (db: Db, session: string) => (await db.query("select kind from pi_durable_documents where session_id = $1 order by id", [session])).rows.map(row => row.kind);
 
 test("stage 2 removes a retired host transcript's records, archive and snapshot document once its index holds the history before the journal's base", async () => {
-  const { db, session } = await hostTranscriptSession({ retired: true, indexed: 3 });
+  const { db, session } = await hostTranscriptSession({ retired: true });
   const before = await kinds(db, session);
   const dry = await reclaimSession(db, session, false, HOST_TRANSCRIPT);
   assert.equal(dry.rows, 4, "three entries and the snapshot document");
@@ -276,8 +275,8 @@ test("stage 2 removes a retired host transcript's records, archive and snapshot 
   assert.equal((await reclaimHostTranscripts(db, { apply: true, session }, () => {})).sessions, 0, "a repeat run finds nothing");
 });
 
-test("stage 2 leaves a host transcript not retired yet, or one whose history index lacks history before the base", async () => {
-  for (const options of [{ retired: false, indexed: 3 }, { retired: true, indexed: 2 }]) {
+test("stage 2 leaves a host transcript not retired yet", async () => {
+  for (const options of [{ retired: false }]) {
     const { db, session } = await hostTranscriptSession(options);
     const before = await kinds(db, session);
     assert.equal((await reclaimHostTranscripts(db, { apply: true, session }, () => {})).sessions, 0, JSON.stringify(options));
@@ -287,7 +286,7 @@ test("stage 2 leaves a host transcript not retired yet, or one whose history ind
 });
 
 test("stage 2 skips a session with a live owner, as stage 1 does", async () => {
-  const { db, session } = await hostTranscriptSession({ retired: true, indexed: 3 });
+  const { db, session } = await hostTranscriptSession({ retired: true });
   const node = randomUUID(), lease = randomUUID();
   await db.query("insert into runtime_nodes (node, session, expires_at, draining) values ($1, $2, now() + interval '1 hour', false)", [node, lease]);
   await db.query("insert into actor_owners (actor, node, session, epoch) values ($1, $2, $3, 1)", [session, node, lease]);
