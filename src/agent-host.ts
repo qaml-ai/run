@@ -1193,16 +1193,23 @@ export function createAgentHost(hostIO: HostIO) {
    * turn stays marked active and is resumed on next load.
    */
   async function dispose() {
+    disposed = true;
     const closing = agent?.close();
     active?.abort();
     await io.cancelTools();
     await closing;
   }
 
-  /** Once a journal write failed, any request it ends says so, for the session to give the agent up (and reload it). */
+  /** Set once the host stops serving: a run it cut off then goes on with the agent's next owner. */
+  let disposed = false;
+  /**
+   * Once a journal write failed, any request it ends says so, for the session to give the agent up (and reload it). A run
+   * cut off by the host's stop is handed off, not failed (`turn_metrics` outcome `handed_off`).
+   */
   async function handled(method: string, params: any): Promise<any> {
     try { return await handle(method, params); }
     catch (error) {
+      if (disposed && journal?.failed === undefined) return { error: null, handedOff: true };
       if (journal?.failed !== undefined && !errorText(error).startsWith(PERSISTENCE_FAILED)) throw new Error(`${PERSISTENCE_FAILED}: ${errorText(error)}`);
       throw error;
     }
