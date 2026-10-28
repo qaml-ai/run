@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Vendor Pi (github.com/earendil-works/pi, MIT) at one commit: build the packages camelRun uses and pack them into
+# vendor/pi/, which package.json installs from (file:vendor/pi/<package>.tgz). See docs/operations/pi-vendoring.md.
+#
+#   scripts/vendor-pi.sh <commit sha>     then: npm install, review, test, PR
+#
+# The checkout and build happen in a temporary directory outside this repository, with Pi's own lockfile (npm ci).
+set -euo pipefail
+
+usage() { echo "usage: scripts/vendor-pi.sh <40-character Pi commit sha>" >&2; exit 2; }
+[ $# -eq 1 ] || usage
+commit="$1"
+[[ "$commit" =~ ^[0-9a-f]{40}$ ]] || usage
+
+repo_url=https://github.com/earendil-works/pi
+root="$(cd "$(dirname "$0")/.." && pwd)"
+out="$root/vendor/pi"
+# Pi package directory, npm name and our tarball name, in build order (each after the packages it depends on).
+# pi-agent-core is a devDependency: camelRun imports only its types (AgentMessage, AgentTool, StreamFn).
+packages=(
+  "telemetry @earendil-works/pi-telemetry pi-telemetry"
+  "chord @earendil-works/chord chord"
+  "codemode @earendil-works/pi-codemode pi-codemode"
+  "ai @earendil-works/pi-ai pi-ai"
+  "agent @earendil-works/pi-agent-core pi-agent-core"
+  "durable @earendil-works/pi-durable pi-durable"
+)
+
+# Its physical path: on macOS the temp directory is behind a symlink (/var -> /private/var), and tsc then sees
+# Pi's sibling packages twice, under both paths, as different types.
+work="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/vendor-pi.XXXXXX")" && pwd -P)"
+trap 'rm -rf "$work"' EXIT
+src="$work/pi"
+mkdir -p "$src" "$work/packed"
+
+echo "Fetching $repo_url at $commit"
+git -C "$src" init -q
+git -C "$src" fetch -q --depth 1 "$repo_url" "$commit"
+git -C "$src" checkout -q --detach FETCH_HEAD
+[ "$(git -C "$src" rev-parse HEAD)" = "$commit" ] || { echo "fetched the wrong commit" >&2; exit 1; }
+date="$(git -C "$src" log -1 --format=%cI)"
+
+# Every @earendil-works dependency of the packages we ship must be one we ship: a new sibling fails here.
+names=()
+for entry in "${packages[@]}"; do read -r _ name _ <<< "$entry"; names+=("$name"); done
+for entry in "${packages[@]}"; do
+  read -r dir name _ <<< "$entry"
+  node -e '
+    const [file, expected, ...shipped] = process.argv.slice(1);
+    const manifest = JSON.parse(require("node:fs").readFileSync(file, "utf8"));
+    if (manifest.name !== expected) { console.error(`${file} is ${manifest.name}, expected ${expected}`); process.exit(1); }
+    if (manifest.license !== "MIT") { console.error(`${expected} is ${manifest.license}, not MIT`); process.exit(1); }
+    const missing = Object.keys({ ...manifest.dependencies, ...manifest.peerDependencies })
+      .filter((dependency) => dependency.startsWith("@earendil-works/") && !shipped.includes(dependency));
+    if (missing.length) { console.error(`${expected} depends on ${missing.join(", ")}: add it to scripts/vendor-pi.sh`); process.exit(1); }
+  ' "$src/packages/$dir/package.json" "$name" "${names[@]}"
+done
+
+echo "Installing Pi's dependencies (npm ci, its lockfile)"
+# No install scripts: the packages we build need only tsc, and Pi's prepare (husky) wants a full clone.
+(cd "$src" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error)
+
+for entry in "${packages[@]}"; do
+  read -r dir name file <<< "$entry"
+  echo "Building $name"
+  # pi-ai's build generates its model catalog from upstream sources (models.dev, OpenRouter, Vercel AI Gateway) at
+  # this moment, so it needs the network; the tarball keeps that snapshot.
+  (cd "$src/packages/$dir" && npm run build > "$work/build.log" 2>&1) || { cat "$work/build.log" >&2; exit 1; }
+  json="$(cd "$src/packages/$dir" && npm pack --ignore-scripts --json --pack-destination "$work/packed")"
+  packed="$(node -e 'const r = JSON.parse(process.argv[1]); console.log((Array.isArray(r) ? r[0] : r).filename)' "$json")"
+  mv "$work/packed/$packed" "$work/packed/$file.tgz"
+done
+
+rm -rf "$out"
+mkdir -p "$out"
+mv "$work/packed/"*.tgz "$out/"
+cp "$src/LICENSE" "$out/LICENSE"
+# The upstream changes since the commit vendored before (v1.4.0, the npm release, before the first vendoring).
+previous="$(git -C "$root" show HEAD:vendor/pi/PI_COMMIT 2>/dev/null | sed -n 's/^commit //p' || true)"
+previous="${previous:-v1.4.0}"
+{
+  echo "commit $commit"
+  echo "date $date"
+  echo "source $repo_url/commit/$commit"
+  if [ -n "$previous" ] && [ "$previous" != "$commit" ]; then
+    echo "changes $repo_url/compare/$previous...$commit"
+  fi
+  echo "packages ${names[*]}"
+} > "$out/PI_COMMIT"
+
+echo
+echo "vendor/pi now holds Pi $commit ($date):"
+(cd "$out" && ls -l *.tgz | awk '{ printf "  %-22s %8.1f KiB\n", $9, $5 / 1024 }')
+echo
+echo "Next: npm install (updates package-lock.json), read the upstream changes (PI_COMMIT), npm run typecheck, test, PR."

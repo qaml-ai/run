@@ -51,6 +51,8 @@ npm run typecheck
 
 ## Conventions that matter
 
+- **Pi is vendored** (`vendor/pi/`, built from one commit of Pi's main): bump it with `scripts/vendor-pi.sh <sha>`, never by
+  editing the tarballs or installing it from npm ([docs/operations/pi-vendoring.md](docs/operations/pi-vendoring.md)).
 - **Migrations** (`migrations/NNN_name.sql`, applied at startup): take the next free number on origin/main when you
   merge, and check again after rebasing.
 - **Never print a secret**: no tokens, keys or `.env` values in output, logs, tests, commits or PR text.

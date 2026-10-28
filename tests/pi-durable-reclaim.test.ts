@@ -25,7 +25,7 @@ async function fixture(content = "content must never be logged") {
   kinds.forEach((kind, i) => writes.push({ type: "entry", value: { id: (i + 2) as EntryId, conversationId: 1 as never, kind,
     ...(kind === "camel.legacy.context" ? { head: (i + 2) as EntryId } : {}), data: { fixture: content } } }));
   writes.push({ type: "entry", value: { id: 101 as EntryId, conversationId: 100 as never, kind: "pi.system" } });
-  await storage.commit(writes, context);
+  await storage.commit(writes, () => {}, context);
   await storage.close(context);
   return { db, session, before: await snapshot(db, session) };
 }
@@ -168,7 +168,7 @@ test("after reclaim a cold agent runs, pages history, and forks retained and pre
     const model = await contextAt(storage, { entryId: Number(last), index: -1 });
     const [head, ...ids] = await storage.mintIds(model.length + 1);
     await storage.commit([{ type: "entry", value: { id: head as EntryId, conversationId: 1 as never, kind: "camel.legacy.context", head: head as EntryId } },
-      ...model.map((message, i) => ({ type: "entry" as const, value: { id: ids[i] as EntryId, conversationId: 1 as never, kind: "camel.context.message", model: [message] } }))], context);
+      ...model.map((message, i) => ({ type: "entry" as const, value: { id: ids[i] as EntryId, conversationId: 1 as never, kind: "camel.context.message", model: [message] } }))], () => {}, context);
   } finally { await storage.close(context); }
   const result = await reclaimSession(r.db, session, true);
   assert.equal(result.skipped_reason, null);
@@ -253,7 +253,7 @@ async function hostTranscriptSession(options: { retired: boolean; indexed: numbe
     { type: "document.create", record: { id: 10 as never, kind: "camel.history.base", scope: { kind: "session" } }, content: { version: 1, kind: "base", value: { entry: 9 } } },
   ];
   if (options.retired) writes.push(entry(11, "camel.host.disabled", { retired: "journal" }));
-  await storage.commit(writes, context);
+  await storage.commit(writes, () => {}, context);
   await storage.close(context);
   return { db, session };
 }

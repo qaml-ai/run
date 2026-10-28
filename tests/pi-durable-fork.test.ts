@@ -44,7 +44,7 @@ async function journal(drafts: { kind: string; model?: unknown[]; data?: unknown
       ...(draft.self ? { head: id } : draft.headOf !== undefined ? { head: ids[draft.headOf + 1] as EntryId } : {}),
       ...(draft.omit !== undefined ? { edits: [{ target: ids[draft.omit + 1] as EntryId, action: "omit" as const }] } : {}) } });
   });
-  await storage.commit(writes, BACKGROUND_CONTEXT);
+  await storage.commit(writes, () => {}, BACKGROUND_CONTEXT);
   return { storage, at: (n: number) => ({ entryId: ids[n + 1], index: 0 }) };
 }
 const system = { role: "system", content: "Be brief.", timestamp: 0 };

@@ -3,38 +3,22 @@ import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 
 const piCatalog = piGetModel as (provider: string, id: string) => Model<Api> | undefined;
 
-const TERRA_COST: Model<Api>["cost"] = {
-  input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25,
-  tiers: [{ inputTokensAbove: 272_000, input: 2, output: 7.5, cacheRead: 0.1, cacheWrite: 2.5 }],
-};
-
 /**
  * Models Pi's catalog does not have yet, by provider and id: each is the Pi entry it is a release of (`from`), with
- * what differs, checked against the provider's own model list. Drop each once Pi ships it (pi-ai 1.4.0 has none of
- * these; it ships OpenRouter's DeepSeek V4.1 Flash 1017 at the list price this runtime used):
+ * what differs, checked against the provider's own model list. Drop each once Pi ships it (Pi ships GPT-6.1 Terra on
+ * OpenAI, Azure and OpenRouter since the vendored commit, and OpenRouter's DeepSeek V4.1 Flash 1017 since 1.4.0):
  * - Azure DeepSeek V4.1 Flash: measured 2026-10-26 on version 2026-09-10 (preview), not OpenRouter's
  *   2026-10-17 snapshot. Chat Completions serves tools, reasoning, images and cached input. Its 1,048,576-token
  *   window includes output, sent as max_tokens. Azure Global retail per million: $0.30 input, $1.20 output,
  *   $0.006 cached, no cache writes.
- * - GPT-6.1 Terra (2026-10-26): OpenRouter lists $1 in/$5 out/$0.05 cache reads per million, half Sol's. Each
- *   provider's Sol entry otherwise (API, context window, reasoning, reply limit), with half Sol's cache-write price
- *   and long-context rates at the same 272,000-token threshold. Sol's window, not OpenRouter's 1,050,000: a window
- *   the provider does not grant is one it refuses at (Luna, 2026-10-26).
  */
 const ADDED: Record<string, Record<string, { from: string; name: string; cost: Model<Api>["cost"] } & Partial<Pick<Model<Api>, "contextWindow" | "input" | "thinkingLevelMap" | "compat">>>> = {
-  openai: {
-    "gpt-6.1-terra": { from: "gpt-6.1-sol", name: "GPT-6.1 Terra", cost: TERRA_COST },
-  },
   azure: {
     "deepseek-v4.1-flash": {
       from: "deepseek-v4-pro", name: "DeepSeek V4.1 Flash", input: ["text", "image"], contextWindow: 1_048_576,
       cost: { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0 }, compat: { maxTokensField: "max_tokens" },
       thinkingLevelMap: { off: "none", minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
     },
-    "gpt-6.1-terra": { from: "gpt-6.1-sol", name: "GPT-6.1 Terra", cost: TERRA_COST },
-  },
-  openrouter: {
-    "openai/gpt-6.1-terra": { from: "openai/gpt-6.1-sol", name: "OpenAI: GPT-6.1 Terra", cost: TERRA_COST },
   },
 };
 const added = (provider: string, id: string): Model<Api> | undefined => {

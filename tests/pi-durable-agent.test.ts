@@ -240,7 +240,7 @@ test("Pi adapter commits a streaming answer's progress about once a second, not 
   const storage = new MemoryStorage();
   let commits = 0, streaming = false;
   const commit = storage.commit.bind(storage);
-  storage.commit = async (writes, at) => { if (streaming) commits++; return commit(writes, at); };
+  storage.commit = async (writes, adopt, at) => { if (streaming) commits++; return commit(writes, adopt, at); };
   const response = answer("x".repeat(30));
   const fake = await fixture([], { streamFn: () => {
     const stream = createAssistantMessageEventStream();
@@ -332,13 +332,13 @@ for (const dedupe of [false, true]) test(`Pi input writes preserve rollback cont
   assert.deepEqual((await fake.agent.recoverMessages())[0].message, input);
 });
 
-test("Pi adapter ends a resumed run whose generation Pi parked after repeated crashes, instead of waiting on it forever", { timeout: 20_000 }, async () => {
+test("Pi adapter ends a resumed run whose model request a lost node left in flight, instead of sending it again", { timeout: 20_000 }, async () => {
   const { db } = await testDatabase(), sessionId = randomUUID();
   const open = () => openPiStorage({ sessionId, directory: "unused", db });
   let requests = 0;
   const hanging = (storage: Storage) => DurableAgent.create({
     initialState: { model, messages: [], tools: [] },
-    // Every request "kills the node": it never answers, and the next node opens the session while it is running.
+    // The request "kills the node": it never answers, and the next node opens the session while it is running.
     streamFn: () => { requests++; return createAssistantMessageEventStream(); },
     durable: { storage },
   });
@@ -351,19 +351,15 @@ test("Pi adapter ends a resumed run whose generation Pi parked after repeated cr
     agents.push(first);
     void first.prompt(user("Go")).catch(() => {});
     while (requests < 1) await new Promise(resolve => setTimeout(resolve, 5));
-    // Pi's default restartLimit is 5: four more nodes resume the turn and are lost in the same request.
-    for (let lost = 1; lost < 5; lost++) {
-      const next = await hanging(await open());
-      agents.push(next);
-      void next.continue().catch(() => {});
-      while (requests < lost + 1) await new Promise(resolve => setTimeout(resolve, 5));
-    }
-    const last = await hanging(await open());
-    agents.push(last);
-    assert.ok(reports.some(line => JSON.parse(line).report === "task_parked"), "Pi parked the generation at open");
-    await last.continue();
-    assert.equal(requests, 5, "the parked generation sent no request");
-    assert.match(last.state.errorMessage ?? "", /cut off by repeated node failures/);
+    // With Pi's retry off, the interrupted request is a failed attempt with none left: the run ends `interrupted`.
+    const next = await hanging(await open());
+    agents.push(next);
+    await next.continue();
+    assert.equal(requests, 1, "the interrupted request was not sent again");
+    assert.match(next.state.errorMessage ?? "", /host stopped while the model was answering/);
+    const interrupted = reports.map(line => JSON.parse(line)).find(line => line.report === "task_interrupted");
+    assert.equal(interrupted?.reason, "interrupted");
+    assert.equal(interrupted?.task, "pi.generation");
     // The conversation is free again: new input runs.
     const fresh = await fixture([answer("back")], {}, await open());
     agents.push(fresh.agent);

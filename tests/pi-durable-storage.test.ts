@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createStorageConformance, type StorageConformanceAssertions } from "@earendil-works/pi-durable/testing";
-import type { ConversationId, EntryId, Seq, Storage, StorageWrite } from "@earendil-works/pi-durable";
-import { commitTo, deletePiStorage, hasPiStorage, openPiStorage, PostgresPiStorage, purgePiStorage, remotePiStorage, storageRequest } from "../src/pi-durable/storage.ts";
+import type { ConversationId, EntryId, Seq, Storage } from "@earendil-works/pi-durable";
+import { deletePiStorage, hasPiStorage, openPiStorage, PostgresPiStorage, purgePiStorage, remotePiStorage, storageRequest } from "../src/pi-durable/storage.ts";
 import { LostClaim, Ownership } from "../src/ownership.ts";
 import { testDatabase } from "./database.ts";
 import { transaction } from "../src/db.ts";
@@ -50,12 +50,12 @@ test("Pi shared storage retains IDs, isolates sessions, and reopens only indexed
   const root = 1 as ConversationId;
   const storage = await PostgresPiStorage.open(db, sessionId);
   const isolated = await PostgresPiStorage.open(db, randomUUID());
-  await storage.commit([{ type: "conversation", value: { id: root } }], context);
+  await storage.commit([{ type: "conversation", value: { id: root } }], () => {}, context);
   const writes = Array.from({ length: 3_000 }, (_, n) => ({ type: "entry" as const, value: {
     id: (n + 2) as EntryId, conversationId: root, kind: "message", data: "x".repeat(100),
     ...(n === 2990 ? { head: (n + 2) as EntryId } : {}),
   } }));
-  await storage.commit(writes, context);
+  await storage.commit(writes, () => {}, context);
   const minted = await storage.mintId<EntryId>();
   await storage.close(context);
   assert.equal(await isolated.conversation(root, context), undefined);
@@ -81,9 +81,9 @@ test("Pi shared writes and ID allocation are fenced against stale owners", async
   const claim = acquired.claim;
   const sessionId = randomUUID();
   const stale = await PostgresPiStorage.open(db, sessionId, claim);
-  await stale.commit([{ type: "conversation", value: { id: 1 as ConversationId } }], context);
+  await stale.commit([{ type: "conversation", value: { id: 1 as ConversationId } }], () => {}, context);
   await db.query("update actor_owners set epoch = epoch + 1 where actor = $1", [claim.actor]);
-  await assert.rejects(stale.commit([], context), LostClaim);
+  await assert.rejects(stale.commit([], () => {}, context), LostClaim);
   // A holder that has no block left reserves one, and is fenced. (IDs left in an earlier block are handed out, but no
   // write using them can commit.)
   await assert.rejects(stale.mintId<EntryId>(), LostClaim);
@@ -91,7 +91,7 @@ test("Pi shared writes and ID allocation are fenced against stale owners", async
   await assert.rejects(purgePiStorage(db, sessionId, claim), LostClaim);
   const active = await PostgresPiStorage.open(db, sessionId, { ...claim, epoch: claim.epoch + 1 });
   assert.ok(await active.conversation(1 as ConversationId, context));
-  await active.commit([], context);
+  await active.commit([], () => {}, context);
   await active.close(context);
   await stale.close(context);
 });
@@ -124,8 +124,8 @@ test("Pi deletion participates in the caller transaction and preserves other ses
   const first = randomUUID(), second = randomUUID();
   const a = await PostgresPiStorage.open(db, first);
   const b = await PostgresPiStorage.open(db, second);
-  await a.commit([{ type: "conversation", value: { id: 1 as ConversationId } }], context);
-  await b.commit([{ type: "conversation", value: { id: 1 as ConversationId } }], context);
+  await a.commit([{ type: "conversation", value: { id: 1 as ConversationId } }], () => {}, context);
+  await b.commit([{ type: "conversation", value: { id: 1 as ConversationId } }], () => {}, context);
   await assert.rejects(transaction(db, async sql => {
     await deletePiStorage(sql, first);
     throw new Error("later tombstone write failed");
@@ -206,7 +206,7 @@ test("Pi shared storage rides out a database it cannot reach: reads are asked ag
   const page = await storage.scanEntries({ conversationId: conversation as ConversationId }, 10, undefined, context);
   assert.deepEqual(page.items.map(item => item.id), [entry], "a read the database did not answer is asked again");
   down = 2;
-  const next = await storage.commit([{ type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId: conversation as ConversationId, kind: "test" } }] as never, context);
+  const next = await storage.commit([{ type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId: conversation as ConversationId, kind: "test" } }] as never, () => {}, context);
   assert.ok(next > seq);
   await storage.close(context);
   // Without a retry window, it fails as before.
@@ -236,7 +236,7 @@ test("Pi shared mintId reserves IDs in blocks, and a later holder never reuses o
   const bulk = await next.mintIds(10);
   const after = await next.mintId<EntryId>();
   assert.ok(after > bulk.at(-1)!);
-  await next.commit([{ type: "conversation", value: { id: (after + 100) as ConversationId } }], context);
+  await next.commit([{ type: "conversation", value: { id: (after + 100) as ConversationId } }], () => {}, context);
   assert.ok(await next.mintId<EntryId>() > after + 100);
   await first.close(context);
   await next.close(context);
@@ -248,8 +248,8 @@ test("Pi shared document reads take no transaction or metadata lock, and one com
   const storage = await PostgresPiStorage.open(db, sessionId);
   const id = await storage.mintId<any>();
   const address = { kind: "probe", scope: { kind: "session" as const } };
-  await storage.commit([{ type: "document.create", record: { id, ...address }, content: { kind: "base", version: 1, value: { n: 0 } } }], context);
-  for (let n = 1; n <= 3; n++) await storage.commit([{ type: "document.change", id, content: { kind: "delta", version: 1, ops: [["s", ["n"], n]] } }], context);
+  await storage.commit([{ type: "document.create", record: { id, ...address }, content: { kind: "base", version: 1, value: { n: 0 } } }], () => {}, context);
+  for (let n = 1; n <= 3; n++) await storage.commit([{ type: "document.change", id, content: { kind: "delta", version: 1, ops: [["s", ["n"], n]] } }], () => {}, context);
   // A writer holds the session's metadata lock: a read neither waits for it nor sees its uncommitted change.
   const client = await db.connect();
   try {
@@ -258,9 +258,9 @@ test("Pi shared document reads take no transaction or metadata lock, and one com
     const read = await Promise.race([storage.document(id, "current", context), new Promise(resolve => setTimeout(() => resolve("blocked"), 2_000))]);
     assert.deepEqual(read, { record: { id, ...address, createdAt: 1 }, version: 1, value: { n: 3 }, deltasSinceBase: 3 });
   } finally { await client.query("rollback"); client.release(); }
-  await assert.rejects(storage.commit([{ type: "document.change", id, content: { kind: "delta", version: 2, ops: [] } }], context), /version transition requires a base/);
-  await assert.rejects(storage.commit([{ type: "document.create", record: { id: await storage.mintId<any>(), ...address }, content: { kind: "base", version: 1, value: {} } }], context), /already has a current incarnation/);
-  await storage.commit([{ type: "document.retire", id }], context);
+  await assert.rejects(storage.commit([{ type: "document.change", id, content: { kind: "delta", version: 2, ops: [] } }], () => {}, context), /version transition requires a base/);
+  await assert.rejects(storage.commit([{ type: "document.create", record: { id: await storage.mintId<any>(), ...address }, content: { kind: "base", version: 1, value: {} } }], () => {}, context), /already has a current incarnation/);
+  await storage.commit([{ type: "document.retire", id }], () => {}, context);
   assert.equal(await storage.document(id, "current", context), undefined);
   await storage.close(context);
 });
@@ -287,8 +287,8 @@ test("Pi shared journal reads match the SQLite reference through forks, head mar
       [{ type: "conversation" as const, value: { id: 60 as ConversationId } }],
     ];
     for (const batch of batches) {
-      await shared.commit(batch as never, context);
-      await reference.commit(batch as never, context);
+      await shared.commit(batch as never, () => {}, context);
+      await reference.commit(batch as never, () => {}, context);
     }
     const same = async (what: string, read: (storage: Storage) => Promise<unknown>) => {
       const expected = await read(reference).then(value => ({ value }), (error: Error) => ({ error: error.message }));
@@ -336,14 +336,14 @@ test("Pi shared storage reads a conversation's journal in one statement and comm
   const root = 1 as ConversationId;
   const [task, document, ...ids] = await storage.mintIds(10);
   await storage.commit([{ type: "conversation", value: { id: root } },
-    { type: "document.create", record: { id: document as never, kind: "probe", scope: { kind: "conversation", conversationId: root }, history: "latest" } as never, content: { kind: "base", version: 1, value: { n: 0 } } }], context);
+    { type: "document.create", record: { id: document as never, kind: "probe", scope: { kind: "conversation", conversationId: root }, history: "latest" } as never, content: { kind: "base", version: 1, value: { n: 0 } } }], () => {}, context);
   const measure = async (work: () => Promise<unknown>) => { statements.length = 0; await work(); return statements.length; };
   // A step's commit: an entry, its task and a current-only document's new base (Pi's live state) in one transaction.
   assert.equal(await measure(() => storage.commit([
     { type: "entry", value: { id: ids[0] as EntryId, conversationId: root, kind: "message" } },
     { type: "task", value: { id: task, conversationId: root, kind: "probe", state: { status: "running" } } as never },
     { type: "document.change", id: document as never, content: { kind: "base", version: 1, value: { n: 1 } } },
-  ], context)), 5, "begin, the metadata lock taking the sequence, one check, one write, commit");
+  ], () => {}, context)), 5, "begin, the metadata lock taking the sequence, one check, one write, commit");
   assert.deepEqual((await storage.document(document as never, "current", context))?.value, { n: 1 }, "the base replaced, its old revision gone");
   assert.equal(Number((await db.query("select count(*) from pi_durable_document_revisions where session_id = $1", [sessionId])).rows[0].count), 1);
   assert.equal(await measure(() => storage.scanEntries({ conversationId: root }, 10, undefined, context)), 1);
@@ -378,14 +378,14 @@ test("Pi shared commits check the claim in their lock statement: a takeover wait
   let hold: PromiseWithResolvers<void> | undefined, entered: PromiseWithResolvers<void> | undefined;
   const node = await PostgresPiStorage.open(counted, sessionId, claim, async () => { entered?.resolve(); await hold?.promise; });
   const root = 1 as ConversationId;
-  await node.commit([{ type: "conversation", value: { id: root } }], context);
+  await node.commit([{ type: "conversation", value: { id: root } }], () => {}, context);
   const [first, second, third] = await node.mintIds(3);
   statements.length = 0;
-  await node.commit([{ type: "entry", value: { id: first as EntryId, conversationId: root, kind: "message" } }], context);
+  await node.commit([{ type: "entry", value: { id: first as EntryId, conversationId: root, kind: "message" } }], () => {}, context);
   assert.equal(statements.length, 5, "begin, the claim and metadata lock in one statement, one check, one write, commit");
 
   hold = Promise.withResolvers(); entered = Promise.withResolvers();
-  const inFlight = node.commit([{ type: "entry", value: { id: second as EntryId, conversationId: root, kind: "message" } }], context);
+  const inFlight = node.commit([{ type: "entry", value: { id: second as EntryId, conversationId: root, kind: "message" } }], () => {}, context);
   await entered.promise;
   let takenOver = false;
   const takeover = db.query("update actor_owners set epoch = epoch + 1 where actor = $1", [claim.actor]).then(() => { takenOver = true; });
@@ -398,13 +398,13 @@ test("Pi shared commits check the claim in their lock statement: a takeover wait
 
   // The lease is gone: the old node's next commit fails and writes nothing, though its IDs and metadata are in hand.
   const before = (await db.query("select next_seq from pi_durable_metadata where session_id = $1", [sessionId])).rows[0].next_seq;
-  await assert.rejects(node.commit([{ type: "entry", value: { id: third as EntryId, conversationId: root, kind: "message" } }], context), LostClaim);
+  await assert.rejects(node.commit([{ type: "entry", value: { id: third as EntryId, conversationId: root, kind: "message" } }], () => {}, context), LostClaim);
   await assert.rejects(node.mintIds(5), LostClaim);
   assert.equal((await db.query("select next_seq from pi_durable_metadata where session_id = $1", [sessionId])).rows[0].next_seq, before);
   const ids = (await db.query("select id from pi_durable_entries where session_id = $1 order by id", [sessionId])).rows.map(row => Number(row.id));
   assert.deepEqual(ids, [first, second], "the commit in flight landed; the stale node's did not");
   const next = await PostgresPiStorage.open(db, sessionId, { ...claim, epoch: claim.epoch + 1 });
-  await next.commit([{ type: "entry", value: { id: third as EntryId, conversationId: root, kind: "message" } }], context);
+  await next.commit([{ type: "entry", value: { id: third as EntryId, conversationId: root, kind: "message" } }], () => {}, context);
   await next.close(context);
   await node.close(context);
 });
@@ -413,17 +413,15 @@ test("Pi shared entryIds lists a conversation's entry IDs in a range without the
   const { db } = await database;
   const storage = await PostgresPiStorage.open(db, randomUUID());
   const conversationId = 1 as ConversationId;
-  await storage.commit([{ type: "conversation", value: { id: conversationId } }], context);
+  await storage.commit([{ type: "conversation", value: { id: conversationId } }], () => {}, context);
   const ids: number[] = [];
   for (let i = 0; i < 5; i++) ids.push(await storage.mintId<EntryId>());
-  await storage.commit(ids.map(id => ({ type: "entry", value: { id: id as EntryId, conversationId, kind: "test", data: { big: "x".repeat(1000) } } })) as never, context);
+  await storage.commit(ids.map(id => ({ type: "entry", value: { id: id as EntryId, conversationId, kind: "test", data: { big: "x".repeat(1000) } } })) as never, () => {}, context);
   assert.deepEqual(await storage.entryIds(conversationId, ids[1], ids[3]), ids.slice(1, 4));
   const remote = remotePiStorage(request => storageRequest(storage, request)) as typeof storage;
   assert.deepEqual(await remote.entryIds(conversationId, ids[0], ids[4]), ids);
 });
 
-// The Pi release after 1.4.0 calls `commit(writes, adopt, context)`; 1.4.0 calls `commit(writes, context)`. Both work.
-type Adopting = (writes: readonly StorageWrite[], adopt: (seq: Seq) => void, ctx: typeof context) => Promise<Seq>;
 const storageModes = ["sqlite", "sqlite-committing", "postgres", "remote-postgres"] as const;
 async function openMode(mode: typeof storageModes[number], sessionId: string, directory: string): Promise<{ storage: Storage; close(): Promise<void> }> {
   const sqlite = mode === "sqlite" || mode === "sqlite-committing";
@@ -437,23 +435,19 @@ async function openMode(mode: typeof storageModes[number], sessionId: string, di
 }
 
 for (const mode of storageModes) {
-  test(`Pi ${mode}: commit takes both shapes and adopts each durable batch once, before it resolves and before the next commit`, async () => {
+  test(`Pi ${mode}: commit adopts each durable batch once, before it resolves and before the next commit`, async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-adopt-"));
     const { storage, close } = await openMode(mode, randomUUID(), directory);
     try {
       const root = await storage.mintId<ConversationId>();
-      // Pi 1.4.0's shape.
-      const first = await storage.commit([{ type: "conversation", value: { id: root } }], context);
+      const first = await storage.commit([{ type: "conversation", value: { id: root } }], () => {}, context);
       const order: string[] = [];
       const entry = async () => ({ type: "entry" as const, value: { id: await storage.mintId<EntryId>(), conversationId: root, kind: "test" } });
       const step = async (name: string) => {
         const write = await entry();
         // Adoption runs when the batch is durable: a read started inside it already sees the batch.
         let visible: Promise<unknown> | undefined;
-        const commit = (adopt: (seq: Seq) => void) => storage.commit.length >= 3
-          ? (storage.commit as unknown as Adopting)([write], adopt, context)
-          : commitTo(storage, [write], context, adopt);
-        const seq = await commit(seq => { order.push(`adopt ${name} ${seq}`); visible = storage.entry(write.value.id, context); });
+        const seq = await storage.commit([write], seq => { order.push(`adopt ${name} ${seq}`); visible = storage.entry(write.value.id, context); }, context);
         order.push(`resolved ${name} ${seq}`);
         assert.ok(await visible, "adopted after the batch is durable");
         return seq;
@@ -465,13 +459,8 @@ for (const mode of storageModes) {
       // A batch that fails before it is durable (an ID that names another record) is never adopted.
       let adopted = 0;
       const clash = [{ type: "entry" as const, value: { id: root as unknown as EntryId, conversationId: root, kind: "test" } }];
-      await assert.rejects((storage.commit.length >= 3 ? (storage.commit as unknown as Adopting)(clash, () => adopted++, context) : commitTo(storage, clash, context, () => adopted++)));
-      await assert.rejects(commitTo(storage, clash, context, () => adopted++));
+      await assert.rejects(storage.commit(clash, () => adopted++, context));
       assert.equal(adopted, 0);
-      // The helper adopts exactly once whichever shape the storage takes.
-      let once = 0;
-      await commitTo(storage, [await entry()], context, () => once++);
-      assert.equal(once, 1);
     } finally {
       await close();
       await rm(directory, { recursive: true, force: true });
@@ -488,7 +477,7 @@ for (const mode of storageModes) {
       assert.ok(minted.every((id, index) => index === 0 || id > minted[index - 1]));
       // A record stored with an ID above everything minted (as an import's reserved range writes).
       const stored = minted.at(-1)! + 1_000;
-      await commitTo(opened.storage, [{ type: "conversation", value: { id: stored as ConversationId } }], context);
+      await opened.storage.commit([{ type: "conversation", value: { id: stored as ConversationId } }], () => {}, context);
       const after = await opened.storage.mintId<EntryId>();
       assert.ok(after > stored, `${after} > stored ${stored}`);
       await opened.close();
@@ -496,7 +485,7 @@ for (const mode of storageModes) {
       const reopened = await opened.storage.mintId<EntryId>();
       // Across reopen the contract covers stored IDs; minted IDs never stored may be minted again (SQLite does).
       assert.ok(reopened > stored, `${reopened} > stored ${stored}`);
-      const last = (await commitTo(opened.storage, [{ type: "conversation", value: { id: reopened as unknown as ConversationId } }], context), reopened);
+      const last = (await opened.storage.commit([{ type: "conversation", value: { id: reopened as unknown as ConversationId } }], () => {}, context), reopened);
       assert.ok(await opened.storage.mintId<EntryId>() > last);
     } finally {
       await opened.close();

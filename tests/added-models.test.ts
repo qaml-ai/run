@@ -9,7 +9,7 @@ import { fakeModel, runtime } from "./runtime-server.ts";
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const FLASH_1017 = "deepseek/deepseek-v4.1-flash-1017";
 
-test("GPT-6.1 Terra is listed on OpenAI, Azure and OpenRouter with Sol's capabilities and window", () => {
+test("GPT-6.1 Terra is listed on OpenAI, Azure and OpenRouter with Sol's capabilities and window, and can reason not at all", () => {
   for (const provider of ["openai", "azure", "openrouter"]) {
     const prefix = provider === "openrouter" ? "openai/" : "";
     const id = `${prefix}gpt-6.1-terra`;
@@ -20,8 +20,9 @@ test("GPT-6.1 Terra is listed on OpenAI, Azure and OpenRouter with Sol's capabil
     assert.equal(model.contextWindow, sol.contextWindow, "the window the provider grants Sol, not a larger one it refuses at");
     assert.equal(model.maxTokens, 128_000);
     assert.deepEqual([model.api, model.baseUrl, model.reasoning, model.input, model.thinkingLevelMap, model.compat, model.inputLimits],
-      [sol.api, sol.baseUrl, true, sol.input, sol.thinkingLevelMap, sol.compat, sol.inputLimits]);
-    assert.equal(reasoningFloor(model), "low");
+      [sol.api, sol.baseUrl, true, sol.input, { ...sol.thinkingLevelMap, off: "none" }, sol.compat, sol.inputLimits]);
+    // Pi's entry (since the vendored commit): unlike Sol, Terra takes reasoning effort `none`.
+    assert.equal(reasoningFloor(model), undefined);
     const info = listModels(provider).find(entry => entry.id === `${provider}/${id}`)!;
     assert.deepEqual([info.api, info.contextWindow, info.toolCallStreaming],
       [provider === "azure" ? "azure-openai-responses" : "openai-responses", sol.contextWindow, "unknown"]);

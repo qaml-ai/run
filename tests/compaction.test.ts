@@ -593,7 +593,7 @@ test("an agent whose journal keeps more messages after its compaction than the h
       api: "openai-completions", provider: "openai", model: "fixture", usage, stopReason: "toolUse", timestamp: 5 }] } },
     { type: "entry", value: { id: next + 1, conversationId: LEGACY_CONVERSATION_ID, kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "ask-1", toolName: "ask",
       content: [{ type: "text", text: "Waiting for the user's input." }], details: { inputRequired: true }, isError: false, timestamp: 6 }] } },
-  ] as never, BACKGROUND_CONTEXT);
+  ] as never, () => {}, BACKGROUND_CONTEXT);
   await storage.close(BACKGROUND_CONTEXT);
   const restarted = await supervisor.start("drifted", { model, apiKey: "fixture" }, bridge);
   assert.ok(restarted.messages >= 10, "the agent started");

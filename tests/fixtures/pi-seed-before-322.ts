@@ -7,7 +7,6 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord";
 import type { EntryId, Storage, StorageWrite } from "@earendil-works/pi-durable";
 import { convertToLlm } from "../../src/pi-harness/messages.ts";
-import { commitTo } from "../../src/pi-durable/storage.ts";
 import { contextWrites, SEED_MARKER_KIND, SEED_RECORD_KIND, SESSION_CONVERSATION_ID as conversationId, type SeedMetadata } from "../../src/pi-durable/seed.ts";
 import { copyFingerprint, reducedTranscript, type TranscriptRecord } from "./host-transcript.ts";
 
@@ -31,6 +30,6 @@ export async function seedWithoutGeneration(storage: Storage, sessionId: string,
     data: { index, records: records.slice(index, index + 128) } as unknown as JsonValue } });
   writes.push(...contextWrites(ids.slice(next, next += contextIds), conversationId, model, JSON.parse(JSON.stringify({ fingerprint, state }))));
   for (const requestId of state.requests) writes.push({ type: "submission", value: { id: ids[next++] as never, conversationId, requestId, type: "input", status: "unanswered", reason: "legacy_import" } });
-  await commitTo(storage, writes, context);
+  await storage.commit(writes, () => {}, context);
   return metadata;
 }

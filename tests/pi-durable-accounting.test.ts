@@ -48,10 +48,10 @@ test("a rejected receipt rolls back the canonical response in the same Postgres 
   const storage = await openPiStorage({ db, sessionId: randomUUID(), directory: tmpdir(), committing: async (entry, sql) => {
     if (entry.kind === "pi.assistant") await sql!.query("insert into pi_usage_receipts(session_id,entry_id,tenant,message) values ('session',$1,'payg','{}')", [entry.id]);
   } });
-  await storage.commit([{ type: "conversation", value: { id: 1 as any } }], context);
+  await storage.commit([{ type: "conversation", value: { id: 1 as any } }], () => {}, context);
   await db.query("alter table pi_usage_receipts add constraint rejected check (false)");
   const id = await storage.mintId<any>();
-  await assert.rejects(storage.commit([{ type: "entry", value: { id, conversationId: 1 as any, kind: "pi.assistant" } }], context), /rejected/);
+  await assert.rejects(storage.commit([{ type: "entry", value: { id, conversationId: 1 as any, kind: "pi.assistant" } }], () => {}, context), /rejected/);
   assert.equal(await storage.entry(id, context), undefined);
   await storage.close(context);
 });

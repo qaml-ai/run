@@ -24,7 +24,7 @@ sys.exit(0 if paths and all(map(allowed, paths)) else 1)
   if git diff --no-renames --name-only -z "$base...$head" | python3 -c '
 import sys
 paths = [p for p in sys.stdin.buffer.read().decode().split("\0") if p]
-inputs = ("src/", "shared/", "sandbox/", "migrations/", "console/", "docs/", "packages/cli/", "packages/registry/public/r/", ".github/actions/")
+inputs = ("src/", "shared/", "sandbox/", "migrations/", "console/", "docs/", "packages/cli/", "packages/registry/public/r/", ".github/actions/", "vendor/")
 files = {"Dockerfile", ".dockerignore", "package.json", "package-lock.json", ".npmrc", "clients/history-formats.ts", ".github/workflows/ci.yml", "scripts/ci-changes.sh", "scripts/backfill-pins.ts", "scripts/verify-gc.ts", "scripts/check-storage.ts", "scripts/voice-check.ts", "tests/image-isolation.ts", "tests/v8-exec.test.ts"}
 sys.exit(0 if paths and not any(p in files or p.startswith(inputs) for p in paths) else 1)
 '; then

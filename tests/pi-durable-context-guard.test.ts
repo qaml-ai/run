@@ -31,16 +31,16 @@ for (const backend of ["sqlite", "postgres"] as const) test(`${backend} measures
   const storage = await openPiStorage({ sessionId: "size-test", directory, db });
   t.after(async () => { await storage.close(context); await rm(directory, { recursive: true, force: true }); });
   assert.deepEqual(await contextRangeSize(storage, root), { entries: 0, bytes: 0 });
-  await storage.commit([{ type: "conversation", value: { id: root } }], context);
+  await storage.commit([{ type: "conversation", value: { id: root } }], () => {}, context);
   const entries = [
     { id: 2 as EntryId, conversationId: root, kind: "test", data: "old".repeat(1000) },
     { id: 3 as EntryId, conversationId: root, kind: "test", data: "café 🐪" },
     { id: 4 as EntryId, conversationId: root, kind: "test", head: 3 as EntryId },
     { id: 5 as EntryId, conversationId: root, kind: "test", data: "tail" },
   ];
-  await storage.commit(entries.slice(0, 2).map(value => ({ type: "entry" as const, value })), context);
+  await storage.commit(entries.slice(0, 2).map(value => ({ type: "entry" as const, value })), () => {}, context);
   assert.deepEqual(await contextRangeSize(storage, root), { entries: 2, bytes: entries.slice(0, 2).reduce((n, entry) => n + Buffer.byteLength(JSON.stringify(entry)), 0) });
-  await storage.commit(entries.slice(2).map(value => ({ type: "entry" as const, value })), context);
+  await storage.commit(entries.slice(2).map(value => ({ type: "entry" as const, value })), () => {}, context);
   // The newest marker points backwards, so starting at the marker's own ID would undercount.
   const expected = { entries: 3, bytes: entries.slice(1).reduce((n, entry) => n + Buffer.byteLength(JSON.stringify(entry)), 0) };
   storage.scanEntries = async () => { throw new Error("range records must not be loaded"); };
@@ -49,10 +49,10 @@ for (const backend of ["sqlite", "postgres"] as const) test(`${backend} measures
   const remote = remotePiStorage(request => storageRequest(storage, request));
   assert.deepEqual(await contextRangeSize(remote, root), expected);
   const fork = 6 as ConversationId;
-  await storage.commit([{ type: "conversation", value: { id: fork, parent: { conversationId: root, at: 4 as EntryId } } }], context);
+  await storage.commit([{ type: "conversation", value: { id: fork, parent: { conversationId: root, at: 4 as EntryId } } }], () => {}, context);
   assert.deepEqual(await contextRangeSize(remote, fork), { entries: 2, bytes: expected.bytes - Buffer.byteLength(JSON.stringify(entries[3])) });
   const own = { id: 7 as EntryId, conversationId: fork, kind: "test", head: 7 as EntryId, data: "new head" };
-  await storage.commit([{ type: "entry", value: own }], context);
+  await storage.commit([{ type: "entry", value: own }], () => {}, context);
   assert.deepEqual(await contextRangeSize(remote, fork), { entries: 1, bytes: Buffer.byteLength(JSON.stringify(own)) });
 });
 
@@ -65,7 +65,7 @@ test("host rejects an oversized context before opening the journal or scanning a
   await storage.commit([
     { type: "conversation", value: { id: root } },
     { type: "entry", value: { id: 2 as EntryId, conversationId: root, kind: "test", head: 2 as EntryId, data: "oversized" } },
-  ], context);
+  ], () => {}, context);
   storage.entry = async () => { throw new Error("entry must not be read"); };
   storage.scanEntries = async () => { throw new Error("entries must not be scanned"); };
   storage.findLatestHeadMarker = async () => { throw new Error("marker must not be read"); };

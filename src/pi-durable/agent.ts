@@ -6,7 +6,7 @@ import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
   GenerationTask, Harness, LiveDoc, createRegistry, createSession, defineDoc, section,
-  type CommitPublication, type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type ReportInfo, type Storage, type TaskId,
+  type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Report, type Storage,
 } from "@earendil-works/pi-durable";
 
 /** Small latest-value document: loading an agent never scans its journal for a limit. */
@@ -97,7 +97,8 @@ export function durableEntryMessages(entry: EntryRecord): DurableMessage[] {
   if (!nativeKinds.has(entry.kind)) return [];
   const original = originalUser(entry);
   const diagnostics = (entry.data as { diagnostics?: { code?: string }[] } | undefined)?.diagnostics ?? [];
-  const uncertain = diagnostics.some(item => item.code === "aborted" || item.code === "interrupted" || item.code === "abandoned");
+  // A call the node cut off (`restart_limit`: cut off too often to run again) may or may not have run.
+  const uncertain = diagnostics.some(item => ["aborted", "interrupted", "abandoned", "restart_limit"].includes(item.code!));
   return (original ? [original] : entry.model ?? []).map((message, index) => ({
     message: structuredClone(message.role === "toolResult" && uncertain ? { ...message,
       content: [{ type: "text", text: `Tool ${message.toolName} was interrupted; its outcome is unknown and it may or may not have run.` }],
@@ -178,27 +179,6 @@ export async function recoverDurableMessages(storage: Pick<Storage, "scanEntries
 }
 
 /**
- * A report to `HarnessOptions.onReport` in either shape: Pi 1.4.0 calls `onReport(error, info)` (`info.type`), the next
- * release `onReport(report)` (`report.kind`, `report.error`; `session_failed` is `storage_failed`, `task_parked` is gone).
- */
-type PiReport = { kind?: string; error: unknown; task?: { kind: string; id: TaskId } };
-export function piReport(first: unknown, info?: ReportInfo): PiReport {
-  if (info === undefined && first !== null && typeof first === "object" && typeof (first as { kind?: unknown }).kind === "string" && "error" in first) return first as PiReport;
-  return { kind: info?.type, error: first, ...info && "task" in info && info.task ? { task: info.task } : {} };
-}
-
-/**
- * Observe stored commits: `subscribeCommits(listener)` on Pi 1.4.0, `observeCommits(observer)` on the release after it,
- * which removes `subscribeCommits`. Either way, one call per stored commit, with what it stored. (1.4.0 has an internal
- * `observeCommits(listener)` of another shape, so the test is for `subscribeCommits`.)
- */
-export function observeCommits(harness: Harness, listener: (publication: CommitPublication) => void): void {
-  if (typeof (harness as Partial<Harness>).subscribeCommits === "function") { harness.subscribeCommits(publication => listener(publication)); return; }
-  const next = harness as unknown as { observeCommits(observer: { advance(publication: CommitPublication, context: unknown): void; end(end: unknown): void }): unknown };
-  next.observeCommits({ advance: publication => listener(publication), end: () => {} });
-}
-
-/**
  * Agent event/policy boundary around Pi's durable Harness. Pi owns compaction;
  * credentials, tools and run limits remain host responsibilities.
  */
@@ -249,8 +229,6 @@ export class DurableAgent {
   private lastTurn?: AssistantMessage;
   private lastTurnResults: ToolResultMessage[] = [];
   private stoppedByFinishTurn = false;
-  /** Generations Pi 1.4's crash-loop guard parked at open (`task_parked`): cut off `restartLimit` times without progress. */
-  private parked = new Set<TaskId>();
   private closed = false;
   private closing?: Promise<void>;
 
@@ -393,12 +371,13 @@ export class DurableAgent {
       identity: { attribution: null },
       // What Pi contains rather than throws (a faulted phase, a throwing hook or section, a dropped progress commit) is
       // otherwise silent.
-      onReport: (first: unknown, info?: ReportInfo) => {
-        const report = piReport(first, info);
-        if (report.kind === "session_failed" || report.kind === "storage_failed") options.durable.onStorageFailure?.(report.error);
-        if (report.kind === "task_parked" && report.task?.kind === original.name) agent.parked.add(report.task.id);
-        console.error(JSON.stringify({ type: "pi_report", ...report.kind ? { report: report.kind } : {},
-          ...report.task ? { task: report.task.kind, taskId: report.task.id } : {},
+      // A task cut off `restartLimit` times in a row ends (`task_interrupted`, reason `restart_limit`; a generation ends
+      // its run with `runFailure`), and so does a run whose model request a lost node left in flight (reason `interrupted`).
+      onReport: (report: Report) => {
+        if (report.kind === "storage_failed") options.durable.onStorageFailure?.(report.error);
+        const task = "task" in report ? report.task : undefined;
+        console.error(JSON.stringify({ type: "pi_report", report: report.kind,
+          ...task ? { task: task.kind, taskId: task.id } : {}, ..."reason" in report ? { reason: report.reason } : {},
           error: report.error instanceof Error ? report.error.message : String(report.error) }));
       },
       settings: { compaction: { enabled: true,
@@ -414,7 +393,8 @@ export class DurableAgent {
         }, backgroundTokens: 0 },
         // Live answers and tool output stream to the host from the provider and the tool, not from these commits:
         // they only bound what a lost node's run keeps, so each costs a journal write once a second, not every 100 ms.
-        progress: { partialIntervalMs: 1_000, outputIntervalMs: 1_000 },
+        // Pi defers storing them by up to `persistWithinMs` (default 1 s); 0 stores each right after its commit, as before.
+        progress: { partialIntervalMs: 1_000, outputIntervalMs: 1_000, persistWithinMs: 0 },
         retry: { enabled: false }, toolExecution: options.toolExecution ?? "parallel",
         steeringMode: options.steeringMode ?? "one-at-a-time", contextRetentionMs: 0 },
     }, context);
@@ -424,7 +404,7 @@ export class DurableAgent {
     const limit = await agent.harness.snapshot(ContextLimitDoc, agent.conversation.id, context);
     if (limit?.provider === agent.state.model.provider && limit.model === agent.state.model.id && Number.isFinite(limit.window) && limit.window > 0)
       agent.overflowWindow = Math.max(limit.window, limitFloor(agent.state.model));
-    observeCommits(agent.harness, publication => {
+    agent.harness.observeCommits({ end: () => {}, advance: publication => {
       // A generation that ended without an answer fails the run: one that failed, and one whose phase threw (faulted) or
       // that no installed definition could take (orphaned), which would otherwise end the run as if it had answered.
       for (const change of publication.changes) if (change.type === "task" && change.value.kind === original.name && change.value.state.status === "terminal") {
@@ -451,7 +431,7 @@ export class DurableAgent {
         }
         for (const item of items) agent.queueEvent(() => agent.committedMessage(item));
       }
-    });
+    } });
     await agent.reload();
     agent._latestCursor = options.durable.cursor ?? await latestDurableCursor(options.durable.storage, agent.conversation.id);
     return agent;
@@ -871,22 +851,6 @@ export class DurableAgent {
       if (this.signal?.aborted) return;
       this.landedTokens = undefined;
       await this.syncContext();
-      // A run whose generation Pi parked would never run again and keep the conversation busy: end it (its abort handler
-      // settles what it left open). Resuming it fails the run; new input runs after it.
-      if (this.parked.size) {
-        const live = await this.harness.snapshot(LiveDoc, this.conversation.id, context);
-        const parked = live?.run !== undefined && this.parked.has(live.run.taskId);
-        this.parked.clear();
-        if (parked) {
-          await this.conversation.abort(context);
-          await this.conversation.waitForIdle(context);
-          await this.flushEvents();
-          if (!messages.length) {
-            this.errorMessage = "The turn was cut off by repeated node failures without progress, and was not resumed again";
-            return;
-          }
-        }
-      }
       // Brand-new sessions have no native cursor. Start at the context marker,
       // rather than scanning a potentially huge imported archive at agent_end.
       start ??= await latestDurableCursor(this.options.durable.storage, this.conversation.id);
@@ -900,13 +864,9 @@ export class DurableAgent {
       }
       if (!input.length) {
         const live = await this.harness.snapshot(LiveDoc, this.conversation.id, context);
-        // Idle is `run === undefined`: after a run that ended without an answer `pi.live` is not empty (`runFailure`).
-        if (live?.run === undefined) {
-          await this.conversation.commit(async tx => {
-            const live = await tx.doc(LiveDoc, this.conversation.id);
-            live.run = { taskId: await tx.createTask(GenerationTask, {}, { ownership: { kind: "conversation" }, conversationId: this.conversation.id }), inputs: [] };
-          }, context);
-        }
+        // Idle is `run === undefined`: after a run that ended without an answer `pi.live` is not empty (`runFailure`). A
+        // continue runs on the context as it is; one that ends in an answer has nothing to answer (`nothing_to_answer`).
+        if (live?.run === undefined) await this.conversation.submit({ type: "continue" }, context);
         this.harness.resume();
       }
       while (true) {

@@ -40,6 +40,8 @@ WORKDIR /app
 # .npmrc: onnxruntime-node (voice turn-taking's models, src/voice/turns) installs for the CPU, without CUDA libraries;
 # and only this platform's binaries are kept (the package has every OS's: ~290 MB).
 COPY package.json package-lock.json .npmrc ./
+# Pi, built from one commit of its main branch (docs/operations/pi-vendoring.md): package.json installs it from here.
+COPY vendor/pi ./vendor/pi
 # onnxruntime's usage telemetry stays off (src/voice/turns/inference.ts sets it too).
 ENV ORT_DISABLE_TELEMETRY=1
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force \

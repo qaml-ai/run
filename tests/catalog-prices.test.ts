@@ -80,7 +80,7 @@ test("DeepSeek V4.1 Flash 1017 asks for at most what all its hosts serve (DeepIn
   assert.equal(getModel("openrouter", id)!.maxTokens, 131_072);
   assert.equal(getModels("openrouter").find(entry => entry.id === id)!.maxTokens, 131_072);
   assert.equal(withCatalogPrices({ ...getModel("openrouter", id)!, maxTokens: 943_718 }).maxTokens, 131_072);
-  assert.equal(getModel("openrouter", "deepseek/deepseek-v4.1-flash")!.maxTokens, 393_216, "pi-ai 1.4.0's catalog");
+  assert.equal(getModel("openrouter", "deepseek/deepseek-v4.1-flash")!.maxTokens, 131_072, "the vendored pi-ai's catalog");
   // A tenant's endpoint keeps its own.
   const elsewhere = { ...getModel("openrouter", id)!, maxTokens: 943_718, baseUrl: "https://llm.example.com" };
   assert.equal(withCatalogPrices(elsewhere), elsewhere);
