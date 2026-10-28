@@ -23,6 +23,7 @@ import type { SystemMessage } from "@earendil-works/pi-ai";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { apply, type Op } from "@earendil-works/chord/delta";
 import { StorageRequestError } from "@earendil-works/pi-durable";
+import { placeEntries, type Placement } from "./ordinals.ts";
 
 import type {
 	ConversationId,
@@ -136,8 +137,8 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim, retryMs = 0)
             // no longer current writes nothing), locks and reads the metadata row (a commit's also takes its
             // sequence) and turns synchronous commit on for this transaction.
             const lock = advance === undefined
-                ? "select next_id, next_seq, set_config('synchronous_commit', 'on', true) from pi_durable_metadata where session_id = $1 for update"
-                : "update pi_durable_metadata set next_id = greatest(next_id::bigint, $2::bigint)::text, next_seq = next_seq + 1 where session_id = $1 returning next_id, next_seq - 1 as next_seq, set_config('synchronous_commit', 'on', true)";
+                ? "select next_id, next_seq, history_next, history_last_id, set_config('synchronous_commit', 'on', true) from pi_durable_metadata where session_id = $1 for update"
+                : "update pi_durable_metadata set next_id = greatest(next_id::bigint, $2::bigint)::text, next_seq = next_seq + 1 where session_id = $1 returning next_id, next_seq - 1 as next_seq, history_next, history_last_id, set_config('synchronous_commit', 'on', true)";
             const params: unknown[] = advance === undefined ? [sessionId] : [sessionId, advance.nextId];
             let metadata: MetadataRow | undefined;
             if (!claim) metadata = (await sql.query<MetadataRow>(lock, params)).rows[0];
@@ -465,7 +466,8 @@ type RevisionRow = {
 	readonly content: string;
 };
 type IdRow = { readonly id: number };
-type MetadataRow = { readonly next_id: string; readonly next_seq: number };
+/** `history_next` and `history_last_id`: the session's history ordinals (ordinals.ts), null until placed. */
+type MetadataRow = { readonly next_id: string; readonly next_seq: number; readonly history_next?: number | null; readonly history_last_id?: string | null };
 type DocumentAction = {
 	create?: DocumentCreate;
 	copy?: Extract<StorageWrite, { readonly type: "document.copy" }>["source"];
@@ -582,7 +584,8 @@ export class PostgresPiStorage implements Storage {
 	static async open(db: Db, sessionId: string, claim?: Claim, committing?: PiCommitEffect, retryMs = 0): Promise<PostgresPiStorage> {
         const database = postgresDatabase(db, sessionId, claim, retryMs);
         await database.transaction(async sql => {
-            await sql.run(`INSERT INTO ${TABLES.durableMetadata} (session_id, singleton, next_id, next_seq) VALUES ($1, 1, '2', 1) ON CONFLICT(session_id) DO NOTHING`);
+            // A new session's history is placed from its start (ordinals.ts); one from before ordinals waits for its fill.
+            await sql.run(`INSERT INTO ${TABLES.durableMetadata} (session_id, singleton, next_id, next_seq, history_next, history_last_id) VALUES ($1, 1, '2', 1, 0, 0) ON CONFLICT(session_id) DO NOTHING`);
         });
         const metadata = await database.get<MetadataRow>(`SELECT next_id, next_seq FROM ${TABLES.durableMetadata} WHERE session_id = $1 AND singleton = 1`);
         if (!metadata) throw new Error("Durable Postgres metadata is missing");
@@ -605,8 +608,12 @@ export class PostgresPiStorage implements Storage {
 			const stored = await this.readCommitState(transaction, writes, documentActions);
 			this.checkGlobalIds(writes, stored.ids);
 			const existing = await this.checkDocumentActions(transaction, documentActions, stored.documents);
+			// Each history entry's place (ordinals.ts): earlier rows moved now, the batch's own with its insert.
+			const ordinals = metadata.history_next === undefined || metadata.history_next === null ? undefined
+				: await placeEntries(transaction, writes, { next: metadata.history_next, lastId: Number(metadata.history_last_id ?? 0) });
 			const statements = new Statements(transaction);
-			await this.applyTableWrites(statements, writes, committedSeq);
+			await this.applyTableWrites(statements, writes, committedSeq, ordinals?.placements);
+			if (ordinals) await statements.add(`UPDATE ${this.schema.tables.durableMetadata} SET history_next = ?, history_last_id = ? WHERE session_id = $1`, [ordinals.state.next, ordinals.state.lastId]);
 			const after = await this.applyDocumentActions(transaction, statements, documentActions, committedSeq, existing);
 			await statements.flush();
 			for (const id of after) await transaction.run(`DELETE FROM ${this.schema.tables.documentRevisions} WHERE session_id = $1 AND document_id = ?`, id);
@@ -1392,7 +1399,7 @@ export class PostgresPiStorage implements Storage {
 		return id === undefined ? undefined : idFromNumber<DocumentId>(id);
 	}
 
-    private async applyTableWrites(statements: Statements, writes: readonly StorageWrite[], seq: Seq): Promise<void> {
+    private async applyTableWrites(statements: Statements, writes: readonly StorageWrite[], seq: Seq, placements?: Map<number, Placement>): Promise<void> {
         const conversations = new Map<number, ConversationRecord>();
         const entries = new Map<number, EntryRecord>();
         const tasks = new Map<number, StoredTask>();
@@ -1423,9 +1430,12 @@ export class PostgresPiStorage implements Storage {
         let batch: EntryRecord[] = [], records: string[] = [], bytes = 0;
         const flush = async () => {
             if (!batch.length) return;
-            await statements.add(`INSERT INTO ${this.schema.tables.entries} (session_id, id, conversation_id, head, commit_seq, record)
-                SELECT $1, r.id, r.conversation_id, r.head, ?::bigint, r.record FROM unnest(?::bigint[], ?::bigint[], ?::bigint[], ?::text[]) AS r(id, conversation_id, head, record)`,
-                [seq, batch.map(value => value.id), batch.map(value => value.conversationId), batch.map(value => value.head ?? null), records], bytes);
+            const places = batch.map(value => placements?.get(value.id));
+            await statements.add(`INSERT INTO ${this.schema.tables.entries} (session_id, id, conversation_id, head, commit_seq, record, msg_from, msg_count, msg_skip, turn_start)
+                SELECT $1, r.id, r.conversation_id, r.head, ?::bigint, r.record, r.msg_from, r.msg_count, r.msg_skip, r.turn_start
+                FROM unnest(?::bigint[], ?::bigint[], ?::bigint[], ?::text[], ?::integer[], ?::integer[], ?::integer[], ?::boolean[]) AS r(id, conversation_id, head, record, msg_from, msg_count, msg_skip, turn_start)`,
+                [seq, batch.map(value => value.id), batch.map(value => value.conversationId), batch.map(value => value.head ?? null), records,
+                places.map(place => place?.from ?? null), places.map(place => place?.count ?? null), places.map(place => place?.skip ?? 0), places.map(place => place?.turn ?? false)], bytes);
             batch = []; records = []; bytes = 0;
         };
         for (const value of entries.values()) {

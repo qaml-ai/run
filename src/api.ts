@@ -59,6 +59,8 @@ import { exportAccount, type ExportOptions } from "./account-export.ts";
 import { Readable } from "node:stream";
 import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState } from "./rate-limits.ts";
 import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./legacy-coverage.ts";
+import { OrdinalCursorError, ordinalWalk } from "./history-ordinals.ts";
+import { FILL_MAX_ENTRIES } from "./pi-durable/ordinals.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -1246,6 +1248,43 @@ export function api(context: ApiContext) {
       console.log(JSON.stringify({ type: "legacy_coverage_viewed", by, complete: coverage.complete, calls: coverage.calls, durationMs: coverage.durationMs, ...coverage.counts }));
       return json(c, 200, coverage);
     } finally { coverageRunning = false; }
+  });
+  // History ordinals (src/history-ordinals.ts): their coverage, and the fill that places every agent's history entries,
+  // a dry run unless the body says `dryRun: false`. One call at a time per node; each walks for a time budget and
+  // answers a cursor to go on from.
+  let ordinalsRunning = false;
+  const ordinalCall = async <T>(work: () => Promise<T>) => {
+    if (ordinalsRunning) throw new HttpError(429, "A history ordinals call is already running on this node");
+    ordinalsRunning = true;
+    try { return await work(); }
+    catch (error) {
+      if (error instanceof OrdinalCursorError) throw new HttpError(400, error.message);
+      throw error;
+    } finally { ordinalsRunning = false; }
+  };
+  app.get("/v1/operations/history-ordinals-coverage", async c => {
+    const by = operatorOnly(c);
+    const budget = c.req.query("budgetMs");
+    if (budget !== undefined && !/^[1-9]\d{0,5}$/.test(budget)) throw new HttpError(400, "budgetMs must be a whole number of milliseconds");
+    const coverage = await ordinalCall(() => ordinalWalk(accounts.db, { cursor: c.req.query("cursor"), ...(budget ? { budgetMs: Number(budget) } : {}) }));
+    console.log(JSON.stringify({ type: "history_ordinals_coverage_viewed", by, complete: coverage.complete, calls: coverage.calls, durationMs: coverage.durationMs, ...coverage.counts }));
+    return json(c, 200, coverage);
+  });
+  app.post("/v1/operations/history-ordinals", async c => {
+    const by = operatorOnly(c);
+    const input = await readJson(c.req.raw.body, 8192, {}) as Record<string, unknown>;
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "The body is a JSON object");
+    const { cursor, dryRun, maxEntries, budgetMs } = input;
+    if (cursor !== undefined && typeof cursor !== "string") throw new HttpError(400, "cursor is a string");
+    if (dryRun !== undefined && typeof dryRun !== "boolean") throw new HttpError(400, "dryRun is true or false");
+    if (maxEntries !== undefined && !(Number.isSafeInteger(maxEntries) && (maxEntries as number) > 0 && (maxEntries as number) <= FILL_MAX_ENTRIES)) throw new HttpError(400, `maxEntries is a whole number, at most ${FILL_MAX_ENTRIES}`);
+    if (budgetMs !== undefined && !(Number.isSafeInteger(budgetMs) && (budgetMs as number) > 0)) throw new HttpError(400, "budgetMs is a whole number of milliseconds");
+    const walk = await ordinalCall(() => ordinalWalk(accounts.db, {
+      ...(cursor ? { cursor } : {}), fill: { dryRun: dryRun !== false, ...(maxEntries !== undefined ? { maxEntries: maxEntries as number } : {}) },
+      ...(budgetMs !== undefined ? { budgetMs: budgetMs as number } : {}),
+    }));
+    console.log(JSON.stringify({ type: "history_ordinals_called", by, dryRun: walk.dryRun, complete: walk.complete, calls: walk.calls, durationMs: walk.durationMs, ...walk.fills }));
+    return json(c, 200, walk);
   });
   route(createRoute({
     method: "post", path: "/v1/tenants", request: { body: content(schema.TenantInput) },
