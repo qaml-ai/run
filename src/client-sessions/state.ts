@@ -26,6 +26,7 @@ import type { CodeLimits } from "../codemode.ts";
 import type { FileLinks, FileRef } from "../files.ts";
 import type { Transcriber } from "../transcription.ts";
 import type { Imager } from "../images.ts";
+import type { Decider } from "../decisions.ts";
 import type { Outbound } from "../outbound.ts";
 import type { WrittenFile } from "../volume-tools.ts";
 import type { Backlog } from "../history-pages.ts";
@@ -229,6 +230,8 @@ export type Session = {
   childSpend?: Map<string, number>;
   /** What each running run's generate_image calls spent, which its own spend limit counts. */
   imageSpend?: Map<string, number>;
+  /** What each running run's decide calls spent, which its own spend limit counts. */
+  decisionSpend?: Map<string, number>;
   /** What each running run's children in flight may still spend, held for them (`delegate`), and how many hold it. */
   childHeld?: Map<string, { usd: number; holders: number }>;
   /** Listeners on this agent's stream on this node: a parent relaying its child's events to its own (`subagent_event`). */
@@ -245,7 +248,7 @@ export type Session = {
   messagesSent?: Map<string, Set<string>>;
 };
 /** What a run handed off at a step boundary had gathered for its outcome, which its next owner takes over (`takeOver`). */
-export type Carried = { usage?: RunUsage; childSpend?: number; imageSpend?: number; spendLimit?: number; runLimits?: RunLimits; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };
+export type Carried = { usage?: RunUsage; childSpend?: number; imageSpend?: number; decisionSpend?: number; spendLimit?: number; runLimits?: RunLimits; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };
 export interface ClientSessionOptions {
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
   /** Event ids reserved at a time (default EVENT_BLOCK); tests set fewer, to reserve often. */
@@ -347,6 +350,8 @@ export interface ClientSessionOptions {
   transcriber?: Transcriber;
   /** Makes images for the generate_image builtin (images.ts); without it, the builtin has no tool. */
   imager?: Imager;
+  /** Answers the decide builtin (decisions.ts); without it, the builtin has no tool. */
+  decider?: Decider;
   /** Fetches files attached by URL ({url}): the public internet only. Without it, files cannot be attached by URL. */
   outbound?: Outbound;
   /** Signs links to the agent's files (`POST /clients/:id/links`, `present_file`). */
@@ -384,11 +389,14 @@ export type DefinitionConfig = { id: string; revision: number; config: Pick<Agen
  * A model response's usage, a web tool's call (`searches`: web searches, `renders`: pages web_fetch had
  * rendered), tool search's ranking by meaning (`toolSearch`: `toolSearches` searches, none for
  * embedding a catalog ahead of them), audio transcribed (kind `transcription`: `audioSeconds` of it), or
- * images made (kind `image`: `images` of them, their tokens in `usage`), with its cost in `usage.cost.total`.
+ * images made (kind `image`: `images` of them, their tokens in `usage`), or decisions (kind `decision`: `decisions` answered),
+ * with its cost in `usage.cost.total`.
  */
 export type UsageRecord = {
-  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription" | "image" | "speech"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
+  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription" | "image" | "speech" | "decision"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
   transcriptions?: number; audioSeconds?: number; images?: number; speeches?: number;
+  /** Kind `decision`: questions answered (decisions.ts). */
+  decisions?: number;
   /** Already persisted beside a Pi journal response. */
   durableReceipt?: boolean;
   /** For a model response: the run it was in, who acted in it, whom the agent acts for, and its key scope (for usage webhooks). */

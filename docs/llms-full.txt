@@ -296,7 +296,7 @@ A `Run` has:
 | `toolErrors` | tool calls that did not complete (timed out, connection lost, no process serving the tools); the model was told and carried on |
 | `toolCalls` | every tool call the run made (the first 100), calls from `js_exec`'s code included: `{tool, toolCallId, innerCallId?, ok, code?, agentId?}`. A `delegate` call names its sub-agent (`agentId`). Arguments and results are in history |
 | `files` | files the run wrote |
-| `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent; `imageCostUsd`, what its `generate_image` calls cost |
+| `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent; `imageCostUsd`, what its `generate_image` calls cost; `decisionCostUsd`, what its `decide` calls cost |
 
 ### Independent questions
 
@@ -1623,7 +1623,7 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents"]`.
+`"builtins": ["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide"]`.
 
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or
@@ -1672,6 +1672,11 @@ it is made from (whose builtins it then has):
   else the platform's, charged per token on prepaid credit, and counts against
   the agent's and the run's spend limits. Saving a definition or an agent with
   it and no OpenAI key answers with a warning. See [Images](https://run.camelai.com/docs/guides/images.md#in-an-agent).
+- `decide` (`{state, questions}` or `{items}`) answers typed questions about a
+  state (yes/no, a choice, a score) with probabilities, through a decision model
+  (TypeSafe's Jev on OpenRouter). From `js_exec`, `tools.decide({items})` takes up
+  to 100 states a call, for classifying or scoring a dataset. It counts against
+  the agent's and the run's spend limits. See [Decisions](https://run.camelai.com/docs/guides/decisions.md).
 - `agents` (with the same settings) starts sub-agents in the background
   (`spawn_agent`, `wait_agent`, `list_agents`); each one's answer arrives as a
   notification. See [Background sub-agents](https://run.camelai.com/docs/guides/multi-agent.md#background-sub-agents).
@@ -3708,6 +3713,130 @@ Prompts and images are never written to the runtime's logs, which carry sizes, q
 without `volumeId` keeps nothing; with one, the images are kept in your volume until you delete them. OpenAI processes
 the prompt and images under its API data policy (not used for training). See
 [Account data](https://run.camelai.com/docs/operations/privacy.md#images).
+
+---
+
+<!-- https://run.camelai.com/docs/guides/decisions.md -->
+
+# Decisions
+
+`POST /v1/decisions` answers typed questions about a state (a message, a record, a document) with a decision model:
+yes/no, one of a set of options, or a level on a scale, each with calibrated probabilities instead of text. It is
+fast (a few hundred milliseconds) and cheap (about $0.00002 for three questions about a short message), so it suits
+moderation, routing, triage, and classifying or scoring a dataset. An agent asks with the `decide` builtin, and from
+`js_exec` as `tools.decide`.
+
+Decisions run on TypeSafe's Jev (`typesafe/jev-1.14`), through OpenRouter's decisions API, with the OpenRouter key a
+model call of yours would use: a [key scope](https://run.camelai.com/docs/guides/models-and-keys.md#key-scopes)'s, your own
+(`PUT /v1/providers/openrouter/key`), else the platform's, which a prepaid account pays for at what OpenRouter charges.
+
+## Asking about one state
+
+```bash
+curl -X POST "$RUNTIME/v1/decisions" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{
+  "state": "hey can someone help me reset my password? i keep getting locked out",
+  "questions": {
+    "is_support": { "type": "noul", "instructions": "The message asks for account or technical help." },
+    "topic": { "type": "choice", "instructions": "Main topic of the message.",
+               "criteria": { "billing": "payments, invoices", "account": "login, password, access", "bug": "something broken", "other": "" } },
+    "toxicity": { "type": "score", "instructions": "How abusive the message is.",
+                  "criteria": ["not at all", "mildly rude", "insulting", "hateful or threatening"] }
+  }
+}'
+```
+
+```json
+{
+  "model": "typesafe/jev-1.14-20261014",
+  "answers": {
+    "is_support": { "type": "noul", "noul": 0.99 },
+    "topic": { "type": "choice", "choice": "account", "confidence": 1, "probabilities": { "billing": 0, "account": 1, "bug": 0, "other": 0 } },
+    "toxicity": { "type": "score", "score": 0, "confidence": 1, "probabilities": [1, 0, 0, 0] }
+  },
+  "usage": { "inputTokens": 444, "outputTokens": 77 }, "costUsd": 0.000018648, "ms": 310
+}
+```
+
+| Question | Fields | Answer |
+| --- | --- | --- |
+| `noul` | `instructions`: a yes/no question or statement; `criteria?`: `{true?, false?}`, what counts as yes and as no | `noul`: the probability it is true |
+| `choice` | `instructions`: what to decide; `criteria`: `{option: description}`, 2 to 255 (an empty description judges the option by its name) | `choice`, the likeliest option; `confidence`; `probabilities` by option |
+| `score` | `instructions`: what to rate; `criteria`: 2 to 10 levels, lowest first | `score`, the expected level from 0 (may be fractional); `confidence`; `probabilities` by level |
+
+Ask every question about a state in one request: they are answered together, for about the price of one. Question
+ids are yours (letters, digits, `_` and `-`), at most 32 a state.
+
+Probabilities are calibrated, so act on them with thresholds (block at 0.95, flag at 0.8) rather than on the top
+answer alone. Tune thresholds on your own data, for the model you pinned: another model's probabilities differ.
+
+| Field | |
+| --- | --- |
+| `state` | text, or JSON (an object or array): at most 64,000 characters |
+| `questions` | the questions, by id |
+| `items` | a batch instead: 1 to 100 `{state, questions}` (below) |
+| `model` | `typesafe/jev-1.14` (default) or `typesafe/jev-1.13`: a pinned version, so answers do not shift under your thresholds |
+| `maxUsd` | refuse (402) before anything is sent if the estimate is more |
+| `keyScope` | a key scope whose OpenRouter key goes first |
+| `subject`, `context`, `actor`, `bucket` | who it is for, who asked, and the end user's credit bucket, as for an agent's runs |
+
+## Batches
+
+`items` asks about up to 100 states in one request, each with its own questions. They are answered in parallel (at
+most 16 at once for an account on a node; the rest wait), and the answer lists each item's `answers`, or its `error`,
+in order: one item failing does not fail the others, and is not billed.
+
+```json
+{ "items": [ { "state": "first message", "questions": { "spam": { "type": "noul", "instructions": "This is spam." } } },
+             { "state": "second message", "questions": { "spam": { "type": "noul", "instructions": "This is spam." } } } ] }
+```
+
+```json
+{ "model": "typesafe/jev-1.14-20261014", "results": [ { "answers": { "spam": { "type": "noul", "noul": 0.02 } }, "usage": { "inputTokens": 120, "outputTokens": 12 }, "costUsd": 0.000005 },
+                                                     { "error": { "status": 400, "code": "DECISION_REFUSED", "message": "…" } } ],
+  "usage": { "inputTokens": 120, "outputTokens": 12 }, "costUsd": 0.000005, "ms": 290 }
+```
+
+A call the provider fails for now (rate limited, overloaded) is retried up to 3 times with backoff, honouring its
+Retry-After; a request answers within 60 seconds. Nothing is cached: send each distinct state once. Neither states nor
+answers are logged or kept.
+
+## In an agent
+
+With the `decide` builtin, an agent asks directly (`{state, questions}` or `{items}`, as above), and from `js_exec`:
+
+```js
+const questions = { spam: { type: "noul", instructions: "This message is spam." } };
+let spam = 0;
+for (let start = 0; start < rows.length; start += 100) {
+  const { results } = await tools.decide({ items: rows.slice(start, start + 100).map(row => ({ state: row.text, questions })) });
+  for (const result of results) if (!result.error && result.answers.spam.noul > 0.9) spam++;
+}
+```
+
+One `tools.decide` call takes up to 100 states; a script may have several in flight (`Promise.all` over a few chunks),
+within js_exec's limits (256 tool calls and 30 seconds by default per execution, 128 KB of arguments a call). For more
+than one execution holds, loop executions over files in the workspace. What the calls cost counts against the agent's
+and the run's spend limits (the run's `usage.decisionCostUsd`), and the run's budget is checked against each call's
+estimate before it is sent.
+
+## Errors
+
+| Status | Code | |
+| --- | --- | --- |
+| 400 | | a malformed request, said before anything is sent |
+| 400 | `DECISION_REFUSED` | the provider refused the request (its reason, without your state) |
+| 400 | `DECISIONS_UNAVAILABLE` | no OpenRouter key for this account |
+| 402 | `SPEND_LIMIT` | the estimate is more than `maxUsd` or the run's budget |
+| 413 | `DECISION_TOO_LARGE` | a state over 64,000 characters, or a state and its questions over 96,000 |
+| 429 | `RATE_LIMITED` | too many decisions waiting for the account on a node |
+| 502 | `DECISION_FAILED`, `DECISIONS_UNAVAILABLE` | the provider failed after retries, or its decisions API (in alpha) is unavailable |
+
+## Cost
+
+What OpenRouter charges: Jev is $0.042 per million input tokens, and output is free. Each question adds about 100
+tokens of the provider's own prompt to the state's, so three questions about a short message come to about 450 tokens
+($0.00002). Usage shows decisions as their own kind (`decision`, `responses` counting the questions answered), and each
+request is a `usage.recorded` event with `decisions`.
 
 ---
 
@@ -8114,7 +8243,7 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `toolErrors` | tool calls that did not complete (the model was told): `{tool, toolCallId?, innerCallId?, code, outcomeUnknown?, message}`; `code` is `timeout`, `connection_lost`, `not_connected`, `source_unavailable` or `failed`. See [Errors](https://run.camelai.com/docs/reference/errors.md#tool-errors) |
 | `toolCalls` | every tool call the run made, in order, the first 100: `{tool, toolCallId?, innerCallId?, ok, code?, agentId?}`; `agentId` is the sub-agent a `delegate` call ran. A call from `js_exec`'s code has js_exec's `toolCallId` and its own `innerCallId`; `js_exec` itself is not listed. `code`, when `ok` is false: a `toolErrors` code, `tool_error` (the tool answered with an error), `input_required` (it waits on a person; the run that resumes it lists it again) or `aborted`. Arguments and results are left out: read them from history (`GET /v1/agents/:id/history`) by `toolCallId` |
 | `sourceErrors` | tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools: `{kind, source, message}` |
-| `usage` | what its model responses used: `{responses, input, output, cacheRead, cacheWrite, costUsd}`, and `subagentCostUsd` when its sub-agents spent something (theirs, apart from `costUsd`), `imageCostUsd` when its `generate_image` calls did |
+| `usage` | what its model responses used: `{responses, input, output, cacheRead, cacheWrite, costUsd}`, and `subagentCostUsd` when its sub-agents spent something (theirs, apart from `costUsd`), `imageCostUsd` when its `generate_image` calls did, `decisionCostUsd` when its `decide` calls did |
 
 An `execute` request's result is `{output: string[], truncated}` (plus `files`,
 `presented`, `toolErrors`, `toolCalls`, `sourceErrors` as above). A steered prompt's request
@@ -8146,7 +8275,7 @@ dedupe by `id`. See [Webhooks](https://run.camelai.com/docs/guides/webhooks.md).
 | `voice.utterance` | the above facts, `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended` (`silence`, `max`, `error`, `handoff`, `end`), `costUsd`, `addressed?`, `addressedBy?` (none for a listening session), `speakers?` (everyone whose audio is in it, when people spoke at once), `brain` (`realtime`: the model answered it already; `listen`: a listening session transcribed it) |
 | `voice.speech.started` | the voice facts, `speechId`, `latencyMs` (from asking the model to the first audio out), `startedAt` (ms), `brain`, and for the answer to a turn `turn`: `path` (`realtime`) and `stagesMs` (each stage since the end of speech: `turnCommit`, `ttsFirstAudio`, `firstPacket`) |
 | `voice.speech.ended` | the voice facts, `speechId`, `reason` (`done`, `interrupted`, `error`), `by?` (`requested`, `barge_in`, `end`, `superseded`, `budget`), `seconds` (played), `costUsd` (its tokens; the session's usage already counts it), `brain` |
-| `usage.recorded` | `agentId` (null for a [transcription](https://run.camelai.com/docs/guides/voice.md) or [images](https://run.camelai.com/docs/guides/images.md) made alone), `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image`, `speech`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `audioSeconds?` (a transcription's, or speech made), `images?` (how many images were made), `cost: {usd, source}`, `at` |
+| `usage.recorded` | `agentId` (null for a [transcription](https://run.camelai.com/docs/guides/voice.md), [images](https://run.camelai.com/docs/guides/images.md) or [decisions](https://run.camelai.com/docs/guides/decisions.md) made alone), `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image`, `speech`, `decision`), `input`, `output`, `cacheRead`, `cacheWrite`, `reasoning?`, `audioSeconds?` (a transcription's, or speech made), `images?` (how many images were made), `decisions?` (questions answered), `cost: {usd, source}`, `at` |
 | `end_user.balance.low` | `endUser`, `balance`, `previousBalance`, `threshold` (integer micro-USD; the person's own `lowBalance`, else the tenant's), `cause`: an [end user's](https://run.camelai.com/docs/guides/end-user-credits.md) balance is below their threshold ([when it fires](https://run.camelai.com/docs/guides/end-user-credits.md#when-balance-events-fire)) |
 | `end_user.credit.exhausted` | `endUser`, `reason` (`allowance`: the bucket's free allowance for the day is used up; or a [credit reason](https://run.camelai.com/docs/reference/errors.md#end-user-credit-reasons): `balance`, `daily_limit`, `bucket_limit`), `bucket`, `balance`, `day`, `allowance?`, `dailyLimit?`, `bucketLimit?`, `cause?` (with `balance`) |
 | `end_user.credit.granted`, `end_user.credit.refunded`, `end_user.credit.adjusted` | `endUser`, `entryId`, `kind`, `amount` (signed as in the ledger), `key`, `reference`, `metadata`, `balance`, `previousBalance`: an entry the tenant posted, once per entry |

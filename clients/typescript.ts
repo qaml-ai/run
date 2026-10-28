@@ -453,7 +453,7 @@ export interface CreateAgentOptions extends AgentOptions {
  * delegate (sub-agents: needs `delegate` settings), or agents (sub-agents in the background: spawn_agent, wait_agent and
  * list_agents, with the same settings).
  */
-export type Builtin = "web_fetch" | "web_search" | "x_search" | "schedule" | "ask_user" | "delegate" | "generate_image" | "agents";
+export type Builtin = "web_fetch" | "web_search" | "x_search" | "schedule" | "ask_user" | "delegate" | "generate_image" | "agents" | "decide";
 /**
  * A delegate target: a definition's key or id, as a string or `{ definition }`, or an existing agent's key
  * (`{ agent }`, which keeps its own history across calls). `name` is what the model calls it (default: the key); `description`
@@ -617,6 +617,8 @@ export interface RunUsage {
   subagentCostUsd?: number;
   /** What its generate_image calls spent, apart from `costUsd`. */
   imageCostUsd?: number;
+  /** What its decide calls spent, apart from `costUsd`. */
+  decisionCostUsd?: number;
 }
 type RunFacts = { agentId: string; requestId: string; method: "prompt" | "continue" | "resume" | "execute"; actor?: string; metadata?: Record<string, string> };
 /**

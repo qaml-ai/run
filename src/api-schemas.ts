@@ -229,10 +229,10 @@ export const WebhookEvents = {
     agentId: z.string(), requestId: z.string(), inputId: z.string(), state: z.enum(["answered", "declined", "cancelled", "expired", "superseded"]),
   }), "An input settled"),
   "usage.recorded": envelope("usage.recorded", z.object({
-    agentId: z.string().nullable().openapi({ description: "null for a transcription made with POST /v1/transcriptions, or images made with POST /v1/images, which no agent made" }), requestId: z.string().nullable(), subject: z.string().nullable(), actor: z.string().nullable(), context: z.record(z.string(), z.unknown()), keyScope: z.string().nullable(),
-    provider: z.string(), model: z.string(), kind: z.enum(["response", "compaction", "transcription", "image", "speech"]).openapi({ description: "speech: speech made, by POST /v1/speech (audioSeconds of it; no tokens) or a voice session's realtime brain (its tokens, and audioSeconds); response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)" }), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
-    reasoning: z.number().optional(), audioSeconds: z.number().optional().openapi({ description: "For a transcription: the seconds of audio billed; for speech: the seconds of speech made" }), images: z.number().optional().openapi({ description: "For images made: how many" }), cost: z.object({ usd: z.number(), source: z.enum(["provider", "catalog"]) }), at: z.number(),
-  }), "A model response's usage and cost, a transcription's, or images'"),
+    agentId: z.string().nullable().openapi({ description: "null for a transcription made with POST /v1/transcriptions, images made with POST /v1/images, or decisions made with POST /v1/decisions, which no agent made" }), requestId: z.string().nullable(), subject: z.string().nullable(), actor: z.string().nullable(), context: z.record(z.string(), z.unknown()), keyScope: z.string().nullable(),
+    provider: z.string(), model: z.string(), kind: z.enum(["response", "compaction", "transcription", "image", "speech", "decision"]).openapi({ description: "decision: questions answered by a decision model (POST /v1/decisions, the decide builtin; decisions of them); speech: speech made, by POST /v1/speech (audioSeconds of it; no tokens) or a voice session's realtime brain (its tokens, and audioSeconds); response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)" }), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
+    reasoning: z.number().optional(), audioSeconds: z.number().optional().openapi({ description: "For a transcription: the seconds of audio billed; for speech: the seconds of speech made" }), images: z.number().optional().openapi({ description: "For images made: how many" }), decisions: z.number().optional().openapi({ description: "For decisions: the questions answered" }), cost: z.object({ usd: z.number(), source: z.enum(["provider", "catalog"]) }), at: z.number(),
+  }), "A model response's usage and cost, a transcription's, images', or decisions'"),
   "voice.session.started": envelope("voice.session.started", z.object(voiceFacts), "A voice session connected and is listening (once per session)"),
   "voice.session.ended": envelope("voice.session.ended", z.object({
     ...voiceFacts, reason: z.enum(VOICE_END_REASONS).openapi({ description: "requested: DELETE; empty: no one else in the call for emptySeconds; idle: no speech for idleMinutes; max_duration: maxMinutes passed; budget: the account's or the end user's credit ran out (limit); kicked: the bot was disconnected from the channel and no new credentials came; credentials: Discord stopped taking the session's credentials; error: the connection failed" }),
@@ -372,7 +372,7 @@ export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeade
 });
 
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
-const Builtin = z.enum(["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents"]).openapi("Builtin", { description: "agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings" });
+const Builtin = z.enum(["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide"]).openapi("Builtin", { description: "agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings" });
 const AgentTarget = z.union([
   z.string().openapi({ description: "A definition's key or id; the model sees it by that name" }),
   z.strictObject({
@@ -514,7 +514,7 @@ export const AgentInput = z.object({
   remount: z.boolean().optional().openapi({ description: "An upsert of an existing agent: true sets the mounts given, between its turns, where other mounts are a 409" }),
   subject: z.string().optional().openapi({ description: "Who the agent acts for (a user id in your app): the `sub` of the identity tokens its tool servers with auth \"runtime\" get. Set only here" }),
   context: z.record(z.string(), z.unknown()).optional().openapi({ description: "Claims your tool servers need (org, workspace, thread…), carried as `ctx` in its identity tokens; at most 4 KB. Set only here" }),
-  builtins: z.array(Builtin).max(8).optional().openapi({ description: "Tools the runtime answers itself (web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none" }),
+  builtins: z.array(Builtin).max(9).optional().openapi({ description: "Tools the runtime answers itself (web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents, decide), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none" }),
   delegate: DelegateSettings.optional().openapi({ description: "With the delegate or agents builtin: who the agent may hand tasks to. Not with a definition, whose own it takes" }),
   mcpServers: z.array(InlineMcpServerInput).max(64).optional().openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent, for an agent without a definition; one made from a definition has its definition's. No credentials: auth \"runtime\" or none. An upsert without mcpServers leaves the agent none" }),
   keyScope: z.string().optional().openapi({ description: "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own", example: "org_abc123" }),
@@ -571,7 +571,7 @@ export const RequestRecord = z.object({
   steeredInto: z.string().optional().openapi({ description: "A prompt with whileRunning: steer that a running turn took: that turn's request. This request completes as the turn takes the message; the turn's request has the turn's outcome (reply, output...)" }),
   steer: z.enum(["accepted", "queued"]).optional().openapi({ description: "A prompt with whileRunning: steer, as it was accepted: accepted, the running turn reads it after its current step; queued, no turn could take it, so it runs as a turn of its own" }),
   abortedAt: z.number().optional().openapi({ description: "When the agent was stopped while this run was going: it ends as aborted, and is never resumed elsewhere" }),
-  outcome: Outcome.optional().openapi({ description: "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, context_too_large (its stored Pi context range exceeds the runtime byte limit), spend_limit, agent_loop_limit (a sub-agent's notification landed without a turn: its chain reached its wake cap), output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate or spawn_agent call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, and result.usage.imageCostUsd what its generate_image calls spent. result.servedModel is the model that made its last response (provider/model-id); result.modelError, when a model call failed it, says how: {errorClass, providerStatus?, retryable, model} (ModelFailure)" }),
+  outcome: Outcome.optional().openapi({ description: "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, context_too_large (its stored Pi context range exceeds the runtime byte limit), spend_limit, agent_loop_limit (a sub-agent's notification landed without a turn: its chain reached its wake cap), output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate or spawn_agent call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, result.usage.imageCostUsd what its generate_image calls spent, and result.usage.decisionCostUsd what its decide calls spent. result.servedModel is the model that made its last response (provider/model-id); result.modelError, when a model call failed it, says how: {errorClass, providerStatus?, retryable, model} (ModelFailure)" }),
   error: z.string().optional().openapi({ description: "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded" }),
   stopped: z.enum(["input_required", "spend_limit", "turn_limit", "agent_loop_limit"]).optional().openapi({ description: "Why an ended run stopped early (outcome.result.stopped)" }),
   status: z.enum(["completed", "input_required", "failed"]).optional().openapi({ description: "How an ended request ended (state says only that it ended): failed when it has an error or stopped at a spend or turn limit; input_required when it waits on people. Absent while running" }),
@@ -616,7 +616,7 @@ export const RunInput = z.strictObject({
   maxOutputTokens: MaxOutputTokens.optional(),
   temperature: Temperature.optional(),
   dataCollection: DataCollection.optional(),
-  builtins: z.array(z.enum(["web_fetch", "web_search", "x_search", "delegate", "generate_image"])).max(8).optional().openapi({ description: "Tools the runtime answers itself (generate_image gives the run a workspace for its images). Not schedule or ask_user: a run has no later and no one to ask" }),
+  builtins: z.array(z.enum(["web_fetch", "web_search", "x_search", "delegate", "generate_image", "decide"])).max(9).optional().openapi({ description: "Tools the runtime answers itself (generate_image gives the run a workspace for its images). Not schedule or ask_user: a run has no later and no one to ask" }),
   delegate: DelegateSettings.optional(),
   mcpServers: z.array(InlineMcpServerInput).max(64).optional().openapi({ description: "Remote MCP servers whose tools the run may call, as an agent's own: no credentials (auth \"runtime\" or none). A server that cannot be listed shows in sourceErrors" }),
   fileTools: z.boolean().optional().openapi({ description: "true: the run gets a workspace volume and file tools. Default: none, unless input has files" }),
@@ -652,7 +652,7 @@ export const Run = z.object({
   text: z.string().openapi({ description: "The final reply's text (\"\" while running, or when it said nothing)" }),
   output: z.unknown().optional().openapi({ description: "For a run with output: the answer, which fits its schema" }),
   error: RunFailure.nullable(),
-  usage: z.record(z.string(), z.unknown()).nullable().openapi({ description: "What its model calls used: responses, input, output, cacheRead, cacheWrite, costUsd (and subagentCostUsd, what its sub-agents spent; imageCostUsd, what its generate_image calls spent)" }),
+  usage: z.record(z.string(), z.unknown()).nullable().openapi({ description: "What its model calls used: responses, input, output, cacheRead, cacheWrite, costUsd (and subagentCostUsd, what its sub-agents spent; imageCostUsd, what its generate_image calls spent; decisionCostUsd, what its decide calls spent)" }),
   servedModel: z.string().optional().openapi({ description: "The model that made its last response (retries ask the same one), as provider/model-id; absent when it made none" }),
   toolCalls: z.array(z.record(z.string(), z.unknown())),
   toolErrors: z.array(z.record(z.string(), z.unknown())),
@@ -876,6 +876,36 @@ export const Transcription = z.object({
   model: z.string().openapi({ example: "openai/gpt-transcribe" }),
   costUsd: z.number().openapi({ description: "What it cost at the runtime's price: charged to prepaid credit when it ran on the platform's key" }),
 }).openapi("Transcription");
+const DecisionQuestion = z.union([
+  z.strictObject({ type: z.literal("noul"), instructions: z.string().openapi({ description: "The yes/no question or statement" }), criteria: z.strictObject({ true: z.string().optional(), false: z.string().optional() }).optional().openapi({ description: "What counts as yes, and as no" }) }),
+  z.strictObject({ type: z.literal("choice"), instructions: z.string().openapi({ description: "What to decide" }), criteria: z.record(z.string(), z.string()).openapi({ description: "The options, 2 to 255: {name: description}. An empty description judges the option by its name" }) }),
+  z.strictObject({ type: z.literal("score"), instructions: z.string().openapi({ description: "What to rate" }), criteria: z.array(z.string()).openapi({ description: "The levels, 2 to 10, lowest first: the score is the level's position from 0" }) }),
+]).openapi("DecisionQuestion");
+const DecisionState = z.union([z.string(), z.record(z.string(), z.unknown()), z.array(z.unknown())]).openapi({ description: "What every question is about: text, or JSON; at most 64,000 characters" });
+const DecisionQuestions = z.record(z.string(), DecisionQuestion).openapi({ description: "The questions, by an id you choose (letters, digits, _ and -; at most 32): answers come back under the same ids" });
+export const DecisionInput = z.strictObject({
+  state: DecisionState.optional(), questions: DecisionQuestions.optional(),
+  items: z.array(z.strictObject({ state: DecisionState, questions: DecisionQuestions })).optional().openapi({ description: "A batch instead of state and questions: 1 to 100 states, each with its questions, answered in parallel. One that fails does not fail the others" }),
+  model: z.string().optional().openapi({ description: "The decision model: typesafe/jev-1.14 (default) or typesafe/jev-1.13" }),
+  maxUsd: z.number().optional().openapi({ description: "Refuse (402) before anything is sent if the estimate is more than this" }),
+  keyScope: z.string().optional().openapi({ description: "A key scope whose OpenRouter key is used first, before the tenant's own" }),
+  subject: TranscriptionFields.subject, context: TranscriptionFields.context, actor: TranscriptionFields.actor, bucket: TranscriptionFields.bucket,
+}).openapi("DecisionInput");
+const DecisionAnswer = z.union([
+  z.object({ type: z.literal("noul"), noul: z.number().openapi({ description: "The probability that it is true (yes)" }) }),
+  z.object({ type: z.literal("choice"), choice: z.string(), confidence: z.number(), probabilities: z.record(z.string(), z.number()).openapi({ description: "Each option's probability" }) }),
+  z.object({ type: z.literal("score"), score: z.number().openapi({ description: "The expected level, from 0 (may be fractional)" }), confidence: z.number(), probabilities: z.array(z.number()).openapi({ description: "Each level's probability, lowest first" }) }),
+]).openapi("DecisionAnswer");
+const DecisionUsage = z.object({ inputTokens: z.number(), outputTokens: z.number() });
+const DecisionError = z.object({ status: z.number(), code: z.string().optional(), message: z.string() });
+export const Decisions = z.object({
+  model: z.string().openapi({ description: "The model that answered (its dated version)", example: "typesafe/jev-1.14-20261014" }),
+  answers: z.record(z.string(), DecisionAnswer).optional().openapi({ description: "For one state: the answers, by question id" }),
+  results: z.array(z.union([z.object({ answers: z.record(z.string(), DecisionAnswer), usage: DecisionUsage, costUsd: z.number() }), z.object({ error: DecisionError })])).optional().openapi({ description: "For a batch: each item's answers, or why it failed, in order" }),
+  usage: DecisionUsage,
+  costUsd: z.number().openapi({ description: "What it cost: charged to prepaid credit when it ran on the platform's key" }),
+  ms: z.number(),
+}).openapi("Decisions");
 const ImageSource = z.union([
   z.strictObject({ data: z.string().openapi({ description: "The image's bytes, base64" }) }),
   z.strictObject({ url: z.string().openapi({ description: "An https URL to fetch the image from (public addresses only)" }) }),
@@ -921,7 +951,7 @@ export const Usage = z.object({
   totals: Totals,
   workspaces: z.array(Totals.extend({ id: z.string().nullable(), name: z.string() })).openapi({ description: "Model and tool spend by workspace; null is Unassigned, including usage from before workspace assignment" }),
   workspaceDays: z.array(z.object({ day: z.string(), workspace: z.string().nullable(), responses: z.number(), cost: z.number() })).optional().openapi({ description: "Without workspaceId: each workspace's responses and spend by UTC day (null is Unassigned), for a chart by workspace" }),
-  days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction", "transcription", "image", "speech"]).openapi({ description: "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: speech made, by POST /v1/speech or voice sessions (responses counts speeches)" }) })),
+  days: z.array(Totals.extend({ day: z.string(), model: z.string(), kind: z.enum(["turn", "compaction", "transcription", "image", "speech", "decision"]).openapi({ description: "decision: questions answered by a decision model (responses counts them); turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: speech made, by POST /v1/speech or voice sessions (responses counts speeches)" }) })),
 }).openapi("Usage");
 
 const ThinkingLevel = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -969,7 +999,7 @@ const definitionFields = {
   limits: DefinitionLimits,
   runLimits: RunLimits,
   mounts: z.array(MountInput).max(16).openapi({ description: "Volumes for each agent's file tools, beside its own workspace at /workspace unless they include {workspace: false}" }),
-  builtins: z.array(Builtin).max(8).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace" }),
+  builtins: z.array(Builtin).max(9).openapi({ description: "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from js_exec as tools.decide" }),
   webSearch: z.object({
     providers: z.array(z.enum(["exa", "brave", "parallel"])).min(1).max(3).openapi({ description: "The providers web_search tries, in order; each is skipped without a key, and the next is tried when one fails, times out or is rate limited", example: ["brave"] }),
   }).strict().openapi({ description: "Pin web_search to providers of your choosing instead of the runtime's order (exa, brave, parallel by default)" }),
@@ -1028,7 +1058,7 @@ export const ConfigureInput = z.object({
   bucket: z.string().nullable().optional().openapi({ description: "The bucket of its subject's credit its runs spend from, applied at once; null: \"default\"" }),
   runLimits: RunLimits.nullable().optional().openapi({ description: "Replaces the agent's run limits from its next run; null removes them (the runtime's apply). Set here on an agent from a definition, they stay when the definition is applied" }),
   modelHeaders: ModelHeaders.nullable().optional().openapi({ description: "Replaces the agent's model headers; null or {} removes them" }),
-  builtins: z.array(Builtin).max(8).optional().openapi({ description: "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's" }),
+  builtins: z.array(Builtin).max(9).optional().openapi({ description: "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's" }),
   delegate: DelegateSettings.nullable().optional().openapi({ description: "Replaces who the agent may delegate to (with the delegate builtin); null removes it" }),
   mcpServers: z.array(InlineMcpServerInput).max(64).nullable().optional().openapi({ description: "Replaces the agent's own MCP servers; null or [] removes them. No credentials: auth \"runtime\" or none. Not for an agent made from a definition, whose servers are its definition's" }),
 }).strict().refine(input => Object.keys(input).some(key => key !== "requestId"), "Give at least one configuration field").openapi("ConfigureInput", { description: "On an agent made from a definition, a model, thinkingLevel, maxOutputTokens, temperature or runLimits set here stays when the definition is applied; a systemPrompt set here is replaced by it" });

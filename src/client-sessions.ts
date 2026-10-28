@@ -2308,8 +2308,8 @@ export class ClientSessions {
       if (RUN_METHODS.includes(record.method) && session.stoppingChildren) await session.stoppingChildren;
       // What its model responses used on this node (a turn resumed after its node was lost counts from the resume), what its children spent, and its images.
       if (RUN_METHODS.includes(record.method) && value.result && typeof value.result === "object") {
-        const usage = session.usage?.get(record.id), children = session.childSpend?.get(record.id), images = session.imageSpend?.get(record.id);
-        value = { result: { ...value.result, usage: usage || children || images ? { ...usage ?? { responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 }, ...children ? { subagentCostUsd: children } : {}, ...images ? { imageCostUsd: images } : {} } : null } };
+        const usage = session.usage?.get(record.id), children = session.childSpend?.get(record.id), images = session.imageSpend?.get(record.id), decisions = session.decisionSpend?.get(record.id);
+        value = { result: { ...value.result, usage: usage || children || images || decisions ? { ...usage ?? { responses: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 }, ...children ? { subagentCostUsd: children } : {}, ...images ? { imageCostUsd: images } : {}, ...decisions ? { decisionCostUsd: decisions } : {} } : null } };
       }
       const failed = value.result as { code?: string; error?: string } | undefined;
       if (failed?.code === "model_key_missing" && this.options.modelKeyHint) value = { result: { ...failed, error: `${failed.error} ${this.options.modelKeyHint}` } };
@@ -2363,6 +2363,7 @@ export class ClientSessions {
       session.runCaps?.delete(record.id);
       session.childSpend?.delete(record.id);
       session.imageSpend?.delete(record.id);
+      session.decisionSpend?.delete(record.id);
       session.messagesSent?.delete(record.id);
       session.aborted?.delete(record.id);
       try { await this.commit(session, true); }
@@ -2758,6 +2759,7 @@ export class ClientSessions {
       ...(session.usage?.has(id) ? { usage: session.usage.get(id) } : {}),
       ...(session.childSpend?.has(id) ? { childSpend: session.childSpend.get(id) } : {}),
       ...(session.imageSpend?.has(id) ? { imageSpend: session.imageSpend.get(id) } : {}),
+      ...(session.decisionSpend?.has(id) ? { decisionSpend: session.decisionSpend.get(id) } : {}),
       ...(session.runLimits?.has(id) ? { spendLimit: session.runLimits.get(id) } : {}),
       ...(session.runCaps?.has(id) ? { runLimits: session.runCaps.get(id) } : {}),
     };
@@ -2771,6 +2773,7 @@ export class ClientSessions {
     session.usage?.delete(id);
     session.childSpend?.delete(id);
     session.imageSpend?.delete(id);
+    session.decisionSpend?.delete(id);
     session.runLimits?.delete(id);
     session.runCaps?.delete(id);
     session.turn = undefined;
@@ -2787,6 +2790,7 @@ export class ClientSessions {
     if (taken.usage) (session.usage ??= new Map()).set(record.id, taken.usage);
     if (taken.childSpend) (session.childSpend ??= new Map()).set(record.id, taken.childSpend);
     if (taken.imageSpend) (session.imageSpend ??= new Map()).set(record.id, taken.imageSpend);
+    if (taken.decisionSpend) (session.decisionSpend ??= new Map()).set(record.id, taken.decisionSpend);
     if (taken.spendLimit !== undefined) (session.runLimits ??= new Map()).set(record.id, taken.spendLimit);
     if (taken.runLimits) (session.runCaps ??= new Map()).set(record.id, taken.runLimits);
     if (taken.toolCalls?.length) session.toolCalls = taken.toolCalls;
