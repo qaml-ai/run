@@ -84,6 +84,44 @@ log, and Pi's messages past it). This refusal protects old data; it is not an
 upgrade path. Every production agent is on Pi. Rollback below the host transcript's
 removal is no longer supported, and the migration dashboard check is gone.
 
+## Legacy format coverage
+
+`GET /v1/operations/legacy-coverage` counts the live agents that still need the
+readers above (`retired-host.ts`, `HostJournal.retire`, the legacy-log reads), so
+they can be deleted once nothing needs them. Only the platform operator calls it:
+an operator token of a tenant in `AGENT_BILLING_ADMINS`; API tokens, console
+sessions and OAuth tokens get 403. It is not part of the documented API.
+
+```sh
+op=$(aws secretsmanager get-secret-value --region us-west-2 --secret-id camelai/agent-runtime/operator-token/miguel --query SecretString --output text)
+curl -fsS -H "Authorization: Bearer $op" https://run.camelai.com/v1/operations/legacy-coverage | jq
+```
+
+It answers `counts`, `gate`, `examples` (up to 20 agent ids per nonzero bucket,
+ids only), `generatedAt` and `durationMs`:
+
+| Count | What it is |
+| --- | --- |
+| `unretired_host_transcripts` | A host generation (`camel.host.bootstrap`) never retired: no `camel.host.disabled` entry with `retired: "journal"` (one without, from a rollback, does not retire it). Its first load still needs `HostJournal.retire`. |
+| `retired_index_short` | Retired, but the history index holds less than the newest journal base's `total` less its `kept` (or there is no base or no index row): history reads still use the retired records. |
+| `pi_without_journal_history` | Pi storage but no `camel.history.base` document and no `camel.history.marker` entry: legacy format only, read from the legacy log. |
+| `no_pi_with_legacy_log_rows` | No Pi storage, and the legacy log (`sessions/<id>/transcript`) still has hot `log_records` rows. Segments folded to object storage are not seen. |
+| `agents_without_pi_storage` | No Pi storage at all: agents never started, or pre-Pi agents whose log folded to object storage. The upper bound of the one above. |
+| `agents_total` | Every `agents` row. |
+
+`gate.ready` is true when the first three are 0 (`gate.blocking` names those that
+are not); `gate.review` names `no_pi_with_legacy_log_rows` when it is not 0, which
+must be 0 or accepted before the readers go. Only agents with an `agents` row
+count.
+
+The read is one read-only transaction stopped after 60 s, one at a time per node
+(another gets 429). It scans the session conversations' entries once, matching the
+kind in each record's first 200 characters (records are written `id`,
+`conversationId`, `kind` first, so a message quoting a kind never matches), so it
+never reads a whole TOASTed record; only the few `camel.host.disabled` and base
+marker records are parsed. Each call is logged as `legacy_coverage_viewed` with
+the counts.
+
 ## Persistence and billing
 
 Normal nodes store Pi data in the session-scoped `pi_durable_*` Postgres tables

@@ -6,7 +6,7 @@ import { transaction, type Db, type Sql } from "../db.ts";
  * fields read here never hold one. Text jsonb refuses for another reason (half of a surrogate pair, from text cut in the
  * middle of an emoji) reads as null: no kind, so nothing selects that record, nor a session by a marker it cannot read.
  */
-const json = (column: string) => {
+export const json = (column: string) => {
   const text = `replace(${column}, '\\u0000', '\\u0001')`;
   return `(case when pg_input_is_valid(${text}, 'jsonb') then ${text}::jsonb end)`;
 };

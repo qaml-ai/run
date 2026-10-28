@@ -57,6 +57,7 @@ import type { AccountDeletions } from "./account-deletion.ts";
 import { exportAccount, type ExportOptions } from "./account-export.ts";
 import { Readable } from "node:stream";
 import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState } from "./rate-limits.ts";
+import { legacyCoverage } from "./legacy-coverage.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -1197,6 +1198,19 @@ export function api(context: ApiContext) {
       select t.id, t.github, t.google_email, p.email, t.created_at from tenants t left join tenant_passwords p on p.tenant = t.id
       where t.id = lower($1) or lower(t.github) = lower($1) or lower(t.google_email) = lower($1) or p.email = lower(trim($1)) order by t.created_at`, [login]);
     return json(c, 200, rows.map(row => ({ tenant: row.id, github: row.github, googleEmail: row.google_email, email: row.email, createdAt: Number(row.created_at) })));
+  });
+  // Operations diagnostics: the platform operator's only, and not part of the documented API (docs/operations/pi-durable.md).
+  // One read at a time per node: it scans every session's entries.
+  let coverageRunning = false;
+  app.get("/v1/operations/legacy-coverage", async c => {
+    const by = operatorOnly(c);
+    if (coverageRunning) throw new HttpError(429, "A legacy coverage read is already running on this node");
+    coverageRunning = true;
+    try {
+      const coverage = await legacyCoverage(accounts.db);
+      console.log(JSON.stringify({ type: "legacy_coverage_viewed", by, durationMs: coverage.durationMs, ...coverage.counts }));
+      return json(c, 200, coverage);
+    } finally { coverageRunning = false; }
   });
   route(createRoute({
     method: "post", path: "/v1/tenants", request: { body: content(schema.TenantInput) },
