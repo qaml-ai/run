@@ -92,35 +92,53 @@ they can be deleted once nothing needs them. Only the platform operator calls it
 an operator token of a tenant in `AGENT_BILLING_ADMINS`; API tokens, console
 sessions and OAuth tokens get 403. It is not part of the documented API.
 
+It walks the agents in id order, 500 at a time, for about 20 s per call
+(`?budgetMs=`, at most 25000), and answers the counts so far with `complete` and
+`next`, a cursor that carries them: call again with `?cursor=<next>` until
+`complete` is true. Every call moves the walk on. One call at a time per node
+(another gets 429).
+
 ```sh
 op=$(aws secretsmanager get-secret-value --region us-west-2 --secret-id camelai/agent-runtime/operator-token/miguel --query SecretString --output text)
-curl -fsS -H "Authorization: Bearer $op" https://run.camelai.com/v1/operations/legacy-coverage | jq
+url=https://run.camelai.com/v1/operations/legacy-coverage; args=()
+while :; do
+  page=$(curl -fsS -G -H "Authorization: Bearer $op" "${args[@]}" "$url") || break
+  next=$(jq -r '.next // empty' <<<"$page")
+  [ -z "$next" ] && { jq . <<<"$page"; break; }
+  args=(--data-urlencode "cursor=$next")
+done
 ```
 
-It answers `counts`, `gate`, `examples` (up to 20 agent ids per nonzero bucket,
-ids only), `generatedAt` and `durationMs`:
+The last page has `counts`, `gate`, `examples` (up to 20 agent ids per nonzero
+bucket, ids only), `generatedAt` (when the walk began), `durationMs` (that call),
+`totalDurationMs` and `calls`:
 
 | Count | What it is |
 | --- | --- |
-| `unretired_host_transcripts` | A host generation (`camel.host.bootstrap`) never retired: no `camel.host.disabled` entry with `retired: "journal"` (one without, from a rollback, does not retire it). Its first load still needs `HostJournal.retire`. |
+| `unretired_host_transcripts` | A host generation (`camel.host.bootstrap`, the entry after the seed marker) never retired: its `camel.host.snapshot` document's latest revision is not the retirement's (`retired: "journal"`, written in the commit with the `camel.host.disabled` entry); a rollback's disabling does not retire it. A session whose host document reclaim's stage 2 removed was retired. Its first load still needs `HostJournal.retire`. |
 | `retired_index_short` | Retired, but the history index holds less than the newest journal base's `total` less its `kept` (or there is no base or no index row): history reads still use the retired records. |
 | `pi_without_journal_history` | Pi storage but no `camel.history.base` document and no `camel.history.marker` entry: legacy format only, read from the legacy log. |
 | `no_pi_with_legacy_log_rows` | No Pi storage, and the legacy log (`sessions/<id>/transcript`) still has hot `log_records` rows. Segments folded to object storage are not seen. |
 | `agents_without_pi_storage` | No Pi storage at all: agents never started, or pre-Pi agents whose log folded to object storage. The upper bound of the one above. |
 | `agents_total` | Every `agents` row. |
 
-`gate.ready` is true when the first three are 0 (`gate.blocking` names those that
-are not); `gate.review` names `no_pi_with_legacy_log_rows` when it is not 0, which
-must be 0 or accepted before the readers go. Only agents with an `agents` row
-count.
+`gate.ready` is true when the walk is complete and the first three are 0
+(`gate.blocking` names those that are not); `gate.review` names
+`no_pi_with_legacy_log_rows` when it is not 0, which must be 0 or accepted before
+the readers go. Only agents with an `agents` row count.
 
-The read is one read-only transaction stopped after 60 s, one at a time per node
-(another gets 429). It scans the session conversations' entries once, matching the
-kind in each record's first 200 characters (records are written `id`,
-`conversationId`, `kind` first, so a message quoting a kind never matches), so it
-never reads a whole TOASTed record; only the few `camel.host.disabled` and base
-marker records are parsed. Each call is logged as `legacy_coverage_viewed` with
-the counts.
+Each batch is its own read-only transaction, each statement stopped after 20 s.
+It never scans `pi_durable_entries` (a whole scan timed out at 60 s in
+production): each agent gets a few index lookups (`LEGACY_COVERAGE_QUERIES` in
+`src/legacy-coverage.ts`, for EXPLAIN): its first three entries, for a host
+generation; its host and base documents and their latest revisions; the base
+marker its base names; and, only for a Pi session with no base document, its
+entries newest first until a history marker. Entry kinds are matched in a
+record's first 200 characters (records are written `id`, `conversationId`,
+`kind` first, so a message quoting a kind never matches), so no whole TOASTed
+entry is read; a host document's latest revision is read whole, once per host
+session still holding one. Each call is logged as `legacy_coverage_viewed` with
+the counts so far.
 
 ## Persistence and billing
 

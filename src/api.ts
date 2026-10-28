@@ -57,7 +57,7 @@ import type { AccountDeletions } from "./account-deletion.ts";
 import { exportAccount, type ExportOptions } from "./account-export.ts";
 import { Readable } from "node:stream";
 import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState } from "./rate-limits.ts";
-import { legacyCoverage } from "./legacy-coverage.ts";
+import { legacyCoverage, LegacyCoverageCursorError } from "./legacy-coverage.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -1200,15 +1200,22 @@ export function api(context: ApiContext) {
     return json(c, 200, rows.map(row => ({ tenant: row.id, github: row.github, googleEmail: row.google_email, email: row.email, createdAt: Number(row.created_at) })));
   });
   // Operations diagnostics: the platform operator's only, and not part of the documented API (docs/operations/pi-durable.md).
-  // One read at a time per node: it scans every session's entries.
+  // One call at a time per node; each call walks agents for a time budget and answers a cursor to go on from.
   let coverageRunning = false;
   app.get("/v1/operations/legacy-coverage", async c => {
     const by = operatorOnly(c);
     if (coverageRunning) throw new HttpError(429, "A legacy coverage read is already running on this node");
     coverageRunning = true;
     try {
-      const coverage = await legacyCoverage(accounts.db);
-      console.log(JSON.stringify({ type: "legacy_coverage_viewed", by, durationMs: coverage.durationMs, ...coverage.counts }));
+      const budget = c.req.query("budgetMs");
+      if (budget !== undefined && !/^[1-9]\d{0,5}$/.test(budget)) throw new HttpError(400, "budgetMs must be a whole number of milliseconds");
+      let coverage;
+      try { coverage = await legacyCoverage(accounts.db, { cursor: c.req.query("cursor"), ...(budget ? { budgetMs: Number(budget) } : {}) }); }
+      catch (error) {
+        if (error instanceof LegacyCoverageCursorError) throw new HttpError(400, error.message);
+        throw error;
+      }
+      console.log(JSON.stringify({ type: "legacy_coverage_viewed", by, complete: coverage.complete, calls: coverage.calls, durationMs: coverage.durationMs, ...coverage.counts }));
       return json(c, 200, coverage);
     } finally { coverageRunning = false; }
   });
