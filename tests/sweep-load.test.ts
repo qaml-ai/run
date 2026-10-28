@@ -11,7 +11,7 @@ type Loader = {
 };
 
 function loader(read: Loader["read"]): Loader {
-  return Object.assign(Object.create(ClientSessions.prototype), { sessions: new Map(), loading: new Map(), read });
+  return Object.assign(Object.create(ClientSessions.prototype), { sessions: new Map(), loading: new Map(), migrating: new Map(), read });
 }
 
 test("acting callers joining a declined sweep share a plain retry", async () => {

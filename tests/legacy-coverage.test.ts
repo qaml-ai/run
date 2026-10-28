@@ -77,32 +77,48 @@ async function everything(db: Db) {
     { id: 5, conversationId: 2, kind: "camel.history.marker", data: {} }]);
   // Pi storage, no base document, but history markers: journal history.
   await agent(db, "markers-only"); await pi(db, "markers-only", [{ ...seed, data: {} }, marker]);
-  // No Pi storage: one whose legacy log still has hot rows, one with none.
+  // An import before #322: its host generation came after its archive, so only its host document says it has one.
+  await agent(db, "late-host");
+  await pi(db, "late-host", [{ ...seed, data: {} }, { id: 3, conversationId: 1, kind: "camel.legacy.record" }, { id: 4, conversationId: 1, kind: "camel.legacy.context" }, { id: 5, conversationId: 1, kind: "camel.host.bootstrap" }]);
+  await hostDocument(db, "late-host", "enabled");
+  // No Pi storage: one whose legacy log still has hot rows, one folded to Storage (`lister` finds it), one with none,
+  // and one with Pi storage a refused start opened and left with no journal.
   await agent(db, "log-rows");
   await db.query("insert into log_records (log_key, seq, body) values ('sessions/log-rows/transcript', 1, '{}')");
+  await agent(db, "folded");
   await agent(db, "never-started");
+  await agent(db, "opened"); await pi(db, "opened", []);
+  // A purged agent's tombstone counts only in the total, whatever a failed purge left behind.
+  await agent(db, "tombstone"); await db.query("update agents set revoked = true, purged_at = 1 where id = 'tombstone'");
+  await pi(db, "tombstone", [seed, bootstrap]); await hostDocument(db, "tombstone", "enabled");
+  await db.query("insert into log_records (log_key, seq, body) values ('sessions/tombstone/transcript', 1, '{}')");
   // A deleted agent's leftovers count nowhere.
   await pi(db, "deleted", [seed, bootstrap]); await hostDocument(db, "deleted", "enabled");
 }
-const all = { unretired_host_transcripts: 3, retired_index_short: 3, pi_without_journal_history: 1, no_pi_with_legacy_log_rows: 1, agents_without_pi_storage: 2, agents_total: 13 };
+const lister = async (ids: string[]) => ids.filter(id => id === "folded");
+const all = { unretired_host_transcripts: 4, retired_index_short: 3, pi_without_journal_history: 2, pi_without_base_document: 7, no_pi_with_legacy_log_rows: 1, no_pi_with_legacy_log_objects: 1, agents_without_pi_storage: 4, agents_total: 17 };
 
 test("each bucket counts what it names, with example ids; a clean database reads all zero and ready", async () => {
   const db = await seeded();
-  const clean = await legacyCoverage(db);
+  const clean = await legacyCoverage(db, { lister });
   assert.equal(clean.complete, true);
   assert.equal(clean.next, null);
-  assert.deepEqual(clean.counts, { unretired_host_transcripts: 0, retired_index_short: 0, pi_without_journal_history: 0, no_pi_with_legacy_log_rows: 0, agents_without_pi_storage: 0, agents_total: 3 });
+  assert.deepEqual(clean.counts, { unretired_host_transcripts: 0, retired_index_short: 0, pi_without_journal_history: 0, pi_without_base_document: 0, no_pi_with_legacy_log_rows: 0, no_pi_with_legacy_log_objects: 0, agents_without_pi_storage: 0, agents_total: 3 });
   assert.deepEqual(clean.gate, { ready: true, blocking: [], review: [] });
+  assert.deepEqual(clean.checked, { legacyLogObjects: true });
   assert.deepEqual(clean.examples, {});
+  // Without Storage listed, a walk is never ready: a legacy log folded out of log_records would go unseen.
+  assert.deepEqual((await legacyCoverage(db)).gate, { ready: false, blocking: [], review: [] });
 
   await everything(db);
-  const coverage = await legacyCoverage(db, { now: (() => { let t = Date.parse("2026-10-27T12:00:00Z"); return () => (t += 5); })() });
+  const coverage = await legacyCoverage(db, { lister, now: (() => { let t = Date.parse("2026-10-27T12:00:00Z"); return () => (t += 5); })() });
   assert.deepEqual(coverage.counts, all);
   assert.deepEqual(coverage.examples, {
-    unretired_host_transcripts: ["delta", "rolled-back", "unretired"], retired_index_short: ["baseless", "short", "unindexed"],
-    pi_without_journal_history: ["legacy-only"], no_pi_with_legacy_log_rows: ["log-rows"], agents_without_pi_storage: ["log-rows", "never-started"],
+    unretired_host_transcripts: ["delta", "late-host", "rolled-back", "unretired"], retired_index_short: ["baseless", "short", "unindexed"],
+    pi_without_journal_history: ["late-host", "legacy-only"], pi_without_base_document: ["baseless", "delta", "late-host", "legacy-only", "markers-only", "rolled-back", "unretired"],
+    no_pi_with_legacy_log_rows: ["log-rows"], no_pi_with_legacy_log_objects: ["folded"], agents_without_pi_storage: ["folded", "log-rows", "never-started", "opened"],
   });
-  assert.deepEqual(coverage.gate, { ready: false, blocking: ["unretired_host_transcripts", "retired_index_short", "pi_without_journal_history"], review: ["no_pi_with_legacy_log_rows"] });
+  assert.deepEqual(coverage.gate, { ready: false, blocking: ["unretired_host_transcripts", "retired_index_short", "pi_without_journal_history", "pi_without_base_document", "no_pi_with_legacy_log_rows", "no_pi_with_legacy_log_objects"], review: [] });
   assert.equal(coverage.generatedAt, "2026-10-27T12:00:00.005Z");
   assert.equal(coverage.calls, 1);
 });
@@ -113,7 +129,7 @@ test("a walk stopped by its budget goes on from its cursor to the same counts", 
   const pages = [];
   let cursor: string | undefined;
   do {
-    const page = await legacyCoverage(db, { cursor, batch: 2, budgetMs: 1 });
+    const page = await legacyCoverage(db, { cursor, batch: 2, budgetMs: 1, lister });
     pages.push(page);
     cursor = page.next ?? undefined;
     if (!page.complete) assert.equal(page.gate.ready, false, "never ready before the walk is complete");
@@ -125,6 +141,8 @@ test("a walk stopped by its budget goes on from its cursor to the same counts", 
   assert.deepEqual(last.examples.retired_index_short, ["baseless", "short", "unindexed"]);
   await assert.rejects(legacyCoverage(db, { cursor: "not-a-cursor" }), LegacyCoverageCursorError);
   await assert.rejects(legacyCoverage(db, { cursor: Buffer.from(JSON.stringify({ v: 1, after: "", counts: {}, examples: {}, started: 0, spent: 0, calls: 0 })).toString("base64url") }), LegacyCoverageCursorError);
+  // A walk that lists Storage goes on listing it.
+  await assert.rejects(legacyCoverage(db, { cursor: pages[0].next! }), LegacyCoverageCursorError);
 });
 
 test("it reads in read-only transactions with a statement timeout, and writes nothing", async () => {
@@ -150,7 +168,7 @@ test("it reads in read-only transactions with a statement timeout, and writes no
       return result;
     } } });
   } } }) as Db;
-  assert.deepEqual((await legacyCoverage(watched)).counts, all);
+  assert.deepEqual((await legacyCoverage(watched, { lister })).counts, all);
   assert.deepEqual([...states], ["on 20s"]);
   assert.ok(sent.filter(text => /^\s*select/i.test(text)).length >= 4, "every probe ran");
   assert.ok(sent.every(text => !/\b(insert|update|delete|create|alter|drop|truncate)\b/i.test(text.replace(/'[^']*'/g, ""))), "only reads");

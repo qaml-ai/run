@@ -5,6 +5,7 @@ import { HostJournal } from "./pi-durable/host-journal.ts";
 import { legacyHistory, recordsHistory, retiredRecords, type RetiredRecord } from "./pi-durable/retired-host.ts";
 import { journalForkCut, type JournalForkCut } from "./pi-durable/fork.ts";
 import { resetContext, type ContextReset } from "./pi-durable/reset.ts";
+import { convertLegacy, type LegacyConversion } from "./pi-durable/legacy-migrate.ts";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
@@ -188,6 +189,43 @@ export class AgentSupervisor {
     const idle = () => { if (this.agents.has(id) || this.starting.has(id) || this.unhosted.has(id)) throw new Error("Agent is running"); };
     try { return await resetContext(storage, { ...options, beforeCommit: idle }); }
     finally { await storage.close(BACKGROUND_CONTEXT); }
+  }
+
+  /**
+   * Convert a stopped agent's history from a legacy format to the current one (pi-durable/legacy-migrate.ts) under its
+   * owner's `claim`, without starting it: the history index written through `index`, the journal under the claim.
+   * After a close of its turn here (which may retire it first): the conversion reads the journal as that left it.
+   * `dryRun` reads and checks everything and writes nothing (a session with no Pi storage is not opened, as opening it
+   * would make it). Undefined when its history is current. Its legacy log is read, never written.
+   */
+  async migrateLegacy(id: string, claim: Claim | undefined, options: { index: NonNullable<ToolBridge["history"]>; dryRun?: boolean; limit: number; now?: number }): Promise<LegacyConversion | undefined> {
+    if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
+    await this.stopping.get(id);
+    await this.closing.get(id);
+    const idle = () => { if (this.agents.has(id) || this.starting.has(id) || this.unhosted.has(id)) throw new Error("Agent is running"); };
+    idle();
+    const storage = await hasPiStorage(this.piLocation(id)) ? await openPiStorage({ ...this.piLocation(id), ...(claim ? { claim } : {}) }) : undefined;
+    const legacy = this.legacyLog(id);
+    try {
+      const indexed = (await options.index.indexed()) ?? 0;
+      return await convertLegacy({
+        ...(storage ? { storage } : {}), indexed, dryRun: options.dryRun, limit: options.limit, ...(options.now ? { now: options.now } : {}),
+        legacy: { read: () => legacy.read(), empty: async () => (await legacy.empty?.()) === true },
+        index: (from, messages, turns) => writeChunks(options.index, from, messages, turns),
+        seed: async start => { idle(); await this.seed(id, start, claim); },
+      });
+    } finally {
+      await storage?.close(BACKGROUND_CONTEXT);
+      // Read only: nothing it read is folded or written back.
+      await legacy.close(true);
+    }
+  }
+
+  /** Whether the agent's legacy log is empty (Storage listed, and its tail rows), without reading it. */
+  async legacyLogEmpty(id: string): Promise<boolean> {
+    const legacy = this.legacyLog(id);
+    try { return (await legacy.empty?.()) === true; }
+    finally { await legacy.close(true); }
   }
 
   /** Delete a stopped agent's native journal, legacy log and local directory. Reuse a caller's purge transaction. */
