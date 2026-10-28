@@ -158,6 +158,10 @@ test("the OpenRouter adapter sends TypeSafe's body to /decisions with the key, r
   };
   await fails(404, { error: { message: "Not Found", code: 404 } }, error => error.status === 502 && error.code === "DECISIONS_UNAVAILABLE" && !error.transient && /alpha/.test(error.message));
   await fails(410, {}, error => error.code === "DECISIONS_UNAVAILABLE");
+  // A 404 for a request with a data policy: no host serves the model so.
+  reply = { status: 404, body: { error: { message: "No endpoints found matching your data policy", code: 404 } } };
+  await assert.rejects(provider.decide(item, "typesafe/jev-1.14", credentials, AbortSignal.timeout(5_000), { dataCollection: "deny" }), (error: any) => error instanceof DecisionFailed && error.status === 400 && error.code === "DECISIONS_DATA_POLICY");
+  assert.deepEqual(seen.at(-1)!.body.provider, { data_collection: "deny" });
   // A validation error names where, never the input it quotes.
   await fails(422, { detail: [{ loc: ["body", "questions", "q", "criteria"], msg: "Field required", type: "missing", input: STATE }] }, error => error.status === 400 && error.code === "DECISION_REFUSED" && /body\.questions\.q\.criteria: Field required/.test(error.message) && !error.message.includes("password"));
   await fails(429, { error: { message: "Rate limited" } }, error => error.transient && error.retryAfterMs === 2_000, { "Retry-After": "2" });
@@ -178,4 +182,74 @@ test("a tenant's waiting decisions are bounded on a node: past the queue a reque
   assert.equal((await decider.decide({ tenant: "t2" }, items(1, "other"), AbortSignal.timeout(10_000))).results.length, 1);
   assert.equal((await first).results.filter(result => "answers" in result).length, 3);
   assert.equal((decider as any).tenants.size, 0);
+});
+
+test("a provider that says neither cost nor tokens is billed the estimate, and said; a call's own timeout is retried", async () => {
+  let calls = 0;
+  const provider: DecisionProvider = {
+    id: "openrouter",
+    async decide(_item, _model, _credentials, signal) {
+      calls++;
+      // The first attempt never answers: only its own timeout ends it.
+      if (calls === 1) await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+      return { answers: LIVE.answers, inputTokens: 0, outputTokens: 0 };
+    },
+  };
+  const logs: string[] = [];
+  const log = console.log;
+  console.log = (line: string) => { logs.push(line); };
+  // AbortSignal.timeout's timers do not hold the event loop open; a server's sockets do.
+  const alive = setInterval(() => {}, 1_000);
+  try {
+    const decider = new Decider({ provider, key, sleep: noWait, limits: { callTimeoutMs: 50 }, creditMultiplier: () => 1.055 });
+    const request = decisionRequest({ state: STATE, questions: QUESTIONS });
+    const decided = await decider.decide({ tenant: "t1" }, request, AbortSignal.timeout(5_000));
+    assert.equal(calls, 2, "the timed-out call was retried");
+    assert.ok("answers" in decided.results[0]!);
+    assert.equal(decided.costUsd, decider.estimate(request.items, request.model));
+    assert.ok(decided.costUsd > 0);
+    assert.ok(Math.abs(decided.chargedUsd - decided.costUsd * 1.055) < 1e-15, "the platform's key: what the credits cost");
+    assert.ok(logs.some(line => line.includes('"type":"decision_usage_untrusted"')));
+  } finally { console.log = log; clearInterval(alive); }
+});
+
+test("dataCollection deny is refused before anything is sent unless the provider passes the policy on, which then goes with the call", async t => {
+  const fake = fakeProvider();
+  const decider = new Decider({ provider: fake.provider, key });
+  const request = decisionRequest({ state: STATE, questions: QUESTIONS });
+  await assert.rejects(decider.decide({ tenant: "t1", dataCollection: "deny" }, request, AbortSignal.timeout(1_000)), (error: any) => error.status === 400 && error.code === "DECISIONS_DATA_POLICY");
+  assert.equal(fake.calls.length, 0);
+  // An adapter that takes it sends provider.data_collection.
+  const bodies: any[] = [];
+  const base = await listen(t, async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk);
+    bodies.push(JSON.parse(Buffer.concat(chunks).toString()));
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(LIVE));
+  });
+  const outbound = new Outbound({ allowHttp: true, allow: ["127.0.0.1/32"] });
+  const passing = new Decider({ provider: openrouterDecisions({ outbound, baseUrl: base, dataPolicy: true }), key });
+  await passing.decide({ tenant: "t1", dataCollection: "deny" }, request, AbortSignal.timeout(5_000));
+  await passing.decide({ tenant: "t1" }, request, AbortSignal.timeout(5_000));
+  assert.deepEqual(bodies.map(body => body.provider ?? null), [{ data_collection: "deny" }, null]);
+});
+
+test("characters in flight are bounded per tenant and per node: past them a request is refused (429), and saturated() says so before a body is read", async () => {
+  const fake = fakeProvider({ ms: 30 });
+  const decider = new Decider({ provider: fake.provider, key, limits: { tenantChars: 3_000, nodeChars: 5_000 } });
+  const big = (tag: string) => decisionRequest({ items: [{ state: `${tag} ${"x".repeat(1_500)}`, questions: QUESTIONS }] });
+  const first = decider.decide({ tenant: "t1" }, big("a"), AbortSignal.timeout(5_000));
+  await assert.rejects(decider.decide({ tenant: "t1" }, big("b"), AbortSignal.timeout(5_000)), (error: any) => error.status === 429);
+  assert.equal(decider.saturated("t1")?.status, undefined, "under its own bound, the tenant may still be read");
+  const second = decider.decide({ tenant: "t2" }, big("c"), AbortSignal.timeout(5_000));
+  await assert.rejects(decider.decide({ tenant: "t3" }, big("d"), AbortSignal.timeout(5_000)), (error: any) => error.status === 429, "the node's bound");
+  await Promise.all([first, second]);
+  assert.equal(decider.saturated("t3"), undefined);
+  // A tenant holding all it may is refused before its next body is read.
+  const one = decisionRequest({ state: "x".repeat(900), questions: { q: QUESTIONS.is_support } });
+  const full = new Decider({ provider: fakeProvider({ ms: 30 }).provider, key, limits: { tenantChars: 900 + JSON.stringify(one.items[0]!.questions).length } });
+  const holding = full.decide({ tenant: "t1" }, one, AbortSignal.timeout(5_000));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(full.saturated("t1")?.status, 429);
+  await holding;
 });

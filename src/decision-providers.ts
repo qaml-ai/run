@@ -10,18 +10,25 @@ import { safeError } from "./metrics.ts";
  * version). Being alpha, it may move or change shape: a 404 or 410 says decisions are unavailable, and an answer this
  * cannot read is a 502 that names what was missing, never a crash. Neither the state nor a provider's error detail that
  * may quote it is logged.
+ *
+ * Always OpenRouter's own address: a key scope's `baseUrl` (a chat gateway) and headers are for its model calls, not
+ * this API. `dataCollection: "deny"` (an agent's or a request's) is sent as `provider.data_collection: "deny"`, which the
+ * decisions API takes: a live call on 2026-10-28 was served by TypeSafe with it. Should no host serve the model without
+ * collecting data, OpenRouter answers 404, which is said as DECISIONS_DATA_POLICY rather than as the API being gone.
  */
-export function openrouterDecisions(options: { outbound: Outbound; baseUrl?: string; timeoutMs?: number }): DecisionProvider {
-  const { outbound, baseUrl = "https://openrouter.ai/api/alpha", timeoutMs = DECISION_LIMITS.callTimeoutMs } = options;
+export function openrouterDecisions(options: { outbound: Outbound; baseUrl?: string; timeoutMs?: number; dataPolicy?: boolean }): DecisionProvider {
+  const { outbound, baseUrl = "https://openrouter.ai/api/alpha", timeoutMs = DECISION_LIMITS.callTimeoutMs, dataPolicy = true } = options;
   return {
     id: "openrouter",
-    async decide(item, model, credentials, signal) {
-      const url = `${(credentials.baseUrl ?? baseUrl).replace(/\/+$/, "")}/decisions`;
+    dataPolicy,
+    async decide(item, model, credentials, signal, policy) {
+      const url = `${baseUrl.replace(/\/+$/, "")}/decisions`;
+      const provider = dataPolicy && policy?.dataCollection === "deny" ? { provider: { data_collection: "deny" } } : {};
       let response: Response;
       try {
         response = await outbound.fetch(url, {
-          method: "POST", body: JSON.stringify({ model, state: item.state, questions: item.questions }),
-          headers: { Accept: "application/json", "Content-Type": "application/json", ...credentials.headers },
+          method: "POST", body: JSON.stringify({ model, state: item.state, questions: item.questions, ...provider }),
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
           secrets: credentials.apiKey ? { Authorization: `Bearer ${credentials.apiKey}` } : {}, timeoutMs, maxBytes: 1024 * 1024, signal,
         });
       } catch (error) {
@@ -36,6 +43,7 @@ export function openrouterDecisions(options: { outbound: Outbound; baseUrl?: str
         if (status === 413) throw new DecisionFailed(413, `The state and questions are too large for ${model} (${said})`, { code: "DECISION_TOO_LARGE" });
         if (status === 401 || status === 403) throw new DecisionFailed(502, `OpenRouter rejected the API key (HTTP ${status})`);
         if (status === 402) throw new DecisionFailed(502, "OpenRouter has no credit left on this key (HTTP 402)");
+        if (status === 404 && "provider" in provider) throw new DecisionFailed(400, `No host serves ${model} without collecting data, as dataCollection "deny" asks (HTTP 404${detail ? `: ${detail}` : ""}); nothing was decided`, { code: "DECISIONS_DATA_POLICY" });
         if (status === 404 || status === 410) throw new DecisionFailed(502, `OpenRouter's decisions API or ${model} is not available (HTTP ${status}): it is in alpha and may have moved`, { code: "DECISIONS_UNAVAILABLE" });
         const transient = status === 408 || status === 429 || status >= 500;
         const retryAfterMs = transient ? retryAfter(response.headers.get("retry-after")) : undefined;

@@ -137,7 +137,7 @@ export function decisionServer(ctx: SpendContext, session: Session, sources: Sou
       const budget = run ? await budgetLeft(ctx, session, run.id) : undefined;
       const { identity, keyScope } = header;
       return decideTool(decider, {
-        tenant: header.tenant, ...(keyScope ? { keyScope } : {}), ...(budget !== undefined ? { budget } : {}),
+        tenant: header.tenant, ...(keyScope ? { keyScope } : {}), ...(budget !== undefined ? { budget } : {}), ...(header.config.dataCollection ? { dataCollection: header.config.dataCollection } : {}),
         hold: usd => endUserHold(ctx, session, run, usd, "decision"),
         record: usage => {
           const cost = usage.usage.cost.total as number;

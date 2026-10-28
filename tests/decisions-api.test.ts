@@ -31,13 +31,13 @@ const ANSWERS = {
 
 /** OpenRouter's decisions API: answers every question as ANSWERS does, at `cost` a call; a state "refused" is a 422. */
 async function fakeOpenRouter(t: T, cost: number) {
-  const requests: { key: string; model: string; state: unknown; questions: string[] }[] = [];
+  const requests: { key: string; model: string; state: unknown; questions: string[]; provider?: unknown }[] = [];
   const base = await listen(t, async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString());
     if (req.url !== "/decisions") return res.writeHead(404).end();
-    requests.push({ key: String(req.headers.authorization), model: body.model, state: body.state, questions: Object.keys(body.questions) });
+    requests.push({ key: String(req.headers.authorization), model: body.model, state: body.state, questions: Object.keys(body.questions), ...(body.provider ? { provider: body.provider } : {}) });
     if (body.state === "refused") return res.writeHead(422, { "Content-Type": "application/json" }).end(JSON.stringify({ detail: [{ loc: ["body", "state"], msg: "bad state", input: body.state }] }));
     const answers = Object.fromEntries(Object.keys(body.questions).map(id => [id, (ANSWERS as any)[id] ?? { type: "noul", noul: 0.5 }]));
     res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ model: "typesafe/jev-1.14-20261014", answers, usage: { input_tokens: 400, output_tokens: 70, cost }, id: "gen-dec-1", provider: "TypeSafe" }));
@@ -74,16 +74,20 @@ test("POST /v1/decisions answers one state or a batch on the platform's OpenRout
   const sent = openrouter.requests.length;
   assert.equal((await r.call("/v1/decisions", { body: { state: "x", questions: { q: { type: "choice", instructions: "x", criteria: { a: "" } } } }, token: PAYG })).status, 400);
   assert.equal((await r.call("/v1/decisions", { body: { state: "x", questions: QUESTIONS, maxUsd: 1e-9 }, token: PAYG })).status, 402);
+  // deny goes to OpenRouter as its data policy.
+  const denied = await r.call("/v1/decisions", { body: { state: "x", questions: QUESTIONS, dataCollection: "deny" }, token: PAYG });
+  assert.equal(denied.status, 200, denied.text);
+  assert.deepEqual(openrouter.requests.at(-1)!.provider, { data_collection: "deny" });
   assert.equal((await r.call("/v1/decisions", { body: { state: "refused", questions: QUESTIONS }, token: PAYG })).json.code, "DECISION_REFUSED", "one state's failure is the request's");
-  assert.equal(openrouter.requests.length, sent + 1);
+  assert.equal(openrouter.requests.length, sent + 2);
 
-  // Three calls answered at a cent each: credit, a usage row of their own counting the questions, and an event each.
-  await until(async () => (await r.call("/v1/billing", { token: PAYG })).json.balance === 970_000, "the decisions' charge");
+  // Four calls answered at a cent each: credit, a usage row of their own counting the questions, and an event a request.
+  await until(async () => (await r.call("/v1/billing", { token: PAYG })).json.balance === 960_000, "the decisions' charge");
   const usage = (await r.call("/v1/usage", { token: PAYG })).json.days;
-  assert.deepEqual(usage.filter((day: any) => day.kind === "decision").map((day: any) => [day.model, day.responses, Math.round(day.platformCost * 1e6)]), [["openrouter/typesafe/jev-1.14", 7, 30_000]]);
+  assert.deepEqual(usage.filter((day: any) => day.kind === "decision").map((day: any) => [day.model, day.responses, Math.round(day.platformCost * 1e6)]), [["openrouter/typesafe/jev-1.14", 10, 40_000]]);
   const ledger = (await r.call("/v1/billing/ledger", { token: PAYG })).json.entries.find((entry: any) => entry.kind === "usage");
-  assert.deepEqual([ledger.metadata.decision, ledger.metadata.decisions], [30_000, 7]);
-  await until(async () => (await r.db.query("select count(*)::int as n from webhook_deliveries where tenant = 'payg' and body->'data'->>'kind' = 'decision'")).rows[0].n === 2, "the events");
+  assert.deepEqual([ledger.metadata.decision, ledger.metadata.decisions], [40_000, 10]);
+  await until(async () => (await r.db.query("select count(*)::int as n from webhook_deliveries where tenant = 'payg' and body->'data'->>'kind' = 'decision'")).rows[0].n === 3, "the events");
   const { rows } = await r.db.query("select body from webhook_deliveries where tenant = 'payg' and body->'data'->>'kind' = 'decision' order by created_at");
   const first = rows.map(row => row.body.data).find((data: any) => data.subject === "user_1");
   assert.deepEqual(first, {
@@ -138,4 +142,14 @@ test("the decide builtin answers from js_exec in batches and directly, billed to
   const dear = await r.prompt(agent, "too dear", PAYG);
   assert.match(dear.outcome.result.reply, /^failed: .*more than maxUsd/);
   assert.equal(openrouter.requests.length, 151);
+});
+
+test("an agent that denies data collection has its decide calls sent with that data policy", async t => {
+  const { r, openrouter } = await start(t, body => toolResults(body).length ? { role: "assistant", content: `result: ${toolResults(body).at(-1)}` } : toolCall("decide", { state: "private", questions: QUESTIONS }, "call_private"), 0.001);
+  assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 1_000_000, reason: "test" }, token: OPS })).status, 201);
+  const agent = (await r.call("/v1/agents", { body: { builtins: ["decide"], dataCollection: "deny" }, token: PAYG })).json.id;
+  const record = await r.prompt(agent, "classify", PAYG);
+  assert.match(record.outcome.result.reply, /^result: \{"model":"typesafe\/jev-1\.14-20261014","answers"/);
+  assert.equal(openrouter.requests.length, 1);
+  assert.deepEqual(openrouter.requests[0]!.provider, { data_collection: "deny" });
 });

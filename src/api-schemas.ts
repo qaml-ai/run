@@ -888,7 +888,8 @@ export const DecisionInput = z.strictObject({
   items: z.array(z.strictObject({ state: DecisionState, questions: DecisionQuestions })).optional().openapi({ description: "A batch instead of state and questions: 1 to 100 states, each with its questions, answered in parallel. One that fails does not fail the others" }),
   model: z.string().optional().openapi({ description: "The decision model: typesafe/jev-1.14 (default) or typesafe/jev-1.13" }),
   maxUsd: z.number().optional().openapi({ description: "Refuse (402) before anything is sent if the estimate is more than this" }),
-  keyScope: z.string().optional().openapi({ description: "A key scope whose OpenRouter key is used first, before the tenant's own" }),
+  keyScope: z.string().optional().openapi({ description: "A key scope whose OpenRouter key is used first, before the tenant's own (its baseUrl, a chat gateway's, is not used)" }),
+  dataCollection: z.enum(["deny"]).nullable().optional().openapi({ description: "deny: only hosts that do not collect the state (sent to OpenRouter as provider.data_collection; TypeSafe, Jev's only host, serves it). An agent's decide calls carry its own dataCollection. If no host would serve the model so, 400 DECISIONS_DATA_POLICY" }),
   subject: TranscriptionFields.subject, context: TranscriptionFields.context, actor: TranscriptionFields.actor, bucket: TranscriptionFields.bucket,
 }).openapi("DecisionInput");
 const DecisionAnswer = z.union([
@@ -903,7 +904,7 @@ export const Decisions = z.object({
   answers: z.record(z.string(), DecisionAnswer).optional().openapi({ description: "For one state: the answers, by question id" }),
   results: z.array(z.union([z.object({ answers: z.record(z.string(), DecisionAnswer), usage: DecisionUsage, costUsd: z.number() }), z.object({ error: DecisionError })])).optional().openapi({ description: "For a batch: each item's answers, or why it failed, in order" }),
   usage: DecisionUsage,
-  costUsd: z.number().openapi({ description: "What it cost: charged to prepaid credit when it ran on the platform's key" }),
+  costUsd: z.number().openapi({ description: "What the provider charged (OpenRouter's usage.cost). On the platform's key, prepaid credit (and an end user's) is charged this times the OpenRouter credit multiplier, as for model calls on it; on your own key, nothing" }),
   ms: z.number(),
 }).openapi("Decisions");
 const ImageSource = z.union([

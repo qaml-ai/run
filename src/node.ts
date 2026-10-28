@@ -465,7 +465,14 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // the platform's, which a prepaid tenant pays for at what OpenRouter charges.
   const decider = new Decider({
     provider: openrouterDecisions({ outbound, ...(env.AGENT_DECISIONS_URL ? { baseUrl: env.AGENT_DECISIONS_URL } : {}) }),
-    key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider),
+    // A key scope's OpenRouter key goes first; a scope that gives only an address (a chat gateway, no key) is not one
+    // this API reaches, so the tenant's own key (or the platform's) answers instead.
+    key: async (tenant, keyScope, provider) => {
+      const scoped = await providerKey(tenant, keyScope, provider);
+      const found = scoped?.apiKey ? scoped : keyScope ? await providerKey(tenant, undefined, provider) : undefined;
+      return found?.apiKey ? { apiKey: found.apiKey, platform: found.platform } : undefined;
+    },
+    creditMultiplier: () => accounts.billing.pricing.openrouterCreditMultiplier,
   });
   // Files sent to tools as URLs bound to their call, signed with the identity tokens' key (file-arguments.ts).
   const fileUrls = new FileUrls({ signer, get volumes() { return volumes; }, publicUrl: () => links.publicUrl });
