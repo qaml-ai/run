@@ -133,10 +133,24 @@ const corrected = (found: Model<Api> | undefined): Model<Api> | undefined => {
  * - DeepSeek V4.1 Flash (Miguel, 2026-10-18): fp8 or full-precision hosts of the full context; none of the fp4 ones.
  * - DeepSeek V4.1 Flash 1017 and its `:nitro` variant (Miguel, 2026-10-23): none. Its hosts had been listed since
  *   2026-10-18 (a slow host, then two rate-limited ones, then a host list that left out Morph, Cloudflare and Wafer);
- *   by 2026-10-23 every host was fast and stable, so OpenRouter routes it among all of them, as it does other models.
+ *   by 2026-10-23 every host was fast and stable, so OpenRouter routes it among all of them, as it does other models,
+ *   except the hosts of OPENROUTER_IGNORED_HOSTS.
  */
 const OPENROUTER_HOSTS: Record<string, string[]> = {
   "deepseek/deepseek-v4.1-flash": ["fireworks", "together", "parasail", "coreweave", "nebius"],
+};
+
+/**
+ * The OpenRouter hosts a model of the platform's catalog is never served by (its requests' `provider.ignore`), by id; a
+ * routing variant (`:nitro`) is its base model's, a host variant (`:morph`) has its own `only` instead. A filter like
+ * `only`, so load balancing stays on, and unlike a short `only` list it leaves every other host to take the load (an
+ * `only` of a few hosts was rate-limited, 2026-10-18).
+ * - DeepSeek V4.1 Flash 1017 (Miguel, 2026-10-27): InferenceNet and Wafer, which intermittently drop a tool call's
+ *   optional arguments (13.6% of camel-builder's bot__preview calls failed on InferenceNet 2026-10-27 evening, 15.6%
+ *   on Wafer 2026-10-26, against 1.7% on Together).
+ */
+const OPENROUTER_IGNORED_HOSTS: Record<string, string[]> = {
+  "deepseek/deepseek-v4.1-flash-1017": ["inference-net", "wafer"],
 };
 
 /**
@@ -160,22 +174,28 @@ export function openRouterHosts(id: string): string[] | undefined {
   return hostVariant(id)?.only ?? OPENROUTER_HOSTS[id] ?? OPENROUTER_HOSTS[id.replace(/:[a-z]+$/, "")];
 }
 
+/** The OpenRouter hosts a model is never served by (OPENROUTER_IGNORED_HOSTS), or undefined; none for a host variant. */
+export function openRouterIgnoredHosts(id: string): string[] | undefined {
+  return hostVariant(id) ? undefined : OPENROUTER_IGNORED_HOSTS[id] ?? OPENROUTER_IGNORED_HOSTS[id.replace(/:[a-z]+$/, "")];
+}
+
 /**
  * An OpenRouter request of the platform's catalog with its model's hosts (`provider.only`; a host variant's model sent as
- * its base id) and, when its agent asks
+ * its base id), the hosts it is never served by (`provider.ignore`) and, when its agent asks
  * (`dataCollection: "deny"`), only hosts that do not collect its data (`provider.data_collection`): OpenRouter skips the
- * providers whose data policy says they may train on it. Both are filters, so load balancing stays on; any other
- * `provider` routing the request has is kept. Nothing is added by default. Any other request is as it was.
+ * providers whose data policy says they may train on it. All are filters, so load balancing stays on; any other
+ * `provider` routing the request has is kept. Nothing else is added by default. Any other request is as it was.
  */
 export function withOpenRouterHosts(model: Model<Api>, payload: unknown, dataCollection?: "deny" | null): unknown {
   if (model.provider !== "openrouter" || !payload || typeof payload !== "object") return payload;
   const only = openRouterHosts(model.id);
-  if (!only && !dataCollection) return payload;
+  const ignore = openRouterIgnoredHosts(model.id);
+  if (!only && !ignore && !dataCollection) return payload;
   const request = payload as { model?: unknown; provider?: Record<string, unknown> };
   const variant = hostVariant(model.id);
   return {
     ...request, ...(variant && request.model === model.id ? { model: variant.base } : {}),
-    provider: { ...(only ? { only } : {}), ...request.provider, ...(dataCollection ? { data_collection: dataCollection } : {}) },
+    provider: { ...(only ? { only } : {}), ...(ignore ? { ignore } : {}), ...request.provider, ...(dataCollection ? { data_collection: dataCollection } : {}) },
   };
 }
 

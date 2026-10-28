@@ -209,7 +209,8 @@ In Python, `await agents.runtime.set_scope_key("org_abc123", "openrouter", api_k
   Some models are served only by the OpenRouter hosts the platform lists for them
   (`provider.only`; DeepSeek V4.1 Flash: Fireworks, Together, Parasail,
   CoreWeave and Nebius), and OpenRouter balances load among those. Any other
-  model, DeepSeek V4.1 Flash 1017 included, is OpenRouter's to route. An agent, definition or run with `dataCollection: "deny"`
+  model, DeepSeek V4.1 Flash 1017 included, is OpenRouter's to route; DeepSeek V4.1 Flash 1017 is never served by
+  InferenceNet or Wafer (`provider.ignore`), which dropped tool-call arguments. An agent, definition or run with `dataCollection: "deny"`
   also asks OpenRouter for hosts that do not collect its data
   (`provider.data_collection: "deny"`): OpenRouter skips the providers whose data
   policy says they may train on it (for DeepSeek V4.1 Flash 1017, DeepSeek's own
