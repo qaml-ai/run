@@ -50,11 +50,12 @@ test("a node that retires ends its event streams with a reconnect hint: the SDK 
   const run = app.prompt("go", { idempotencyKey: "long-turn", timeoutMs: 90_000 });
   await until(() => model.bodies.length === 1, "A to call the model");
   await sleep(300);
-  // A newer deploy supersedes A: it lets the tool call finish, hands the turn off, releases the agent, then ends its streams.
+  // A newer deploy supersedes A: it hands the turn off at once, releases the agent, then ends its streams. The watcher's
+  // starts are counted from before the retirement, which can end its stream as soon as it is logged.
+  const before = starts.length;
   a.ecs.state.revision++;
   a.ecs.state.created = Date.now() / 1000;
   await until(() => a.logs.some(entry => entry.type === "retiring"), "A to retire");
-  const before = starts.length;
   gate.resolve();
   assert.equal((await run).reply, "finished on b");
   await until(() => hintedAt !== undefined, "the reconnect hint");

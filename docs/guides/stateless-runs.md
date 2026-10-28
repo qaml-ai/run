@@ -129,9 +129,9 @@ A run is as durable as an agent's run, within itself. If the node running it
 dies, or a deploy retires it, the run goes on on another node from its last
 completed step:
 
-- A node that retires (a deploy) lets the step in flight finish, then hands the
-  run to another node at that step boundary. Nothing is lost and nothing runs
-  twice (`handoffs` lists them).
+- A node that retires (a deploy) hands the run to another node at once, which
+  goes on where it was: a model request is made again, and a tool call in flight
+  is answered as interrupted (`handoffs` lists them).
 - A node that dies: another node resumes the run from its transcript, at most
   two times by default (`resumes`; configurable with `AGENT_MAX_RESUMES`).
   The next loss fails it with `resume_limit`. A tool call that completed is not made again. A model call

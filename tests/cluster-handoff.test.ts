@@ -57,7 +57,7 @@ test("on ECS a task is protected while turns run, and once superseded it retires
   assert.deepEqual(a.logs.find(entry => entry.type === "drain_started")?.agents, 0, "the drain found nothing to do");
 });
 
-test("a turn still running when the drain times out is handed off and resumed by the next owner", { timeout: 90_000 }, async t => {
+test("a turn running when its node drains is handed off at once, and the next owner makes its model request again", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const model = await fakeModel(t, (_body, index) => index === 0 ? undefined : { role: "assistant", content: "resumed after the drain" });
   const a = await c.start("a", { ...model.env, AGENT_DRAIN_TIMEOUT_MS: "500" });
@@ -71,7 +71,7 @@ test("a turn still running when the drain times out is handed off and resumed by
 
   a.child.kill("SIGTERM");
   assert.equal((await once(a.child, "exit"))[0], 0);
-  assert.equal(a.logs.find(entry => entry.type === "drain_finished")?.unfinished, 1);
+  assert.equal(a.logs.find(entry => entry.type === "drain_finished")?.unfinished, 0, "handed off before the drain's wait");
   const result = await run;
   assert.equal(result.reply, "resumed after the drain");
   assert.equal(model.bodies.length, 2);
@@ -98,10 +98,10 @@ test("a prompt through a load balancer gets its result when its turn is handed o
   assert.equal(await c.owner(created.session.id), b.url);
 });
 
-test("a prompt through a load balancer gets its result when its turn finishes on a node that is draining", { timeout: 90_000 }, async t => {
+test("a prompt through a load balancer gets its result when its node drains mid-request: the next owner asks the model again", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const answer = Promise.withResolvers<object>();
-  const model = await fakeModel(t, (_body, index) => index === 0 ? answer.promise : undefined);
+  const model = await fakeModel(t, (_body, index) => index === 0 ? answer.promise : { role: "assistant", content: "finished on b" });
   const a = await c.start("a", model.env);
   const b = await c.start("b", model.env);
   const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: {}, idempotencyKey: "handoff-old-owner" });
@@ -115,11 +115,11 @@ test("a prompt through a load balancer gets its result when its turn finishes on
   const exited = once(a.child, "exit");
   a.child.kill("SIGTERM");
   await until(() => a.logs.some(entry => entry.type === "drain_started"), "A is draining");
+  assert.equal((await run).reply, "finished on b");
   answer.resolve({ role: "assistant", content: "finished on a" });
-  assert.equal((await run).reply, "finished on a");
   assert.equal((await exited)[0], 0);
-  assert.equal(a.logs.find(entry => entry.type === "drain_finished")?.unfinished, 0);
-  assert.equal(model.bodies.length, 1, "the turn was not run again");
+  assert.equal(model.bodies.length, 2, "the request a's close cut was made again on b");
+  assert.equal(await c.owner(created.session.id), b.url);
 });
 
 test("a prompt gets its result when the event stream drops mid-turn, and when its result event is lost", { timeout: 90_000 }, async t => {
