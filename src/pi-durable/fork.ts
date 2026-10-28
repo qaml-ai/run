@@ -1,9 +1,8 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import type { Cursor, EntryId, EntryRecord, Storage } from "@earendil-works/pi-durable";
+import { Harness, createRegistry, type EntryId, type Storage } from "@earendil-works/pi-durable";
 import { convertToLlm } from "../pi-harness/messages.ts";
-import { piOrdered } from "./agent.ts";
 import type { At, JournalHistory } from "./history.ts";
 import { SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
 
@@ -67,35 +66,33 @@ export function forkCount(history: Pick<JournalHistory, "total" | "active" | "tu
 }
 
 /**
- * Pi's retained model context through journal cursor `at` (`index` -1: the whole entry; past every entry: the journal's
- * end): the newest head marker (a compaction's summary, or a context checkpoint), then the entries from its head
- * through `at` (each entry's messages as its newest edit leaves them; later head markers' own messages left out),
- * settled as Pi settles them (`piOrdered`).
+ * Pi's model context through journal cursor `at` (`index` -1: the whole entry; past every entry: the journal's end), as
+ * Pi derives it (`context({ at })`), read on a viewer Harness that writes and recovers nothing. Refused before the
+ * newest head marker, whose superseded checkpoints reclaim may have deleted, and inside an entry of several messages,
+ * which Pi cannot cut.
  */
-export async function contextAt(storage: Pick<Storage, "scanEntries" | "findLatestHeadMarker">, at: At): Promise<Message[]> {
+export async function contextAt(storage: Storage, at: At): Promise<Message[]> {
   const end = Number.isSafeInteger(at.entryId) && at.entryId < Number.MAX_SAFE_INTEGER ? at.entryId as EntryId : undefined;
   const head = await storage.findLatestHeadMarker(conversationId, undefined, context);
-  if (head && end !== undefined && end < (head.head ?? head.id)) {
-    throw new ForkBeforeHead();
-  }
-  // A compaction marker can follow the first message it keeps. That retained range already belongs to its
-  // context: older checkpoints may have been reclaimed, even when the cut precedes the marker's own ID.
-  const entries: EntryRecord[] = [];
-  let cursor: Cursor | undefined;
-  do {
-    const page = await storage.scanEntries({ conversationId, order: "ascending", minEntryId: (head?.head ?? 0) as EntryId, ...(end === undefined ? {} : { maxEntryId: end }) }, 256, cursor, context);
-    entries.push(...page.items);
-    cursor = page.next;
-  } while (cursor !== undefined);
-  const omitted = new Set<number>();
-  for (const entry of entries) for (const edit of entry.edits ?? []) if (edit.action === "omit") omitted.add(edit.target);
-  const messages: Message[] = head && head.head !== head.id ? [...head.model ?? []] : [];
-  for (const entry of entries) {
-    if (omitted.has(entry.id) || (entry.head !== undefined && entry.id !== head?.id) || (head && entry.id === head.id && head.head !== head.id)) continue;
-    const model = entry.model ?? [];
-    messages.push(...(entry.id === at.entryId && at.index >= 0 ? model.slice(0, at.index + 1) : model));
-  }
-  return piOrdered(messages as AgentMessage[]) as Message[];
+  if (head && end !== undefined && end < (head.head ?? head.id)) throw new ForkBeforeHead();
+  // Pi cuts after a stored entry: the newest through `end`.
+  const last = end === undefined ? undefined : (await storage.scanEntries({ conversationId, order: "descending", maxEntryId: end }, 1, undefined, context)).items[0];
+  if (end !== undefined && (!last || last.id === end && at.index >= 0 && at.index < (last.model?.length ?? 0) - 1)) throw new ForkBeforeHead();
+  // The caller owns the storage: the viewer's close leaves it open.
+  const viewer = await Harness.open(new Proxy(storage, { get(target, key) {
+    if (key === "close") return async () => {};
+    const value = Reflect.get(target, key, target);
+    return typeof value === "function" ? value.bind(target) : value;
+  } }),
+    { registry: createRegistry(), models: { getModel: () => undefined, getAuth: () => undefined } as never, readOnly: true }, context);
+  try {
+    const conversation = (await viewer.conversation(conversationId, context))!;
+    // A compaction marker can follow the first messages it keeps, and the context before it may be reclaimed: a cut
+    // between them is the marker's context through the cut.
+    const view = await conversation.context(context, last ? { at: Math.max(last.id, head?.id ?? 0) as EntryId } : undefined);
+    if (!last || !head || last.id >= head.id) return view.messages as Message[];
+    return view.entries.flatMap((entry, index) => entry.id <= last.id || entry.id === view.head?.id ? view.contributions[index] : []) as Message[];
+  } finally { await viewer.close(context); }
 }
 
 /**
@@ -104,7 +101,7 @@ export async function contextAt(storage: Pick<Storage, "scanEntries" | "findLate
  * retained head, or the journal base (whose messages have no cursor), it starts from raw kept history, which Pi
  * compacts on the first turn as needed.
  */
-export async function journalForkCut(storage: Pick<Storage, "scanEntries" | "findLatestHeadMarker">, history: JournalHistory, messages: readonly AgentMessage[], at?: number | string): Promise<JournalForkCut> {
+export async function journalForkCut(storage: Storage, history: JournalHistory, messages: readonly AgentMessage[], at?: number | string): Promise<JournalForkCut> {
   if (messages.length !== history.total) throw new Error(`The agent's history has ${messages.length} messages, its journal ${history.total}`);
   // Turn starts the journal records, and before its base, where user messages begin them.
   const turns = [...new Set([...userTurns(messages.slice(0, history.baseTotal)), ...history.turnsFrom(0)])].sort((a, b) => a - b);

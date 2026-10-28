@@ -56,36 +56,6 @@ type Listener = (event: AgentEvent & { durable?: DurableCursor }, signal: AbortS
 const context = BACKGROUND_CONTEXT;
 const nativeKinds = new Set(["pi.user", "pi.assistant", "pi.tool-result", "camel.user", "camel.message"]);
 
-/** Pi 1.3.0's context derivation (harness/context.js, not exported): what it leaves out, and a missing result's text. */
-const EXCLUDED_STOP_REASONS = new Set(["aborted", "error", "deferred"]);
-const MISSING_RESULT_TEXT = "Tool result unavailable: history ends before this call completed.";
-
-/**
- * A context as Pi derives it from a checkpoint of `messages`: failed, aborted and deferred responses left out, and each
- * assistant's tool results right after it in call order (a missing one given Pi's own placeholder, an unmatched one
- * dropped).
- */
-export function piOrdered(messages: readonly AgentMessage[]): AgentMessage[] {
-  const kept = messages.filter(message => message.role !== "assistant" || !EXCLUDED_STOP_REASONS.has(message.stopReason));
-  const ordered: AgentMessage[] = [];
-  for (let index = 0; index < kept.length; index++) {
-    const message = kept[index];
-    if (message.role === "toolResult") continue;
-    ordered.push(message);
-    if (message.role !== "assistant") continue;
-    const calls = message.content.filter(part => part.type === "toolCall");
-    if (!calls.length) continue;
-    const results = new Map<string, AgentMessage>();
-    for (let next = index + 1; next < kept.length && kept[next].role !== "assistant"; next++) {
-      const candidate = kept[next];
-      if (candidate.role === "toolResult" && !results.has(candidate.toolCallId)) results.set(candidate.toolCallId, candidate);
-    }
-    for (const call of calls) ordered.push(results.get(call.id) ?? { role: "toolResult", toolCallId: call.id, toolName: call.name,
-      content: [{ type: "text", text: MISSING_RESULT_TEXT }], isError: true, details: { reason: "missing_result" }, timestamp: message.timestamp } as AgentMessage);
-  }
-  return ordered;
-}
-
 /** Read both full user messages and entries with content stored only in Pi's model message. */
 function originalUser(entry: EntryRecord): AgentMessage | undefined {
   const message = entry.kind === "camel.user" ? (entry.data as { message?: Extract<AgentMessage, { role: "user" }> } | undefined)?.message : undefined;
