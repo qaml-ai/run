@@ -193,6 +193,25 @@ read-only transaction of index probes per agent (its metadata row and newest
 session entry), statements stopped after 20 s; calls are logged as
 `history_ordinals_coverage_viewed`. One ordinals call at a time per node (429).
 
+## History archive move
+
+History from before an agent's journal (retired host transcripts' and imports' messages, forks made before archive
+entries) is in the history index's chunks until it moves into the agent's Pi storage as `camel.history.archive` entries
+(`src/history-archive.ts`), after which the index goes. `POST /v1/operations/history-archive` (platform operator only)
+moves it: a dry run unless the body says `dryRun: false`. It walks agents in id order, 500 at a time, for about 20 s per
+call (`budgetMs`, at most 25000) with a cursor (a dry run's goes on as a dry run). For each agent whose journal's first
+message is past what archive entries hold, the index's chunks before it are read from Storage one at a time (about
+1 MB each, its hash checked), split per turn, and committed in one Pi commit per chunk, placed at their ordinals; a
+chunk whose first message an archive entry holds is skipped, so a call stopped by its budget, or a crash, leaves whole
+chunks moved and the next call goes on. Agents a live node holds, or with runs open or Pi tasks unfinished, are
+`skipped_busy` for a later call. Codes: `moved`/`would_move`, `current`, `skipped_busy`, `short` (the index's chunks do
+not hold every message before the journal's: for a person), `unplaced`, `no_journal`, `failed`. Calls are logged as
+`history_archive_called`.
+
+`GET /v1/operations/history-archive-coverage` counts agents `archived` (Pi storage holds every message), `pending`,
+`short`, `unplaced` and `no_journal`; `gate.ready` once the walk is complete with `pending`, `short` and `unplaced` at 0.
+History reads use archive entries once they hold every message before the journal's, and the index's chunks until then.
+
 ## Persistence and billing
 
 Normal nodes store Pi data in the session-scoped `pi_durable_*` Postgres tables

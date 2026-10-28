@@ -60,6 +60,7 @@ import { Readable } from "node:stream";
 import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState } from "./rate-limits.ts";
 import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./legacy-coverage.ts";
 import { OrdinalCursorError, ordinalWalk } from "./history-ordinals.ts";
+import { ArchiveCursorError, archiveWalk } from "./history-archive.ts";
 import { FILL_MAX_ENTRIES } from "./pi-durable/ordinals.ts";
 
 /**
@@ -1261,6 +1262,34 @@ export function api(context: ApiContext) {
       throw error;
     } finally { ordinalsRunning = false; }
   };
+  // The move of history from before agents' journals into Pi storage (src/history-archive.ts): its coverage, and the
+  // move, a dry run unless the body says `dryRun: false`. One call at a time per node, shared with the ordinal calls.
+  const archiveCall = <T>(work: () => Promise<T>) => ordinalCall(async () => {
+    try { return await work(); }
+    catch (error) { if (error instanceof ArchiveCursorError) throw new HttpError(400, error.message); throw error; }
+  });
+  app.get("/v1/operations/history-archive-coverage", async c => {
+    const by = operatorOnly(c);
+    const budget = c.req.query("budgetMs");
+    if (budget !== undefined && !/^[1-9]\d{0,5}$/.test(budget)) throw new HttpError(400, "budgetMs must be a whole number of milliseconds");
+    const coverage = await archiveCall(() => archiveWalk(accounts.db, clients.storage, { cursor: c.req.query("cursor"), ...(budget ? { budgetMs: Number(budget) } : {}) }));
+    console.log(JSON.stringify({ type: "history_archive_coverage_viewed", by, complete: coverage.complete, calls: coverage.calls, durationMs: coverage.durationMs, ...coverage.counts }));
+    return json(c, 200, coverage);
+  });
+  app.post("/v1/operations/history-archive", async c => {
+    const by = operatorOnly(c);
+    const input = await readJson(c.req.raw.body, 8192, {}) as Record<string, unknown>;
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "The body is a JSON object");
+    const { cursor, dryRun, budgetMs } = input;
+    if (cursor !== undefined && typeof cursor !== "string") throw new HttpError(400, "cursor is a string");
+    if (dryRun !== undefined && typeof dryRun !== "boolean") throw new HttpError(400, "dryRun is true or false");
+    if (budgetMs !== undefined && !(Number.isSafeInteger(budgetMs) && (budgetMs as number) > 0)) throw new HttpError(400, "budgetMs is a whole number of milliseconds");
+    const walk = await archiveCall(() => archiveWalk(accounts.db, clients.storage, {
+      ...(cursor ? { cursor } : {}), move: { dryRun: dryRun !== false }, ...(budgetMs !== undefined ? { budgetMs: budgetMs as number } : {}),
+    }));
+    console.log(JSON.stringify({ type: "history_archive_called", by, dryRun: walk.dryRun, complete: walk.complete, calls: walk.calls, durationMs: walk.durationMs, ...walk.moves }));
+    return json(c, 200, walk);
+  });
   app.get("/v1/operations/history-ordinals-coverage", async c => {
     const by = operatorOnly(c);
     const budget = c.req.query("budgetMs");
