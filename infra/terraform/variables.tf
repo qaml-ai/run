@@ -182,7 +182,7 @@ variable "runtime_env" {
     # Operator tenants that may post manual credit adjustments (POST /v1/billing/adjustments).
     AGENT_BILLING_ADMINS = "miguel"
     # Tenants whose agents' runs a lost node left are resumed by Pi from its checkpoint (canary; docs/operations/configuration.md).
-    AGENT_PI_RECOVERY_TENANTS = "miguel"
+    AGENT_PI_RECOVERY_TENANTS = "miguel,camel-bots"
   }
 }
 
