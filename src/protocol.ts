@@ -31,7 +31,7 @@ export type RunLimits = { maxResponses?: number; maxSeconds?: number; firstToken
  * Why a running turn ends before its next model request. A limit's stop carries its `code` (end_user_credit,
  * spend_limit), the limit reached, and for an end user's credit why (`reason`), whose (`endUser`) and which `bucket`.
  */
-export type RunStop = { stopped: "spend_limit" | "turn_limit" | "handoff"; message: string; limit?: "run" | "agent" | "tenant" | "credit" | "end_user"; code?: string; reason?: string; bucket?: string; endUser?: string };
+export type RunStop = { stopped: "spend_limit" | "turn_limit"; message: string; limit?: "run" | "agent" | "tenant" | "credit" | "end_user"; code?: string; reason?: string; bucket?: string; endUser?: string };
 export interface ToolBridge {
   definitions: ToolDefinition[];
   call(name: string, args: Record<string, unknown>, signal: AbortSignal, context?: CallContext): Promise<unknown>;
