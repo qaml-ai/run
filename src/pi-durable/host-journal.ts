@@ -3,7 +3,6 @@ import type { SystemMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Cursor, DocumentId, EntryId, JsonObject, Storage, StorageWrite } from "@earendil-works/pi-durable";
 import { BASE_ADDRESS, baseWrites, HOST_MESSAGE_KIND, HOST_SYSTEM_KIND, HOST_USER_KIND, JournalHistory, MARKER_KIND, type At, type HistoryBase } from "./history.ts";
-import { recordsHistory, retiredRecords, type RetiredRecord } from "./retired-host.ts";
 import { SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
 import { commitTo } from "./storage.ts";
 
@@ -27,9 +26,6 @@ export type HostRecord =
    * settled for an interrupted run the host discarded.
    */
   | { t: "pi"; cursor: At; after?: At };
-
-/** What a retirement did (or, dry, would do): the history's length at its base, how much of it is settled, and where the index ends. */
-export type Retirement = { total: number; settled: number; indexed?: number };
 
 /** Messages the history grows by past its base before the next turn's end writes a new one (`rebase`). */
 const REBASE_MESSAGES = 256;
@@ -59,84 +55,6 @@ export class HostJournal {
   static async open(storage: Storage, dedupeUserEntries = false): Promise<HostJournal | undefined> {
     const history = await JournalHistory.open(storage);
     return history && new HostJournal(storage, history, dedupeUserEntries);
-  }
-
-  /**
-   * Retire a session's host transcript, once, as its first release without it loads the session. Its journal history
-   * starts from the base marker an earlier release wrote, or else where the host's last snapshot stood (and so does one
-   * written as a turn ran or waited on input, which holds none of that turn's messages): that base, with that turn's
-   * messages before it (`kept`), is written then. Every settled message before the base the history index lacks is first indexed
-   * from the host's records (`index`; the session's legacy log first, for an import too large to copy: `legacy`), so
-   * none is only in them. Then, in one commit: the base, the base document, and the host document disabled and marked
-   * `retired`, with a `camel.host.disabled` entry. An earlier release refuses the session from then on (its history
-   * format is newer) rather than continue from that snapshot. False when there is no enabled host transcript to retire.
-   */
-  /**
-   * What a retirement of the session's host transcript starts from (as `retire` reads it): its base, the settled
-   * messages before it, and where the running turn's messages it keeps begin (`keptFrom`, when it keeps them from the
-   * host's records). Undefined when there is no enabled host transcript.
-   */
-  static async retirementPlan(storage: Storage): Promise<{ base: HistoryBase; settled: number; keptFrom?: number } | undefined> {
-    const found = await JournalHistory.snapshotBase(storage);
-    if (!found?.enabled) return undefined;
-    const marked = (await JournalHistory.findBase(storage))?.data as unknown as HistoryBase | undefined;
-    const open = (base: HistoryBase) => (base.active || base.awaiting.length > 0) && base.turnStart < base.total;
-    const keep = marked && !open(marked) ? marked : undefined;
-    const base = keep ?? found.base;
-    return { base, settled: open(base) ? base.turnStart : base.total, ...(!keep && open(base) ? { keptFrom: base.turnStart } : {}) };
-  }
-
-  static async retire(storage: Storage, options: {
-    indexed?: number;
-    /** Index `messages` (the history's from `from`, where `turns` begin), as chunks; returns where the index ends then. */
-    index?: (from: number, messages: AgentMessage[], turns: number[]) => Promise<number>;
-    legacy?: () => Promise<RetiredRecord[]>;
-    /** Read and check everything the retirement would, and write nothing (`POST /v1/operations/legacy-migrate`'s dry run). */
-    dryRun?: boolean;
-    /** The running turn's messages before the base, read already (legacy-migrate.ts streams them): not read again. */
-    kept?: AgentMessage[];
-  } = {}): Promise<false | Retirement> {
-    const found = await JournalHistory.snapshotBase(storage);
-    if (!found?.enabled) return false;
-    const marker = await JournalHistory.findBase(storage);
-    const marked = marker?.data as unknown as HistoryBase | undefined;
-    const open = (base: HistoryBase) => (base.active || base.awaiting.length > 0) && base.turnStart < base.total;
-    const keep = marked && !open(marked) ? marked : undefined;
-    const base = keep ?? found.base;
-    let history: ReturnType<typeof recordsHistory> | undefined;
-    const records = async () => history ??= recordsHistory(await retiredRecords(storage, options.legacy) ?? []);
-    if (!keep && open(base) && options.kept) {
-      if (options.kept.length !== base.total - base.turnStart) throw new Error(`The running turn has ${options.kept.length} messages given, its snapshot ${base.total - base.turnStart}`);
-      base.kept = options.kept;
-    } else if (!keep && open(base)) {
-      // The running turn's messages before the base, whole (the snapshot's may start past a compaction within the turn).
-      const all = (await records()).messages;
-      if (all.length !== base.total) throw new Error(`The host's records hold ${all.length} messages, its snapshot ${base.total}`);
-      base.kept = all.slice(base.turnStart);
-    }
-    const settled = open(base) ? base.turnStart : base.total;
-    let indexed = options.indexed;
-    if ((options.index || options.dryRun) && indexed !== undefined && indexed < settled) {
-      const { messages, turns } = await records();
-      if (messages.length < settled) throw new Error(`The host's records hold ${messages.length} messages, before its base ${settled}`);
-      if (options.dryRun) indexed = settled;
-      else {
-        indexed = await options.index!(indexed, messages.slice(indexed, settled), turns);
-        if (indexed < settled) throw new Error(`The history index ends at ${indexed}, before the journal's base ${settled}`);
-      }
-    }
-    const retirement: Retirement = { total: base.total, settled, ...(indexed !== undefined ? { indexed } : {}) };
-    if (options.dryRun) return retirement;
-    const writes: StorageWrite[] = [];
-    const existing = await JournalHistory.baseDocument(storage);
-    if (!keep) writes.push(...baseWrites(await storage.mintId<EntryId>(), base, { id: existing ?? await storage.mintId<DocumentId>(), create: !existing }));
-    else if (!existing) writes.push({ type: "document.create", record: { id: await storage.mintId<DocumentId>(), ...BASE_ADDRESS }, content: { version: 1, kind: "base", value: { entry: marker!.id } } });
-    writes.push(
-      { type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "camel.host.disabled", data: { retired: "journal" } } },
-      { type: "document.change", id: found.documentId, content: { version: 1, kind: "base", value: { ...found.value, enabled: false, retired: "journal" } as JsonObject } },
-    );
-    await commitTo(storage, writes, context);
-    return retirement;
   }
 
   get total() { return this.history.total; }

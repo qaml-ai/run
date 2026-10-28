@@ -2,9 +2,9 @@ import { transaction, type Db, type Sql } from "./db.ts";
 import { json } from "./pi-durable/reclaim.ts";
 
 /**
- * Which live agents still need the readers of retired and legacy history formats (src/pi-durable/retired-host.ts,
- * `HostJournal.retire`, the legacy log's reads in the supervisor, agent host and agent child), which `POST /v1/operations/legacy-migrate` uses one last time to convert them. The gate's
- * counts must be 0 before those readers are deleted. Read by the platform operator (GET /v1/operations/legacy-coverage).
+ * Which live agents still have history in a retired or legacy format, which this release refuses (`legacyFormatRefused`):
+ * `POST /v1/operations/legacy-migrate` converted every one before the readers of those formats were deleted, and the
+ * gate's counts stay 0. Read by the platform operator (GET /v1/operations/legacy-coverage).
  *
  * It walks the `agents` table in id order, a batch at a time, with a few indexed probes per agent, and never scans
  * pi_durable_entries as a whole: one call walks for a time budget and answers the counts so far with a cursor to go on
@@ -15,7 +15,7 @@ import { json } from "./pi-durable/reclaim.ts";
 export const LEGACY_COVERAGE_BUCKETS = [
   /**
    * A host transcript never retired (its `camel.host.snapshot` document's latest revision is not the retirement's): an
-   * enabled one, or one a rollback disabled. Its history needs `HostJournal.retire` and `retiredRecords`.
+   * enabled one, or one a rollback disabled. Refused as `host_transcript`.
    */
   "unretired_host_transcripts",
   /**
