@@ -63,7 +63,7 @@ test("a stale lease cuts the model request in flight, the next waits for a fresh
   assert.equal(result.error, null, "an interrupted request is retried, even with no retries left for provider failures");
   assert.equal(result.reply, "answered");
   assert.equal(fake.calls.length, 2);
-  assert.ok(events.some(event => event.type === "message_retracted"), "the cut response is not history");
+  assert.ok(!events.some(event => event.type === "message_retracted"), "the cut response never became history");
   const history = ((await supervisorMessages(supervisor, "gated")) as any[]);
   assert.deepEqual(history.map((message: any) => message.role), ["user", "assistant"]);
 });

@@ -309,7 +309,7 @@ test(`a provider rejecting intact images (${rejection}) gets one request without
     assert.ok(JSON.stringify(request).includes(`[image omitted: ${IMAGE_DAMAGED}]`));
     assert.ok(JSON.stringify(request).includes("/image.png"));
   }
-  assert.equal(events.filter(event => event.type === "message_retracted").length, 1);
+  assert.equal(events.filter(event => event.type === "message_retracted").length, 0, "a retried attempt never became history");
   const stored = await journalMessages({ sessionId: "agent", directory });
   assert.ok(JSON.stringify(stored).includes(png));
   assert.ok(!JSON.stringify(stored).includes("Failed to load image"));

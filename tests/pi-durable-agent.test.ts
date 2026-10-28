@@ -331,7 +331,7 @@ test("Pi input writes keep the whole message, as earlier readers take data.messa
   assert.deepEqual((await fake.agent.recoverMessages())[0].message, input);
 });
 
-test("Pi adapter asks again once in a resumed run whose model request a lost node left in flight (Pi ended it `interrupted`)", { timeout: 20_000 }, async () => {
+test("Pi adapter asks again in a resumed run whose model request a lost node left in flight, as its beforeRetry says", { timeout: 20_000 }, async () => {
   const { db } = await testDatabase(), sessionId = randomUUID();
   const open = () => openPiStorage({ sessionId, directory: "unused", db });
   let requests = 0;
@@ -350,17 +350,14 @@ test("Pi adapter asks again once in a resumed run whose model request a lost nod
     agents.push(first);
     void first.prompt(user("Go")).catch(() => {});
     while (requests < 1) await new Promise(resolve => setTimeout(resolve, 5));
-    // With Pi's retry off, the interrupted request is a failed attempt with none left: the run ends `interrupted`, and the
-    // adapter continues the conversation once, so the model is asked again.
-    const next = await fixture([answer("back")], {}, await open());
+    // The interrupted request is a failed attempt: the host's beforeRetry has it made again.
+    const next = await fixture([answer("back")], {}, await open(), { beforeRetry: failed => failed.reason === "interrupted" ? { retry: true, delayMs: 0 } : undefined });
     agents.push(next.agent);
     await next.agent.continue();
     assert.equal(requests, 1, "the lost node's request was not resent by Pi itself");
     assert.equal(next.requests.length, 1, "asked again once");
     assert.equal(next.agent.state.errorMessage, undefined);
-    const interrupted = reports.map(line => JSON.parse(line)).find(line => line.report === "task_interrupted");
-    assert.equal(interrupted?.reason, "interrupted");
-    assert.equal(interrupted?.task, "pi.generation");
+    assert.ok(!reports.some(line => line.includes("task_interrupted")), "retried, not ended");
   } finally {
     console.error = report;
     for (const agent of agents.reverse()) await agent.close(100).catch(() => {});
