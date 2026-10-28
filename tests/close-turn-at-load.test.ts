@@ -17,6 +17,8 @@ import { JournalHistory } from "../src/pi-durable/history.ts";
 import { journalForkCut } from "../src/pi-durable/fork.ts";
 import { seedJournal } from "../src/pi-durable/seed.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Db } from "../src/db.ts";
+import { journalForkHistory } from "./fixtures/journal-messages.ts";
 
 /**
  * A run that ends with no host to end it (past its resumes or stopped before its node was lost, at a load; or resumed
@@ -34,7 +36,7 @@ async function lostTurn(t: Parameters<typeof fixture>[0], run: Partial<RequestRe
   await fx.sessions.close();
   await fx.supervisor.close();
   // The open turn, in the agent's journal.
-  const location = { sessionId: id, directory: join(fx.root, "agents", id) };
+  const location = { sessionId: id, directory: join(fx.root, "agents", id), db: fx.db };
   await openTurn(location, options.awaiting);
   const journal = fileStorage(join(fx.root, "sessions")).log<unknown>(`${id}.journal`);
   const now = Date.now();
@@ -52,7 +54,7 @@ async function lostTurn(t: Parameters<typeof fixture>[0], run: Partial<RequestRe
 }
 
 /** Open a turn in the agent's journal at `location`, as a node lost mid-turn left it (`awaiting`: one call waits on a person). */
-async function openTurn(location: { sessionId: string; directory: string }, awaiting = false) {
+async function openTurn(location: { sessionId: string; directory: string; db?: Db }, awaiting = false) {
   const storage = await openPiStorage(location);
   try {
     // A session no host ever started: its journal is seeded as a start's.
@@ -65,12 +67,12 @@ async function openTurn(location: { sessionId: string; directory: string }, awai
 }
 
 /** The agent's turn and history, as its journal gives them, and a fork of it without a point. */
-async function turnState(location: { sessionId: string; directory: string }) {
+async function turnState(location: { sessionId: string; directory: string; db?: Db }) {
   const storage = await openPiStorage(location);
   try {
     const history = (await JournalHistory.open(storage))!;
     const messages = (await history.messagesFrom(0))!;
-    return { active: history.active, awaiting: history.awaiting, context: messages, fork: await journalForkCut(storage, history, messages) };
+    return { active: history.active, awaiting: history.awaiting, context: messages, fork: await journalForkCut(storage, history, journalForkHistory(history, messages)) };
   } finally { await storage.close(BACKGROUND_CONTEXT); }
 }
 type TurnState = Awaited<ReturnType<typeof turnState>>;

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { cluster, fakeModel, sleep, token, until } from "./cluster-helpers.ts";
+import { cluster, fakeModel, token, until } from "./cluster-helpers.ts";
 import { unzip } from "./unzip.ts";
 
 test("an export from any node holds every agent's whole history: agents loaded on this node, on another, and on none", { timeout: 120_000 }, async t => {
@@ -57,18 +57,13 @@ test("an export from any node holds every agent's whole history: agents loaded o
   const ids = [idle, onA, onB];
   const whole = ids.map(id => [expect.user(id), expect.assistant(id)]);
 
-  // Each node reads the agents another node serves from that node: the operator's export of the tenant too, which shares the code.
+  // Each node reads every agent's history from Pi storage, wherever it is served: the operator's export of the tenant too, which shares the code.
   for (const [node, path] of [[a, "/v1/account/export"], [b, "/v1/account/export"], [a, "/v1/tenants/alice/export"], [b, "/v1/tenants/alice/export"]] as const) {
     assert.deepEqual(histories(await exported(node, path), ids), whole, `${node.url}${path} has every agent's history`);
   }
 
-  // B dies with its agent loaded: while its lease runs, no node can read that agent's history, and A's export fails
-  // instead of answering a zip without it.
+  // B dies with its agent loaded: its history is still read from Pi storage, at once, while B's lease runs.
   b.child.kill("SIGKILL");
   await once(b.child, "close");
-  const failed = await fetch(`${a.url}/v1/account/export`, { headers: { Authorization: `Bearer ${token}` } });
-  await assert.rejects(failed.arrayBuffer(), "the export is cut off, not completed without the agent B served");
-  // Once the lease lapses, A serves that agent from storage, and its export is whole again.
-  await sleep(1500 + 500);
   assert.deepEqual(histories(await exported(a), ids), whole);
 });

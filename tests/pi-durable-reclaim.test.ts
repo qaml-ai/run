@@ -190,7 +190,6 @@ test("after reclaim a cold agent runs, pages history, and forks retained and pre
   assert.deepEqual(early.json.forkedFrom, { agentId: session, atMessage: 0 });
   const copied = (await r.call(`/v1/agents/${early.json.id}/history`)).json.messages;
   assert.deepEqual(copied, [older.json.entries[0].message], "the fork keeps the original indexed message");
-  assert.equal((await r.db.query("select indexed from agent_history_index where agent = $1", [session])).rows[0].indexed >= 2, true, "old history is in blob chunks");
   assert.equal((await r.prompt(early.json.id, "early fork")).outcome.result.reply, "answer to early fork");
   const raw = r.model.bodies.at(-1).messages.filter((message: any) => message.role !== "system");
   assert.deepEqual(raw.map((message: any) => [message.role, message.content]),

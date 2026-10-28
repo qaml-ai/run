@@ -55,7 +55,7 @@ import { idempotency } from "./idempotency.ts";
 import { BrowserTokens, readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
 import type { Help } from "./help.ts";
 import type { AccountDeletions } from "./account-deletion.ts";
-import { exportAccount, type ExportOptions } from "./account-export.ts";
+import { exportAccount } from "./account-export.ts";
 import { Readable } from "node:stream";
 import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState } from "./rate-limits.ts";
 import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./legacy-coverage.ts";
@@ -117,7 +117,6 @@ export interface ApiContext {
   /** Submit a request to an agent on whichever node serves it (applying definitions). */
   submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
   /** A page of an agent's history from whichever node serves it (the export's reads, which no forwarding routes). */
-  historyPage?: ExportOptions["historyPage"];
   /** Get Help from the console (`/v1/help`); without it the console hides the button. */
   help?: Help;
   /** Deleting accounts (`DELETE /v1/account`, and the operator's `DELETE /v1/tenants/{id}`). */
@@ -1192,7 +1191,7 @@ export function api(context: ApiContext) {
     return context.accountDeletions;
   };
   const exported = (tenant: string) => {
-    const options = { accounts, clients, volumes: context.volumes, definitions: context.definitions, channels: context.channels, webhooks: context.webhooks, telemetry: context.telemetry, oauth: context.oauth, historyPage: context.historyPage, journey: context.journey };
+    const options = { accounts, clients, volumes: context.volumes, definitions: context.definitions, channels: context.channels, webhooks: context.webhooks, telemetry: context.telemetry, oauth: context.oauth, journey: context.journey };
     // Past the first bytes the status is sent: a failure cuts the zip off before its directory, so no reader takes it as whole.
     const zip = (async function* () {
       try { yield* exportAccount(options, tenant); }

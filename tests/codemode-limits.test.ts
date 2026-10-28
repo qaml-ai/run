@@ -13,6 +13,7 @@ import { keywordScores } from "../src/tool-search.ts";
 import { codeErrorClass, recordCodeExecution, recordV8Exec, setMetricSink } from "../src/metrics.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { supervisorMessages } from "./fixtures/journal-messages.ts";
 
 // Hard limits on js_exec: nothing a tenant supplies runs on the runtime's thread, every execution's CPU is
 // bounded from outside its guest, and one tenant cannot take every sandbox worker on a node. The executions
@@ -158,7 +159,7 @@ test("an agent process that stops answering is killed, and its turn is closed on
   assert.throws(() => process.kill(handle.child.pid, 0), { code: "ESRCH" });
   const restarted = await supervisor.start("frozen", { model, apiKey: "fixture" }, bridge);
   assert.equal(restarted.recovered, true);
-  assert.match(((await supervisor.history("frozen")) as any[]).at(-1).content, /interrupted by a restart/);
+  assert.match(((await supervisorMessages(supervisor, "frozen")) as any[]).at(-1).content, /interrupted by a restart/);
   assert.equal((await supervisor.request("frozen", "prompt", { text: "Carry on" })).error, null);
 });
 

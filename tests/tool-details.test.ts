@@ -33,7 +33,7 @@ test("details caps count UTF-8 bytes, drop duplicate JSON, and survive missing o
       fs: async (_op, args) => { writes.push(String(args.path)); throw new Error("write failed"); },
     };
     const host = createAgentHost(io);
-    t.after(async () => { await host.dispose(0); await storage.close(BACKGROUND_CONTEXT); faux.unregister(); await rm(directory, { recursive: true, force: true }); });
+    t.after(async () => { await host.dispose(); await storage.close(BACKGROUND_CONTEXT); faux.unregister(); await rm(directory, { recursive: true, force: true }); });
     await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", mounts: mounted ? [{ path: "/workspace", volumeId: "fixture", mode: "rw" }] : [], tools: [
       { name: "content", description: "Content", parameters: { type: "object" }, exposure: "direct", resultFormat: "content" },
       { name: "json", description: "JSON", parameters: { type: "object" }, exposure: "direct" },

@@ -5,6 +5,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ConversationId, DocumentId, EntryId, Storage, StorageWrite } from "@earendil-works/pi-durable";
 import { baseWrites, HOST_MESSAGE_KIND, HOST_USER_KIND, MARKER_KIND } from "./history.ts";
+import { ARCHIVE_KIND, type ArchiveData } from "./ordinals.ts";
 
 /**
  * The marker every session's Pi storage starts with (`seedJournal`): releases before #326 refuse a root whose first entry
@@ -88,11 +89,33 @@ const lines = new WeakMap<Storage, Promise<unknown>>();
  * retried one is never run again): a failed commit leaves nothing. Seeding the same source again finds it seeded
  * (`existing`).
  */
+/** About as much as one archive entry holds: a turn larger than it takes several. */
+const ARCHIVE_BYTES = 1_000_000;
+
+/** History kept before a base (messages from `start`), as archive entries: one per turn (`turns`: where they start), split past ARCHIVE_BYTES. */
+export function archiveEntries(messages: AgentMessage[], turns: readonly number[], start = 0): ArchiveData[] {
+  const entries: ArchiveData[] = [];
+  const starts = new Set(turns);
+  let current: ArchiveData | undefined, bytes = 0;
+  messages.forEach((message, index) => {
+    const size = JSON.stringify(message).length;
+    const turn = starts.has(start + index);
+    if (!current || turn || bytes + size > ARCHIVE_BYTES) {
+      current = { start: start + index, messages: [], ...(turn ? { turn: true } : {}) };
+      entries.push(current); bytes = 0;
+    }
+    current.messages.push(message); bytes += size;
+  });
+  return entries;
+}
+
 export async function seedJournal(options: {
   storage: Storage;
   sessionId: string;
   model: Message[];
   before?: { total: number; calls?: [string, number][] };
+  /** The history before the base (a fork's copy of its source's) and its turn starts, kept as archive entries: `before.total` is its length. */
+  archive?: { messages: AgentMessage[]; turns: number[] };
   messages?: AgentMessage[];
   /** Where the checkpoint goes among `messages` (an import's summary at its cut); 0 by default. */
   headAt?: number;
@@ -105,7 +128,9 @@ export async function seedJournal(options: {
   if (!sessionId) throw new TypeError("A seed needs the session's public ID");
   const messages = options.messages ?? [], before = options.before?.total ?? 0;
   const headAt = Math.min(options.headAt ?? 0, messages.length);
-  const fingerprint = createHash("sha256").update(JSON.stringify({ before, messages, model, headAt })).digest("hex");
+  const archive = options.archive ? archiveEntries(options.archive.messages, options.archive.turns) : [];
+  if (options.archive && options.archive.messages.length !== before) throw new TypeError("A seed's archive is the history before its base");
+  const fingerprint = createHash("sha256").update(JSON.stringify({ before, messages, model, headAt, ...(options.archive?.messages.length ? { archive: options.archive.messages } : {}) })).digest("hex");
   const requests = [...new Set([...options.requests ?? [], ...messages.flatMap(message => message.role === "user" && (message as { requestId?: string }).requestId ? [(message as { requestId?: string }).requestId!] : [])])];
   const run = (lines.get(storage) ?? Promise.resolve()).catch(() => {}).then(async () => {
     const previous = await loadSeedMarker(storage, context);
@@ -116,7 +141,7 @@ export async function seedJournal(options: {
     // Where turns begin in the history written here: at a user message after anything else.
     const turns = messages.flatMap((message, index) => message.role === "user" && messages[index - 1]?.role !== "user" ? [index] : []);
     const contextIds = Math.max(1, model.length);
-    const count = 3 + messages.length + 2 * turns.length + contextIds + requests.length;
+    const count = 3 + archive.length + messages.length + 2 * turns.length + contextIds + requests.length;
     const bulk = storage as Storage & { mintIds?(count: number): Promise<number[]> };
     const ids = bulk.mintIds ? await bulk.mintIds(count) : await (async () => {
       const ids: number[] = [];
@@ -128,7 +153,7 @@ export async function seedJournal(options: {
     }
     let nextId = 0;
     const markerId = ids[nextId++] as EntryId, baseId = ids[nextId++] as EntryId, documentId = ids[nextId++] as DocumentId;
-    const body: StorageWrite[] = [];
+    const body: StorageWrite[] = archive.map(data => ({ type: "entry" as const, value: { id: ids[nextId++] as EntryId, conversationId: SESSION_CONVERSATION_ID, kind: ARCHIVE_KIND, data: payload(data) } }));
     let contextEntryId = 0 as EntryId;
     const checkpoint = () => {
       contextEntryId = ids[nextId] as EntryId;

@@ -7,8 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { AgentSupervisor } from "../src/supervisor.ts";
+import { supervisorMessages } from "./fixtures/journal-messages.ts";
 
-test("an idle agent's history backlog comes from its journal", { timeout: 60_000 }, async t => {
+test("an idle agent's history is its journal's", { timeout: 60_000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "journal-backlog-"));
   const server = createServer(async (request, response) => {
     for await (const _ of request) { /* drain */ }
@@ -28,8 +29,5 @@ test("an idle agent's history backlog comes from its journal", { timeout: 60_000
   await supervisor.request("idle", "prompt", { text: "one" });
   await supervisor.request("idle", "prompt", { text: "two" });
   await supervisor.stop("idle");
-  const backlog = (await supervisor.journalBacklog("idle", 1))!;
-  assert.deepEqual(backlog.messages.map(message => message.role), ["assistant", "user", "assistant"]);
-  assert.deepEqual(backlog.turns, [2]);
-  assert.deepEqual((await supervisor.history("idle")).map(message => message.role), ["user", "assistant", "user", "assistant"]);
+  assert.deepEqual((await supervisorMessages(supervisor, "idle")).map(message => message.role), ["user", "assistant", "user", "assistant"]);
 });

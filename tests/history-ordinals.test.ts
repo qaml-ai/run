@@ -15,6 +15,7 @@ import { fillOrdinals, historyPositions } from "../src/pi-durable/ordinals.ts";
 import { seedJournal, SESSION_CONVERSATION_ID as conversationId } from "../src/pi-durable/seed.ts";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { ordinalWalk, OrdinalCursorError } from "../src/history-ordinals.ts";
+import { rowMessages } from "../src/history-pages.ts";
 import { testDatabase } from "./database.ts";
 
 const user = (content: string, requestId?: string) => ({ role: "user", content, timestamp: 1, ...(requestId ? { requestId } : {}) }) as AgentMessage;
@@ -43,8 +44,7 @@ async function byOrdinal(session: string) {
     const entry = JSON.parse(row.record) as EntryRecord;
     from ??= row.msg_from;
     assert.equal(row.msg_from, from + messages.length, `entry ${row.id} is placed where the history before it ends`);
-    const own = entry.kind === MARKER_KIND ? (entry.data as unknown as { kept: AgentMessage[] }).kept : durableEntryMessages(entry).map(item => item.message);
-    messages.push(...own.slice(row.msg_skip, row.msg_skip + row.msg_count));
+    messages.push(...rowMessages(entry, row.msg_skip, row.msg_count));
   }
   if (from !== undefined) assert.equal(next, from + messages.length, "history_next is the history's length");
   return { from: from ?? next, next, messages, turns: rows.filter(row => row.turn_start).map(row => row.msg_from) };
@@ -59,9 +59,10 @@ async function byJournal(storage: Storage) {
 async function assertSame(session: string, storage: Storage, label: string) {
   const journal = await byJournal(storage), ordinals = await byOrdinal(session);
   assert.equal(ordinals.next, journal.next, `${label}: length`);
-  assert.deepEqual(ordinals.messages, journal.messages.slice(journal.messages.length - ordinals.messages.length), `${label}: messages`);
-  assert.equal(ordinals.messages.length, journal.messages.length, `${label}: every message held is placed`);
-  assert.deepEqual(ordinals.turns, journal.turns, `${label}: turn starts`);
+  // The journal reads from its latest base (a turn's end moves it on); the ordinals hold every message since the first.
+  assert.ok(ordinals.from! <= journal.from, `${label}: placed from the first base`);
+  assert.deepEqual(ordinals.messages.slice(journal.from - ordinals.from!), journal.messages, `${label}: messages`);
+  assert.deepEqual(ordinals.turns.filter(turn => turn >= journal.from), journal.turns, `${label}: turn starts`);
 }
 
 /** Clears an agent's ordinals, as a session from before them has none. */
@@ -256,5 +257,25 @@ test("records Postgres will not parse as jsonb (a \\u0000, a lone surrogate) are
     assert.equal((await fillOrdinals(db, "unicode", { dryRun })).code, dryRun ? "would_place" : "placed");
   }
   assert.deepEqual(await columns("unicode"), placed);
+  await storage.close(context);
+});
+
+test("a fork's archive entries are placed where they say, before its base, and the fill places them the same", async () => {
+  const storage = await open("archived");
+  const archive = [user("a"), reply("A"), user("b"), reply("B")];
+  await seedJournal({ storage, sessionId: "archived", model: [system as never], before: { total: 4 }, archive: { messages: archive, turns: [0, 2] } });
+  const journal = (await HostJournal.open(storage))!;
+  await journal.setActive(true);
+  await journal.append([user("c"), reply("C")]);
+  await journal.setActive(false);
+  const ordinals = await byOrdinal("archived");
+  assert.equal(ordinals.from, 0);
+  assert.equal(ordinals.next, 6);
+  assert.deepEqual(ordinals.messages.slice(0, 4), archive);
+  assert.deepEqual(ordinals.turns, [0, 2, 4], "archive entries opening a turn, then the journal's turn marker");
+  const placed = await columns("archived");
+  await unplace("archived");
+  assert.equal((await fillOrdinals(db, "archived", { dryRun: false })).code, "placed");
+  assert.deepEqual(await columns("archived"), placed);
   await storage.close(context);
 });

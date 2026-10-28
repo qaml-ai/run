@@ -18,6 +18,7 @@ import { JournalHistory } from "../src/pi-durable/history.ts";
 import { journalForkCut } from "../src/pi-durable/fork.ts";
 import { hostTranscriptSession, setDualWrite, type TranscriptRecord } from "./fixtures/host-transcript.ts";
 import { journalMessages } from "./fixtures/journal-history.ts";
+import { journalForkHistory } from "./fixtures/journal-messages.ts";
 
 // Sessions a release before the host transcript's removal left (a node lost mid-turn), as nodes ran it then
 // (AGENT_PI_DUAL_WRITE=1): their first load retires the host transcript.
@@ -41,7 +42,7 @@ async function setup(t: Context) {
     { name: "fetch", description: "Fetch something, alongside other calls", parameters: { type: "object" }, exposure: "direct", executionMode: "parallel" },
   ];
   /** A host over the agent's Pi storage, as a node starting the agent: `call` answers its tools. */
-  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[]; tenant?: string; history?: HostIO["history"] } = {}) {
+  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[]; tenant?: string } = {}) {
     const events: any[] = [];
     const opened = await openPiStorage({ sessionId: "agent", directory });
     const storage = options.storage?.(opened) ?? opened;
@@ -55,11 +56,11 @@ async function setup(t: Context) {
       file: async () => { throw new Error("no files"); },
       modelAuth: async () => { throw new Error("no per-call credentials"); },
       fs: async () => { throw new Error("no files"); },
-      ...(options.history ? { history: options.history } : {}),
+
     };
     const host = createAgentHost(io);
     const init = await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", tools, ...(options.tenant ? { tenant: options.tenant } : {}), ...(options.resume ? { resume: true } : {}), ...(options.initialMessages ? { initialMessages: options.initialMessages } : {}) });
-    t.after(async () => { await host.dispose(0); await opened.close(BACKGROUND_CONTEXT); });
+    t.after(async () => { await host.dispose(); await opened.close(BACKGROUND_CONTEXT); });
     return { host, init, events };
   }
   /**
@@ -167,7 +168,7 @@ test("a node stopped while a tool call runs leaves a turn the next one resumes f
   // The turn never settles: its node is gone, as a process killed mid-call would be.
   void first.host.handle("prompt", { text: "look it up" }).catch(() => {});
   await running.promise;
-  await first.host.dispose(0);
+  await first.host.dispose();
   fake.respond(answer("Found it."));
   const { host, init } = await fake.start({ resume: true });
   assert.deepEqual(init.resume, { continue: true });
@@ -253,7 +254,7 @@ test("resume: a node closed mid-call leaves the run to Pi: a lost delegate call 
   const first = await fake.start({ call: () => { if (++started === 2) running.resolve(); return new Promise(() => {}); } });
   void first.host.handle("prompt", { text: "research both" }).catch(() => {});
   await running.promise;
-  await first.host.dispose(0);
+  await first.host.dispose();
   const calls: string[] = [];
   fake.respond(answer("Both done."));
   const { host, init } = await fake.start({ resume: true, call: name => { calls.push(name); return { agentId: "client_child", status: "completed", text: "the child's answer" }; } });
@@ -296,7 +297,7 @@ for (const when of ["before the host has the run", "as the host begins it"]) {
     // A fork without a point ends with the last turn that ended: the aborted turn's prompt is in it.
     const storage = await openPiStorage({ sessionId: "agent", directory: fake.directory });
     try {
-      const cut = await journalForkCut(storage, (await JournalHistory.openAny(storage))!, after.context);
+      const cut = await journalForkCut(storage, (await JournalHistory.openAny(storage))!, journalForkHistory((await JournalHistory.openAny(storage))!, after.context));
       assert.equal(cut.through, 4);
       assert.ok(cut.messages.some(message => JSON.stringify(message).includes("research it")));
     } finally { await storage.close(BACKGROUND_CONTEXT); }
@@ -382,7 +383,7 @@ test("a session's host transcript is retired once, at its first load: a base whe
   assert.deepEqual(await markers(), ["base", "disabled"]);
   fake.respond(answer("One."));
   assert.equal((await first.host.handle("prompt", { text: "one" })).messages, 5, "the old history, the interrupted turn's notice, and the new turn");
-  await first.host.dispose(0);
+  await first.host.dispose();
   const second = await fake.start();
   fake.respond(answer("Two."));
   assert.equal((await second.host.handle("prompt", { text: "two" })).messages, 7);
@@ -415,21 +416,6 @@ test("a host transcript no release retired is refused at load, logged, its journ
   assert.equal(await entries(), before);
 });
 
-test("the history index takes its chunks from the journal", async t => {
-  const fake = await setup(t);
-  const chunks: { start: number; messages: AgentMessage[]; turns: number[] }[] = [];
-  let indexed = 0;
-  const history = { indexed: async () => indexed,
-    write: async (chunk: { start: number; messages: AgentMessage[]; turns: number[] }) => { chunks.push(chunk); indexed = chunk.start + chunk.messages.length; return indexed; } };
-  const { host } = await fake.start({ history });
-  fake.respond(answer(fauxToolCall("lookup", {}, { id: "look" }), "toolUse"), answer("Found."), answer("Again."));
-  await host.handle("prompt", { text: "look it up" });
-  await host.handle("prompt", { text: "again" });
-  await host.handle("historyFlush", {});
-  assert.deepEqual(chunks.flatMap(chunk => chunk.messages).map(message => message.role), ["user", "assistant", "toolResult", "assistant", "user", "assistant"]);
-  assert.deepEqual(chunks.flatMap(chunk => chunk.turns), [0, 4]);
-});
-
 test("two calls of one response that ask for their message index at once read the journal history once each (it fails a run that counts twice)", async t => {
   const fake = await setup(t);
   // Journal reads that take a while, as Postgres's do: the two calls' refreshes overlap.
@@ -443,17 +429,4 @@ test("two calls of one response that ask for their message index at once read th
   assert.equal(run.error, null);
   assert.equal(run.reply, "Done.");
   assert.equal(run.messages, 5);
-});
-
-test("a history tail is the journal's: what Pi committed is in it at once", async t => {
-  const fake = await setup(t);
-  const noIndex = { indexed: async () => 0, write: async () => 0 } as unknown as HostIO["history"];
-  let journal!: PiStorage;
-  const { host } = await fake.start({ history: noIndex, storage: storage => (journal = storage) });
-  fake.respond(answer("One."));
-  await host.handle("prompt", { text: "one" });
-  // Pi's next response is committed; its event is still on its way to the host.
-  await journal.commit([{ type: "entry", value: { id: await journal.mintId(), conversationId: 1 as never, kind: "pi.assistant", model: [answer("Two.")] as never } }], () => {}, BACKGROUND_CONTEXT);
-  const tail = await host.handle("historyTail", {});
-  assert.deepEqual(tail.messages.map((message: AgentMessage) => message.role), ["user", "assistant", "assistant"]);
 });

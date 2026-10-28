@@ -10,6 +10,7 @@ import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { errorClass } from "../src/metrics.ts";
 import { STREAM_TIMEOUTS, streamTimeouts, watchedStream } from "../src/model-stream.ts";
 import { responses } from "./provider-fixtures.ts";
+import { supervisorMessages } from "./fixtures/journal-messages.ts";
 
 type T = { after: (fn: () => Promise<void> | void) => void };
 const chunk = (delta: object, finish_reason: string | null = null) => `data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
@@ -91,7 +92,7 @@ test("a stream that stops partway goes quiet for idleSeconds, is retried, and th
   assert.equal(result.reply, "answer 2");
   assert.equal(bodies.length, 2);
   assert.equal(events.find(event => event.type === "model_stream_stalled")?.phase, "idle");
-  const history = ((await supervisor.history("a")) as any[]);
+  const history = ((await supervisorMessages(supervisor, "a")) as any[]);
   assert.deepEqual(history.map((message: any) => message.role), ["user", "assistant"]);
   assert.doesNotMatch(JSON.stringify(history), /half an ans/);
 });
@@ -177,7 +178,7 @@ test("a provider stream that ends before its terminal event (OpenAI Responses) i
   assert.equal(result.reply, "whole answer");
   assert.equal(requests(), 2);
   assert.ok(events.some(event => event.type === "auto_retry_start" && /ended before a terminal response event/.test(event.errorMessage)));
-  assert.doesNotMatch(JSON.stringify(((await supervisor.history("a")) as any[])), /half an ans/);
+  assert.doesNotMatch(JSON.stringify(((await supervisorMessages(supervisor, "a")) as any[])), /half an ans/);
 
   // Every attempt is cut off: the run ends with the provider's error, and the agent is idle for the next message.
   const always = await responsesProvider(t, () => cutOff("cut"));

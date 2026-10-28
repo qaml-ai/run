@@ -2,7 +2,6 @@ import type { Accounts } from "./accounts.ts";
 import type { ClientSessions } from "./client-sessions.ts";
 import type { Channels } from "./channels.ts";
 import type { Definitions } from "./definitions.ts";
-import type { HistoryPage } from "./history-pages.ts";
 import { HttpError } from "./http.ts";
 import { journeyKept, type Journey } from "./journey.ts";
 import type { OAuth } from "./oauth.ts";
@@ -27,11 +26,6 @@ export interface ExportOptions {
   webhooks?: Webhooks;
   telemetry?: Telemetry;
   oauth?: OAuth;
-  /**
-   * A page of an agent's history from the node that serves it (another node's agent has turns only it holds yet);
-   * by default this node's view, which is whole only when no other node serves the agent.
-   */
-  historyPage?: (id: string, tenant: string, query: { before?: string; limit?: string }) => Promise<HistoryPage>;
   /** Journey events (src/journey.ts), where the operator configured them: the store is asked for what it holds of the account. */
   journey?: Journey;
 }
@@ -72,7 +66,7 @@ const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 
 export async function* exportAccount(options: ExportOptions, tenant: string): AsyncGenerator<Uint8Array> {
   const { accounts, clients } = options;
-  const historyPage = options.historyPage ?? ((id: string, tenant: string, query: { before?: string; limit?: string }) => clients.historyPageFor(id, tenant, query));
+  const historyPage = (id: string, tenant: string, query: { before?: string; limit?: string }) => clients.historyPageFor(id, tenant, query);
   const zip = new ZipWriter();
   const { created_at: created, signup_source: signupSource } = (await accounts.db.query("select created_at, signup_source from tenants where id = $1", [tenant])).rows[0] ?? {};
   yield* zip.file("README.txt", README);

@@ -59,9 +59,9 @@ async function setup(t: { after(fn: () => unknown): void }, summarize: (index: n
     await host.handle("init", { id: "agent", directory, model: { ...faux.getModel(), contextWindow: WINDOW, maxTokens: 1000 }, apiKey: "fixture", tools: [], ...init });
     return host;
   };
-  const stop = async (host: ReturnType<typeof createAgentHost>) => { hosts.delete(host); await host.dispose(0); };
+  const stop = async (host: ReturnType<typeof createAgentHost>) => { hosts.delete(host); await host.dispose(); };
   const host = await start();
-  t.after(async () => { for (const host of hosts) await host.dispose(0); for (const opened of storages) await opened.close(context).catch(() => {}); faux.unregister(); await rm(directory, { recursive: true, force: true }); });
+  t.after(async () => { for (const host of hosts) await host.dispose(); for (const opened of storages) await opened.close(context).catch(() => {}); faux.unregister(); await rm(directory, { recursive: true, force: true }); });
   return { host, start, stop, storage, current: () => storages.at(-1)!, events, requests, summaries: () => summaries, overlapping: () => overlapping };
 }
 

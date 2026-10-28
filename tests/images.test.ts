@@ -164,7 +164,7 @@ test("inline images enter the journal scaled down: a user message's, and an MCP 
     file: async () => { throw new Error("no files"); }, modelAuth: async () => { throw new Error("no per-call credentials"); }, fs: async () => { throw new Error("no files"); },
   };
   const host = createAgentHost(io);
-  t.after(async () => { await host.dispose(0); await storage.close(BACKGROUND_CONTEXT); });
+  t.after(async () => { await host.dispose(); await storage.close(BACKGROUND_CONTEXT); });
   await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", tools: [{ name: "screenshot", description: "A browser screenshot", parameters: { type: "object" }, exposure: "direct", resultFormat: "content" }] });
   const sent: unknown[] = [];
   faux.setResponses([
@@ -256,7 +256,7 @@ test("a 60-image saved history is hydrated with only the newest 40 images", asyn
     tool: async () => { throw new Error("no tools"); }, file: async () => png,
     modelAuth: async () => { throw new Error("no per-call credentials"); }, fs: async () => { throw new Error("no files"); },
   });
-  t.after(async () => { await host.dispose(0); await storage.close(BACKGROUND_CONTEXT); });
+  t.after(async () => { await host.dispose(); await storage.close(BACKGROUND_CONTEXT); });
   const initialMessages = Array.from({ length: 60 }, (_, index) => ({ role: "user", timestamp: index + 1,
     content: [{ type: "text", text: `shot ${index}` }, { type: "image", mimeType: "image/png", data: png }] }));
   await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", initialMessages, tools: [] });
@@ -288,7 +288,7 @@ test(`a provider rejecting intact images (${rejection}) gets one request without
     file: async ref => ref.path === "/broken.png" ? Buffer.from(png, "base64").subarray(0, 24).toString("base64") : png, modelAuth: async () => { throw new Error("no per-call credentials"); }, fs: async () => { throw new Error("no files"); },
   };
   const host = createAgentHost(io);
-  t.after(async () => { await host.dispose(0); await storage.close(BACKGROUND_CONTEXT); });
+  t.after(async () => { await host.dispose(); await storage.close(BACKGROUND_CONTEXT); });
   await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", initialMessages: [{ role: "user", content: [{ type: "text", text: "look" }, { type: "image", data: png, mimeType: "image/png" }], timestamp: 1 }], tools: [{ name: "picture", description: "An image", parameters: { type: "object" }, exposure: "direct", resultFormat: "content" }] });
   const requests: any[] = [];
   const reject = (context: any) => {

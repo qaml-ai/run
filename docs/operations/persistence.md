@@ -7,18 +7,17 @@ Nothing is serialized per streamed delta. Each agent has two append-only logs:
   being converted to UI messages. A retried provider error is retracted. The
   supervisor writes it under the agent's ownership claim; an agent in its own
   process sends records over IPC and holds no database connection.
-- History chunks (`sessions/<id>/history/<start>-<count>-<hash>`, indexed in
-  `agent_history_chunks`): the settled messages again, in immutable chunks of
-  whole turns of about 1 MB, so a page of history (`/history?limit=`) reads a
-  few index rows and the chunks it returns, never the whole log (whose snapshot
-  is every record in one object). Like the log's segments, chunks are written
-  when the agent stops and when what is unindexed passes a chunk's size, never
-  per turn; what is newer comes from the running agent, which keeps at most
-  8 MB of it in memory (past that it reads the rest back from its log to index
-  it, a chunk at a time). The rest of an index behind what the agent's runs
-  reported (a stop that could not write), or all of an agent's history when it
-  has no index yet (made before the index), is read from its whole log, as
-  `/history` without paging is, until the agent's next start indexes it.
+- History is read from Pi storage by ordinal (`pi_durable_entries.msg_from`,
+  `msg_count`, kept by every commit: [pi-durable](pi-durable.md#history-ordinals)),
+  so a page of history (`/history?limit=`) reads the sizes of its rows and then
+  only the rows it returns, on any node, whether the agent runs or not; every read
+  is bounded in bytes before it reads (a page at 64 MiB, a full read or fork at
+  64 MiB: 413 past it). A fork's copied history is kept in its own Pi storage, as
+  archive entries before its base. History from before the journal (retired host
+  transcripts, imports and forks before archive entries) is still read from the
+  history index's chunks (`sessions/<id>/history/<start>-<count>-<hash>`, indexed
+  in `agent_history_chunks`), which nothing writes any more, until it moves into
+  Pi storage too.
 - `<session>.journal.jsonl`: request state changes. It is fsynced only where
   correctness needs it: accepting a request, a run's start (before its first tool
   call can have an effect), and recording outcomes. Tool calls are not journaled:
@@ -47,7 +46,7 @@ and nothing blocks later requests.
 compaction summary and the messages after its cut. A compaction is one
 transcript record, `{t: "compaction", summary, cut, tokensBefore, at}`, where
 `cut` is the absolute index of the first message it keeps; the messages before
-it stay in the log and the history index. Background compaction summarizes the
+it stay in the history. Background compaction summarizes the
 working set as it was when it began, and turns go on meanwhile: their messages
 are appended after everything the summary read, so they follow the cut and stay.
 The record is appended under the owner's claim like every other, and only onto

@@ -8,7 +8,6 @@ import type { SearchHit, SearchQuery } from "./tool-search.ts";
 /** Which model tool call a tool call belongs to: its own, or for a call from js_exec, the js_exec call's and the call's id within it. */
 /** A tool call from the model: its id, its place in js_exec's code if made there, and the history index of the assistant message that made it. */
 export type CallContext = { toolCallId: string; innerCallId?: string; messageIndex?: number };
-import type { HistoryChunk } from "./history-pages.ts";
 import type { CommitEffect } from "../shared/append-log.ts";
 /** The least `runLimits.contextTokens` may be: below it, a summary and the recent messages it keeps would not fit. */
 export const MIN_CONTEXT_TOKENS = 20_000;
@@ -47,8 +46,6 @@ export interface ToolBridge {
   modelAttempt?: ModelAttemptHook;
   /** js_exec's `fs` (`op` is readFile, writeFile, stat, list or remove), answered by the runtime's file tools over the agent's mounts. */
   fs?(op: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
-  /** The agent's history index (history-pages.ts): how many messages it has, and writing a chunk where it ends (returning where it ends then). */
-  history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number> };
   /** Events of work the agent does apart from any run (`background: true`: a background compaction's), which reach no run's stream. */
   background?(event: any): void;
   /** Wait for the tenant's turn to run js_exec on this node (codemode.ts `CodeGate`), until `signal` aborts; resolves with the function that gives it back. */

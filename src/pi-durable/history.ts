@@ -297,9 +297,6 @@ export class JournalHistory {
     return slot && "at" in slot ? slot.at : undefined;
   }
 
-  /** The size of each history message from absolute index `from` (at or past `heldFrom`) to `to`. */
-  sizesFrom(from: number, to = this.total): number[] { return this.slots.slice(from - this.heldFrom, to - this.heldFrom).map(slot => slot.size); }
-
   /** Where turns began, among the history's messages from absolute index `from` on. */
   turnsFrom(from: number): number[] { return this.turnStarts.filter(turn => turn >= from && turn < this.total); }
 
@@ -315,7 +312,7 @@ export class JournalHistory {
    */
   async messagesFrom(from: number, to = this.total): Promise<AgentMessage[] | undefined> {
     if (from < this.heldFrom || from > to || to > this.total) return undefined;
-    const chars = this.sizesFrom(from, to).reduce((sum, size) => sum + size, 0);
+    const chars = this.slots.slice(from - this.heldFrom, to - this.heldFrom).reduce((sum, slot) => sum + slot.size, 0);
     if (chars > MESSAGES_READ_CHARS) throw new HttpError(413, `History messages ${from} to ${to} are ${chars} characters, past the ${MESSAGES_READ_CHARS} one read takes. Full-history reads and forks are limited; read it in pages with limit/before/maxBytes.`);
     const messages: AgentMessage[] = [];
     const entries = new Map<number, ReturnType<typeof durableEntryMessages>>();

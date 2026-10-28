@@ -1,18 +1,12 @@
-import { createHash } from "node:crypto";
 import { HttpError } from "./http.ts";
+import { legacyFormatRefused } from "./protocol.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { Storage } from "../shared/storage.ts";
-import { underClaim, type Claim } from "./ownership.ts";
 import type { Db, Sql } from "./db.ts";
+import { durableEntryMessages } from "./pi-durable/agent.ts";
+import { ARCHIVE_KIND, fillOrdinals, historyPositions, MARKER_KIND } from "./pi-durable/ordinals.ts";
 
-/**
- * Messages the agent's history index does not have yet, from absolute index `from` on, with each one's size (its JSON's
- * length), and where runs began among them.
- */
-export interface Backlog { from: number; messages: AgentMessage[]; sizes: number[]; turns: number[] }
-
-/** Messages from absolute index `start`, and where turns begin among them. */
-export type HistoryChunk = { start: number; messages: AgentMessage[]; turns: number[] };
 /** One message of a page, at its index in the agent's history. */
 export type HistoryEntry = { index: number; message: AgentMessage };
 /**
@@ -22,113 +16,72 @@ export type HistoryEntry = { index: number; message: AgentMessage };
  */
 export type HistoryPage = { entries: HistoryEntry[]; next: number | null; total: number; split?: true };
 
-/** A chunk holds about this much; a turn larger than it is split between messages. */
-export const CHUNK_BYTES = 1_000_000;
-/** Full-history reads may load at most this many stored UTF-8 bytes. */
+/** Full-history reads (export, fork) may load at most this many stored UTF-8 bytes. */
 export const FULL_HISTORY_READ_BYTES = 64 * 1024 * 1024;
 /** A page returns about this much at most, beyond its first turn. */
 export const PAGE_BYTES = 4_000_000;
-/** Chunk rows read at a time while looking for where a page starts. */
-const ROWS = 16;
-/** Chunks read from Storage at once. */
-const READS = 8;
-
-/** Where turns begin among `messages` (from absolute `from`): run starts that begin with a user message, and index 0. */
-export function boundaries(from: number, messages: AgentMessage[], turns: number[]) {
-  const starts = turns.filter(turn => turn >= from && turn < from + messages.length && messages[turn - from].role === "user");
-  return [...new Set(from === 0 && messages.length ? [0, ...starts] : starts)].sort((a, b) => a - b);
-}
-
+/** Rows read at a time while looking for where a page starts. */
+const ROWS = 128;
+/** The most stored bytes one page loads, whatever its turns: past it the page is refused, never read. */
+const PAGE_READ_BYTES = 64 * 1024 * 1024;
 /**
- * The first `count` messages of a backlog as chunks of whole turns, each about CHUNK_BYTES at most;
- * a turn larger than that is split between its messages.
+ * The most session entries a read places itself (an agent the operator's fill has not reached): the fill holds the
+ * agent's commits while it runs, so a larger one waits for the operator's (503).
  */
-export function chunksOf(backlog: Backlog, count = backlog.messages.length): HistoryChunk[] {
-  const turns = boundaries(backlog.from, backlog.messages.slice(0, count), backlog.turns);
-  const chunks: HistoryChunk[] = [];
-  let start = 0, bytes = 0;
-  const cut = (end: number) => {
-    if (end <= start) return;
-    chunks.push({ start: backlog.from + start, messages: backlog.messages.slice(start, end), turns: turns.filter(turn => turn >= backlog.from + start && turn < backlog.from + end) });
-    start = end; bytes = 0;
-  };
-  for (let index = 0; index < count; index++) {
-    const size = backlog.sizes[index];
-    if (bytes && bytes + size > CHUNK_BYTES) {
-      // Back to the latest turn start in the chunk, unless the chunk is one turn: then between messages.
-      const turn = turns.findLast(turn => turn > backlog.from + start && turn <= backlog.from + index);
-      const end = turn !== undefined ? turn - backlog.from : index;
-      cut(end);
-      for (let kept = end; kept < index; kept++) bytes += backlog.sizes[kept];
-    }
-    bytes += size;
-  }
-  cut(count);
-  return chunks;
+const LAZY_FILL_ENTRIES = 20_000;
+
+type Piece = { start: number; count: number; bytes: number; turns: number[]; row?: number; skip?: number; chunk?: ChunkRow };
+type ChunkRow = { start: number; count: number; bytes: number; turns: number[]; hash: string };
+type OrdinalRow = { id: string; msg_from: number; msg_count: number; msg_skip: number; bytes: string };
+
+/** A user message's entry kinds: a turn that starts with one is a page boundary. */
+const USER_KINDS = ["pi.user", "camel.user"];
+const kindIs = (kinds: string[]) => `(${kinds.map(kind => `substr(m.record, 1, 200) LIKE '%"kind":"${kind}"%'`).join(" OR ")})`;
+
+/** A history row's messages, its own history messages from `skip`, `count` of them. */
+export function rowMessages(entry: EntryRecord, skip: number, count: number): AgentMessage[] {
+  const all = entry.kind === MARKER_KIND ? (entry.data as unknown as { kept?: AgentMessage[] }).kept ?? []
+    : entry.kind === ARCHIVE_KIND ? (entry.data as unknown as { messages: AgentMessage[] }).messages
+    : durableEntryMessages(entry).map(item => item.message);
+  return all.slice(skip, skip + count);
 }
 
-type Row = { start: number; count: number; bytes: number; turns: number[]; hash: string };
-type Piece = Omit<Row, "hash"> & { hash?: string; messages?: AgentMessage[] };
-
 /**
- * An agent's history as pages: chunks of its settled messages in Storage, and their index in
- * Postgres. The owner writes a chunk once its turn has settled (or its turn grows past a chunk);
- * what is newer comes from the running agent. So a page reads a few index rows and the chunks it
- * returns, never the whole log, and a settled page never changes.
+ * An agent's history, read from Pi storage by ordinal (pi-durable/ordinals.ts): a page reads the index of its rows and
+ * then only the rows it returns, never the journal from its start, and every read is bounded before it reads. History
+ * before an agent's first placed message (retired host transcripts, imports and forks from before the archive) is in the
+ * history index's chunks (Storage blobs, `agent_history_chunks`) until it moves into Pi (H3).
  */
 export class HistoryIndex {
   readonly db: Db;
   readonly storage: Storage;
   constructor(db: Db, storage: Storage) { this.db = db; this.storage = storage; }
 
-  private key(agent: string, row: Pick<Row, "start" | "count" | "hash">) { return `sessions/${agent}/history/${row.start}-${row.count}-${row.hash}`; }
-
-  /** Whether the agent is not deleted (`lock`: and keep it so until the transaction ends). */
-  private async live(agent: string, sql: Sql, lock = false) {
-    return !!(await sql.query(`select 1 from agents where id = $1 and not revoked and purged_at is null${lock ? " for share" : ""}`, [agent])).rowCount;
-  }
-
-  /** How many messages the agent's runs had reported when it last unloaded: more than its index has means its last chunks were not written. */
-  async reported(agent: string): Promise<number> {
-    return (await this.db.query("select reported from agent_history_index where agent = $1", [agent])).rows[0]?.reported ?? 0;
-  }
-
-  /** Start a new agent's index, empty; `reported`: messages its history starts with (a fork's), which a page then finds in its log until they are indexed. */
-  async begin(agent: string, reported = 0) {
-    await this.db.query("insert into agent_history_index (agent, indexed, reported) values ($1, 0, $2) on conflict (agent) do nothing", [agent, reported]);
-  }
-
-  /** How many of the agent's messages the chunks cover; undefined for an agent whose index has not begun. */
-  async indexed(agent: string): Promise<number | undefined> {
-    return (await this.db.query("select indexed from agent_history_index where agent = $1", [agent])).rows[0]?.indexed;
-  }
+  private key(agent: string, row: Pick<ChunkRow, "start" | "count" | "hash">) { return `sessions/${agent}/history/${row.start}-${row.count}-${row.hash}`; }
 
   /**
-   * Write a chunk where the index ends, under the owner's claim; returns where the index ends now.
-   * A chunk that does not start there (another writer indexed these messages first) is not written.
-   * `creating`: the agent is being made (a fork's copied history), and has no row yet.
+   * The agent's history length (`total`) and its first message in Pi storage (`from`: those before it are the index's).
+   * An agent whose ordinals are not placed yet is placed first (`fillOrdinals`); one with no Pi storage has none.
    */
-  async write(agent: string, claim: Claim | undefined, chunk: HistoryChunk, { creating = false } = {}): Promise<number> {
-    const count = chunk.messages.length;
-    const body = Buffer.from(JSON.stringify(chunk.messages));
-    const hash = createHash("sha256").update(body).digest("hex").slice(0, 32);
-    // A deleted agent's history is purged, not written again: checked before the blob, so almost never is one left
-    // behind (a delete landing between the check and the write can leave one, unreferenced, under its content hash),
-    // and again with the row, holding the agent's, so no row outlives a purge.
-    if (!creating && !await this.live(agent, this.db)) throw new Error(`Agent ${agent} is deleted; its history is not written`);
-    await this.storage.writeBlob(this.key(agent, { start: chunk.start, count, hash }), body);
-    return underClaim(this.db, claim, async sql => {
-      if (!creating && !await this.live(agent, sql, true)) throw new Error(`Agent ${agent} is deleted; its history is not written`);
-      await sql.query("insert into agent_history_index (agent, indexed) values ($1, 0) on conflict (agent) do nothing", [agent]);
-      const indexed: number = (await sql.query("select indexed from agent_history_index where agent = $1 for update", [agent])).rows[0].indexed;
-      if (indexed !== chunk.start || !count) return indexed;
-      await sql.query("insert into agent_history_chunks (agent, start, count, bytes, turns, hash) values ($1, $2, $3, $4, $5, $6)", [agent, chunk.start, count, body.length, chunk.turns, hash]);
-      await sql.query("update agent_history_index set indexed = $2 where agent = $1", [agent, chunk.start + count]);
-      return chunk.start + count;
-    });
+  async extent(agent: string): Promise<{ total: number; from: number }> {
+    const read = async () => (await this.db.query<{ history_next: number | null; first: number | null }>(`
+      select m.history_next, (select e.msg_from from pi_durable_entries e where e.session_id = m.session_id and e.msg_from is not null and e.msg_count > 0
+        order by e.msg_from limit 1) as first
+      from pi_durable_metadata m where m.session_id = $1`, [agent])).rows[0];
+    let row = await read();
+    if (!row) return { total: 0, from: 0 };
+    if (row.history_next === null) {
+      const filled = await fillOrdinals(this.db, agent, { dryRun: false, maxEntries: LAZY_FILL_ENTRIES });
+      // A journal with no base marker holds history only a legacy format had: refused, as a load refuses it.
+      if (filled.code === "no_base") throw legacyFormatRefused(agent, undefined, "not_on_pi");
+      if (filled.code !== "placed" && filled.code !== "current") throw new HttpError(503, `The agent's history cannot be read yet (${filled.code}${filled.error ? `: ${filled.error}` : ""})`);
+      row = (await read())!;
+    }
+    const total = row.history_next!;
+    return { total, from: row.first ?? total };
   }
 
-  /** Delete the agent's chunks and index, for an agent being purged. */
+  /** Delete the agent's history index (Pi storage goes with the agent's), for an agent being purged. */
   async remove(agent: string, sql: Sql) {
     await this.storage.removeBlobs(`sessions/${agent}/history/`);
     await sql.query("delete from agent_history_chunks where agent = $1", [agent]);
@@ -136,34 +89,31 @@ export class HistoryIndex {
   }
 
   /**
-   * The page of whole turns ending at `before` (default: the newest message), of at least `limit`
-   * messages where the history has them and about PAGE_BYTES at most. `tail` is what the chunks do
-   * not have yet: the running agent's backlog. `maxBytes` limits the serialized UTF-8 page,
-   * keeping at least one message and allowing a page to start inside a turn.
+   * The page of whole turns ending at `before` (default: the newest message), of at least `limit` messages where the
+   * history has them and about PAGE_BYTES at most. `maxBytes` limits the serialized UTF-8 page, keeping at least one
+   * message and allowing a page to start inside a turn.
    */
-  async page(agent: string, { before, limit, maxBytes }: { before?: number; limit: number; maxBytes?: number }, tail?: Pick<Backlog, "from" | "messages" | "turns">): Promise<HistoryPage> {
-    const indexed = (await this.indexed(agent)) ?? 0;
-    // Chunks below the tail; any the running agent has written since it answered are in its tail too.
-    const below = tail ? tail.from : indexed;
-    const total = tail ? tail.from + tail.messages.length : indexed;
+  async page(agent: string, { before, limit, maxBytes }: { before?: number; limit: number; maxBytes?: number }): Promise<HistoryPage> {
+    const { total, from: placed } = await this.extent(agent);
     const end = Math.min(before ?? total, total);
     const pieces: Piece[] = [];
-    if (tail && end > tail.from) {
-      // One piece per turn, newest first, as chunks are: a page's size is counted a turn at a time.
-      const messages = tail.messages.slice(0, end - tail.from);
-      const turns = boundaries(tail.from, messages, tail.turns);
-      const starts = [...new Set([tail.from, ...turns])];
-      for (let index = starts.length - 1; index >= 0; index--) {
-        const part = messages.slice(starts[index] - tail.from, (starts[index + 1] ?? end) - tail.from);
-        pieces.push({ start: starts[index], count: part.length, bytes: part.reduce((sum, message) => sum + JSON.stringify(message).length, 0), turns: turns.includes(starts[index]) ? [starts[index]] : [], messages: part });
-      }
-    }
-    let cursor = Math.min(end, below);
+    // Rows newest first, then (before the first placed message) index chunks newest first.
+    let cursor = end, chunkCursor = Math.min(end, placed);
     const more = async () => {
-      if (cursor <= 0) return false;
-      const { rows } = await this.db.query("select start, count, bytes, turns, hash from agent_history_chunks where agent = $1 and start < $2 order by start desc limit $3", [agent, cursor, ROWS]);
-      for (const row of rows as Row[]) pieces.push({ ...row, turns: row.turns.filter(turn => turn < end) });
-      cursor = rows.length === ROWS ? rows.at(-1).start : 0;
+      if (cursor > placed) {
+        const rows = (await this.db.query<OrdinalRow>(`select id, msg_from, msg_count, msg_skip, octet_length(record) as bytes from pi_durable_entries
+          where session_id = $1 and msg_from < $2 and msg_count > 0 order by msg_from desc limit $3`, [agent, cursor, ROWS])).rows;
+        const low = rows.length === ROWS ? rows.at(-1)!.msg_from : placed;
+        const turns = await this.turns(agent, low, cursor);
+        for (const row of rows) pieces.push({ start: row.msg_from, count: Math.min(row.msg_count, end - row.msg_from), bytes: Number(row.bytes), row: Number(row.id), skip: row.msg_skip,
+          turns: turns.filter(turn => turn >= row.msg_from && turn < row.msg_from + row.msg_count) });
+        cursor = rows.length === ROWS ? low : placed;
+        if (rows.length) return true;
+      }
+      if (chunkCursor <= 0) return false;
+      const { rows } = await this.db.query<ChunkRow>("select start, count, bytes, turns, hash from agent_history_chunks where agent = $1 and start < $2 order by start desc limit $3", [agent, chunkCursor, 16]);
+      for (const row of rows) pieces.push({ start: row.start, count: Math.min(row.count, placed - row.start), bytes: row.bytes, turns: row.turns.filter(turn => turn < Math.min(end, placed)), chunk: row });
+      chunkCursor = rows.length === 16 ? rows.at(-1)!.start : 0;
       return rows.length > 0;
     };
     // Back through turn starts, newest first, until the page has `limit` messages or would pass its size.
@@ -176,12 +126,12 @@ export class HistoryIndex {
         previous = turn;
         if (end - turn >= limit) { start = turn; break search; }
       }
-      // One turn larger than a page: the page starts inside it, at a chunk.
+      // One turn larger than a page: the page starts inside it, at a row.
       if (bytes > PAGE_BYTES && previous === undefined) { start = piece.start; split = true; break; }
     }
     start ??= previous ?? (pieces.length ? pieces.at(-1)!.start : end);
     const needed = pieces.filter(piece => piece.count > 0 && piece.start + piece.count > start! && piece.start < end);
-    const loaded = await mapLimit(needed, READS, async piece => piece.messages ?? this.read(agent, piece as Row));
+    const loaded = await this.load(agent, needed, PAGE_READ_BYTES);
     const entries: HistoryEntry[] = [];
     needed.forEach((piece, index) => loaded[index].forEach((message, offset) => {
       const at = piece.start + offset;
@@ -208,26 +158,84 @@ export class HistoryIndex {
     return { entries, next: start > 0 ? start : null, total, ...(split ? { split: true as const } : {}) };
   }
 
-  /** Messages in [from, end), in order. The byte cap counts every overlapping chunk read. */
-  async messages(agent: string, end: number, from = 0): Promise<AgentMessage[]> {
-    const { rows } = await this.db.query("select start, count, bytes, turns, hash from agent_history_chunks where agent = $1 and start < $2 and start + count > $3 order by start", [agent, end, from]);
-    const bytes = (rows as Row[]).reduce((sum, row) => sum + row.bytes, 0);
-    if (bytes > FULL_HISTORY_READ_BYTES) throw new HttpError(413, `History is ${bytes} bytes; full-history reads and forks are limited to ${FULL_HISTORY_READ_BYTES} bytes. Read it in pages with limit/before/maxBytes.`);
-    const loaded = await mapLimit(rows as Row[], READS, row => this.read(agent, row));
-    return loaded.flatMap((messages, index) => messages.slice(Math.max(0, from - rows[index].start), end - rows[index].start));
+  /**
+   * Where turns start in [from, to): turn markers whose first message is a person's (a run a continue or a host message
+   * opened is not a page boundary), and the history's first message.
+   */
+  async turns(agent: string, from: number, to: number): Promise<number[]> {
+    if (from >= to) return [];
+    // A turn marker's turn opens at the message placed where it stands; an archive entry opening a turn holds that message.
+    const { rows } = await this.db.query<{ at: number }>(`select distinct t.msg_from as at from pi_durable_entries t
+      where t.session_id = $1 and t.turn_start and t.msg_from >= $2 and t.msg_from < $3 and (t.msg_count > 0 or exists (select 1 from pi_durable_entries m
+        where m.session_id = t.session_id and m.msg_from = t.msg_from and m.msg_count > 0 and m.msg_skip = 0 and ${kindIs(USER_KINDS)}))
+      order by 1`, [agent, from, to]);
+    return [...new Set([...from === 0 ? [0] : [], ...rows.map(row => row.at)])].sort((a, b) => a - b);
   }
 
-  private async read(agent: string, row: Row): Promise<AgentMessage[]> {
-    const stored = await this.storage.readBlob(this.key(agent, row));
-    if (!stored) throw new Error(`History chunk ${row.start} of ${agent} is missing`);
-    return JSON.parse(Buffer.from(stored).toString("utf8"));
+  /** Every turn start in the history: the index chunks' before its first placed message, then by ordinal. */
+  async allTurns(agent: string): Promise<number[]> {
+    const { total, from: placed } = await this.extent(agent);
+    const chunks = placed > 0 ? (await this.db.query<{ turns: number[] }>("select turns from agent_history_chunks where agent = $1 and start < $2 order by start", [agent, placed])).rows.flatMap(row => row.turns.filter(turn => turn < placed)) : [];
+    return [...new Set([...chunks, ...await this.turns(agent, placed, total)])].sort((a, b) => a - b);
   }
-}
 
-/** `work` over `items`, at most `limit` at once; results in order. */
-async function mapLimit<T, R>(items: T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => { while (next < items.length) { const index = next++; results[index] = await work(items[index]); } }));
-  return results;
+  /** The journal cursor of history message `index` (its entry, and where in it); undefined for one archived or kept by a base. */
+  async cursorAt(agent: string, index: number): Promise<{ entryId: number; index: number } | undefined> {
+    const row = (await this.db.query<{ id: string; msg_from: number; msg_count: number; msg_skip: number; record: string }>(`select id, msg_from, msg_count, msg_skip, record from pi_durable_entries
+      where session_id = $1 and msg_from <= $2 and msg_count > 0 order by msg_from desc limit 1`, [agent, index])).rows[0];
+    if (!row || index >= row.msg_from + row.msg_count) return undefined;
+    const entry = JSON.parse(row.record) as EntryRecord;
+    if (entry.kind === MARKER_KIND || entry.kind === ARCHIVE_KIND) return undefined;
+    const position = historyPositions(entry)[row.msg_skip + index - row.msg_from];
+    return position === undefined ? undefined : { entryId: Number(row.id), index: position };
+  }
+
+  /**
+   * The history's messages in [from, to) (to: its end), in order. Every stored byte they take is counted before any is
+   * read: past `limit` the read is refused (413).
+   */
+  async messages(agent: string, from = 0, to?: number, limit = FULL_HISTORY_READ_BYTES): Promise<AgentMessage[]> {
+    const { total, from: placed } = await this.extent(agent);
+    const end = Math.min(to ?? total, total);
+    if (from >= end) return [];
+    const pieces: Piece[] = [];
+    if (from < placed) {
+      const { rows } = await this.db.query<ChunkRow>("select start, count, bytes, turns, hash from agent_history_chunks where agent = $1 and start < $2 and start + count > $3 order by start", [agent, Math.min(end, placed), from]);
+      for (const row of rows) pieces.push({ start: row.start, count: Math.min(row.count, placed - row.start), bytes: row.bytes, turns: [], chunk: row });
+      const covered = pieces.length ? pieces.at(-1)!.start + pieces.at(-1)!.count : from;
+      if ((pieces[0]?.start ?? from) > from || covered < Math.min(end, placed)) throw new Error(`The history index of ${agent} does not hold messages ${from} to ${Math.min(end, placed)}`);
+    }
+    if (end > placed) {
+      const { rows } = await this.db.query<OrdinalRow>(`select id, msg_from, msg_count, msg_skip, octet_length(record) as bytes from pi_durable_entries
+        where session_id = $1 and msg_count > 0 and msg_from < $2 and msg_from + msg_count > $3 order by msg_from`, [agent, end, Math.max(from, placed)]);
+      for (const row of rows) pieces.push({ start: row.msg_from, count: row.msg_count, bytes: Number(row.bytes), turns: [], row: Number(row.id), skip: row.msg_skip });
+    }
+    const loaded = await this.load(agent, pieces, limit);
+    const messages: AgentMessage[] = [];
+    pieces.forEach((piece, index) => loaded[index].forEach((message, offset) => {
+      const at = piece.start + offset;
+      if (at >= from && at < end) messages.push(message);
+    }));
+    if (messages.length !== end - from) throw new Error(`The history of ${agent} holds ${messages.length} of messages ${from} to ${end}`);
+    return messages;
+  }
+
+  /** Each piece's messages: rows read in one statement, chunks from Storage; refused (413) past `limit` stored bytes. */
+  private async load(agent: string, pieces: Piece[], limit: number): Promise<AgentMessage[][]> {
+    const bytes = pieces.reduce((sum, piece) => sum + piece.bytes, 0);
+    if (bytes > limit) throw new HttpError(413, `History messages ${pieces[0]?.start} to ${pieces.at(-1) && pieces.at(-1)!.start + pieces.at(-1)!.count} are ${bytes} bytes; one read is limited to ${limit} bytes. Read it in pages with limit/before/maxBytes.`);
+    const ids = pieces.flatMap(piece => piece.row === undefined ? [] : [piece.row]);
+    const records = new Map<number, EntryRecord>();
+    if (ids.length) for (const row of (await this.db.query<{ id: string; record: string }>("select id, record from pi_durable_entries where session_id = $1 and id = any($2::bigint[])", [agent, ids])).rows) records.set(Number(row.id), JSON.parse(row.record));
+    return Promise.all(pieces.map(async piece => {
+      if (piece.chunk) {
+        const stored = await this.storage.readBlob(this.key(agent, piece.chunk));
+        if (!stored) throw new Error(`History chunk ${piece.chunk.start} of ${agent} is missing`);
+        return (JSON.parse(Buffer.from(stored).toString("utf8")) as AgentMessage[]).slice(0, piece.count);
+      }
+      const record = records.get(piece.row!);
+      if (!record) throw new Error(`History entry ${piece.row} of ${agent} is missing`);
+      return rowMessages(record, piece.skip ?? 0, piece.count);
+    }));
+  }
 }

@@ -97,7 +97,7 @@ test("an idle agent's history, state and inputs are read without loading it", { 
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const done = await r.prompt(agent, "hi");
   const owner = async () => (await r.db.query("select node from actor_owners where actor = $1", [agent])).rows[0]?.node ?? null;
-  await until(async () => (await r.db.query("select indexed from agent_history_index where agent = $1", [agent])).rows[0]?.indexed === 2 && await owner() === null, "the idle agent to be released", 20_000);
+  await until(async () => await owner() === null, "the idle agent to be released", 20_000);
   const { token } = (await r.call(`/v1/agents/${agent}/browser-tokens`, { body: {} })).json;
   for (const reader of [undefined, token]) {
     assert.deepEqual((await r.call(`/v1/agents/${agent}/history`, { token: reader })).json.messages.map((message: any) => message.role), ["user", "assistant"]);

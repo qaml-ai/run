@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { safeError } from "../metrics.ts";
-import type { HistoryIndex } from "../history-pages.ts";
 import { END_USER_CREDIT } from "../model-attempt.ts";
 import { creditError, DEFAULT_BUCKET, MICROS, type CreditHold } from "../end-user-credits.ts";
 import { durableEntryMessages } from "../pi-durable/agent.ts";
@@ -28,7 +27,6 @@ import { type Session, type ClientSessionOptions, type UsageRecord, type Refusal
 export type SpendContext = {
   options: ClientSessionOptions;
   sessions: Map<string, Session>;
-  historyIndex: HistoryIndex;
   apiKey(session: Session, provider: string, keyScope: string | undefined): Promise<{ key?: string; platform: boolean }>;
   db: Db;
   supervisor: AgentSupervisor;

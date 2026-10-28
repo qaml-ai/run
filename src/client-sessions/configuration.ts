@@ -17,7 +17,6 @@ import { mcpServerView, type McpServerSpec, type Sources } from "../tool-sources
 import { builtinsInput } from "../builtins.ts";
 import type { AgentIdentity } from "../identity.ts";
 import { validFileRef } from "../files.ts";
-import type { HistoryIndex } from "../history-pages.ts";
 import { safeError, Steps } from "../metrics.ts";
 import { delegateSettings, limitsOnly, startsChildren, type DelegateSettings } from "../multi-agent.ts";
 import { decideInput } from "../decisions.ts";
@@ -35,7 +34,6 @@ export type ConfigurationContext = {
   sessions: Map<string, Session>;
   loading: Map<string, Promise<Session | undefined>>;
   creatingRuns: Set<string>;
-  historyIndex: HistoryIndex;
   eventBlock: number;
   toolsContext: sessionTools.ToolsContext;
   spendContext: spend.SpendContext;
@@ -206,13 +204,11 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
       // exists, so there is never an agent without them (a pin left by a create that failed only keeps chunks stored).
       const refs = [...safeConfig.initialMessages ?? [], ...access.fork?.messages ?? []].flatMap(message => Array.isArray((message as { content?: unknown }).content) ? (message as { content: unknown[] }).content.filter(validFileRef) : []);
       if (refs.length && ctx.options.volumes) await ctx.options.volumes.pin(tenant, id, refs.flatMap(ref => ref.chunks));
-      // A fork's history is in its index and its journal before it exists, written under its claim: the copied history
-      // in its index (again from where a create that failed left it), then its journal, starting after it.
+      // A fork's history is in its journal before it exists, written under its claim: the copied history archived before
+      // its base.
       if (access.fork) await steps.time("history", ctx.seedFork(id, claim, access.fork));
-      // A conditional create: if a concurrent request made this agent first, retry as a load. A new agent's history is
-      // indexed from its first message (a fork's after its copy); beginning its index is idempotent, so it goes alongside.
-      const seeded = access.fork?.messages.length ?? 0;
-      await Promise.all([steps.time("header", ctx.writeHeader(session)), steps.time("index", ctx.historyIndex.begin(id, seeded))]);
+      // A conditional create: if a concurrent request made this agent first, retry as a load.
+      await steps.time("header", ctx.writeHeader(session));
       ctx.sessions.set(id, session);
       created = true;
       settle(session);

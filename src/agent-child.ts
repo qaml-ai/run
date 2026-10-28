@@ -22,7 +22,6 @@ const host = createAgentHost({
   fs: (op, args) => rpc.request("fs", { op, args }),
   codeSlot: signal => codeSlot(rpc, signal),
   lease: () => rpc.request("lease"),
-  history: { indexed: () => rpc.request("history", { op: "indexed" }), write: chunk => rpc.request("history", { op: "write", chunk }) },
   // The legacy log is the supervisor's, read through it.
   legacyLog: { empty: () => rpc.request("legacy-log", { op: "empty" }) },
   piStorage: async () => await rpc.request("pi-storage", { method: "available" }) ? remotePiStorage(request => rpc.request("pi-storage", request)) : undefined,

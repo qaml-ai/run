@@ -75,7 +75,7 @@ async function fixture(t: TestContext) {
     return { host, init, storage, events };
   }
   t.after(async () => {
-    for (const host of hosts.reverse()) await host.dispose(0).catch(() => {});
+    for (const host of hosts.reverse()) await host.dispose().catch(() => {});
     for (const storage of stores) await storage.close(context).catch(() => {});
     faux.unregister();
     await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
@@ -94,7 +94,7 @@ async function fixture(t: TestContext) {
       assert.equal(f.asked(), 2);
       const native = await recoverDurableMessages(first.storage, 1);
       assert.equal(native.filter(item => text(item.message) === "durable final answer").length, 1, "the answer already exists in the authoritative native WAL");
-      await first.host.dispose(0).catch(() => {});
+      await first.host.dispose().catch(() => {});
 
       const second = await f.start({ resume: true });
       // Lost before it was written, the turn is still open: it is finished with its answer. Written, it ended with it.
@@ -108,7 +108,7 @@ async function fixture(t: TestContext) {
       assert.equal(f.asked(), 2, "recovering a committed final response never asks the model again");
       assert.deepEqual(await second.host.handle("prompt", { text: "look it up", requestId: "request-once" }), { messages: 4, error: null, taken: true });
       assert.equal(f.asked(), 2);
-      await second.host.dispose(0);
+      await second.host.dispose();
 
       const third = await f.start({ resume: true });
       assert.deepEqual(await f.history(), history, "a second restart cannot count the native response twice");
@@ -171,7 +171,7 @@ test("a native human wait survives reopen and accepts its answer without project
   assert.equal(suspended.stopped, "input_required");
   assert.deepEqual(f.calls, ["lookup"]);
   assert.equal((await f.history()).filter(message => message.role === "toolResult").length, 0, "temporary native result is not public completed history");
-  await first.host.dispose(0);
+  await first.host.dispose();
   const second = await f.start({ resume: true });
   assert.equal((second.init.resume?.finished ?? second.init.ended?.finished)?.stopped, "input_required");
   assert.deepEqual(f.calls, ["lookup"]);
@@ -183,7 +183,7 @@ test("a native human wait survives reopen and accepts its answer without project
   const before = await f.history();
   assert.equal(before.filter(message => message.role === "toolResult" && message.toolCallId === "native-waiting-call").length, 1);
   assert.doesNotMatch(JSON.stringify(before), /inputRequired/);
-  await second.host.dispose(0);
+  await second.host.dispose();
   await f.start({ resume: true });
   assert.deepEqual(await f.history(), before);
 });
