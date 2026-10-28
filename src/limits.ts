@@ -120,10 +120,16 @@ export const DECISION_LIMITS = Object.freeze({
   stateChars: 64_000, itemChars: 96_000,
   /** A request's JSON body (a batch's states are about 20,000 characters each at most). */
   requestBytes: 2 * 1024 * 1024,
-  /** Provider calls at once: a tenant's on one node, and the node's; past them calls wait, at most `queued` a tenant. */
+  /**
+   * Provider calls at once: a tenant's on one node (by default: a tenant's own, its tier's, override it), and the
+   * node's (AGENT_DECISION_NODE_CONCURRENCY; the outbound pool keeps 64 connections an origin, so more would wait
+   * there); past them calls wait, at most `queued` a tenant. A tenant's queue and characters scale with its concurrency.
+   */
   tenantConcurrent: 16, nodeConcurrent: 64, queued: 1_000,
   /** Characters of state and question held by requests in flight on a node: a tenant's, and all of them (then 429). */
   tenantChars: 8_000_000, nodeChars: 32_000_000,
+  /** A request whose calls waited this long for a slot logs `decision_wait`. */
+  waitLogMs: 250,
   /** Attempts of a call a provider failed for now (rate limited, overloaded, 5xx), backing off from `backoffMs`. */
   attempts: 3, backoffMs: 250,
   /** One provider call (Jev answers in 70–500 ms), and a whole request with its waits and retries. */

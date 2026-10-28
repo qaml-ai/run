@@ -43,8 +43,16 @@ export interface Pricing {
   tiers: UsageTier[];
 }
 
-/** A usage tier: a tenant that has paid at least `paid` in total (net of refunds) may have `busyAgents` agents busy at once. */
-export interface UsageTier { name: string; paid: number; busyAgents: number }
+/**
+ * A usage tier: a tenant that has paid at least `paid` in total (net of refunds) may have `busyAgents` agents busy at once
+ * across the runtime, start `runsPerMinute` runs and create `agentCreatesPerMinute` agents a minute, and run
+ * `codeConcurrency` js_exec executions and `decisionConcurrency` decision calls at once on one node. A field left out
+ * (in AGENT_USAGE_TIERS) is the deployment's default for it.
+ */
+export interface UsageTier { name: string; paid: number; busyAgents: number; runsPerMinute?: number; agentCreatesPerMinute?: number; codeConcurrency?: number; decisionConcurrency?: number }
+/** The per-tenant limits a tier sets besides busyAgents. */
+export const TIER_LIMITS = ["runsPerMinute", "agentCreatesPerMinute", "codeConcurrency", "decisionConcurrency"] as const;
+export type TierLimitName = typeof TIER_LIMITS[number];
 
 export const MICROS = 1_000_000;
 export const micros = (usd: number) => Math.round(usd * MICROS);
@@ -68,11 +76,13 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
   maxStorageBytes: 100e9,
   free: Object.freeze({ hourlySpend: micros(1), maxStorageBytes: 1e9 }),
   tiers: Object.freeze([
-    { name: "Free", paid: 0, busyAgents: 20 },
-    { name: "Tier 1", paid: micros(5), busyAgents: 50 },
-    { name: "Tier 2", paid: micros(50), busyAgents: 100 },
-    { name: "Tier 3", paid: micros(250), busyAgents: 250 },
-    { name: "Tier 4", paid: micros(1000), busyAgents: 1000 },
+    // Busy agents, runs and creates count across the runtime; js_exec and decisions per node, where the node's own caps
+    // (AGENT_CODE_WORKERS_MAX, 16; AGENT_DECISION_NODE_CONCURRENCY, 64) bound them, so the top tiers stop there.
+    { name: "Free", paid: 0, busyAgents: 50, runsPerMinute: 300, agentCreatesPerMinute: 600, codeConcurrency: 4, decisionConcurrency: 16 },
+    { name: "Tier 1", paid: micros(5), busyAgents: 250, runsPerMinute: 1_500, agentCreatesPerMinute: 1_200, codeConcurrency: 8, decisionConcurrency: 32 },
+    { name: "Tier 2", paid: micros(50), busyAgents: 1_000, runsPerMinute: 6_000, agentCreatesPerMinute: 3_000, codeConcurrency: 16, decisionConcurrency: 48 },
+    { name: "Tier 3", paid: micros(250), busyAgents: 4_000, runsPerMinute: 20_000, agentCreatesPerMinute: 6_000, codeConcurrency: 16, decisionConcurrency: 64 },
+    { name: "Tier 4", paid: micros(1000), busyAgents: 10_000, runsPerMinute: 60_000, agentCreatesPerMinute: 12_000, codeConcurrency: 16, decisionConcurrency: 64 },
   ].map(tier => Object.freeze(tier))) as UsageTier[],
 });
 
@@ -134,8 +144,9 @@ export function pricingFromEnvironment(env = process.env): Pricing {
 }
 
 /**
- * AGENT_USAGE_TIERS: a JSON array of `{name, paidUsd, busyAgents}`, by ascending `paidUsd`, the first at 0
- * (a tenant that has paid nothing). Each tier's `busyAgents` is a positive integer.
+ * AGENT_USAGE_TIERS: a JSON array of `{name, paidUsd, busyAgents, runsPerMinute?, agentCreatesPerMinute?,
+ * codeConcurrency?, decisionConcurrency?}`, by ascending `paidUsd`, the first at 0 (a tenant that has paid nothing).
+ * Each limit is a positive integer; one left out is the deployment's default for it.
  */
 export function usageTiers(text: string): UsageTier[] {
   let parsed: unknown;
@@ -145,7 +156,13 @@ export function usageTiers(text: string): UsageTier[] {
     if (!tier || typeof tier !== "object" || typeof tier.name !== "string" || !tier.name.trim() || tier.name.length > 40) throw new Error(`AGENT_USAGE_TIERS[${index}] needs a name (at most 40 characters)`);
     if (typeof tier.paidUsd !== "number" || !Number.isFinite(tier.paidUsd) || tier.paidUsd < 0) throw new Error(`AGENT_USAGE_TIERS[${index}].paidUsd must be a non-negative number of USD`);
     if (!Number.isSafeInteger(tier.busyAgents) || tier.busyAgents < 1) throw new Error(`AGENT_USAGE_TIERS[${index}].busyAgents must be a positive integer`);
-    return { name: tier.name, paid: micros(tier.paidUsd), busyAgents: tier.busyAgents };
+    const limits: Partial<Record<TierLimitName, number>> = {};
+    for (const field of TIER_LIMITS) {
+      if (tier[field] === undefined) continue;
+      if (!Number.isSafeInteger(tier[field]) || tier[field] < 1) throw new Error(`AGENT_USAGE_TIERS[${index}].${field} must be a positive integer, or left out for the default`);
+      limits[field] = tier[field];
+    }
+    return { name: tier.name, paid: micros(tier.paidUsd), busyAgents: tier.busyAgents, ...limits };
   });
   if (tiers[0].paid !== 0) throw new Error("AGENT_USAGE_TIERS must start with a tier at paidUsd 0");
   if (tiers.some((tier, index) => index > 0 && tier.paid <= tiers[index - 1].paid)) throw new Error("AGENT_USAGE_TIERS must be in ascending paidUsd order");

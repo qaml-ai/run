@@ -9,6 +9,8 @@
 #   tenant.sh link-github <tenant> <login>      # console sign-in as that GitHub account (by its numeric id, looked up now) uses this tenant
 #   tenant.sh set-limit <tenant> <n|default>    # busy agents across the fleet for this tenant (default: its usage tier, or AGENT_MAX_AGENTS_PER_TENANT)
 #   tenant.sh set-spend-limit <tenant> <usd|none>  # model spend per UTC month, e.g. 250 or 99.50 (default: none, unlimited)
+#   tenant.sh set-decision-concurrency <tenant> <n|default>  # decision calls at once per node (default: its tier's, or 16; at most AGENT_DECISION_NODE_CONCURRENCY)
+#   tenant.sh set-tier <tenant> <internal|default>  # internal: no tenant-level limits (node caps and spend limits still apply)
 #   tenant.sh clear-engine <tenant>             # removes a js_exec engine pin (codeEngine): QuickJS is gone, a "quickjs" pin stops the runtime loading the file
 #   tenant.sh set-password <tenant> <email>     # console sign-in with this email and a password: read from stdin, else generated into a 0600 file
 #   tenant.sh set-password <tenant> --clear     # no more password sign-in for this tenant
@@ -22,7 +24,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/config.sh"
 aws() { command aws --region "$REGION" "$@"; }
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 command=${1:-}; tenant=${2:-}
 [[ -n "$command" ]] || usage
@@ -64,6 +66,14 @@ elif action == "spend":
     if tenant not in tenants: sys.exit(f"No tenant {tenant}")
     if os.environ["LIMIT"] == "none": tenants[tenant].pop("maxMonthlyCost", None)
     else: tenants[tenant]["maxMonthlyCost"] = float(os.environ["LIMIT"])
+elif action == "decisions":
+    if tenant not in tenants: sys.exit(f"No tenant {tenant}")
+    if os.environ["LIMIT"] == "default": tenants[tenant].pop("decisionConcurrency", None)
+    else: tenants[tenant]["decisionConcurrency"] = int(os.environ["LIMIT"])
+elif action == "tier":
+    if tenant not in tenants: sys.exit(f"No tenant {tenant}")
+    if os.environ["LIMIT"] == "default": tenants[tenant].pop("tier", None)
+    else: tenants[tenant]["tier"] = os.environ["LIMIT"]
 elif action == "engine":
     if tenant not in tenants: sys.exit(f"No tenant {tenant}")
     tenants[tenant].pop("codeEngine", None)
@@ -71,7 +81,7 @@ elif action == "remove":
     if tenants.pop(tenant, None) is None: sys.exit(f"No tenant {tenant}")
 json.dump(data, open(path, "w"))
 PY
-# edit <add|token|key|github|limit|spend|engine|remove>: stdin stays free for the API key.
+# edit <add|token|key|github|limit|spend|decisions|tier|engine|remove>: stdin stays free for the API key.
 edit() { TENANT="$tenant" PROVIDER="${provider:-}" TOKEN_SHA="${token_sha:-}" GITHUB_LOGIN="${login:-}" GITHUB_ID="${github_id:-}" LIMIT="${limit:-}" python3 "$work/edit.py" "$work/tenants.json" "$1"; }
 save() { aws secretsmanager put-secret-value --secret-id "$SECRET_PREFIX/tenants" --secret-string "file://$work/tenants.json" >/dev/null; }
 new_token() {
@@ -96,7 +106,7 @@ reload() {
 case "$command" in
   list)
     python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tenants"]
-for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v["apiKeys"])) or "(none)") + "\tmax agents: " + str(v.get("maxAgents", "default")) + "\tmonthly spend limit: " + ("$%.2f" % v["maxMonthlyCost"] if "maxMonthlyCost" in v else "none") + ("\tcodeEngine: " + str(v["codeEngine"]) + " (remove it: clear-engine)" if "codeEngine" in v else ""))' "$work/tenants.json" ;;
+for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v["apiKeys"])) or "(none)") + "\tmax agents: " + str(v.get("maxAgents", "default")) + "\tmonthly spend limit: " + ("$%.2f" % v["maxMonthlyCost"] if "maxMonthlyCost" in v else "none") + ("\ttier: " + v["tier"] if "tier" in v else "") + ("\tdecisionConcurrency: " + str(v["decisionConcurrency"]) if "decisionConcurrency" in v else "") + ("\tcodeEngine: " + str(v["codeEngine"]) + " (remove it: clear-engine)" if "codeEngine" in v else ""))' "$work/tenants.json" ;;
   add)
     new_token; edit add; save; store_token
     echo "Next: echo -n \"\$KEY\" | $0 set-key $tenant anthropic"
@@ -126,6 +136,18 @@ for id, v in sorted(t.items()): print(id + "\tproviders: " + (", ".join(sorted(v
     edit spend; save
     if [[ "$limit" == none ]]; then echo "$tenant has no monthly spend limit."; else echo "$tenant may spend \$$limit per UTC month on models."; fi
     echo "At the limit, new model runs get 402 and a running turn ends after its current model response."
+    reload ;;
+  set-decision-concurrency)
+    limit=${3:-}
+    [[ "$limit" == default || "$limit" =~ ^[1-9][0-9]{0,2}$ ]] || { echo "Usage: $0 set-decision-concurrency <tenant> <n|default>  (n: 1 to 999)" >&2; exit 2; }
+    edit decisions; save
+    if [[ "$limit" == default ]]; then echo "$tenant makes its tier's decision calls at once per node (16 by default)."; else echo "$tenant may make $limit decision calls at once per node (at most AGENT_DECISION_NODE_CONCURRENCY, 64 by default)."; fi
+    reload ;;
+  set-tier)
+    limit=${3:-}
+    [[ "$limit" == internal || "$limit" == default ]] || { echo "Usage: $0 set-tier <tenant> <internal|default>" >&2; exit 2; }
+    edit tier; save
+    if [[ "$limit" == internal ]]; then echo "$tenant is on the internal tier: no tenant-level limits its entry does not set. Node caps and spend limits still apply."; else echo "$tenant has no tier pin: its limits are its entry's, its usage tier's (prepaid), or the defaults."; fi
     reload ;;
   clear-engine)
     edit engine; save

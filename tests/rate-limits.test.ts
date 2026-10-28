@@ -184,7 +184,9 @@ test("a tenant's window as X-RateLimit-* headers: limit, what is left, and secon
 });
 
 test("creates and runs answer with X-RateLimit-* headers; an upsert that changes nothing is not a create, and gives the same configHash", { timeout: 180_000 }, async t => {
-  const r = await runtime(t, () => ({ content: "ok" }), { AGENT_RATE_LIMIT_FREE_AGENT_CREATES: "3", AGENT_BILLING_ADMINS: "alice" }, { tenants: {
+  // A prepaid tenant's per-minute limits are its usage tier's.
+  const tiers = [{ name: "Free", paidUsd: 0, busyAgents: 20, agentCreatesPerMinute: 3, runsPerMinute: 240 }, { name: "Tier 1", paidUsd: 5, busyAgents: 50, runsPerMinute: 600 }];
+  const r = await runtime(t, () => ({ content: "ok" }), { AGENT_USAGE_TIERS: JSON.stringify(tiers), AGENT_BILLING_ADMINS: "alice" }, { tenants: {
     alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
     bob: { tokenSha256: sha(OTHER_OPERATOR), apiKeys: { openrouter: "fixture-model-key" }, maxRunsPerMinute: 2 },
   } });
@@ -194,10 +196,21 @@ test("creates and runs answer with X-RateLimit-* headers; an upsert that changes
   const upsert = (key: string, body: object, token = carol) => r.call("/v1/agents", { body, token, headers: { "Idempotency-Key": key } });
   await freshWindow(60, 20_000);
 
-  // The default limits: busy agents and runs on free credit, and what buying credit raises them to; creates only against abuse.
+  // The tier's limits: busy agents and runs on free credit, and what buying credit raises them to; creates only against abuse.
   const billing = (await r.call("/v1/billing", { token: carol })).json;
   assert.deepEqual(billing.runsPerMinute, { limit: 240, afterPurchase: 600 });
   assert.deepEqual({ limit: billing.busyAgents.limit, next: billing.busyAgents.next }, { limit: 20, next: { tier: "Tier 1", paid: 5_000_000, limit: 50 } });
+  // GET /v1/limits: the tier, every limit with its source, and the tiers. Tier 1 leaves creates to the default.
+  const limits = (await r.call("/v1/limits", { token: carol })).json;
+  assert.deepEqual(limits.tier, { name: "Free", paid: 0, next: { name: "Tier 1", paid: 5_000_000 } });
+  assert.deepEqual(limits.limits.runsPerMinute, { limit: 240, source: "tier", tier: "Free", paid: 0, next: { tier: "Tier 1", paid: 5_000_000, limit: 600 } });
+  assert.deepEqual(limits.limits.agentCreatesPerMinute, { limit: 3, source: "tier", tier: "Free", paid: 0 });
+  assert.deepEqual({ ...limits.limits.busyAgents, busy: undefined }, { busy: undefined, limit: 20, source: "tier", tier: "Free", paid: 0, next: { tier: "Tier 1", paid: 5_000_000, limit: 50 } });
+  assert.deepEqual(limits.limits.codeConcurrency, { limit: 2, source: "default" }, "a tier without codeConcurrency: free credit's default");
+  assert.deepEqual(limits.limits.decisionConcurrency, { limit: 16, source: "default" });
+  assert.equal(limits.tiers.length, 2);
+  // An admin tenant without a tier has no per-minute limit.
+  assert.deepEqual((await r.call("/v1/limits")).json.limits.runsPerMinute, { limit: null, source: "default" });
   const made = await upsert("triage", { systemPrompt: "Answer yes or no." });
   assert.equal(made.status, 201, made.text);
   assert.match(made.json.configHash, /^[0-9a-f]{64}$/);
@@ -286,7 +299,8 @@ test("ended windows are swept", async () => {
 
 test("the server answers 429 RATE_LIMITED with Retry-After and the limit: per address behind Cloudflare, per tenant for creates and runs", async t => {
   const r = await runtime(t, () => ({ content: "ok" }), {
-    AGENT_TRUST_CF_CONNECTING_IP: "true", AGENT_RATE_LIMIT_API_PER_IP: "4", AGENT_RATE_LIMIT_FREE_AGENT_CREATES: "2", AGENT_RATE_LIMIT_FREE_RUNS: "2", AGENT_BILLING_ADMINS: "alice",
+    AGENT_TRUST_CF_CONNECTING_IP: "true", AGENT_RATE_LIMIT_API_PER_IP: "4", AGENT_BILLING_ADMINS: "alice",
+    AGENT_USAGE_TIERS: JSON.stringify([{ name: "Free", paidUsd: 0, busyAgents: 20, agentCreatesPerMinute: 2, runsPerMinute: 2 }, { name: "Tier 1", paidUsd: 5, busyAgents: 50, runsPerMinute: 600 }]),
   }, { tenants: {
     alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
     bob: { tokenSha256: sha(OTHER_OPERATOR), apiKeys: { openrouter: "fixture-model-key" }, maxAgentCreatesPerMinute: 3 },
@@ -317,7 +331,7 @@ test("the server answers 429 RATE_LIMITED with Retry-After and the limit: per ad
   assert.equal(refused.status, 429);
   assert.equal(refused.json.code, "RATE_LIMITED");
   assert.deepEqual(refused.json.limit, { name: "agent_creates", scope: "tenant", max: 2, windowSeconds: 60 });
-  assert.match(refused.json.error, /on free credit/);
+  assert.match(refused.json.error, /usage tier Free/);
   // An admin tenant with a limit of its own in the tenants file is held to it.
   for (let i = 0; i < 3; i++) assert.equal((await r.call("/v1/agents", { body: {}, token: OTHER_OPERATOR })).status, 201);
   assert.equal((await r.call("/v1/agents", { body: {}, token: OTHER_OPERATOR })).status, 429);
@@ -329,7 +343,7 @@ test("the server answers 429 RATE_LIMITED with Retry-After and the limit: per ad
   const third = await run(created[1], "run-3");
   assert.equal(third.status, 429);
   assert.deepEqual(third.json.limit, { name: "runs", scope: "tenant", max: 2, windowSeconds: 60 });
-  assert.match(third.json.error, /Too many runs started: at most 2 a minute for this account on free credit/);
+  assert.match(third.json.error, /Too many runs started: at most 2 a minute for this account \(usage tier Free; \$5 more of credit unlocks Tier 1: 600 a minute\)/);
   // The operator raises this self-serve tenant's run limit (tenants.limits); null returns it to the plan's.
   const raised = await r.call("/v1/tenants/carol/limits", { method: "PUT", body: { runsPerMinute: 4 } });
   assert.deepEqual(raised.json, { tenant: "carol", limits: { runsPerMinute: 4 } });
@@ -337,6 +351,28 @@ test("the server answers 429 RATE_LIMITED with Retry-After and the limit: per ad
   assert.deepEqual((await run(created[1], "run-5")).json.limit, { name: "runs", scope: "tenant", max: 4, windowSeconds: 60 });
   assert.deepEqual((await r.call("/v1/tenants/carol/limits", { method: "PUT", body: { runsPerMinute: null, agentCreatesPerMinute: 50 } })).json, { tenant: "carol", limits: { agentCreatesPerMinute: 50 } });
   assert.equal((await r.call("/v1/agents", { body: {}, token: carol })).status, 201);
+
+  // Decision concurrency is set and cleared the same way, and GET /v1/limits says where it comes from.
+  const decisions = await r.call("/v1/tenants/carol/limits", { method: "PUT", body: { decisionConcurrency: 48 } });
+  assert.deepEqual(decisions.json, { tenant: "carol", limits: { agentCreatesPerMinute: 50, decisionConcurrency: 48 } });
+  assert.deepEqual((await r.call("/v1/limits", { token: carol })).json.limits.decisionConcurrency, { limit: 48, source: "tenant" });
+  assert.deepEqual((await r.call("/v1/tenants/carol/limits", { method: "PUT", body: { decisionConcurrency: 500 } })).json.limits.decisionConcurrency, 500);
+  assert.deepEqual((await r.call("/v1/limits", { token: carol })).json.limits.decisionConcurrency, { limit: 64, source: "tenant" }, "at most the node's");
+  assert.deepEqual((await r.call("/v1/tenants/carol/limits", { method: "PUT", body: { decisionConcurrency: null } })).json.limits, { agentCreatesPerMinute: 50 });
+  assert.deepEqual((await r.call("/v1/limits", { token: carol })).json.limits.decisionConcurrency, { limit: 16, source: "default" });
+  assert.equal((await r.call("/v1/tenants/carol/limits", { method: "PUT", body: { decisionConcurrency: 0 } })).status, 400);
+  // An admin tenant's is in the tenants file.
+  assert.equal((await r.call("/v1/tenants/bob/limits", { method: "PUT", body: { decisionConcurrency: 48 } })).status, 409);
+});
+
+test("the tenants file takes decisionConcurrency and tier internal, and refuses anything else", async () => {
+  const file = (entry: Record<string, unknown>) => new Tenants({ read: async () => JSON.stringify({ tenants: { bots: { tokenSha256: "c".repeat(64), ...entry } } }) });
+  const ok = file({ decisionConcurrency: 48, tier: "internal" });
+  await ok.reload();
+  assert.equal(ok.decisionConcurrency("bots"), 48);
+  assert.equal(ok.internal("bots"), true);
+  await assert.rejects(file({ decisionConcurrency: 0 }).reload(), /invalid decisionConcurrency/);
+  await assert.rejects(file({ tier: "gold" }).reload(), /invalid tier/);
 });
 
 test("an admin tenant's traffic (camelAI's servers behind a few Cloudflare egress addresses, its users' browser tokens) is never rate limited", async t => {

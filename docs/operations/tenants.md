@@ -85,15 +85,27 @@ in [Configuration](configuration.md), with their defaults in [Limits](../referen
 - `maxWatchers`, `maxDiscordServers`, `maxVoiceSessions` and `maxStorageGb`;
 - `maxAgentCreatesPerMinute` and `maxRunsPerMinute`;
 - `maxRunResponses` and `maxRunSeconds`;
-- `codeCpuMs`, `codeMaxTimeoutMs` and `codeConcurrency`.
+- `codeCpuMs`, `codeMaxTimeoutMs` and `codeConcurrency`;
+- `decisionConcurrency`: decision calls at once on a node (default 16, or the tier's), at most
+  `AGENT_DECISION_NODE_CONCURRENCY` (64). The tenant's queue (1,000) and in-flight characters (8 million) scale
+  up with it in proportion, the characters at most the node's 32 million;
+- `tier: "internal"`: the operator's own applications. No busy-agent, per-minute, js_exec or decision limit of
+  the tenant's own, unless a field of its entry sets one. A node's caps (agents hosted, js_exec workers, decision
+  calls, in-flight characters, memory, request bodies) and spend limits still apply.
 
-`tenant.sh` sets only `maxAgents` and `maxMonthlyCost`. For the others, edit the secret's JSON: get it, change the
-entry, and put it back with `put-secret-value`, as the script does.
+A limit is the first of: the entry's field (or a self-serve tenant's `limits`), none on the internal tier, the
+[usage tier](../reference/limits.md#usage-tiers)'s for a prepaid tenant, else the deployment's default. An unbilled
+admin tenant keeps the defaults it had: no rate or js_exec limit, `AGENT_MAX_AGENTS_PER_TENANT` busy agents, 16
+decision calls. `GET /v1/limits` shows a tenant every limit and where it comes from.
+
+`tenant.sh` sets `maxAgents`, `maxMonthlyCost`, `decisionConcurrency` (`set-decision-concurrency`) and `tier`
+(`set-tier`). For the others, edit the secret's JSON: get it, change the entry, and put it back with
+`put-secret-value`, as the script does.
 
 A **self-serve** tenant's limits are set through the API instead, by a billing-admin operator token:
 `PUT /v1/tenants/{id}/limits`. It takes `{maxBusyAgents, maxStorageGb, agentCreatesPerMinute, runsPerMinute,
-maxRunResponses, maxRunSeconds, codeCpuMs, codeMaxTimeoutMs, codeConcurrency}`, and null returns a limit to its plan's.
-For a tenant in the tenants file it answers 409: set those in the file.
+maxRunResponses, maxRunSeconds, codeCpuMs, codeMaxTimeoutMs, codeConcurrency, decisionConcurrency}`, and null returns
+a limit to its tier's. For a tenant in the tenants file it answers 409: set those in the file.
 
 ## Billing and keys
 

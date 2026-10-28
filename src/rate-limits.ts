@@ -164,6 +164,11 @@ export interface RateLimitOptions {
   /** The per-minute limit set for the tenant (an admin tenant's entry, or a self-serve tenant's `tenants.limits`), over the default. */
   override?: (tenant: string, limit: "agentCreates" | "runs") => number | undefined | Promise<number | undefined>;
   /**
+   * The tenant's usage tier's limit, after an override: null for none (the internal tier), the tier's (a prepaid
+   * tenant's, with the next tier's), else undefined for the default (`free`, `exempt` and the config).
+   */
+  tier?: (tenant: string, limit: "agentCreates" | "runs") => Promise<{ limit: number; tier: string; paid: number; next?: { tier: string; paid: number; limit: number } } | null | undefined>;
+  /**
    * Whether a tenant is exempt from the per-tenant limits unless an override sets one: admin tenants (the tenants file's,
    * such as the operator's own applications), whose traffic is trusted and must never be throttled by default.
    */
@@ -292,27 +297,34 @@ export class RateLimits {
   }
 
   /**
-   * A tenant's per-minute limit of `limit` (none: undefined), whether it is free credit's, and what buying credit would
-   * raise it to (`paid`, when that is more).
+   * A tenant's per-minute limit of `limit` (none: undefined), where it comes from (`source`; with `tier`, the tier and
+   * the next one up), whether it is free credit's, and what buying credit would raise it to (`paid`, when that is more).
    */
-  async tenantLimit(tenant: string, limit: "agentCreates" | "runs"): Promise<{ max: number; free: boolean; paid?: number } | undefined> {
+  async tenantLimit(tenant: string, limit: "agentCreates" | "runs"): Promise<{ max: number; source: "tenant" | "tier" | "default"; free: boolean; paid?: number; tier?: { name: string; paid: number; next?: { tier: string; paid: number; limit: number } } } | undefined> {
     const own = await this.options.override?.(tenant, limit);
-    if (own === undefined && this.options.exempt?.(tenant)) return undefined;
-    const free = own === undefined && await this.options.free(tenant);
-    const max = own ?? (free ? this.config[limit === "runs" ? "freeRuns" : "freeAgentCreates"] : this.config[limit]);
+    if (own !== undefined) return own ? { max: own, source: "tenant", free: false } : undefined;
+    const tier = await this.options.tier?.(tenant, limit);
+    if (tier === null) return undefined;
+    if (tier) return { max: tier.limit, source: "tier", free: false, tier: { name: tier.tier, paid: tier.paid, ...(tier.next ? { next: tier.next } : {}) } };
+    if (this.options.exempt?.(tenant)) return undefined;
+    const free = await this.options.free(tenant);
+    const max = free ? this.config[limit === "runs" ? "freeRuns" : "freeAgentCreates"] : this.config[limit];
     if (!max) return;
     const paid = this.config[limit];
-    return { max, free, ...(free && (!paid || paid > max) ? { paid } : {}) };
+    return { max, source: "default", free, ...(free && (!paid || paid > max) ? { paid } : {}) };
   }
 
   private async perTenant(tenant: string, limit: "agentCreates" | "runs", name: string, what: string, counted: boolean): Promise<RateLimitState | undefined> {
     const applies = await this.tenantLimit(tenant, limit);
     if (!applies) return;
-    const { max, free, paid } = applies;
-    // On free credit, what buying credit unlocks; a create limit is only against abuse.
-    const upgrade = paid !== undefined ? `; buying credit raises it to ${paid ? `${paid} a minute` : "no limit"}` : "";
-    const message = limit === "runs" ? `Too many ${what}: at most ${max} a minute for this account${free ? ` on free credit${upgrade}` : ""}`
-      : `Too many ${what}: at most ${max} a minute for this account (a limit against abuse${free ? `, on free credit${upgrade}` : ""}). Upsert an agent you have instead of making new ones`;
+    const { max, free, paid, tier } = applies;
+    // On free credit, what buying credit unlocks; on a tier, the next tier's; a create limit is only against abuse.
+    const dollars = (amount: number) => `$${(amount / 1_000_000).toFixed(2).replace(/\.00$/, "")}`;
+    const upgrade = paid !== undefined ? `; buying credit raises it to ${paid ? `${paid} a minute` : "no limit"}`
+      : tier?.next ? `; ${dollars(Math.max(0, tier.next.paid - tier.paid))} more of credit unlocks ${tier.next.tier}: ${tier.next.limit} a minute` : "";
+    const why = tier ? ` (usage tier ${tier.name}${upgrade})` : free ? ` on free credit${upgrade}` : "";
+    const message = limit === "runs" ? `Too many ${what}: at most ${max} a minute for this account${why}`
+      : `Too many ${what}: at most ${max} a minute for this account (a limit against abuse${tier ? `; usage tier ${tier.name}${upgrade}` : free ? `, on free credit${upgrade}` : ""}). Upsert an agent you have instead of making new ones`;
     const key = `${name}:${tenant}`, windowMs = 60_000, now = this.now();
     // Only this tenant's own counter is read: its key is the tenant's, never another's.
     const row = counted ? await this.counted(this.options.db, key, { name, scope: "tenant", max, windowSeconds: 60 }, message)

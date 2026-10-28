@@ -21,8 +21,8 @@ wait out `Retry-After` and retry. `GET /v1/billing` has the account's run limit
 | `password_failures`: failed email and password sign-ins (an unknown address counts as a wrong password) | email address, and client address | 10 per 15 minutes per address; 20 per 15 minutes per client address. Past either, sign-in answers 429, even with the right password, until the window turns over |
 | `email_requests`: requests that mail a link (email sign-up, password reset, adding a password), where the runtime has account mail | client address | 10 an hour |
 | `emails`: those mails to one address, whether or not it has an account | email address | 5 a UTC day |
-| `agent_creates`: `POST /v1/agents` (an upsert that changes its agent too) and forks (`POST /v1/agents/:id/fork`) | account | 600 a minute, against abuse only: making agents costs almost nothing. Design around [busy agents](#usage-tiers) instead |
-| `runs`: runs started (prompt, continue, execute), however sent: REST, SDKs, MCP, schedules, channels | account | 600 a minute; 240 on free credit (the 429 says buying credit raises it) |
+| `agent_creates`: `POST /v1/agents` (an upsert that changes its agent too) and forks (`POST /v1/agents/:id/fork`) | account | by [usage tier](#usage-tiers): 600 a minute on Free, up to 12,000; against abuse only: making agents costs almost nothing. Design around [busy agents](#usage-tiers) instead |
+| `runs`: runs started (prompt, continue, execute), however sent: REST, SDKs, MCP, schedules, channels | account | by [usage tier](#usage-tiers): 300 a minute on Free, up to 60,000 (the 429 says what the next tier raises it to) |
 
 - A client address is the caller's IP address; an IPv6 address counts with the
   rest of its `/64`. The runtime's own calls (hosted MCP tools calling the API)
@@ -48,9 +48,10 @@ wait out `Retry-After` and retry. `GET /v1/billing` has the account's run limit
   and neither does a retried request. A create with a first `prompt` carries
   the create's.
 - Admin tenants (the operator's own, from its tenants file) are not rate
-  limited: neither their account limits, nor `api_requests` for requests made
-  with their tokens, browser tokens or console sessions. An admin tenant's
-  `maxAgentCreatesPerMinute` and `maxRunsPerMinute` set limits for it anyway.
+  limited unless prepaid (then by their tier): neither their account limits,
+  nor `api_requests` for requests made with their tokens, browser tokens or
+  console sessions. An admin tenant's `maxAgentCreatesPerMinute` and
+  `maxRunsPerMinute` set limits for it anyway.
 - Operators set every value (see [Configuration](../operations/configuration.md)),
   and a self-serve account's own with `PUT /v1/tenants/{id}/limits`
   `{agentCreatesPerMinute, runsPerMinute}` (see [Billing](../operations/billing.md)). A self-hosted runtime has no per-address limits unless it
@@ -76,30 +77,44 @@ wait out `Retry-After` and retry. `GET /v1/billing` has the account's run limit
 
 ### Usage tiers
 
-An account's tier comes from what it has paid for credit in total, net of refunds.
-Starting credit and other grants do not count. A payment moves the account up as soon as it lands.
+An account's tier sets its per-account limits. The tier comes from what it has paid for credit in
+total, net of refunds. Starting credit and other grants do not count. A payment moves the account up
+as soon as it lands: the next run, create, js_exec execution or decision has the new limits.
 
-| Tier | Paid in total | Agents busy at once |
-| --- | --- | --- |
-| Free | nothing yet | 20 |
-| Tier 1 | $5 | 50 |
-| Tier 2 | $50 | 100 |
-| Tier 3 | $250 | 250 |
-| Tier 4 | $1,000 | 1,000 |
+| Tier | Paid in total | Agents busy at once | Runs a minute | Agent creates a minute | js_exec at once, per node | Decision calls at once, per node |
+| --- | --- | --- | --- | --- | --- | --- |
+| Free | nothing yet | 50 | 300 | 600 | 4 | 16 |
+| Tier 1 | $5 | 250 | 1,500 | 1,200 | 8 | 32 |
+| Tier 2 | $50 | 1,000 | 6,000 | 3,000 | 16 | 48 |
+| Tier 3 | $250 | 4,000 | 20,000 | 6,000 | 16 | 64 |
+| Tier 4 | $1,000 | 10,000 | 60,000 | 12,000 | 16 | 64 |
 
-`GET /v1/billing` has `busyAgents`: the limit, how many are busy now, the tier, and the next one
-(`next: {tier, paid, limit}`); the console's Billing page shows the same. An account whose limit
-the operator set (the tenants file's `maxAgents`, or `maxBusyAgents` with
-`PUT /v1/tenants/{id}/limits`) has `source: "tenant"` and no tier. Self-hosted runtimes set the tiers with
+- Busy agents, runs and creates count across the whole runtime. js_exec executions and decision calls
+  count on each runtime node, which has caps of its own for everyone together (16 js_exec workers and
+  64 decision calls by default): above them a higher limit adds nothing on one node, only across nodes.
+- Your spend limits, and free credit's hourly spending limit, are separate from the tiers.
+- **What you have now:** `GET /v1/limits` has your tier and the next one (`tier: {name, paid, next}`),
+  each limit with where it comes from (`source`: `tier`, `tenant` when the operator set it for your
+  account, `default`) and what the next tier raises it to (`next: {tier, paid, limit}`), and the whole
+  table (`tiers`). `GET /v1/billing` has `busyAgents` and `runsPerMinute` too; the console's Billing
+  page shows them.
+- **Higher limits** than your tier's: ask the operator, who sets them for your account
+  (`PUT /v1/tenants/{id}/limits`, below), or buy credit up to the next tier.
+- The operator's own applications run on the `internal` tier, with no per-account limit (`limit: null`).
+  The nodes' caps still apply to them.
+
+An account whose limit the operator set (the tenants file's `maxAgents`, or `maxBusyAgents` with
+`PUT /v1/tenants/{id}/limits`) has `source: "tenant"` and no tier for that limit. An account not
+billed by the runtime has the deployment's defaults. Self-hosted runtimes set the tiers with
 `AGENT_USAGE_TIERS` ([configuration](../operations/configuration.md)).
 
 At the limit, a run (a prompt, `continue` or `execute`) gets 429 with `Retry-After`:
 
 ```json
 {
-  "error": "This account has 20 agents busy, the most its usage tier (Free) allows; retry when one finishes. $5 more of credit unlocks Tier 1: 50 busy agents (it applies once the account has paid $5 in total).",
+  "error": "This account has 50 agents busy, the most its usage tier (Free) allows; retry when one finishes. $5 more of credit unlocks Tier 1: 250 busy agents (it applies once the account has paid $5 in total).",
   "code": "BUSY_AGENT_LIMIT",
-  "busyAgents": { "busy": 20, "limit": 20, "source": "tier", "tier": "Free", "paid": 0, "next": { "tier": "Tier 1", "paid": 5000000, "limit": 25 } }
+  "busyAgents": { "busy": 50, "limit": 50, "source": "tier", "tier": "Free", "paid": 0, "next": { "tier": "Tier 1", "paid": 5000000, "limit": 250 } }
 }
 ```
 
@@ -202,7 +217,7 @@ See [Images](../guides/images.md).
 | --- | --- |
 | Wall time | 30 s by default, at most 60 s (`timeoutMs`; a longer one is cut to it). Admin tenants may ask for 120 s; an operator can set a tenant's maximum up to 120 s (`codeMaxTimeoutMs`) |
 | CPU time | 2 s of keeping its thread busy, TypeScript stripping included (time waiting on tools does not count). Enforced from outside the guest: an execution past it is stopped whatever it is doing, with `Codemode CPU limit exceeded`. An operator can set a tenant's up to 30 s (`codeCpuMs`) |
-| Executions at once | 4 per tenant on each node (2 on free credit; `codeConcurrency`), all such tenants together within what the node's memory affords (6 on a 2 GB node). Executions past it wait their turn, tenants in rotation, within their own `timeoutMs`. Admin tenants are not limited unless their entry sets it |
+| Executions at once | by [usage tier](#usage-tiers) per account on each node (4 on Free, 8 on Tier 1, 16 from Tier 2; `codeConcurrency`), all such tenants together within what the node's memory affords (6 on a 2 GB node). Executions past it wait their turn, tenants in rotation, within their own `timeoutMs`. Admin tenants are not limited unless their entry sets it or they are prepaid |
 | Memory | a 128 MiB V8 heap (reaching it ends the execution) and 128 MiB of ArrayBuffers (past it, a `RangeError`) |
 | Output | 32,000 characters by default, at most 128,000 (`maxOutputCharacters`); 1,024 chunks |
 | Tool calls | 256 per script, at most 32 in flight |

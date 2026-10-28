@@ -5,11 +5,11 @@ import type { Ownership } from "./ownership.ts";
 
 /**
  * How many agents a tenant may have busy at once, across the fleet, and why: its entry's own
- * `maxAgents` (`tenant`), the usage tier of a prepaid tenant (`tier`, with the next tier up), or the
- * deployment's AGENT_MAX_AGENTS_PER_TENANT (`default`).
+ * `maxAgents` (`tenant`), none on the internal tier (`internal`, limit Infinity), the usage tier of a prepaid tenant
+ * (`tier`, with the next tier up), or the deployment's AGENT_MAX_AGENTS_PER_TENANT (`default`).
  */
 export type BusyLimit =
-  | { limit: number; source: "tenant" | "default" }
+  | { limit: number; source: "tenant" | "internal" | "default" }
   | { limit: number; source: "tier"; tier: string; paid: number; next?: { tier: string; paid: number; limit: number } };
 
 /** The 429 for a tenant at its busy-agent limit: it names the limit, its tier, and what buying credit unlocks next. */

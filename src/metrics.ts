@@ -476,6 +476,27 @@ export function recordDaveRoster(strangers: number) {
   emit("voice_dave_roster", { dimensions: {}, rollups: [[]], metrics: { VoiceDaveRosterDrops: 1 }, properties: { strangers } });
 }
 
+/**
+ * A decisions request some of whose calls waited for a slot past DECISION_LIMITS.waitLogMs (decisions.ts): how many,
+ * the longest wait and the node gate's part of it, the deepest queue one saw, and the tenant's slots. One line a
+ * request; never a state or an answer.
+ */
+export function recordDecisionWait(wait: { tenant: string; items: number; waitMs: number; nodeWaitMs: number; queued: number; slots: number }) {
+  emit("decision_wait", {
+    dimensions: { Tenant: wait.tenant }, rollups: [[], ["Tenant"]],
+    metrics: { DecisionsWaited: wait.items, DecisionWaitMs: [wait.waitMs, "Milliseconds"], DecisionQueued: wait.queued },
+    properties: { nodeWaitMs: wait.nodeWaitMs, slots: wait.slots },
+  });
+}
+
+/** Decision calls in flight and waiting on this node for one tenant with calls here, and its slots: sampled with node_load. */
+export function decisionLoadLine(load: { tenant: string; active: number; waiting: number; slots: number }, service = metricService) {
+  return metricLine("decision_load", {
+    dimensions: { Tenant: load.tenant }, rollups: [["Tenant"]],
+    metrics: { DecisionsActive: load.active, DecisionsWaiting: load.waiting, DecisionSlots: load.slots },
+  }, service);
+}
+
 export function recordWatchRefused(scope: "agent" | "tenant" | "node", tenant: string) {
   emit("watch_refused", { dimensions: { Scope: scope, Tenant: tenant }, rollups: [[], ["Scope"], ["Tenant"]], metrics: { WatchersRefused: 1 } });
 }

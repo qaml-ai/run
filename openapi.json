@@ -7099,17 +7099,21 @@
             "description": "Agents busy now across the runtime: each has a run open (running or queued)"
           },
           "limit": {
-            "type": "integer",
-            "description": "How many may be busy at once; a run past it gets 429 BUSY_AGENT_LIMIT"
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "How many may be busy at once; a run past it gets 429 BUSY_AGENT_LIMIT. null: no limit (the internal tier)"
           },
           "source": {
             "type": "string",
             "enum": [
               "tier",
               "tenant",
+              "internal",
               "default"
             ],
-            "description": "tier: the usage tier's (prepaid tenants, by what they have paid); tenant: set for this tenant by the operator; default: the deployment's"
+            "description": "tier: the usage tier's (prepaid tenants, by what they have paid); tenant: set for this tenant by the operator; internal: the operator's own applications, no limit; default: the deployment's"
           },
           "tier": {
             "type": "string",
@@ -7185,6 +7189,384 @@
           "amount",
           "metadata",
           "createdAt"
+        ]
+      },
+      "AccountLimits": {
+        "type": "object",
+        "properties": {
+          "tier": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "example": "Tier 1"
+              },
+              "paid": {
+                "type": "integer",
+                "description": "Paid for credit in total, net of refunds, in micro-USD (1 USD = 1000000)"
+              },
+              "next": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "paid": {
+                    "type": "integer",
+                    "description": "Paid in total that reaches it, in micro-USD (1 USD = 1000000)"
+                  }
+                },
+                "required": [
+                  "name",
+                  "paid"
+                ],
+                "description": "The next tier up, if any"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "description": "The account's usage tier: by what it has paid for prepaid accounts, `internal` for the operator's own applications; null when no tier applies"
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "busyAgents": {
+                "type": "object",
+                "properties": {
+                  "limit": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "description": "The limit; null: none"
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "tier",
+                      "tenant",
+                      "internal",
+                      "default"
+                    ],
+                    "description": "tier: the usage tier's; tenant: set for this account by the operator; internal: the operator's own applications, no limit; default: the deployment's"
+                  },
+                  "tier": {
+                    "type": "string",
+                    "description": "The usage tier, with source tier"
+                  },
+                  "paid": {
+                    "type": "integer",
+                    "description": "What the account has paid for credit, net of refunds; with source tier, in micro-USD (1 USD = 1000000)"
+                  },
+                  "next": {
+                    "type": "object",
+                    "properties": {
+                      "tier": {
+                        "type": "string"
+                      },
+                      "paid": {
+                        "type": "integer",
+                        "description": "Paid in total that reaches it, in micro-USD (1 USD = 1000000)"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "tier",
+                      "paid",
+                      "limit"
+                    ],
+                    "description": "The next tier up and its limit, if any"
+                  },
+                  "busy": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "limit",
+                  "source"
+                ],
+                "description": "Agents busy at once across the runtime"
+              },
+              "runsPerMinute": {
+                "type": "object",
+                "properties": {
+                  "limit": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "description": "The limit; null: none"
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "tier",
+                      "tenant",
+                      "internal",
+                      "default"
+                    ],
+                    "description": "tier: the usage tier's; tenant: set for this account by the operator; internal: the operator's own applications, no limit; default: the deployment's"
+                  },
+                  "tier": {
+                    "type": "string",
+                    "description": "The usage tier, with source tier"
+                  },
+                  "paid": {
+                    "type": "integer",
+                    "description": "What the account has paid for credit, net of refunds; with source tier, in micro-USD (1 USD = 1000000)"
+                  },
+                  "next": {
+                    "type": "object",
+                    "properties": {
+                      "tier": {
+                        "type": "string"
+                      },
+                      "paid": {
+                        "type": "integer",
+                        "description": "Paid in total that reaches it, in micro-USD (1 USD = 1000000)"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "tier",
+                      "paid",
+                      "limit"
+                    ],
+                    "description": "The next tier up and its limit, if any"
+                  }
+                },
+                "required": [
+                  "limit",
+                  "source"
+                ],
+                "description": "Runs started a minute"
+              },
+              "agentCreatesPerMinute": {
+                "type": "object",
+                "properties": {
+                  "limit": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "description": "The limit; null: none"
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "tier",
+                      "tenant",
+                      "internal",
+                      "default"
+                    ],
+                    "description": "tier: the usage tier's; tenant: set for this account by the operator; internal: the operator's own applications, no limit; default: the deployment's"
+                  },
+                  "tier": {
+                    "type": "string",
+                    "description": "The usage tier, with source tier"
+                  },
+                  "paid": {
+                    "type": "integer",
+                    "description": "What the account has paid for credit, net of refunds; with source tier, in micro-USD (1 USD = 1000000)"
+                  },
+                  "next": {
+                    "type": "object",
+                    "properties": {
+                      "tier": {
+                        "type": "string"
+                      },
+                      "paid": {
+                        "type": "integer",
+                        "description": "Paid in total that reaches it, in micro-USD (1 USD = 1000000)"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "tier",
+                      "paid",
+                      "limit"
+                    ],
+                    "description": "The next tier up and its limit, if any"
+                  }
+                },
+                "required": [
+                  "limit",
+                  "source"
+                ],
+                "description": "Agents created a minute"
+              },
+              "codeConcurrency": {
+                "type": "object",
+                "properties": {
+                  "limit": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "description": "The limit; null: none"
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "tier",
+                      "tenant",
+                      "internal",
+                      "default"
+                    ],
+                    "description": "tier: the usage tier's; tenant: set for this account by the operator; internal: the operator's own applications, no limit; default: the deployment's"
+                  },
+                  "tier": {
+                    "type": "string",
+                    "description": "The usage tier, with source tier"
+                  },
+                  "paid": {
+                    "type": "integer",
+                    "description": "What the account has paid for credit, net of refunds; with source tier, in micro-USD (1 USD = 1000000)"
+                  },
+                  "next": {
+                    "type": "object",
+                    "properties": {
+                      "tier": {
+                        "type": "string"
+                      },
+                      "paid": {
+                        "type": "integer",
+                        "description": "Paid in total that reaches it, in micro-USD (1 USD = 1000000)"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "tier",
+                      "paid",
+                      "limit"
+                    ],
+                    "description": "The next tier up and its limit, if any"
+                  }
+                },
+                "required": [
+                  "limit",
+                  "source"
+                ],
+                "description": "js_exec executions at once on one node"
+              },
+              "decisionConcurrency": {
+                "type": "object",
+                "properties": {
+                  "limit": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "description": "The limit; null: none"
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "tier",
+                      "tenant",
+                      "internal",
+                      "default"
+                    ],
+                    "description": "tier: the usage tier's; tenant: set for this account by the operator; internal: the operator's own applications, no limit; default: the deployment's"
+                  },
+                  "tier": {
+                    "type": "string",
+                    "description": "The usage tier, with source tier"
+                  },
+                  "paid": {
+                    "type": "integer",
+                    "description": "What the account has paid for credit, net of refunds; with source tier, in micro-USD (1 USD = 1000000)"
+                  },
+                  "next": {
+                    "type": "object",
+                    "properties": {
+                      "tier": {
+                        "type": "string"
+                      },
+                      "paid": {
+                        "type": "integer",
+                        "description": "Paid in total that reaches it, in micro-USD (1 USD = 1000000)"
+                      },
+                      "limit": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "tier",
+                      "paid",
+                      "limit"
+                    ],
+                    "description": "The next tier up and its limit, if any"
+                  }
+                },
+                "required": [
+                  "limit",
+                  "source"
+                ],
+                "description": "Decision calls at once on one node, within the node's own cap"
+              }
+            },
+            "required": [
+              "busyAgents",
+              "runsPerMinute",
+              "agentCreatesPerMinute",
+              "codeConcurrency",
+              "decisionConcurrency"
+            ]
+          },
+          "tiers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "paid": {
+                  "type": "integer",
+                  "description": "Paid in total that reaches it, in micro-USD (1 USD = 1000000)"
+                },
+                "busyAgents": {
+                  "type": "integer"
+                },
+                "runsPerMinute": {
+                  "type": "integer"
+                },
+                "agentCreatesPerMinute": {
+                  "type": "integer"
+                },
+                "codeConcurrency": {
+                  "type": "integer"
+                },
+                "decisionConcurrency": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "paid",
+                "busyAgents"
+              ]
+            },
+            "description": "Every usage tier, lowest first; a limit left out is the deployment's default"
+          }
+        },
+        "required": [
+          "tier",
+          "limits",
+          "tiers"
         ]
       },
       "Ledger": {
@@ -7512,6 +7894,9 @@
               },
               "codeConcurrency": {
                 "type": "integer"
+              },
+              "decisionConcurrency": {
+                "type": "integer"
               }
             },
             "description": "The limits set for the tenant; those absent are its plan's"
@@ -7604,7 +7989,16 @@
             ],
             "minimum": 1,
             "maximum": 1000,
-            "description": "js_exec executions the tenant may run at once on one node, in place of its plan's (2 on free credit, else 4); null returns to the plan's"
+            "description": "js_exec executions the tenant may run at once on one node, in place of its usage tier's; null returns to the tier's"
+          },
+          "decisionConcurrency": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Decision calls the tenant may make at once on one node, in place of its usage tier's (16 by default), at most the node's (AGENT_DECISION_NODE_CONCURRENCY, 64); its queue and in-flight characters scale with it. null returns to the tier's"
           },
           "codeEngine": {
             "type": "null",
@@ -15450,6 +15844,32 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Billing"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/limits": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "The account's usage tier and every per-account limit, with where each comes from and what the next tier unlocks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountLimits"
                 }
               }
             }
