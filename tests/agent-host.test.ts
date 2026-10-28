@@ -7,6 +7,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, getCurrentSystemMessage, getCurrentTools, getSystemMessageText, type AssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { createAgentHost, type HostIO } from "../src/agent-host.ts";
+import { DurableAgent } from "../src/pi-durable/agent.ts";
 import type { ToolDefinition } from "../src/protocol.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { SystemMessage } from "@earendil-works/pi-ai";
@@ -190,6 +191,35 @@ test("a write that fails leaves memory as the journal has it, and the agent refu
   await host.handle("prompt", { text: "two" }).catch(() => {});
   assert.equal((await host.handle("status", {})).messages, status.messages, "nothing unwritten is held");
   await assert.rejects(host.handle("prompt", { text: "three" }), /Session persistence failed: .*disk full/);
+});
+
+test("a commit observer that throws gives the agent up, and loaded again it has what was committed", async t => {
+  const fake = await setup(t);
+  const { host } = await fake.start();
+  fake.respond(answer("One."));
+  assert.equal((await host.handle("prompt", { text: "one" })).reply, "One.");
+  // Pi detaches an observer that throws: the agent would no longer see what is committed.
+  const prototype = DurableAgent.prototype as any, advance = prototype.advanceCursor;
+  let throws = 1;
+  prototype.advanceCursor = function (this: unknown, ...args: unknown[]) {
+    if (throws-- > 0) throw new Error("observer boom");
+    return advance.apply(this, args);
+  };
+  t.after(() => { prototype.advanceCursor = advance; });
+  const logged: string[] = [], log = console.error;
+  console.error = (line: unknown, ...rest: unknown[]) => { if (typeof line === "string" && line.includes("pi_observer_error")) logged.push(line); else log(line, ...rest); };
+  try {
+    fake.respond(answer("Two."));
+    await host.handle("prompt", { text: "two" }).catch(() => {});
+  } finally { console.error = log; }
+  assert.deepEqual(logged.map(line => JSON.parse(line)), [{ type: "pi_observer_error", error: "Error", message: "observer boom" }]);
+  await assert.rejects(host.handle("prompt", { text: "three" }), /Session persistence failed: .*observer boom/);
+  // Loaded again, the agent reads what Pi committed and runs.
+  const next = await fake.start();
+  fake.respond(answer("Three."));
+  assert.equal((await next.host.handle("prompt", { text: "three" })).reply, "Three.");
+  const texts = (await fake.history()).context.flatMap((message: any) => message.role !== "assistant" ? [] : message.content.filter((part: any) => part.type === "text").map((part: any) => part.text));
+  assert.deepEqual(texts, ["One.", "Two.", "Three."]);
 });
 
 test("the leading system message is the agent's first context, and a change follows it as a system message of its own", async t => {

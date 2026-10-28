@@ -2,12 +2,15 @@
 
 **This deploy cannot be rolled back.** The first session a node on this release touches is stored in formats Pi 1.4.0
 cannot read: `pi.live` version 3, and in-flight `pi.tool` version 3 and `pi.generation` version 2 tasks. A node on the
-release before fails to open such a session (`Document … (pi.live) has newer version 3 than 1`); it writes nothing, and
-the session works again once a node on this release loads it. So if this release misbehaves, roll forward with a fix:
-a rollback (by hand, or ECS's circuit breaker or a deployment alarm) makes every agent that ran on it fail to load
-until the next deploy. During the rolling deploy the same failure can hit an agent that ran on a new node, sat idle
-for 5 minutes (unloaded), and was loaded next by an old node that has not started retiring yet; sessions from the
-release before open on new nodes as usual.
+release before fails to open such a session (`Document … (pi.live) has newer version 3 than 1`), and it works again
+once a node on this release loads it. The old node does write first, though: loading an agent whose turn was still
+open (its node died or handed it off mid-turn), it repairs that turn (retracts a cut-off response, answers lost calls
+as unknown) or closes it in the journal before Pi's open fails, so that turn ends instead of resuming. So if this
+release misbehaves, roll forward with a fix: a rollback (by hand, or ECS's circuit breaker or a deployment alarm)
+makes every agent that ran on it fail to load until the next deploy, and fails the turns that were running. During
+the rolling deploy the same can hit an agent that ran on a new node and was loaded next by an old node that has not
+started retiring yet: one idle for 5 minutes (unloaded; it fails to load), or one whose new node died or drained
+mid-turn (its turn fails); sessions from the release before open on new nodes as usual.
 
 The runtime now runs on Pi built from commit `02a2b2532d8f` of its main branch (2026-10-28) instead of the npm
 release 1.4.0: `vendor/pi/` holds the six packages (`pi-durable`, `pi-ai`, `chord`, `pi-codemode`, `pi-telemetry`,
@@ -28,6 +31,10 @@ What changes with it:
 - **A continue on a context that ends in an answer** asks no model: the run ends with "The conversation has nothing
   to answer" (Pi's `nothing_to_answer`). Continues the runtime makes itself (after a failed or taken-back response, a
   resumed tool round) end in a user message or tool results and are unaffected.
+- **A failed commit observer reloads the agent.** Pi detaches a commit observer that throws (and ends it when the
+  Session fails); the agent's would then stop seeing what is committed and could end a turn on an older answer. Now an
+  error in it is logged (`pi_observer_error`, the error's type and message) and, like a storage failure, the agent is
+  given up (`Session persistence failed`) and loaded again from what was committed.
 - **Streamed progress is stored as before**: Pi now defers storing partial answers and tool output by up to 1 s; the
   runtime sets `persistWithinMs: 0`, so each is stored right after its commit, as on 1.4.0.
 - **Memory**: Pi no longer copies a growing answer or tool-call argument string on every partial commit, nor re-parses

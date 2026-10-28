@@ -13,7 +13,9 @@ npm release, so a fix or change on Pi's main reaches us without waiting for a re
 | `pi-telemetry.tgz` | `@earendil-works/pi-telemetry` | a dependency of pi-durable, pi-ai and chord |
 | `pi-agent-core.tgz` | `@earendil-works/pi-agent-core` | devDependency: we import only its types (`AgentMessage`, `AgentTool`, `StreamFn`) |
 
-`vendor/pi/PI_COMMIT` names the commit, its date, and the upstream changes since the commit vendored before it.
+Each package's version is Pi's with the commit appended (`1.4.0-main.02a2b2532d8f`; the script stamps it from the
+next bump on, so the packages vendored first still say `1.4.0`), which tells the lockfile, pi-ai's `User-Agent` and
+telemetry a vendored build from the npm release. `vendor/pi/PI_COMMIT` names the commit, its date, and the upstream changes since the commit vendored before it.
 `vendor/pi/LICENSE` is Pi's MIT notice. `package.json` `overrides` pin every `@earendil-works/*` package, also the ones
 only Pi's packages depend on, to these tarballs, so nothing of Pi comes from npm (`package-lock.json` resolves each to
 `file:vendor/pi/…` with its integrity hash).
@@ -58,9 +60,13 @@ each `defineDoc`/`defineTask` in `packages/durable/src/harness/` with the commit
 
 - the deploy cannot be rolled back: every session a new node touched fails to load on the old code until the new
   code serves it again. Roll forward instead.
-- during the rolling deploy, a session a new node touched and an old node loads next fails that load. Old nodes take
-  new agents only until the new deployment is up (then they retire), and an agent unloads after 5 minutes idle, so
-  this needs a slow rollout. An ECS rollback (circuit breaker or deployment alarm) turns it into an outage for those
-  sessions until the next deploy.
+- the old code writes before it refuses: loading an agent whose turn is open (its node died or handed it off
+  mid-turn), the host repairs or closes that turn in the journal (`src/agent-host.ts`, before `Harness.open`), then
+  Pi's open fails. That turn ends instead of resuming on the next owner.
+- during the rolling deploy, a session a new node touched and an old node loads next fails that load, and its open
+  turn, if any, fails. Old nodes take new agents only until the new deployment is up (then they retire), and an agent
+  unloads after 5 minutes idle, so it needs a slow rollout or a new node that dies or drains mid-turn. An ECS rollback
+  (circuit breaker or deployment alarm) turns it into an outage for those sessions until the next deploy, and fails
+  their running turns.
 
 Say so in the PR and the release note, and deploy when someone can roll forward at once.
