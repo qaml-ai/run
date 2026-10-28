@@ -5,6 +5,7 @@ import type { Cursor, DocumentId, EntryId, JsonObject, Storage, StorageWrite } f
 import { BASE_ADDRESS, baseWrites, HOST_MESSAGE_KIND, HOST_SYSTEM_KIND, HOST_USER_KIND, JournalHistory, MARKER_KIND, type At, type HistoryBase } from "./history.ts";
 import { recordsHistory, retiredRecords, type RetiredRecord } from "./retired-host.ts";
 import { SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
+import { commitTo } from "./storage.ts";
 
 /** What the agent host writes to its session's journal (`HostJournal.commit`). */
 export type HostRecord =
@@ -103,7 +104,7 @@ export class HostJournal {
       { type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "camel.host.disabled", data: { retired: "journal" } } },
       { type: "document.change", id: found.documentId, content: { version: 1, kind: "base", value: { ...found.value, enabled: false, retired: "journal" } as JsonObject } },
     );
-    await storage.commit(writes, context);
+    await commitTo(storage, writes, context);
     return true;
   }
 
@@ -198,7 +199,7 @@ export class HostJournal {
             writes.push({ type: "entry", value: { id, conversationId, kind: MARKER_KIND, data: json(record.t === "turn" ? { ...record, total } : record) as never } });
           }
         }
-        await this.storage.commit(writes, context);
+        await commitTo(this.storage, writes, context);
         if (written) this.written = written;
       } catch (error) { this.failed = error; throw error; }
       await this.refresh();
@@ -228,7 +229,7 @@ export class HostJournal {
       const base = this.history.settledBase();
       if (!base || base.total - this.history.baseTotal < REBASE_MESSAGES || indexed < base.total) return false;
       const document = await JournalHistory.baseDocument(this.storage);
-      try { await this.storage.commit(baseWrites(await this.storage.mintId<EntryId>(), base, { id: document ?? await this.storage.mintId<DocumentId>(), create: !document }), context); }
+      try { await commitTo(this.storage, baseWrites(await this.storage.mintId<EntryId>(), base, { id: document ?? await this.storage.mintId<DocumentId>(), create: !document }), context); }
       catch (error) { this.failed = error; throw error; }
       return true;
     });
