@@ -60,15 +60,17 @@ async function toolServers(ctx: ToolsContext, session: Session, tools: ToolDefin
     ({ ...server, sources: async () => [{ kind, name: kind, status: "listed", ...extra, tools: await server.tools() }] });
   const multiAgent = childSessions.multiAgentServer(ctx.childrenContext, session, sources);
   const images = spend.imageServer(ctx.spendContext, session, sources);
+  const decisions = spend.decisionServer(ctx.spendContext, session, sources);
   const definition = header.definition;
   // An agent with no tools at all (no js_exec, file tools or tools of any source) has nothing to present a file from: no present_file either.
-  const bare = codeMode === false && fileTools === false && !tools.length && !feature && !multiAgent && !images && !sources;
+  const bare = codeMode === false && fileTools === false && !tools.length && !feature && !multiAgent && !images && !decisions && !sources;
   return [
     ...feature ? [view("channel", feature)] : [],
     { tools: () => defaultExposure(tools), call: call => events.callAttached(ctx.eventContext, session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
     ...volumes && header.mounts?.length && !bare ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(toolContext(ctx, session), name, args, signal)))] : [],
     ...multiAgent ? [multiAgent] : [],
     ...images ? [images] : [],
+    ...decisions ? [decisions] : [],
     ...ctx.options.sources ? [ctx.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: () => session.header.mounts ?? [], onWrite: toolContext(ctx, session).onWrite }, sources)] : [],
   ];
 }

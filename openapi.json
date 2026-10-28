@@ -555,7 +555,7 @@
                   "string",
                   "null"
                 ],
-                "description": "null for a transcription made with POST /v1/transcriptions, or images made with POST /v1/images, which no agent made"
+                "description": "null for a transcription made with POST /v1/transcriptions, images made with POST /v1/images, or decisions made with POST /v1/decisions, which no agent made"
               },
               "requestId": {
                 "type": [
@@ -598,9 +598,10 @@
                   "compaction",
                   "transcription",
                   "image",
-                  "speech"
+                  "speech",
+                  "decision"
                 ],
-                "description": "speech: speech made, by POST /v1/speech (audioSeconds of it; no tokens) or a voice session's realtime brain (its tokens, and audioSeconds); response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)"
+                "description": "decision: questions answered by a decision model (POST /v1/decisions, the decide builtin; decisions of them); speech: speech made, by POST /v1/speech (audioSeconds of it; no tokens) or a voice session's realtime brain (its tokens, and audioSeconds); response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)"
               },
               "input": {
                 "type": "number"
@@ -624,6 +625,10 @@
               "images": {
                 "type": "number",
                 "description": "For images made: how many"
+              },
+              "decisions": {
+                "type": "number",
+                "description": "For decisions: the questions answered"
               },
               "cost": {
                 "type": "object",
@@ -673,7 +678,7 @@
           "created",
           "data"
         ],
-        "description": "A model response's usage and cost, a transcription's, or images'"
+        "description": "A model response's usage and cost, a transcription's, images', or decisions'"
       },
       "Event_voice_session.started": {
         "type": "object",
@@ -3388,7 +3393,7 @@
             "type": "boolean"
           }
         },
-        "description": "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, context_too_large (its stored Pi context range exceeds the runtime byte limit), spend_limit, agent_loop_limit (a sub-agent's notification landed without a turn: its chain reached its wake cap), output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate or spawn_agent call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, and result.usage.imageCostUsd what its generate_image calls spent. result.servedModel is the model that made its last response (provider/model-id); result.modelError, when a model call failed it, says how: {errorClass, providerStatus?, retryable, model} (ModelFailure)"
+        "description": "result.code names a run's failure where it has a name: cancelled (a stop cancelled it before it began), aborted (stopped while it ran), model_stream_stalled (its model stopped answering, past every retry), turn_limit, context_too_large (its stored Pi context range exceeds the runtime byte limit), spend_limit, agent_loop_limit (a sub-agent's notification landed without a turn: its chain reached its wake cap), output_missing, model_key_missing, model_key_invalid. result.stopped is input_required when the turn waits on human input, listed in result.inputs. A run's result also has reply, replyIndex, files, toolErrors and toolCalls: every tool call it made (the first 100), as {tool, toolCallId?, innerCallId?, ok, code?, agentId?} (agentId: the child a delegate or spawn_agent call ran), without arguments or results. result.output is a structured answer, for a prompt sent with output. result.usage.subagentCostUsd is what its children spent, result.usage.imageCostUsd what its generate_image calls spent, and result.usage.decisionCostUsd what its decide calls spent. result.servedModel is the model that made its last response (provider/model-id); result.modelError, when a model call failed it, says how: {errorClass, providerStatus?, retryable, model} (ModelFailure)"
       },
       "AgentInput": {
         "type": "object",
@@ -3538,8 +3543,8 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 8,
-            "description": "Tools the runtime answers itself (web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
+            "maxItems": 9,
+            "description": "Tools the runtime answers itself (web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents, decide), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
           },
           "delegate": {
             "$ref": "#/components/schemas/DelegateSettings"
@@ -3664,7 +3669,8 @@
           "ask_user",
           "delegate",
           "generate_image",
-          "agents"
+          "agents",
+          "decide"
         ],
         "description": "agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings"
       },
@@ -5258,7 +5264,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 8,
+            "maxItems": 9,
             "description": "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's"
           },
           "delegate": {
@@ -6027,9 +6033,10 @@
                     "compaction",
                     "transcription",
                     "image",
-                    "speech"
+                    "speech",
+                    "decision"
                   ],
-                  "description": "turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: speech made, by POST /v1/speech or voice sessions (responses counts speeches)"
+                  "description": "decision: questions answered by a decision model (responses counts them); turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: speech made, by POST /v1/speech or voice sessions (responses counts speeches)"
                 }
               },
               "required": [
@@ -6171,6 +6178,391 @@
             "description": "With end-user credits on (/v1/end-user-settings): the subject's bucket this spends from. Default \"default\""
           }
         }
+      },
+      "Decisions": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "The model that answered (its dated version)",
+            "example": "typesafe/jev-1.14-20261014"
+          },
+          "answers": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DecisionAnswer"
+            },
+            "description": "For one state: the answers, by question id"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "answers": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "$ref": "#/components/schemas/DecisionAnswer"
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "inputTokens": {
+                          "type": "number"
+                        },
+                        "outputTokens": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "inputTokens",
+                        "outputTokens"
+                      ]
+                    },
+                    "costUsd": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "answers",
+                    "usage",
+                    "costUsd"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "number"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              ]
+            },
+            "description": "For a batch: each item's answers, or why it failed, in order"
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "inputTokens": {
+                "type": "number"
+              },
+              "outputTokens": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "inputTokens",
+              "outputTokens"
+            ]
+          },
+          "costUsd": {
+            "type": "number",
+            "description": "What it cost: charged to prepaid credit when it ran on the platform's key"
+          },
+          "ms": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "model",
+          "usage",
+          "costUsd",
+          "ms"
+        ]
+      },
+      "DecisionAnswer": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "noul"
+                ]
+              },
+              "noul": {
+                "type": "number",
+                "description": "The probability that it is true (yes)"
+              }
+            },
+            "required": [
+              "type",
+              "noul"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "choice"
+                ]
+              },
+              "choice": {
+                "type": "string"
+              },
+              "confidence": {
+                "type": "number"
+              },
+              "probabilities": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "description": "Each option's probability"
+              }
+            },
+            "required": [
+              "type",
+              "choice",
+              "confidence",
+              "probabilities"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "score"
+                ]
+              },
+              "score": {
+                "type": "number",
+                "description": "The expected level, from 0 (may be fractional)"
+              },
+              "confidence": {
+                "type": "number"
+              },
+              "probabilities": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "description": "Each level's probability, lowest first"
+              }
+            },
+            "required": [
+              "type",
+              "score",
+              "confidence",
+              "probabilities"
+            ]
+          }
+        ]
+      },
+      "DecisionInput": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              {
+                "type": "array",
+                "items": {}
+              }
+            ],
+            "description": "What every question is about: text, or JSON; at most 64,000 characters"
+          },
+          "questions": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DecisionQuestion"
+            },
+            "description": "The questions, by an id you choose (letters, digits, _ and -; at most 32): answers come back under the same ids"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": {}
+                    },
+                    {
+                      "type": "array",
+                      "items": {}
+                    }
+                  ],
+                  "description": "What every question is about: text, or JSON; at most 64,000 characters"
+                },
+                "questions": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/DecisionQuestion"
+                  },
+                  "description": "The questions, by an id you choose (letters, digits, _ and -; at most 32): answers come back under the same ids"
+                }
+              },
+              "required": [
+                "state",
+                "questions"
+              ],
+              "additionalProperties": false
+            },
+            "description": "A batch instead of state and questions: 1 to 100 states, each with its questions, answered in parallel. One that fails does not fail the others"
+          },
+          "model": {
+            "type": "string",
+            "description": "The decision model: typesafe/jev-1.14 (default) or typesafe/jev-1.13"
+          },
+          "maxUsd": {
+            "type": "number",
+            "description": "Refuse (402) before anything is sent if the estimate is more than this"
+          },
+          "keyScope": {
+            "type": "string",
+            "description": "A key scope whose OpenRouter key is used first, before the tenant's own"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Who it is for (a user id in your app): usage.recorded's subject"
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Your claims (org, workspace…), carried as usage.recorded's context; at most 4 KB"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who asked (a user id in your app): usage.recorded's actor"
+          },
+          "bucket": {
+            "type": "string",
+            "description": "With end-user credits on (/v1/end-user-settings): the subject's bucket this spends from. Default \"default\""
+          }
+        },
+        "additionalProperties": false
+      },
+      "DecisionQuestion": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "noul"
+                ]
+              },
+              "instructions": {
+                "type": "string",
+                "description": "The yes/no question or statement"
+              },
+              "criteria": {
+                "type": "object",
+                "properties": {
+                  "true": {
+                    "type": "string"
+                  },
+                  "false": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false,
+                "description": "What counts as yes, and as no"
+              }
+            },
+            "required": [
+              "type",
+              "instructions"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "choice"
+                ]
+              },
+              "instructions": {
+                "type": "string",
+                "description": "What to decide"
+              },
+              "criteria": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "The options, 2 to 255: {name: description}. An empty description judges the option by its name"
+              }
+            },
+            "required": [
+              "type",
+              "instructions",
+              "criteria"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "score"
+                ]
+              },
+              "instructions": {
+                "type": "string",
+                "description": "What to rate"
+              },
+              "criteria": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The levels, 2 to 10, lowest first: the score is the level's position from 0"
+              }
+            },
+            "required": [
+              "type",
+              "instructions",
+              "criteria"
+            ],
+            "additionalProperties": false
+          }
+        ]
       },
       "SpeechInput": {
         "type": "object",
@@ -7728,8 +8120,8 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace"
+            "maxItems": 9,
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from js_exec as tools.decide"
           },
           "webSearch": {
             "type": "object",
@@ -8105,8 +8497,8 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace"
+            "maxItems": 9,
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from js_exec as tools.decide"
           },
           "webSearch": {
             "type": "object",
@@ -8630,8 +9022,8 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 8,
-            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace"
+            "maxItems": 9,
+            "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from js_exec as tools.decide"
           },
           "webSearch": {
             "type": [
@@ -8827,7 +9219,7 @@
               "null"
             ],
             "additionalProperties": {},
-            "description": "What its model calls used: responses, input, output, cacheRead, cacheWrite, costUsd (and subagentCostUsd, what its sub-agents spent; imageCostUsd, what its generate_image calls spent)"
+            "description": "What its model calls used: responses, input, output, cacheRead, cacheWrite, costUsd (and subagentCostUsd, what its sub-agents spent; imageCostUsd, what its generate_image calls spent; decisionCostUsd, what its decide calls spent)"
           },
           "servedModel": {
             "type": "string",
@@ -9074,10 +9466,11 @@
                 "web_search",
                 "x_search",
                 "delegate",
-                "generate_image"
+                "generate_image",
+                "decide"
               ]
             },
-            "maxItems": 8,
+            "maxItems": 9,
             "description": "Tools the runtime answers itself (generate_image gives the run a workspace for its images). Not schedule or ask_user: a run has no later and no one to ask"
           },
           "delegate": {
@@ -15088,6 +15481,54 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Transcription"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/decisions": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Typed answers with probabilities: one state's, or a batch's in order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Decisions"
                 }
               }
             }

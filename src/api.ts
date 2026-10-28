@@ -46,7 +46,8 @@ import { languageInput, transcribeRequest, type TranscriptionService } from "./t
 import { speechChoiceInput, speechInput, speechRequest, type SpeechService } from "./speech-api.ts";
 import { DEFAULT_VOICE } from "./speech.ts";
 import { imageOptions, imageRequest, type Hold, type ImageService, type ImageSource } from "./images.ts";
-import { AUDIO_LIMITS, IMAGE_LIMITS } from "./limits.ts";
+import { decisionRequest, decisionsRequest, type DecisionService } from "./decisions.ts";
+import { AUDIO_LIMITS, DECISION_LIMITS, IMAGE_LIMITS } from "./limits.ts";
 import { declaredType, downloadHeaders, fileResponse, type FileLinks } from "./files.ts";
 import type { FileUrls } from "./file-arguments.ts";
 import { tar } from "./tar.ts";
@@ -58,7 +59,6 @@ import { exportAccount, type ExportOptions } from "./account-export.ts";
 import { Readable } from "node:stream";
 import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState } from "./rate-limits.ts";
 import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./legacy-coverage.ts";
-import { legacyMigrate, LegacyMigrateCursorError, LEGACY_MIGRATE_MAX_BYTES } from "./legacy-migrate.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -130,6 +130,8 @@ export interface ApiContext {
   voiceLibraryKey?: (tenant: string) => Promise<string | undefined>;
   /** `POST /v1/images`; without it, image generation is not enabled. */
   images?: ImageService;
+  /** `POST /v1/decisions`; without it, decisions are not enabled. */
+  decisions?: DecisionService;
   /** The tenant's own users' credit (`/v1/end-users`, end-user-credits.ts); without it, end users are not metered. */
   endUsers?: EndUserCredits;
   /** `/v1/voice/sessions`: calls the runtime holds for the tenant's bots; without it, voice is not enabled. */
@@ -346,7 +348,7 @@ export function api(context: ApiContext) {
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
   app.use("/v1/*", idempotency({
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
-    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || path === "/v1/speech" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
+    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || path === "/v1/speech" || path === "/v1/decisions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
     secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
@@ -945,6 +947,27 @@ export function api(context: ApiContext) {
   });
 
   route(createRoute({
+    method: "post", path: "/v1/decisions",
+    request: { body: { content: { "application/json": { schema: schema.DecisionInput } } } },
+    responses: { 200: reply("Typed answers with probabilities: one state's, or a batch's in order", schema.Decisions) },
+  }), async c => {
+    const service = context.decisions;
+    if (!service) throw new HttpError(404, "Decisions are not enabled on this runtime");
+    const body = await readJson(c.req.raw.body, DECISION_LIMITS.requestBytes);
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "Send a JSON object: {state, questions} or {items}");
+    const { keyScope, subject, context: claims, actor: asked, bucket, ...rest } = body as Record<string, unknown>;
+    const request = decisionRequest(rest);
+    if (keyScope !== undefined && typeof keyScope !== "string") throw new HttpError(400, "keyScope is a key scope's name");
+    if (bucket !== undefined && typeof bucket !== "string") throw new HttpError(400, "bucket is a bucket's name");
+    const identity = identityInput({ subject, context: claims });
+    const actor = actorInput(asked);
+    const hold = endUserHold(c.var.principal.tenant, identity?.subject, bucket as string | undefined, "decision");
+    return json(c, 200, await decisionsRequest(service, c.var.principal.tenant, {
+      ...request, ...(keyScope ? { keyScope: keyScope as string } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
+    }, c.req.raw.signal));
+  });
+
+  route(createRoute({
     method: "post", path: "/v1/speech",
     request: { body: { content: { "application/json": { schema: schema.SpeechInput } } } },
     responses: { 200: { description: "The speech, streamed as it is made: audio/pcm (24 kHz mono 16-bit) or audio/wav. X-Speech-Model names who made it", content: { "audio/pcm": { schema: z.any().openapi({ type: "string", format: "binary" }) }, "audio/wav": { schema: z.any().openapi({ type: "string", format: "binary" }) } } } },
@@ -1219,35 +1242,6 @@ export function api(context: ApiContext) {
       console.log(JSON.stringify({ type: "legacy_coverage_viewed", by, complete: coverage.complete, calls: coverage.calls, durationMs: coverage.durationMs, ...coverage.counts }));
       return json(c, 200, coverage);
     } finally { coverageRunning = false; }
-  });
-  // Converts the agents legacy coverage counts to the current history format (src/legacy-migrate.ts): a dry run unless
-  // the body says `dryRun: false`. One call at a time per node; each walks for a time budget and answers a cursor.
-  let migrateRunning = false;
-  app.post("/v1/operations/legacy-migrate", async c => {
-    const by = operatorOnly(c);
-    const input = await readJson(c.req.raw.body, 8192, {}) as Record<string, unknown>;
-    if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "The body is a JSON object");
-    const { cursor, dryRun, maxBytes, budgetMs } = input;
-    if (cursor !== undefined && typeof cursor !== "string") throw new HttpError(400, "cursor is a string");
-    if (dryRun !== undefined && typeof dryRun !== "boolean") throw new HttpError(400, "dryRun is true or false");
-    if (maxBytes !== undefined && !(Number.isSafeInteger(maxBytes) && (maxBytes as number) > 0 && (maxBytes as number) <= LEGACY_MIGRATE_MAX_BYTES)) throw new HttpError(400, `maxBytes is a whole number of bytes, at most ${LEGACY_MIGRATE_MAX_BYTES}`);
-    if (budgetMs !== undefined && !(Number.isSafeInteger(budgetMs) && (budgetMs as number) > 0)) throw new HttpError(400, "budgetMs is a whole number of milliseconds");
-    if (migrateRunning) throw new HttpError(429, "A legacy migration call is already running on this node");
-    migrateRunning = true;
-    try {
-      let migration;
-      try {
-        migration = await legacyMigrate(accounts.db, {
-          ...(cursor ? { cursor } : {}), dryRun: dryRun !== false, ...(maxBytes !== undefined ? { maxBytes: maxBytes as number } : {}), ...(budgetMs !== undefined ? { budgetMs: budgetMs as number } : {}),
-          lister: legacyLogLister(id => clients.legacyLogEmpty(id)), migrate: (agent, options) => clients.migrateLegacy(agent, options),
-        });
-      } catch (error) {
-        if (error instanceof LegacyMigrateCursorError) throw new HttpError(400, error.message);
-        throw error;
-      }
-      console.log(JSON.stringify({ type: "legacy_migrate_called", by, dryRun: migration.dryRun, maxBytes: migration.maxBytes, complete: migration.complete, calls: migration.calls, durationMs: migration.durationMs, ...migration.counts }));
-      return json(c, 200, migration);
-    } finally { migrateRunning = false; }
   });
   route(createRoute({
     method: "post", path: "/v1/tenants", request: { body: content(schema.TenantInput) },

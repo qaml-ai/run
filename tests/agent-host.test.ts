@@ -49,7 +49,7 @@ async function setup(t: Context) {
       tool: async name => (options.call ?? (() => "found"))(name, host),
       cancelTools: async () => null,
       runLimit: async () => undefined,
-      legacyLog: { read: async () => [], empty: async () => true },
+      legacyLog: { empty: async () => true },
       piStorage: async () => storage,
       file: async () => { throw new Error("no files"); },
       modelAuth: async () => { throw new Error("no per-call credentials"); },
@@ -362,19 +362,22 @@ test("a session's host transcript is retired once, at its first load: a base whe
   assert.deepEqual(roles((await fake.history()).context), ["user", "assistant", "user", "user", "assistant", "user", "assistant"]);
 });
 
-test("retiring a session indexes the settled history before its base the index lacks, from the host's records", async t => {
+test("a host transcript no release retired is refused at load, logged, its journal untouched", async t => {
   const fake = await setup(t);
-  await fake.crashedTurn([user("now"), answer(fauxToolCall("lookup", {}, { id: "look" }), "toolUse")], [user("hi"), answer("Hello.")]);
-  const chunks: { start: number; messages: AgentMessage[]; turns: number[] }[] = [];
-  let indexed = 0;
-  const history = { indexed: async () => indexed, write: async (chunk: { start: number; messages: AgentMessage[]; turns: number[] }) => { if (chunk.start !== indexed) return indexed; chunks.push(chunk); indexed = chunk.start + chunk.messages.length; return indexed; } };
-  const { host, init } = await fake.start({ history, resume: true });
-  assert.deepEqual(init.resume, { continue: true });
-  assert.deepEqual(chunks.flatMap(chunk => chunk.messages).map(message => message.role), ["user", "assistant"], "the settled turn, not the one it resumes");
-  fake.respond(answer("Found."));
-  assert.equal((await host.handle("continue", {})).reply, "Found.");
-  await host.handle("historyFlush", {});
-  assert.deepEqual(chunks.flatMap(chunk => chunk.messages).map(message => message.role), ["user", "assistant", "user", "assistant", "toolResult", "assistant"], "the resumed turn's messages before the base are the journal's");
+  await hostTranscriptSession({ sessionId: "agent", directory: fake.directory }, [{ t: "turn", active: true }, { t: "message", message: user("hi") }, { t: "message", message: answer("Hello.") }, { t: "turn", active: false }], { unretired: true });
+  const entries = async () => {
+    const storage = await openPiStorage({ sessionId: "agent", directory: fake.directory });
+    try { return (await storage.scanEntries({ conversationId: 1 as never, order: "ascending" }, 256, undefined, BACKGROUND_CONTEXT)).items.length; }
+    finally { await storage.close(BACKGROUND_CONTEXT); }
+  };
+  const before = await entries();
+  const logged: string[] = [];
+  const error = console.error;
+  console.error = (line: unknown) => { logged.push(String(line)); };
+  try { await assert.rejects(fake.start(), /AGENT_NOT_MIGRATED: .*host_transcript/); }
+  finally { console.error = error; }
+  assert.ok(logged.some(line => JSON.parse(line).type === "legacy_format_refused" && JSON.parse(line).kind === "host_transcript"));
+  assert.equal(await entries(), before);
 });
 
 test("the history index takes its chunks from the journal", async t => {

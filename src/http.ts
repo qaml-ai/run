@@ -63,8 +63,23 @@ export function errorStatus(error: unknown, fallback: number): number {
   return databaseUnavailable(error) || databaseRetryable(error) ? 503 : fallback;
 }
 
+/** Bodies a route allows past this many bytes are shed while the node is short of memory (`shedBodies`). */
+export const SHED_BODY_BYTES = 64 * 1024;
+let short: () => boolean = () => false;
+
+/**
+ * Load shedding of large request bodies: while `memoryShort()` (the node past AGENT_MEMORY_HIGH_BYTES, as it then
+ * starts no agents), a body whose route allows more than SHED_BODY_BYTES is refused with a 503 and Retry-After before
+ * any of it is read, so a burst of large requests can't push a node into an out-of-memory crash. Small bodies are
+ * read as before.
+ */
+export function shedBodies(memoryShort: () => boolean) { short = memoryShort; }
+
 /** Read a request body, failing with 413 past `limit` bytes rather than buffering it all. */
 export async function readBytes(body: AsyncIterable<Uint8Array> | null, limit: number) {
+  if (limit > SHED_BODY_BYTES && short()) {
+    throw Object.assign(new HttpError(503, "BUSY: this node is short of memory; retry shortly"), { retryAfter: 2 });
+  }
   const chunks: Uint8Array[] = [];
   let bytes = 0;
   for await (const chunk of body ?? []) {

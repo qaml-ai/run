@@ -28,6 +28,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Guides", path: "guides/voice.md", about: "audio in messages transcribed for the model, POST /v1/transcriptions, and speech from text with POST /v1/speech: formats, limits, billing, privacy" },
   { section: "Guides", path: "guides/voice-calls.md", about: "Discord voice calls camelRun holds for your bot: forwarding the join, a realtime speech-to-speech model that answers aloud and asks your agent, utterances to webhooks, cost, the notice your app posts, limits" },
   { section: "Guides", path: "guides/images.md", about: "making and editing images with POST /v1/images: sizes, quality, saving to volumes, safety refusals, limits, cost per image" },
+  { section: "Guides", path: "guides/decisions.md", about: "typed questions (yes/no, choice, score) answered with probabilities by a decision model (TypeSafe's Jev): POST /v1/decisions, batches, the decide builtin and tools.decide in js_exec, limits, cost" },
   { section: "Guides", path: "guides/files.md", about: "attachments, what the model sees, files out, volumes, signed links" },
   { section: "Guides", path: "guides/multi-user.md", about: "an agent per user or conversation, identity, spend limits and keys per customer" },
   { section: "Guides", path: "guides/end-user-credits.md", about: "charging your own users: a balance per person, daily free allowances by bucket, markup and daily limits, enforced on every model call; grants after a payment, the ledger, running out, webhooks" },

@@ -68,7 +68,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
+import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson, readText, shedBodies, signInHint } from "./http.ts";
 import { outcomeEnding, type RequestRecord } from "../shared/client-protocol.ts";
 import type { HistoryPage } from "./history-pages.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
@@ -81,6 +81,8 @@ import { checkSandbox, type CodeExecutor } from "./codemode.ts";
 import { V8Exec } from "./v8-exec.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
 import { openaiTranscription, Transcriber } from "./transcription.ts";
+import { Decider } from "./decisions.ts";
+import { openrouterDecisions } from "./decision-providers.ts";
 import { openaiSpeech, Synthesizer } from "./speech.ts";
 import { Imager, openaiImages } from "./images.ts";
 import { azureChatCredentials, azureCredentials, azureRealtimeCredentials, azureRealtimeDeployment } from "./azure-openai.ts";
@@ -312,6 +314,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     piRetryMs: leaseTtlMs,
     agentEnv: config.agentEnv, dedupeUserEntries: config.dedupeUserEntries, modelOutbound: outbound,
   });
+  // Past AGENT_MEMORY_HIGH_BYTES, large request bodies are refused (503, Retry-After) before they are read (http.ts).
+  shedBodies(() => supervisor.memoryHigh);
   const model = configuredModel(env);
   // Where people are sent (the public URL), other names served in full (an earlier domain), and the issuer tokens name.
   const origins = publicOrigins(env, `http://127.0.0.1:${port}`);
@@ -456,6 +460,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     provider: openaiImages({ outbound, ...(env.AGENT_IMAGES_URL ? { baseUrl: env.AGENT_IMAGES_URL } : {}) }),
     key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider, secrets.azureOpenAI?.imageDeployment),
     price: () => accounts.billing.pricing.image,
+  });
+  // Decisions (POST /v1/decisions, the decide builtin): OpenRouter's decisions API on the tenant's OpenRouter key, else
+  // the platform's, which a prepaid tenant pays for at what OpenRouter charges.
+  const decider = new Decider({
+    provider: openrouterDecisions({ outbound, ...(env.AGENT_DECISIONS_URL ? { baseUrl: env.AGENT_DECISIONS_URL } : {}) }),
+    key: (tenant, keyScope, provider) => providerKey(tenant, keyScope, provider),
   });
   // Files sent to tools as URLs bound to their call, signed with the identity tokens' key (file-arguments.ts).
   const fileUrls = new FileUrls({ signer, get volumes() { return volumes; }, publicUrl: () => links.publicUrl });
@@ -882,7 +892,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     onUsage: (tenant, agent, message) => accounts.recordUsage(tenant, agent, message),
     modelAttempt: (tenant, agent, platform, priced, event) => modelAttempts.event(tenant, agent, platform, priced, event),
     endUsers,
-    transcriber, imager, outbound: outbound.withoutOrigins(),
+    transcriber, imager, decider, outbound: outbound.withoutOrigins(),
     onActive: (tenant, agent, ms) => accounts.recordActive(tenant, agent, ms),
     spendLimit: tenant => accounts.runLimit(tenant),
     runLimitsFor: async tenant => {
@@ -1302,7 +1312,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Browser tokens: HMACs under a key derived from the session secret, so any node checks any node's.
   const browserTokens = new BrowserTokens(sessionSecret);
   if (billingMailer) app.route("/", billingMailer.feedback());
-  // A transcription or images asked for alone count as a run: refused past a monthly cap, spent credit or runs per minute.
+  // A transcription, images or decisions asked for alone count as a run: refused past a monthly cap, spent credit or runs per minute.
   const admitAlone = async (tenant: string) => {
     const refused = await accounts.runLimit(tenant);
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
@@ -1315,6 +1325,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       admit: admitAlone,
       record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
     },
+    decisions: { decider, admit: admitAlone, record: (tenant, usage) => accounts.recordUsage(tenant, "", usage) },
     // Speech made alone (POST /v1/speech), as a voice session makes it.
     voiceLibraryKey: async tenant => (await providerKey(tenant, undefined, "elevenlabs"))?.apiKey,
     speech: { synthesizer, admit: admitAlone, record: (tenant, usage) => accounts.recordUsage(tenant, "", usage) },

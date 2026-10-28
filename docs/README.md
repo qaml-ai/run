@@ -23,6 +23,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Voice and audio](guides/voice.md): audio in messages, transcribed for the model; transcribing on its own
    - [Voice calls](guides/voice-calls.md): Discord voice calls camelRun listens to for your bot, utterances to webhooks or an agent
    - [Images](guides/images.md): making and editing images with POST /v1/images
+   - [Decisions](guides/decisions.md): typed answers with probabilities from a decision model, with POST /v1/decisions or the decide builtin
    - [End-user credits](guides/end-user-credits.md): charging your own users, with a balance and daily allowances per person
    - [Auto top-up on end-user credits](guides/end-user-auto-top-up.md): topping a person up from their saved card when their balance runs low, on balance events
    - [Agents for many users](guides/multi-user.md): per-user agents, identity, spend

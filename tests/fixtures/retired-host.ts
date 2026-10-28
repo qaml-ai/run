@@ -1,13 +1,15 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import type { Cursor, EntryId, EntryRecord, Storage } from "@earendil-works/pi-durable";
-import { durableEntryMessages } from "./agent.ts";
-import { SESSION_CONVERSATION_ID as conversationId, HOST_ARCHIVE_KIND as ARCHIVE, HOST_BOOTSTRAP_KIND as BOOTSTRAP, SEED_MARKER_KIND } from "./seed.ts";
+import type { Cursor, DocumentId, EntryId, EntryRecord, JsonObject, Storage, StorageWrite } from "@earendil-works/pi-durable";
+import { durableEntryMessages } from "../../src/pi-durable/agent.ts";
+import { SESSION_CONVERSATION_ID as conversationId, HOST_ARCHIVE_KIND as ARCHIVE, HOST_BOOTSTRAP_KIND as BOOTSTRAP, SEED_MARKER_KIND } from "../../src/pi-durable/seed.ts";
+
+import { BASE_ADDRESS, baseWrites, JournalHistory, type HistoryBase } from "../../src/pi-durable/history.ts";
+import { commitTo } from "../../src/pi-durable/storage.ts";
 
 /**
- * The host transcript's records, as releases before its removal wrote them (plans/host-transcript-removal.md): read
- * here, never written, for the history before each session's journal base, which its history index may still lack
- * (`retiredHistory`). Once every session's index covers its base, this and the records go (plans/journal-reclaim.md).
+ * The host transcript's records and their retirement, as releases before the legacy readers' removal read and did them:
+ * tests make sessions of the current format from them (`retireHostTranscript`), and read history the host transcript holds.
  */
 export type RetiredRecord =
   | { t: "message"; message: AgentMessage; pi?: { entryId: number; index: number } }
@@ -118,4 +120,55 @@ export async function legacyHistory(storage: Pick<Storage, "scanEntries">, recor
     cursor = page.next;
   } while (cursor);
   return { messages: history.messages, turns: history.turns.filter(turn => turn < history.messages.length) };
+}
+
+/** The host transcript's retirement, as releases from #374 to the readers' removal did it at a session's first load. */
+/**
+ * Retire a session's host transcript, once, as its first release without it loads the session. Its journal history
+ * starts from the base marker an earlier release wrote, or else where the host's last snapshot stood (and so does one
+ * written as a turn ran or waited on input, which holds none of that turn's messages): that base, with that turn's
+ * messages before it (`kept`), is written then. Every settled message before the base the history index lacks is first indexed
+ * from the host's records (`index`; the session's legacy log first, for an import too large to copy: `legacy`), so
+ * none is only in them. Then, in one commit: the base, the base document, and the host document disabled and marked
+ * `retired`, with a `camel.host.disabled` entry. An earlier release refuses the session from then on (its history
+ * format is newer) rather than continue from that snapshot. False when there is no enabled host transcript to retire.
+ */
+export async function retireHostTranscript(storage: Storage, options: {
+  indexed?: number;
+  /** Index `messages` (the history's from `from`, where `turns` begin), as chunks; returns where the index ends then. */
+  index?: (from: number, messages: AgentMessage[], turns: number[]) => Promise<number>;
+  legacy?: () => Promise<RetiredRecord[]>;
+} = {}): Promise<boolean> {
+  const found = await JournalHistory.snapshotBase(storage);
+  if (!found?.enabled) return false;
+  const marker = await JournalHistory.findBase(storage);
+  const marked = marker?.data as unknown as HistoryBase | undefined;
+  const open = (base: HistoryBase) => (base.active || base.awaiting.length > 0) && base.turnStart < base.total;
+  const keep = marked && !open(marked) ? marked : undefined;
+  const base = keep ?? found.base;
+  let history: ReturnType<typeof recordsHistory> | undefined;
+  const records = async () => history ??= recordsHistory(await retiredRecords(storage, options.legacy) ?? []);
+  if (!keep && open(base)) {
+    // The running turn's messages before the base, whole (the snapshot's may start past a compaction within the turn).
+    const all = (await records()).messages;
+    if (all.length !== base.total) throw new Error(`The host's records hold ${all.length} messages, its snapshot ${base.total}`);
+    base.kept = all.slice(base.turnStart);
+  }
+  const settled = open(base) ? base.turnStart : base.total;
+  if (options.index && options.indexed !== undefined && options.indexed < settled) {
+    const { messages, turns } = await records();
+    if (messages.length < settled) throw new Error(`The host's records hold ${messages.length} messages, before its base ${settled}`);
+    const indexed = await options.index(options.indexed, messages.slice(options.indexed, settled), turns);
+    if (indexed < settled) throw new Error(`The history index ends at ${indexed}, before the journal's base ${settled}`);
+  }
+  const writes: StorageWrite[] = [];
+  const existing = await JournalHistory.baseDocument(storage);
+  if (!keep) writes.push(...baseWrites(await storage.mintId<EntryId>(), base, { id: existing ?? await storage.mintId<DocumentId>(), create: !existing }));
+  else if (!existing) writes.push({ type: "document.create", record: { id: await storage.mintId<DocumentId>(), ...BASE_ADDRESS }, content: { version: 1, kind: "base", value: { entry: marker!.id } } });
+  writes.push(
+    { type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "camel.host.disabled", data: { retired: "journal" } } },
+    { type: "document.change", id: found.documentId, content: { version: 1, kind: "base", value: { ...found.value, enabled: false, retired: "journal" } as JsonObject } },
+  );
+  await commitTo(storage, writes, context);
+  return true;
 }

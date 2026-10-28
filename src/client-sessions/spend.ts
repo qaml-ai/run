@@ -21,6 +21,7 @@ import { ToolFiles } from "../tool-files.ts";
 import { essence, type FileRef } from "../files.ts";
 import { checkedAudio } from "../transcription.ts";
 import { GENERATE_IMAGE, generateImage } from "../images.ts";
+import { DECIDE, decideTool } from "../decisions.ts";
 import type { ToolContext } from "../volume-tools.ts";
 import { type Session, type ClientSessionOptions, type UsageRecord, type Refusal, type SpendLimit, RUN_METHODS, MODEL_RUNS, runningRun } from "./state.ts";
 
@@ -113,6 +114,36 @@ export function imageServer(ctx: SpendContext, session: Session, sources: Source
           ctx.options.onUsage?.(header.tenant, header.id, { ...usage, ...(run ? { requestId: run.id } : {}), ...(run?.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
           ctx.spent(session, cost);
           if (run && cost > 0) (session.imageSpend ??= new Map()).set(run.id, (session.imageSpend.get(run.id) ?? 0) + cost);
+        },
+      }, call.args, call.signal);
+    },
+  };
+}
+
+/**
+ * The decide tool of an agent whose sources enable it, answered here rather than by a tool source: its decisions are
+ * billed like a model response, with the run's facts, and count against the agent's spend limit and the run's.
+ */
+export function decisionServer(ctx: SpendContext, session: Session, sources: Sources | undefined): ToolServer | undefined {
+  const { decider } = ctx.options;
+  if (!decider || !sources?.builtins?.includes("decide")) return undefined;
+  return {
+    tools: () => [DECIDE],
+    sources: async () => [{ kind: "builtin", name: "decide", status: "listed", tools: [DECIDE] }],
+    call: async call => {
+      if (call.name !== "decide") throw new Error(`Unknown tool ${call.name}`);
+      const { header } = session;
+      const run = runningRun(session);
+      const budget = run ? await budgetLeft(ctx, session, run.id) : undefined;
+      const { identity, keyScope } = header;
+      return decideTool(decider, {
+        tenant: header.tenant, ...(keyScope ? { keyScope } : {}), ...(budget !== undefined ? { budget } : {}),
+        hold: usd => endUserHold(ctx, session, run, usd, "decision"),
+        record: usage => {
+          const cost = usage.usage.cost.total as number;
+          ctx.options.onUsage?.(header.tenant, header.id, { ...usage, ...(run ? { requestId: run.id } : {}), ...(run?.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
+          ctx.spent(session, cost);
+          if (run && cost > 0) (session.decisionSpend ??= new Map()).set(run.id, (session.decisionSpend.get(run.id) ?? 0) + cost);
         },
       }, call.args, call.signal);
     },
@@ -326,7 +357,7 @@ export async function codeLimits(ctx: SpendContext, tenant: string): Promise<Cod
 /** Why the running run may not spend more: it has spent its own limit (`runLimits`). */
 export function runSpendLimit(session: Session): string | undefined {
   for (const [id, usd] of session.runLimits ?? []) {
-    const spent = (session.usage?.get(id)?.costUsd ?? 0) + (session.childSpend?.get(id) ?? 0) + (session.imageSpend?.get(id) ?? 0);
+    const spent = (session.usage?.get(id)?.costUsd ?? 0) + (session.childSpend?.get(id) ?? 0) + (session.imageSpend?.get(id) ?? 0) + (session.decisionSpend?.get(id) ?? 0);
     if (session.running.has(id) && spent >= usd) return `This run has reached its spend limit of ${dollars(usd)} (${dollars(spent)} spent)`;
   }
   return undefined;
@@ -434,7 +465,7 @@ export async function childShare(ctx: SpendContext, session: Session, requestId:
 export async function budgetLeft(ctx: SpendContext, session: Session, runId: string) {
   const spend = await ctx.spendOf(session);
   const own = session.runLimits?.get(runId);
-  const left = Math.min(spend ? spend.usd - spend.spent : Infinity, own !== undefined ? own - (session.usage?.get(runId)?.costUsd ?? 0) - (session.childSpend?.get(runId) ?? 0) - (session.imageSpend?.get(runId) ?? 0) : Infinity);
+  const left = Math.min(spend ? spend.usd - spend.spent : Infinity, own !== undefined ? own - (session.usage?.get(runId)?.costUsd ?? 0) - (session.childSpend?.get(runId) ?? 0) - (session.imageSpend?.get(runId) ?? 0) - (session.decisionSpend?.get(runId) ?? 0) : Infinity);
   return Number.isFinite(left) ? Math.max(0, left) : undefined;
 }
 
@@ -482,8 +513,7 @@ export async function closeTurn(ctx: SpendContext, session: Session) {
     session.catalogPriced = !!priced;
   }
   const id = session.header.id;
-  const closed = await ctx.supervisor.closeTurn(id, session.claim, { committing: entry => entryEffect(ctx, session, entry),
-    index: { indexed: async () => (await ctx.historyIndex.indexed(id)) ?? (await ctx.historyIndex.begin(id), 0), write: chunk => ctx.historyIndex.write(id, session.claim, chunk) } });
+  const closed = await ctx.supervisor.closeTurn(id, session.claim, { committing: entry => entryEffect(ctx, session, entry) });
   // Recovered messages have no live message_end event to count them in memory. Read the committed ledger instead;
   // a retry or a second close finds the same native cursor and cannot charge the response twice.
   await refreshSpend(ctx, session);
