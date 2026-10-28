@@ -6412,7 +6412,7 @@ see [Several processes, workers and deploys](https://run.camelai.com/docs/guides
 | `CodeInterpreterTool` | `js_exec`, always on: JavaScript in a sandbox that can call the agent's tools. It has no Python |
 | `FileSearchTool` (vector stores) | No equivalent. Agents have files and file tools, not vector search |
 | `MCPServerStreamableHttp` | `mcpServers` in a [definition](https://run.camelai.com/docs/guides/definitions.md): the runtime calls the server itself. A local MCP server object can be attached with `fromMcpServer` (TypeScript) |
-| Tracing (`trace()`, the traces dashboard) | OpenTelemetry trace export to your own backend (LangSmith, Langfuse, Honeycomb, Datadog, Tempo, any OTLP endpoint): a span per run, model call, tool call and wait, continuing your `traceparent`. See [Observability](https://run.camelai.com/docs/guides/observability.md). Also the event stream (`on_event`, `stream()`), `run.completed` and `usage.recorded` [webhooks](https://run.camelai.com/docs/guides/webhooks.md), and `GET /v1/agents/:id/history` |
+| Tracing (`trace()`, the traces dashboard) | No trace export. The event stream (`on_event`, `stream()`), `run.completed` and `usage.recorded` [webhooks](https://run.camelai.com/docs/guides/webhooks.md), and `GET /v1/agents/:id/history` |
 | `max_turns` | `run_limits={"maxResponses": n}` on the agent (at most 1,000 model responses and 2 hours a run by default); a run that reaches it stops with `stopped: "turn_limit"`. `spend_limit={"usd": …}` on a run, or on the agent, bounds what it spends |
 | `ModelSettings` (temperature, top_p) | Not settable. `thinking_level` is |
 
@@ -6432,7 +6432,6 @@ see [Several processes, workers and deploys](https://run.camelai.com/docs/guides
 | `Send` (map-reduce) | Parallel `delegate` calls in one response, or `asyncio.gather` over runs of several agents |
 | Long-term memory (`Store`) | Files. Mount a shared [volume](https://run.camelai.com/docs/guides/files.md#volumes) in several agents |
 | Time travel (`get_state_history`, replay from a checkpoint) | [Fork](https://run.camelai.com/docs/concepts.md#forking) the agent at an earlier message (`agent.fork({ atMessage })`): a new agent goes on from there. An agent cannot be rewound in place |
-| LangSmith | Export traces to LangSmith's OTLP endpoint (`PUT /v1/telemetry`, [preset](https://run.camelai.com/docs/guides/observability.md#presets)); include content to see messages |
 
 ## Handoffs and multi-agent
 
@@ -6694,9 +6693,6 @@ Before you ship an application on the runtime, check each of these.
 - [ ] You register a [webhook](https://run.camelai.com/docs/guides/webhooks.md) endpoint for `run.failed` and
       `input.requested` (and `usage.recorded` to meter spend), verify signatures,
       dedupe by event `id`, and answer within 10 seconds.
-- [ ] To trace runs in your own backend, you set [trace export](https://run.camelai.com/docs/guides/observability.md)
-      (`PUT /v1/telemetry`), pass `traceparent` from your request's span, send a
-      test span, and decide deliberately whether to include content.
 - [ ] You handle 429 and 503 by waiting `Retry-After` (the SDKs retry them),
       and know the [limits](https://run.camelai.com/docs/reference/limits.md) your workload approaches.
 - [ ] Serverless: prefer served tools.
@@ -6869,7 +6865,6 @@ Run options (`run`, `stream`):
 | `runLimits` | `run_limits=` | `{maxResponses, maxSeconds}`: this run's own, lowering the agent's; see [Run limits](https://run.camelai.com/docs/guides/models-and-keys.md#run-limits) |
 | `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
 | `output` | `output=` | structured output: a zod (or other Standard Schema), TypeBox or JSON Schema (Python: a pydantic model class, or a JSON Schema dict) for an object; the answer is `run.output`. See [Structured output](https://run.camelai.com/docs/guides/structured-output.md) |
-| `traceparent` | `traceparent=` | a W3C trace context (`00-<trace-id>-<span-id>-<flags>`), sent as the `traceparent` header: when the tenant exports telemetry (`runtime.telemetry`), the run's spans continue your trace, under that span. Not part of the run's idempotency |
 
 ### `agent.fork(options)`
 
@@ -6912,7 +6907,7 @@ run = await agents.run("Ship on Friday?", instructions="Vote yes or no.", output
 `runLimits`, `modelHeaders`, `mounts`, `fileTools`, `codeMode`, `name`; a run with
 no tools defaults to `codeMode: false` and `fileTools: false`) and the run's own:
 `input`, `files` (inline bytes, or `{ url }`; audio is transcribed, and `input` may then be `""`), `output`, `user`, `metadata`, `idempotencyKey`,
-`spendLimit`, `retentionSeconds`, `signal`, `throwOnError`, `traceparent`
+`spendLimit`, `retentionSeconds`, `signal`, `throwOnError`
 (Python: snake_case keywords, `input` first). It resolves with a `Run` (no
 `inputs`), and throws a `RunError` when the run failed unless
 `throwOnError: false`.
@@ -7037,7 +7032,7 @@ with Agents() as agents:  # CAMELAI_API_KEY
   `files`, `delete`. A run's inputs are answered with `run.inputs[0].answer(…)`.
 - `AgentRuntime` has every call of the async one that is one request
   (definitions, providers, key scopes, tokens, usage, webhooks, `me`,
-  `browser_token`, runs, `telemetry`), and `wait_for_run` and `run_events`.
+  `browser_token`, runs), and `wait_for_run` and `run_events`.
 - Handles hold no connection. `agent.run()` sends the message and asks for its
   outcome (a long poll of up to 25 s at a time); `agent.stream()` reads the
   agent's events while it reads the run. `timeout=` (seconds) stops the wait,
@@ -7101,10 +7096,9 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | | `tokens()`, `create_token(name)`, `revoke_token(token_id)` | API tokens; a new one's secret is in `create_token`'s answer only |
 | | `create_webhook(url, events, description=)`, `webhooks()`, `webhook(id)`, `update_webhook(id, …)`, `delete_webhook(id)`, `rotate_webhook_secret(id)` | webhook endpoints; see [Webhooks](https://run.camelai.com/docs/guides/webhooks.md) |
 | | `rotate_agent_credentials(agent_id)` | a new token for an agent; the old one stops at once |
-| `runtime.telemetry.set({ endpoint, headers, protocol, sampleRate, include: { content } })`, `get()`, `test()`, `clear()` | `await runtime.telemetry.set(endpoint, headers=, protocol=, sample_rate=, include_content=)`, `get()`, `test()`, `clear()` | export each run as an OpenTelemetry trace to your OTLP/HTTP endpoint (see [Telemetry](https://run.camelai.com/docs/reference/sdk.md#telemetry)) |
 | `agents.endUsers.configure({ enabled, allowances, markupBps, dailyLimit, lowBalance })`, `settings()`, `get(id, { buckets })`, `list({ after, limit })`, `update(id, { allowances, dailyLimit })`, `ledger(id, { before, limit })`, `grant(id, { amount, key, reference?, metadata? })`, `refund(…)`, `adjust(…)` | `agents.end_users.configure(enabled=, allowances=, markup_bps=, daily_limit=, low_balance=)`, `settings()`, `get(id, buckets=)`, `list(after=, limit=)`, `update(id, allowances=, daily_limit=)`, `ledger(id, before=, limit=)`, `grant(id, amount=, key=, reference=, metadata=)`, `refund(…)`, `adjust(…)` | your users' credit, in micro-USD: allowances by bucket, balances, grants after a payment, the ledger (see [End-user credits](https://run.camelai.com/docs/guides/end-user-credits.md)); an agent's `bucket` is an upsert option
 | `client.prompt(text, { from, actor, files, metadata, whileRunning, output, idempotencyKey, signal })` | `client.prompt(text, from_=, …)` | a run's raw result: `{ reply, output, error, stopped, inputs, files, toolErrors, … }`; rejects on a runtime error. `output` here is `{ schema }`, a JSON Schema |
-| `client.request(method, params, options)` | `client.request(method, params, …)` | any request (`prompt`, `continue`, `execute`, `configure`, `status`, `abort`); `traceparent` (`traceparent=`) continues your trace |
+| `client.request(method, params, options)` | `client.request(method, params, …)` | any request (`prompt`, `continue`, `execute`, `configure`, `status`, `abort`) |
 | `client.waitForRequest(id)` | `wait_for_request(id)` | wait for a request already sent, from any process |
 | `client.requestStatus(id, { wait })`, `outcomes()` | `request_status(id, wait=)`, `outcomes()` | a request's record (`wait`: seconds, at most 25, to wait for it to settle first); every request's state |
 | `client.answer(inputId, { action, content, from })`, `inputs(state)` | `answer(input_id, action=, …)`, `inputs(state=)` | inputs, raw |
@@ -7137,44 +7131,6 @@ Each agent also has `workspaceId`, `lastActiveAt` (when its latest run ended)
 and `lastError` (`{ at, class }` of its latest failed run: a class such as
 `model_error`, `spend_limit` or `aborted`, never the error's text; the
 request's outcome has the message).
-
-### Telemetry
-
-`runtime.telemetry` (in the simple interface, `agents.runtime.telemetry`) is the
-tenant's trace export, `/v1/telemetry`: each run becomes an OpenTelemetry trace,
-with spans for its model calls and tool calls, sent to an OTLP/HTTP endpoint
-(LangSmith, Langfuse, Honeycomb, Datadog, Tempo, your own collector). See
-[Observability](https://run.camelai.com/docs/guides/observability.md) for the spans, presets and what is
-exported.
-
-```ts
-await agents.runtime.telemetry.set({ endpoint: "https://api.honeycomb.io/v1/traces", headers: { "x-honeycomb-team": key } });
-const { ok, traceId } = await agents.runtime.telemetry.test();   // one test span, sent now
-const run = await agent.run("Summarize ticket 123", { traceparent }); // continues your trace
-```
-
-```python
-await agents.runtime.telemetry.set("https://api.honeycomb.io/v1/traces", headers={"x-honeycomb-team": key})
-result = await agents.runtime.telemetry.test()
-run = await agent.run("Summarize ticket 123", traceparent=traceparent)
-```
-
-- `set` changes only what it is given: options left out keep their current
-  values (their defaults the first time, when `endpoint` is needed). `headers`
-  are stored encrypted and never returned: `get()` lists their names. Left out
-  of a later `set`, they stay while the endpoint keeps its origin, and are
-  dropped when it moves; `{}` removes them. `protocol` is `http/protobuf`
-  (default) or `http/json`, `sampleRate` (`sample_rate=`) the share of runs
-  traced (default 1), and `include: { content: true }` (`include_content=True`)
-  also exports prompts, replies and tool arguments and results.
-- `get()` is the settings with `status: { lastExportAt, lastError, lastErrorAt }`,
-  or `null` (`None`) when none are set. `clear()` stops export: `{ deleted }`,
-  false when nothing was set. `test()` is `{ ok, status?, error?, traceId, spanId }`.
-- `traceparent` is also taken by `client.prompt`, `client.request`, and
-  `createAgent` / `upsertAgent` (`create_agent` / `upsert_agent`) for their
-  first `prompt`. A run's record (`client.requestStatus(id)`, typed as
-  `RequestRecord`) carries `trace: { traceId, spanId, parentSpanId?, sampled }`
-  while the tenant exports telemetry.
 
 ### Transcriptions
 
@@ -7327,7 +7283,7 @@ stream's cursor in memory; a new one starts from a snapshot of the running turn.
 ### The wire
 
 `GET /clients/:id/events` streams SSE; `POST /clients/:id/requests` accepts
-idempotent requests (with a W3C `traceparent` header, the run continues that trace); `POST /clients/:id/mcp` carries the application's MCP
+idempotent requests; `POST /clients/:id/mcp` carries the application's MCP
 messages; all with the agent's token as `Authorization: Bearer`. `/clients/*`
 refuses requests with a browser `Origin`. Application code should use the SDK
 rather than speak this protocol.
@@ -7790,7 +7746,6 @@ its id (`def_…`).
 | `inputs [agent]` / `answer <agent> <inputId> <value>` | questions and approvals waiting on someone, and answering them |
 | `schedules list\|add\|delete <agent>` | wake-ups: `add --text t --in 3600 [--every 86400]` |
 | `definitions list\|get\|agents\|delete` | definitions, and the revision each agent has |
-| `telemetry get\|set\|test\|clear` | export each run as an OpenTelemetry trace to your OTLP/HTTP endpoint ([below](https://run.camelai.com/docs/reference/cli.md#telemetry)) |
 
 `run` waits for the run to end; `--wait 30` waits at most 30 seconds and
 `--no-wait` not at all, printing the request id to follow with `runs get`.
@@ -7799,38 +7754,9 @@ is going. An agent whose tools are attached by an application that is not
 connected refuses the run (`APPLICATION_NOT_CONNECTED`) unless you pass
 `--allow-disconnected`.
 
-`--traceparent 00-<trace-id>-<span-id>-01` makes the run continue that trace
-when the account exports telemetry.
-
 `answer` takes `true` or `false` for an approval, the chosen label or your own
 words for a question (`{"<question>": "<answer>"}` for several), the fields as
 JSON for a form, and `decline`.
-
-### Telemetry
-
-```sh
-camelrun telemetry set https://api.honeycomb.io/v1/traces --header x-honeycomb-team=@env:HONEYCOMB_KEY
-op read op://ops/langsmith/key | camelrun telemetry set https://api.smith.langchain.com/otel/v1/traces \
-  --header x-api-key=@stdin --header Langsmith-Project=agents
-camelrun telemetry set --content   # change one option; the rest stay
-camelrun telemetry test          # one test span, sent now: what the endpoint answered, and its trace id
-camelrun telemetry get           # the endpoint, header names, and how the last export went
-camelrun telemetry clear         # stop exporting
-```
-
-`set [<endpoint>]` changes what it is given (`PUT /v1/telemetry`): options left
-out keep their current values (their defaults the first time, when the endpoint
-is needed). `--header` (repeat it for several) is sent with every export, stored
-encrypted, and never shown again: `get` prints header names only, and no command
-prints a value. Give the value as `name=@env:VAR` (from the environment) or
-`name=@stdin` (from standard input, one header), so the key stays out of your
-shell history and the process list; `name=value` works too. A later `set`
-without `--header` keeps the stored headers while the endpoint stays on the same
-origin, and drops them when it moves. See [Observability](https://run.camelai.com/docs/guides/observability.md). `--protocol` is `http/protobuf` (default) or `http/json`,
-`--sample-rate` the share of runs traced (0 to 1, default 1), and `--content`
-also exports prompts, replies and tool arguments and results (default
-`--no-content`). `test` exits 1 when the endpoint refused the span or could not
-be reached.
 
 ### Output and exit codes
 
@@ -8613,16 +8539,6 @@ spend limits like any other.
 | Webhook endpoints per tenant | 16 |
 | A webhook delivery | 10 s to answer; retried until delivered, for up to 3 days |
 | A rotated webhook secret | keeps signing beside the new one for 24 hours |
-
-## Trace export
-
-| Limit | Value |
-| --- | --- |
-| Endpoints per tenant | 1 (`PUT /v1/telemetry`), OTLP/HTTP only (protobuf or JSON) |
-| Headers | 16, each value at most 4,096 characters; endpoint at most 2,048 |
-| Spans waiting to be sent | 5,000 per tenant and 20,000 in all, per node; more are dropped |
-| An export request | at most 512 spans; 10 s to answer; 5 attempts, retrying 429, 502, 503, 504 and connection failures |
-| A content attribute (with `include.content`) | 16,384 characters, then cut |
 
 ## Spending
 

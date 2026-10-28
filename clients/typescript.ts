@@ -449,8 +449,6 @@ export interface CreateAgentOptions extends AgentOptions {
    * Give it a `requestId`: a retried call with the same key and requestId sends it once.
    */
   prompt?: { text: string; requestId?: string; actor?: string; from?: Sender; metadata?: Record<string, string>; spendLimit?: { usd: number }; whileRunning?: "queue" | "steer"; allowDisconnected?: boolean; files?: ({ path: string } | { name?: string; data: string; contentType?: string })[] };
-  /** A W3C trace context for the first `prompt`, sent as the `traceparent` header: its run continues that trace. */
-  traceparent?: string;
 }
 /**
  * A tool the runtime answers itself: web_fetch, web_search, x_search, schedule (wake-ups), ask_user (questions, waiting for the answer),
@@ -754,11 +752,6 @@ export function steerReceipt(record: RequestRecord): SteerReceipt {
  */
 export interface RequestOptions {
   idempotencyKey?: string; timeoutMs?: number; signal?: AbortSignal;
-  /**
-   * A W3C trace context (`00-<trace-id>-<span-id>-<flags>`), sent as the `traceparent` header: when the tenant exports
-   * telemetry (`runtime.telemetry.set`), the run's spans continue this trace, under that span. Not part of the request's idempotency.
-   */
-  traceparent?: string;
 }
 /**
  * `allowDisconnected`: run even when no process serves the agent's tools (its calls to them then fail as
@@ -1048,37 +1041,6 @@ function withMultiAgent<T extends { builtins?: Builtin[]; delegate?: unknown }>(
   const targets = !!delegate && (!!delegate.agents?.length || !!delegate.instructions);
   return targets && !input.builtins?.some(name => name === "delegate" || name === "agents") ? { ...input, builtins: [...input.builtins ?? [], "delegate"] } : input;
 }
-
-/** The `traceparent` header, when there is one to send. */
-const traceHeader = (traceparent?: string): Record<string, string> => traceparent ? { traceparent } : {};
-
-export type TelemetryProtocol = "http/protobuf" | "http/json";
-/** Where the tenant's traces go (`PUT /v1/telemetry`). A field left out keeps its current value (its default the first time). */
-export interface TelemetryInput {
-  /** The OTLP/HTTP traces URL spans are POSTed to (https; a collector's base URL gets /v1/traces). Needed the first time. */
-  endpoint?: string;
-  /**
-   * Sent with each export (a backend's API key), stored encrypted and never shown again. Left out, the stored ones stay
-   * while the endpoint keeps its origin; `{}` removes them.
-   */
-  headers?: Record<string, string>;
-  /** OTLP's encoding. Default http/protobuf. */
-  protocol?: TelemetryProtocol;
-  /** The share of runs traced, 0 to 1 (default 1). A run continuing a caller's traceparent follows its sampled flag instead. */
-  sampleRate?: number;
-  /** `content: true` exports what people and models wrote (prompts, replies, tool arguments and results). Default false. */
-  include?: { content?: boolean };
-}
-/** The tenant's trace export: `headers` are the stored headers' names; their values are never returned. */
-export interface TelemetrySettings {
-  endpoint: string; protocol: TelemetryProtocol; sampleRate: number; include: { content: boolean };
-  headers: string[];
-  createdAt: number; updatedAt: number;
-  /** When a node last exported here, and why the last export failed since the last success. */
-  status: { lastExportAt: number | null; lastError: string | null; lastErrorAt: number | null };
-}
-/** One test span, sent now: what the endpoint answered (`status`, or `error` when it could not be reached), and the span's ids. */
-export interface TelemetryTestResult { ok: boolean; status?: number; error?: string; traceId: string; spanId: string }
 
 /** What to transcribe: the audio (bytes, a Blob or File, or a URL the runtime fetches) and how. */
 export interface TranscriptionInput {
@@ -1534,33 +1496,10 @@ export class Voice {
   end(id: string): Promise<VoiceSessionEnded> { return this.transport.json(this.path(id), this.key(), "DELETE"); }
 }
 
-/** The tenant's OpenTelemetry trace export (`runtime.telemetry`): set it, read it, test it, clear it. */
-export class Telemetry {
-  private readonly transport: Transport;
-  private readonly key: () => string;
-  constructor(transport: Transport, key: () => string) { this.transport = transport; this.key = key; }
-  /** The settings, with header names only and how the last export went; null when none are set. */
-  async get(): Promise<TelemetrySettings | null> {
-    try { return await this.transport.json("/v1/telemetry", this.key()); }
-    catch (error) { if (error instanceof AgentError && error.status === 404) return null; throw error; }
-  }
-  /** Export the tenant's runs as traces to `endpoint`, replacing what was set. */
-  set(input: TelemetryInput): Promise<TelemetrySettings> { return this.transport.json("/v1/telemetry", this.key(), "PUT", input); }
-  /** Stop exporting; `deleted` is false when nothing was set. */
-  async clear(): Promise<{ deleted: boolean }> {
-    try { return await this.transport.json("/v1/telemetry", this.key(), "DELETE", undefined, false); }
-    catch (error) { if (error instanceof AgentError && error.status === 404) return { deleted: false }; throw error; }
-  }
-  /** Send one test span now; look its `traceId` up in your backend. */
-  test(): Promise<TelemetryTestResult> { return this.transport.json("/v1/telemetry/test", this.key(), "POST", undefined, false); }
-}
-
 /** Trusted-backend SDK. Only createAgent needs the operator key. */
 export class AgentRuntime {
   readonly options: RuntimeOptions;
   private readonly transport: Transport;
-  /** The tenant's OpenTelemetry trace export: `get`, `set`, `clear`, `test`. */
-  readonly telemetry: Telemetry;
   /** Speech to text on its own: `create`. */
   readonly transcriptions: Transcriptions;
   /** Images on their own: `generate`, `edit`. */
@@ -1573,7 +1512,6 @@ export class AgentRuntime {
   constructor(options: RuntimeOptions = {}) {
     this.options = options; this.transport = new Transport(options);
     this.endUsers = new EndUsers(this.transport, () => this.operator());
-    this.telemetry = new Telemetry(this.transport, () => this.operator());
     this.transcriptions = new Transcriptions(this.transport, () => this.operator());
     this.images = new Images(this.transport, () => this.operator());
     this.voice = new Voice(this.transport, () => this.operator());
@@ -1589,7 +1527,7 @@ export class AgentRuntime {
     if (!AGENT_KEY.test(key)) throw new AgentError(`An agent's key is 1 to 80 letters, digits, _ and -: ${JSON.stringify(key.slice(0, 100))} is not`);
     const server = options.mcp ?? toolServer(options.tools ?? {});
     // The key is the agent's idempotency key: the same key is the same agent, reconfigured when its configuration differs.
-    const answer = await this.transport.json("/v1/agents", apiKey, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options) }, true, { "Idempotency-Key": key, ...traceHeader(options.traceparent) });
+    const answer = await this.transport.json("/v1/agents", apiKey, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options) }, true, { "Idempotency-Key": key });
     return { session: { id: answer.id, token: answer.token, expiresAt: answer.expiresAt ?? null }, ...(answer.configHash ? { configHash: answer.configHash } : {}), ...(answer.reconfigured ? { reconfigured: answer.reconfigured } : {}), ...(answer.prompt ? { prompt: answer.prompt } : {}) };
   }
   async createAgent(options: CreateAgentOptions): Promise<AgentClient> {
@@ -1601,7 +1539,7 @@ export class AgentRuntime {
     const ttlSeconds = options.ttlSeconds !== undefined || options.idleTtlSeconds !== undefined ? options.ttlSeconds : options.idempotencyKey === undefined ? 86_400 : undefined;
     const session = await this.transport.json("/v1/agents", key, "POST", { mcp: { tools: await server.listTools() }, ...provisioning(options), ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
       ...(options.idleTtlSeconds !== undefined ? { idleTtlSeconds: options.idleTtlSeconds } : {}) }, true,
-      { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID(), ...traceHeader(options.traceparent) });
+      { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID() });
     return this.connectAgent(session, options);
   }
   async connectAgent(session: SessionCredentials, options: AgentOptions): Promise<AgentClient> {
@@ -1717,10 +1655,10 @@ export class AgentRuntime {
    * 60 s, or seconds) it answers once the run ends, else still running. Retries are safe: each create has an
    * Idempotency-Key (one of its own unless given), so a retry is the same run.
    */
-  createRun(request: RunRequest, options: { idempotencyKey?: string; wait?: boolean | number; traceparent?: string; signal?: AbortSignal } = {}): Promise<StatelessRun> {
+  createRun(request: RunRequest, options: { idempotencyKey?: string; wait?: boolean | number; signal?: AbortSignal } = {}): Promise<StatelessRun> {
     const waitMs = options.wait === true ? 60_000 : typeof options.wait === "number" ? Math.min(options.wait, 60) * 1000 : 0;
     return this.transport.json("/v1/runs", this.operator(), "POST", { ...withMultiAgent(request as RunRequest & { builtins?: Builtin[] }), ...(options.wait !== undefined ? { wait: options.wait } : {}) }, true,
-      { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID(), ...traceHeader(options.traceparent) }, waitMs + 15_000, options.signal);
+      { "Idempotency-Key": options.idempotencyKey ?? globalThis.crypto.randomUUID() }, waitMs + 15_000, options.signal);
   }
   /** A stateless run: running, or how it ended. `wait` (seconds, at most 25) waits for it to end first. */
   getRun(id: string, options: { wait?: number; signal?: AbortSignal } = {}): Promise<StatelessRun> {
@@ -2331,7 +2269,7 @@ export class AgentClient {
     if (this.lazy && this.listeners.size) await this.connect();
     const deferred = this.waiter(id, options, "Request timed out; it may still be running: requestStatus() or waitForRequest() observe it");
     try {
-      const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method, params }, true, traceHeader(options.traceparent));
+      const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method, params }, true);
       if (record.outcome) this.settle(id, record.outcome);
       return await this.outcome(id, deferred.promise);
     } catch (error) {
@@ -2416,7 +2354,7 @@ export class AgentClient {
       text, ...(files ? { files } : {}), whileRunning: "steer", ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}),
       ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}),
     };
-    const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true, traceHeader(options?.traceparent)) as RequestRecord;
+    const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true) as RequestRecord;
     if (record.outcome) this.settle(id, record.outcome);
     return steerReceipt(record);
   }
@@ -2435,7 +2373,7 @@ export class AgentClient {
       ...(options?.spendLimit ? { spendLimit: options.spendLimit } : {}), ...(options?.runLimits ? { runLimits: options.runLimits } : {}), ...(options?.output ? { output: options.output } : {}), ...(options?.history === "none" ? { history: "none" } : {}),
       ...(options?.from ? { from: options.from } : {}), ...(options?.metadata ? { metadata: options.metadata } : {}),
     };
-    const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true, traceHeader(options?.traceparent)) as RequestRecord;
+    const record = await this.transport.json(this.path("/requests"), this.session.token, "POST", { id, method: "prompt", params }, true) as RequestRecord;
     if (record.outcome) this.settle(id, record.outcome);
     return { id: record.id, state: record.state };
   }

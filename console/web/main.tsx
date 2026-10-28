@@ -28,7 +28,6 @@ import { ChannelsPage } from "@/pages/channels";
 import { DefinitionsPage } from "@/pages/definitions";
 import { ModelsPage } from "@/pages/models";
 import { TokensPage } from "@/pages/tokens";
-import { TelemetryPage } from "@/pages/telemetry";
 import { UsagePage } from "@/pages/usage";
 import { BillingConfirmationPage } from "@/pages/billing-confirmation";
 import { BillingUnsubscribePage } from "@/pages/billing-unsubscribe";
@@ -122,7 +121,6 @@ function Console({ me }: { me: Me }) {
     : section === "models" ? <ModelsPage me={me} />
     : section === "tokens" ? <TokensPage tenant={me.tenant} />
     : section === "usage" ? <UsagePage />
-    : section === "telemetry" ? <TelemetryPage me={me} />
     : section === "billing" ? <BillingPage state={billingState} />
     : section === "account" ? <AccountPage me={me} />
     : !section ? <OverviewPage billing={billing.data} />

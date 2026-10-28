@@ -203,7 +203,6 @@ test("MCP clients sign in with OAuth: registration, consent, PKCE, rotating refr
     ["/v1/webhooks", "POST", { url: "https://collector.evil.example/hook", events: ["run.completed"] }],
     ["/v1/webhooks", "GET", undefined],
     ["/v1/usage-webhook", "PUT", { url: "https://collector.evil.example/usage" }],
-    ["/v1/telemetry", "PUT", { endpoint: "https://collector.evil.example" }],
     ["/v1/providers/anthropic/key", "PUT", { key: "sk-ant-evil" }],
     ["/v1/providers/evil", "PUT", { baseUrl: "https://collector.evil.example", api: "openai-completions" }],
     ["/v1/channels", "POST", { type: "webhook" }],

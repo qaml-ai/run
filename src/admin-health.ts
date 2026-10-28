@@ -107,7 +107,6 @@ export async function adminHealth(db: Db, options: { days: number | string; now?
         (select count(*) from account_deletions where completed_at is null and requested_at < $2) as deletions_waiting,
         (select to_char(done_day, 'YYYY-MM-DD') from billing_jobs where name = 'storage') as storage_day,
         (select count(*) from webhook_deliveries where attempts > 0) + (select count(*) from usage_webhook_outbox where attempts > 0) as webhooks_retrying,
-        (select count(*) from telemetry_exporters where last_error_at is not null and last_error_at > coalesce(last_export_at, 0)) as telemetry_failing,
         (select count(*) from voice_sessions where state <> 'ended') as voice_live`,
       [now - 10 * MINUTE, now - 60 * MINUTE, now - 7 * DAY_MS]),
   ]));
@@ -156,7 +155,7 @@ export async function adminHealth(db: Db, options: { days: number | string; now?
       detail: n(q.journey_waiting) ? "Analytics events over an hour old the store has not taken" : "Analytics events reach the journey store" },
     { key: "running", label: "Running now", status: "info", value: plural(n(q.busy), "agent"), detail: `${plural(n(q.voice_live), "voice call")} live` },
     { key: "webhooks", label: "Customers' webhooks", status: "info", value: n(q.webhooks_retrying) ? `${plural(n(q.webhooks_retrying), "delivery", "deliveries")} retrying` : "Delivering",
-      detail: `Retries are usually the customer's endpoint being down. ${plural(n(q.telemetry_failing), "telemetry export")} failing` },
+      detail: "Retries are usually the customer's endpoint being down" },
   ];
 
   return {

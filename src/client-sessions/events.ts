@@ -3,7 +3,7 @@ import type { ServerResponse } from "node:http";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { FRAME_BYTES, type ClientEvent, type RequestRecord, type TurnSnapshot } from "../../shared/client-protocol.ts";
+import { FRAME_BYTES, type ClientEvent, type TurnSnapshot } from "../../shared/client-protocol.ts";
 import { HttpError } from "../http.ts";
 import type { Db } from "../db.ts";
 import { LostClaim, underClaim } from "../ownership.ts";
@@ -12,10 +12,7 @@ import { CallToolResultSchema, ErrorCode, McpError } from "@modelcontextprotocol
 import { AttachedServer } from "../attached.ts";
 import { callMeta, TOOL_DEADLINES, timedOut, ToolFailure, type ToolCall } from "../tool-servers.ts";
 import { recordWatchRefused, safeError } from "../metrics.ts";
-import { BackgroundSpans, RunSpans } from "../telemetry.ts";
-import { newSpanId, newTraceId, parseTraceparent, sampledAt } from "../otlp.ts";
 import { SUBAGENT_EVENTS } from "../multi-agent.ts";
-import { random } from "../node-context.ts";
 import { type SessionHeader, runIdOf, type ClientEnv, type BufferedEvent, type Session, type ClientSessionOptions, visible } from "./state.ts";
 
 export type EventContext = {
@@ -131,32 +128,6 @@ export const DRAIN_MS = 30_000;
  */
 export const CONNECTION_LOST = "The server running this tool disconnected during the call (it restarted or lost its connection), so the call may or may not have " +
   "taken effect. Check whether it did before trying it again; if you cannot check, tell the user it is unknown whether it went through.";
-
-/**
- * A run's place in a trace, if its tenant exports telemetry: a `resume` continues the run it resumes; another run
- * continues the caller's `traceparent` (sampled as the caller decided), or starts a trace sampled at the tenant's rate.
- */
-export async function traceFor(ctx: EventContext, session: Session, traceparent: unknown, continues?: RequestRecord["trace"]): Promise<RequestRecord["trace"]> {
-  const settings = await ctx.options.tracing?.settings(session.header.tenant).catch(() => undefined);
-  if (!settings) return undefined;
-  if (continues) return { traceId: continues.traceId, spanId: newSpanId(), parentSpanId: continues.spanId, sampled: continues.sampled };
-  const parent = parseTraceparent(traceparent);
-  const traceId = parent?.traceId ?? newTraceId();
-  return { traceId, spanId: newSpanId(), ...(parent ? { parentSpanId: parent.spanId } : {}), sampled: parent ? parent.sampled : sampledAt(traceId, settings.sampleRate) };
-}
-
-/** The spans of a run whose trace is sampled, while its tenant exports telemetry. */
-export async function spansFor(ctx: EventContext, session: Session, record: RequestRecord): Promise<RunSpans | undefined> {
-  const tracing = ctx.options.tracing;
-  const settings = record.trace?.sampled ? await tracing?.settings(session.header.tenant).catch(() => undefined) : undefined;
-  if (!tracing || !settings || !record.trace) return undefined;
-  const { tenant, id, metadata } = session.header;
-  return new RunSpans({
-    tenant, agent: { id, ...(metadata?.name ? { name: metadata.name } : {}) }, request: record, trace: record.trace, content: settings.content,
-    model: () => session.header.config.model, toolSource: name => session.toolSources?.get(name) ?? "runtime",
-    record: span => tracing.record(tenant, span),
-  });
-}
 
 /**
  * Call a tool on the application's attached server, as on any MCP server. With no application
@@ -521,23 +492,6 @@ export async function poll(ctx: EventContext, c: Context<ClientEnv>, session: Se
       return visible === undefined ? [] : [{ id, data: visible }];
     })],
   });
-}
-
-/** An event, to the spans of the run it belongs to, or of the compaction between runs it is part of. */
-export function traceEvent(ctx: EventContext, session: Session, requestId: string, event: any) {
-  const at = Date.now();
-  if (event?.background === true) {
-    if (event.type === "compaction_start") session.background = ctx.options.tracing?.settings(session.header.tenant).then(settings => {
-      if (!settings || random().float() >= settings.sampleRate) return undefined;
-      const tracing = ctx.options.tracing!, tenant = session.header.tenant;
-      return new BackgroundSpans({ tenant, agentId: session.header.id, content: settings.content, model: () => session.header.config.model, record: span => tracing.record(tenant, span) });
-    }, () => undefined);
-    void session.background?.then(spans => spans?.event(event, at));
-    if (event.type === "compaction_end") session.background = undefined;
-    return;
-  }
-  const spans = session.spans;
-  if (spans && (requestId === spans.requestId || requestId === "")) spans.event(event, at);
 }
 
 /** A tap on a run's text deltas from now on: `chunks` yields them until the response (or the agent leaves, or `signal`). */

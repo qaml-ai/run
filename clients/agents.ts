@@ -245,11 +245,6 @@ export interface RunOptions {
    * without it, use `agents.run({ instructions, input })` (POST /v1/runs).
    */
   history?: "full" | "none";
-  /**
-   * A W3C trace context (`00-<trace-id>-<span-id>-<flags>`) to continue: when the tenant exports telemetry
-   * (`agents.runtime.telemetry.set`), the run's spans join this trace under that span. Not part of the run's idempotency.
-   */
-  traceparent?: string;
 }
 
 /** What `agent.stream()` yields. `raw` is the event it came from. */
@@ -408,7 +403,6 @@ export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick
   signal?: AbortSignal;
   /** Resolve with a failed run instead of throwing RunError. Default true: failures throw. */
   throwOnError?: boolean;
-  traceparent?: string;
 }
 
 const base64 = async (data: Uint8Array | Blob) => {
@@ -426,7 +420,7 @@ export class Runs {
   /** Start a run and return at once, still running (or, with `wait`, once it ends within it). */
   async create<S extends OutputSchema = never>(config: StatelessRunConfig<S>, options: { wait?: boolean | number } = {}): Promise<StatelessRun> {
     const { request, key } = await this.request(config);
-    return this.runtime.createRun(request, { idempotencyKey: key, ...(options.wait !== undefined ? { wait: options.wait } : {}), ...(config.traceparent ? { traceparent: config.traceparent } : {}), ...(config.signal ? { signal: config.signal } : {}) });
+    return this.runtime.createRun(request, { idempotencyKey: key, ...(options.wait !== undefined ? { wait: options.wait } : {}), ...(config.signal ? { signal: config.signal } : {}) });
   }
   /** A run, by its id: running, or how it ended. `wait` (seconds, at most 25) waits for it to end first. */
   get(id: string, options: { wait?: number } = {}): Promise<StatelessRun> { return this.runtime.getRun(id, options); }
@@ -494,7 +488,7 @@ export class Runs {
 
   private async request(config: StatelessRunConfig<OutputSchema>): Promise<{ request: RunRequest; key: string }> {
     if (!this.runtime.options.apiKey) throw new AgentError("No API key: set CAMELAI_API_KEY (or pass apiKey). Create one at https://run.camelai.com/console/tokens");
-    const { input, files, instructions, instructionsAppend, output, user, idempotencyKey, signal: _signal, throwOnError: _throw, traceparent: _trace, ...rest } = config;
+    const { input, files, instructions, instructionsAppend, output, user, idempotencyKey, signal: _signal, throwOnError: _throw, ...rest } = config;
     const parts: RunInputPart[] = input ? [{ type: "text", text: input }] : [];
     for (const file of files ?? []) {
       if (!(file instanceof Uint8Array || file instanceof Blob) && "url" in file) { parts.push({ type: "file", ...file }); continue; }
@@ -764,7 +758,7 @@ function promptOptions(id: string, options: RunOptions) {
     ...(options.signal ? { signal: options.signal } : {}), ...(options.whileRunning ? { whileRunning: options.whileRunning } : {}),
     ...(options.allowDisconnected ? { allowDisconnected: true } : {}), ...(options.spendLimit ? { spendLimit: options.spendLimit } : {}),
     ...(options.runLimits ? { runLimits: options.runLimits } : {}),
-    ...(options.output ? { output: outputRequest(options.output) } : {}), ...(options.traceparent ? { traceparent: options.traceparent } : {}),
+    ...(options.output ? { output: outputRequest(options.output) } : {}),
     ...(options.history === "none" ? { history: "none" as const } : {}),
   };
 }

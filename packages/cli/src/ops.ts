@@ -108,12 +108,12 @@ export async function waitFor(api: Api, agentId: string, requestId: string, seco
 }
 
 /** Send an agent a message and wait up to `wait` seconds for its run. `requestId` makes a retry the same run. */
-export async function run(api: Api, agent: string, text: string, options: { wait?: number; requestId?: string; from?: string; steer?: boolean; allowDisconnected?: boolean; traceparent?: string; signal?: AbortSignal } = {}) {
+export async function run(api: Api, agent: string, text: string, options: { wait?: number; requestId?: string; from?: string; steer?: boolean; allowDisconnected?: boolean; signal?: AbortSignal } = {}) {
   const id = await api.agentId(agent);
   const record = await api.call("POST", `/v1/agents/${enc(id)}/prompt`, {
     text, requestId: options.requestId ?? `cli_${globalThis.crypto.randomUUID()}`, ...(options.allowDisconnected ? { allowDisconnected: true } : {}),
     ...(options.from ? { from: { id: options.from } } : {}), ...(options.steer ? { whileRunning: "steer" } : {}),
-  }, options.traceparent ? { traceparent: options.traceparent } : {});
+  });
   return options.wait === 0 ? summarize(id, record) : waitFor(api, id, record.id, options.wait ?? Infinity, options.signal);
 }
 
@@ -121,13 +121,13 @@ export async function run(api: Api, agent: string, text: string, options: { wait
  * A stateless run (POST /v1/runs): a configuration and a message, nothing carried over and no agent kept; waits up to
  * `wait` seconds (default: until it ends). `requestId` is its Idempotency-Key: a retry is the same run.
  */
-export async function statelessRun(api: Api, text: string, options: { wait?: number; requestId?: string; definition?: string; model?: string; prompt?: string; thinking?: string; from?: string; traceparent?: string; signal?: AbortSignal } = {}): Promise<RunSummary> {
+export async function statelessRun(api: Api, text: string, options: { wait?: number; requestId?: string; definition?: string; model?: string; prompt?: string; thinking?: string; from?: string; signal?: AbortSignal } = {}): Promise<RunSummary> {
   const wait = options.wait ?? Infinity;
   const body = {
     input: text, ...(options.definition ? { definition: options.definition } : {}), ...(options.model ? { model: options.model } : {}), ...(options.prompt ? { systemPrompt: options.prompt } : {}),
     ...(options.thinking ? { thinkingLevel: options.thinking } : {}), ...(options.from ? { from: { id: options.from } } : {}), wait: Math.min(wait, 60),
   };
-  let run = await api.call("POST", "/v1/runs", body, { "Idempotency-Key": options.requestId ?? `cli_${globalThis.crypto.randomUUID()}`, ...(options.traceparent ? { traceparent: options.traceparent } : {}) });
+  let run = await api.call("POST", "/v1/runs", body, { "Idempotency-Key": options.requestId ?? `cli_${globalThis.crypto.randomUUID()}` });
   for (const deadline = Date.now() + wait * 1000; run.status === "running" && Date.now() < deadline && !options.signal?.aborted;) {
     run = await api.get(`/v1/runs/${enc(run.id)}?wait=${Math.max(1, Math.min(25, Math.ceil((deadline - Date.now()) / 1000)))}`);
   }

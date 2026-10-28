@@ -7,7 +7,6 @@ import { journeyKept, type Journey } from "./journey.ts";
 import type { OAuth } from "./oauth.ts";
 import type { VolumeService } from "./volumes.ts";
 import type { Webhooks } from "./webhooks.ts";
-import type { Telemetry } from "./telemetry.ts";
 import { ZipWriter } from "./zip.ts";
 import { mcpServerView } from "./tool-sources.ts";
 
@@ -24,7 +23,6 @@ export interface ExportOptions {
   definitions?: Definitions;
   channels?: Channels;
   webhooks?: Webhooks;
-  telemetry?: Telemetry;
   oauth?: OAuth;
   /** Journey events (src/journey.ts), where the operator configured them: the store is asked for what it holds of the account. */
   journey?: Journey;
@@ -42,7 +40,6 @@ workspace-usage.json       daily model and tool usage attributed to each workspa
 definitions.json           your agent definitions (secrets left out)
 channels.json              your channels (credentials masked)
 webhooks.json              your webhook endpoints (signing secrets left out)
-telemetry.json             where your traces are exported (header values left out)
 tokens.json                your API tokens' names and prefixes (never the tokens)
 keys.json                  which provider keys are set (the last four characters, never the keys)
 oauth-grants.json          the applications you let act for your account
@@ -115,8 +112,6 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
   if (options.definitions) yield* zip.file("definitions.json", json(await options.definitions.list(tenant)));
   if (options.channels) yield* zip.file("channels.json", json(await options.channels.list(tenant)));
   if (options.webhooks) yield* zip.file("webhooks.json", json(await options.webhooks.list(tenant)));
-  const telemetry = await options.telemetry?.get(tenant);
-  if (telemetry) yield* zip.file("telemetry.json", json(telemetry));
   yield* zip.file("tokens.json", json(await accounts.listTokens(tenant)));
   yield* zip.file("keys.json", json(await accounts.keyStatus(tenant)));
   if (options.oauth) yield* zip.file("oauth-grants.json", json(await options.oauth.grants(tenant)));

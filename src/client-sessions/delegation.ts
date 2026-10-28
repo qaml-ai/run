@@ -204,8 +204,6 @@ export function childPrompt(ctx: DelegationContext, session: Session, run: Reque
   const { agent, requestId, depth, maxDepth, chain, task, output, budget } = child;
   return {
     text: task, ...output ? { output } : {}, ...budget !== undefined ? { spendLimit: { usd: budget } } : {}, ...run.actor ? { actor: run.actor } : {},
-    // The child's run joins the parent's trace, under this call's span (not part of the request's fingerprint).
-    ...call.traceparent ? { traceparent: call.traceparent } : {},
     metadata: { [PARENT_KEYS.agent]: session.header.id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: call.toolCallId!, [PARENT_KEYS.depth]: String(depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(","),
       [PARENT_KEYS.signature]: delegationSignature(ctx, agent, requestId, String(depth), String(maxDepth), chain.join(",")) },
   };

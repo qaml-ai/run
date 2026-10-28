@@ -141,29 +141,6 @@ export const WebhookEndpoint = z.object({ id: z.string(), url: z.string(), event
 const signingSecret = z.string().openapi({ description: "The Standard Webhooks signing secret (whsec_…); shown only this once" });
 export const WebhookEndpointCreated = WebhookEndpoint.extend({ secret: signingSecret }).openapi("WebhookEndpointCreated");
 export const WebhookSecret = z.object({ secret: signingSecret }).openapi("WebhookSecret");
-export const TelemetryInput = z.object({
-  endpoint: z.string().optional().openapi({ description: "The OTLP/HTTP traces URL spans are POSTed to (https; a collector's base URL gets /v1/traces). Needed the first time", example: "https://api.honeycomb.io/v1/traces" }),
-  headers: z.record(z.string(), z.string()).optional().openapi({ description: "Headers sent with each export (a collector's API key), stored encrypted and never shown again. Left out, the stored ones stay while the endpoint keeps its origin; {} removes them", example: { "x-honeycomb-team": "<key>" } }),
-  protocol: z.enum(["http/protobuf", "http/json"]).optional().openapi({ description: "OTLP's encoding. Default http/protobuf" }),
-  sampleRate: z.number().min(0).max(1).optional().openapi({ description: "The share of runs traced, from 0 to 1 (default 1). A run continuing a caller's traceparent follows its sampled flag instead" }),
-  include: z.strictObject({
-    content: z.boolean().optional().openapi({ description: "Export what people and models wrote: prompts, replies, tool arguments and results, inputs' questions, errors' messages. Default false" }),
-  }).optional(),
-}).strict().openapi("TelemetryInput", { description: "A field left out keeps its current value (its default the first time)" });
-export const Telemetry = z.object({
-  endpoint: z.string(), protocol: z.enum(["http/protobuf", "http/json"]), sampleRate: z.number(), include: z.object({ content: z.boolean() }),
-  headers: z.array(z.string()).openapi({ description: "The names of the stored headers; their values are never returned" }),
-  createdAt: z.number(), updatedAt: z.number(), setBy: z.string().nullable().openapi({ description: "Who last set where it sends: \"token:<API token id>\", \"oauth:<grant id>\", \"console\" or \"operator\"; null if set before this was recorded. Revoking that token lists it" }),
-  status: z.object({
-    lastExportAt: z.number().nullable().openapi({ description: "When a node last exported spans here (recorded at most once a minute)" }),
-    lastError: z.string().nullable().openapi({ description: "Why the last export failed, since the last success: an HTTP status, or how the connection failed" }),
-    lastErrorAt: z.number().nullable(),
-  }),
-}).openapi("Telemetry");
-export const TelemetryTest = z.object({
-  ok: z.boolean(), status: z.number().optional().openapi({ description: "The endpoint's HTTP status" }), error: z.string().optional(),
-  traceId: z.string().openapi({ description: "The test span's trace, to look up in your backend" }), spanId: z.string(),
-}).openapi("TelemetryTest");
 export const UsageWebhookInput = z.object({ url: z.string().openapi({ description: "An HTTPS URL that receives each model response's usage", example: "https://example.com/hooks/agent-usage" }) }).strict().openapi("UsageWebhookInput");
 export const UsageWebhook = z.object({ url: z.string(), createdAt: z.number(), setBy: z.string().nullable().openapi({ description: "Who last set where it sends: \"token:<API token id>\", \"oauth:<grant id>\", \"console\" or \"operator\"; null if set before this was recorded. Revoking that token lists it" }) }).openapi("UsageWebhook");
 export const UsageWebhookSet = z.object({ url: z.string(), secret: signingSecret.optional() }).openapi("UsageWebhookSet");
@@ -583,11 +560,6 @@ export const RequestRecord = z.object({
   error: z.string().optional().openapi({ description: "An ended request's error, from its outcome: the runtime's (outcome.error) or the model's (outcome.result.error). Absent when it succeeded" }),
   stopped: z.enum(["input_required", "spend_limit", "turn_limit", "agent_loop_limit"]).optional().openapi({ description: "Why an ended run stopped early (outcome.result.stopped)" }),
   status: z.enum(["completed", "input_required", "failed"]).optional().openapi({ description: "How an ended request ended (state says only that it ended): failed when it has an error or stopped at a spend or turn limit; input_required when it waits on people. Absent while running" }),
-  trace: z.object({
-    traceId: z.string(), spanId: z.string().openapi({ description: "The run's own span" }),
-    parentSpanId: z.string().optional().openapi({ description: "The span it continues: the caller's traceparent, or the run a resume continues" }),
-    sampled: z.boolean(),
-  }).optional().openapi({ description: "A run's place in its trace, when the tenant exports telemetry (PUT /v1/telemetry)" }),
 }).openapi("RequestRecord");
 export const AgentCredentials = z.object({
   id: z.string(),
@@ -643,7 +615,7 @@ export const RunInput = z.strictObject({
   actor: PromptInput.shape.actor,
   from: PromptInput.shape.from,
   metadata: PromptInput.shape.metadata,
-  name: z.string().optional().openapi({ description: "A name for the run, in its traces" }),
+  name: z.string().optional().openapi({ description: "A name for the run" }),
   wait: z.union([z.boolean(), z.number().min(0)]).optional().openapi({ description: "Wait for the run to end before answering: true for up to 60 seconds, or a number of seconds (at most 60). It answers 200 with the ended run, or 202 with it still running when the wait ends. Default: answer at once, 202. ?wait=<seconds> does the same" }),
   retentionSeconds: z.number().int().min(60).max(7 * 86_400).optional().openapi({ description: "How long the run's result, events and messages are kept once it ends, before they are deleted: 60 to 604800 seconds. Default: the runtime's (86400)" }),
 }).openapi("RunInput");
@@ -838,7 +810,7 @@ export const Schedule = z.object({
 export const TokenInput = z.object({ name: z.string().openapi({ description: "1–80 characters" }) }).openapi("TokenInput");
 export const Revoked = z.object({
   revoked: z.literal(true),
-  left: z.array(z.object({ kind: z.enum(["webhook", "usage-webhook", "telemetry"]), id: z.string().optional(), url: z.string() })).openapi({ description: "The webhooks and trace export this credential last pointed somewhere, which keep sending: review them, and change or delete any you do not recognize" }),
+  left: z.array(z.object({ kind: z.enum(["webhook", "usage-webhook"]), id: z.string().optional(), url: z.string() })).openapi({ description: "The webhooks this credential last pointed somewhere, which keep sending: review them, and change or delete any you do not recognize" }),
 }).openapi("Revoked");
 export const Token = z.object({ id: z.string(), name: z.string(), prefix: z.string(), createdAt: z.number() }).openapi("Token");
 export const OAuthGrant = z.object({

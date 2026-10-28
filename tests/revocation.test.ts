@@ -55,7 +55,7 @@ test("a rotation right after an upsert waits for the upsert's header write: it i
   }
 });
 
-test("revoking an API token lists the webhooks and trace export it set, which keep sending", async t => {
+test("revoking an API token lists the webhooks it set, which keep sending", async t => {
   const hook = await listen(t, (_req, res) => void res.writeHead(204).end());
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), LOCAL);
   const made = (await r.call("/v1/tokens", { body: { name: "ci" } })).json;
@@ -63,7 +63,6 @@ test("revoking an API token lists the webhooks and trace export it set, which ke
   const endpoint = (await asToken("/v1/webhooks", { body: { url: hook, events: ["run.completed"] } })).json;
   assert.equal(endpoint.setBy, `token:${made.id}`);
   assert.equal((await asToken("/v1/usage-webhook", { method: "PUT", body: { url: `${hook}/usage` } })).status, 200);
-  assert.equal((await asToken("/v1/telemetry", { method: "PUT", body: { endpoint: `${hook}/traces` } })).json.setBy, `token:${made.id}`);
   // One the console set is not the token's.
   const own = (await r.call("/v1/webhooks", { body: { url: `${hook}/own`, events: ["run.completed"] } })).json;
   assert.equal(own.setBy, "operator");
@@ -73,7 +72,6 @@ test("revoking an API token lists the webhooks and trace export it set, which ke
   assert.deepEqual(revoked.json, { revoked: true, left: [
     { kind: "webhook", id: endpoint.id, url: hook },
     { kind: "usage-webhook", url: `${hook}/usage` },
-    { kind: "telemetry", url: `${hook}/traces` },
   ] });
   assert.equal((await asToken("/v1/me")).status, 401);
   assert.equal((await r.call(`/v1/webhooks/${endpoint.id}`)).json.setBy, `token:${made.id}`, "kept, and shown, until the tenant changes it");

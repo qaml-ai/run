@@ -30,7 +30,8 @@ import type { Decider } from "../decisions.ts";
 import type { Outbound } from "../outbound.ts";
 import type { WrittenFile } from "../volume-tools.ts";
 import type { Inputs, RetryPlan } from "../inputs.ts";
-import type { BackgroundSpans, RunSpans, ToolSource, Tracing } from "../telemetry.ts";
+/** Where a tool comes from. */
+export type ToolSource = "attached" | "served" | "mcp" | "openapi" | "builtin" | "files" | "channel" | "runtime";
 
 export const validSessionId = (value: string) => /^client_[a-f0-9]{40}$/.test(value);
 
@@ -208,11 +209,7 @@ export type Session = {
   retries?: Map<string, RetryPlan>;
   /** A channel's conversation: someone there answers the agent's inputs. */
   channel?: boolean;
-  /** The running run's spans, when its trace is exported (telemetry.ts). */
-  spans?: RunSpans;
-  /** A compaction between runs, when its tenant exports telemetry. */
-  background?: Promise<BackgroundSpans | undefined>;
-  /** Where each of the running agent's tools comes from, for its tool calls' spans. */
+  /** Where each of the running agent's tools comes from. */
   toolSources?: Map<string, ToolSource>;
   computerRevision?: string;
   /** The children the running run's calls started, by call id, which its tool calls name (an abort finds them by their rows: `stopDelegates`). */
@@ -359,8 +356,6 @@ export interface ClientSessionOptions {
   rerankers?: Reranker[];
   /** Human input (questions, approvals, setup steps) that suspended turns wait on; without it, tools cannot ask. */
   inputs?: Inputs;
-  /** Trace export: runs of a tenant that has it set record their spans here. */
-  tracing?: Tracing;
   /** Submit a request to an agent on whichever node serves it (resuming a suspension that expired). */
   submit?: (agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) => Promise<RequestRecord>;
   /**

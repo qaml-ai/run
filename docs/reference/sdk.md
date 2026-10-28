@@ -162,7 +162,6 @@ Run options (`run`, `stream`):
 | `runLimits` | `run_limits=` | `{maxResponses, maxSeconds}`: this run's own, lowering the agent's; see [Run limits](../guides/models-and-keys.md#run-limits) |
 | `allowDisconnected` | `allow_disconnected=` | run even with nobody serving the agent's tools (else refused: `APPLICATION_NOT_CONNECTED`) |
 | `output` | `output=` | structured output: a zod (or other Standard Schema), TypeBox or JSON Schema (Python: a pydantic model class, or a JSON Schema dict) for an object; the answer is `run.output`. See [Structured output](../guides/structured-output.md) |
-| `traceparent` | `traceparent=` | a W3C trace context (`00-<trace-id>-<span-id>-<flags>`), sent as the `traceparent` header: when the tenant exports telemetry (`runtime.telemetry`), the run's spans continue your trace, under that span. Not part of the run's idempotency |
 
 ### `agent.fork(options)`
 
@@ -205,7 +204,7 @@ run = await agents.run("Ship on Friday?", instructions="Vote yes or no.", output
 `runLimits`, `modelHeaders`, `mounts`, `fileTools`, `codeMode`, `name`; a run with
 no tools defaults to `codeMode: false` and `fileTools: false`) and the run's own:
 `input`, `files` (inline bytes, or `{ url }`; audio is transcribed, and `input` may then be `""`), `output`, `user`, `metadata`, `idempotencyKey`,
-`spendLimit`, `retentionSeconds`, `signal`, `throwOnError`, `traceparent`
+`spendLimit`, `retentionSeconds`, `signal`, `throwOnError`
 (Python: snake_case keywords, `input` first). It resolves with a `Run` (no
 `inputs`), and throws a `RunError` when the run failed unless
 `throwOnError: false`.
@@ -330,7 +329,7 @@ with Agents() as agents:  # CAMELAI_API_KEY
   `files`, `delete`. A run's inputs are answered with `run.inputs[0].answer(…)`.
 - `AgentRuntime` has every call of the async one that is one request
   (definitions, providers, key scopes, tokens, usage, webhooks, `me`,
-  `browser_token`, runs, `telemetry`), and `wait_for_run` and `run_events`.
+  `browser_token`, runs), and `wait_for_run` and `run_events`.
 - Handles hold no connection. `agent.run()` sends the message and asks for its
   outcome (a long poll of up to 25 s at a time); `agent.stream()` reads the
   agent's events while it reads the run. `timeout=` (seconds) stops the wait,
@@ -394,10 +393,9 @@ available and stable for code that needs the wire's shape: `agents.runtime`,
 | | `tokens()`, `create_token(name)`, `revoke_token(token_id)` | API tokens; a new one's secret is in `create_token`'s answer only |
 | | `create_webhook(url, events, description=)`, `webhooks()`, `webhook(id)`, `update_webhook(id, …)`, `delete_webhook(id)`, `rotate_webhook_secret(id)` | webhook endpoints; see [Webhooks](../guides/webhooks.md) |
 | | `rotate_agent_credentials(agent_id)` | a new token for an agent; the old one stops at once |
-| `runtime.telemetry.set({ endpoint, headers, protocol, sampleRate, include: { content } })`, `get()`, `test()`, `clear()` | `await runtime.telemetry.set(endpoint, headers=, protocol=, sample_rate=, include_content=)`, `get()`, `test()`, `clear()` | export each run as an OpenTelemetry trace to your OTLP/HTTP endpoint (see [Telemetry](#telemetry)) |
 | `agents.endUsers.configure({ enabled, allowances, markupBps, dailyLimit, lowBalance })`, `settings()`, `get(id, { buckets })`, `list({ after, limit })`, `update(id, { allowances, dailyLimit })`, `ledger(id, { before, limit })`, `grant(id, { amount, key, reference?, metadata? })`, `refund(…)`, `adjust(…)` | `agents.end_users.configure(enabled=, allowances=, markup_bps=, daily_limit=, low_balance=)`, `settings()`, `get(id, buckets=)`, `list(after=, limit=)`, `update(id, allowances=, daily_limit=)`, `ledger(id, before=, limit=)`, `grant(id, amount=, key=, reference=, metadata=)`, `refund(…)`, `adjust(…)` | your users' credit, in micro-USD: allowances by bucket, balances, grants after a payment, the ledger (see [End-user credits](../guides/end-user-credits.md)); an agent's `bucket` is an upsert option
 | `client.prompt(text, { from, actor, files, metadata, whileRunning, output, idempotencyKey, signal })` | `client.prompt(text, from_=, …)` | a run's raw result: `{ reply, output, error, stopped, inputs, files, toolErrors, … }`; rejects on a runtime error. `output` here is `{ schema }`, a JSON Schema |
-| `client.request(method, params, options)` | `client.request(method, params, …)` | any request (`prompt`, `continue`, `execute`, `configure`, `status`, `abort`); `traceparent` (`traceparent=`) continues your trace |
+| `client.request(method, params, options)` | `client.request(method, params, …)` | any request (`prompt`, `continue`, `execute`, `configure`, `status`, `abort`) |
 | `client.waitForRequest(id)` | `wait_for_request(id)` | wait for a request already sent, from any process |
 | `client.requestStatus(id, { wait })`, `outcomes()` | `request_status(id, wait=)`, `outcomes()` | a request's record (`wait`: seconds, at most 25, to wait for it to settle first); every request's state |
 | `client.answer(inputId, { action, content, from })`, `inputs(state)` | `answer(input_id, action=, …)`, `inputs(state=)` | inputs, raw |
@@ -430,44 +428,6 @@ Each agent also has `workspaceId`, `lastActiveAt` (when its latest run ended)
 and `lastError` (`{ at, class }` of its latest failed run: a class such as
 `model_error`, `spend_limit` or `aborted`, never the error's text; the
 request's outcome has the message).
-
-### Telemetry
-
-`runtime.telemetry` (in the simple interface, `agents.runtime.telemetry`) is the
-tenant's trace export, `/v1/telemetry`: each run becomes an OpenTelemetry trace,
-with spans for its model calls and tool calls, sent to an OTLP/HTTP endpoint
-(LangSmith, Langfuse, Honeycomb, Datadog, Tempo, your own collector). See
-[Observability](../guides/observability.md) for the spans, presets and what is
-exported.
-
-```ts
-await agents.runtime.telemetry.set({ endpoint: "https://api.honeycomb.io/v1/traces", headers: { "x-honeycomb-team": key } });
-const { ok, traceId } = await agents.runtime.telemetry.test();   // one test span, sent now
-const run = await agent.run("Summarize ticket 123", { traceparent }); // continues your trace
-```
-
-```python
-await agents.runtime.telemetry.set("https://api.honeycomb.io/v1/traces", headers={"x-honeycomb-team": key})
-result = await agents.runtime.telemetry.test()
-run = await agent.run("Summarize ticket 123", traceparent=traceparent)
-```
-
-- `set` changes only what it is given: options left out keep their current
-  values (their defaults the first time, when `endpoint` is needed). `headers`
-  are stored encrypted and never returned: `get()` lists their names. Left out
-  of a later `set`, they stay while the endpoint keeps its origin, and are
-  dropped when it moves; `{}` removes them. `protocol` is `http/protobuf`
-  (default) or `http/json`, `sampleRate` (`sample_rate=`) the share of runs
-  traced (default 1), and `include: { content: true }` (`include_content=True`)
-  also exports prompts, replies and tool arguments and results.
-- `get()` is the settings with `status: { lastExportAt, lastError, lastErrorAt }`,
-  or `null` (`None`) when none are set. `clear()` stops export: `{ deleted }`,
-  false when nothing was set. `test()` is `{ ok, status?, error?, traceId, spanId }`.
-- `traceparent` is also taken by `client.prompt`, `client.request`, and
-  `createAgent` / `upsertAgent` (`create_agent` / `upsert_agent`) for their
-  first `prompt`. A run's record (`client.requestStatus(id)`, typed as
-  `RequestRecord`) carries `trace: { traceId, spanId, parentSpanId?, sampled }`
-  while the tenant exports telemetry.
 
 ### Transcriptions
 
@@ -620,7 +580,7 @@ stream's cursor in memory; a new one starts from a snapshot of the running turn.
 ### The wire
 
 `GET /clients/:id/events` streams SSE; `POST /clients/:id/requests` accepts
-idempotent requests (with a W3C `traceparent` header, the run continues that trace); `POST /clients/:id/mcp` carries the application's MCP
+idempotent requests; `POST /clients/:id/mcp` carries the application's MCP
 messages; all with the agent's token as `Authorization: Bearer`. `/clients/*`
 refuses requests with a browser `Origin`. Application code should use the SDK
 rather than speak this protocol.
