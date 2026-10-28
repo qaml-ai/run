@@ -3,7 +3,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { JournalHistory } from "../../src/pi-durable/history.ts";
 import { hasPiStorage, openPiStorage } from "../../src/pi-durable/storage.ts";
-import { recordsHistory, retiredRecords } from "../../src/pi-durable/retired-host.ts";
+import { recordsHistory, retiredRecords } from "./retired-host.ts";
 
 /** The whole history: what the retired host transcript held before the journal's base, then the journal's. */
 export async function journalMessages(location: Parameters<typeof openPiStorage>[0]): Promise<AgentMessage[]> {

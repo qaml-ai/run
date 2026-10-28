@@ -9,7 +9,7 @@ import {
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
+import { errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, legacyFormatRefused, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
@@ -33,7 +33,7 @@ import type { Storage as PiStorage } from "@earendil-works/pi-durable";
 import { DurableAgent, type DurableAgentOptions } from "./pi-durable/agent.ts";
 import { contextRangeSize } from "./pi-durable/storage.ts";
 import { HostJournal } from "./pi-durable/host-journal.ts";
-import type { RetiredRecord } from "./pi-durable/retired-host.ts";
+import { JournalHistory } from "./pi-durable/history.ts";
 import { seedJournal, SESSION_CONVERSATION_ID } from "./pi-durable/seed.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
@@ -60,7 +60,7 @@ const hydratedSize = (value: Hydrated) => "data" in value ? value.data.length : 
 const hydratedImage = (fitted: Fitted): Hydrated => "omitted" in fitted ? { omitted: fitted.omitted } : { data: fitted.data.toString("base64"), mimeType: fitted.mimeType };
 
 /** An agent's legacy log, read only (`HostIO.legacyLog`). */
-export interface LegacyLog { read(): Promise<RetiredRecord[]>; empty(): Promise<boolean> }
+export interface LegacyLog { empty(): Promise<boolean> }
 
 /** How a host talks to its supervisor: over IPC in its own process, or directly when inline. */
 export interface HostIO {
@@ -72,8 +72,8 @@ export interface HostIO {
   /** Why the running turn must end before its next model request (a reached spend cap, the run's own limits, or its node leaving), if so. */
   runLimit(): Promise<RunStop | undefined>;
   /**
-   * The agent's legacy log, read only: what the host transcript's first imports could not copy (retired-host.ts), read
-   * once, as the session's history before its journal base is indexed. A session holding history only there is refused.
+   * Whether the agent's legacy log (the history of a session from before Pi, or what the host transcript's first imports
+   * could not copy) is empty: a session holding history only there is refused, never started empty.
    */
   legacyLog: LegacyLog;
   /** Native Pi storage stays on the supervisor under the session's ownership claim. */
@@ -793,35 +793,22 @@ export function createAgentHost(hostIO: HostIO) {
     }
   }
 
-  /** Write `messages` (the history's from `from`, where `turns` begin) to the history index, as chunks: where it ends then. */
-  async function writeIndex(from: number, messages: AgentMessage[], turns: number[]): Promise<number> {
-    let indexed = from;
-    for (const chunk of chunksOf({ from, messages, sizes: messages.map(message => JSON.stringify(message).length), turns })) {
-      indexed = await io.history!.write(chunk);
-      if (indexed !== chunk.start + chunk.messages.length) break;
-    }
-    return indexed;
-  }
-
   /**
-   * The session's history in Pi's journal. A session the host transcript wrote has it retired first (its history before
-   * the journal's base indexed from it: `HostJournal.retire`). A new agent's journal (no Pi storage yet, nothing in its
+   * The session's history in Pi's journal. A session in a legacy format (a host transcript no release retired) is
+   * refused, untouched. A new agent's journal (no Pi storage yet, nothing in its
    * legacy log) is seeded here: its Pi context starts from the leading system message `tools` make, after the history
    * it was created with (`initialMessages`); a fork's was seeded as it was made. A session whose history is still only
    * in the legacy format (never imported, or rolled back to the legacy engine by an earlier release) is refused,
    * loudly: this release imports nothing, and starting it empty would lose its history.
    */
   async function open(storage: PiStorage, tools: Tool[]): Promise<HostJournal> {
-    if (await HostJournal.retire(storage, { ...(io.history && indexedTo !== undefined ? { indexed: indexedTo, index: async (from, messages, turns) => indexedTo = await writeIndex(from, messages, turns) } : {}),
-      legacy: () => io.legacyLog.read() })) console.log(JSON.stringify({ type: "host_transcript_retired", agent: config.id, tenant: config.tenant }));
+    // A host transcript no release retired holds history before the journal that only its records have.
+    if ((await JournalHistory.snapshotBase(storage))?.enabled) throw legacyFormatRefused(config.id, config.tenant, "host_transcript");
     const opened = await HostJournal.open(storage, io.dedupeUserEntries);
     if (opened) return opened;
     const legacy = await storage.conversation(SESSION_CONVERSATION_ID, BACKGROUND_CONTEXT) ? "not_on_pi"
       : await io.legacyLog.empty() ? undefined : "legacy_log";
-    if (legacy) {
-      console.error(JSON.stringify({ type: "legacy_session_not_imported", agent: config.id, tenant: config.tenant, reason: legacy }));
-      throw new Error(`${NOT_MIGRATED}: this agent's history is in the legacy format (${legacy === "not_on_pi" ? "its Pi host generation is missing or disabled" : "only its legacy transcript holds it"}), which this release no longer imports. This release cannot start it; nothing was changed`);
-    }
+    if (legacy) throw legacyFormatRefused(config.id, config.tenant, legacy);
     const leadingSystem = leadingSystemMessage(config, tools);
     // Pi's context starts with the leading system message: before the history it was created with (`initialMessages`), or
     // with that history's summary, at its cut.

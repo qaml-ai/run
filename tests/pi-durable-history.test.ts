@@ -15,7 +15,7 @@ import { AgentSupervisor } from "../src/supervisor.ts";
 import type { TranscriptRecord } from "./fixtures/host-transcript.ts";
 import { testDatabase } from "./database.ts";
 
-test("cold paginated history of an import before #322 includes a native commit beyond an up-to-date legacy index, without starting or writing the session", async t => {
+test("cold history of an import before #322 (no journal history) is refused, without starting or writing the session", async t => {
   const { db } = await testDatabase();
   const directory = await mkdtemp(join(tmpdir(), "pi-cold-history-"));
   const storage = fileStorage(join(directory, "storage"));
@@ -48,11 +48,9 @@ test("cold paginated history of an import before #322 includes a native commit b
   // No pending run or lagging index signals the WAL-only messages left by a failed legacy projection.
   assert.equal((await db.query("select pending_runs from agents where id = $1", [id])).rows[0].pending_runs, false);
   assert.equal(await index.indexed(id), await index.reported(id));
-  const newest = await sessions.historyPageFor(id, "owner", { limit: "1" });
-  assert.equal(newest.total, 4);
-  assert.deepEqual(newest.entries.map(entry => entry.message), fresh);
-  assert.deepEqual((await sessions.historyPageFor(id, "owner", { limit: "2", before: "2" })).entries.map(entry => entry.message), old);
-  assert.deepEqual((await sessions.agentHistory(id, "owner"))?.messages, [...old, ...fresh]);
+  // Its history is in a legacy format this release no longer reads: refused, nothing started or written.
+  await assert.rejects(sessions.historyPageFor(id, "owner", { limit: "1" }), (error: any) => error.status === 409 && /AGENT_NOT_MIGRATED: .*not_on_pi/.test(error.message));
+  await assert.rejects(sessions.agentHistory(id, "owner"), /AGENT_NOT_MIGRATED/);
   assert.equal(supervisor.agents.size, 0);
   assert.equal(sessions.sessions.size, 0);
   const source = storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id));
