@@ -28,7 +28,7 @@ from . import (
     _AgentCalls, _DEFAULT, _PartReader, _RuntimeCalls, _Session, _TRANSCRIPTION_TIMEOUT, _UPLOAD_TIMEOUT, _answer_for, _attachment, _bearer,
     _check_request_id, _env, _error, _file_claims, _file_token, _http_sync, _issuer_of, _message_params, _origin, _outcome_run, _output_request,
     _prompt_extra, _public_key_sync, _require_tenant, _retry_after, _run_frame, _sender, _sse_frames,
-    _stateless_run, _steer_receipt, _token_header, _tool_server_answer, _tool_table, _tool_server_response, _trace_header, _unauthorized,
+    _stateless_run, _steer_receipt, _token_header, _tool_server_answer, _tool_table, _tool_server_response, _unauthorized,
     _unique_name, _verified,
 )
 from . import AgentFiles as _AsyncFiles, RunInput as _AsyncInput, Runs as _AsyncRuns, TestRuntime as _AsyncTestRuntime
@@ -196,11 +196,11 @@ class AgentClient(_AgentCalls):
     def _http(self, suffix, method="GET", body=None, retry=True, timeout=None):
         return _http_sync(self.http, self.base, self.path + suffix, self.session["token"], method, body, retry, timeout=timeout)
 
-    def _submit(self, method, params, request_id, traceparent=None):
+    def _submit(self, method, params, request_id):
         """Send a request (the same id again joins the first): its record."""
         _check_request_id(request_id)
         return _http_sync(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
-                          {"id": request_id, "method": method, "params": params or {}}, headers=_trace_header(traceparent))
+                          {"id": request_id, "method": method, "params": params or {}})
 
     def _outcome(self, request_id, record=None, timeout=None):
         """A request's outcome ({"result"} or {"error", "code"?}): from its record, or asked for until it settles."""
@@ -229,12 +229,11 @@ class AgentClient(_AgentCalls):
             if "outcome" in record:
                 return record["outcome"]
 
-    def request(self, method, params=None, *, idempotency_key=None, timeout=None, traceparent=None):
+    def request(self, method, params=None, *, idempotency_key=None, timeout=None):
         """Send a request and wait for its result, however long the run takes: `timeout` (seconds) only stops the wait;
-        the request goes on. A runtime error raises AgentError. `traceparent` (a W3C trace context) makes the run
-        continue the caller's trace when the tenant exports telemetry."""
+        the request goes on. A runtime error raises AgentError."""
         request_id = idempotency_key or str(uuid.uuid4())
-        return _result(request_id, self._outcome(request_id, self._submit(method, params, request_id, traceparent), timeout))
+        return _result(request_id, self._outcome(request_id, self._submit(method, params, request_id), timeout))
 
     def wait_for_request(self, request_id, *, timeout=None):
         """Wait for a request already sent (by this process or another) to settle. This never submits or re-executes work."""
@@ -263,24 +262,24 @@ class AgentClient(_AgentCalls):
         return _message_params(text, attached, _prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history, run_limits), from_, metadata)
 
     def prompt(self, text, *, actor=None, from_=None, files=None, metadata=None, while_running=None, idempotency_key=None, allow_disconnected=False,
-               spend_limit=None, output=None, history=None, timeout=None, traceparent=None):
+               spend_limit=None, output=None, history=None, timeout=None):
         """Send a message and wait for the run's raw result ({"reply", "output", "error", "stopped", "inputs", ...}), as
         camelai_run.AgentClient.prompt. `files`: bytes, a local path, {"name", "data", "content_type"?} or {"path"}."""
         request_id = idempotency_key or str(uuid.uuid4())
         params = self._prompt_params(request_id, text, actor=actor, from_=from_, files=files, metadata=metadata, while_running=while_running,
                                      allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=output, history=history)
-        result = self.request("prompt", params, idempotency_key=request_id, timeout=timeout, traceparent=traceparent)
+        result = self.request("prompt", params, idempotency_key=request_id, timeout=timeout)
         # A steered message's request completes as the running turn takes it, naming the turn: its outcome is the turn's.
         if while_running == "steer" and isinstance(result, dict) and isinstance(result.get("steeredInto"), str) and "reply" not in result:
             return self.wait_for_request(result["steeredInto"], timeout=timeout)
         return result
 
-    def steer_message(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False, traceparent=None):
+    def steer_message(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False):
         """Hand a message to the running turn and return as soon as the runtime has it: {"id", "status", "steeredInto"?},
         as camelai_run.AgentClient.steer_message."""
         request_id = idempotency_key or str(uuid.uuid4())
         params = self._prompt_params(request_id, text, actor=actor, from_=from_, files=files, metadata=metadata, while_running="steer", allow_disconnected=allow_disconnected)
-        return _steer_receipt(self._submit("prompt", params, request_id, traceparent))
+        return _steer_receipt(self._submit("prompt", params, request_id))
 
     def configure(self, *, model=None, system_prompt=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT, data_collection=_DEFAULT, language=_DEFAULT):
         """Change the model, system prompt, thinking level, declared tools, max_output_tokens or temperature between runs (None
@@ -417,13 +416,13 @@ class RunStream:
             raise AgentError("A run's stream is read once: result() has the run")
         self._started = True
         agent, options = self._agent, dict(self._options)
-        output, timeout, traceparent = options.pop("output", None), options.pop("timeout", None), options.pop("traceparent", None)
+        output, timeout = options.pop("output", None), options.pop("timeout", None)
         user = options.pop("user", None)
         params = agent.client._prompt_params(self.id, self._text, from_=_sender(user) if user else None, output=_output_request(output), **options)
         make_input = lambda input: RunInput(agent, input, output)
         reader = _PartReader(make_input)
         deadline = None if timeout is None else time.monotonic() + timeout
-        follow = agent.client._follow(self.id, lambda: agent.client._submit("prompt", params, self.id, traceparent))
+        follow = agent.client._follow(self.id, lambda: agent.client._submit("prompt", params, self.id))
         try:
             while True:
                 try:
@@ -474,7 +473,7 @@ class Agent:
         return self.client.files
 
     def run(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-            allow_disconnected=False, spend_limit=None, output=None, traceparent=None, history=None, run_limits=None):
+            allow_disconnected=False, spend_limit=None, output=None, history=None, run_limits=None):
         """Send a message and wait for the run it starts: its reply, or the input it waits on. As camelai_run.Agent.run:
         `timeout` (seconds) only stops the wait, a failed run raises RunError unless throw_on_error=False, and the same
         idempotency_key returns the same run."""
@@ -482,7 +481,7 @@ class Agent:
         params = self.client._prompt_params(request_id, text, from_=_sender(user) if user else None, files=files, metadata=metadata, while_running=while_running,
                                             allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=_output_request(output), history=history,
                                             run_limits=run_limits)
-        record = self.client._submit("prompt", params, request_id, traceparent)
+        record = self.client._submit("prompt", params, request_id)
         return self._settled(request_id, self.client._outcome(request_id, record, timeout), output, throw_on_error, timeout)
 
     def _settled(self, request_id, outcome, output, throw_on_error, timeout=None):
@@ -497,12 +496,12 @@ class Agent:
         return run
 
     def stream(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-               allow_disconnected=False, spend_limit=None, output=None, traceparent=None, history=None):
+               allow_disconnected=False, spend_limit=None, output=None, history=None):
         """Send a message and read the run as it happens: text as it is written, tool calls and results, the input it
         waits on and, last, "done" with the run."""
         return RunStream(self, text, {"user": user, "files": files, "metadata": metadata, "idempotency_key": idempotency_key, "timeout": timeout,
                                       "throw_on_error": throw_on_error, "while_running": while_running, "allow_disconnected": allow_disconnected,
-                                      "spend_limit": spend_limit, "output": output, "traceparent": traceparent, "history": history})
+                                      "spend_limit": spend_limit, "output": output, "history": history})
 
     def _respond(self, input, answer, from_, throw_on_error, timeout):
         audience = (input.get("responders") or {}).get("audience")
@@ -517,14 +516,14 @@ class Agent:
         return Run(input["requestId"], "input_required", inputs=pending)
 
     def send(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False, spend_limit=None,
-             output=None, traceparent=None, history=None, run_limits=None):
+             output=None, history=None, run_limits=None):
         """Send a message and return as soon as the runtime has it, without waiting for the run: {"id", "state"} (running
         or queued). Get its outcome later with wait(id), the agent's events, or a run.completed webhook."""
         request_id = idempotency_key or str(uuid.uuid4())
         params = self.client._prompt_params(request_id, text, from_=_sender(user) if user else None, files=files, metadata=metadata,
                                             allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=_output_request(output), history=history,
                                             run_limits=run_limits)
-        record = self.client._submit("prompt", params, request_id, traceparent)
+        record = self.client._submit("prompt", params, request_id)
         return {"id": record["id"], "state": record["state"]}
 
     def wait(self, request_id, *, timeout=None, throw_on_error=True):
@@ -548,7 +547,7 @@ class Agent:
         if wait:
             return self.run(text, **options, while_running="steer")
         user = options.pop("user", None)
-        unknown = set(options) - {"files", "metadata", "idempotency_key", "allow_disconnected", "traceparent"}
+        unknown = set(options) - {"files", "metadata", "idempotency_key", "allow_disconnected"}
         if unknown:
             raise TypeError(f"steer() takes {', '.join(sorted(unknown))} only with wait=True")
         return self.client.steer_message(text, from_=_sender(user) if user else None, **options)
@@ -630,9 +629,9 @@ class Runs:
     def __init__(self, runtime):
         self.runtime = runtime
 
-    def create(self, input, *, idempotency_key=None, wait=None, traceparent=None, **config):
+    def create(self, input, *, idempotency_key=None, wait=None, **config):
         """Start a run and return at once, still running (or, with `wait`, once it ends within it): its view as a dict."""
-        return self.runtime.create_run(_AsyncRuns._request(input, **config), idempotency_key=idempotency_key, wait=wait, traceparent=traceparent)
+        return self.runtime.create_run(_AsyncRuns._request(input, **config), idempotency_key=idempotency_key, wait=wait)
 
     def get(self, run_id, *, wait=0):
         """A run by its id, as a dict: running, or how it ended. `wait` (seconds, at most 25) waits for it to end first."""
@@ -653,17 +652,17 @@ class Runs:
         """A run's raw event stream, to its end; see stream for one read into text, tool calls and the result."""
         return self.runtime.run_events(run_id, last_event_id=last_event_id)
 
-    def run(self, input, *, idempotency_key=None, throw_on_error=True, traceparent=None, timeout=None, **config):
+    def run(self, input, *, idempotency_key=None, throw_on_error=True, timeout=None, **config):
         """Run and wait for its result: see Agents.run. `timeout` (seconds) stops the wait, not the run."""
-        view = self.create(input, idempotency_key=idempotency_key, wait=True if timeout is None else min(timeout, 60), traceparent=traceparent, **config)
+        view = self.create(input, idempotency_key=idempotency_key, wait=True if timeout is None else min(timeout, 60), **config)
         if view["status"] == "running":
             view = self.runtime.wait_for_run(view["id"], timeout=None if timeout is None else max(0.0, timeout - 60))
         return _stateless_run(view, config.get("output"), throw_on_error)
 
-    def stream(self, input=None, *, run_id=None, idempotency_key=None, throw_on_error=True, traceparent=None, **config):
+    def stream(self, input=None, *, run_id=None, idempotency_key=None, throw_on_error=True, **config):
         """Run, reading it as it happens (or, given run_id, follow that run). Returns a StatelessRunStream."""
         if run_id is None:
-            run_id = self.create(input, idempotency_key=idempotency_key, traceparent=traceparent, **config)["id"]
+            run_id = self.create(input, idempotency_key=idempotency_key, **config)["id"]
         return StatelessRunStream(self.runtime, run_id, config.get("output"), throw_on_error)
 
 
