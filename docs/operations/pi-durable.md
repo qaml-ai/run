@@ -39,27 +39,31 @@ Full history, export and fork read the history index, then the journal past it.
 ## Sessions from before the host transcript's removal
 
 Releases before it kept a host transcript beside Pi's journal: a latest-only
-`camel.host.snapshot` document and `camel.host.record` entries. Its first load by
-this release retires it, once (`HostJournal.retire`): the settled history before
-the journal's base that the history index lacks is indexed from the host's records
-first (the session's legacy log first, for an import too large to copy); then, in
-one commit, the base marker (where the host's last snapshot stood, with the running
-or waiting turn's messages before it, unless an earlier release's base marker
-holds the session already), the base document, and the host document set to
-`enabled: false, retired: "journal"` with a `camel.host.disabled` entry. The host
-logs `host_transcript_retired`. Releases from #374 on refuse such a session with 409
-`AGENT_NOT_MIGRATED` saying its history format is newer (`session_format_newer`);
-earlier ones refuse it as not on Pi. Rolling back below this release is one-way.
+`camel.host.snapshot` document and `camel.host.record` entries. Releases from #374
+to #465 retired it at a session's first load, once: the settled history before
+the journal's base that the history index lacked was indexed from the host's
+records (the session's legacy log first, for an import too large to copy); then,
+in one commit, the base marker (where the host's last snapshot stood, with the
+running or waiting turn's messages before it, unless an earlier release's base
+marker held the session already), the base document, and the host document set to
+`enabled: false, retired: "journal"` with a `camel.host.disabled` entry.
 
-A history index that lacks messages before a session's base (it was lost, or never
-written) is logged as `history_index_behind_journal`; history reads then read those
-messages from the retired host records.
+Since #465 the runtime no longer reads the host's records or the legacy log. An
+agent whose history is still in such a format is refused with 409
+`AGENT_NOT_MIGRATED`, its storage untouched, and logged as `legacy_format_refused`
+with a `kind`: `host_transcript` (never retired), `not_on_pi` (a journal with no
+journal history: an import before #322 never adopted, or a session an earlier
+release rolled back to the legacy engine), `legacy_log` (no journal, only a legacy
+log) or `history_before_base` (a history read reaches before the base, and the
+index lacks it). None should be left: `POST /v1/operations/legacy-migrate` (#466,
+#468, removed with the readers) converted every agent in those formats, and legacy
+coverage read 0 before the readers went. The refusal stays as a guard against
+losing history, never as an upgrade path.
 
 ## Sessions from the legacy engine
 
 Every session the legacy engine kept was imported into Pi, when a host first opened
-it or by the migration sweep (both now removed). The runtime no longer reads a
-legacy transcript to import it. It still reads every format those imports wrote:
+it or by the migration sweep (both now removed). Those imports wrote:
 
 - Every session starts with `camel.legacy.migration`, and its context checkpoint
   uses `camel.legacy.context`. These persisted kinds stay the same for new agents,
@@ -69,27 +73,16 @@ legacy transcript to import it. It still reads every format those imports wrote:
   base, initial history, context checkpoint and request IDs (`seedJournal`).
 - An import too large to copy (more than 64 MiB or 200,000 records) left its records
   in the session's legacy log (`archive: "legacy-log"` on the marker and the
-  generation). Retirement reads that log first to backfill the history index.
-  New forks put their copied history into the history index, then seed their Pi
-  context; they do not write a legacy log.
-- Imports from before #322 have archive blocks and no generation of their own; their
-  history reads the same way.
-
-A session whose history is still only in the legacy format (its Pi host generation
-missing, or disabled by an earlier release's rollback to the legacy engine) is
-refused: its host logs `legacy_session_not_imported` (agent, tenant, `reason`:
-`legacy_log` or `not_on_pi`), and the request fails with 409 `AGENT_NOT_MIGRATED`.
-Nothing is written, so its history stays where it is, and readable (from its legacy
-log, and Pi's messages past it). This refusal protects old data; it is not an
-upgrade path. Every production agent is on Pi. Rollback below the host transcript's
-removal is no longer supported, and the migration dashboard check is gone.
+  generation). New forks put their copied history into the history index, then
+  seed their Pi context; they do not write a legacy log.
+- Imports from before #322 have archive blocks (`camel.legacy.record`) and their
+  host generation, if a host adopted them, after the archive.
 
 ## Legacy format coverage
 
 `GET /v1/operations/legacy-coverage` counts the live agents whose history is still
-in a legacy format, which need the readers above (`src/pi-durable/retired-host.ts`,
-`HostJournal.retire`, the legacy log's reads), so those can be deleted once nothing
-needs them. Only the
+in a legacy format, which this release refuses (above). It read 0 before the
+readers were deleted, and stays as a check that none appears. Only the
 platform operator calls it: an operator token of a tenant in
 `AGENT_BILLING_ADMINS`; API tokens, console sessions and OAuth tokens get 403. It
 is not part of the documented API.
@@ -146,61 +139,6 @@ document's latest revision is read whole, once per host session still holding on
 Agents with no journal and no hot rows then have their legacy log listed in
 Storage, outside the transaction. Each call is logged as `legacy_coverage_viewed`
 with the counts so far.
-
-## Converting legacy formats
-
-`POST /v1/operations/legacy-migrate` converts every agent the coverage gate counts
-to the current format, with the legacy readers one last time
-(`src/pi-durable/legacy-migrate.ts`), so the gate reads 0. Platform operator only,
-like coverage. The body is JSON: `dryRun` (default `true`: reads and checks
-everything, writes nothing), `maxBytes` (default 16 MiB, at most 64 MiB, the history
-index's full-read bound: the most stored history a conversion that holds it all in
-memory may read), `budgetMs` (default 20000, at most 25000) and `cursor`.
-
-It walks agents as coverage does (the same batches and probes, read-only, 20 s
-statement timeouts) and converts each agent of a batch that a gate count names, one
-at a time:
-
-| `kind` | What it was | What it becomes |
-| --- | --- | --- |
-| `host_transcript` | A host transcript never retired. | Retired as a first load does (`HostJournal.retire`), streaming: the host's records (its legacy log's first, streamed from Storage an object at a time, a snapshot an item at a time) pass through a window that settles a message only once no later record takes it back (a first pass finds which) and never the newest few, and the settled history before the base the index lacks is written to it in pieces of at least 4 MiB, at most 8 MiB held, from where it ends, so memory stays bounded whatever the history's size and a stop goes on from there; then the base, the base document and the host document retired, in one commit. `maxBytes` does not bound it. Pi's context is kept. |
-| `not_on_pi` | A journal with no journal history: an import before #322 never adopted, or a rollback to the legacy engine. | Its history as the readers gave it (the legacy log's records, then Pi's messages past the newest they name) indexed whole; then, in one commit, a base after it, a context checkpoint (the context's system message, a summary, the last 20 messages) and, after a rollback, the host document retired. |
-| `legacy_log` | No journal, a legacy log (from before Pi). | The log's history indexed whole, then its journal seeded after it (`seedJournal`) with a summary and the last 20 messages as its context, and its requests recorded. |
-| `history_before_base` | Retired, its index short of the base. | The missing messages indexed from the retired host's records. |
-| `base_document` | A base marker but no base document. | The document naming the newest marker. |
-
-Each agent gets a result `code`: `migrated` (or `would_migrate` in a dry run),
-`current` (nothing to do), `skipped_hosted` (loaded, loading or being deleted
-here, or held by a live node), `skipped_busy` (runs open or queued),
-`skipped_memory` (this node is past `AGENT_MEMORY_HIGH_BYTES`), `skipped_gone`
-(revoked or purged), `too_large` (not a host transcript, and its journal entries and
-documents, and its legacy log's objects and tail rows, measured without reading
-them, before the claim and again under it, are past `maxBytes`: never read), `review` (the converter cannot read it whole or tell what it is: a journal
-with no history and an empty legacy log, an index short of a base whose host
-records reclaim removed, an index holding more than the records give, a rollback
-after the journal had a base; nothing written) or `failed` (tried again next time).
-Before converting, the node takes the agent under a claim of its own (a dry run
-takes none), so no other node loads it meanwhile and a load on this node waits for
-it, and lets it go after. Legacy logs are read, never written. A converted agent is
-`current` the next time, so the walk can be run again until coverage reads 0.
-
-A call answers `counts` (by code, for the walk so far), `kinds` (conversions by
-kind), `results` (this call's, but `current`, up to 500), `complete`, `next`,
-`dryRun` and `maxBytes`. A cursor keeps its walk's `dryRun`: a dry run's cursor is
-refused for a migration. Each conversion is logged as `legacy_migrated`; a
-`review` as `legacy_migrate_review` and a failure as `legacy_migrate_failed`, with
-the agent and the error; each call as `legacy_migrate_called`.
-
-```sh
-url=https://run.camelai.com/v1/operations/legacy-migrate; body='{"dryRun":true}'
-while :; do
-  page=$(curl -fsS -X POST -H "Authorization: Bearer $op" -H 'content-type: application/json' -d "$body" "$url") || break
-  jq -c '{counts, kinds, results: [.results[] | select(.code != "skipped_hosted")]}' <<<"$page"
-  next=$(jq -r '.next // empty' <<<"$page")
-  [ -z "$next" ] && break
-  body=$(jq -nc --arg c "$next" '{dryRun: true, cursor: $c}')
-done
-```
 
 ## Persistence and billing
 

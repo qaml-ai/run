@@ -64,7 +64,7 @@ async function fixture(t: TestContext) {
       tool: async name => { calls.push(name); return options.inputRequired ? { inputRequired: true, content: [{ type: "text", text: "Approval required" }] } : { value: "saved-value" }; },
       cancelTools: async () => null,
       runLimit: async () => undefined,
-      legacyLog: { read: async () => [], empty: async () => true },
+      legacyLog: { empty: async () => true },
       piStorage: async () => storage,
       file: async () => { throw new Error("unexpected file read"); },
       modelAuth: async () => { throw new Error("unexpected credential lookup"); },

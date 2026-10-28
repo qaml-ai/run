@@ -10,6 +10,7 @@ import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { contextTokens, explicitKeyStream } from "../src/compaction.ts";
 import { historyOf, hostTranscriptSession, type TranscriptRecord } from "./fixtures/host-transcript.ts";
+import { journalMessages } from "./fixtures/journal-history.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
@@ -155,7 +156,7 @@ test("a history pi 0.80.6 wrote loads, replays its tool history and summary, and
   const events: any[] = [];
   const started = await supervisor.start("legacy", { model: fake.model(8000), apiKey: "fixture" }, { ...inspect, background: (event: any) => events.push(event) });
   assert.equal(started.messages, 20);
-  assert.deepEqual(((await supervisor.history("legacy")) as any[]), before);
+  assert.deepEqual(((await journalMessages({ sessionId: "legacy", directory })) as any[]), before);
   const result = await supervisor.request("legacy", "prompt", { text: "After the upgrade" });
   assert.equal(result.error, null);
   const sent = text(fake.chat().at(-1)!);
@@ -166,7 +167,7 @@ test("a history pi 0.80.6 wrote loads, replays its tool history and summary, and
   for (let index = 0; index < 3; index++) assert.equal((await supervisor.request("legacy", "prompt", { text: turn(index) }, event => events.push(event))).error, null);
   await until(() => events.some(event => event.type === "compaction_end" && event.summarizedMessages > 0), "a compaction ran");
   assert.match(text(fake.summarizations()[0]), /SUMMARY-write-4/, "the stored summary seeds the next one");
-  assert.deepEqual(((await supervisor.history("legacy")) as any[]).slice(0, 20), before);
+  assert.deepEqual(((await journalMessages({ sessionId: "legacy", directory })) as any[]).slice(0, 20), before);
 });
 
 test("a history pi 0.87.1 wrote loads on pi 1.0, replays its summary, tool history and system change, and keeps compacting", async t => {
@@ -189,7 +190,7 @@ test("a history pi 0.87.1 wrote loads on pi 1.0, replays its summary, tool histo
   const events: any[] = [];
   const started = await supervisor.start("legacy", { model: fake.model(8000), apiKey: "fixture", systemPrompt: "Changed rules" }, { definitions, async call() { return "inspected"; }, background: event => events.push(event) });
   assert.equal(started.messages, 26);
-  assert.deepEqual(((await supervisor.history("legacy")) as any[]), before);
+  assert.deepEqual(((await journalMessages({ sessionId: "legacy", directory })) as any[]), before);
   assert.equal((await supervisor.request("legacy", "status")).compacted, true);
   assert.equal((await supervisor.request("legacy", "prompt", { text: "After the upgrade" })).error, null);
   const sent = fake.chat().at(-1)!;
@@ -201,7 +202,7 @@ test("a history pi 0.87.1 wrote loads on pi 1.0, replays its summary, tool histo
   for (let index = 0; index < 3; index++) assert.equal((await supervisor.request("legacy", "prompt", { text: turn(index) }, event => events.push(event))).error, null);
   await until(() => events.some(event => event.type === "compaction_end" && event.summarizedMessages > 0), "a compaction ran");
   assert.match(text(fake.summarizations()[0]), /SUMMARY-087-2/, "the stored summary seeds the next one");
-  assert.deepEqual(((await supervisor.history("legacy")) as any[]).slice(0, 26), before);
+  assert.deepEqual(((await journalMessages({ sessionId: "legacy", directory })) as any[]).slice(0, 26), before);
 });
 
 test("an imported history larger than one summarization request is summarized in chunks", async t => {
@@ -621,7 +622,7 @@ for (const outcome of ["fits", "irreducible", "summary-fails"]) test(outcome ===
   if (!fits) {
     assert.match(String(result.error), /maximum context length/);
     assert.ok(fake.chat().length <= 4, "native recovery and one host continuation are bounded");
-    const history = await supervisor.history("overflow-twice") as any[];
+    const history = await journalMessages({ sessionId: "overflow-twice", directory }) as any[];
     assert.equal(history.filter(message => message.stopReason === "error").length, 1, "only the final refusal remains in history");
     const failures = events.filter(event => event.type === "message_end" && event.message.stopReason === "error");
     assert.equal(failures.length, 1, "only the final unrecovered refusal is visible");
@@ -634,7 +635,7 @@ for (const outcome of ["fits", "irreducible", "summary-fails"]) test(outcome ===
   assert.ok(text(fake.chat()[0]).length > 100_000);
   assert.ok(text(fake.chat().at(-1)!).length <= 100_000);
   assert.ok(fake.summarizations().length >= 2, "both recoveries summarize, with large prefixes split into chunks");
-  const history = await supervisor.history("overflow-twice") as any[];
+  const history = await journalMessages({ sessionId: "overflow-twice", directory }) as any[];
   assert.equal(history.filter(message => message.stopReason === "error").length, 0, "rejected attempts are not history");
 });
 

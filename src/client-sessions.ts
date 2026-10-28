@@ -25,9 +25,7 @@ import { scheduleInput } from "./scheduler.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson } from "./http.ts";
 import { rateLimitHeaders, type RateLimitState } from "./rate-limits.ts";
 import { VolumeService } from "./volumes.ts";
-import { databaseRetryable, databaseUnavailable, transaction, type Db, type Sql } from "./db.ts";
-import { LegacyReview, LegacyTooLarge } from "./pi-durable/legacy-migrate.ts";
-import type { LegacyAgentResult } from "./legacy-migrate.ts";
+import { databaseRetryable, databaseUnavailable, type Db, type Sql } from "./db.ts";
 import { NotOwner, LostClaim, underClaim, type Claim } from "./ownership.ts";
 import { deleteTail } from "./log-tail.ts";
 import type { DefinitionRef } from "./definitions.ts";
@@ -145,8 +143,6 @@ const settled = (state: string) => state !== "running";
 export class ClientSessions {
   readonly sessions = new Map<string, Session>();
   private readonly loading = new Map<string, Promise<Session | undefined>>();
-  /** Agents whose history `migrateLegacy` is converting here: a load waits for it. */
-  private readonly migrating = new Map<string, Promise<void>>();
   /** Concurrent deletes must wait for the same cancellation before any caller stops the host. */
   private readonly removing = new Map<string, Promise<void>>();
   readonly supervisor: AgentSupervisor;
@@ -309,9 +305,6 @@ export class ClientSessions {
   private load(id: string, sweep = false): Promise<Session | undefined> {
     const loaded = this.sessions.get(id);
     if (loaded) return Promise.resolve(loaded);
-    // Its history is being converted from a legacy format here (`migrateLegacy`): loaded once that is done.
-    const migrating = this.migrating.get(id);
-    if (migrating) return migrating.then(() => this.load(id, sweep));
     let loading = this.loading.get(id);
     if (!loading) {
       loading = this.read(id, sweep).finally(() => this.loading.delete(id));
@@ -1434,89 +1427,8 @@ export class ClientSessions {
       : { reset: false as const, keptMessages: 0, before: { entries: 0, bytes: 0 }, after: { entries: 0, bytes: 0 } };
   }
 
-  /**
-   * Convert one agent's history from a legacy format to the current one (POST /v1/operations/legacy-migrate,
-   * src/legacy-migrate.ts; pi-durable/legacy-migrate.ts says what each format becomes). Only an agent no node holds:
-   * one loaded, loading or held by a live node is skipped (`skipped_hosted`), one with runs open or queued too
-   * (`skipped_busy`). Its stored history is measured (journal entries and documents, legacy log), before the claim and
-   * again under it: past `maxBytes`, a conversion that reads the whole history into memory is refused (`too_large`),
-   * never read; a host transcript is retired streaming, memory bounded, whatever its size. Otherwise this node takes it under a claim of its own, so no other
-   * node loads it meanwhile and a load here waits, converts it, and lets it go. `dryRun` takes no claim, reads and checks
-   * everything, and writes nothing. A converted agent converts no more: a second call finds it `current`.
-   */
-  async migrateLegacy(id: string, options: { dryRun: boolean; maxBytes: number; now?: number }): Promise<LegacyAgentResult> {
-    const agent = id;
-    if (!validSessionId(id)) return { agent, code: "failed", error: "Invalid agent id" };
-    if (this.closed) throw new HttpError(503, "This node is stopping; retry");
-    const here = () => this.sessions.has(id) || this.loading.has(id) || this.migrating.has(id) || this.removing.has(id) || this.supervisor.agents.has(id) || this.supervisor.starting.has(id);
-    if (here()) return { agent, code: "skipped_hosted" };
-    // A conversion holds the agent's history in memory: none on a node past its limit.
-    if (this.supervisor.memoryHigh) return { agent, code: "skipped_memory" };
-    const done = Promise.withResolvers<void>();
-    // Set before anything is awaited: a load from here on waits for it.
-    this.migrating.set(id, done.promise);
-    const ownership = this.options.ownership;
-    let claim: Claim | undefined, bytes = 0;
-    try {
-      const row = async () => (await this.db.query<{ revoked: boolean; purged_at: string | null; pending_runs: boolean }>("select revoked, purged_at, pending_runs from agents where id = $1", [id])).rows[0];
-      const found = await row();
-      if (!found || found.revoked || found.purged_at) return { agent, code: "skipped_gone" };
-      if (found.pending_runs) return { agent, code: "skipped_busy" };
-      bytes = await this.legacyBytes(id);
-      if (ownership) {
-        if (options.dryRun) { if (await ownership.owner(id)) return { agent, code: "skipped_hosted", bytes }; }
-        else {
-          const acquired = await ownership.acquire(id).catch(() => undefined);
-          if (!acquired || "owner" in acquired) return { agent, code: "skipped_hosted", bytes };
-          claim = acquired.claim;
-          // Again under the claim: a run marked open meanwhile, before this node held it, is left to its next load.
-          const now = await row();
-          if (!now || now.revoked || now.purged_at) return { agent, code: "skipped_gone", bytes };
-          if (now.pending_runs) return { agent, code: "skipped_busy", bytes };
-          // Measured again under the claim: it may have grown since, and nothing grows it now.
-          bytes = await this.legacyBytes(id);
-        }
-      }
-      const conversion = await this.supervisor.migrateLegacy(id, claim, {
-        dryRun: options.dryRun, limit: this.options.contextRangeMaxBytes ?? CONTEXT_RANGE_MAX_BYTES, ...(options.now ? { now: options.now } : {}), tooLarge: bytes > options.maxBytes,
-        index: { indexed: async () => (await this.historyIndex.indexed(id)) ?? 0, write: chunk => this.historyIndex.write(id, claim, chunk) },
-      });
-      if (!conversion) return { agent, code: "current", bytes };
-      const result: LegacyAgentResult = { agent, code: options.dryRun ? "would_migrate" : "migrated", bytes, ...conversion };
-      if (!options.dryRun) console.log(JSON.stringify({ type: "legacy_migrated", ...result }));
-      return result;
-    } catch (error) {
-      if (error instanceof LegacyTooLarge) return { agent, code: "too_large", bytes, error: error.message };
-      const result: LegacyAgentResult = { agent, code: error instanceof LegacyReview ? "review" : "failed", error: errorText(error).slice(0, 500) };
-      console.error(JSON.stringify({ type: result.code === "review" ? "legacy_migrate_review" : "legacy_migrate_failed", ...result, dryRun: options.dryRun }));
-      return result;
-    } finally {
-      if (claim) await ownership!.release(claim).catch(() => {});
-      this.migrating.delete(id);
-      done.resolve();
-    }
-  }
-
   /** Whether an agent's legacy log is empty, listed rather than read (legacy coverage's Storage check). */
   legacyLogEmpty(id: string): Promise<boolean> { return this.supervisor.legacyLogEmpty(id); }
-
-  /**
-   * What reading an agent's legacy history would load, at most: its journal's entries and document revisions (their
-   * stored text, measured without reading it), and its legacy log (Storage's objects, listed, and its tail rows).
-   */
-  private async legacyBytes(id: string): Promise<number> {
-    const key = AgentSupervisor.transcriptKey(id);
-    const stored = await transaction(this.db, async sql => {
-      await sql.query("set transaction isolation level repeatable read, read only");
-      await sql.query("set local statement_timeout = 20000");
-      return (await sql.query<{ bytes: string }>(`select coalesce((select sum(octet_length(record)) from pi_durable_entries where session_id = $1), 0)
-          + coalesce((select sum(octet_length(content)) from pi_durable_document_revisions where session_id = $1), 0)
-          + coalesce((select sum(octet_length(body)) from log_records where log_key = $2), 0) as bytes`, [id, key])).rows[0].bytes;
-    });
-    let objects = 0;
-    if (this.storage.objects) for await (const object of this.storage.objects(`${key}.log/`)) objects += object.bytes;
-    return Number(stored) + objects;
-  }
 
   /**
    * A tenant's key for `provider` changed: stop that tenant's idle agents using it
@@ -2666,7 +2578,7 @@ export class ClientSessions {
   private async purgeAgent(id: string, header: SessionHeader): Promise<boolean> {
     // Held here (a single host without ownership, or a revocation not yet unloaded) or taken by
     // another node since: the claim's lease lapses and a later sweep tries again.
-    if (this.sessions.has(id) || this.loading.has(id) || this.migrating.has(id) || this.supervisor.agents.has(id) || this.supervisor.starting.has(id)) return false;
+    if (this.sessions.has(id) || this.loading.has(id) || this.supervisor.agents.has(id) || this.supervisor.starting.has(id)) return false;
     const ownership = this.options.ownership;
     let claim: Claim | undefined;
     if (ownership) {

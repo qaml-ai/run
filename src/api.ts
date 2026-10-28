@@ -59,7 +59,6 @@ import { exportAccount, type ExportOptions } from "./account-export.ts";
 import { Readable } from "node:stream";
 import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState } from "./rate-limits.ts";
 import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./legacy-coverage.ts";
-import { legacyMigrate, LegacyMigrateCursorError, LEGACY_MIGRATE_MAX_BYTES } from "./legacy-migrate.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -1243,35 +1242,6 @@ export function api(context: ApiContext) {
       console.log(JSON.stringify({ type: "legacy_coverage_viewed", by, complete: coverage.complete, calls: coverage.calls, durationMs: coverage.durationMs, ...coverage.counts }));
       return json(c, 200, coverage);
     } finally { coverageRunning = false; }
-  });
-  // Converts the agents legacy coverage counts to the current history format (src/legacy-migrate.ts): a dry run unless
-  // the body says `dryRun: false`. One call at a time per node; each walks for a time budget and answers a cursor.
-  let migrateRunning = false;
-  app.post("/v1/operations/legacy-migrate", async c => {
-    const by = operatorOnly(c);
-    const input = await readJson(c.req.raw.body, 8192, {}) as Record<string, unknown>;
-    if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "The body is a JSON object");
-    const { cursor, dryRun, maxBytes, budgetMs } = input;
-    if (cursor !== undefined && typeof cursor !== "string") throw new HttpError(400, "cursor is a string");
-    if (dryRun !== undefined && typeof dryRun !== "boolean") throw new HttpError(400, "dryRun is true or false");
-    if (maxBytes !== undefined && !(Number.isSafeInteger(maxBytes) && (maxBytes as number) > 0 && (maxBytes as number) <= LEGACY_MIGRATE_MAX_BYTES)) throw new HttpError(400, `maxBytes is a whole number of bytes, at most ${LEGACY_MIGRATE_MAX_BYTES}`);
-    if (budgetMs !== undefined && !(Number.isSafeInteger(budgetMs) && (budgetMs as number) > 0)) throw new HttpError(400, "budgetMs is a whole number of milliseconds");
-    if (migrateRunning) throw new HttpError(429, "A legacy migration call is already running on this node");
-    migrateRunning = true;
-    try {
-      let migration;
-      try {
-        migration = await legacyMigrate(accounts.db, {
-          ...(cursor ? { cursor } : {}), dryRun: dryRun !== false, ...(maxBytes !== undefined ? { maxBytes: maxBytes as number } : {}), ...(budgetMs !== undefined ? { budgetMs: budgetMs as number } : {}),
-          lister: legacyLogLister(id => clients.legacyLogEmpty(id)), migrate: (agent, options) => clients.migrateLegacy(agent, options),
-        });
-      } catch (error) {
-        if (error instanceof LegacyMigrateCursorError) throw new HttpError(400, error.message);
-        throw error;
-      }
-      console.log(JSON.stringify({ type: "legacy_migrate_called", by, dryRun: migration.dryRun, maxBytes: migration.maxBytes, complete: migration.complete, calls: migration.calls, durationMs: migration.durationMs, ...migration.counts }));
-      return json(c, 200, migration);
-    } finally { migrateRunning = false; }
   });
   route(createRoute({
     method: "post", path: "/v1/tenants", request: { body: content(schema.TenantInput) },
