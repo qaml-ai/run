@@ -6,7 +6,7 @@ import { convertToLlm, createCompactionSummaryMessage } from "../pi-harness/mess
 import { BASE_ADDRESS, baseWrites, JournalHistory } from "./history.ts";
 import { currentSystemMessage, keptTail, RESET_KEEP_MAX } from "./reset.ts";
 import { HostJournal } from "./host-journal.ts";
-import { HistoryWindow, legacyHistory, recordsHistory, retiredRecords, streamRetiredRecords, type RetiredRecord } from "./retired-host.ts";
+import { finalTotals, HistoryWindow, legacyHistory, recordsHistory, retiredRecords, streamRetiredRecords, type RetiredRecord } from "./retired-host.ts";
 import { contextWrites, SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
 import { commitTo } from "./storage.ts";
 
@@ -107,7 +107,8 @@ export const STREAM_CHUNK_BYTES = 4 * 1024 * 1024;
  * base the index lacks are written to it as they pass, STREAM_CHUNK_BYTES at a time, from where it ends (`indexed`), so
  * a retirement stopped halfway goes on from there. The running turn's messages before the base (`kept`) are collected
  * as they pass. Then the same single commit (`HostJournal.retire`, which finds nothing left to read). A first pass finds
- * the last reset, which replaces everything before it, so the window starts there.
+ * the last reset, which replaces everything before it, so the window starts there, and for each record how many
+ * messages no later one takes back (`finalTotals`): only those are written, so the index never holds a retracted one.
  */
 async function retireStreamed(journal: Storage, options: LegacyConvertOptions): Promise<LegacyConversion> {
   const plan = await HostJournal.retirementPlan(journal);
@@ -117,9 +118,12 @@ async function retireStreamed(journal: Storage, options: LegacyConvertOptions): 
   let kept: AgentMessage[] | undefined;
   if (indexed < settled || keptFrom !== undefined) {
     const legacy = options.legacy;
-    const records = () => streamRetiredRecords(journal, () => legacy.records ? legacy.records() : (async function* () { yield* await legacy.read(); })());
-    let count = 0, reset = 0;
-    for await (const record of records()) { if (record.t === "reset") reset = count; count++; }
+    const records = () => streamRetiredRecords(journal, () => {
+      if (!legacy.records) throw new Error("This session's legacy log cannot be read streaming");
+      return legacy.records();
+    });
+    // A first pass: what no later record takes back, so nothing written to the index is ever retracted, and the last reset.
+    const { final, reset } = await finalTotals(records());
     if (keptFrom !== undefined) kept = [];
     const window = new HistoryWindow(async (from, messages, turns) => {
       if (kept) kept.push(...messages.slice(Math.max(0, keptFrom! - from)));
@@ -132,7 +136,10 @@ async function retireStreamed(journal: Storage, options: LegacyConvertOptions): 
       indexed = end;
     }, STREAM_CHUNK_BYTES);
     let position = 0;
-    for await (const record of records()) if (position++ >= reset) await window.apply(record);
+    for await (const record of records()) {
+      if (position >= reset) await window.apply(record, final[position] ?? 0);
+      position++;
+    }
     await window.flush(window.total);
     if (keptFrom !== undefined && window.total !== base.total) throw new Error(`The host's records hold ${window.total} messages, its snapshot ${base.total}`);
     if (window.total < settled) throw new Error(`The host's records hold ${window.total} messages, before its base ${settled}`);

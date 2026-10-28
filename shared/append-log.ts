@@ -85,20 +85,25 @@ async function endLastLine(path: string) {
  * parse is dropped (`torn`: a crash mid-append), as `read` drops it; any other is an error.
  */
 export async function* jsonLines<T>(chunks: AsyncIterable<string> | Iterable<string>, torn = false): AsyncIterable<T> {
-  let rest = "", pending: string | undefined;
+  // The current line's pieces so far: joined once, when its newline comes, never copied again per chunk.
+  let parts: string[] = [], pending: string | undefined;
   const parse = (line: string, last: boolean): T[] => {
     try { return [JSON.parse(line)]; }
     catch (error) { if (torn && last) return []; throw new Error(`Corrupt append log record: ${(error as Error).message}`); }
   };
   for await (const chunk of chunks) {
-    const lines = (rest + chunk).split("\n");
-    rest = lines.pop()!;
-    for (const line of lines) {
+    let start = 0;
+    for (let newline = chunk.indexOf("\n"); newline >= 0; start = newline + 1, newline = chunk.indexOf("\n", start)) {
+      parts.push(chunk.slice(start, newline));
+      const line = parts.length === 1 ? parts[0] : parts.join("");
+      parts = [];
       if (!line) continue;
       if (pending !== undefined) yield* parse(pending, false);
       pending = line;
     }
+    if (start < chunk.length) parts.push(chunk.slice(start));
   }
+  const rest = parts.join("");
   if (rest) { if (pending !== undefined) yield* parse(pending, false); pending = rest; }
   if (pending !== undefined) yield* parse(pending, true);
 }

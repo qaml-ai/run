@@ -21,7 +21,7 @@ import { legacyCoverage, legacyLogLister } from "../src/legacy-coverage.ts";
 import { LEGACY_AGENT_CODES, legacyMigrate, LegacyMigrateCursorError, type LegacyAgentResult } from "../src/legacy-migrate.ts";
 import { Ownership } from "../src/ownership.ts";
 import { Passwords } from "../src/passwords.ts";
-import { HistoryWindow, legacyHistory, recordsHistory } from "../src/pi-durable/retired-host.ts";
+import { finalTotals, HistoryWindow, legacyHistory, recordsHistory, type RetiredRecord } from "../src/pi-durable/retired-host.ts";
 import { HostJournal } from "../src/pi-durable/host-journal.ts";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
@@ -427,30 +427,74 @@ test("a large host transcript, its archive in its journal or in its legacy log, 
   }
 });
 
-test("a history window holds only what is not settled: the latest turn, at most a bound past it", async () => {
-  const records: TranscriptRecord[] = [{ t: "reset", messages: [user("imported")] }];
-  for (let index = 0; index < 40; index++) records.push({ t: "turn", active: true }, { t: "message", message: user(`q${index}`) }, { t: "message", message: fauxAssistantMessage("z".repeat(10_000)) }, { t: "turn", active: false });
-  records.push({ t: "turn", active: true }, { t: "message", message: user("last") }, { t: "message", message: fauxAssistantMessage("wrong") }, { t: "retract" }, { t: "message", message: fauxAssistantMessage("right") });
-  const settled: { from: number; messages: AgentMessage[]; turns: number[] }[] = [];
-  let held = 0;
-  const window = new HistoryWindow(async (from, messages, turns) => { settled.push({ from, messages, turns }); }, 50_000);
-  for (const record of records) {
-    await window.apply(record as never);
-    held = Math.max(held, window.total - window.from);
-  }
+/** `records` through a HistoryWindow of `bytes`, as a streamed retirement runs it (`final` from a first pass, unless `trusting`). */
+async function windowed(records: TranscriptRecord[], bytes: number, trusting = false) {
+  async function* stream() { yield* records as never as RetiredRecord[]; }
+  const { final, reset } = await finalTotals(stream());
+  const settles: { from: number; messages: AgentMessage[]; turns: number[] }[] = [];
+  const window = new HistoryWindow(async (from, messages, turns) => { settles.push({ from, messages, turns }); }, bytes);
+  for (const [position, record] of (records as never as RetiredRecord[]).entries()) if (position >= reset) await window.apply(record, trusting ? Number.MAX_SAFE_INTEGER : final[position]);
   await window.flush(window.total);
-  const expected = recordsHistory(records as never);
-  assert.deepEqual(settled.flatMap(chunk => chunk.messages), expected.messages, "every message, in order, once");
-  assert.deepEqual(settled.flatMap(chunk => chunk.turns), expected.turns);
-  assert.ok(settled.length >= 8, `${settled.length} settles`);
-  assert.ok(held <= 12, `at most ${held} messages held`);
-  // A retraction that would take back a settled message, and a reset after one, fail rather than diverge.
-  const strict = new HistoryWindow(async () => {}, 1);
-  await strict.apply({ t: "message", message: user("a") });
-  await strict.apply({ t: "turn", active: true });
-  await strict.apply({ t: "message", message: user("b") });
-  await assert.rejects(strict.apply({ t: "retract" }).then(() => strict.apply({ t: "retract" })), /reaches back past/);
-  await assert.rejects(strict.apply({ t: "reset", messages: [] }), /reset after/);
+  return { settles, window, expected: recordsHistory(records as never) };
+}
+
+test("a history window settles by bytes: a long turn goes in a few large settles, held memory about twice the bound", async () => {
+  // 2,000 messages of 20 KB in one turn (40 MB), with a 4 MiB bound.
+  const records: TranscriptRecord[] = [{ t: "reset", messages: [user("imported")] }, { t: "turn", active: true }, { t: "message", message: user("go") }];
+  for (let index = 0; index < 2000; index++) records.push({ t: "message", message: fauxAssistantMessage(`${index} ${"z".repeat(20_000)}`) });
+  const bound = 4 * 1024 * 1024;
+  const { settles, window, expected } = await windowed(records, bound);
+  assert.deepEqual(settles.flatMap(chunk => chunk.messages), expected.messages, "every message, in order, once");
+  assert.deepEqual(settles.flatMap(chunk => chunk.turns), expected.turns);
+  assert.ok(settles.length <= 12, `${settles.length} settles`);
+  for (const chunk of settles.slice(0, -1)) assert.ok(chunk.messages.reduce((sum, message) => sum + JSON.stringify(message).length, 0) >= bound, "each settle but the last is the bound or more");
+  assert.ok(window.maxHeldBytes <= 2 * bound + 21_000, `held ${window.maxHeldBytes}`);
+});
+
+test("a history window never settles a message a later record takes back: retractions far back, and the newest always held", async () => {
+  // A turn of 600 messages of 20 KB (12 MB), then 300 retracted one after another, then more: a 1 MiB window without
+  // knowing what comes would have settled what is taken back.
+  const records: TranscriptRecord[] = [{ t: "turn", active: true }, { t: "message", message: user("go") }];
+  for (let index = 0; index < 600; index++) records.push({ t: "message", message: fauxAssistantMessage(`${index} ${"r".repeat(20_000)}`) });
+  for (let index = 0; index < 300; index++) records.push({ t: "retract" });
+  for (let index = 0; index < 50; index++) records.push({ t: "message", message: fauxAssistantMessage(`again ${index} ${"s".repeat(20_000)}`) });
+  const bound = 1024 * 1024;
+  const { settles, expected } = await windowed(records, bound);
+  assert.deepEqual(settles.flatMap(chunk => chunk.messages), expected.messages, "nothing taken back was settled");
+  assert.ok(settles.length > 2);
+  // Without the first pass's bound, the same window would settle a message a retraction then takes back: it fails.
+  await assert.rejects(windowed(records, bound, true), /reaches back past/);
+  // The newest HOLD_BACK are always held, whatever the bound.
+  const tiny: TranscriptRecord[] = Array.from({ length: 20 }, (_, index) => ({ t: "message" as const, message: user(`m${index} ${"t".repeat(100)}`) }));
+  const held = new HistoryWindow(async () => {}, 1);
+  for (const record of tiny) {
+    await held.apply(record as never, Number.MAX_SAFE_INTEGER);
+    assert.ok(held.total - held.from >= Math.min(held.total, HistoryWindow.HOLD_BACK));
+  }
+  await assert.rejects(held.apply({ t: "reset", messages: [] }, 0), /reset after/);
+});
+
+test("a streamed retirement stopped halfway (an index write failing) goes on from where the index ends, its history the same", { timeout: 300_000 }, async t => {
+  const rt = await runtime(t);
+  const records: TranscriptRecord[] = [];
+  for (let index = 0; index < 120; index++) records.push({ t: "turn", active: true }, { t: "message", message: user(`q${index}`) }, { t: "message", message: fauxAssistantMessage(`a${index} ${"w".repeat(100_000)}`) }, { t: "turn", active: false });
+  const agent = id("resumed");
+  await rt.row(agent);
+  await hostTranscriptSession(rt.location(agent), records);
+  const before = (await rt.sessions.agentHistory(agent, TENANT))!.messages;
+  // The node's history index fails its fifth write: the conversion fails, the session is not retired.
+  const write = rt.sessions.historyIndex.write.bind(rt.sessions.historyIndex);
+  let writes = 0;
+  t.mock.method(rt.sessions.historyIndex, "write", async (...args: Parameters<typeof write>) => { if (++writes === 5) throw new Error("storage went away"); return write(...args); });
+  const failed = await rt.sessions.migrateLegacy(agent, { dryRun: false, maxBytes: 1024 });
+  assert.equal(failed.code, "failed");
+  const halfway = (await rt.index.indexed(agent))!;
+  assert.ok(halfway > 0 && halfway < 240, `stopped at ${halfway}`);
+  t.mock.restoreAll();
+  const done = await rt.sessions.migrateLegacy(agent, { dryRun: false, maxBytes: 1024 });
+  assert.deepEqual([done.code, done.kind, done.indexedFrom, done.indexedTo], ["migrated", "host_transcript", halfway, 240]);
+  assert.deepEqual((await rt.sessions.agentHistory(agent, TENANT))!.messages, before);
+  assert.deepEqual(await rt.index.messages(agent, 240), historyOf(records), "the index holds each message once, in order");
 });
 
 test("POST /v1/operations/legacy-migrate is the platform operator's alone, a dry run by default", async t => {
