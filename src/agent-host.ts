@@ -27,8 +27,6 @@ import { describeFile, documentPayload, FILE_LIMITS, IMAGE_PAST_BUDGET, nativeBl
 import { observeContextMetrics, observeTurns, recordCodeExecution, recordContextRange, recordToolResultSize, safeError } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
-import { clock } from "./node-context.ts";
-import { usageMissing } from "./platform-pricing.ts";
 import type { FailedAttempt, RetryDecision, Storage as PiStorage } from "@earendil-works/pi-durable";
 import { DurableAgent, piRunning, type DurableAgentOptions } from "./pi-durable/agent.ts";
 import { contextRangeSize } from "./pi-durable/storage.ts";
@@ -147,7 +145,7 @@ export function createAgentHost(hostIO: HostIO) {
   let journal: HostJournal;
   let busy = false;
   let active: AbortController | undefined;
-  /** Why the current run ended early: a spend limit, tool calls waiting on a person's input, or a hand-off (its node is leaving). */
+  /** Why the current run ended early: a run or spend limit, or tool calls waiting on a person's input. */
   let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string; limit?: RunStop["limit"]; reason?: string; bucket?: string; endUser?: string } | undefined;
   /**
    * A model call its end user's credit refused (before it was made) or cut (where its hold ran out, as it streamed):

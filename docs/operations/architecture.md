@@ -255,7 +255,7 @@ dimension sets listed:
 | --- | --- | --- | --- |
 | `turn_metrics` | a turn (prompt, continue, resume) ends | `Turns`, `TurnDurationMs`, `TimeToFirstTokenMs`, `TimeToFirstRequestMs` (the runtime's part: until the first model request starts), `ModelResponses`, `ModelRetries`, `ToolCalls`, `ToolErrors` | `Outcome` (completed, failed, input_required, spend_limit, turn_limit, handed_off: its part on a node that handed it off at a step boundary), `ErrorClass`, `Provider`+`Model` |
 | `model_response` | a model response ends | `ResponseMs` and `ResponseFirstTokenMs` (from its stream's headers, which some hosts send only with the first token), `RequestFirstTokenMs` (from its request's start: the model's time to first token as the runtime waits for it) | `Provider`+`Model`+`Host` |
-| `turn_handed_off` | a node continues a turn another node handed off at a step boundary | `Handoffs`, `BoundaryWaitMs`, `HandoffLatencyMs` | `Reason` (retire, drain), `Step` (model, tool) |
+| `turn_handed_off` | a node continues a turn another node handed off as it left | `Handoffs`, `HandoffLatencyMs` | `Reason` (retire, drain), `Step` (model, tool) |
 | `model_error` | a model response fails (retried or not) | `ModelErrors` | `Provider`+`Model`, `ErrorClass` |
 | `run_events` | run events are written to the outbox | `RunsStarted`, `RunsResumed`, `RunsCompleted`, `RunsInputRequired`, `RunsSpendLimited`, `RunsTurnLimited`, `RunsFailed`, `RunsUncertain` | `Tenant` |
 | `run_failed` | the same, per failed run | `RunsFailedByClass` | `ErrorClass`, `Tenant`+`ErrorClass` |

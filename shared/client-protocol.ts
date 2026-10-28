@@ -38,8 +38,8 @@ export type RequestRecord = {
    * turn off at a step boundary, its next owner continuing with nothing lost: when, and why. Not resumes.
    */
   handoffs?: { reason: "retire" | "drain" | "memory"; at: number }[];
-  /** The runtime's own: handed off at a step boundary and not yet begun again on its next owner. */
-  handedOff?: { step: "model" | "tool"; boundaryWaitMs: number; from?: string };
+  /** The runtime's own: handed off by a node leaving the cluster and not yet begun again on its next owner. */
+  handedOff?: { step: "model" | "tool"; from?: string };
   /** The runtime's own: what a handed-off run had gathered for its outcome (usage, tool calls, files), carried to its next owner. */
   carried?: unknown;
   /** Who the application said is acting in this run: passed to its tool calls (`act` in identity tokens). */

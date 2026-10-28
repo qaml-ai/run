@@ -52,8 +52,6 @@ import { dollars } from "./client-sessions/spend.ts";
 import { historyNoneIgnored } from "./history-none.ts";
 import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun, failureClass } from "./client-sessions/state.ts";
 
-const has = (object: object, key: string) => Object.hasOwn(object, key);
-
 /** How far past its time limit a run may get before it is aborted, and twice this before its agent is stopped (`overrun`). */
 const RUN_OVERRUN_MS = 60_000;
 /**
@@ -2627,7 +2625,7 @@ export class ClientSessions {
     };
     const { params: _params, ...rest } = record;
     this.upsertRequest(session, {
-      ...rest, handedOff: { step: session.step ?? "model", boundaryWaitMs: 0, ...(this.options.ownership ? { from: this.options.ownership.node } : {}) },
+      ...rest, handedOff: { step: session.step ?? "model", ...(this.options.ownership ? { from: this.options.ownership.node } : {}) },
       handoffs: [...rest.handoffs ?? [], { reason: leaving.reason, at: now }].slice(-MAX_HANDOFFS_KEPT), ...(Object.keys(carried).length ? { carried } : {}),
     });
   }
@@ -2648,7 +2646,7 @@ export class ClientSessions {
     const last = record.handoffs?.at(-1);
     recordHandoff({
       tenant: session.header.tenant, agent: session.header.id, request: record.id, reason: last?.reason ?? "retire", step: handedOff?.step ?? "tool",
-      boundaryWaitMs: handedOff?.boundaryWaitMs ?? 0, latencyMs: last ? Math.max(0, Date.now() - last.at) : 0, handoffs: record.handoffs?.length ?? 1, ...(handedOff?.from ? { fromNode: handedOff.from } : {}),
+      latencyMs: last ? Math.max(0, Date.now() - last.at) : 0, handoffs: record.handoffs?.length ?? 1, ...(handedOff?.from ? { fromNode: handedOff.from } : {}),
     });
   }
 
