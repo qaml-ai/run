@@ -2,7 +2,7 @@
 
 The team's dashboard, the admin site (`src/admin-site.ts`), is at **https://run.camelai.com/ops**. It shows who
 signs up and stays, what they use, the money, and whether the platform is healthy. It reads the runtime's own
-database (and, for acquisition and the Journeys tab, the operator's journey store) and changes nothing. Cloudflare
+database (and, for the Journeys tab, the operator's journey store) and changes nothing. Cloudflare
 Access signs the team in. Every answer of its API is logged with the email of the person who asked.
 
 It has five tabs:
@@ -81,8 +81,8 @@ To turn the site off, set `admin_hostname = ""`; that is also how to run an olde
 
 ## Connecting the journey store
 
-The Growth tab's acquisition panel, the Journeys tab, and first-run counts in Product signals need journey events
-on. On the Terraform deployment:
+The Journeys tab and first-run counts in Product signals need journey events on. (Growth's sources do not: each
+account keeps its own, below.) On the Terraform deployment:
 
 1. Follow [the infrastructure plan/apply instructions](../../infra/terraform/README.md#plan-and-apply): fetch the current production `prod.auto.tfvars` from the state bucket, initialize, save and inspect the plan, and apply that exact plan. Never plan from repository defaults alone: that can disable unrelated production features. This creates two empty secrets, `<secret_prefix>/journey` and `<secret_prefix>/journey-report`, lets the tasks read them, and sets the journey settings (`journey.tf`; `journey_url` is the store's origin). Nothing changes yet: with no value in the journey secret the runtime leaves journey events off.
 2. Deploy (`infra/ecs-deploy.sh <tag>`), so tasks carry the new settings.
@@ -155,30 +155,28 @@ runbook. Otherwise that apply can restore the previous setting.
 ### Acquisition
 
 `GET /api/acquisition` (`src/admin-acquisition.ts`) starts with the same outside self-serve signup cohort
-as Growth. Staff and erased accounts are excluded. Signup and lifetime usage counts come from the runtime;
-the journey store's `journeys` report supplies first-touch attribution, joined by opaque account reference.
+as Growth. Staff and erased accounts are excluded. Everything comes from the runtime's own tables in one
+read, as camelBot counts its sign-ups by `signup_ref`; nothing is asked of the journey store.
 
-- **Sources**: arrivals on the configured sales-site host are grouped by their first landing page, including
-  individual blog posts. Referrals to the same sales page share one row, even if one came through Google and
-  another through a newsletter. Other hosts keep their recorded source and medium. The store supplies
-  `landing_host` and `landing_path`; older reports without a hostname keep their referral labels.
-- **Plugin acquisition**: the first OAuth grant within one hour of signup supplies the plugin label, including
-  accounts without journey records. Later connections do not rewrite acquisition.
+- **Where a source comes from**: each account keeps it when it is made (`tenants.signup_source`,
+  `src/signup-source.ts`). When a GitHub or Google sign-in starts, or with an email sign-up, the console sends
+  the `ref` of the link that opened it (`/console/?ref=run-slack`) and the host of the site the browser came
+  from (`document.referrer`, not the console itself). They wait in the sign-in's own 10-minute cookie
+  (`ar_source`, path `/console/auth`) or with the mailed link, and are kept once, on the account the sign-in
+  makes. A browser that sends Global Privacy Control, or whose consent cookie says `denied`, keeps its link's
+  tag but not its referrer. The sales site tags its links to the console with the page they are on
+  (`ref=home`, `ref=run-slack`, `ref=blog/<post>`); other links may carry a tag of their own.
+- **Sources**, in order: the MCP plugin whose first OAuth grant came within one hour of signup (later
+  connections do not rewrite acquisition); `ref=<tag>`; the referring host; **Direct**, a sign-up that showed
+  neither (a typed address, a bookmark, an app or a site that sends no referrer); **Not captured**, an account
+  made before sources were kept (migration 091) or by an operator. Not captured is never
+  relabelled Direct, and older sources cannot be reconstructed. `recorded_since` is when the first account
+  with a source was made.
 - **Usage by source**: signups, share, made an agent (or ran one), ran a model, median UTC days to first model
   answer, active on two or more UTC days, and purchased credit. Counts include scheduled and channel runs,
   use lifetime usage through today, and exclude standalone searches, voice and image calls.
 - **Daily chart**: the same source groups as the table. Small groups fold into Other; its hover lists each
-  page or source with signups that day, largest first. The chart's table view lists every source separately.
-- **Campaigns** and **landing pages**: the ten with the most signups in recorded attribution.
-- **Coverage**: the store's first and last event times. `tracked_signups` counts local cohort members returned
-  by the store, once per account; a tracked account may still have no captured source.
-
-At most 20 pages of 25 store accounts are read, for at most 15 seconds. Past that, `truncated` is true and
-unread sources stay Not captured. Accounts missing from reports remain in signup and usage totals.
-`status` is `not_configured` where no store answers reports and `unavailable` where it could not be asked;
-local counts and plugin labels remain available in both states. Missing attribution is never relabelled Direct.
-The page label is the first landing page recorded for that browser, which can differ from the page where it
-later clicked through to Run. Attribution that was never recorded cannot be reconstructed.
+  source with signups that day, largest first. The chart's table view lists every source separately.
 
 ## Usage
 
@@ -367,7 +365,7 @@ A missing journey connection does not hide the database-backed product signals. 
 - **Staff by GitHub alone** are counted until journey events mark them internal.
 - **Paying or free is as of now.** Revenue's and Health's split of accounts uses whether an account has bought credit
   today, not when it was charged.
-- **Acquisition sources** cover the journey records read, at most 500 accounts a request. Unread or missing sources remain Not captured; local signup and usage totals still include those accounts.
+- **Sources begin with migration 091.** Accounts made before it are Not captured; signup and usage totals still include them.
 
 ## API
 
@@ -378,7 +376,7 @@ no-store`). Each answer but `/api/me`'s is logged with the viewer's email.
 |---|---|---|
 | `GET /api/me` | the viewer's email | |
 | `GET /api/growth?days=` | Growth | `admin_growth_viewed` |
-| `GET /api/acquisition?days=` | Growth's acquisition, from the journey store | `admin_acquisition_viewed` |
+| `GET /api/acquisition?days=` | Growth's sources, kept on each account at sign-up | `admin_acquisition_viewed` |
 | `GET /api/usage?days=` | Usage | `admin_usage_viewed` |
 | `GET /api/account?tenant=&days=` | one account, with its agents' prompts | `admin_account_viewed` (with the tenant) |
 | `GET /api/revenue?days=` | Revenue | `admin_revenue_viewed` |
@@ -394,7 +392,7 @@ answers 400.
 ## Validation
 
 `tests/admin-dashboard.test.ts` covers the windows, every tab's definitions (staff, erased and admin tenants, free
-credit counting as spent first, spend by payer, the checks), acquisition paging, the drill-down's prompt and MCP
+credit counting as spent first, spend by payer, the checks), sources by kind, the drill-down's prompt and MCP
 hosts, and the site on a path: only `/ops` and `/ops/...` are the site's, all of it needs the token, and the settings
 are refused where they could not work. `tests/admin-signals.test.ts` covers the Journeys tab's reports and the
 journey store proxy. `tests/admin-site.test.ts` exercises the full runtime and requires the runtime's Rust-built V8

@@ -24,10 +24,10 @@ const growth = (days: number): AdminGrowth => ({
   median_days_to_first_run: 1, cohorts: [{ week: "2026-10-05", size: 10, active: [6, 3] }, { week: "2026-10-12", size: 4, active: [2] }],
 });
 const acquisition = (days: number): AdminAcquisition => ({
-  schema_version: 1, range: range(days), generated_at: NOW, status: "not_configured", tracked_signups: 0, sources: [{ source: "Not captured", medium: null, signups: 9, made_agent: 4, activated: 3, active_two_days: 2, paying: 1, median_days_to_first_run: 0 }], campaigns: [], landing_pages: [],
-  total: { source: "All", medium: null, signups: 9, made_agent: 4, activated: 3, active_two_days: 2, paying: 1, median_days_to_first_run: 0 },
+  schema_version: 1, range: range(days), generated_at: NOW, sources: [{ source: "Not captured", kind: "not_captured", signups: 9, made_agent: 4, activated: 3, active_two_days: 2, paying: 1, median_days_to_first_run: 0 }],
+  total: { source: "All", kind: "direct", signups: 9, made_agent: 4, activated: 3, active_two_days: 2, paying: 1, median_days_to_first_run: 0 },
   daily: DATES.map((date, index) => ({ date, counts: [index + 2] })),
-  truncated: false, coverage: { first_event_at: null, last_event_at: null },
+  recorded_since: null,
 });
 const usage = (days: number): AdminUsage => ({
   schema_version: 1, range: range(days), generated_at: NOW,
@@ -137,9 +137,9 @@ test("growth shows its headline figures, the takeaway, and why sources are missi
   expect(within(signups).getByText("59")).toBeTruthy();
   expect(within(signups).getByText("+18%")).toBeTruthy();
   expect(within(screen.getByText("Activated", { selector: "dt" }).closest("div")!).getByText("56% of them ran a model")).toBeTruthy();
-  // The journey store is not connected here: the card says so in plain words, never a zero.
-  const sources = (await screen.findAllByText(/Source reporting is not connected/))[0];
-  expect(sources.textContent).toContain("Signup and usage counts still include all outside accounts");
+  // No account has a source yet: the card says how many have one and why the rest are Not captured, never a zero.
+  expect(await screen.findByText("0 of 9 sign-ups in 30 days have a source · kept for accounts made from now on")).toBeTruthy();
+  expect((await screen.findAllByText(/Not captured means the account was made before sources were kept/)).length).toBeGreaterThan(0);
   expect(new URLSearchParams(location.search).get("tab")).toBe("growth");
   expect(new URLSearchParams(location.search).get("days")).toBe("30");
 });
@@ -202,9 +202,9 @@ test("MCP plugins shows attribution and token activity with the shared range and
 test("sources show conversion rates and daily stacks retain every source in table view", async () => {
   const user = userEvent.setup();
   sourceReport = acquisition(30);
-  sourceReport.status = "ok";
-  sourceReport.sources = ["newsletter", "blog", "docs", "camelai.com/blog/ai-agent-memory", "camelai.com/blog/deploy-ai-agents", "camelai.com/", "ChatGPT plugin", "Not captured"].map((source, index) => ({
-    source, medium: null, signups: index + 1, made_agent: 1, activated: 1, active_two_days: 0, paying: 0, median_days_to_first_run: 0,
+  sourceReport.recorded_since = "2026-10-01T10:00:00Z";
+  sourceReport.sources = ([["newsletter", "ref"], ["blog", "ref"], ["docs.example.test", "referrer"], ["blog/ai-agent-memory", "ref"], ["blog/deploy-ai-agents", "ref"], ["home", "ref"], ["ChatGPT plugin", "plugin"], ["Not captured", "not_captured"]] as const).map(([source, kind], index) => ({
+    source, kind, signups: index + 1, made_agent: 1, activated: 1, active_two_days: 0, paying: 0, median_days_to_first_run: 0,
   }));
   sourceReport.total.signups = 36;
   sourceReport.daily = [{ date: "2026-10-16", counts: [1, 2, 3, 4, 5, 6, 7, 8] }];
@@ -212,7 +212,8 @@ test("sources show conversion rates and daily stacks retain every source in tabl
   const table = await screen.findByRole("table", { name: "Sign-ups of the last 30 days by source" });
   expect(within(table).getByText("Active 2+ days")).toBeTruthy();
   expect(within(table).getAllByRole("row")).toHaveLength(10);
-  const blog = within(table).getByText("blog").closest("tr")!;
+  const blog = within(table).getByText("ref=blog").closest("tr")!;
+  expect(within(table).getByText("docs.example.test")).toBeTruthy();
   expect(blog.textContent).toContain("1 (50%)");
   const chart = screen.getByRole("heading", { name: "Sign-ups, by where they came from" }).closest("div.bg-card") as HTMLElement;
   expect(within(chart).getByText("Other")).toBeTruthy();
@@ -223,13 +224,13 @@ test("sources show conversion rates and daily stacks retain every source in tabl
   const readoutRows = Array.from(readout.children).slice(1);
   expect(readoutRows[0].textContent).toBe("36in all");
   expect(readoutRows.slice(-3).map(element => element.textContent)).toEqual([
-    "6/", "5/blog/deploy-ai-agents", "4/blog/ai-agent-memory",
+    "6ref=home", "5ref=blog/deploy-ai-agents", "4ref=blog/ai-agent-memory",
   ]);
   expect(readoutRows.slice(-3).every(element => element.classList.contains("text-muted-foreground/70"))).toBe(true);
   expect(chart.textContent).not.toContain("Other:");
-  expect(table.textContent).not.toContain("camelai.com");
+  expect(screen.getByText("28 of 36 sign-ups in 30 days have a source · kept for accounts made since Oct 1, 2026")).toBeTruthy();
   await user.click(within(chart).getByRole("button", { name: "Table view" }));
   const daily = within(chart).getByRole("table");
-  expect(within(daily).getByText("/")).toBeTruthy();
+  expect(within(daily).getByText("ref=home")).toBeTruthy();
   expect(within(daily).getByText("36")).toBeTruthy();
 });

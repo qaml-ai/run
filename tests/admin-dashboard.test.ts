@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { Hono } from "hono";
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { adminWindow } from "../src/admin-accounts.ts";
-import { ADMIN_ACQUISITION_PAGES, adminAcquisition } from "../src/admin-acquisition.ts";
+import { adminAcquisition } from "../src/admin-acquisition.ts";
 import { adminGrowth } from "../src/admin-growth.ts";
 import { adminHealth } from "../src/admin-health.ts";
 import { adminRevenue, freeCreditBucket } from "../src/admin-revenue.ts";
@@ -15,7 +15,7 @@ import { adminSite, adminSiteFromEnvironment, OPS_ICON, type AdminSiteOptions } 
 import { adminAccount, adminUsage, maskSecrets } from "../src/admin-usage.ts";
 import type { Sql } from "../src/db.ts";
 import { testDatabase } from "./database.ts";
-import { listen, type T } from "./runtime-server.ts";
+import type { T } from "./runtime-server.ts";
 
 const at = (iso: string) => Date.parse(iso);
 /** A Friday afternoon: the 7-day window is March 14 to 20, the one before it March 7 to 13. */
@@ -290,55 +290,32 @@ test("health says what the platform spent, for whom, and what is waiting longer 
   assert.equal(health.nodes.length, 1);
 });
 
-test("where sign-ups came from is read from the journey store's accounts, page by page", async t => {
+test("where sign-ups came from is the source each account kept, read from the runtime alone", async () => {
   const { db } = await testDatabase();
   await seed(db);
-  const refs = new Map<string, string>();
-  for (const tenant of ["ann", "bea", "dan", "eve", "old"]) {
-    const ref = randomUUID(); refs.set(tenant, ref);
-    await db.query("insert into journey_accounts (tenant, account_ref, internal, since_signup, consent, created_at) values ($1,$2,false,true,'granted',$3)", [tenant, ref, NOW]);
+  // Old has a source but signed up outside the window; staff (Dan) and the erased (Eve) are never counted.
+  for (const [tenant, source] of [["ann", { ref: "run-slack" }], ["bea", { referrer: "news.ycombinator.com" }], ["old", { ref: "home" }], ["dan", { ref: "home" }], ["eve", { ref: "home" }]] as const) {
+    await db.query("update tenants set signup_source = $2 where id = $1", [tenant, JSON.stringify(source)]);
   }
-  const pages: unknown[] = [];
-  const item = (signup: string, source: string | null, extra: object = {}) => ({
-    account_ref: randomUUID(), signup_at: signup, activated_at: null, payments: 0, events_in_range: 1, last_active_at: signup, display_name: null, email: null, summary: "",
-    acquisition: { source, medium: source === "google" ? "organic" : null, campaign: null, landing_path: "/run", handoff_status: "none", capture_quality: "full" }, ...extra,
-  });
-  const store = await listen(t, (req, res) => {
-    let raw = "";
-    req.on("data", chunk => raw += chunk).on("end", () => {
-      const asked = JSON.parse(raw);
-      pages.push(asked);
-      const items = asked.cursor ? [item("2026-03-16T00:00:00Z", "news.ycombinator.com", { account_ref: refs.get("bea"), acquisition: { source: "news.ycombinator.com", medium: "referral", campaign: "launch", landing_path: "/", capture_quality: "full" } }), item("2026-03-01T00:00:00Z", "google", { account_ref: refs.get("old") })]
-        : [item("2026-03-15T00:00:00Z", "google", { account_ref: refs.get("ann") }), item("2026-03-15T02:00:00Z", "google", { account_ref: refs.get("ann") }),
-          item("2026-03-17T00:00:00Z", "news.ycombinator.com", { payments: 1, acquisition: { source: "news.ycombinator.com", medium: "referral", campaign: "launch", landing_path: "/", handoff_status: "none", capture_quality: "full" } }),
-          item("2026-03-18T00:00:00Z", null, { acquisition: { source: null, medium: null, campaign: null, landing_path: null, handoff_status: "none", capture_quality: "not_applicable" } })];
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
-        schema_version: 1, kind: "journeys", range: { start_date: asked.start_date, end_date: asked.end_date, time_zone: asked.time_zone },
-        generated_at: new Date(NOW).toISOString(), coverage: { first_event_at: "2026-03-01T00:00:00Z", last_event_at: "2026-03-20T00:00:00Z" },
-        items, next_cursor: asked.cursor ? null : "page-2",
-      }));
-    });
-  });
-  const source = { url: `${store}/api/journey/admin-report`, secret: `whsec_${Buffer.from("admin-test-report-signing-key-012").toString("base64")}` };
-  const acquisition = await adminAcquisition(source, { days: 7, now: NOW, db, internalDomains: STAFF });
-  assert.deepEqual(pages.map(page => (page as { cursor?: string }).cursor ?? null), [null, "page-2"]);
-  assert.deepEqual((pages[0] as object), { schema_version: 1, kind: "journeys", start_date: "2026-03-14", end_date: "2026-03-20", time_zone: "UTC" });
-  assert.equal(acquisition.status, "ok");
-  assert.equal(acquisition.tracked_signups, 2, "only local outside signups, deduplicated across pages");
+  const acquisition = await adminAcquisition({ days: 7, now: NOW, db, internalDomains: STAFF });
   assert.deepEqual(acquisition.sources, [
-    { source: "google", medium: "organic", signups: 1, made_agent: 1, activated: 1, active_two_days: 1, paying: 0, median_days_to_first_run: 0 },
-    { source: "news.ycombinator.com", medium: "referral", signups: 1, made_agent: 0, activated: 0, active_two_days: 0, paying: 0, median_days_to_first_run: null },
+    { source: "run-slack", kind: "ref", signups: 1, made_agent: 1, activated: 1, active_two_days: 1, paying: 0, median_days_to_first_run: 0 },
+    { source: "news.ycombinator.com", kind: "referrer", signups: 1, made_agent: 0, activated: 0, active_two_days: 0, paying: 0, median_days_to_first_run: null },
   ]);
   assert.equal(acquisition.total.signups, 2);
   assert.equal(acquisition.daily.length, 7);
   assert.deepEqual(acquisition.daily.find(row => row.date === "2026-03-15")?.counts, [1, 0]);
   assert.deepEqual(acquisition.daily.find(row => row.date === "2026-03-16")?.counts, [0, 1]);
-  assert.deepEqual(acquisition.campaigns, [{ campaign: "launch", signups: 1 }]);
-  assert.deepEqual(acquisition.landing_pages, [{ path: "/", signups: 1 }, { path: "/run", signups: 1 }]);
-  assert.equal(acquisition.truncated, false);
+  assert.equal(acquisition.recorded_since, "2026-02-01T08:00:00.000Z", "the first account with a source, whether or not it is counted");
 
-  assert.equal((await adminAcquisition(undefined, { days: 7, now: NOW, db, internalDomains: STAFF })).status, "not_configured");
-  assert.equal((await adminAcquisition({ ...source, url: "http://127.0.0.1:9/api/journey/admin-report" }, { days: 7, now: NOW, db, internalDomains: STAFF })).status, "unavailable");
+  // A sign-up that showed neither is direct; an account made before sources were kept is not captured, never direct.
+  await db.query("update tenants set signup_source = '{}' where id = 'ann'");
+  await db.query("update tenants set signup_source = null where id = 'bea'");
+  assert.deepEqual((await adminAcquisition({ days: 7, now: NOW, db, internalDomains: STAFF })).sources.map(row => [row.source, row.kind]), [["Direct", "direct"], ["Not captured", "not_captured"]]);
+
+  // A plugin whose first grant came within an hour of signup is the source, whatever the browser showed.
+  await db.query("insert into oauth_grants (id, tenant, client_id, client_name, scope, created_at) values ('ann-first-grant', 'ann', 'chatgpt-client', 'ChatGPT', 'agents', $1)", [at("2026-03-15T10:30:00Z")]);
+  assert.deepEqual((await adminAcquisition({ days: 7, now: NOW, db, internalDomains: STAFF })).sources.map(row => [row.source, row.kind]), [["Not captured", "not_captured"], ["ChatGPT plugin", "plugin"]]);
 });
 
 /** The site as the runtime mounts it, before the runtime's own routes (which answer "runtime" here). */
@@ -368,71 +345,25 @@ async function ops(t: T, options: Partial<AdminSiteOptions> = {}) {
 }
 
 
-test("source cohorts retain unknown signups and local conversion totals when reports are incomplete", async () => {
+test("sources keep every sign-up and its local conversion, captured or not", async () => {
   const { db } = await testDatabase();
   await seed(db);
-  const ann = randomUUID(), bea = randomUUID();
-  for (const [tenant, ref] of [["ann", ann], ["bea", bea]]) {
-    await db.query("insert into journey_accounts (tenant, account_ref, internal, since_signup, consent, created_at) values ($1,$2,false,true,'granted',$3)", [tenant, ref, NOW]);
-  }
   // A web search does not activate Bea. Two models on one day still count as one active day.
   await db.query("insert into usage (tenant, day, model, responses) values ('bea','2026-03-16','brave/web_search',1), ('bea','2026-03-18','model-a',2), ('bea','2026-03-18','model-b',1)");
   await db.query("insert into credit_ledger (tenant, kind, amount, idempotency_key, created_at) values ('bea','purchase',1000000,'source-test',$1)", [NOW]);
-  const source = { url: "https://reports.example.test", secret: `whsec_${Buffer.from("source-cohort-test-key").toString("base64")}` };
-  let calls = 0;
-  const fetcher = (async (_url, init) => {
-    const request = JSON.parse(init!.body as string);
-    calls++;
-    return Response.json({ schema_version: 1, kind: "journeys", range: { start_date: request.start_date, end_date: request.end_date, time_zone: "UTC" },
-      items: [{ account_ref: ann, acquisition: { source: "newsletter", medium: "campaign" } }], next_cursor: "more" });
-  }) as typeof fetch;
-  const partial = await adminAcquisition(source, { db, days: 7, now: NOW, internalDomains: STAFF, fetch: fetcher });
-  assert.equal(calls, ADMIN_ACQUISITION_PAGES);
-  assert.equal(partial.truncated, true);
-  assert.equal(partial.total.signups, 2);
-  assert.equal(partial.tracked_signups, 1, "repeated pages do not double count");
-  assert.deepEqual(partial.sources.find(row => row.source === "Not captured"), {
-    source: "Not captured", medium: null, signups: 1, made_agent: 1, activated: 1, active_two_days: 0, paying: 1, median_days_to_first_run: 2,
+  await db.query("update tenants set signup_source = $1 where id = 'ann'", [JSON.stringify({ ref: "newsletter" })]);
+  const acquisition = await adminAcquisition({ db, days: 7, now: NOW, internalDomains: STAFF });
+  assert.equal(acquisition.total.signups, 2);
+  assert.deepEqual(acquisition.sources.find(row => row.kind === "not_captured"), {
+    source: "Not captured", kind: "not_captured", signups: 1, made_agent: 1, activated: 1, active_two_days: 0, paying: 1, median_days_to_first_run: 2,
   });
-  assert.equal(partial.total.median_days_to_first_run, 1, "median includes both sources");
-  const offline = await adminAcquisition(undefined, { db, days: 7, now: NOW, internalDomains: STAFF });
-  assert.equal(offline.status, "not_configured");
-  assert.deepEqual(offline.total, partial.total);
-  assert.equal(offline.sources.length, 1);
-  assert.equal(offline.sources[0].source, "Not captured");
-  const failed = await adminAcquisition(source, { db, days: 7, now: NOW, internalDomains: STAFF, fetch: (async () => Response.json({}, { status: 500 })) as typeof fetch });
-  assert.equal(failed.status, "unavailable");
-  assert.deepEqual(failed.total, partial.total);
-});
-
-
-test("sales-site landing pages combine referrals while other hosts and older reports retain their source", async () => {
-  const { db } = await testDatabase();
-  await seed(db);
-  const ann = randomUUID(), bea = randomUUID();
-  for (const [tenant, ref] of [["ann", ann], ["bea", bea]]) {
-    await db.query("insert into journey_accounts (tenant, account_ref, internal, since_signup, consent, created_at) values ($1,$2,false,true,'granted',$3)", [tenant, ref, NOW]);
-  }
-  const source = { url: "https://sales.example.test/api/journey/admin-report", secret: `whsec_${Buffer.from("source-pages-test-key").toString("base64")}` };
-  let host: string | null = "www.sales.example.test";
-  const fetcher = (async (_url, init) => {
-    const request = JSON.parse(init!.body as string);
-    return Response.json({ schema_version: 1, kind: "journeys", range: { start_date: request.start_date, end_date: request.end_date, time_zone: "UTC" }, items: [
-      { account_ref: ann, acquisition: { source: "google", medium: "organic", landing_host: host, landing_path: "/blog/deploy-ai-agents" } },
-      { account_ref: bea, acquisition: { source: "newsletter", medium: "email", landing_host: host, landing_path: "/blog/deploy-ai-agents" } },
-    ] });
-  }) as typeof fetch;
-  const options = { db, days: 7, now: NOW, internalDomains: STAFF, fetch: fetcher };
-  const pages = await adminAcquisition(source, options);
-  assert.equal(pages.sources.length, 1);
-  assert.deepEqual(pages.sources[0], { ...pages.total, source: "sales.example.test/blog/deploy-ai-agents", medium: null });
-  assert.equal(pages.daily.reduce((sum, day) => sum + day.counts[0], 0), 2);
-  for (const other of [null, "run.example.test", "sales.example.test.evil.test"]) {
-    host = other;
-    const referrals = await adminAcquisition(source, options);
-    assert.deepEqual(referrals.sources.map(row => row.source), ["google", "newsletter"]);
-    assert.deepEqual(referrals.total, pages.total);
-  }
+  assert.equal(acquisition.total.median_days_to_first_run, 1, "median includes both sources");
+  assert.equal(acquisition.recorded_since, "2026-03-15T10:00:00.000Z");
+  await db.query("update tenants set signup_source = null");
+  const none = await adminAcquisition({ db, days: 7, now: NOW, internalDomains: STAFF });
+  assert.deepEqual(none.total, acquisition.total);
+  assert.deepEqual(none.sources.map(row => row.source), ["Not captured"]);
+  assert.equal(none.recorded_since, null);
 });
 
 test("on a path of the runtime's hostname, the site is that path alone, and all of it needs Access's token", async t => {
@@ -469,7 +400,8 @@ test("on a path of the runtime's hostname, the site is that path alone, and all 
   assert.equal(mcp.daily.length, 28);
   assert.deepEqual(mcp.funnel.map((row: { kind: string }) => row.kind), ["chatgpt", "codex", "claude", "other"]);
   assert.equal(mcp.limitations.length, 4);
-  assert.equal(JSON.parse((await call("/ops/api/acquisition")).text).status, "not_configured");
+  const acquisition = JSON.parse((await call("/ops/api/acquisition")).text);
+  assert.deepEqual([acquisition.schema_version, "status" in acquisition], [1, false], "read from the runtime alone, with no journey store to report on");
   assert.equal(JSON.parse((await call("/ops/api/account?tenant=ann&days=7")).text).account.tenant, "ann");
   assert.equal((await call("/ops/api/account?tenant=nobody")).status, 404);
   assert.equal((await call("/ops/api/account?tenant=a%20b")).status, 400);

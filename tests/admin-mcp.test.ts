@@ -90,17 +90,10 @@ test("plugin reports deduplicate token activity and provide nested account-wide 
 });
 
 test("acquisition includes local plugin signups without journey records and uses local usage", async () => {
-  const { db, signup } = await fixture();
-  const fakeFetch = (async () => new Response(JSON.stringify({ schema_version: 1, kind: "journeys", range: { start_date: "2026-03-14", end_date: "2026-03-20", time_zone: "UTC" }, items: [{ account_ref: "00000000-0000-4000-8000-000000000001", signup_at: new Date(signup).toISOString(), activated_at: new Date(signup).toISOString(), payments: 1,
-    acquisition: { capture_quality: "complete", source: "google", landing_host: "reports.example.test", landing_path: "/run" } }], next_cursor: null }), { status: 200, headers: { "Content-Type": "application/json" } })) as typeof fetch;
-  const report = await adminAcquisition({ url: "https://reports.example.test", secret: `whsec_${Buffer.from("test-report-secret").toString("base64")}` }, { days: 7, now: NOW, db: db as Db, internalDomains: ["camelai.com"], fetch: fakeFetch });
-  assert.equal(report.status, "ok");
-  assert.deepEqual(report.sources.find(row => row.source === "ChatGPT plugin"), { source: "ChatGPT plugin", medium: null, signups: 1, made_agent: 1, activated: 1, active_two_days: 1, paying: 0, median_days_to_first_run: 0 });
+  const { db } = await fixture();
+  const report = await adminAcquisition({ days: 7, now: NOW, db: db as Db, internalDomains: ["camelai.com"] });
+  assert.deepEqual(report.sources.find(row => row.source === "ChatGPT plugin"), { source: "ChatGPT plugin", kind: "plugin", signups: 1, made_agent: 1, activated: 1, active_two_days: 1, paying: 0, median_days_to_first_run: 0 });
   assert.equal(report.sources.find(row => row.source === "Codex plugin")?.signups, 1);
   assert.equal(report.total.signups, 4);
-  const offline = await adminAcquisition(undefined, { days: 7, now: NOW, db: db as Db, internalDomains: ["camelai.com"] });
-  assert.equal(offline.status, "not_configured");
-  assert.deepEqual(offline.sources, report.sources);
-  assert.equal(offline.daily.reduce((sum, row) => sum + row.counts.reduce((a, b) => a + b, 0), 0), 4);
-  assert.equal(report.tracked_signups, 1);
+  assert.equal(report.daily.reduce((sum, row) => sum + row.counts.reduce((a, b) => a + b, 0), 0), 4);
 });

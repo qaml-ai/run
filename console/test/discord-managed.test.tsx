@@ -132,5 +132,6 @@ describe("managed Discord sign-in continuation", () => {
     expect(discordInstallNext("/other", "?discord_install=1")).toBeUndefined();
     expect(consoleLoginUrl("github", "/console/discord/install")).toBe(`/console/auth/github?next=${encodeURIComponent("/console/discord/install")}`);
     expect(consoleLoginUrl("google")).toBe("/console/auth/google");
+    expect(consoleLoginUrl("github", undefined, { ref: "blog/agent-memory", from: "google.com" })).toBe(`/console/auth/github?ref=${encodeURIComponent("blog/agent-memory")}&from=google.com`);
   });
 });

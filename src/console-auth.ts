@@ -8,6 +8,7 @@ import type { Journey, JourneyMethod } from "./journey.ts";
 import { checkNewPassword, MAX_PASSWORD, normalizeEmail, type Passwords } from "./passwords.ts";
 import { LINK_GONE, type EmailAccounts } from "./email-accounts.ts";
 import { network } from "./node-context.ts";
+import { keptSignupSource, recordSignupSource, signupSource, type SignupSource } from "./signup-source.ts";
 
 /**
  * Console sign-in. Sessions live in Postgres (`console_sessions`); the cookie (HttpOnly, Secure, SameSite=Lax)
@@ -58,6 +59,8 @@ const STATE_COOKIE = "ar_oauth_state";
 const NEXT_COOKIE = "ar_next";
 /** Google sign-in's state, nonce and PKCE verifier, between the redirect and the callback. */
 const GOOGLE_COOKIE = "ar_google";
+/** Where the browser that started a GitHub or Google sign-in came from (src/signup-source.ts), for the account it may make. */
+const SOURCE_COOKIE = "ar_source";
 const nextPath = (value: string | undefined) => {
   if (!value) return undefined;
   if (/^\/oauth\/authorize\?[^\s]*$/.test(value)) return value;
@@ -171,19 +174,35 @@ export class ConsoleAuth {
   }
 
   /**
-   * What a sign-in tells the journey store, when there is one: `created` goes to `tenantFor*`, which calls it in the
-   * transaction that makes a new account; `signedIn` is for after it, and says so only if no account was made.
+   * What a sign-in does beside signing in. `created` goes to `tenantFor*`, which calls it in the transaction that makes
+   * a new account: it keeps where the account came from (`source`, src/signup-source.ts) and tells the journey store,
+   * when there is one. `signedIn` is for after it, and tells the store only if no account was made.
    */
-  private journeySignIn(c: Context, method: JourneyMethod, next: string | undefined, email?: string) {
+  private signInHooks(c: Context, method: JourneyMethod, next: string | undefined, email?: string, source?: SignupSource) {
     const journey = this.options.journey;
-    if (!journey) return { started: async () => {}, signedIn: async (_tenant: string) => {} };
+    const keep = async (sql: Sql, tenant: string) => { if (source) await recordSignupSource(sql, tenant, source); };
+    if (!journey) return { started: async () => {}, created: keep, signedIn: async (_tenant: string) => {} };
     const browser = journey.browser(c.req.raw), surface = next?.startsWith("/oauth/authorize") ? "mcp" as const : "console" as const;
     let made = false;
     return {
       started: () => journey.authStarted({ method, surface, browser }),
-      created: async (sql: Sql, tenant: string) => { made = true; await journey.accountCreated(sql, { tenant, method, surface, browser, email }); },
+      created: async (sql: Sql, tenant: string) => { made = true; await keep(sql, tenant); await journey.accountCreated(sql, { tenant, method, surface, browser, email }); },
       signedIn: async (tenant: string) => { if (!made) await journey.signedIn({ tenant, method, surface, browser, email }); },
     };
+  }
+
+  /** Where the browser starting a sign-in came from, as the console says (`ref`, `from`): its referrer not if it refuses to be measured. */
+  private signupSource(c: Context, input: { ref?: unknown; from?: unknown }) {
+    return signupSource(input, c.req.header("sec-gpc") === "1" || this.options.journey?.consent(c.req.raw) === "denied");
+  }
+  /** The cookie that keeps a sign-in's source until its callback; for a source that showed nothing, an earlier sign-in's cleared. */
+  private sourceCookie(source: SignupSource) {
+    return [this.cookie(SOURCE_COOKIE, Object.keys(source).length ? encodeURIComponent(JSON.stringify(source)) : "", Object.keys(source).length ? 600 : 0, "/console/auth")];
+  }
+  /** The source a callback's sign-in started with: `{}`, direct, when it kept none. */
+  private keptSource(c: Context): SignupSource {
+    try { return keptSignupSource(JSON.parse(decodeURIComponent(cookies(c.req.raw)[SOURCE_COOKIE] ?? "{}"))) ?? {}; }
+    catch { return {}; }
   }
 
   /** The /console/auth/* routes. */
@@ -217,8 +236,9 @@ export class ConsoleAuth {
       authorize.searchParams.set("state", state);
       authorize.searchParams.set("allow_signup", github.open ? "true" : "false");
       const next = nextPath(c.req.query("next"));
-      await this.journeySignIn(c, "github", next).started();
-      return redirect(c, authorize.href, [this.cookie(STATE_COOKIE, state, 600, "/console/auth"), ...(next ? [this.cookie(NEXT_COOKIE, encodeURIComponent(next), 600, "/console/auth")] : [])]);
+      await this.signInHooks(c, "github", next).started();
+      return redirect(c, authorize.href, [this.cookie(STATE_COOKIE, state, 600, "/console/auth"), ...(next ? [this.cookie(NEXT_COOKIE, encodeURIComponent(next), 600, "/console/auth")] : []),
+        ...this.sourceCookie(this.signupSource(c, { ref: c.req.query("ref"), from: c.req.query("from") }))]);
     });
     app.get("/console/auth/callback", async c => {
       const github = this.options.github;
@@ -227,9 +247,9 @@ export class ConsoleAuth {
       const expected = cookies(c.req.raw)[STATE_COOKIE];
       const clearState = this.cookie(STATE_COOKIE, "", 0, "/console/auth");
       const next = nextPath(decodeURIComponent(cookies(c.req.raw)[NEXT_COOKIE] ?? ""));
-      const clearNext = this.cookie(NEXT_COOKIE, "", 0, "/console/auth");
+      const clearNext = this.cookie(NEXT_COOKIE, "", 0, "/console/auth"), clearSource = this.cookie(SOURCE_COOKIE, "", 0, "/console/auth");
       if (!github || !state || !code || !expected || state.length !== expected.length || !timingSafeEqual(Buffer.from(state), Buffer.from(expected))) {
-        return fail(c, "Sign-in expired or was tampered with; try again", [clearState, clearNext]);
+        return fail(c, "Sign-in expired or was tampered with; try again", [clearState, clearNext, clearSource]);
       }
       try {
         const exchange = await network().fetch(new URL("/login/oauth/access_token", github.webUrl ?? "https://github.com"), {
@@ -263,14 +283,14 @@ export class ConsoleAuth {
           if (!member) throw new Error(`Only members of the ${github.org} GitHub organization can sign in`);
         }
         const createdAt = user.created_at ? Date.parse(user.created_at) : NaN;
-        const journey = this.journeySignIn(c, "github", next);
+        const journey = this.signInHooks(c, "github", next, undefined, this.keptSource(c));
         const tenant = await this.options.accounts.tenantForGithub(
           { login: user.login, id: user.id, ...(Number.isFinite(createdAt) ? { createdAt } : {}) },
           { minAccountAgeMs: github.minAccountDays === undefined ? undefined : Math.round(github.minAccountDays * 86_400_000), admit: this.options.admitSignup?.(c), created: journey.created });
         await journey.signedIn(tenant);
-        return redirect(c, next ?? "/console/", [clearState, clearNext, await this.session(tenant, "github", user.login, user.name ?? undefined)]);
+        return redirect(c, next ?? "/console/", [clearState, clearNext, clearSource, await this.session(tenant, "github", user.login, user.name ?? undefined)]);
       } catch (error) {
-        return fail(c, (error as Error).message, [clearState, clearNext]);
+        return fail(c, (error as Error).message, [clearState, clearNext, clearSource]);
       }
     });
     app.get("/console/auth/google", async c => {
@@ -285,8 +305,9 @@ export class ConsoleAuth {
           scope: "openid email profile", state, nonce, code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", prompt: "select_account",
         })) authorize.searchParams.set(key, value);
         const next = nextPath(c.req.query("next"));
-        await this.journeySignIn(c, "google", next).started();
-        return redirect(c, authorize.href, [this.cookie(GOOGLE_COOKIE, `${state}.${nonce}.${verifier}`, 600, "/console/auth"), ...(next ? [this.cookie(NEXT_COOKIE, encodeURIComponent(next), 600, "/console/auth")] : [])]);
+        await this.signInHooks(c, "google", next).started();
+        return redirect(c, authorize.href, [this.cookie(GOOGLE_COOKIE, `${state}.${nonce}.${verifier}`, 600, "/console/auth"), ...(next ? [this.cookie(NEXT_COOKIE, encodeURIComponent(next), 600, "/console/auth")] : []),
+          ...this.sourceCookie(this.signupSource(c, { ref: c.req.query("ref"), from: c.req.query("from") }))]);
       } catch (error) {
         return fail(c, (error as Error).message);
       }
@@ -295,7 +316,7 @@ export class ConsoleAuth {
       const google = this.options.google;
       const [expected, nonce, verifier] = (cookies(c.req.raw)[GOOGLE_COOKIE] ?? "").split(".");
       const state = c.req.query("state"), code = c.req.query("code");
-      const clear = [this.cookie(GOOGLE_COOKIE, "", 0, "/console/auth"), this.cookie(NEXT_COOKIE, "", 0, "/console/auth")];
+      const clear = [this.cookie(GOOGLE_COOKIE, "", 0, "/console/auth"), this.cookie(NEXT_COOKIE, "", 0, "/console/auth"), this.cookie(SOURCE_COOKIE, "", 0, "/console/auth")];
       const next = nextPath(decodeURIComponent(cookies(c.req.raw)[NEXT_COOKIE] ?? ""));
       if (!google || !state || !expected || !nonce || !verifier || !same(state, expected)) return fail(c, "Sign-in expired or was tampered with; try again", clear);
       if (!code) return fail(c, "Google sign-in was cancelled", clear);
@@ -315,7 +336,7 @@ export class ConsoleAuth {
         catch { throw new Error("Google's sign-in token did not verify; try again"); }
         if (typeof claims.nonce !== "string" || !same(claims.nonce, nonce) || (claims.azp !== undefined && claims.azp !== google.clientId)) throw new Error("Google's sign-in token did not verify; try again");
         if (claims.email_verified !== true || typeof claims.email !== "string" || typeof claims.sub !== "string") throw new Error("Sign in with a Google account whose email address is verified");
-        const journey = this.journeySignIn(c, "google", next, claims.email);
+        const journey = this.signInHooks(c, "google", next, claims.email, this.keptSource(c));
         const tenant = await this.options.accounts.tenantForGoogle({ sub: claims.sub, email: claims.email }, { admit: this.options.admitSignup?.(c), created: journey.created });
         await journey.signedIn(tenant);
         return redirect(c, next ?? "/console/", [...clear, await this.session(tenant, "google", claims.email, typeof claims.name === "string" ? claims.name : undefined)]);
@@ -330,7 +351,7 @@ export class ConsoleAuth {
       try { body = JSON.parse(await readText(c.req.raw.body, 4096)); }
       catch { return json(c, 400, { error: "Send {\"email\": \"...\", \"password\": \"...\"}" }); }
       const next = typeof body?.next === "string" ? nextPath(body.next) : undefined;
-      const journey = this.journeySignIn(c, "password", next, normalizeEmail(body?.email) ?? undefined);
+      const journey = this.signInHooks(c, "password", next, normalizeEmail(body?.email) ?? undefined);
       await journey.started();
       const session = await this.passwordSession(c, body?.email, body?.password);
       if ("error" in session) return json(c, 401, { error: session.error });
@@ -356,8 +377,8 @@ export class ConsoleAuth {
       checkNewPassword(input!.password, to);
       await this.options.emailLimit?.(c, to);
       const next = typeof input!.next === "string" ? nextPath(input!.next) : undefined;
-      await email.signUp(to, input!.password, next);
-      await this.journeySignIn(c, "password", next, to).started();
+      await email.signUp(to, input!.password, next, this.signupSource(c, { ref: input!.ref, from: input!.from }));
+      await this.signInHooks(c, "password", next, to).started();
       return c.json({ sent: true }, 202);
     });
     app.post("/console/auth/link", async c => {
@@ -376,7 +397,7 @@ export class ConsoleAuth {
       await this.options.passwordLimits?.allowed(c, link.email);
       if (typeof input!.password === "string" && input!.password.length > MAX_PASSWORD) return json(c, 401, { error: "That is not the password you chose" });
       // The account is made here, in the browser that opened the mailed link: the journey's visitor is this one.
-      const journey = this.journeySignIn(c, "password", undefined, link.email);
+      const journey = this.signInHooks(c, "password", undefined, link.email);
       const done = await email.complete(input!.token, input!.password, this.options.admitSignup?.(c), journey.created);
       if ("wrong" in done) {
         await this.options.passwordLimits?.failed(c, done.email);
@@ -405,7 +426,7 @@ export class ConsoleAuth {
       const done = await email.reset(input?.token, input?.password);
       console.log(JSON.stringify({ type: "password_reset", tenant: done.tenant, signedOut: done.signedOut }));
       const next = done.next && nextPath(done.next);
-      await this.journeySignIn(c, "password", next || undefined, done.email).signedIn(done.tenant);
+      await this.signInHooks(c, "password", next || undefined, done.email).signedIn(done.tenant);
       return json(c, 200, { tenant: done.tenant, signedOut: done.signedOut, ...(next ? { next } : {}) }, [await this.startSession({ tenant: done.tenant, method: "password", login: done.email })]);
     });
     app.post("/console/auth/logout", async c => {

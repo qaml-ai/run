@@ -42,6 +42,15 @@ describe("signing up with email", () => {
     expect(calls[1].body).toEqual(calls[0].body);
   });
 
+  it("sends where the browser came from, for the account it makes", async () => {
+    render(<SignUpForm source={{ ref: "run-slack", from: "google.com" }} />);
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "a long unusual passphrase" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    expect(await screen.findByText("Check your email")).toBeTruthy();
+    expect(calls[0].body).toEqual({ email: "ada@example.com", password: "a long unusual passphrase", ref: "run-slack", from: "google.com" });
+  });
+
   it("says why a sign-up was refused", async () => {
     reply = () => json({ error: "That password is too common; choose another" }, 400);
     render(<SignUpForm />);

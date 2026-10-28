@@ -30,7 +30,7 @@ export function GrowthTab({ days, refresh, growth }: { days: OpsRange; refresh: 
 
       <Section title="Sign-ups and work, day by day" description="By UTC day. Today is still going, so its column is fainter.">
         <div className="grid gap-4 lg:grid-cols-2">
-          <Panel title="Sign-ups, by where they came from" state={acquisition.state} hint="Sales-site visitors are grouped by their first landing page; other visitors by their original referral. Small sources are grouped as Other; hover a day for the breakdown. Not captured means the source is unknown, not direct traffic.">
+          <Panel title="Sign-ups, by where they came from" state={acquisition.state} hint="Each account keeps where it came from when it is made. Small sources are grouped as Other; hover a day for the breakdown. Not captured means the account is older than that record, not direct traffic.">
             {acquisition.data && <SignupsChart data={acquisition.data} growth={data} />}
           </Panel>
           <Panel title="Accounts doing work, per day" hint="Accounts whose agents got at least one model answer that day (web searches, voice or images alone do not count). Returning accounts were made before that day; new ones that same day." state={growth.state}>
@@ -39,7 +39,7 @@ export function GrowthTab({ days, refresh, growth }: { days: OpsRange; refresh: 
         </div>
       </Section>
 
-      <Section title="Where sign-ups came from" description={`Outside people who signed up in the last ${days} days, by where they came from and what they have done since. Sales-site visits are split by their first landing page. A plugin is the source when their first connection was within an hour of signup.`}>
+      <Section title="Where sign-ups came from" description={`Outside people who signed up in the last ${days} days, by where they came from and what they have done since.`}>
         <Panel title="Sources" state={acquisition.state} description={acquisition.data && <AcquisitionNote data={acquisition.data} days={days} />}>
           {acquisition.data && <Acquisition data={acquisition.data} days={days} />}
         </Panel>
@@ -73,14 +73,12 @@ const METHODS = [
   { key: "email", label: "Email", color: MID },
 ] as const;
 
-const sourceName = (row: AdminSource) => {
-  const source = row.source.replace(/^(?:www\.)?camelai\.com(?=\/)/i, "");
-  return row.medium ? `${source} (${row.medium})` : source;
-};
+/** A link's tag shows as it was written in the link (`ref=run-slack`); every other source by its name. */
+const sourceName = (row: AdminSource) => row.kind === "ref" ? `ref=${row.source}` : row.source;
 
 function SignupsChart({ data, growth }: { data: AdminAcquisition; growth?: AdminGrowth }) {
   // Keep plugin acquisition and unknown coverage visible even when their counts are small.
-  const fixed = data.sources.map((row, index) => /plugin$/.test(row.source) || row.source === "Not captured" ? index : -1).filter(index => index >= 0);
+  const fixed = data.sources.map((row, index) => row.kind === "plugin" || row.kind === "not_captured" ? index : -1).filter(index => index >= 0);
   const kept = new Set([...fixed, ...data.sources.map((_, index) => index).filter(index => !fixed.includes(index)).slice(0, Math.max(1, 5 - fixed.length))]);
   const folded = data.sources.map((_, index) => index).filter(index => !kept.has(index));
   const groups = [...kept].sort((a, b) => a - b).map(index => ({ label: sourceName(data.sources[index]), indices: [index] }));
@@ -95,7 +93,6 @@ function SignupsChart({ data, growth }: { data: AdminAcquisition; growth?: Admin
           more: [...folded].filter(index => row.counts[index]).sort((a, b) => row.counts[b] - row.counts[a] || sourceName(data.sources[a]).localeCompare(sourceName(data.sources[b]))).map(index => ({ value: count(row.counts[index]), label: sourceName(data.sources[index]), muted: true })),
         }))}
         table={{ columns: ["Day (UTC)", "Sign-ups", ...data.sources.map(sourceName)], rows: [...data.daily].reverse().map(row => [dayColumn(row.date, data.range.incomplete_date).title, row.counts.reduce((a, b) => a + b, 0), ...row.counts]) }} />
-      <Coverage data={data} />
       {growth && <div className="mt-4 border-t pt-3.5">
         <p className="text-muted-foreground mb-2 text-xs">How they signed in</p>
         <SplitBar inline unit="sign-ups" label="How they signed in" parts={METHODS.map(method => ({ key: method.key, label: method.label, value: growth.sign_in[method.key], color: method.color }))} />
@@ -124,65 +121,41 @@ function WorkChart({ data }: { data: AdminGrowth }) {
   );
 }
 
-/** Under the Sources title: how much of the window the store saw. */
+/** Under the Sources title: how many of the window's sign-ups have a source, and since when sources are kept. */
 function AcquisitionNote({ data, days }: { data: AdminAcquisition; days: number }) {
-  const known = data.total.signups - data.sources.filter(row => row.source === "Not captured").reduce((sum, row) => sum + row.signups, 0);
+  const known = data.total.signups - data.sources.filter(row => row.kind === "not_captured").reduce((sum, row) => sum + row.signups, 0);
   const parts = [
-    `${count(known)} of ${plural(data.total.signups, "sign-up")} have a recorded source in ${days} days`,
-    data.coverage.first_event_at ? `records begin ${fullDay(data.coverage.first_event_at)}` : undefined,
-    data.truncated ? "source lookup is incomplete; unread sources are marked Not captured" : undefined,
-  ].filter(Boolean);
+    `${count(known)} of ${plural(data.total.signups, "sign-up")} in ${days} days have a source`,
+    data.recorded_since ? `kept for accounts made since ${fullDay(data.recorded_since)}` : "kept for accounts made from now on",
+  ];
   return <>{parts.join(" · ")}</>;
 }
 
-function Coverage({ data }: { data: AdminAcquisition }) {
+function Coverage() {
   return <p className="text-muted-foreground mt-3 text-xs">
-    {data.status === "not_configured" ? "Source reporting is not connected. Signup and usage counts still include all outside accounts. " : data.status === "unavailable" ? "Source reporting is temporarily unavailable. Signup and usage counts still include all outside accounts. " : ""}
-    {data.truncated ? "Some source records could not be read. " : ""}
-    Not captured includes unmeasured visits, older signups and source records not yet received. Direct means a recorded visit without a known referral or campaign.
+    A plugin is the source when its first connection came within an hour of sign-up. Otherwise <span className="font-mono">ref=</span> is the tag on the link that opened the console (camelai.com tags its links with the page they are on), else the site the browser came from. Direct means neither: a typed address, a bookmark, or a site that hides itself. Not captured means the account was made before sources were kept, or by an operator.
   </p>;
 }
 
 function Acquisition({ data, days }: { data: AdminAcquisition; days: number }) {
-  if (!data.total.signups) return <><Empty>No outside sign-ups in the last {days} days.</Empty><Coverage data={data} /></>;
-  const list = (title: string, rows: { key: string; value: number }[], none: string) => (
-    <div>
-      <h4 className="text-muted-foreground mb-1.5 text-xs">{title}</h4>
-      {rows.length ? (
-        <ul className="grid text-xs">
-          {rows.map(row => (
-            <li key={row.key} className="flex items-baseline justify-between gap-3 border-b py-1 last:border-b-0">
-              <span className="min-w-0 truncate" title={row.key}>{row.key}</span>
-              <span className="font-mono tabular-nums">{count(row.value)}</span>
-            </li>
-          ))}
-        </ul>
-      ) : <p className="text-muted-foreground text-xs">{none}</p>}
-    </div>
-  );
+  if (!data.total.signups) return <><Empty>No outside sign-ups in the last {days} days.</Empty><Coverage /></>;
   return (
-    <div className="grid gap-x-8 gap-y-6">
-      <div className="min-w-0">
-        <p className="text-muted-foreground mb-3 text-xs">Usage is counted through today. Active 2+ days means model answers on at least two UTC days, including scheduled and channel runs. Typical wait is the median number of UTC days to a first model answer, among those who ran one. Newer signups have had less time to return or pay.</p>
-        <div className="overflow-x-auto">
-          <table aria-label={`Sign-ups of the last ${days} days by source`} className="w-full text-left text-sm tabular-nums">
-            <thead><tr>{["Source", "Sign-ups", "Share", "Made an agent", "Ran a model", "Typical wait to first run", "Active 2+ days", "Paid"].map(label => <th key={label} className="text-muted-foreground whitespace-nowrap px-3 py-2 text-xs font-medium">{label}</th>)}</tr></thead>
-            <tbody>{[...data.sources, data.total].map((row, index) => <tr key={index} className={`border-t ${index === data.sources.length ? "font-semibold" : ""}`}>
-              <td className="whitespace-nowrap px-3 py-2">{sourceName(row)}</td>
-              <td className="px-3 py-2">{count(row.signups)}</td>
-              <td className="px-3 py-2">{percent(row.signups, data.total.signups)}</td>
-              {[row.made_agent, row.activated].map((value, i) => <td key={i} className="whitespace-nowrap px-3 py-2">{count(value)} ({percent(value, row.signups)})</td>)}
-              <td className="whitespace-nowrap px-3 py-2">{row.median_days_to_first_run === null ? "—" : row.median_days_to_first_run === 0 ? "Same day" : plural(row.median_days_to_first_run, "day")}</td>
-              {[row.active_two_days, row.paying].map((value, i) => <td key={i} className="whitespace-nowrap px-3 py-2">{count(value)} ({percent(value, row.signups)})</td>)}
-            </tr>)}</tbody>
-          </table>
-        </div>
-        <Coverage data={data} />
+    <div className="min-w-0">
+      <p className="text-muted-foreground mb-3 text-xs">Usage is counted through today. Active 2+ days means model answers on at least two UTC days, including scheduled and channel runs. Typical wait is the median number of UTC days to a first model answer, among those who ran one. Newer signups have had less time to return or pay.</p>
+      <div className="overflow-x-auto">
+        <table aria-label={`Sign-ups of the last ${days} days by source`} className="w-full text-left text-sm tabular-nums">
+          <thead><tr>{["Source", "Sign-ups", "Share", "Made an agent", "Ran a model", "Typical wait to first run", "Active 2+ days", "Paid"].map(label => <th key={label} className="text-muted-foreground whitespace-nowrap px-3 py-2 text-xs font-medium">{label}</th>)}</tr></thead>
+          <tbody>{[...data.sources, data.total].map((row, index) => <tr key={index} className={`border-t ${index === data.sources.length ? "font-semibold" : ""}`}>
+            <td className="whitespace-nowrap px-3 py-2">{sourceName(row)}</td>
+            <td className="px-3 py-2">{count(row.signups)}</td>
+            <td className="px-3 py-2">{percent(row.signups, data.total.signups)}</td>
+            {[row.made_agent, row.activated].map((value, i) => <td key={i} className="whitespace-nowrap px-3 py-2">{count(value)} ({percent(value, row.signups)})</td>)}
+            <td className="whitespace-nowrap px-3 py-2">{row.median_days_to_first_run === null ? "—" : row.median_days_to_first_run === 0 ? "Same day" : plural(row.median_days_to_first_run, "day")}</td>
+            {[row.active_two_days, row.paying].map((value, i) => <td key={i} className="whitespace-nowrap px-3 py-2">{count(value)} ({percent(value, row.signups)})</td>)}
+          </tr>)}</tbody>
+        </table>
       </div>
-      <div className="grid content-start gap-6 sm:grid-cols-2">
-        {list("Campaigns", data.campaigns.map(row => ({ key: row.campaign, value: row.signups })), "No sign-up came with a campaign tag.")}
-        {list("First page they landed on", data.landing_pages.map(row => ({ key: row.path, value: row.signups })), "No landing pages recorded.")}
-      </div>
+      <Coverage />
     </div>
   );
 }
