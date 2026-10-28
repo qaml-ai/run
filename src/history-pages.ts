@@ -38,6 +38,20 @@ type OrdinalRow = { id: string; msg_from: number; msg_count: number; msg_skip: n
 const USER_KINDS = ["pi.user", "camel.user"];
 const kindIs = (kinds: string[]) => `(${kinds.map(kind => `substr(m.record, 1, 200) LIKE '%"kind":"${kind}"%'`).join(" OR ")})`;
 
+/**
+ * An agent's history length (`history_next`, null: not placed), where its journal's messages begin (`journal`: its first
+ * placed message that is not archived), and how many messages archive entries hold before that (`archived`).
+ */
+export async function placedExtent(db: Pick<Db, "query">, agent: string): Promise<{ history_next: number | null; journal: number; archived: number } | undefined> {
+  const row = (await db.query<{ history_next: number | null; journal: number | null; archived: number }>(`
+    select m.history_next, j.journal, (select coalesce(sum(a.msg_count), 0)::int from pi_durable_entries a where a.session_id = m.session_id
+      and a.msg_from is not null and a.msg_count > 0 and a.msg_from < coalesce(j.journal, m.history_next)) as archived
+    from pi_durable_metadata m left join lateral (select e.msg_from as journal from pi_durable_entries e where e.session_id = m.session_id
+      and e.msg_from is not null and e.msg_count > 0 and substr(e.record, 1, 200) not like '%"kind":"${ARCHIVE_KIND}"%' order by e.msg_from limit 1) j on true
+    where m.session_id = $1`, [agent])).rows[0];
+  return row && { history_next: row.history_next, journal: row.journal ?? row.history_next ?? 0, archived: row.archived };
+}
+
 /** A history row's messages, its own history messages from `skip`, `count` of them. */
 export function rowMessages(entry: EntryRecord, skip: number, count: number): AgentMessage[] {
   const all = entry.kind === MARKER_KIND ? (entry.data as unknown as { kept?: AgentMessage[] }).kept ?? []
@@ -64,10 +78,7 @@ export class HistoryIndex {
    * An agent whose ordinals are not placed yet is placed first (`fillOrdinals`); one with no Pi storage has none.
    */
   async extent(agent: string): Promise<{ total: number; from: number }> {
-    const read = async () => (await this.db.query<{ history_next: number | null; first: number | null }>(`
-      select m.history_next, (select e.msg_from from pi_durable_entries e where e.session_id = m.session_id and e.msg_from is not null and e.msg_count > 0
-        order by e.msg_from limit 1) as first
-      from pi_durable_metadata m where m.session_id = $1`, [agent])).rows[0];
+    const read = () => placedExtent(this.db, agent);
     let row = await read();
     if (!row) return { total: 0, from: 0 };
     if (row.history_next === null) {
@@ -77,8 +88,8 @@ export class HistoryIndex {
       if (filled.code !== "placed" && filled.code !== "current") throw new HttpError(503, `The agent's history cannot be read yet (${filled.code}${filled.error ? `: ${filled.error}` : ""})`);
       row = (await read())!;
     }
-    const total = row.history_next!;
-    return { total, from: row.first ?? total };
+    // Archive entries hold every message before the journal's (a fork's, or moved from the index): Pi storage holds it all.
+    return { total: row.history_next!, from: row.archived === row.journal ? 0 : row.journal };
   }
 
   /** Delete the agent's history index (Pi storage goes with the agent's), for an agent being purged. */
