@@ -195,8 +195,6 @@ export function createAgentHost(hostIO: HostIO) {
   let unindexed = 0;
   /** Whether the running turn can still take a steer sent `whileRunning` (see `steer`). */
   let steerable = false;
-  /** Steering messages not yet taken, in order; `whileRunning` ones are taken back if the turn ends without them. */
-  let steers: { message: AgentMessage; whileRunning: boolean }[] = [];
   /** What the current run's final_output call gave, once the model made one that fit its schema. */
   let output: { value: unknown } | undefined;
   /**
@@ -1027,7 +1025,6 @@ export function createAgentHost(hostIO: HostIO) {
         // A turn handed off at a step boundary goes on elsewhere: for its subscribers it has not ended.
         if (event.type === "agent_end" && stopped?.stopped === "handoff") return;
         // A call waiting on input has no result yet: the journal keeps it open instead (`awaiting`).
-        if (event.type === "message_end" && event.message.role === "user") steers = steers.filter(steer => !sameInput(steer.message, event.message));
         // Pi's journal holds each finished message as Pi commits it; streaming deltas are never persisted.
         if (event.type === "message_end" && !(event.message.role === "toolResult" && (event.message.details as { inputRequired?: boolean } | undefined)?.inputRequired)) {
           unindexed += JSON.stringify(event.message).length;
@@ -1085,10 +1082,7 @@ export function createAgentHost(hostIO: HostIO) {
       // A prompt sent `whileRunning: "steer"`: only for the running turn, and only while it can still take it.
       if (params.whileRunning === "steer" && !steerable) return { steered: false };
       // Pi queues the rest whether or not a run is active; an idle queue drains into the next run.
-      for (const message of messages) {
-        agent.steer(message);
-        steers.push({ message, whileRunning: params.whileRunning === "steer" });
-      }
+      for (const message of messages) agent.steer(message, params.whileRunning === "steer");
       return params.whileRunning === "steer" ? { steered: true } : { queued: true, running: busy };
     }
     // The node's lease went stale: its model requests in flight are cut, and made again once it is fresh (`recoverFailedResponses`).
@@ -1102,10 +1096,7 @@ export function createAgentHost(hostIO: HostIO) {
       // The runtime's own stop of a run past its time limit: the run ends as that limit's, not as aborted.
       if (busy && (params?.stopped === "turn_limit" || params?.stopped === "spend_limit")) stopped = { stopped: params.stopped, error: String(params.message ?? ""), code: params.stopped };
       // A stop of the agent (not just its turn): messages held for the turn or the next one are dropped too, so nothing runs after it.
-      if (params?.clearQueued) {
-        steers = [];
-        agent.clearSteeringQueue();
-      }
+      if (params?.clearQueued) agent.clearSteeringQueue();
       active?.abort();
       agent.abort();
       return { aborted: true };
@@ -1222,11 +1213,7 @@ export function createAgentHost(hostIO: HostIO) {
       if (refused) { hostIO.emit(refused); refused = undefined; }
       // Steers sent for this turn that it did not take are taken back: each runs as a turn of its own.
       steerable = false;
-      if (steers.some(steer => steer.whileRunning)) {
-        agent.clearSteeringQueue();
-        steers = steers.filter(steer => !steer.whileRunning);
-        for (const steer of steers) agent.steer(steer.message);
-      }
+      agent.dropRunSteers();
       await io.cancelTools();
       active = undefined;
       busy = false;
@@ -1242,10 +1229,6 @@ export function createAgentHost(hostIO: HostIO) {
   }).catch(error => console.error(JSON.stringify({ type: "compaction_start_failed", agent: config.id, error: safeError(error) })));
   /** Between runs no run's stream carries a compaction's events: they go as the agent's background work, billed as such. */
   const emitCompaction = (event: Record<string, unknown>) => io.emit(busy ? event : { ...event, background: true });
-
-  /** Whether the user message Pi committed is `sent`, as the journal keeps it. */
-  const sameInput = (sent: AgentMessage, committed: AgentMessage) => sent.timestamp === committed.timestamp &&
-    JSON.stringify((sent as { content?: unknown }).content) === JSON.stringify((committed as { content?: unknown }).content);
 
   /** Whether the current run stopped for a hand-off (a function, so the check is not narrowed away across awaits). */
   const handedOffHere = () => stopped?.stopped === "handoff";
