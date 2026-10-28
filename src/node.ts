@@ -68,7 +68,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson, readText, signInHint } from "./http.ts";
+import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson, readText, shedBodies, signInHint } from "./http.ts";
 import { outcomeEnding, type RequestRecord } from "../shared/client-protocol.ts";
 import type { HistoryPage } from "./history-pages.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
@@ -314,6 +314,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     piRetryMs: leaseTtlMs,
     agentEnv: config.agentEnv, dedupeUserEntries: config.dedupeUserEntries, modelOutbound: outbound,
   });
+  // Past AGENT_MEMORY_HIGH_BYTES, large request bodies are refused (503, Retry-After) before they are read (http.ts).
+  shedBodies(() => supervisor.memoryHigh);
   const model = configuredModel(env);
   // Where people are sent (the public URL), other names served in full (an earlier domain), and the issuer tokens name.
   const origins = publicOrigins(env, `http://127.0.0.1:${port}`);
