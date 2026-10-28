@@ -140,6 +140,52 @@ Agents with no journal and no hot rows then have their legacy log listed in
 Storage, outside the transaction. Each call is logged as `legacy_coverage_viewed`
 with the counts so far.
 
+## History ordinals
+
+Each history entry in Pi storage carries its place in the agent's history
+(`src/pi-durable/ordinals.ts`): `pi_durable_entries.msg_from` and `msg_count` (its
+messages are history messages `msg_from` .. `msg_from + msg_count - 1`, its own
+history messages from its `msg_skip`-th on), and `turn_start` on a turn marker that
+opens a turn, at `msg_from`. `pi_durable_metadata.history_next` is the history's
+length and `history_last_id` the newest session entry committed with it. History
+reads find messages by ordinal from these (plans/thin-host-slimdown-2.md §6.1).
+
+`PostgresPiStorage.commit` places each entry as it commits, under the session's
+metadata lock, as `JournalHistory` counts the journal: native messages in entry ID
+order (one committed after a later one takes its place, and those after it move
+up), a `retract` marker takes back the latest message (the next message takes its
+place), a session's first `base` marker opens the history at its `total` (its
+`kept` messages are placed on the marker itself), and a `pi` skip marker unplaces
+the session (`history_ordinals_unplaced`) for the fill to place again. A new
+session starts placed (`history_next` 0); sessions from before ordinals start
+unplaced (null), and a base or retract that does not match logs
+`history_ordinal_mismatch`.
+
+`POST /v1/operations/history-ordinals` (platform operator only, as legacy coverage)
+places every unplaced agent: a dry run unless the body says `dryRun: false`. It
+walks agents in id order, 500 at a time, for about 20 s per call (`budgetMs`, at
+most 25000) and answers `next` to go on from (a dry run's cursor goes on as a dry
+run). Each agent is placed under its session's metadata lock (its commits wait),
+from its first base marker on, reading its entries 250 at a time with their records
+parsed in Postgres (never on the node), every statement stopped after 20 s; an
+agent with more than `maxEntries` session entries (200,000 by default, at most
+2,000,000) is reported `too_large`, not read. Placing is idempotent: a placed agent
+whose newest session entry is placed is `current`; one with entries written since
+by a release that did not place them (`stale`, during the deploy) is placed again.
+Result codes: `placed`/`would_place`, `current`, `no_journal`, `no_base` (entries but
+no base marker: refused by loads anyway), `too_large`, `irregular` (a later base
+that does not stand where the history does, or an entry whose messages are not one
+run: left for a person, `error` says where), `failed`. Calls are logged as
+`history_ordinals_called`.
+
+`GET /v1/operations/history-ordinals-coverage` walks the same way and counts agents:
+`placed`, `unplaced` (Pi storage, never placed), `stale`, `no_journal` (no Pi
+storage), `agents_total`; `gate.ready` once the walk is complete with `unplaced` and
+`stale` at 0, `examples` up to 20 ids per nonzero bucket. Each batch is one
+read-only transaction of index probes per agent (its metadata row and newest
+session entry), statements stopped after 20 s; calls are logged as
+`history_ordinals_coverage_viewed`. One ordinals call at a time per node (429).
+
 ## Persistence and billing
 
 Normal nodes store Pi data in the session-scoped `pi_durable_*` Postgres tables

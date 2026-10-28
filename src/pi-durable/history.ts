@@ -6,6 +6,7 @@ import { durableEntryMessages } from "./agent.ts";
 import { HOST_BOOTSTRAP_KIND, SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
 import { entryIds, type EntryIdLister } from "./storage.ts";
 import { always } from "../assert.ts";
+import { MARKER_KIND } from "./ordinals.ts";
 
 /**
  * An agent's history as Pi's journal gives it (plans/host-transcript-removal.md): the messages before the session's
@@ -20,7 +21,7 @@ export type At = { entryId: number; index: number };
 export type HistoryBase = { t: "base"; total: number; through?: At; active: boolean; turnStart: number; awaiting: string[]; calls?: [string, number][]; kept?: AgentMessage[] };
 
 /** The host's markers: `base`, `retract` (with the index it took back), `turn` (with the history's length), `awaiting`, and `pi` (a skip). */
-export const MARKER_KIND = "camel.history.marker";
+export { MARKER_KIND };
 /** A message the host wrote itself, as Pi's adapter writes a non-user message and a user one: history, and in Pi's context. */
 export const HOST_MESSAGE_KIND = "camel.message", HOST_USER_KIND = "camel.user";
 /** A system message the host declared (a configuration change, the output reminder): in Pi's context, never history. */
