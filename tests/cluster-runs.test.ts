@@ -144,7 +144,7 @@ test("a run whose node dies after its tool call completed resumes on another nod
   assert.deepEqual((await api(b.url, "/v1/agents")).json, []);
 });
 
-test("a run on a retiring node finishes its tool call there, and is handed off at the step boundary: nothing lost, no resume spent", { timeout: 120_000 }, async t => {
+test("a run on a retiring node is handed off mid-call: its call in flight is answered as interrupted on the next owner, never run twice, no resume spent", { timeout: 120_000 }, async t => {
   const c = await cluster(t);
   const mcp = await mcpServer(t);
   const model = await fakeModel(t, (_body, index) => index === 0 ? effect(1) : { role: "assistant", content: "continued on b" });
@@ -160,21 +160,19 @@ test("a run on a retiring node finishes its tool call there, and is handed off a
   await entered;
   assert.equal(await c.owner(session), a.url);
   const watcher = follow([a, b], runId);
-  // A newer deploy supersedes A: it retires, but lets its step finish.
+  // A newer deploy supersedes A: it retires, and hands the run off at once.
   ecsA.state.revision++;
   ecsA.state.created = Date.now() / 1000;
   await until(() => a.logs.some(entry => entry.type === "retiring"), "A to retire");
-  await sleep(500);
-  assert.equal(await c.owner(session), a.url, "A keeps the run while its step runs");
-  release();
 
   const run = await ended([b, a], runId);
   assert.equal(run.status, "completed", JSON.stringify(run));
   assert.equal(run.text, "continued on b");
+  release();
   assert.deepEqual(mcp.calls, ["effect:1"], "the tool call ran once, on A");
   assert.equal(model.bodies.length, 2, "one model call per step");
-  assert.ok(!toolMessages(model.bodies[1]).some((content: string) => /outcome is unknown|may or may not have/.test(content)));
-  assert.equal(run.resumes, undefined, "a hand-off at a boundary is not a resume");
+  assert.ok(toolMessages(model.bodies[1]).some((content: string) => /was interrupted/.test(content)), "the model was told the call was interrupted");
+  assert.equal(run.resumes, undefined, "a hand-off is not a resume");
   assert.deepEqual(run.handoffs.map((entry: any) => entry.reason), ["retire"]);
   const [line] = b.logs.filter(entry => entry.type === "turn_handed_off");
   assert.equal(line?.Step, "tool", JSON.stringify(line));

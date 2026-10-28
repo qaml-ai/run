@@ -76,6 +76,12 @@ export function durableEntryMessages(entry: EntryRecord): DurableMessage[] {
   })).filter(item => !(item.message.role === "toolResult" && (item.message.details as { inputRequired?: boolean } | undefined)?.inputRequired));
 }
 
+/** Whether Pi's journal holds a run that has not ended (`pi.live`'s run): one a close or a crash cut off, which Pi resumes. */
+export async function piRunning(storage: Pick<Storage, "findDocument" | "document">, conversationId: ConversationId | number): Promise<boolean> {
+  const record = await storage.findDocument({ kind: "pi.live", scope: { kind: "conversation", conversationId: conversationId as ConversationId } }, "current", context);
+  return !!record && (await storage.document(record.id, "current", context))?.value?.run !== undefined;
+}
+
 async function latestDurableCursor(storage: Storage, conversationId: ConversationId): Promise<DurableCursor | undefined> {
   let cursor;
   do {
@@ -728,8 +734,9 @@ export class DurableAgent {
   abort() { if (this.controller) { this.errorMessage ??= "Agent run aborted"; this.controller.abort(); void this.conversation.abort(context).catch(() => {}); } }
   close(timeoutMs = 5_000): Promise<void> {
     if (this.closing) return this.closing;
+    // No abort: a run left running stays Pi's, and the next owner's Pi goes on with it (a close is not a crash: a request it
+    // cut is made again, a tool phase runs again from its top).
     this.closed = true;
-    this.abort();
     // close() seals the native mutation line synchronously. Awaiting idle first
     // lets a tool that ignores cancellation keep that line alive forever.
     let nativeError: unknown;
@@ -851,6 +858,13 @@ export class DurableAgent {
         // continue runs on the context as it is; one that ends in an answer has nothing to answer (`nothing_to_answer`).
         if (live?.run === undefined) await this.conversation.submit({ type: "continue" }, context);
         this.harness.resume();
+        // A crash cut its model request (Pi's retry is off, so the run ended `interrupted`): it is asked again.
+        await this.conversation.waitForIdle(context);
+        if ((await this.harness.snapshot(LiveDoc, this.conversation.id, context))?.runFailure?.reason === "interrupted" && !this.signal?.aborted) {
+          await this.flushEvents();
+          this.errorMessage = undefined;
+          await this.conversation.submit({ type: "continue" }, context);
+        }
       }
       while (true) {
         await this.conversation.waitForIdle(context);
