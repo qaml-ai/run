@@ -1539,11 +1539,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
    * stops idle tasks instead. A task a newer deployment superseded retires once that
    * deployment runs all its tasks (or AGENT_RETIRE_WAIT_MS has passed) and a peer
    * that is not retiring has joined: it takes nothing new (its peers do), and each running
-   * turn finishes only the step it is in (its model call, or its latest response's tool
-   * calls), then is handed off to a peer at that boundary, which continues it at once
-   * (`handOffTurns`). Idle agents (one waiting on human input, say), queued runs and
-   * volumes move as soon as they are idle. A step still running AGENT_RETIRE_MAX_MS after
-   * the retirement began is handed off mid-step. With nothing left the task drops its
+   * turn is handed off to a peer at once, mid-step, whose Pi goes on with it (`handOffTurns`).
+   * Idle agents (one waiting on human input, say), queued runs and volumes move as soon as
+   * they are idle. With nothing left the task drops its
    * protection, so ECS stops it and the SIGTERM drain is empty. A retiring task left with
    * no such peer serves again until one joins: refusing work would leave it nowhere to go.
    */
@@ -1553,6 +1551,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   let pausing = false;
   let cutOff = false;
   const workTimer = setInterval(() => {
+    // A code execution has no steps: one still running AGENT_RETIRE_MAX_MS after the retirement began is cut off.
     if (retiringSince !== undefined && !cutOff && Date.now() - retiringSince > retireMaxMs) {
       cutOff = true;
       console.log(JSON.stringify({ type: "retire_cap_reached", node, ms: Date.now() - retiringSince, inFlight: clients.inFlight() }));
@@ -1716,8 +1715,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       catch (error) { failed = true; console.error(JSON.stringify({ type: "drain_step_failed", step: name, error: errorText(error) })); }
     };
     await step("drain", () => ownership.drain());
-    // With a peer to continue them, running turns are handed off at their next step boundary, and idle agents (one waiting
-    // on human input, say) move at once. Alone, the node lets its turns finish instead: nobody could go on with them now.
+    // With a peer to continue them, running turns are handed off at once (Pi goes on with them there), and idle agents (one
+    // waiting on human input, say) move at once. Alone, the node lets its turns finish instead: nobody could go on with them now.
     await step("hand-off", async () => { if (await ownership.peer()) clients.handOffTurns(signal === "memory" ? "memory" : "drain"); });
     // A second signal may come at any moment, and the node stops waiting for its turns.
     if (buggify("drain.stop_waiting")) drainDeadline = 0;

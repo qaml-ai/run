@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { RequestMethod, RequestRecord } from "../shared/client-protocol.ts";
 import { loadDecision, MAX_RESUMES } from "../src/client-sessions.ts";
-import { openCalls, RERUN } from "../src/agent-host.ts";
 import { interruptedTurnRepairs } from "../src/history.ts";
 import { check, fc } from "./prop-helpers.ts";
 
@@ -296,20 +295,14 @@ test("transcript repair (close): every call answered exactly once, and the turn 
   }), { runs: 400 });
 });
 
-test("transcript repair (resume): open calls and the repairs agree; awaited and rerun calls stay open, the rest are answered once", async t => {
+test("transcript repair (suspended): awaited calls stay open, the rest are answered once", async t => {
   await check(t, fc.property(transcript, fc.array(fc.nat({ max: 20 })), (context, picks) => {
     const open = openAtEnd(context);
-    // The host's own view of what is open (`openCalls`) is the repairs' view.
-    assert.deepEqual(openCalls(context).map(call => call.id).sort(), [...open].sort());
-    // Calls awaiting input (or rerun on resume) are left open; ids that are not open calls are ignored.
+    // Calls awaiting input are left open; ids that are not open calls are ignored.
     const awaiting = [...new Set(picks.map(pick => `call_${pick}`))];
     const repaired = [...context, ...interruptedTurnRepairs(context, false, awaiting)];
     assert.deepEqual(openAtEnd(repaired).sort(), open.filter(id => awaiting.includes(id)).sort());
-    // As `init` resumes a turn: rerun calls (delegate) stay open for the turn to make again.
-    const rerun = openCalls(context).filter(call => RERUN.includes(call.name)).map(call => call.id);
-    const resumed = [...context, ...interruptedTurnRepairs(context, false, rerun)];
-    assert.deepEqual(openAtEnd(resumed).sort(), [...rerun].sort());
     // Repairing twice adds nothing: a repaired transcript has nothing left to close but what was left open on purpose.
-    assert.deepEqual(interruptedTurnRepairs(resumed, false, rerun), []);
+    assert.deepEqual(interruptedTurnRepairs(repaired, false, awaiting), []);
   }), { runs: 400 });
 });

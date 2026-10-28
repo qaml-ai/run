@@ -14,7 +14,7 @@ import { prompt, outcome } from "./sim/scenario.ts";
 
 const owner = async (sim: Sim, agent: string) => (await sim.db.query("select node from actor_owners where actor = $1", [agent])).rows[0]?.node as string | undefined;
 
-test("a turn still running when the drain times out is handed off and resumed by the next owner (cluster-handoff)", async t => {
+test("a turn running when its node drains is handed off at once, and the next owner makes its model request again (cluster-handoff)", async t => {
   // The first model call never answers; the next does.
   const sim = await Sim.create({ seed: 31, respond: (_body, served) => served.length === 0 ? { stall: true } : { content: "resumed after the drain" } });
   t.after(() => sim.close());
@@ -25,7 +25,7 @@ test("a turn still running when the drain times out is handed off and resumed by
   await sim.until(() => sim.model.served.length === 1, "a called the model");
   await sim.env.settle(sim.drain("a"));
   const drained = sim.env.logs.find(log => log.by === "a#1" && log.line.includes('"drain_finished"'));
-  assert.equal(JSON.parse(drained!.line).unfinished, 1);
+  assert.equal(JSON.parse(drained!.line).unfinished, 0);
   const record = await outcome(sim, "b", agent, id);
   assert.equal(record.outcome.result.reply, "resumed after the drain");
   assert.deepEqual(sim.model.served.map(served => served.from), ["a.sim", "b.sim"]);
@@ -33,7 +33,7 @@ test("a turn still running when the drain times out is handed off and resumed by
   assert.equal(await owner(sim, agent), "http://b.sim");
 });
 
-test("a draining node finishes the turn in flight, leaves the queued run for the next owner and releases (cluster-drain)", async t => {
+test("a draining node hands the turn in flight off, leaves the queued run for the next owner and releases (cluster-drain)", async t => {
   const sim = await Sim.create({ seed: 32, respond: (body, served) => ({ content: `answer ${served.length}`, delayMs: served.length === 0 ? 3_000 : 100 }) });
   t.after(() => sim.close());
   await sim.start("a");
@@ -46,9 +46,9 @@ test("a draining node finishes the turn in flight, leaves the queued run for the
   const second = await prompt(sim, "b", agent, "second");
   await sim.env.settle(drained);
   assert.equal(JSON.parse(sim.env.logs.find(log => log.by === "a#1" && log.line.includes('"drain_finished"'))!.line).unfinished, 0);
-  assert.equal((await outcome(sim, "b", agent, first)).outcome.result.reply, "answer 0", "the turn in flight finished on a");
-  assert.equal((await outcome(sim, "b", agent, second)).outcome.result.reply, "answer 1");
-  assert.deepEqual(sim.model.served.map(served => served.from), ["a.sim", "b.sim"]);
+  assert.equal((await outcome(sim, "b", agent, first)).outcome.result.reply, "answer 1", "the turn in flight went on on b");
+  assert.equal((await outcome(sim, "b", agent, second)).outcome.result.reply, "answer 2");
+  assert.deepEqual(sim.model.served.map(served => served.from), ["a.sim", "b.sim", "b.sim"]);
   assert.equal(await owner(sim, agent), "http://b.sim");
   assert.equal((await sim.db.query("select from runtime_nodes where node = 'http://a.sim'")).rows.length, 0, "a deleted its heartbeat");
 });
