@@ -336,7 +336,7 @@ export function observeTurns(model: () => { provider: string; id: string } | und
     const aborted = thrown === undefined && (result?.code === "aborted" || (typeof result?.error === "string" && errorClass(result.error) === "aborted"));
     const error = thrown !== undefined ? "exception" : aborted ? "aborted" : !limited && typeof result?.error === "string" && result.error ? errorClass(result.error) : "none";
     // A turn handed off at a step boundary ends here and goes on on another node: its part here is a turn of its own.
-    const outcome = aborted ? "aborted" : error !== "none" ? "failed" : result?.stopped === "input_required" ? "input_required" : limited ?? "completed";
+    const outcome = aborted ? "aborted" : error !== "none" ? "failed" : result?.handedOff ? "handed_off" : result?.stopped === "input_required" ? "input_required" : limited ?? "completed";
     const { provider = "unknown", id = "unknown" } = model() ?? {};
     const firstRequestMs = current.firstRequest === undefined ? undefined : current.firstRequest - current.started;
     // Why its first request waited, where it waited long: Pi storage, or the host's first turn.

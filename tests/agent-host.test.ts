@@ -165,10 +165,11 @@ test("a node stopped while a tool call runs leaves a turn the next one resumes f
   const running = Promise.withResolvers<void>();
   fake.respond(answer(fauxToolCall("lookup", {}, { id: "call_1" }), "toolUse"));
   const first = await fake.start({ call: () => { running.resolve(); return new Promise(() => {}); } });
-  // The turn never settles: its node is gone, as a process killed mid-call would be.
-  void first.host.handle("prompt", { text: "look it up" }).catch(() => {});
+  // The turn never settles here: its host stops mid-call, and the turn is handed off, not failed.
+  const cut = first.host.handle("prompt", { text: "look it up" });
   await running.promise;
   await first.host.dispose();
+  assert.deepEqual(await cut, { error: null, handedOff: true });
   fake.respond(answer("Found it."));
   const { host, init } = await fake.start({ resume: true });
   assert.deepEqual(init.resume, { continue: true });
