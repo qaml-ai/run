@@ -247,10 +247,8 @@ export class DurableAgent {
   static async create(options: DurableAgentOptions): Promise<DurableAgent> {
     const agent = new DurableAgent(options);
     agent.installTools();
-    // Pi's generation task with two changes, pinned to its 1.4 phases: preparation does not take a context checkpoint
-    // (`camel.legacy.context`) for a head marker, and the end of a tool round asks the host whether the run ends
-    // (`finishTurn`: a call waiting for input, final_output, a run or spend limit, a hand-off). Pi ends a run after a round
-    // only when every result asks it to (`control.terminate`), and its `afterTools` hook cannot end one.
+    // Pi's generation task with one change: preparation does not take a context checkpoint (`camel.legacy.context`) for a
+    // head marker.
     const original = GenerationTask.definition;
     const task = { definition: { ...original, phases: { ...original.phases,
       prepare: async (...args: Parameters<typeof original.phases.prepare>) => {
@@ -264,27 +262,6 @@ export class DurableAgent {
           return typeof value === "function" ? value.bind(target) : value;
         } });
         return original.phases.prepare(record, prepared, taskContext);
-      },
-      tools: async (...args: Parameters<typeof original.phases.tools>) => {
-        const [record, runtime, taskContext] = args;
-        if (!record.state.checkpoint.pending.length) {
-          await agent.flushEvents();
-          const checkpoint = record.state.checkpoint;
-          if (await agent.endTurn()) {
-            await runtime.commit(async tx => {
-              const live = await tx.doc(LiveDoc, runtime.conversationId);
-              if (live.run?.taskId === record.id) {
-                for (const id of live.run.inputs) tx.settleSubmission(id, { status: "done", answer: checkpoint.assistant });
-                delete live.run;
-              }
-              delete live.generation; delete live.tools; delete live.nestedTools;
-              return { status: "terminal", outcome: { status: "completed", result: { entryId: checkpoint.assistant } } };
-            }, taskContext);
-            return;
-          }
-          await agent.submitSteer();
-        }
-        return original.phases.tools(...args);
       },
     } } };
     const registry: RegistryReader = {
@@ -659,7 +636,23 @@ export class DurableAgent {
           ...(result.structuredContent === undefined || !tool.outputSchema ? {} : { structuredOutput: result.structuredContent }),
           ...(result.usage === undefined ? {} : { usage: result.usage }), ...(result.terminate ? { control: { terminate: true } } : {}) };
       },
-    })), hooks: [hook(GenerationTask, { beforeRetry: failed => this.options.durable.beforeRetry?.(failed) })] });
+    })), hooks: [hook(GenerationTask, {
+      beforeRetry: failed => this.options.durable.beforeRetry?.(failed),
+      // The end of a tool round: the host decides whether the run ends there (`finishTurn`: a call waiting for input,
+      // final_output, a run or spend limit); otherwise the next steer goes in at this boundary.
+      // A decision that fails ends the run with its error (Pi would only report a throwing hook).
+      afterTools: async () => {
+        try {
+          await this.flushEvents();
+          if (await this.endTurn()) return { end: true };
+          await this.submitSteer();
+          return undefined;
+        } catch (error) {
+          this.errorMessage = error instanceof Error ? error.message : String(error);
+          return { end: true };
+        }
+      },
+    })] });
   }
 
   /**
