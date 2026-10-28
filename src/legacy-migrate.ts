@@ -18,8 +18,11 @@ export const LEGACY_AGENT_CODES = [
   "migrated", "would_migrate",
   /** Nothing to convert: its history is current already, or it has none. */
   "current",
-  /** Held by a node (loaded, loading, or claimed by a live node), or with runs open or queued: left for a later call. */
-  "skipped_hosted", "skipped_busy",
+  /**
+   * Held by a node (loaded, loading, being deleted, or claimed by a live node), or with runs open or queued, or this
+   * node past its memory limit (AGENT_MEMORY_HIGH_BYTES): left for a later call.
+   */
+  "skipped_hosted", "skipped_busy", "skipped_memory",
   /** Deleted, revoked or purged since the batch read it. */
   "skipped_gone",
   /** Its stored history is past `maxBytes`: not read. */
@@ -65,7 +68,8 @@ const encode = (state: State) => Buffer.from(JSON.stringify(state)).toString("ba
 function decode(cursor: string): State {
   let state: State;
   try { state = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")); } catch { throw new LegacyMigrateCursorError("cursor is not one this endpoint gave"); }
-  const ok = state && state.v === 1 && typeof state.after === "string" && typeof state.dryRun === "boolean" && Number.isSafeInteger(state.maxBytes)
+  const ok = state && state.v === 1 && typeof state.after === "string" && typeof state.dryRun === "boolean"
+    && Number.isSafeInteger(state.maxBytes) && state.maxBytes > 0 && state.maxBytes <= LEGACY_MIGRATE_MAX_BYTES
     && Number.isFinite(state.started) && Number.isFinite(state.spent) && Number.isInteger(state.calls)
     && state.counts && LEGACY_AGENT_CODES.every(code => Number.isInteger(state.counts[code])) && state.kinds && typeof state.kinds === "object";
   if (!ok) throw new LegacyMigrateCursorError("cursor is not one this endpoint gave");

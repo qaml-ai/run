@@ -1447,8 +1447,10 @@ export class ClientSessions {
     const agent = id;
     if (!validSessionId(id)) return { agent, code: "failed", error: "Invalid agent id" };
     if (this.closed) throw new HttpError(503, "This node is stopping; retry");
-    const here = () => this.sessions.has(id) || this.loading.has(id) || this.migrating.has(id) || this.supervisor.agents.has(id) || this.supervisor.starting.has(id);
+    const here = () => this.sessions.has(id) || this.loading.has(id) || this.migrating.has(id) || this.removing.has(id) || this.supervisor.agents.has(id) || this.supervisor.starting.has(id);
     if (here()) return { agent, code: "skipped_hosted" };
+    // A conversion holds the agent's history in memory: none on a node past its limit.
+    if (this.supervisor.memoryHigh) return { agent, code: "skipped_memory" };
     const done = Promise.withResolvers<void>();
     // Set before anything is awaited: a load from here on waits for it.
     this.migrating.set(id, done.promise);
@@ -1459,7 +1461,7 @@ export class ClientSessions {
       const found = await row();
       if (!found || found.revoked || found.purged_at) return { agent, code: "skipped_gone" };
       if (found.pending_runs) return { agent, code: "skipped_busy" };
-      const bytes = await this.legacyBytes(id);
+      let bytes = await this.legacyBytes(id);
       if (bytes > options.maxBytes) return { agent, code: "too_large", bytes };
       if (ownership) {
         if (options.dryRun) { if (await ownership.owner(id)) return { agent, code: "skipped_hosted", bytes }; }
@@ -1471,6 +1473,9 @@ export class ClientSessions {
           const now = await row();
           if (!now || now.revoked || now.purged_at) return { agent, code: "skipped_gone", bytes };
           if (now.pending_runs) return { agent, code: "skipped_busy", bytes };
+          // Measured again under the claim: it may have grown since, and nothing grows it now.
+          bytes = await this.legacyBytes(id);
+          if (bytes > options.maxBytes) return { agent, code: "too_large", bytes };
         }
       }
       const conversion = await this.supervisor.migrateLegacy(id, claim, {

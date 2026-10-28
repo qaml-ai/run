@@ -169,11 +169,12 @@ at a time:
 | `base_document` | A base marker but no base document. | The document naming the newest marker. |
 
 Each agent gets a result `code`: `migrated` (or `would_migrate` in a dry run),
-`current` (nothing to do), `skipped_hosted` (loaded or loading here, or held by a
-live node), `skipped_busy` (runs open or queued), `skipped_gone` (revoked or
-purged), `too_large` (its journal entries and documents, and its legacy log's
-objects and tail rows, measured without reading them, are past `maxBytes`: never
-read), `review` (the converter cannot read it whole or tell what it is: a journal
+`current` (nothing to do), `skipped_hosted` (loaded, loading or being deleted
+here, or held by a live node), `skipped_busy` (runs open or queued),
+`skipped_memory` (this node is past `AGENT_MEMORY_HIGH_BYTES`), `skipped_gone`
+(revoked or purged), `too_large` (its journal entries and documents, and its legacy
+log's objects and tail rows, measured without reading them, before the claim and
+again under it, are past `maxBytes`: never read), `review` (the converter cannot read it whole or tell what it is: a journal
 with no history and an empty legacy log, an index short of a base whose host
 records reclaim removed, an index holding more than the records give, a rollback
 after the journal had a base; nothing written) or `failed` (tried again next time).

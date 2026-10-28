@@ -4,6 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId } from "@earendil-works/pi-durable";
 import { fauxAssistantMessage, type Api, type Model } from "@earendil-works/pi-ai";
@@ -16,7 +18,7 @@ import { ConsoleAuth } from "../src/console-auth.ts";
 import type { Db } from "../src/db.ts";
 import { HistoryIndex } from "../src/history-pages.ts";
 import { legacyCoverage, legacyLogLister } from "../src/legacy-coverage.ts";
-import { legacyMigrate, LegacyMigrateCursorError, type LegacyAgentResult } from "../src/legacy-migrate.ts";
+import { LEGACY_AGENT_CODES, legacyMigrate, LegacyMigrateCursorError, type LegacyAgentResult } from "../src/legacy-migrate.ts";
 import { Ownership } from "../src/ownership.ts";
 import { Passwords } from "../src/passwords.ts";
 import { legacyHistory, recordsHistory } from "../src/pi-durable/retired-host.ts";
@@ -332,6 +334,58 @@ test("an agent its own load retired meanwhile converts from where the load left 
   assert.deepEqual([result.code, result.kind], ["migrated", "history_before_base"]);
   assert.equal((await rt.sessions.migrateLegacy(agent, { dryRun: false, maxBytes: 1_000_000 })).code, "current");
   assert.deepEqual((await rt.sessions.agentHistory(agent, TENANT))!.messages, historyOf(records));
+});
+
+test("a legacy log's converted agent asks its model with its system prompt and tools, then the summary and its last messages", { timeout: 60_000 }, async t => {
+  const rt = await runtime(t);
+  const bodies: any[] = [];
+  const server = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    bodies.push(JSON.parse(body));
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    for (const [delta, finish_reason] of [[{ role: "assistant", content: "on Pi" }, null], [{}, "stop"]]) {
+      response.write(`data: ${JSON.stringify({ id: "response", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
+    }
+    response.end("data: [DONE]\n\n");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  const agent = id("legacy-log-request");
+  await rt.row(agent);
+  const records = [...turn("pre-Pi question", "pre-Pi answer", "pre-1")];
+  const log = rt.legacyLog(agent);
+  await log.rewrite(() => records);
+  await log.close();
+  assert.deepEqual([(await rt.sessions.migrateLegacy(agent, { dryRun: false, maxBytes: 1_000_000 })).kind], ["legacy_log"]);
+  const served = { ...model, baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` } as Model<Api>;
+  const tools = { definitions: [{ name: "lookup", description: "Looks a thing up", parameters: { type: "object", properties: { q: { type: "string" } } } }], call: async () => "found" };
+  await rt.supervisor.start(agent, { model: served, apiKey: "fixture", codeMode: false, systemPrompt: "You are the migrated agent." }, tools);
+  assert.equal((await rt.supervisor.request(agent, "prompt", { text: "after migration", requestId: "new" })).reply, "on Pi");
+  await rt.supervisor.stop(agent);
+  const [first] = bodies;
+  const text = JSON.stringify(first.messages);
+  assert.equal(first.messages[0].role, "system", "the system prompt comes first");
+  assert.match(JSON.stringify(first.messages.filter((message: any) => message.role === "system")), /You are the migrated agent\./);
+  assert.deepEqual(first.tools.map((tool: any) => tool.function.name), ["lookup"]);
+  assert.match(text, /moved from a legacy history format/, "the summary of what came before");
+  assert.ok(text.indexOf("pre-Pi answer") < text.indexOf("after migration"), "its last messages, then the new one");
+  assert.deepEqual((await rt.supervisor.history(agent, count => rt.index.messages(agent, count))).map(message => message.role), ["user", "assistant", "user", "assistant"]);
+});
+
+test("no conversion on a node past its memory limit; a cursor's maxBytes stays within the bound", async t => {
+  const { db } = await testDatabase();
+  const directory = await mkdtemp(join(tmpdir(), "legacy-migrate-memory-"));
+  const storage = fileStorage(join(directory, "storage"));
+  const supervisor = new AgentSupervisor(join(directory, "agents"), { db, storage, hosting: "inline", memoryHighBytes: 1 });
+  const sessions = new ClientSessions(supervisor, { db, storage, secret: "legacy-migrate-secret-32-characters" });
+  t.after(async () => { await sessions.close(); await supervisor.close(); await rm(directory, { recursive: true, force: true }); });
+  assert.equal((await sessions.migrateLegacy(id("any"), { dryRun: false, maxBytes: 1_000_000 })).code, "skipped_memory");
+  const forged = (maxBytes: number) => Buffer.from(JSON.stringify({ v: 1, after: "", dryRun: true, maxBytes, counts: Object.fromEntries(LEGACY_AGENT_CODES.map(code => [code, 0])), kinds: {}, started: 0, spent: 0, calls: 0 })).toString("base64url");
+  const walk = (cursor: string) => legacyMigrate(db, { cursor, lister: async () => [], migrate: async agent => ({ agent, code: "current" }) });
+  for (const maxBytes of [0, -1, 65 * 1024 * 1024, Number.MAX_SAFE_INTEGER]) await assert.rejects(walk(forged(maxBytes)), LegacyMigrateCursorError, `maxBytes ${maxBytes}`);
+  assert.equal((await walk(forged(1024))).maxBytes, 1024);
 });
 
 test("POST /v1/operations/legacy-migrate is the platform operator's alone, a dry run by default", async t => {
