@@ -159,7 +159,7 @@ test("inline images enter the journal scaled down: a user message's, and an MCP 
   const screenshot = (await picture(2560, 1440)).toString("base64");
   const storage = await openPiStorage({ sessionId: "agent", directory });
   const io: HostIO = {
-    emit: () => {}, cancelTools: async () => null, runLimit: async () => undefined, legacyLog: { empty: async () => true }, piStorage: async () => storage,
+    emit: () => {}, cancelTools: async () => null, runLimit: async () => undefined, legacyLog: { read: async () => [], empty: async () => true }, piStorage: async () => storage,
     tool: async () => ({ content: [{ type: "text", text: "the page" }, { type: "image", data: screenshot, mimeType: "image/png" }] }),
     file: async () => { throw new Error("no files"); }, modelAuth: async () => { throw new Error("no per-call credentials"); }, fs: async () => { throw new Error("no files"); },
   };
@@ -252,7 +252,7 @@ test("a 60-image saved history is hydrated with only the newest 40 images", asyn
   const png = (await picture(4, 3)).toString("base64");
   const host = createAgentHost({
     emit: () => {}, cancelTools: async () => null, runLimit: async () => undefined,
-    legacyLog: { empty: async () => true }, piStorage: async () => storage,
+    legacyLog: { read: async () => [], empty: async () => true }, piStorage: async () => storage,
     tool: async () => { throw new Error("no tools"); }, file: async () => png,
     modelAuth: async () => { throw new Error("no per-call credentials"); }, fs: async () => { throw new Error("no files"); },
   });
@@ -283,7 +283,7 @@ test(`a provider rejecting intact images (${rejection}) gets one request without
   const png = (await picture(4, 3)).toString("base64");
   const io: HostIO = {
     emit: event => { events.push(event); }, cancelTools: async () => null, runLimit: async () => undefined,
-    legacyLog: { empty: async () => true }, piStorage: async () => storage,
+    legacyLog: { read: async () => [], empty: async () => true }, piStorage: async () => storage,
     tool: async () => ({ content: [{ type: "image", data: png, mimeType: "image/png" }] }),
     file: async ref => ref.path === "/broken.png" ? Buffer.from(png, "base64").subarray(0, 24).toString("base64") : png, modelAuth: async () => { throw new Error("no per-call credentials"); }, fs: async () => { throw new Error("no files"); },
   };

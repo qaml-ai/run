@@ -482,7 +482,8 @@ export async function closeTurn(ctx: SpendContext, session: Session) {
     session.catalogPriced = !!priced;
   }
   const id = session.header.id;
-  const closed = await ctx.supervisor.closeTurn(id, session.claim, { committing: entry => entryEffect(ctx, session, entry) });
+  const closed = await ctx.supervisor.closeTurn(id, session.claim, { committing: entry => entryEffect(ctx, session, entry),
+    index: { indexed: async () => (await ctx.historyIndex.indexed(id)) ?? (await ctx.historyIndex.begin(id), 0), write: chunk => ctx.historyIndex.write(id, session.claim, chunk) } });
   // Recovered messages have no live message_end event to count them in memory. Read the committed ledger instead;
   // a retry or a second close finds the same native cursor and cannot charge the response twice.
   await refreshSpend(ctx, session);

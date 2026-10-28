@@ -68,15 +68,6 @@ export const contextRangeMessage = (bytes: number, max: number) =>
   `This agent's context since its last compaction is ${bytes} bytes, past the ${max} bytes a run can load; start a new agent with a summary of the history, or ask the operator to raise AGENT_CONTEXT_RANGE_MAX_BYTES.`;
 /** A host refused an agent whose history is still only in the legacy format, which no release imports any more. */
 export const NOT_MIGRATED = "AGENT_NOT_MIGRATED";
-/**
- * Refuse an agent whose history is in a legacy format this release no longer reads (`kind`: an unretired host
- * transcript, a legacy log, history before the journal only the host's records hold), leaving its storage untouched:
- * logged as `legacy_format_refused`, failed as `NOT_MIGRATED`.
- */
-export function legacyFormatRefused(agent: string, tenant: string | undefined, kind: "host_transcript" | "not_on_pi" | "legacy_log" | "history_before_base"): Error {
-  console.error(JSON.stringify({ type: "legacy_format_refused", agent, tenant, kind }));
-  return Object.assign(new Error(`${NOT_MIGRATED}: this agent's history is in a legacy format (${kind}) that this release no longer reads. Nothing was changed`), { status: 409, code: NOT_MIGRATED });
-}
 export const IDENTITY_KEY = "agent-runtime:identity-token";
 /** The `apiKey` of an agent with a key scope: each call reads the scope's current entry (`ToolBridge.modelAuth`), so a rotated key applies at once. */
 export const SCOPE_KEY = "agent-runtime:key-scope";
