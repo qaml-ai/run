@@ -15,7 +15,7 @@ const api = async (base: string, path: string, body?: unknown) => {
   const response = await fetch(base + path, { method: body === undefined ? "GET" : "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   return { status: response.status, json: await response.json() as any };
 };
-const unknown = (body: any) => toolMessages(body).some((content: string) => /outcome is unknown|may or may not have/.test(content));
+const unknown = (body: any) => toolMessages(body).some((content: string) => /outcome is unknown|may or may not have|was interrupted and may have partially run/.test(content));
 const handedOff = (node: Node) => node.logs.filter(entry => entry.type === "turn_handed_off");
 
 /** A node with an ECS of its own, so each can be superseded (retired) by a deploy on its own. */
