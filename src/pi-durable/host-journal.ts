@@ -28,6 +28,9 @@ export type HostRecord =
    */
   | { t: "pi"; cursor: At; after?: At };
 
+/** What a retirement did (or, dry, would do): the history's length at its base, how much of it is settled, and where the index ends. */
+export type Retirement = { total: number; settled: number; indexed?: number };
+
 /** Messages the history grows by past its base before the next turn's end writes a new one (`rebase`). */
 const REBASE_MESSAGES = 256;
 
@@ -73,7 +76,9 @@ export class HostJournal {
     /** Index `messages` (the history's from `from`, where `turns` begin), as chunks; returns where the index ends then. */
     index?: (from: number, messages: AgentMessage[], turns: number[]) => Promise<number>;
     legacy?: () => Promise<RetiredRecord[]>;
-  } = {}): Promise<boolean> {
+    /** Read and check everything the retirement would, and write nothing (`POST /v1/operations/legacy-migrate`'s dry run). */
+    dryRun?: boolean;
+  } = {}): Promise<false | Retirement> {
     const found = await JournalHistory.snapshotBase(storage);
     if (!found?.enabled) return false;
     const marker = await JournalHistory.findBase(storage);
@@ -90,12 +95,18 @@ export class HostJournal {
       base.kept = all.slice(base.turnStart);
     }
     const settled = open(base) ? base.turnStart : base.total;
-    if (options.index && options.indexed !== undefined && options.indexed < settled) {
+    let indexed = options.indexed;
+    if ((options.index || options.dryRun) && indexed !== undefined && indexed < settled) {
       const { messages, turns } = await records();
       if (messages.length < settled) throw new Error(`The host's records hold ${messages.length} messages, before its base ${settled}`);
-      const indexed = await options.index(options.indexed, messages.slice(options.indexed, settled), turns);
-      if (indexed < settled) throw new Error(`The history index ends at ${indexed}, before the journal's base ${settled}`);
+      if (options.dryRun) indexed = settled;
+      else {
+        indexed = await options.index!(indexed, messages.slice(indexed, settled), turns);
+        if (indexed < settled) throw new Error(`The history index ends at ${indexed}, before the journal's base ${settled}`);
+      }
     }
+    const retirement: Retirement = { total: base.total, settled, ...(indexed !== undefined ? { indexed } : {}) };
+    if (options.dryRun) return retirement;
     const writes: StorageWrite[] = [];
     const existing = await JournalHistory.baseDocument(storage);
     if (!keep) writes.push(...baseWrites(await storage.mintId<EntryId>(), base, { id: existing ?? await storage.mintId<DocumentId>(), create: !existing }));
@@ -105,7 +116,7 @@ export class HostJournal {
       { type: "document.change", id: found.documentId, content: { version: 1, kind: "base", value: { ...found.value, enabled: false, retired: "journal" } as JsonObject } },
     );
     await commitTo(storage, writes, context);
-    return true;
+    return retirement;
   }
 
   get total() { return this.history.total; }

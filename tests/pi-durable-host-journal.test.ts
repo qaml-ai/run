@@ -122,7 +122,7 @@ test("retiring indexes the settled history before the base the index lacks, keep
   const storage = await earlier(records);
   const chunks: { from: number; messages: AgentMessage[]; turns: number[] }[] = [];
   const retired = await HostJournal.retire(storage, { indexed: 1, index: async (from, messages, turns) => { chunks.push({ from, messages, turns }); return from + messages.length; } });
-  assert.equal(retired, true);
+  assert.deepEqual(retired, { total: 4, settled: 2, indexed: 2 });
   assert.deepEqual(chunks.map(chunk => [chunk.from, roles(chunk.messages)]), [[1, ["assistant"]]], "from where the index ends, to the running turn");
   assert.equal(await HostJournal.retire(storage, { indexed: 2, index: async () => { throw new Error("retired once"); } }), false);
   const journal = (await HostJournal.open(storage))!;
