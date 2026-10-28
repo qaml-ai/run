@@ -27,7 +27,7 @@ test("details caps count UTF-8 bytes, drop duplicate JSON, and survive missing o
     ];
     const io: HostIO = {
       emit: () => {}, cancelTools: async () => null, runLimit: async () => undefined,
-      legacyLog: { empty: async () => true }, piStorage: async () => storage,
+      legacyLog: { read: async () => [], empty: async () => true }, piStorage: async () => storage,
       tool: async () => values.shift(),
       file: async () => { throw new Error("no files"); }, modelAuth: async () => { throw new Error("no credentials"); },
       fs: async (_op, args) => { writes.push(String(args.path)); throw new Error("write failed"); },

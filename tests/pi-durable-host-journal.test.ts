@@ -1,4 +1,3 @@
-import { retireHostTranscript } from "./fixtures/retired-host.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MemoryStorage } from "@earendil-works/pi-durable";
@@ -122,10 +121,10 @@ test("retiring indexes the settled history before the base the index lacks, keep
   ];
   const storage = await earlier(records);
   const chunks: { from: number; messages: AgentMessage[]; turns: number[] }[] = [];
-  const retired = await retireHostTranscript(storage, { indexed: 1, index: async (from, messages, turns) => { chunks.push({ from, messages, turns }); return from + messages.length; } });
+  const retired = await HostJournal.retire(storage, { indexed: 1, index: async (from, messages, turns) => { chunks.push({ from, messages, turns }); return from + messages.length; } });
   assert.equal(retired, true);
   assert.deepEqual(chunks.map(chunk => [chunk.from, roles(chunk.messages)]), [[1, ["assistant"]]], "from where the index ends, to the running turn");
-  assert.equal(await retireHostTranscript(storage, { indexed: 2, index: async () => { throw new Error("retired once"); } }), false);
+  assert.equal(await HostJournal.retire(storage, { indexed: 2, index: async () => { throw new Error("retired once"); } }), false);
   const journal = (await HostJournal.open(storage))!;
   assert.deepEqual([journal.total, journal.active, journal.turnStart, journal.history.heldFrom], [4, true, 2, 2]);
   assert.deepEqual(roles(await journal.turnMessages()), ["user", "assistant"], "the running turn's messages are the journal's");
@@ -145,7 +144,7 @@ test("retiring a session whose import is in its legacy log indexes from that log
   await legacy.rewrite(() => records);
   const storage = await earlier(records, { legacy });
   const chunks: AgentMessage[][] = [];
-  assert.ok(await retireHostTranscript(storage, { indexed: 0, index: async (from, messages) => { chunks.push(messages); return from + messages.length; }, legacy: () => legacy.read() as never }));
+  assert.ok(await HostJournal.retire(storage, { indexed: 0, index: async (from, messages) => { chunks.push(messages); return from + messages.length; }, legacy: () => legacy.read() as never }));
   assert.deepEqual(chunks, [historyOf(records)]);
   const journal = (await HostJournal.open(storage))!;
   assert.deepEqual([journal.total, journal.history.heldFrom], [2, 2]);
@@ -155,7 +154,7 @@ test("retiring a session whose import is in its legacy log indexes from that log
 
 test("a retraction of a message before the base (the running turn's) takes back that message, not one written after", async () => {
   const storage = await earlier([{ t: "turn", active: true }, { t: "message", message: user("q") }, { t: "message", message: fauxAssistantMessage("cut", { stopReason: "aborted" }) }]);
-  assert.ok(await retireHostTranscript(storage));
+  assert.ok(await HostJournal.retire(storage));
   const journal = (await HostJournal.open(storage))!;
   await journal.retract();
   await journal.push(fauxAssistantMessage("again"));

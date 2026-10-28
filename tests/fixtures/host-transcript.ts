@@ -15,7 +15,6 @@ import { createHash } from "node:crypto";
 import type { AppendLog } from "../../shared/append-log.ts";
 import { convertToLlm, createCompactionSummaryMessage } from "../../src/pi-harness/messages.ts";
 import { durableEntryMessages } from "../../src/pi-durable/agent.ts";
-import { retireHostTranscript } from "./retired-host.ts";
 import { JournalHistory, MARKER_KIND, HOST_MESSAGE_KIND, HOST_USER_KIND, type HistoryBase } from "../../src/pi-durable/history.ts";
 import { contextWrites, loadSeedMarker, SeedConflict, SEED_MARKER_KIND, SESSION_CONVERSATION_ID, HOST_ARCHIVE_KIND, HOST_BOOTSTRAP_KIND, type SeedMetadata } from "../../src/pi-durable/seed.ts";
 const conversationId = SESSION_CONVERSATION_ID, ARCHIVE = HOST_ARCHIVE_KIND, BOOTSTRAP = HOST_BOOTSTRAP_KIND;
@@ -749,18 +748,15 @@ export class NativeTranscript extends Transcript {
 
 /**
  * A session as a release before the host transcript's removal left it (`NativeTranscript.seed`): its Pi storage at
- * `location`, seeded with `records` (an import's, or a fork's), with `setDualWrite`'s setting, and retired (`unretired`: as it
- * was left, which this release refuses).
+ * `location`, seeded with `records` (an import's, or a fork's), with `setDualWrite`'s setting. Its first load retires it.
  */
-export async function hostTranscriptSession(location: Parameters<typeof import("../../src/pi-durable/storage.ts").openPiStorage>[0], records: TranscriptRecord[], options: { legacy?: AppendLog<TranscriptRecord>; leadingSystem?: SystemMessage; unretired?: boolean; index?: Parameters<typeof retireHostTranscript>[1] } = {}) {
+export async function hostTranscriptSession(location: Parameters<typeof import("../../src/pi-durable/storage.ts").openPiStorage>[0], records: TranscriptRecord[], options: { legacy?: AppendLog<TranscriptRecord>; leadingSystem?: SystemMessage } = {}) {
   const { openPiStorage } = await import("../../src/pi-durable/storage.ts");
   const storage = await openPiStorage(location);
   try {
     if (options.legacy) await options.legacy.rewrite(() => records);
     const seeded = await NativeTranscript.seed(storage, { sessionId: location.sessionId, records, ...(options.legacy ? { legacy: options.legacy } : {}), ...(options.leadingSystem ? { leadingSystem: options.leadingSystem } : {}) });
     if (!seeded) throw new Error("The session was seeded already");
-    // Retired, as releases that read the host transcript did at its first load; this release refuses one that is not.
-    if (!options.unretired) await retireHostTranscript(storage, { ...options.index ? options.index : {}, ...(options.legacy ? { legacy: () => options.legacy!.read() as never } : {}) });
     return seeded;
   } finally { await storage.close(BACKGROUND_CONTEXT); }
 }

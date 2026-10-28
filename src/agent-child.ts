@@ -25,7 +25,7 @@ const host = createAgentHost({
   lease: () => rpc.request("lease"),
   history: { indexed: () => rpc.request("history", { op: "indexed" }), write: chunk => rpc.request("history", { op: "write", chunk }) },
   // The legacy log is the supervisor's, read through it.
-  legacyLog: { empty: () => rpc.request("legacy-log", { op: "empty" }) },
+  legacyLog: { read: () => rpc.request("legacy-log", { op: "read" }), empty: () => rpc.request("legacy-log", { op: "empty" }) },
   piStorage: async () => await rpc.request("pi-storage", { method: "available" }) ? remotePiStorage(request => rpc.request("pi-storage", request)) : undefined,
   // This process's environment is the node's settings for it (agentProcessEnv).
 });

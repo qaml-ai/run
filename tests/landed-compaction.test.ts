@@ -44,7 +44,7 @@ async function setup(t: { after(fn: () => unknown): void }, summarize: (index: n
   const io: HostIO = {
     emit: event => events.push(event),
     tool: async () => "ok", cancelTools: async () => null, runLimit: async () => undefined,
-    legacyLog: { empty: async () => true },
+    legacyLog: { read: async () => [], empty: async () => true },
     piStorage: async () => storages.at(-1),
     file: async () => { throw new Error("no files"); },
     modelAuth: async () => { throw new Error("no per-call credentials"); },
