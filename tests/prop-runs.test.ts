@@ -21,7 +21,7 @@ const record = fc.record({
   id: fc.constant("r"), fingerprint: fc.constant("f"), method: fc.constantFrom(...METHODS), state: fc.constant("running" as const),
   params: fc.option(fc.oneof(fc.constant({}), fc.dictionary(fc.string({ maxLength: 4 }), fc.jsonValue({ maxDepth: 1 }))), { nil: undefined }),
   began: fc.option(fc.nat(), { nil: undefined }), resumes: fc.option(fc.nat({ max: 5 }), { nil: undefined }), startedAt: fc.option(fc.nat(), { nil: undefined }),
-  handedOff: fc.option(fc.record({ step: fc.constantFrom("model" as const, "tool" as const), boundaryWaitMs: fc.nat() }), { nil: undefined }),
+  handedOff: fc.option(fc.record({ step: fc.constantFrom("model" as const, "tool" as const) }), { nil: undefined }),
   abortedAt: fc.option(fc.nat(), { nil: undefined }),
 }, { requiredKeys: ["id", "fingerprint", "method", "state"] }) as fc.Arbitrary<RequestRecord>;
 
@@ -128,7 +128,7 @@ class Node {
     const current = head && this.requests.get(head.id);
     if (!head || head.phase === "begin" || !current || !["prompt", "continue"].includes(current.method)) return false;
     const { params: _params, ...rest } = current;
-    this.upsert({ ...rest, handedOff: { step: "model", boundaryWaitMs: 0 }, handoffs: [...rest.handoffs ?? [], { reason: "drain", at: now }] });
+    this.upsert({ ...rest, handedOff: { step: "model" }, handoffs: [...rest.handoffs ?? [], { reason: "drain", at: now }] });
     this.journal.flush();
     this.seen.handoffs.set(current.id, (this.seen.handoffs.get(current.id) ?? 0) + 1);
     return true;

@@ -15,7 +15,7 @@ import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
 import { searchQuery, searchTools } from "./tool-search.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import type { Storage } from "../shared/storage.ts";
-import { fileAppendLog, type AppendLog, type CommitEffect } from "../shared/append-log.ts";
+import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
 import type { Claim } from "./ownership.ts";
 import { createAgentHost, type LegacyLog } from "./agent-host.ts";
 import type { CodeExecutor } from "./codemode.ts";

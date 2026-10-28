@@ -1,6 +1,5 @@
 import { databaseUnavailable, transaction, type Db, type Sql } from "./db.ts";
 import type { LogTail, TailRow } from "../shared/storage.ts";
-import type { CommitEffect } from "../shared/append-log.ts";
 import { LostClaim, underClaim, type Claim } from "./ownership.ts";
 import { clock } from "./node-context.ts";
 import { buggify } from "./buggify.ts";

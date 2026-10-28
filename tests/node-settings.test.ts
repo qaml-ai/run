@@ -51,7 +51,7 @@ test("the configured resume limit applies to the same run, while a clean handoff
   const request = { id: "run", fingerprint: "run", method: "prompt" as const, state: "running" as const, began: 1, resumes: 1 };
   assert.equal(loadDecision(request, 1), "resume_limit");
   assert.equal(loadDecision(request, 2), "resume");
-  assert.equal(loadDecision({ ...request, handedOff: { step: "model", boundaryWaitMs: 0 } }, 1), "resume");
+  assert.equal(loadDecision({ ...request, handedOff: { step: "model" } }, 1), "resume");
 });
 
 test("the host transcript's settings are ignored, and said so: every agent's history is its Pi journal", () => {

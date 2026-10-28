@@ -68,7 +68,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson, readText, shedBodies, signInHint } from "./http.ts";
+import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readText, shedBodies, signInHint } from "./http.ts";
 import { outcomeEnding, type RequestRecord } from "../shared/client-protocol.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
