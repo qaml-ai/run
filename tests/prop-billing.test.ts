@@ -273,7 +273,7 @@ type SpendInternals = {
 const spendCleanup: (() => Promise<void>)[] = [];
 after(async () => { for (const cleanup of spendCleanup) await cleanup(); });
 function spendNode() {
-  const supervisor = { agents: new Map(), flush: async () => {}, stop: async () => {} } as unknown as AgentSupervisor;
+  const supervisor = { agents: new Map(), options: {}, stop: async () => {} } as unknown as AgentSupervisor;
   const node = new ClientSessions(supervisor, { secret: "s".repeat(32), db, storage: {} as Storage }) as unknown as SpendInternals;
   spendCleanup.push(() => node.close());
   return node;
