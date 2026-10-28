@@ -59,7 +59,6 @@ export function agentProcessEnv(env: NodeJS.ProcessEnv): Record<string, string> 
     PATH: env.PATH ?? "/usr/bin:/bin",
     ...(env.AGENT_SANDBOX_DIR ? { AGENT_SANDBOX_DIR: env.AGENT_SANDBOX_DIR } : {}),
     ...Object.fromEntries(OUTBOUND_ENV.filter(name => env[name] !== undefined).map(name => [name, env[name]!])),
-    ...(env.AGENT_PI_DEDUPE_USER_ENTRIES !== undefined ? { AGENT_PI_DEDUPE_USER_ENTRIES: env.AGENT_PI_DEDUPE_USER_ENTRIES } : {}),
     ...(env.AGENT_SERVICE_NAME ? { AGENT_SERVICE_NAME: env.AGENT_SERVICE_NAME } : {}),
   };
 }

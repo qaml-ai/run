@@ -193,7 +193,7 @@ test("history and forks keep capped tool details and deduplicated prompts withou
     toolCall("tools__small", {}, "small"),
     toolCall("js_exec", { code: 'text("x".repeat(40000))', maxOutputCharacters: 50000 }, "code"),
     { role: "assistant", content: "done" },
-  ][index] ?? { role: "assistant", content: "continued" }, { ...LOCAL, AGENT_PI_DEDUPE_USER_ENTRIES: "true" });
+  ][index] ?? { role: "assistant", content: "continued" }, LOCAL);
   const definition = (await r.call("/v1/definitions", { body: { name: "Details", mcpServers: [{ name: "tools", url: server.url, exposure: "direct" }] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id as string;
   await r.prompt(agent, "unique prompt", undefined, { from: { id: "sender", name: "Sender" }, metadata: { label: "kept" } });
@@ -211,7 +211,6 @@ test("history and forks keep capped tool details and deduplicated prompts withou
   assert.deepEqual(history[0].metadata, { label: "kept" });
   const entries = (await r.db.query("select record from pi_durable_entries where session_id = $1 and record::jsonb->>'kind' = 'camel.user'", [agent])).rows.map((row: any) => typeof row.record === "string" ? JSON.parse(row.record) : row.record);
   assert.equal(entries.length, 1);
-  assert.equal(Object.hasOwn(entries[0].data.message, "content"), false);
   assert.deepEqual(entries[0].model[0].content, history[0].content);
   const volume = (await r.call(`/v1/agents/${agent}`)).json.mounts[0].volumeId;
   const saved = await r.call(`/v1/volumes/${volume}/files/tool-results/1-large.json`);

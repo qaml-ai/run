@@ -166,12 +166,3 @@ test("a retraction of a message before the base (the running turn's) takes back 
   await storage.close(context);
 });
 
-test("seeded user entries deduplicate only when enabled", async t => {
-  const storage = new MemoryStorage();
-  t.after(() => storage.close(context));
-  const message = user("deduplicated");
-  await seedJournal({ storage, sessionId: "test", model: [system as never], messages: [message], dedupeUserEntries: true });
-  const entry = (await storage.scanEntries({ conversationId: 1 as never, order: "ascending" }, 100, undefined, context)).items.find(entry => entry.kind === "camel.user")!;
-  assert.equal(Object.hasOwn((entry.data as any).message, "content"), false);
-  assert.deepEqual(await (await HostJournal.open(storage))!.history.messagesFrom(0), [message]);
-});

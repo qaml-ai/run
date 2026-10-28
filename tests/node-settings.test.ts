@@ -72,14 +72,8 @@ test("memory retirement defaults to off, accepts zero, and rejects invalid windo
   }
 });
 
-test("user entry deduplication is off by default and accepts only explicit booleans", () => {
-  assert.equal(nodeConfig({}).dedupeUserEntries, false);
-  for (const value of ["true", "false"]) {
-    const config = nodeConfig({ AGENT_PI_DEDUPE_USER_ENTRIES: value });
-    assert.equal(config.dedupeUserEntries, value === "true");
-    assert.equal(config.agentEnv.AGENT_PI_DEDUPE_USER_ENTRIES, value);
-  }
-  for (const value of ["", "1", "0", "yes", "TRUE"]) {
-    assert.throws(() => nodeConfig({ AGENT_PI_DEDUPE_USER_ENTRIES: value }), /AGENT_PI_DEDUPE_USER_ENTRIES/);
-  }
+test("the removed user entry deduplication setting is accepted and ignored", () => {
+  const config = nodeConfig({ AGENT_PI_DEDUPE_USER_ENTRIES: "true" });
+  assert.ok(config.ignored.includes("AGENT_PI_DEDUPE_USER_ENTRIES"));
+  assert.equal(config.agentEnv.AGENT_PI_DEDUPE_USER_ENTRIES, undefined);
 });

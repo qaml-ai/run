@@ -312,7 +312,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     db,
     // Pi's journal rides out a failover as the log tail does: for as long as the node's lease lasts.
     piRetryMs: leaseTtlMs,
-    agentEnv: config.agentEnv, dedupeUserEntries: config.dedupeUserEntries, modelOutbound: outbound,
+    agentEnv: config.agentEnv, modelOutbound: outbound,
   });
   // Past AGENT_MEMORY_HIGH_BYTES, large request bodies are refused (503, Retry-After) before they are read (http.ts).
   shedBodies(() => supervisor.memoryHigh);

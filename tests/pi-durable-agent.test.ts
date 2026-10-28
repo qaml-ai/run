@@ -131,7 +131,7 @@ test("Pi adapter leaves steering queued when finishTurn stops for a run limit", 
   await agent.prompt("Start");
   assert.equal(fake.requests.length, 1);
   assert.equal(agent.hasQueuedMessages(), true);
-  assert.deepEqual(agent.peekQueuedMessages(), [user("later")]);
+  assert.deepEqual((agent as any).queued, [user("later")]);
 });
 
 test("Pi adapter streams an input-required placeholder but excludes it from recovery history", async t => {
@@ -321,14 +321,13 @@ test("Pi adapter reports only the storage failures that fail Pi's Session", asyn
   await agent.close().catch(() => {});
 });
 
-for (const dedupe of [false, true]) test(`Pi input writes preserve rollback content unless deduplication is enabled (${dedupe})`, async t => {
-  const fake = await fixture([answer("Done")], {}, new MemoryStorage(), { dedupeUserEntries: dedupe });
+test("Pi input writes keep the whole message, as earlier readers take data.message whole", async t => {
+  const fake = await fixture([answer("Done")], {}, new MemoryStorage());
   t.after(() => fake.agent.close());
   const input = user("rollback safe");
   await fake.agent.prompt(input);
   const entry = (await fake.storage.scanEntries({ conversationId: fake.agent.conversationId, order: "ascending" }, 100, undefined, BACKGROUND_CONTEXT)).items.find(entry => entry.kind === "camel.user")!;
-  assert.equal(Object.hasOwn((entry.data as any).message, "content"), !dedupe);
-  if (!dedupe) assert.deepEqual((entry.data as any).message, input, "previous reader takes data.message whole");
+  assert.deepEqual((entry.data as any).message, input);
   assert.deepEqual((await fake.agent.recoverMessages())[0].message, input);
 });
 
@@ -412,7 +411,6 @@ test("a request that sends less than Pi holds starts Pi's compaction in the back
   for (const text of ["first", "second", "third"]) await agent.prompt(`${text} ${"long history ".repeat(2_000)}`);
   compacting = true;
   await agent.prompt("current task");
-  await agent.waitForIdle();
   const compacted = async () => (await fake.storage.scanEntries({ conversationId: agent.conversationId, order: "ascending" }, 1000, undefined, BACKGROUND_CONTEXT)).items.some(entry => entry.kind === "pi.compaction");
   for (let tries = 0; tries < 100 && !await compacted(); tries++) await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(await compacted(), true, "Pi compacted what the requests left out");
