@@ -13,7 +13,6 @@ import { configuredModel, defaultModels } from "./model.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
-import { Telemetry, TELEMETRY_CHANNEL } from "./telemetry.ts";
 import { expireIdempotencyKeys } from "./idempotency.ts";
 import { DOCS_SITE, loadDocs, loadRegistry, ROBOTS_TXT, SKILL_PATHS } from "./docs.ts";
 import { StorageGc } from "./storage-gc.ts";
@@ -506,12 +505,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Each model response's usage, POSTed to the tenant's receiver from a durable outbox any node sends from.
   // Which tenants have endpoints for run events: runs of the others write none.
   const subscribers = new Subscribers(db);
-  const telemetry = new Telemetry({
-    db, accounts, outbound, service: config.serviceName,
-    ...(config.telemetry.intervalMs !== undefined ? { intervalMs: config.telemetry.intervalMs } : {}),
-    ...(config.telemetry.retryBaseMs !== undefined ? { retryBaseMs: config.telemetry.retryBaseMs } : {}),
-  });
-  telemetry.start();
   const webhooks = new Webhooks({ db, accounts, outbound, subscribers, ...(config.usageWebhookRetryMs !== undefined ? { retryBaseMs: config.usageWebhookRetryMs } : {}) });
   webhooks.start(config.schedulerIntervalMs);
   // Idempotency keys' answers are kept a day.
@@ -846,7 +839,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   }, endUsers);
   const clients = new ClientSessions(supervisor, {
     runEvents: tenant => subscribers.runs(tenant),
-    tracing: telemetry,
     // A self-hosted runtime configured by its environment takes keys there too.
     ...(config.selfHostedTenant ? { modelKeyHint: "On this self-hosted runtime, AGENT_TENANT_API_KEYS in its environment sets keys too ({\"anthropic\": \"sk-ant-...\"}; restart it after)." } : {}),
     secret: sessionSecret, toolTimeoutMs, idleMs, streamTimeouts, contextRangeMaxBytes: config.contextRangeMaxBytes, ...(config.runOverrunMs !== undefined ? { runOverrunMs: config.runOverrunMs } : {}), maxAgentsPerTenant, codeCapacity: config.codeCapacity, ...(config.snapshotBytes !== undefined ? { snapshotBytes: config.snapshotBytes } : {}), orphanSweepMs: orphanMs, maxResumes: config.maxResumes, childSweepMs: config.childSweepMs, wakesPerHour: config.wakesPerHour, watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
@@ -990,7 +982,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       if (from !== node && agent) clients.loadedElsewhere(agent);
     },
     [ENDPOINTS_CHANNEL]: tenant => subscribers.forget(tenant),
-    [TELEMETRY_CHANNEL]: tenant => telemetry.forget(tenant),
     // Work just left without an owner: a peer released agents with runs open, or ended a dead node's heartbeat.
     [ORPHANS_CHANNEL]: payload => { if (orphanMs && payload.split(" ")[0] !== node) void clients.resumeSoon(); },
     // A voice session changed or was released on some node.
@@ -1303,7 +1294,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     await rateLimits.run(tenant);
   };
-  app.route("/", api({ computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, telemetry, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
+  app.route("/", api({ computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),
@@ -1708,8 +1699,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // Usage is in memory until flushed: write what the turns recorded now, before the slower close steps eat into the
     // time left before SIGKILL (stopTimeout). What later steps record goes in the flush after them.
     await step("usage", () => accounts.flushUsage());
-    // The spans of the runs this node served or handed off, sent within a few seconds.
-    await step("telemetry", () => telemetry.close());
     await step("supervisor", () => supervisor.close());
     await step("volumes", () => volumes.close());
     await step("mcp", () => mcp.close());

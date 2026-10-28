@@ -13,7 +13,6 @@ import { fileRef } from "../inspect.ts";
 import { resolve as resolveMount, type ToolContext } from "../volume-tools.ts";
 import { argumentsHash } from "../inputs.ts";
 import { safeError } from "../metrics.ts";
-import { newSpanId } from "../otlp.ts";
 import type { AgentSupervisor } from "../supervisor.ts";
 import * as events from "./events.ts";
 import * as spend from "./spend.ts";
@@ -148,19 +147,15 @@ export async function toolSources(ctx: ToolsContext, id: string, tenant: string,
  */
 export async function callTool(ctx: ToolsContext, session: Session, call: ToolCall) {
   let code: ToolCallCode | undefined;
-  // A direct call's span is made from its events; a call from js_exec's code has one of its own, under js_exec's.
-  const spans = session.spans, started = Date.now();
-  const innerSpan = spans && call.innerCallId ? newSpanId() : undefined;
   let answer: Awaited<ReturnType<typeof answerToolCall>> | undefined;
   try {
-    answer = await answerToolCall(ctx, session, spans ? { ...call, traceparent: spans.traceparent(call.toolCallId, innerSpan) } : call);
+    answer = await answerToolCall(ctx, session, call);
     code = "inputRequired" in answer ? "input_required" : "isError" in answer && answer.isError ? "tool_error" : undefined;
     return answer;
   } catch (error) {
     code = call.signal.aborted ? "aborted" : error instanceof ToolFailure ? error.code : "failed";
     throw error;
   } finally {
-    if (innerSpan) spans!.innerCall(call, innerSpan, started, Date.now(), code, answer);
     // Listed in the run's outcome (`toolCalls`), ids only: its arguments and result are in history.
     const calls = session.toolCalls ??= [];
     // A call that started a child (delegate, spawn_agent, a tool's spawn directive) names it.

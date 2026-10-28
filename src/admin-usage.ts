@@ -96,7 +96,6 @@ const INTEGRATIONS: { key: string; label: string; sql: string }[] = [
   { key: "model_providers", label: "Their own model server", sql: "select tenant from model_providers" },
   { key: "mcp_clients", label: "Connected an MCP client", sql: "select tenant from oauth_grants" },
   { key: "webhooks", label: "Run webhooks", sql: "select tenant from webhook_endpoints" },
-  { key: "telemetry", label: "Exports telemetry", sql: "select tenant from telemetry_exporters" },
   { key: "end_user_credits", label: "Meters their own users", sql: "select tenant from end_user_settings where enabled" },
   { key: "volumes", label: "Volumes", sql: "select tenant from volumes where purged_at is null" },
   { key: "voice", label: "Voice calls", sql: "select tenant from voice_sessions" },

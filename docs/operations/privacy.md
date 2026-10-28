@@ -12,7 +12,7 @@ or a file chunk in memory at a time:
 - `account.json`: the tenant id, the GitHub login or Google address it signs in with, the address it signs in with a password (`email`), when it was made, where it came from when it was made (`signupSource`, [below](#sign-up-source))
 - `agents/<id>/agent.json`: each live agent's configuration (as `GET /v1/agents/:id` shows it) and schedules
 - `agents/<id>/history/<index>.json`: its whole history, a page of whole turns per file, named by the page's first message index
-- `definitions.json`, `channels.json`, `webhooks.json`, `telemetry.json`, `tokens.json`, `keys.json`, `oauth-grants.json`: as the API lists them,
+- `definitions.json`, `channels.json`, `webhooks.json`, `tokens.json`, `keys.json`, `oauth-grants.json`: as the API lists them,
   so secrets, keys and tokens are left out (keys show their last four characters)
 - `discord.json`: managed server bindings, installation names and states, allowed channels, the Discord IDs of
   the administrators who added Camel, and pending setup expiry times; never OAuth tokens or session/state hashes
@@ -112,9 +112,8 @@ email address may sign up again as a new, empty tenant.
 | Mailed links (`account_email_links`: the address, the token's hash, a sign-up's password hash) | until used or replaced, else a day after mailing (a reset link, an hour), then swept; a tenant's go with its account |
 | Account mail at Amazon SES | SES's sending records; addresses that bounce or complain stay on the account's suppression list until removed |
 | Ledger, usage, payment and starting-credit records | kept after deletion, as above |
-| Trace export settings (`telemetry_exporters`: endpoint, sealed headers) | until the tenant clears them, or its account is deleted |
+| Trace export settings left from before its removal (`telemetry_exporters`: endpoint, sealed headers; nothing reads them) | until the account is deleted |
 | Journey events waiting to be sent (`journey_outbox`), where configured | until the operator's store takes them, 30 days at most; an account's go when it is deleted |
-| Spans waiting to be exported | in each node's memory only, seconds; dropped when they cannot be sent |
 | Audio attached to a message, and its transcript | as the agent's other attachments and history: until the agent is deleted or expires (the audio in its workspace volume, the transcript on the user message) |
 | Audio and transcripts of `POST /v1/transcriptions` | not kept: in the node's memory while the request runs |
 | Prompts and images of `POST /v1/images` | not kept: in the node's memory while the request runs; with `volumeId`, the images made are files of that volume, kept until deleted |
@@ -174,19 +173,6 @@ whose stored answers would hold the images. Images fetched by URL go through the
 only). Logs carry the tenant, the model, size, quality, format, counts, tokens, bytes and the time taken
 (`images_generated`), and error classes; never a prompt, an image or a URL's query
 (`tests/image-generation-api.test.ts` checks the logs).
-
-## Trace export
-
-A tenant that sets `PUT /v1/telemetry` has its agents' runs sent as OpenTelemetry spans to the endpoint it
-chose (`src/telemetry.ts`; [Observability](../guides/observability.md)). By default spans carry ids, names,
-models, token counts, costs, durations and outcomes, with error *classes* rather than messages. Prompts,
-replies, tool arguments and results, input questions, metadata and error messages go only when the tenant
-sets `include.content: true`; `tests/telemetry.test.ts` checks both. The endpoint's headers (its API key)
-are sealed under `AGENT_SECRETS_KEY` like provider keys, are never returned by the API, the export or the
-logs, and are dropped when the endpoint moves to another origin. Exports go through the outbound guard
-(public addresses only). A failed export logs `telemetry_export_failed` with the tenant, a span count and
-`safeError` (class and status), never a span or header. The account export holds `telemetry.json`
-(header names only), and deletion removes the settings.
 
 ## Sign-up source
 

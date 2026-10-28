@@ -36,10 +36,9 @@ describe("nav groups", () => {
     expect(groupOf("")?.label).toBe("Overview");
     expect(groupOf("agents")?.label).toBe("Agents");
     expect(groupOf("account")?.label).toBe("Settings");
-    expect(groupOf("telemetry")?.label).toBe("Settings");
     expect(groupOf("quickstart")?.label).toBe("Get started");
     const reachable = new Set([...WORKSPACE_NAV, ...ACCOUNT_NAV].map(item => item.to).concat(Object.values(TABS).flat().map(tab => tab.to)));
-    for (const page of ["agents", "definitions", "workspaces", "channels", "volumes", "computers", "models", "tokens", "usage", "telemetry", "billing", "account"]) expect(reachable).toContain(page);
+    for (const page of ["agents", "definitions", "workspaces", "channels", "volumes", "computers", "models", "tokens", "usage", "billing", "account"]) expect(reachable).toContain(page);
   });
 
   it("titles the tab with the page and the workspace it shows", () => {
@@ -53,10 +52,11 @@ describe("nav groups", () => {
   });
 
   it("keeps every old URL, and redirects the ones whose page moved", () => {
-    for (const path of ["", "agents", "agents/client_1", "definitions", "workspaces", "volumes", "volumes/vol_1", "channels", "tokens", "models", "usage", "billing", "telemetry", "account", "start", "quickstart"]) {
+    for (const path of ["", "agents", "agents/client_1", "definitions", "workspaces", "volumes", "volumes/vol_1", "channels", "tokens", "models", "usage", "billing", "account", "start", "quickstart"]) {
       expect(redirectFor(path, "")).toBeUndefined();
     }
-    expect(redirectFor("settings", "")).toBe("telemetry");
+    expect(redirectFor("settings", "")).toBe("account");
+    expect(redirectFor("telemetry", "")).toBe("account");
     expect(redirectFor("overview", "?ws=ws_desk")).toBe("?ws=ws_desk");
     expect(redirectFor("usage", "?workspaceId=ws_desk")).toBe("usage?ws=ws_desk");
     expect(redirectFor("usage", "?workspaceId=all")).toBe("usage");
@@ -151,5 +151,5 @@ it("follows a redirect made before the location listeners attach", async () => {
     return <p>at {path}</p>;
   }
   render(<Probe />);
-  expect(await screen.findByText("at telemetry")).toBeTruthy();
+  expect(await screen.findByText("at account")).toBeTruthy();
 });

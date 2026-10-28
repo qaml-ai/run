@@ -32,7 +32,7 @@ __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims", "spawn_agent", "SpawnAgent", "agent_notice",
     "AgentError", "RunError", "CREDIT_REASONS", "EndUserCreditFailure", "end_user_credit",
-    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Telemetry", "Transcriptions", "Images", "EndUsers", "Voice", "Voices", "DEFAULT_URL",
+    "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Volume", "Transcriptions", "Images", "EndUsers", "Voice", "Voices", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
 # Distinguishes "not given" from None (which means "never expires") in create_agent.
@@ -876,8 +876,6 @@ class AgentRuntime(_RuntimeCalls):
         self.api_key = api_key or _env("CAMELAI_API_KEY", "AGENT_RUNTIME_TOKEN")
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.agents = []
-        # The tenant's OpenTelemetry trace export: get, set, clear, test.
-        self.telemetry = Telemetry(self)
         # Speech to text on its own: create.
         self.transcriptions = Transcriptions(self)
         # Images on their own: generate, edit.
@@ -1322,41 +1320,6 @@ class Voice:
     def end(self, session_id):
         """End it. The answer's "leave" is the OP 4 your gateway sends to leave the channel."""
         return self._runtime._rest("DELETE", f"/v1/voice/sessions/{quote(session_id, safe='')}")
-
-
-class Telemetry:
-    """The tenant's OpenTelemetry trace export (runtime.telemetry): each run is a trace, with spans for its model and tool
-    calls, POSTed to an OTLP/HTTP endpoint. Header values are stored encrypted and never returned: reads list their names.
-    Its calls are awaited from AgentRuntime, and plain from the synchronous one."""
-
-    def __init__(self, runtime):
-        self._runtime = runtime
-
-    def _call(self, method, path="/v1/telemetry", body=None, retry=True, missing=_DEFAULT):
-        return self._runtime._rest(method, path, body, retry=retry, missing=missing)
-
-    def get(self):
-        """The settings ({"endpoint", "protocol", "sampleRate", "include", "headers": [names], "createdAt", "updatedAt",
-        "status": {"lastExportAt", "lastError", "lastErrorAt"}}), or None when none are set."""
-        return self._call("GET", missing=None)
-
-    def set(self, endpoint=None, *, headers=None, protocol=None, sample_rate=None, include_content=None):
-        """Export the tenant's runs to `endpoint` (the OTLP/HTTP traces URL; a collector's base URL gets /v1/traces). What is
-        left out keeps its current value (its default the first time, when `endpoint` is needed).
-        `headers` are sent with each export (a backend's API key); left out, the stored ones stay while the endpoint keeps
-        its origin, and {} removes them. `protocol` is "http/protobuf" (default) or "http/json"; `sample_rate` the share of
-        runs traced, 0 to 1 (default 1); `include_content=True` exports prompts, replies, tool arguments and results."""
-        body = {**({"endpoint": endpoint} if endpoint is not None else {}), **({"headers": headers} if headers is not None else {}), **({"protocol": protocol} if protocol else {}),
-                **({"sampleRate": sample_rate} if sample_rate is not None else {}), **({"include": {"content": include_content}} if include_content is not None else {})}
-        return self._call("PUT", body=body)
-
-    def clear(self):
-        """Stop exporting: {"deleted": True}, or {"deleted": False} when nothing was set."""
-        return self._call("DELETE", retry=False, missing={"deleted": False})
-
-    def test(self):
-        """Send one test span now: {"ok", "status"?, "error"?, "traceId", "spanId"}; look the traceId up in your backend."""
-        return self._call("POST", "/v1/telemetry/test", retry=False)
 
 
 def _provisioning(tools, *, workspace_id=_DEFAULT, definition=None, name=None, type=None, system_prompt=None, model=None, thinking_level=None, mounts=None, remount=None,

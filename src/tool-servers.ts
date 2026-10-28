@@ -21,8 +21,6 @@ export type ToolCall = {
   approval?: { input: string; by: Record<string, unknown>; at: number }; inputResponses?: Record<string, unknown>; requestState?: string;
   /** The agent has someone to ask: the call may answer MCP's `input_required` with elicitations. */
   elicit?: boolean;
-  /** The W3C trace context of the call's span, when its run's trace is exported: work the call starts (a subagent's run) continues the trace under it. */
-  traceparent?: string;
   /** In a child's run: its parent agent and its chain's first, from the run's signed chain (identity tokens' `par` and `root`). */
   lineage?: { parent: string; root: string };
 };

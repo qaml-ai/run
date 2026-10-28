@@ -37,7 +37,6 @@ import { fileResponse, type FileRef } from "./files.ts";
 import { HistoryIndex, PAGE_BYTES, type HistoryPage } from "./history-pages.ts";
 import { inputView, resolution, type Input, type Responder } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, safeError, Steps } from "./metrics.ts";
-import { inputSpans } from "./telemetry.ts";
 import { PARENT_KEYS, type DelegateSettings } from "./multi-agent.ts";
 import { clock, random } from "./node-context.ts";
 import { always, reachable, sometimes } from "./assert.ts";
@@ -596,7 +595,6 @@ export class ClientSessions {
       events.reserveEvents(this.eventContext, session);
       return;
     }
-    if (data.type === "event" && (session.spans || this.options.tracing)) events.traceEvent(this.eventContext, session, data.requestId, data.event);
     const nested = events.isSubagent(data);
     // A message_update is its delta alone; the runtime keeps the latest message it updates, for snapshots.
     if (data.type === "event") {
@@ -1563,9 +1561,6 @@ export class ClientSessions {
     });
     app.post(`${agent}/requests`, async c => {
       const request = await readJson(body(c), FRAME_BYTES);
-      // A W3C traceparent header: the run continues the caller's trace.
-      const traceparent = c.req.header("traceparent");
-      if (traceparent && request?.params && typeof request.params === "object" && request.params.traceparent === undefined) request.params.traceparent = traceparent;
       const { status, record, rate } = await this.accept(c.var.session, request);
       for (const [name, value] of Object.entries(rateLimitHeaders(rate))) c.header(name, value);
       return json(c, status, record);
@@ -1643,8 +1638,8 @@ export class ClientSessions {
       if (["prompt", "steer"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);
     } catch (error) { throw new HttpError(400, errorText(error)); }
     // Whether a run may go ahead with no application connected is the caller's choice now, not part of what it asks.
-    // So is the trace it continues: a retry from another span of the caller's is the same request.
-    const { allowDisconnected, traceparent, ...asked } = body.params;
+    // A trace context older SDKs send is ignored.
+    const { allowDisconnected, traceparent: _traceparent, ...asked } = body.params;
     if (allowDisconnected !== undefined && typeof allowDisconnected !== "boolean") throw new HttpError(400, "allowDisconnected is true or false");
     body = { ...body, params: asked };
     const fingerprint = hash(canonical({ method: body.method, params: body.params }));
@@ -1731,7 +1726,6 @@ export class ClientSessions {
       session.header.runBucket = bucket;
       await this.writeHeader(session);
     }
-    const trace = isRun ? await events.traceFor(this.eventContext, session, traceparent, body.method === "resume" ? session.requests.get(params.suspension)?.trace : undefined) : undefined;
     // A run makes its agent busy: it takes one of the tenant's busy slots across the fleet (429 at the limit), held
     // until the agent has no run open. A resume continues a turn already accepted. Until the request is taken, the
     // slot is kept for it (`admitting`) even if the agent's other runs end meanwhile.
@@ -1791,7 +1785,7 @@ export class ClientSessions {
         startedAt: Date.now(), ...(body.method === "prompt" && typeof body.params.text === "string" ? { prompt: body.params.text } : {}),
         ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
         id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(bucket ? { bucket } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
-        ...(body.method === "resume" ? { suspension: params.suspension } : {}), ...(trace ? { trace } : {}),
+        ...(body.method === "resume" ? { suspension: params.suspension } : {}),
       });
       // Taken: its running record now keeps the agent busy, so it is no longer being admitted. An abort that cancels it
       // before the write below is done then gives the slot back before the run is seen to end, as for any cancelled run.
@@ -1965,14 +1959,6 @@ export class ClientSessions {
     const inputs = this.options.inputs!;
     const rows = await inputs.forRequest(session.header.id, suspension);
     if (rows.some(row => row.state === "pending")) throw new Error("Inputs of this turn are still waiting for an answer");
-    // The waits, in the trace of the run that asked.
-    const asked = session.requests.get(suspension)?.trace;
-    if (asked?.sampled && this.options.tracing) {
-      const tracing = this.options.tracing, tenant = session.header.tenant;
-      void tracing.settings(tenant).then(settings => {
-        if (settings) for (const span of inputSpans(rows, { tenant, agentId: session.header.id, requestId: suspension, trace: asked, content: settings.content })) tracing.record(tenant, span);
-      }, () => {});
-    }
     // Inputs settled away from this node (expired, or answered in a channel) are announced here, on the agent's stream.
     for (const row of rows) if (row.state === "expired" || row.answer?.by.via === "channel") humanInput.resolved(this.inputsContext, session, row);
     const onExpire = session.header.sources?.humanInput?.onExpire;
@@ -2137,7 +2123,6 @@ export class ClientSessions {
             [session.header.id, record.resumes ?? 0, Date.now(), this.sweepMs, MAX_RESUME_DELAY_MS]));
         } else if (!continued) await this.resetResumes(session);
         this.hook("runStarted", session, record);
-        session.spans = record.trace?.sampled ? await events.spansFor(this.eventContext, session, record) : undefined;
         if (session.announcing) {
           session.started = enqueueEvents(this.db, [this.runEvent(session, record)])
             .catch(error => console.error(JSON.stringify({ type: "run_event_failed", agent: session.header.id, error: safeError(error) })));
@@ -2250,12 +2235,6 @@ export class ClientSessions {
       session.lastActive = Date.now();
       this.publish(session, { type: "response", id: record.id, outcome: value });
       if (run && session.header.run && record.id === runIdOf(session.header.id)) void this.runEnded(session);
-      if (run && completed.trace?.sampled) {
-        // A run that never began (refused at a limit, or failed starting) has a span too.
-        const spans = session.spans?.requestId === record.id ? session.spans : await events.spansFor(this.eventContext, session, completed);
-        if (session.spans === spans) session.spans = undefined;
-        spans?.end(value, completed);
-      }
     } finally { session.settling--; }
     await this.fold(session);
   }
@@ -2472,12 +2451,6 @@ export class ClientSessions {
       const { params: _params, ...rest } = request;
       this.upsertRequest(session, { ...rest, state: "completed", endedAt: Date.now(), outcome: queued ? { error: reason } : { error: reason, uncertain: true } });
     }
-    // The running run's spans: ended here with it, or left for the node that takes its turn over (the run's own span is that node's).
-    const spans = session.spans;
-    session.spans = undefined;
-    const ended = spans && session.requests.get(spans.requestId);
-    if (ended?.state === "completed") spans!.end(ended.outcome, ended);
-    else spans?.abandon(reason);
     // Tool calls in flight end as unknown: the connection they were on is closed.
     events.closeAttached(session);
     await this.commit(session, true);
@@ -2788,8 +2761,6 @@ export class ClientSessions {
   private async lost(session: Session) {
     // Its busy row named the fenced session, so it no longer counts.
     session.busy = false;
-    session.spans?.abandon("This node lost ownership of the agent");
-    session.spans = undefined;
     this.fail(session, new Error("This node lost ownership of the agent"));
     events.endStreams(session, true);
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);

@@ -143,7 +143,7 @@ export function runRoutes(route: Route, context: () => RunsContext) {
     try {
       record = await (submit ?? clients.submit.bind(clients))(made.id, tenant, { id: runId, method: "prompt", params: {
         text, ...(files.length ? { files } : {}), ...(output ? { output } : {}), ...(spendLimit ? { spendLimit } : {}), ...(actor !== undefined ? { actor } : {}),
-        ...(from ? { from } : {}), ...(metadata ? { metadata } : {}), allowDisconnected: true, ...(c.req.header("traceparent") ? { traceparent: c.req.header("traceparent") } : {}),
+        ...(from ? { from } : {}), ...(metadata ? { metadata } : {}), allowDisconnected: true,
       } });
     } catch (error) {
       // Refused (busy agents, runs per minute, credit, its input): the session made for it goes, so nothing is left.

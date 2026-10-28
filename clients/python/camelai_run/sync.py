@@ -8,7 +8,7 @@ with plain calls instead of awaited ones.
         print(agent.run("Summarize ticket 123").text)
 
 It runs agents and stateless runs and streams them, and manages the tenant (definitions, providers, key scopes, API
-tokens, usage, webhooks, telemetry). Tools that run in a process need it to hold the agent's connection, which only the
+tokens, usage, webhooks). Tools that run in a process need it to hold the agent's connection, which only the
 async SDK does: here serve tools over HTTP (serve_tools, a WSGI app) and name them in a definition, or let a process
 with the async SDK serve the tools an upsert declares. One Agents is for one thread at a time.
 """
@@ -24,7 +24,7 @@ import httpx
 
 from . import (
     DEFAULT_URL, AgentError, Download, InputDetail, InputRequired, Mount, WorkspaceMount, Run, RunError, RuntimeIdentity, RuntimeTokenError, StreamPart,
-    Telemetry, Tool, ToolContext, Transcriptions, Images, EndUsers, Voice, Voices, WebhookVerificationError, identity_from_claims, tool, verify_webhook,
+    Tool, ToolContext, Transcriptions, Images, EndUsers, Voice, Voices, WebhookVerificationError, identity_from_claims, tool, verify_webhook,
     _AgentCalls, _DEFAULT, _PartReader, _RuntimeCalls, _Session, _TRANSCRIPTION_TIMEOUT, _UPLOAD_TIMEOUT, _answer_for, _attachment, _bearer,
     _check_request_id, _env, _error, _file_claims, _file_token, _http_sync, _issuer_of, _message_params, _origin, _outcome_run, _output_request,
     _prompt_extra, _public_key_sync, _require_tenant, _retry_after, _run_frame, _sender, _sse_frames,
@@ -36,7 +36,7 @@ from . import AgentFiles as _AsyncFiles, RunInput as _AsyncInput, Runs as _Async
 __all__ = [
     "Agents", "Agent", "Run", "RunInput", "InputDetail", "Mount", "WorkspaceMount", "RunStream", "StreamPart", "Runs", "StatelessRunStream",
     "tool", "Tool", "ToolContext", "InputRequired", "RuntimeIdentity", "identity_from_claims",
-    "AgentError", "RunError", "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Telemetry", "Transcriptions", "Images", "EndUsers", "Voice", "Voices", "DEFAULT_URL",
+    "AgentError", "RunError", "AgentRuntime", "AgentClient", "AgentFiles", "Download", "Transcriptions", "Images", "EndUsers", "Voice", "Voices", "DEFAULT_URL",
     "serve_tools", "verify_runtime_token", "verify_file_url", "RuntimeTokenError", "TestRuntime", "verify_webhook", "WebhookVerificationError",
 ]
 
@@ -62,15 +62,13 @@ def _file_chunks(path):
 
 class AgentRuntime(_RuntimeCalls):
     """The lower-level client, synchronous: provision agents and runs, and manage definitions, providers, key scopes, API
-    tokens, usage, webhooks and telemetry, as camelai_run.AgentRuntime does. `url` defaults to CAMELAI_BASE_URL, else
+    tokens, usage and webhooks, as camelai_run.AgentRuntime does. `url` defaults to CAMELAI_BASE_URL, else
     https://run.camelai.com; `api_key` to CAMELAI_API_KEY."""
 
     def __init__(self, url=None, api_key=None):
         self.base = _origin(url or _env("CAMELAI_BASE_URL", "AGENT_URL") or DEFAULT_URL)
         self.api_key = api_key or _env("CAMELAI_API_KEY", "AGENT_RUNTIME_TOKEN")
         self.http = httpx.Client(timeout=10, follow_redirects=False)
-        # The tenant's OpenTelemetry trace export: get, set, clear, test.
-        self.telemetry = Telemetry(self)
         # Speech to text on its own: create.
         self.transcriptions = Transcriptions(self)
         self.images = Images(self)

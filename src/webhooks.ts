@@ -285,14 +285,13 @@ export class Webhooks {
   }
 
   /**
-   * The tenant's webhooks and trace export that `setBy` (a revoked token or grant, as `setBy` names it) last pointed
+   * The tenant's webhooks that `setBy` (a revoked token or grant, as `setBy` names it) last pointed
    * somewhere, still in place: revoking a credential does not stop them, so the tenant is shown them to review.
    */
-  async setBy(tenant: string, setBy: string): Promise<{ kind: "webhook" | "usage-webhook" | "telemetry"; id?: string; url: string }[]> {
+  async setBy(tenant: string, setBy: string): Promise<{ kind: "webhook" | "usage-webhook"; id?: string; url: string }[]> {
     const { rows } = await this.db.query(`
       select 'webhook' as kind, id, url from webhook_endpoints where tenant = $1 and set_by = $2
-      union all select 'usage-webhook', null, url from usage_webhooks where tenant = $1 and set_by = $2
-      union all select 'telemetry', null, endpoint from telemetry_exporters where tenant = $1 and set_by = $2`, [tenant, setBy]);
+      union all select 'usage-webhook', null, url from usage_webhooks where tenant = $1 and set_by = $2`, [tenant, setBy]);
     return rows.map(row => ({ kind: row.kind, ...(row.id ? { id: row.id } : {}), url: row.url }));
   }
 

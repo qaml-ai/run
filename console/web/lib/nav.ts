@@ -21,13 +21,11 @@ export const ACCOUNT_NAV: NavItem[] = [
   { to: "tokens", label: "API keys", icon: KeyRound, sections: ["tokens"] },
   { to: "models", label: "Models & keys", icon: SlidersHorizontal, sections: ["models"] },
   { to: "billing", label: "Billing", icon: CreditCard, sections: ["billing"] },
-  { to: "telemetry", label: "Settings", icon: Settings, sections: ["telemetry", "account"] },
+  { to: "account", label: "Settings", icon: Settings, sections: ["account"] },
 ];
 export const NAV: NavItem[] = [START, ...WORKSPACE_NAV, ...ACCOUNT_NAV];
 /** Places that group several pages show them as link tabs; each page keeps its own URL. */
-export const TABS: Record<string, { to: string; label: string }[]> = {
-  telemetry: [{ to: "telemetry", label: "Telemetry" }, { to: "account", label: "Account" }],
-};
+export const TABS: Record<string, { to: string; label: string }[]> = {};
 export const groupOf = (section: string) => NAV.find(item => item.sections.includes(section));
 
 const SCOPED = new Set(WORKSPACE_NAV.flatMap(item => item.sections));
@@ -41,7 +39,8 @@ export const isScoped = (section: string) => SCOPED.has(section);
 export function redirectFor(path: string, search: string): string | undefined {
   const [section, id] = path.split("/");
   const query = new URLSearchParams(search);
-  if (section === "settings" && !id) return withQuery("telemetry", query);
+  // Settings was trace export and the account; trace export is gone.
+  if ((section === "settings" || section === "telemetry") && !id) return withQuery("account", query);
   if (section === "overview" && !id) return withQuery("", query);
   // Usage's workspace filter was ?workspaceId= before the switcher.
   if (section === "usage" && query.has("workspaceId")) {

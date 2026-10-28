@@ -62,14 +62,14 @@ function CreateTokenDialog({ onClose, onCreated }: { onClose: () => void; onCrea
   );
 }
 
-/** What a revoked token or app still has sending the account's data (webhooks, the trace export), to review. */
-export type Left = { kind: "webhook" | "usage-webhook" | "telemetry"; id?: string; url: string }[];
+/** What a revoked token or app still has sending the account's data (webhooks), to review. */
+export type Left = { kind: "webhook" | "usage-webhook"; id?: string; url: string }[];
 function StillSending({ left }: { left?: Left }) {
   if (!left?.length) return null;
   return <Alert variant="destructive" className="mb-4">
     <AlertTitle>Still sending your data</AlertTitle>
     <AlertDescription>
-      <p>The credential you revoked set these, and they keep sending until you change or delete them: webhooks with <code className="font-mono">PATCH</code> or <code className="font-mono">DELETE /v1/webhooks/&#123;id&#125;</code> (the usage webhook at <code className="font-mono">/v1/usage-webhook</code>), the trace export on the Telemetry page.</p>
+      <p>The credential you revoked set these, and they keep sending until you change or delete them: webhooks with <code className="font-mono">PATCH</code> or <code className="font-mono">DELETE /v1/webhooks/&#123;id&#125;</code> (the usage webhook at <code className="font-mono">/v1/usage-webhook</code>).</p>
       <ul className="mt-2 list-disc pl-5">{left.map(sink => <li key={`${sink.kind}:${sink.id ?? ""}`}><span className="font-medium">{sink.kind}</span>{sink.id ? <> <code className="font-mono text-xs">{sink.id}</code></> : null}: <code className="font-mono text-xs break-all">{sink.url}</code></li>)}</ul>
     </AlertDescription>
   </Alert>;

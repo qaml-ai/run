@@ -1364,7 +1364,7 @@ Off unless account mail is configured (`AGENT_ACCOUNT_EMAIL_FROM`); without it n
 - OpenTelemetry trace export per tenant (`/v1/telemetry`): run, model, tool, compaction and human-input spans
   over OTLP/HTTP (protobuf or JSON), GenAI attributes, content off unless `include.content`. Inbound W3C
   `traceparent` continues a caller's trace. A self-hosted runtime sending to a private collector needs it in
-  `AGENT_OUTBOUND_ALLOW_ORIGINS`. See [Observability](../guides/observability.md).
+  `AGENT_OUTBOUND_ALLOW_ORIGINS`. (Removed since: see trace-export-removed.)
 - `GET /v1/agents/{keyOrId}/credentials`, behind the SDKs' `agents.get()`.
 - `GET /v1/models?available=true` sends an `X-Camelrun-Hint` header when it is empty, and a self-hosted
   runtime's `model_key_missing` names `AGENT_TENANT_API_KEYS`.

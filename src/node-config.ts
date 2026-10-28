@@ -150,7 +150,6 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     googleIssuer: env.AGENT_GOOGLE_ISSUER || undefined,
     searchTimeoutMs,
     firecrawlUrl: env.AGENT_FIRECRAWL_SCRAPE_URL,
-    telemetry: { intervalMs: optional("AGENT_TELEMETRY_INTERVAL_MS"), retryBaseMs: optional("AGENT_TELEMETRY_RETRY_MS") },
     usageWebhookRetryMs: optional("AGENT_USAGE_WEBHOOK_RETRY_MS"),
     channelRetryMs: optional("AGENT_CHANNEL_RETRY_MS"),
     runOverrunMs: optional("AGENT_RUN_OVERRUN_MS"),
