@@ -1,0 +1,322 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Miguel Salinas <mikeys@me.com>
+Date: Wed, 28 Oct 2026 14:11:35 -0500
+Subject: [PATCH 2/4] feat(durable): settings.retry.keepRetried leaves retried
+ attempts out of the transcript
+
+Every failed attempt is appended as a pi.assistant entry, also when the run
+asks again and then answers. Context derivation skips them, but a host that
+shows or serves the conversation's history had to recognize and hide the
+superseded failures itself, or retry outside the Harness to keep them out.
+
+With settings.retry.keepRetried: false, a failed attempt that is asked again (a
+retry, an overflow that starts a compaction, an interrupted request or poll)
+appends no entry and records only its usage in pi.usage. The transcript holds
+the attempt that answered, or the last one that failed; pi.live.generation
+still shows the retry's error during the backoff. Default true, unchanged.
+---
+ packages/durable/CHANGELOG.md                 |  1 +
+ packages/durable/README.md                    |  2 +-
+ packages/durable/docs/spec.md                 | 12 +++++--
+ packages/durable/src/harness/agent.ts         |  1 +
+ packages/durable/src/harness/generation.ts    | 36 ++++++++++++++++---
+ packages/durable/src/harness/types.ts         |  9 ++++-
+ .../durable/test/harness-compaction.test.ts   | 15 ++++++++
+ .../durable/test/harness-generation.test.ts   | 29 ++++++++++++++-
+ .../test/harness-restart-failure.test.ts      | 15 ++++++++
+ 9 files changed, 110 insertions(+), 10 deletions(-)
+
+diff --git a/packages/durable/CHANGELOG.md b/packages/durable/CHANGELOG.md
+index ad20c64..11ad707 100644
+--- a/packages/durable/CHANGELOG.md
++++ b/packages/durable/CHANGELOG.md
+@@ -115,6 +115,7 @@
+ - Run-end tasks: a `GenerationHooks.afterRun(run, api)` hook returns `{ tasks }`, built with the typed `runEndTask(task, input)`, after a run answered (a final answer or a `terminate` round; not when an `onYield` continuation is taken, not after a failure or an abort). The answer is committed and the run's inputs settle `done` first, so `Submission.wait()` resolves at the answer; the generation then creates the tasks as its children and waits for them, keeping `pi.live.run` (with `run.afterRun`) and the conversation busy, so idle waits include them, Stop aborts them, and a crash resumes them. Input queued meanwhile, steers included, is placed when they are terminal and starts the next run; a task admits a model-visible write or a fix-run follow-up in its own commit with `submit(tx, draft)`. A crash before the tasks exist asks the hooks again; a broken request (an uninstalled or built-in task, a non-JSON input, a throwing `initial()`) is reported and skipped. `run` names the run's entries: `first` (`pi.live.run.first`, carried into `runFailure.first` so a continue covers a failed run's history), `answer`, and `last` ([#11141](https://github.com/earendil-works/pi/issues/11141))
+ 
+ - `GenerationHooks.beforeRetry(failed, api)`: a host decides whether and when a failed request attempt is tried again, instead of `settings.retry`. It is asked for a failed message (`reason: "model_error"`, with the message) and for a request or poll the host stopped during (`interrupted`), with the attempt, the error text, and the policy's own decision (`delayMs`, absent when the policy would end the run). The first decision wins: `{ retry: true, delayMs? }` retries after `delayMs` (default the policy's backoff), also past `maxRetries` or with the policy disabled; `{ retry: false }` ends the run with the failure; no decision leaves it to the policy. Not asked for an overflow that starts a compaction. New types `FailedAttempt` and `RetryDecision`
++- `settings.retry.keepRetried` (default `true`): with `false`, a failed attempt that is asked again (a retry, an overflow that starts a compaction, an interrupted request) appends no `pi.assistant` entry and records only its usage in `pi.usage`, so the transcript holds the attempt that answered, or the last one that failed, and readers of the history need not skip superseded failures. `pi.live.generation.retry` still shows the error during the backoff
+ 
+ ### Changed
+ 
+diff --git a/packages/durable/README.md b/packages/durable/README.md
+index 2381afb..bdf0535 100644
+--- a/packages/durable/README.md
++++ b/packages/durable/README.md
+@@ -414,7 +414,7 @@ const harness = await Harness.open(storage, {
+ 	settings: {
+ 		extensions: [CodingTools, Coding], // default selection; absent: every installed extension
+ 		stream: { timeoutMs: 120_000 },
+-		retry: { maxRetries: 3 },
++		retry: { maxRetries: 3, keepRetried: true }, // keepRetried: false leaves failed attempts that are asked again out of the transcript
+ 		compaction: { reserveTokens: 16384 },
+ 		progress: { partialIntervalMs: 100, outputIntervalMs: 100, persistWithinMs: 1_000 },
+ 		toolExecution: "parallel",
+diff --git a/packages/durable/docs/spec.md b/packages/durable/docs/spec.md
+index b730d85..2295181 100644
+--- a/packages/durable/docs/spec.md
++++ b/packages/durable/docs/spec.md
+@@ -466,12 +466,14 @@ type ConversationStreamOptions = {
+   deferred?: boolean | { window?: "15m" | "1h" | "24h" };
+ };
+ 
+-/** Durable generation attempt retries; the JSON shape of pi-ai `RetryPolicy`. */
++/** Durable generation attempt retries; the JSON shape of pi-ai `RetryPolicy`, and `keepRetried`. */
+ type ConversationRetryPolicy = {
+   enabled: boolean;
+   maxRetries: number;
+   baseDelayMs: number;
+   maxAgentDelayMs?: number;
++  /** Whether a failed attempt that is asked again keeps its `pi.assistant` entry (section 8.3). */
++  keepRetried?: boolean;
+ };
+ 
+ /** Automatic compaction thresholds (section 8.7); manual compaction ignores `enabled`. */
+@@ -523,7 +525,7 @@ type HarnessSettings = {
+ type Settings = {
+   readonly extensions?: readonly Extension[]; // default: every installed extension, in install order
+   readonly stream: ConversationStreamOptions; // default {}
+-  readonly retry: ConversationRetryPolicy; // { enabled: true, maxRetries: 3, baseDelayMs: 2000, maxAgentDelayMs: 60000 }
++  readonly retry: ConversationRetryPolicy; // { enabled: true, maxRetries: 3, baseDelayMs: 2000, maxAgentDelayMs: 60000, keepRetried: true }
+   readonly compaction: CompactionPolicy & Pick<CompactionSettings, "modelOverrides">; // { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000, backgroundTokens: 32768 }
+   readonly toolExecution: ToolExecutionMode; // "parallel"
+   readonly steeringMode: QueueMode; // "one-at-a-time"
+@@ -4922,6 +4924,12 @@ The run's inputs live in `pi.live.run`, not in the task input.
+     `maxRetries` or with the policy disabled; `{ retry: false }` fails. Without a
+     decision the policy decides. A `delayMs` that is not a finite number of 0 or
+     more is reported as the hook's throw.
++  - With `settings.retry.keepRetried: false`, a failed attempt that is asked
++    again (a retry, an overflow that starts a compaction, an interrupted request
++    or poll) appends no `pi.assistant` entry, neither its message nor its
++    converted partial: the commit adds only its usage to `pi.usage`. The
++    transcript then holds the attempt that answered, or the last one that
++    failed; `pi.live.generation.retry` shows the error during the backoff.
+   - `deferred`: sleep until `pollAt = now + (handle.pollAfterMs ?? 5000)` at `poll`.
+ - `retry` runs once the backoff's sleep is due and returns to `prepare` with the
+   next attempt, so agent and settings changes made during the backoff apply.
+diff --git a/packages/durable/src/harness/agent.ts b/packages/durable/src/harness/agent.ts
+index df15a9f..810d72a 100644
+--- a/packages/durable/src/harness/agent.ts
++++ b/packages/durable/src/harness/agent.ts
+@@ -22,6 +22,7 @@ export const DEFAULT_RETRY_POLICY: ConversationRetryPolicy = {
+ 	maxRetries: 3,
+ 	baseDelayMs: 2000,
+ 	maxAgentDelayMs: 60000,
++	keepRetried: true,
+ };
+ 
+ export const DEFAULT_COMPACTION_POLICY: CompactionPolicy = {
+diff --git a/packages/durable/src/harness/generation.ts b/packages/durable/src/harness/generation.ts
+index 096b3a5..b336765 100644
+--- a/packages/durable/src/harness/generation.ts
++++ b/packages/durable/src/harness/generation.ts
+@@ -513,7 +513,8 @@ async function interrupted(
+ 		// Read before the first table write; only a failure uses it.
+ 		const failure = until === undefined ? await prepareFailure(tx, runtime) : undefined;
+ 		const live = await tx.doc(LiveDoc, runtime.conversationId);
+-		await convertPartial(tx, live, runtime.conversationId);
++		if (until === undefined || keepsRetried(runtime)) await convertPartial(tx, live, runtime.conversationId);
++		else await dropPartial(tx, live, runtime.conversationId);
+ 		if (until !== undefined) {
+ 			live.generation = { attempt, retry: { at: until, error: text } };
+ 			const poll =
+@@ -679,6 +680,24 @@ async function retryDeadline(
+ 	return decision.retry ? runtime.now() + (decision.delayMs ?? backoff) : undefined;
+ }
+ 
++/** Whether failed attempts that are asked again stay in the transcript (`settings.retry.keepRetried`). */
++function keepsRetried(runtime: Runtime): boolean {
++	return runtime.settings.retry.keepRetried !== false;
++}
++
++/** Append a failed attempt that is asked again, or with `keepRetried` off record only its usage. */
++async function appendRetried(tx: Tx, runtime: Runtime, message: AssistantMessage): Promise<void> {
++	if (keepsRetried(runtime)) await appendAssistant(tx, runtime.conversationId, message);
++	else await recordModelUsage(tx, runtime.conversationId, message);
++}
++
++/** Record only the usage of a committed partial whose interrupted attempt is asked again with `keepRetried` off. */
++async function dropPartial(tx: Tx, live: Draft<LiveState>, conversationId: ConversationId): Promise<void> {
++	const partial = live.generation?.message;
++	if (partial === undefined) return;
++	await recordModelUsage(tx, conversationId, copyJson(partial) as unknown as AssistantMessage);
++}
++
+ /**
+  * Append a committed partial left by an interrupted, aborted, faulted, or orphaned attempt as an aborted assistant
+  * entry; the caller replaces or removes `generation`.
+@@ -817,7 +836,7 @@ async function classify(
+ 			const text = message.errorMessage ?? "Context overflow";
+ 			await runtime.commit(async (tx): Promise<Next> => {
+ 				const live = await tx.doc(LiveDoc, conversationId);
+-				await appendAssistant(tx, conversationId, message);
++				await appendRetried(tx, runtime, message);
+ 				delete live.generation;
+ 				const child = await createCompaction(tx, conversationId, { reason: "overflow" }, runtime.taskId);
+ 				const checkpoint = { phase: "prepare", attempt, compacted: child, overflow: text } as const;
+@@ -845,7 +864,8 @@ async function classify(
+ 		// Read before the first table write; only a failure uses it.
+ 		const failure = until === undefined ? await prepareFailure(tx, runtime) : undefined;
+ 		const live = await tx.doc(LiveDoc, conversationId);
+-		await appendAssistant(tx, conversationId, message);
++		if (until === undefined) await appendAssistant(tx, conversationId, message);
++		else await appendRetried(tx, runtime, message);
+ 		if (until !== undefined) {
+ 			live.generation = { attempt, retry: { at: until, error: message.errorMessage ?? "" } };
+ 			const checkpoint = {
+@@ -1158,17 +1178,23 @@ async function finishToolRound(
+ 
+ /**
+  * Append a provider result and add its usage to `pi.usage` in the same commit.
+- * REMINDER: every built-in writer of assistant entries goes through here, so the usage ledger stays complete.
++ * REMINDER: every built-in writer of assistant entries goes through here, so the usage ledger stays complete; a provider
++ * result left out of the transcript goes through `recordModelUsage()`.
+  */
+ async function appendAssistant(
+ 	tx: Tx,
+ 	conversationId: ConversationId,
+ 	message: AssistantMessage,
+ ): Promise<TypedEntry<never>> {
+-	await recordUsage(tx, conversationId, "models", `${message.provider}/${message.model}`, message.usage);
++	await recordModelUsage(tx, conversationId, message);
+ 	return tx.appendEntry(AssistantEntry, conversationId, { model: [message] });
+ }
+ 
++/** Add a provider result's usage to `pi.usage`. */
++function recordModelUsage(tx: Tx, conversationId: ConversationId, message: AssistantMessage): Promise<void> {
++	return recordUsage(tx, conversationId, "models", `${message.provider}/${message.model}`, message.usage);
++}
++
+ /**
+  * Start a run for `inputs`, placed input submissions, whose first entry is `first` (`LiveRun.first`): a new generation
+  * takes `pi.live.run`. Removes `runFailure`, unless `keepFailure`: a run started in the commit that ended the failed one
+diff --git a/packages/durable/src/harness/types.ts b/packages/durable/src/harness/types.ts
+index 59e7e31..2ebf497 100644
+--- a/packages/durable/src/harness/types.ts
++++ b/packages/durable/src/harness/types.ts
+@@ -543,12 +543,19 @@ export type ConversationStreamOptions = {
+ 	deferred?: boolean | { window?: "15m" | "1h" | "24h" };
+ };
+ 
+-/** Durable generation attempt retries; the JSON shape of pi-ai `RetryPolicy`. */
++/** Durable generation attempt retries; the JSON shape of pi-ai `RetryPolicy`, and `keepRetried`. */
+ export type ConversationRetryPolicy = {
+ 	enabled: boolean;
+ 	maxRetries: number;
+ 	baseDelayMs: number;
+ 	maxAgentDelayMs?: number;
++	/**
++	 * Whether a failed attempt that is asked again (a retry, an overflow's compaction, an interrupted request) stays in
++	 * the transcript as a `pi.assistant` entry. Default `true`; with `false` only its usage is recorded (`pi.usage`), so
++	 * the transcript holds the attempt that answered, or the last one that failed, and `pi.live.generation.retry` shows
++	 * the error while the backoff runs.
++	 */
++	keepRetried?: boolean;
+ };
+ 
+ /** Automatic compaction thresholds (spec §8.7); manual compaction ignores `enabled`. */
+diff --git a/packages/durable/test/harness-compaction.test.ts b/packages/durable/test/harness-compaction.test.ts
+index b60eb2d..83f0930 100644
+--- a/packages/durable/test/harness-compaction.test.ts
++++ b/packages/durable/test/harness-compaction.test.ts
+@@ -1874,6 +1874,21 @@ describe("compaction and the inbox", () => {
+ 		await chat.harness.close(context);
+ 	});
+ 
++	it("leaves the overflow and the retried failures out of the transcript with keepRetried off", async () => {
++		const chat = await open();
++		await history(chat);
++		chat.setup.settings.compaction = { ...MANUAL, enabled: true };
++		chat.setup.settings.retry = { ...chat.setup.settings.retry, keepRetried: false };
++		chat.faux.summaries.push(summary());
++		chat.faux.agent.push(failure("prompt is too long"), failure("overloaded"), answer("finally"));
++		const before = (await allEntries(chat.root)).length;
++		const input = await chat.root.submit({ type: "input", content: text("u4", 100) }, context);
++		expect((await input.wait(context)).status).toBe("done");
++		const answers = (await allEntries(chat.root)).slice(before).filter((entry) => entry.kind === "pi.assistant");
++		expect(answers.map((entry) => (entry.model![0] as AssistantMessage).stopReason)).toEqual(["stop"]);
++		await chat.harness.close(context);
++	});
++
+ 	it("loses an application edit placed while a compaction summarizes (spec §12)", async () => {
+ 		const chat = await open();
+ 		await history(chat);
+diff --git a/packages/durable/test/harness-generation.test.ts b/packages/durable/test/harness-generation.test.ts
+index 351756b..3f2cf5e 100644
+--- a/packages/durable/test/harness-generation.test.ts
++++ b/packages/durable/test/harness-generation.test.ts
+@@ -25,6 +25,7 @@ import {
+ 	ProviderDoc,
+ 	type RegistrySnapshot,
+ 	type TaskId,
++	UsageDoc,
+ 	UserEntry,
+ 	wrapSection,
+ } from "@earendil-works/pi-durable";
+@@ -220,6 +221,32 @@ describe("generation", () => {
+ 		await harness.close(context);
+ 	});
+ 
++	it("leaves retried attempts out of the transcript with keepRetried off, and still records their usage", async () => {
++		const run = async (keepRetried: boolean) => {
++			const setup = chatSetup();
++			setup.faux.setResponses([ERROR_503, ERROR_503, fauxAssistantMessage("recovered")]);
++			setup.settings.retry = { enabled: true, maxRetries: 3, baseDelayMs: 1, keepRetried };
++			const { harness, root } = await openChat(new MemoryStorage(), setup);
++			const values = livePublications(harness);
++			harness.resume();
++			expect((await (await root.submit({ type: "input", content: "hi" }, context)).wait(context)).status).toBe(
++				"done",
++			);
++			const kinds = (await allEntries(root)).map((entry) => entry.kind);
++			const usage = await harness.snapshot(UsageDoc, root.id, context);
++			const retried = values.some((value) => value.generation?.retry?.error === "503 Service Unavailable");
++			await harness.close(context);
++			return { kinds, usage, retried };
++		};
++		const kept = await run(true);
++		const left = await run(false);
++		expect(kept.kinds).toEqual(["pi.user", "pi.assistant", "pi.assistant", "pi.assistant"]);
++		expect(left.kinds).toEqual(["pi.user", "pi.assistant"]);
++		expect(left.retried).toBe(true);
++		// The ledger counts every attempt either way.
++		expect(left.usage).toEqual(kept.usage);
++	});
++
+ 	it("fails with model_error once retries are exhausted", async () => {
+ 		const setup = chatSetup();
+ 		setup.faux.setResponses([ERROR_503, ERROR_503, fauxAssistantMessage("never")]);
+@@ -678,7 +705,7 @@ describe("generation", () => {
+ 	it("resolves settings over the built-in defaults", () => {
+ 		expect(resolveSettings(undefined)).toEqual({
+ 			stream: {},
+-			retry: { enabled: true, maxRetries: 3, baseDelayMs: 2000, maxAgentDelayMs: 60000 },
++			retry: { enabled: true, maxRetries: 3, baseDelayMs: 2000, maxAgentDelayMs: 60000, keepRetried: true },
+ 			compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000, backgroundTokens: 32768 },
+ 			progress: { partialIntervalMs: 100, outputIntervalMs: 100, persistWithinMs: 1000 },
+ 			toolExecution: "parallel",
+diff --git a/packages/durable/test/harness-restart-failure.test.ts b/packages/durable/test/harness-restart-failure.test.ts
+index 6d63107..bd3dfa9 100644
+--- a/packages/durable/test/harness-restart-failure.test.ts
++++ b/packages/durable/test/harness-restart-failure.test.ts
+@@ -254,6 +254,21 @@ describe("a generation interrupted while the model answers (#11139)", () => {
+ 		await opened.harness.close(context);
+ 	});
+ 
++	it("drops the interrupted attempt's partial with keepRetried off", async () => {
++		const path = await sqlitePath();
++		const { id } = await crashWhileStreaming(path, streaming());
++		const setup = chatSetup();
++		setup.settings.retry = { enabled: true, maxRetries: 2, baseDelayMs: 1, keepRetried: false };
++		setup.faux.setResponses([fauxAssistantMessage("answer")]);
++		const opened = await open(path, setup);
++		opened.harness.resume();
++		expect((await settled(opened.harness, id)).status).toBe("done");
++		const entries = await allEntries(opened.root);
++		expect(entries.map((entry) => entry.kind)).toEqual(["pi.user", "pi.assistant"]);
++		expect(textOf(entries[1]!.model![0])).toBe("answer");
++		await opened.harness.close(context);
++	});
++
+ 	it("asks beforeRetry, which can retry an interrupted request the policy would not", async () => {
+ 		const path = await sqlitePath();
+ 		const { id } = await crashWhileStreaming(path, streaming());

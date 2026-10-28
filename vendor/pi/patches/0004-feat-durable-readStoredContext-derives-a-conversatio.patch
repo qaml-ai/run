@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Miguel Salinas <mikeys@me.com>
+Date: Wed, 28 Oct 2026 14:13:18 -0500
+Subject: [PATCH 4/4] feat(durable): readStoredContext derives a conversation's
+ context from Storage alone
+
+Conversation.context({ at }) needs an open Harness. A process that only reads
+a session another process drives (to fork it at an earlier entry, or to show
+it) has the Storage but no Harness of its own, and had to copy the derivation:
+the newest head marker, edits, excluded stop reasons, system message lead and
+tool result ordering, and keep the copy in step with Pi.
+
+readStoredContext(storage, conversationId, context, { at }) runs the same
+derivation over Storage reads only (ContextStorage: entry, findLatestHeadMarker,
+scanEntries) and returns the view Conversation.context() returns.
+---
+ packages/durable/CHANGELOG.md                 |  1 +
+ packages/durable/README.md                    |  2 ++
+ packages/durable/src/harness/context.ts       | 24 ++++++++++++++---
+ packages/durable/src/index.ts                 |  1 +
+ packages/durable/test/harness-context.test.ts | 26 +++++++++++++++++++
+ 5 files changed, 51 insertions(+), 3 deletions(-)
+
+diff --git a/packages/durable/CHANGELOG.md b/packages/durable/CHANGELOG.md
+index 345d2bb..38f5d49 100644
+--- a/packages/durable/CHANGELOG.md
++++ b/packages/durable/CHANGELOG.md
+@@ -117,6 +117,7 @@
+ - `GenerationHooks.beforeRetry(failed, api)`: a host decides whether and when a failed request attempt is tried again, instead of `settings.retry`. It is asked for a failed message (`reason: "model_error"`, with the message) and for a request or poll the host stopped during (`interrupted`), with the attempt, the error text, and the policy's own decision (`delayMs`, absent when the policy would end the run). The first decision wins: `{ retry: true, delayMs? }` retries after `delayMs` (default the policy's backoff), also past `maxRetries` or with the policy disabled; `{ retry: false }` ends the run with the failure; no decision leaves it to the policy. Not asked for an overflow that starts a compaction. New types `FailedAttempt` and `RetryDecision`
+ - `settings.retry.keepRetried` (default `true`): with `false`, a failed attempt that is asked again (a retry, an overflow that starts a compaction, an interrupted request) appends no `pi.assistant` entry and records only its usage in `pi.usage`, so the transcript holds the attempt that answered, or the last one that failed, and readers of the history need not skip superseded failures. `pi.live.generation.retry` still shows the error during the backoff
+ - `GenerationHooks.afterTools` can end the run after the round: `{ end: true }` from any hook ends it as a round whose every call asked to `terminate` does (no further request; inputs settled `done` with the tool-calling answer, the final boundary, `afterRun` with reason `terminate`). A host that decides from the round's results, such as a call waiting for input or a budget, no longer needs every tool to return `control.terminate`
++- `readStoredContext(storage, conversationId, context, { at })` reads a conversation's committed context from Storage alone (`ContextStorage`: `entry`, `findLatestHeadMarker`, `scanEntries`), the view `Conversation.context()` returns, so a reader without a Harness (a process that forks or shows a session another one drives) derives it as Pi does instead of copying the derivation
+ 
+ ### Changed
+ 
+diff --git a/packages/durable/README.md b/packages/durable/README.md
+index 74c3f2d..e168c44 100644
+--- a/packages/durable/README.md
++++ b/packages/durable/README.md
+@@ -666,6 +666,8 @@ To limit a hook to some conversations, select its extension only there, for exam
+ 
+ Hooks read committed documents (`api.snapshot()`) and the conversation's raw history (`api.entry()`, `api.entries()`), which compaction never changes.
+ 
++A process without a Harness, such as one that forks or shows a session another process drives, reads a conversation's model context from Storage alone with `readStoredContext(storage, conversationId, context, { at })`: the view `Conversation.context()` returns.
++
+ ### Work at the end of a run
+ 
+ An `afterRun` hook starts durable work after a run answered, without a tool call: for example the project's tests after a run that edited files. It returns tasks, built with `runEndTask()`, and the generation creates them as its children and waits for them before the run ends:
+diff --git a/packages/durable/src/harness/context.ts b/packages/durable/src/harness/context.ts
+index aa56608..10ed516 100644
+--- a/packages/durable/src/harness/context.ts
++++ b/packages/durable/src/harness/context.ts
+@@ -10,6 +10,24 @@ const SCAN_PAGE_SIZE = 256;
+ const EXCLUDED_STOP_REASONS: ReadonlySet<AssistantMessage["stopReason"]> = new Set(["aborted", "error", "deferred"]);
+ const MISSING_RESULT_TEXT = "Tool result unavailable: history ends before this call completed.";
+ 
++/** The Storage reads a context derivation makes. */
++export type ContextStorage = Pick<Storage, "entry" | "findLatestHeadMarker" | "scanEntries">;
++
++/**
++ * Committed context of one conversation, read from Storage alone: the view `Conversation.context()` returns, with `at`
++ * as there, for a reader without a Harness, such as a process that forks or shows a session another process drives.
++ * Entries at or below the context's tail never change, so entries appended meanwhile do not change the view.
++ */
++export async function readStoredContext(
++	storage: ContextStorage,
++	conversationId: ConversationId,
++	context: Context,
++	options?: { readonly at?: EntryId },
++): Promise<ContextView> {
++	const bounds = await captureContextBounds(storage, conversationId, context, options?.at);
++	return deriveContext(storage, conversationId, bounds, context);
++}
++
+ /** Head marker and newest visible entry that fix one committed context range. */
+ export type ContextBounds = {
+ 	readonly head: (EntryRecord & { readonly head: EntryId }) | undefined;
+@@ -22,7 +40,7 @@ export type ContextBounds = {
+  * them off the line.
+  */
+ export async function captureContextBounds(
+-	storage: Storage,
++	storage: ContextStorage,
+ 	conversationId: ConversationId,
+ 	context: Context,
+ 	at?: EntryId,
+@@ -127,7 +145,7 @@ export async function readContext(
+  * the newest edit in the range wins. Context entries are H followed by the range's non-head entries.
+  */
+ export async function deriveContext(
+-	storage: Storage,
++	storage: ContextStorage,
+ 	conversationId: ConversationId,
+ 	bounds: ContextBounds | undefined,
+ 	context: Context,
+@@ -261,7 +279,7 @@ function rangeQuery(bounds: ContextBounds): Omit<EntryQuery, "conversationId"> {
+ 
+ /** Visible entries within `range`, oldest first. */
+ async function scanRange(
+-	storage: Storage,
++	storage: ContextStorage,
+ 	conversationId: ConversationId,
+ 	range: Omit<EntryQuery, "conversationId">,
+ 	context: Context,
+diff --git a/packages/durable/src/index.ts b/packages/durable/src/index.ts
+index 0362bd8..d9f5af2 100644
+--- a/packages/durable/src/index.ts
++++ b/packages/durable/src/index.ts
+@@ -31,6 +31,7 @@ export {
+ 	CompactionTask,
+ 	type SummaryRequest,
+ } from "./harness/compaction.ts";
++export { type ContextStorage, readStoredContext } from "./harness/context.ts";
+ export { defineExtension, defineTool, hook, runEndTask, section, wrapSection, wrapTool } from "./harness/define.ts";
+ export {
+ 	type GenerationCheckpoint,
+diff --git a/packages/durable/test/harness-context.test.ts b/packages/durable/test/harness-context.test.ts
+index f3a9ada..7b13dbb 100644
+--- a/packages/durable/test/harness-context.test.ts
++++ b/packages/durable/test/harness-context.test.ts
+@@ -10,6 +10,7 @@ import {
+ 	Harness,
+ 	type HarnessSettings,
+ 	MemoryStorage,
++	readStoredContext,
+ 	type Storage,
+ } from "@earendil-works/pi-durable";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+@@ -423,6 +424,31 @@ describe("conversation context", () => {
+ 		await expect(other.context(context, { at: tail.id })).rejects.toThrow("is not visible");
+ 	});
+ 
++	it("reads the same context from Storage alone, also as of an earlier entry", async () => {
++		const storage = new MemoryStorage();
++		const { harness } = await openHarness(storage);
++		const root = await harness.root(context);
++		const append = (draft: EntryDraft) => root.commit((tx) => tx.appendEntry(root.id, draft), context);
++		const first = await append({ kind: "message", model: [user("first")] });
++		const call = await append({ kind: "message", model: [assistant("calling", { calls: ["x"] })] });
++		await append({ kind: "message", model: [toolResult("x")] });
++		await append({ kind: "edit", edits: [{ target: first.id, action: "replace", messages: [user("first v2")] }] });
++		const reset = await append({ kind: "reset", head: "self", model: [user("fresh start")] });
++		await append({ kind: "message", model: [assistant("after reset")] });
++
++		expect(await readStoredContext(storage, root.id, context)).toEqual(await root.context(context));
++		for (const at of [first.id, call.id, reset.id]) {
++			expect(await readStoredContext(storage, root.id, context, { at })).toEqual(
++				await root.context(context, { at }),
++			);
++		}
++		const other = await root.fork(first.id, { ownership: { kind: "ownerless" } }, context);
++		await expect(readStoredContext(storage, other.id, context, { at: reset.id })).rejects.toThrow("is not visible");
++		const empty = await harness.createConversation({ ownership: { kind: "ownerless" } }, context);
++		expect(await readStoredContext(storage, empty.id, context)).toEqual(await empty.context(context));
++		await harness.close(context);
++	});
++
+ 	it("extends a task's context read with only newer entries", async () => {
+ 		const { harness, registry, root, first, scanned } = await countingSetup();
+ 		const Reads = defineTask<Record<string, never>, { phase: "run" }, null>({
