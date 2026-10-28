@@ -96,8 +96,6 @@ export interface HostIO {
   modelOutbound?: Outbound;
   /** Wait until the node may act for the agent (its lease is fresh), before each model request and js_exec; rejects once it lost the agent. */
   lease?(): Promise<void>;
-  /** Omit duplicate user content only after all rollback readers support it. */
-  dedupeUserEntries?: boolean;
   /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
   history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number> };
 }
@@ -806,7 +804,7 @@ export function createAgentHost(hostIO: HostIO) {
   async function open(storage: PiStorage, tools: Tool[]): Promise<HostJournal> {
     // A host transcript no release retired holds history before the journal that only its records have.
     if ((await JournalHistory.snapshotBase(storage))?.enabled) throw legacyFormatRefused(config.id, config.tenant, "host_transcript");
-    const opened = await HostJournal.open(storage, io.dedupeUserEntries);
+    const opened = await HostJournal.open(storage);
     if (opened) return opened;
     const legacy = await storage.conversation(SESSION_CONVERSATION_ID, BACKGROUND_CONTEXT) ? "not_on_pi"
       : await io.legacyLog.empty() ? undefined : "legacy_log";
@@ -824,8 +822,8 @@ export function createAgentHost(hostIO: HostIO) {
         headAt = imported.compaction.cut;
       }
     }
-    await seedJournal({ storage, dedupeUserEntries: io.dedupeUserEntries, sessionId: config.id, model: convertToLlm(head), messages, headAt });
-    const seeded = await HostJournal.open(storage, io.dedupeUserEntries);
+    await seedJournal({ storage, sessionId: config.id, model: convertToLlm(head), messages, headAt });
+    const seeded = await HostJournal.open(storage);
     if (!seeded) throw new Error("The agent's Pi storage was seeded without its journal history");
     return seeded;
   }
@@ -968,7 +966,7 @@ export function createAgentHost(hostIO: HostIO) {
       };
       await requireContextSize();
       agent = await DurableAgent.create({ ...agentOptions, durable: {
-        storage: piStorage, dedupeUserEntries: io.dedupeUserEntries, conversationId: SESSION_CONVERSATION_ID, cursor: journal.history.latest, written: () => journal.written,
+        storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: journal.history.latest, written: () => journal.written,
         leading: () => leading(agent ? undefined : tools.map(toToolDeclaration)),
         onContextRequest: (held, sent) => contextMetrics.request(held, sent),
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own

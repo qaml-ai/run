@@ -7,7 +7,7 @@ import { resetContext, type ContextReset } from "./pi-durable/reset.ts";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
-import { agentProcessEnv, childProcess, type Rpc } from "./rpc.ts";
+import { childProcess, type Rpc } from "./rpc.ts";
 import { legacyFormatRefused, type AgentConfig, type CallContext, type ToolBridge } from "./protocol.ts";
 import type { RequestMethod } from "../shared/client-protocol.ts";
 import type { ChildProcess } from "node:child_process";
@@ -63,8 +63,6 @@ type SupervisorOptions = {
   agentEnv?: Record<string, string>;
   /** The outbound policy inline agents' model calls go through (agent processes get it in `agentEnv`). */
   modelOutbound?: Outbound;
-  /** Omit duplicate user content only after all rollback readers support it. */
-  dedupeUserEntries?: boolean;
   /** Shared Pi records use the same database and ownership claim as the session. */
   db?: Db;
 };
@@ -163,7 +161,7 @@ export class AgentSupervisor {
     try {
       // A host transcript no release retired holds history before the journal that only its records have.
       if ((await JournalHistory.snapshotBase(storage))?.enabled) throw legacyFormatRefused(id, undefined, "host_transcript");
-      const journal = await HostJournal.open(storage, this.options.dedupeUserEntries);
+      const journal = await HostJournal.open(storage);
       return journal ? await closeInterruptedTurn(journal) : false;
     } finally { await storage.close(BACKGROUND_CONTEXT); }
   }
@@ -266,12 +264,7 @@ export class AgentSupervisor {
   }
 
   private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, legacy: AppendLog<unknown>, durable?: PiStorage) {
-    // A supervisor given its tenant lists directly (tests) tells its agent processes, as a node's agentEnv does.
-    const lists = {
-      ...(this.options.dedupeUserEntries !== undefined ? { AGENT_PI_DEDUPE_USER_ENTRIES: String(this.options.dedupeUserEntries) } : {}),
-    };
-    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, Object.keys(lists).length
-      ? { ...this.options.agentEnv ?? agentProcessEnv(process.env), ...lists } : this.options.agentEnv);
+    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, this.options.agentEnv);
     const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), legacy, durable, slots: new Map() };
     this.agents.set(id, handle);
     this.starting.delete(id);
@@ -468,7 +461,6 @@ export class AgentSupervisor {
       modelAttempt: event => handle.bridge.modelAttempt?.(structuredClone(event)) ?? Promise.resolve(false),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
       codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),
-      dedupeUserEntries: this.options.dedupeUserEntries,
       ...(this.options.codeExecutor ? { codeExecutor: this.options.codeExecutor } : {}),
       ...(this.options.modelOutbound ? { modelOutbound: this.options.modelOutbound } : {}),
       lease: async () => { await handle.bridge.lease?.(); },

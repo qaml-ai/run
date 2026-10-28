@@ -31,10 +31,10 @@ test("scoped callers can submit user text and images but never assistant or tool
 });
 
 /** A new session's journal, as a host seeds it, and its HostJournal. */
-async function journal(dedupeUserEntries = false) {
+async function journal() {
   const storage = new MemoryStorage();
   await seedJournal({ storage, sessionId: "test", model: [{ role: "system", content: "base", timestamp: 0 }] });
-  return { storage, journal: (await HostJournal.open(storage, dedupeUserEntries))! };
+  return { storage, journal: (await HostJournal.open(storage))! };
 }
 
 test("system messages keep their place in Pi's context across retractions and reloads, and never enter history", async t => {
@@ -76,17 +76,17 @@ test("calls awaiting human input stay open across a reload, and leave the wait o
   assert.deepEqual(reloaded.awaiting, []);
 });
 
-test("host user entries store content once and read both old and deduplicated messages", async t => {
-  const { storage, journal: host } = await journal(true);
+test("host user entries read both whole and deduplicated messages (content only in the model message)", async t => {
+  const { storage, journal: host } = await journal();
   t.after(() => storage.close(context));
   const message = { role: "user", content: [{ type: "text", text: "question" }], timestamp: 7, from: { id: "sender" }, metadata: { tag: "kept" }, requestId: "request" } as Extract<AgentMessage, { role: "user" }>;
   await host.push(message);
   const page = await storage.scanEntries({ conversationId: 1 as never, order: "ascending" }, 100, undefined, context);
   const entry = page.items.find(entry => entry.kind === "camel.user")!;
-  assert.equal(Object.hasOwn((entry.data as any).message, "content"), false);
   assert.deepEqual(entry.model![0].content, message.content);
   assert.deepEqual(await (await HostJournal.open(storage))!.history.messagesFrom(0), [message]);
-  assert.deepEqual(durableEntryMessages({ ...entry, data: { message } as never })[0].message, message, "legacy entries still read their original content");
+  const { content: _content, ...metadata } = message;
+  assert.deepEqual(durableEntryMessages({ ...entry, data: { message: metadata } as never })[0].message, message, "deduplicated entries (written by AGENT_PI_DEDUPE_USER_ENTRIES) still read their content");
 });
 
 test("default host writes remain readable by the previous release", async t => {

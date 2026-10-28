@@ -232,9 +232,8 @@ Larger values become `{ truncated: true, path? }`. When a writable workspace is 
 and `path` is absent. Drops past 700 KiB log `tool_details_dropped` with only the agent, tool and byte count.
 Input-required markers and structured `final_output` results are preserved.
 
-User entries keep content in both the original and model message by default for rollback compatibility.
-`AGENT_PI_DEDUPE_USER_ENTRIES=true` opts into storing it only in the model message. Readers accept both formats;
-leave the flag off until those readers are deployed everywhere and older releases are no longer rollback targets.
+User entries keep content in both the original and model message. Entries that hold it only in the model message
+(written while `AGENT_PI_DEDUPE_USER_ENTRIES` existed; the setting is now ignored) are still read.
 
 ### Tools
 

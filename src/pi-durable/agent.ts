@@ -39,7 +39,6 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     leading?: () => AgentMessage | undefined;
     /** Telemetry only: Pi's held context before conversion, and the request sent. */
     onContextRequest?: (held: number, sent: number) => void;
-    dedupeUserEntries?: boolean;
     contextWindow?: number;
     maxOutputTokens?: number;
     summaryStream?: AgentOptions["streamFn"];
@@ -735,14 +734,12 @@ export class DurableAgent {
   dropRunSteers() { this.queued = this.queued.filter(message => !this.runOnly.has(message)); }
   clearSteeringQueue() { this.queued = []; }
   hasQueuedMessages() { return this.queued.length > 0; }
-  peekQueuedMessages() { return this.queued.slice(0, 1); }
   /** The next steer as Pi input (`whenBusy: "steer"`): placed at the running round's boundary, or starting a run. */
   private async submitSteer() {
     const message = this.queued.shift();
     if (message) await this.submitMessage(message, "steer", (message as { requestId?: string }).requestId);
   }
   abort() { if (this.controller) { this.errorMessage ??= "Agent run aborted"; this.controller.abort(); void this.conversation.abort(context).catch(() => {}); } }
-  async waitForIdle() { await this.running; }
   close(timeoutMs = 5_000): Promise<void> {
     if (this.closing) return this.closing;
     this.closed = true;
@@ -773,8 +770,8 @@ export class DurableAgent {
       await this.conversation.commit(tx => tx.appendEntry(this.conversation.id, { kind: "camel.message", model: [message] as never }), context);
       return undefined;
     }
-    const { content, ...metadata } = message;
-    const entry = { kind: "camel.user", data: { message: this.options.durable.dedupeUserEntries ? metadata : message } as never };
+    const content = message.content;
+    const entry = { kind: "camel.user", data: { message } as never };
     return this.conversation.submit({ ...(requestId ? { requestId } : {}), ...mode === "steer" ? { type: "input", content: content as never, whenBusy: "steer", entry }
       : { type: "write", entry: { ...entry, model: [{ role: "user", content, timestamp: Date.now() }] as never } } }, context);
   }

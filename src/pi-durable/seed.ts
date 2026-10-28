@@ -94,7 +94,6 @@ export async function seedJournal(options: {
   model: Message[];
   before?: { total: number; calls?: [string, number][] };
   messages?: AgentMessage[];
-  dedupeUserEntries?: boolean;
   /** Where the checkpoint goes among `messages` (an import's summary at its cut); 0 by default. */
   headAt?: number;
   /** Requests whose messages the history holds before its base. */
@@ -141,9 +140,8 @@ export async function seedJournal(options: {
         if (index) body.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: SESSION_CONVERSATION_ID, kind: MARKER_KIND, data: { t: "turn", active: false, total: before + index } } });
         body.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: SESSION_CONVERSATION_ID, kind: MARKER_KIND, data: { t: "turn", active: true, total: before + index } } });
       }
-      const { content, ...metadata } = message.role === "user" ? message : { content: undefined };
       body.push({ type: "entry", value: { id: ids[nextId++] as EntryId, conversationId: SESSION_CONVERSATION_ID, ...(message.role === "user"
-        ? { kind: HOST_USER_KIND, data: payload({ message: options.dedupeUserEntries ? metadata : message }), model: payload([{ role: "user", content, timestamp: message.timestamp }]) as never }
+        ? { kind: HOST_USER_KIND, data: payload({ message }), model: payload([{ role: "user", content: message.content, timestamp: message.timestamp }]) as never }
         : { kind: HOST_MESSAGE_KIND, model: payload([message]) as never }) } });
     }
     if (headAt === messages.length) checkpoint();
