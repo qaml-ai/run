@@ -82,7 +82,10 @@ function reconfiguration(header: SessionHeader, definitions: ToolDefinition[], c
     ...remounted ? { mounts } : {},
     provisionHash, model: `${config.model.provider}/${config.model.id}`, thinkingLevel: config.thinkingLevel ?? "off",
     systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, codeMode: config.codeMode !== false, runLimits: config.runLimits ?? null,
-    maxOutputTokens: config.maxOutputTokens ?? null, temperature: config.temperature ?? null, dataCollection: config.dataCollection ?? null, language: config.language ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
+    maxOutputTokens: config.maxOutputTokens ?? null, temperature: config.temperature ?? null, dataCollection: config.dataCollection ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
+    // A language only when the upsert gives one (null clears it): an upsert from an SDK that predates it, which drops the
+    // field, leaves the language set by PATCH .../configuration.
+    ...config.language !== undefined ? { language: config.language } : {},
     // Only a definition's own fields are the agent's: the rest follow its definition.
     ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions, builtins: own.builtins ?? [], delegate: own.delegate ?? null, mcpServers: own.mcpServers ?? [], decide: own.decide ?? null },
   };

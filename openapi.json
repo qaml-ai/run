@@ -3462,7 +3462,13 @@
             "$ref": "#/components/schemas/DataCollection"
           },
           "language": {
-            "$ref": "#/components/schemas/Language"
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 35,
+            "description": "Its primary language (Language). On an upsert of an existing agent, null removes it and leaving it out keeps the one it has",
+            "example": "es-ES"
           },
           "initialMessages": {
             "type": "array",
@@ -3605,12 +3611,6 @@
           "deny"
         ],
         "description": "\"deny\": the agent's OpenRouter model calls (turns and compaction summaries) go only to hosts that do not collect their data: OpenRouter's provider.data_collection, which skips providers whose data policy says they may train on it. A filter, so OpenRouter still balances load among the rest. Default: none (OpenRouter's default). Other providers ignore it"
-      },
-      "Language": {
-        "type": "string",
-        "maxLength": 35,
-        "description": "The agent's primary language, a BCP 47 tag such as \"en\", \"es-ES\", \"pt-BR\" or \"zh-Hant\" (at most 35 characters; stored in canonical case). The system prompt then asks the model to reply in it by default, and in the person's language when they clearly write in another. Default: none (the model follows the conversation). Compaction summaries are unchanged",
-        "example": "es-ES"
       },
       "MountInput": {
         "anyOf": [
@@ -4322,18 +4322,7 @@
                 ]
               },
               "language": {
-                "allOf": [
-                  {
-                    "$ref": "#/components/schemas/Language"
-                  },
-                  {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "description": "Its primary language, its own or its definition's; null: none"
-                  }
-                ]
+                "$ref": "#/components/schemas/Language"
               },
               "forkedFrom": {
                 "$ref": "#/components/schemas/ForkedFrom"
@@ -4663,6 +4652,15 @@
         "required": [
           "type"
         ]
+      },
+      "Language": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 35,
+        "description": "Its primary language, its own or its definition's; null: none",
+        "example": "es-ES"
       },
       "ForkedFrom": {
         "type": "object",
@@ -9059,10 +9057,6 @@
                 "$ref": "#/components/schemas/Language"
               },
               {
-                "type": [
-                  "string",
-                  "null"
-                ],
                 "description": "Its agents' primary language (Language); an agent given its own keeps it when the definition is applied"
               }
             ]
@@ -9570,7 +9564,14 @@
             "$ref": "#/components/schemas/DataCollection"
           },
           "language": {
-            "$ref": "#/components/schemas/Language"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Language"
+              },
+              {
+                "description": "The agent's primary language, a BCP 47 tag such as \"en\", \"es-ES\", \"pt-BR\" or \"zh-Hant\" (at most 35 characters; stored in canonical case). The system prompt then asks the model to reply in it by default, and in the person's language when they clearly write in another. Default: none (the model follows the conversation). Compaction summaries are unchanged"
+              }
+            ]
           },
           "builtins": {
             "type": "array",

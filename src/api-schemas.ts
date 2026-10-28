@@ -506,7 +506,7 @@ export const AgentInput = z.object({
   maxOutputTokens: MaxOutputTokens.optional(),
   temperature: Temperature.optional(),
   dataCollection: DataCollection.optional(),
-  language: Language.optional(),
+  language: Language.nullable().optional().openapi({ description: "Its primary language (Language). On an upsert of an existing agent, null removes it and leaving it out keeps the one it has" }),
   initialMessages: z.array(z.unknown()).optional().openapi({ description: "History to begin with (a conversation from elsewhere): Pi user, assistant and toolResult messages, and compactionSummary messages, the last of which stands in for everything before it. Only when the agent is made; at most 16 MB of JSON. See the multi-user guide" }),
   importMessages: z.object({
     format: z.enum(["anthropic", "openai-responses", "openai-chat"]).openapi({ description: "anthropic: Messages API messages; openai-responses: Responses API input items; openai-chat: Chat Completions messages" }),

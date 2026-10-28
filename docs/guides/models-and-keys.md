@@ -156,7 +156,8 @@ conversation as before.
 Set it when you make an agent, for a [stateless run](stateless-runs.md), or for
 every agent of a [definition](definitions.md) (an agent's own wins). Change it
 with `PATCH /v1/agents/:id/configuration`; `null` removes it. `GET /v1/agents/:id`
-shows it (`null` when unset).
+shows it (`null` when unset). An upsert (`POST /v1/agents` with an
+`Idempotency-Key`) that leaves `language` out keeps the agent's; `null` removes it.
 
 ```json
 {"systemPrompt": "You help people build Discord bots.", "language": "es-ES"}

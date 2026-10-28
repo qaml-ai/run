@@ -89,6 +89,20 @@ test("an agent's language: in its prompt once and the same every turn, shown, ch
   assert.notEqual(a.json.configHash, other.json.configHash);
   await until(async () => (await r.call(`/v1/agents/${a.json.id}/requests/${other.json.reconfigured.id}`)).json.state === "completed", "the upsert");
   assert.equal((await r.call(`/v1/agents/${a.json.id}`)).json.language, "de");
+
+  // An upsert that leaves language out (an SDK from before it drops the field) keeps the one PATCH set; null clears it.
+  const upsert = async (body: object) => {
+    const made = await r.call("/v1/agents", { body, headers: { "Idempotency-Key": "language-kept" } });
+    if (made.json.reconfigured) await until(async () => (await r.call(`/v1/agents/${made.json.id}/requests/${made.json.reconfigured.id}`)).json.state === "completed", "the upsert");
+    return made.json.id as string;
+  };
+  const kept = await upsert({ systemPrompt: "Be brief." });
+  await configure(kept, { language: "es-419" });
+  await upsert({ systemPrompt: "Be brief." });
+  await upsert({ systemPrompt: "Be briefer." });
+  assert.equal((await r.call(`/v1/agents/${kept}`)).json.language, "es-419");
+  await upsert({ systemPrompt: "Be briefer.", language: null });
+  assert.equal((await r.call(`/v1/agents/${kept}`)).json.language, null);
 });
 
 test("a definition's language: its agents inherit it, an agent's own stays when it is applied, and a run takes its own or the definition's", async t => {
