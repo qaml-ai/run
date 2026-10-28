@@ -71,6 +71,21 @@ export class HostJournal {
    * `retired`, with a `camel.host.disabled` entry. An earlier release refuses the session from then on (its history
    * format is newer) rather than continue from that snapshot. False when there is no enabled host transcript to retire.
    */
+  /**
+   * What a retirement of the session's host transcript starts from (as `retire` reads it): its base, the settled
+   * messages before it, and where the running turn's messages it keeps begin (`keptFrom`, when it keeps them from the
+   * host's records). Undefined when there is no enabled host transcript.
+   */
+  static async retirementPlan(storage: Storage): Promise<{ base: HistoryBase; settled: number; keptFrom?: number } | undefined> {
+    const found = await JournalHistory.snapshotBase(storage);
+    if (!found?.enabled) return undefined;
+    const marked = (await JournalHistory.findBase(storage))?.data as unknown as HistoryBase | undefined;
+    const open = (base: HistoryBase) => (base.active || base.awaiting.length > 0) && base.turnStart < base.total;
+    const keep = marked && !open(marked) ? marked : undefined;
+    const base = keep ?? found.base;
+    return { base, settled: open(base) ? base.turnStart : base.total, ...(!keep && open(base) ? { keptFrom: base.turnStart } : {}) };
+  }
+
   static async retire(storage: Storage, options: {
     indexed?: number;
     /** Index `messages` (the history's from `from`, where `turns` begin), as chunks; returns where the index ends then. */
@@ -78,6 +93,8 @@ export class HostJournal {
     legacy?: () => Promise<RetiredRecord[]>;
     /** Read and check everything the retirement would, and write nothing (`POST /v1/operations/legacy-migrate`'s dry run). */
     dryRun?: boolean;
+    /** The running turn's messages before the base, read already (legacy-migrate.ts streams them): not read again. */
+    kept?: AgentMessage[];
   } = {}): Promise<false | Retirement> {
     const found = await JournalHistory.snapshotBase(storage);
     if (!found?.enabled) return false;
@@ -88,7 +105,10 @@ export class HostJournal {
     const base = keep ?? found.base;
     let history: ReturnType<typeof recordsHistory> | undefined;
     const records = async () => history ??= recordsHistory(await retiredRecords(storage, options.legacy) ?? []);
-    if (!keep && open(base)) {
+    if (!keep && open(base) && options.kept) {
+      if (options.kept.length !== base.total - base.turnStart) throw new Error(`The running turn has ${options.kept.length} messages given, its snapshot ${base.total - base.turnStart}`);
+      base.kept = options.kept;
+    } else if (!keep && open(base)) {
       // The running turn's messages before the base, whole (the snapshot's may start past a compaction within the turn).
       const all = (await records()).messages;
       if (all.length !== base.total) throw new Error(`The host's records hold ${all.length} messages, its snapshot ${base.total}`);

@@ -26,7 +26,7 @@ import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson 
 import { rateLimitHeaders, type RateLimitState } from "./rate-limits.ts";
 import { VolumeService } from "./volumes.ts";
 import { databaseRetryable, databaseUnavailable, transaction, type Db, type Sql } from "./db.ts";
-import { LegacyReview } from "./pi-durable/legacy-migrate.ts";
+import { LegacyReview, LegacyTooLarge } from "./pi-durable/legacy-migrate.ts";
 import type { LegacyAgentResult } from "./legacy-migrate.ts";
 import { NotOwner, LostClaim, underClaim, type Claim } from "./ownership.ts";
 import { deleteTail } from "./log-tail.ts";
@@ -1438,8 +1438,9 @@ export class ClientSessions {
    * Convert one agent's history from a legacy format to the current one (POST /v1/operations/legacy-migrate,
    * src/legacy-migrate.ts; pi-durable/legacy-migrate.ts says what each format becomes). Only an agent no node holds:
    * one loaded, loading or held by a live node is skipped (`skipped_hosted`), one with runs open or queued too
-   * (`skipped_busy`). Its stored history is measured first (journal entries and documents, legacy log), and one past
-   * `maxBytes` is reported (`too_large`), never read. Otherwise this node takes it under a claim of its own, so no other
+   * (`skipped_busy`). Its stored history is measured (journal entries and documents, legacy log), before the claim and
+   * again under it: past `maxBytes`, a conversion that reads the whole history into memory is refused (`too_large`),
+   * never read; a host transcript is retired streaming, memory bounded, whatever its size. Otherwise this node takes it under a claim of its own, so no other
    * node loads it meanwhile and a load here waits, converts it, and lets it go. `dryRun` takes no claim, reads and checks
    * everything, and writes nothing. A converted agent converts no more: a second call finds it `current`.
    */
@@ -1455,14 +1456,13 @@ export class ClientSessions {
     // Set before anything is awaited: a load from here on waits for it.
     this.migrating.set(id, done.promise);
     const ownership = this.options.ownership;
-    let claim: Claim | undefined;
+    let claim: Claim | undefined, bytes = 0;
     try {
       const row = async () => (await this.db.query<{ revoked: boolean; purged_at: string | null; pending_runs: boolean }>("select revoked, purged_at, pending_runs from agents where id = $1", [id])).rows[0];
       const found = await row();
       if (!found || found.revoked || found.purged_at) return { agent, code: "skipped_gone" };
       if (found.pending_runs) return { agent, code: "skipped_busy" };
-      let bytes = await this.legacyBytes(id);
-      if (bytes > options.maxBytes) return { agent, code: "too_large", bytes };
+      bytes = await this.legacyBytes(id);
       if (ownership) {
         if (options.dryRun) { if (await ownership.owner(id)) return { agent, code: "skipped_hosted", bytes }; }
         else {
@@ -1475,11 +1475,10 @@ export class ClientSessions {
           if (now.pending_runs) return { agent, code: "skipped_busy", bytes };
           // Measured again under the claim: it may have grown since, and nothing grows it now.
           bytes = await this.legacyBytes(id);
-          if (bytes > options.maxBytes) return { agent, code: "too_large", bytes };
         }
       }
       const conversion = await this.supervisor.migrateLegacy(id, claim, {
-        dryRun: options.dryRun, limit: this.options.contextRangeMaxBytes ?? CONTEXT_RANGE_MAX_BYTES, ...(options.now ? { now: options.now } : {}),
+        dryRun: options.dryRun, limit: this.options.contextRangeMaxBytes ?? CONTEXT_RANGE_MAX_BYTES, ...(options.now ? { now: options.now } : {}), tooLarge: bytes > options.maxBytes,
         index: { indexed: async () => (await this.historyIndex.indexed(id)) ?? 0, write: chunk => this.historyIndex.write(id, claim, chunk) },
       });
       if (!conversion) return { agent, code: "current", bytes };
@@ -1487,6 +1486,7 @@ export class ClientSessions {
       if (!options.dryRun) console.log(JSON.stringify({ type: "legacy_migrated", ...result }));
       return result;
     } catch (error) {
+      if (error instanceof LegacyTooLarge) return { agent, code: "too_large", bytes, error: error.message };
       const result: LegacyAgentResult = { agent, code: error instanceof LegacyReview ? "review" : "failed", error: errorText(error).slice(0, 500) };
       console.error(JSON.stringify({ type: result.code === "review" ? "legacy_migrate_review" : "legacy_migrate_failed", ...result, dryRun: options.dryRun }));
       return result;

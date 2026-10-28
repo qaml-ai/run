@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
 import { join } from "node:path";
-import { fileAppendLog, type AppendLog, type CommitEffect } from "./append-log.ts";
+import { fileAppendLog, jsonArrayItems, jsonLines, type AppendLog, type CommitEffect } from "./append-log.ts";
 import type { Claim } from "../src/ownership.ts";
 import { buggify } from "../src/buggify.ts";
 import { reachable, sometimes } from "../src/assert.ts";
@@ -130,6 +131,7 @@ function fileSegments(directory: string): SegmentStore {
       };
     },
     read: name => readFile(join(directory, name), "utf8"),
+    stream: name => createReadStream(join(directory, name), { encoding: "utf8", highWaterMark: 1024 * 1024 }) as AsyncIterable<string>,
     async create(name, body) {
       await mkdir(directory, { recursive: true, mode: 0o700 });
       let file;
@@ -186,6 +188,8 @@ export interface SegmentStore {
   /** `bytes`, when the store knows it cheaply, is each object's size (segments, snapshots and blobs), by name. */
   list(): Promise<Listing>;
   read(name: string): Promise<string>;
+  /** An object's text in pieces, read as it streams (`AppendLog.records`); without it, `read` whole. */
+  stream?(name: string): AsyncIterable<string>;
   /** Create a segment, snapshot or blob; throws PreconditionFailed if it already exists. */
   create(name: string, body: string): Promise<void>;
   /** `sizes`, the objects' sizes from a listing, is for metering (see `meteredSegments`). */
@@ -223,6 +227,7 @@ export function meteredSegments(store: SegmentStore, key: string, meter?: Storag
   return {
     list: () => store.list(),
     read: name => store.read(name),
+    ...(store.stream ? { stream: (name: string) => store.stream!(name) } : {}),
     async create(name, body) {
       await store.create(name, body);
       meter(`${key}.log/${name}`, Buffer.byteLength(body));
@@ -442,9 +447,35 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
     return records;
   };
 
+  /**
+   * `read`'s records, streamed: the tail's rows are listed first (as `read` does), then Storage's snapshot is parsed an
+   * item at a time and its later segments a line at a time, then the rows above them. Not serialized with writes: a
+   * compaction meanwhile may remove what was listed, which fails the read (the caller tries again later).
+   */
+  async function* records(): AsyncIterable<T> {
+    const rows = await tail.rows(key);
+    const listing = await store.list();
+    const through = covered(listing);
+    const fresh = rows.filter(row => row.seq > through);
+    const replaced = fresh.findLastIndex(row => row.snapshot);
+    const text = (name: string): AsyncIterable<string> | Iterable<string> => store.stream ? store.stream(name) : (async function* () { yield await store.read(name); })();
+    if (replaced < 0) {
+      const snapshot = listing.snapshots.at(-1);
+      if (snapshot !== undefined) yield* jsonArrayItems<T>(text(`snapshot-${segmentName(snapshot)}`));
+      for (const sequence of listing.segments.filter(sequence => snapshot === undefined || sequence > snapshot)) yield* jsonLines<T>(text(segmentName(sequence)));
+    }
+    for (const row of fresh.slice(Math.max(0, replaced))) {
+      const body = row.body ?? (store.stream ? store.stream(`blob-${row.blob}`) : [await store.read(`blob-${row.blob}`)]);
+      const chunks = typeof body === "string" ? [body] : body;
+      if (row.snapshot) yield* jsonArrayItems<T>(chunks);
+      else yield* jsonLines<T>(chunks);
+    }
+  }
+
   return {
     // Serialized with writes, so a read beside a live writer never moves its position back.
     read: () => serialize(read),
+    records,
     empty: () => serialize(async () => {
       // Tail first, as in read(): a concurrent compaction cannot hide data between the two checks.
       if (await tail.last(key) !== undefined) return false;

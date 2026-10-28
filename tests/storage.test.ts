@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileStorage, memoryStorage, segmentLog, type Storage, type StorageMeter, type SegmentStore } from "../shared/storage.ts";
 import { storageOwner } from "../src/storage-usage.ts";
 import { postgresTail } from "../src/log-tail.ts";
+import { jsonArrayItems, jsonLines } from "../shared/append-log.ts";
 import { testDatabase } from "./database.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
@@ -177,3 +178,46 @@ test("s3 storage: a batch delete S3 answers with per-object errors fails, so the
   await storage.removeBlobs("chunks/t/");
   assert.deepEqual(deleted, [["chunks/t/ab/abc", "chunks/t/cd/cde"], ["chunks/t/ab/abc", "chunks/t/cd/cde"]]);
 });
+
+const collect = async <T>(items: AsyncIterable<T>) => { const all: T[] = []; for await (const item of items) all.push(item); return all; };
+const pieces = (text: string, size: number) => Array.from({ length: Math.ceil(text.length / size) }, (_, index) => text.slice(index * size, (index + 1) * size));
+
+test("a JSON array and JSON lines stream an item at a time, whatever pieces their text comes in", async () => {
+  const items = [{ a: "[,]{}\"\\", b: [1, [2, { c: "]" }]] }, "x,y", 3, null, [], {}, "]"];
+  const text = JSON.stringify(items), lines = items.map(item => JSON.stringify(item)).join("\n") + "\n";
+  for (const size of [1, 2, 3, 7, text.length]) {
+    assert.deepEqual(await collect(jsonArrayItems(pieces(text, size))), items, `pieces of ${size}`);
+    assert.deepEqual(await collect(jsonLines(pieces(lines, size))), items, `lines in pieces of ${size}`);
+  }
+  assert.deepEqual(await collect(jsonArrayItems([" [ ] "])), []);
+  assert.deepEqual(await collect(jsonLines(["1\n2\n{\"torn"], true)), [1, 2], "a torn final line is dropped");
+  await assert.rejects(collect(jsonLines(["1\n{\"torn\n3\n"])), /Corrupt/);
+  await assert.rejects(collect(jsonArrayItems(["[1, 2"])), /ends early/);
+});
+
+for (const [name, open] of backends) {
+  test(`a log's records stream as read gives them: snapshot, segments, tail rows and blobs (${name})`, async t => {
+    const storage = await open(t);
+    const key = `logs/${randomUUID()}`;
+    let log = storage.log<{ n: number; pad?: string }>(key);
+    const expected: { n: number; pad?: string }[] = [];
+    const add = (count: number, pad = 0) => {
+      for (let index = 0; index < count; index++) { const record = { n: expected.length, ...(pad ? { pad: "p".repeat(pad) } : {}) }; expected.push(record); log.append(record); }
+    };
+    add(5);
+    await log.flush(true);
+    await log.rewrite(() => [...expected]);
+    add(600);
+    await log.flush(true);
+    add(2, 70 * 1024);
+    await log.flush(true);
+    await log.close();
+    log = storage.log(key);
+    add(3);
+    await log.flush(true);
+    assert.deepEqual(await log.read(), expected);
+    assert.ok(log.records, "every log streams its records");
+    assert.deepEqual(await collect(log.records!()), expected);
+    await log.close();
+  });
+}

@@ -19,6 +19,11 @@ export type CommitEffect = (sql?: Sql) => Promise<void>;
 export interface AppendLog<T> {
   /** Every record since the last rewrite. A torn final record from a crash is dropped. */
   read(): Promise<T[]>;
+  /**
+   * The same records as `read`, one at a time, streamed from where they are stored: memory holds one record and a read
+   * buffer, however long the log. For a reader alone (an operator's one-off conversion), not beside a writer.
+   */
+  records?(): AsyncIterable<T>;
   /** Whether no persisted data exists, without reading record bodies. */
   empty?(): Promise<boolean>;
   /** Buffer a record; it is written by the next `flush`, with `effect` (see `CommitEffect`). */
@@ -75,6 +80,62 @@ async function endLastLine(path: string) {
 }
 
 /** JSONL file implementation for a single process that owns `path`. */
+/**
+ * The JSON records of newline-separated `chunks` (text in any pieces), one line at a time. A final line that does not
+ * parse is dropped (`torn`: a crash mid-append), as `read` drops it; any other is an error.
+ */
+export async function* jsonLines<T>(chunks: AsyncIterable<string> | Iterable<string>, torn = false): AsyncIterable<T> {
+  let rest = "", pending: string | undefined;
+  const parse = (line: string, last: boolean): T[] => {
+    try { return [JSON.parse(line)]; }
+    catch (error) { if (torn && last) return []; throw new Error(`Corrupt append log record: ${(error as Error).message}`); }
+  };
+  for await (const chunk of chunks) {
+    const lines = (rest + chunk).split("\n");
+    rest = lines.pop()!;
+    for (const line of lines) {
+      if (!line) continue;
+      if (pending !== undefined) yield* parse(pending, false);
+      pending = line;
+    }
+  }
+  if (rest) { if (pending !== undefined) yield* parse(pending, false); pending = rest; }
+  if (pending !== undefined) yield* parse(pending, true);
+}
+
+/** The items of the JSON array `chunks` holds (text in any pieces), one at a time: memory holds one item and a chunk. */
+export async function* jsonArrayItems<T>(chunks: AsyncIterable<string> | Iterable<string>): AsyncIterable<T> {
+  let depth = 0, inString = false, escaped = false, item = "", done = false;
+  for await (const chunk of chunks) {
+    if (done) { if (chunk.trim()) throw new Error("Text after a JSON array"); continue; }
+    let from = depth >= 1 ? 0 : -1;
+    for (let index = 0; index < chunk.length; index++) {
+      const code = chunk.charCodeAt(index);
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (code === 92) escaped = true;
+        else if (code === 34) inString = false;
+        continue;
+      }
+      if (code === 34) inString = true;
+      else if (code === 91 || code === 123) {
+        if (++depth === 1) { if (code !== 91) throw new Error("Not a JSON array"); from = index + 1; item = ""; }
+      } else if (code === 93 || code === 125) {
+        if (--depth === 0) {
+          item += chunk.slice(from, index);
+          if (item.trim()) yield JSON.parse(item);
+          item = ""; from = -1; done = true;
+        }
+      } else if (code === 44 && depth === 1) {
+        yield JSON.parse(item + chunk.slice(from, index));
+        item = ""; from = index + 1;
+      }
+    }
+    if (from >= 0 && depth >= 1) item += chunk.slice(from);
+  }
+  if (!done) throw new Error("A JSON array ends early");
+}
+
 export function fileAppendLog<T>(path: string): AppendLog<T> {
   let buffer: string[] = [];
   let effects: CommitEffect[] = [];
@@ -122,6 +183,12 @@ export function fileAppendLog<T>(path: string): AppendLog<T> {
         }
       }
       return records;
+    },
+    async *records() {
+      let stream;
+      try { stream = (await open(path, "r")).createReadStream({ encoding: "utf8", highWaterMark: 1024 * 1024 }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+      yield* jsonLines<T>(stream as AsyncIterable<string>, true);
     },
     append(record, effect) {
       if (closed) throw new Error("Append log closed");
