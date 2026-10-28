@@ -6,7 +6,7 @@ import { convertToLlm, createCompactionSummaryMessage } from "../pi-harness/mess
 import { BASE_ADDRESS, baseWrites, JournalHistory } from "./history.ts";
 import { currentSystemMessage, keptTail, RESET_KEEP_MAX } from "./reset.ts";
 import { HostJournal } from "./host-journal.ts";
-import { legacyHistory, recordsHistory, retiredRecords, type RetiredRecord } from "./retired-host.ts";
+import { HistoryWindow, legacyHistory, recordsHistory, retiredRecords, streamRetiredRecords, type RetiredRecord } from "./retired-host.ts";
 import { contextWrites, SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
 import { commitTo } from "./storage.ts";
 
@@ -15,9 +15,9 @@ import { commitTo } from "./storage.ts";
  * before it in the history index), once, with the readers of those formats (retired-host.ts), so they can then be
  * deleted. `POST /v1/operations/legacy-migrate` runs it for each agent legacy coverage finds (src/legacy-migrate.ts).
  *
- * - `host_transcript`: a host transcript no release retired. Retired as its first load would (`HostJournal.retire`):
- *   the settled history before the base indexed from the host's records, then the base and the host document retired.
- *   Pi's context is kept: it was Pi's own.
+ * - `host_transcript`: a host transcript no release retired. Retired as its first load would (`HostJournal.retire`),
+ *   its records streamed (`retireStreamed`: memory bounded whatever its size): the settled history before the base
+ *   indexed from the host's records, then the base and the host document retired. Pi's context is kept: it was Pi's own.
  * - `not_on_pi`: Pi storage without a journal history (an import before #322 never adopted, or a session an earlier
  *   release rolled back to the legacy engine). Its history is what the legacy reads gave (`legacyHistory`: the legacy
  *   log's records, then Pi's messages past the newest they name), indexed whole; then, in one commit, a base after it, a
@@ -46,12 +46,19 @@ export type LegacyConversion = {
   keptMessages?: number;
 };
 export class LegacyReview extends Error { readonly code = "review"; }
+/** A conversion that would read the whole history into memory, of an agent whose stored history is past `maxBytes`. */
+export class LegacyTooLarge extends Error { readonly code = "too_large"; }
 
 export interface LegacyConvertOptions {
   /** The session's Pi storage, under its owner's claim; undefined when it has none. */
   storage?: Storage;
-  /** The session's legacy log: its records, and whether it is empty. */
-  legacy: { read(): Promise<RetiredRecord[]>; empty(): Promise<boolean> };
+  /** The session's legacy log: its records (all, or streamed), and whether it is empty. */
+  legacy: { read(): Promise<RetiredRecord[]>; records?(): AsyncIterable<RetiredRecord>; empty(): Promise<boolean> };
+  /**
+   * Whether the agent's stored history is past the most a conversion may read into memory. A host transcript is
+   * retired streaming (memory bounded whatever its size), so this refuses only the other kinds (`LegacyTooLarge`).
+   */
+  tooLarge?: boolean;
   /** Where the history index ends, and a write of messages (from `from`, where `turns` begin) to it: where it ends then. */
   indexed: number;
   index(from: number, messages: AgentMessage[], turns: number[]): Promise<number>;
@@ -91,6 +98,50 @@ async function indexRest(options: LegacyConvertOptions, history: { messages: Age
   return indexed;
 }
 
+/** Messages a streamed retirement holds before it writes them to the history index. */
+export const STREAM_CHUNK_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Retire a host transcript as `HostJournal.retire` does, but with memory bounded whatever the history's size: the
+ * host's records (the legacy log's first) are streamed through a `HistoryWindow`, and the settled messages before the
+ * base the index lacks are written to it as they pass, STREAM_CHUNK_BYTES at a time, from where it ends (`indexed`), so
+ * a retirement stopped halfway goes on from there. The running turn's messages before the base (`kept`) are collected
+ * as they pass. Then the same single commit (`HostJournal.retire`, which finds nothing left to read). A first pass finds
+ * the last reset, which replaces everything before it, so the window starts there.
+ */
+async function retireStreamed(journal: Storage, options: LegacyConvertOptions): Promise<LegacyConversion> {
+  const plan = await HostJournal.retirementPlan(journal);
+  if (!plan) throw new Error("The host transcript was not retired");
+  const { base, settled, keptFrom } = plan;
+  let indexed = options.indexed;
+  let kept: AgentMessage[] | undefined;
+  if (indexed < settled || keptFrom !== undefined) {
+    const legacy = options.legacy;
+    const records = () => streamRetiredRecords(journal, () => legacy.records ? legacy.records() : (async function* () { yield* await legacy.read(); })());
+    let count = 0, reset = 0;
+    for await (const record of records()) { if (record.t === "reset") reset = count; count++; }
+    if (keptFrom !== undefined) kept = [];
+    const window = new HistoryWindow(async (from, messages, turns) => {
+      if (kept) kept.push(...messages.slice(Math.max(0, keptFrom! - from)));
+      const start = Math.max(from, indexed), end = Math.min(from + messages.length, settled);
+      if (start >= end) return;
+      if (!options.dryRun) {
+        const to = await options.index(start, messages.slice(start - from, end - from), turns);
+        if (to < end) throw new Error(`The history index ends at ${to}, not ${end}`);
+      }
+      indexed = end;
+    }, STREAM_CHUNK_BYTES);
+    let position = 0;
+    for await (const record of records()) if (position++ >= reset) await window.apply(record);
+    await window.flush(window.total);
+    if (keptFrom !== undefined && window.total !== base.total) throw new Error(`The host's records hold ${window.total} messages, its snapshot ${base.total}`);
+    if (window.total < settled) throw new Error(`The host's records hold ${window.total} messages, before its base ${settled}`);
+  }
+  const retired = await HostJournal.retire(journal, { indexed, ...(kept ? { kept } : {}), dryRun: options.dryRun });
+  if (!retired) throw new Error("The host transcript was not retired");
+  return { kind: "host_transcript", messages: retired.total, indexedFrom: options.indexed, indexedTo: Math.max(indexed, retired.indexed ?? 0) };
+}
+
 /** Convert one agent's legacy history (see `LegacyKind`); undefined when it is current. */
 export async function convertLegacy(options: LegacyConvertOptions): Promise<LegacyConversion | undefined> {
   const { storage, now = Date.now() } = options;
@@ -98,6 +149,7 @@ export async function convertLegacy(options: LegacyConvertOptions): Promise<Lega
   if (!journal) {
     // No journal (none, or storage a refused start opened and left empty): a legacy log is the whole history.
     if (await options.legacy.empty()) return undefined;
+    if (options.tooLarge) throw new LegacyTooLarge("A legacy log's conversion reads its whole history into memory");
     const history = recordsHistory(await options.legacy.read());
     const indexedTo = await indexRest(options, history);
     const { model, kept } = checkpoint(history.messages, undefined, options.limit, now);
@@ -105,16 +157,13 @@ export async function convertLegacy(options: LegacyConvertOptions): Promise<Lega
     return { kind: "legacy_log", messages: history.messages.length, indexedFrom: options.indexed, indexedTo, keptMessages: kept };
   }
   const host = await JournalHistory.snapshotBase(journal);
-  if (host?.enabled) {
-    const retired = await HostJournal.retire(journal, { indexed: options.indexed, index: options.index, legacy: () => options.legacy.read(), dryRun: options.dryRun });
-    if (!retired) throw new Error("The host transcript was not retired");
-    return { kind: "host_transcript", messages: retired.total, indexedFrom: options.indexed, indexedTo: retired.indexed ?? options.indexed };
-  }
+  if (host?.enabled) return retireStreamed(journal, options);
   const rolledBack = host && host.value.retired !== "journal" ? host : undefined;
   const history = await JournalHistory.open(journal);
   if (history) {
     if (rolledBack) throw new LegacyReview("A rollback disabled this session's host document after its journal had a base; its history is in neither format alone");
     if (history.heldFrom > options.indexed) {
+      if (options.tooLarge) throw new LegacyTooLarge("Filling the index before the base reads the host's records into memory");
       // Read as history reads read them: the retired host's records, its legacy log first for an archive left there.
       const records = await retiredRecords(journal, () => options.legacy.read(), true);
       if (!records) throw new LegacyReview(`The history index ends at ${options.indexed}, before the journal's base ${history.heldFrom}, and no host records hold the rest (reclaimed)`);
@@ -130,6 +179,7 @@ export async function convertLegacy(options: LegacyConvertOptions): Promise<Lega
   }
   // No journal history: what the legacy reads gave, from the legacy log, then Pi's messages past it. With no legacy log
   // they gave no history at all, though the journal may hold an import's archive: a person decides.
+  if (options.tooLarge) throw new LegacyTooLarge("A journal without journal history is converted with its whole history in memory");
   const records = await options.legacy.read();
   if (!records.length) throw new LegacyReview("This session's journal has no history of its own and its legacy log is empty");
   const old = await legacyHistory(journal, records);

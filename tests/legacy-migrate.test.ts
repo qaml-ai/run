@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId } from "@earendil-works/pi-durable";
-import { fauxAssistantMessage, type Api, type Model } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall, type Api, type Model } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { fileStorage } from "../shared/storage.ts";
 import { Accounts } from "../src/accounts.ts";
@@ -21,7 +21,7 @@ import { legacyCoverage, legacyLogLister } from "../src/legacy-coverage.ts";
 import { LEGACY_AGENT_CODES, legacyMigrate, LegacyMigrateCursorError, type LegacyAgentResult } from "../src/legacy-migrate.ts";
 import { Ownership } from "../src/ownership.ts";
 import { Passwords } from "../src/passwords.ts";
-import { legacyHistory, recordsHistory } from "../src/pi-durable/retired-host.ts";
+import { HistoryWindow, legacyHistory, recordsHistory } from "../src/pi-durable/retired-host.ts";
 import { HostJournal } from "../src/pi-durable/host-journal.ts";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
@@ -159,9 +159,17 @@ async function legacyAgents(rt: Runtime) {
   await rt.row(loaded);
   await hostTranscriptSession(rt.location(loaded), turn("loaded", "here"));
 
+  // Large, and rolled back: its conversion reads its whole history into memory, so maxBytes bounds it.
   const large = id("large");
   await rt.row(large);
   await hostTranscriptSession(rt.location(large), turn("large", "x".repeat(200_000)));
+  {
+    const storage = await openPiStorage(rt.location(large));
+    const log = rt.legacyLog(large);
+    await rollBack(storage, log);
+    await log.close();
+    await storage.close(context);
+  }
 
   return { expected, host, rolled, pre322, logOnly, short, busy, loaded, large };
 }
@@ -386,6 +394,63 @@ test("no conversion on a node past its memory limit; a cursor's maxBytes stays w
   const walk = (cursor: string) => legacyMigrate(db, { cursor, lister: async () => [], migrate: async agent => ({ agent, code: "current" }) });
   for (const maxBytes of [0, -1, 65 * 1024 * 1024, Number.MAX_SAFE_INTEGER]) await assert.rejects(walk(forged(maxBytes)), LegacyMigrateCursorError, `maxBytes ${maxBytes}`);
   assert.equal((await walk(forged(1024))).maxBytes, 1024);
+});
+
+test("a large host transcript, its archive in its journal or in its legacy log, is retired streaming whatever maxBytes says, its history the same", { timeout: 300_000 }, async t => {
+  const rt = await runtime(t);
+  // About 20 MB of history: 250 turns, a retraction among them, and a turn still running at the end (its calls open).
+  const records: TranscriptRecord[] = [];
+  for (let index = 0; index < 250; index++) {
+    records.push({ t: "turn", active: true }, { t: "message", message: user(`question ${index}`, `req-${index}`) });
+    if (index === 100) records.push({ t: "message", message: fauxAssistantMessage("cut short", { stopReason: "aborted" }) }, { t: "retract" });
+    records.push({ t: "message", message: fauxAssistantMessage(`answer ${index} ${"y".repeat(80_000)}`) }, { t: "turn", active: false });
+  }
+  records.push({ t: "turn", active: true }, { t: "message", message: user("still running") }, { t: "message", message: fauxAssistantMessage(fauxToolCall("lookup", {}, { id: "open" }), { stopReason: "toolUse" }) });
+  const inJournal = id("large-journal"), inLog = id("large-log");
+  for (const agent of [inJournal, inLog]) await rt.row(agent);
+  await hostTranscriptSession(rt.location(inJournal), records);
+  const log = rt.legacyLog(inLog);
+  await hostTranscriptSession(rt.location(inLog), records, { legacy: log });
+  await log.close();
+  for (const agent of [inJournal, inLog]) {
+    const before = (await rt.sessions.agentHistory(agent, TENANT))!.messages;
+    assert.deepEqual(before, historyOf(records), "the legacy readers' history");
+    const result = await rt.sessions.migrateLegacy(agent, { dryRun: false, maxBytes: 1024 * 1024 });
+    assert.deepEqual([result.code, result.kind, result.messages], ["migrated", "host_transcript", 502]);
+    assert.ok(result.bytes! > 16 * 1024 * 1024, "past maxBytes, and converted all the same");
+    assert.deepEqual((await rt.sessions.agentHistory(agent, TENANT))!.messages, before, `history of ${agent} after`);
+    // The settled history went to the index a chunk at a time, up to the running turn.
+    const chunks = (await rt.db.query<{ count: number; bytes: number }>("select count, bytes from agent_history_chunks where agent = $1", [agent])).rows;
+    assert.equal(await rt.index.indexed(agent), 500);
+    assert.ok(chunks.length >= 16 && chunks.every(chunk => chunk.bytes <= 2 * 1024 * 1024), `${chunks.length} chunks`);
+    assert.equal((await rt.sessions.migrateLegacy(agent, { dryRun: false, maxBytes: 1024 * 1024 })).code, "current");
+  }
+});
+
+test("a history window holds only what is not settled: the latest turn, at most a bound past it", async () => {
+  const records: TranscriptRecord[] = [{ t: "reset", messages: [user("imported")] }];
+  for (let index = 0; index < 40; index++) records.push({ t: "turn", active: true }, { t: "message", message: user(`q${index}`) }, { t: "message", message: fauxAssistantMessage("z".repeat(10_000)) }, { t: "turn", active: false });
+  records.push({ t: "turn", active: true }, { t: "message", message: user("last") }, { t: "message", message: fauxAssistantMessage("wrong") }, { t: "retract" }, { t: "message", message: fauxAssistantMessage("right") });
+  const settled: { from: number; messages: AgentMessage[]; turns: number[] }[] = [];
+  let held = 0;
+  const window = new HistoryWindow(async (from, messages, turns) => { settled.push({ from, messages, turns }); }, 50_000);
+  for (const record of records) {
+    await window.apply(record as never);
+    held = Math.max(held, window.total - window.from);
+  }
+  await window.flush(window.total);
+  const expected = recordsHistory(records as never);
+  assert.deepEqual(settled.flatMap(chunk => chunk.messages), expected.messages, "every message, in order, once");
+  assert.deepEqual(settled.flatMap(chunk => chunk.turns), expected.turns);
+  assert.ok(settled.length >= 8, `${settled.length} settles`);
+  assert.ok(held <= 12, `at most ${held} messages held`);
+  // A retraction that would take back a settled message, and a reset after one, fail rather than diverge.
+  const strict = new HistoryWindow(async () => {}, 1);
+  await strict.apply({ t: "message", message: user("a") });
+  await strict.apply({ t: "turn", active: true });
+  await strict.apply({ t: "message", message: user("b") });
+  await assert.rejects(strict.apply({ t: "retract" }).then(() => strict.apply({ t: "retract" })), /reaches back past/);
+  await assert.rejects(strict.apply({ t: "reset", messages: [] }), /reset after/);
 });
 
 test("POST /v1/operations/legacy-migrate is the platform operator's alone, a dry run by default", async t => {

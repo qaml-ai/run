@@ -119,3 +119,86 @@ export async function legacyHistory(storage: Pick<Storage, "scanEntries">, recor
   } while (cursor);
   return { messages: history.messages, turns: history.turns.filter(turn => turn < history.messages.length) };
 }
+
+/**
+ * `retiredRecords`, streamed: the records one at a time, the legacy log's first (`legacy`, streamed too), each archive
+ * block's in turn, and a host record's message from the native entry it names. Memory holds a page of entries and the
+ * native entries since the newest one a record named: an older one is let go, as records name Pi's messages in the
+ * order Pi committed them (a record naming one let go fails the read). Nothing when the session has no enabled host
+ * generation.
+ */
+export async function* streamRetiredRecords(storage: Pick<Storage, "scanEntries">, legacy?: () => AsyncIterable<RetiredRecord>): AsyncIterable<RetiredRecord> {
+  const bootstrap = await generation(storage);
+  if (!bootstrap) return;
+  if ((bootstrap.data as { archive?: string } | undefined)?.archive === "legacy-log") {
+    if (!legacy) throw new Error("This session's history before its import is in its legacy log, which this read was not given");
+    yield* legacy();
+  }
+  const pending = new Map<number, ReturnType<typeof durableEntryMessages>>();
+  let cursor: Cursor | undefined;
+  do {
+    const page = await storage.scanEntries({ conversationId, minEntryId: bootstrap.id as EntryId, order: "ascending" }, 64, cursor, context);
+    for (const entry of page.items) {
+      if (entry.kind === ARCHIVE) yield* (entry.data as { records: RetiredRecord[] }).records;
+      else if (entry.kind === RECORD) {
+        const data = entry.data as { pi?: { entryId: number; index: number }; record?: RetiredRecord };
+        if (data.pi) {
+          const message = pending.get(data.pi.entryId)?.find(item => item.cursor.index === data.pi!.index)?.message;
+          if (!message) throw new Error("Native transcript references a missing message");
+          for (const id of pending.keys()) if (id < data.pi.entryId) pending.delete(id);
+          yield { t: "message", message, pi: data.pi };
+        } else if (data.record) yield data.record;
+      } else {
+        const messages = durableEntryMessages(entry);
+        if (messages.length) pending.set(entry.id, messages);
+      }
+    }
+    cursor = page.next;
+  } while (cursor);
+}
+
+/**
+ * `recordsHistory` over streamed records, holding only the messages not yet settled: those from the latest turn's start
+ * on, or the last WINDOW_MESSAGES of a longer turn. Settled messages go to `settle` in order once at least `bytes` of
+ * them wait, with where turns began among them. A retraction that would reach back past them fails, and so does a reset
+ * after any (callers start from the last reset).
+ */
+export class HistoryWindow {
+  static readonly WINDOW_MESSAGES = 256;
+  /** Messages in the history so far, and where the held ones (not yet settled) begin. */
+  total = 0;
+  from = 0;
+  private held: AgentMessage[] = [];
+  private sizes: number[] = [];
+  private turns: number[] = [];
+  private readonly settle: (from: number, messages: AgentMessage[], turns: number[]) => Promise<void>;
+  private readonly bytes: number;
+
+  constructor(settle: (from: number, messages: AgentMessage[], turns: number[]) => Promise<void>, bytes: number) { this.settle = settle; this.bytes = bytes; }
+
+  async apply(record: RetiredRecord) {
+    if (record.t === "message") { this.held.push(record.message); this.sizes.push(JSON.stringify(record.message).length); this.total++; }
+    else if (record.t === "retract") {
+      if (this.total <= this.from) throw new Error(`A retraction reaches back past message ${this.from}, which was settled`);
+      this.held.pop(); this.sizes.pop(); this.total--;
+      this.turns = this.turns.filter(turn => turn <= this.total);
+    } else if (record.t === "turn" && record.active && this.turns.at(-1) !== this.total) this.turns.push(this.total);
+    else if (record.t === "reset") {
+      if (this.from) throw new Error("A reset after messages were settled");
+      this.held = [...record.messages]; this.sizes = this.held.map(message => JSON.stringify(message).length); this.total = this.held.length;
+      this.turns = userTurns(0, this.held);
+    }
+    if (this.sizes.reduce((sum, size) => sum + size, 0) >= this.bytes) {
+      await this.flush(Math.max(this.turns.findLast(turn => turn > this.from) ?? this.from, this.total - HistoryWindow.WINDOW_MESSAGES));
+    }
+  }
+
+  /** Settle the held messages before `end` (all of them: `total`). */
+  async flush(end: number) {
+    if (end <= this.from) return;
+    const count = end - this.from;
+    await this.settle(this.from, this.held.slice(0, count), this.turns.filter(turn => turn >= this.from && turn < end));
+    this.held = this.held.slice(count); this.sizes = this.sizes.slice(count); this.from = end;
+    this.turns = this.turns.filter(turn => turn >= end);
+  }
+}

@@ -64,6 +64,15 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
         if (text === undefined) throw new Error(`Missing log object ${directory}${name}`);
         return text;
       },
+      async *stream(name) {
+        let body;
+        try { body = (await client.send(new GetObjectCommand({ Bucket: bucket, Key: directory + name }))).Body as AsyncIterable<Uint8Array>; }
+        catch (error) { if (missing(error)) throw new Error(`Missing log object ${directory}${name}`); throw error; }
+        const decoder = new TextDecoder("utf-8");
+        for await (const bytes of body) yield decoder.decode(bytes, { stream: true });
+        const rest = decoder.decode();
+        if (rest) yield rest;
+      },
       async create(name, body) { await create(directory + name, body, `${key}/${name}`); },
       async remove(names) {
         for (let index = 0; index < names.length; index += 1000) {

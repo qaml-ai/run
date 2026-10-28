@@ -198,7 +198,7 @@ export class AgentSupervisor {
    * `dryRun` reads and checks everything and writes nothing (a session with no Pi storage is not opened, as opening it
    * would make it). Undefined when its history is current. Its legacy log is read, never written.
    */
-  async migrateLegacy(id: string, claim: Claim | undefined, options: { index: NonNullable<ToolBridge["history"]>; dryRun?: boolean; limit: number; now?: number }): Promise<LegacyConversion | undefined> {
+  async migrateLegacy(id: string, claim: Claim | undefined, options: { index: NonNullable<ToolBridge["history"]>; dryRun?: boolean; limit: number; now?: number; tooLarge?: boolean }): Promise<LegacyConversion | undefined> {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
     await this.stopping.get(id);
     await this.closing.get(id);
@@ -209,8 +209,8 @@ export class AgentSupervisor {
     try {
       const indexed = (await options.index.indexed()) ?? 0;
       return await convertLegacy({
-        ...(storage ? { storage } : {}), indexed, dryRun: options.dryRun, limit: options.limit, ...(options.now ? { now: options.now } : {}),
-        legacy: { read: () => legacy.read(), empty: async () => (await legacy.empty?.()) === true },
+        ...(storage ? { storage } : {}), indexed, dryRun: options.dryRun, limit: options.limit, ...(options.now ? { now: options.now } : {}), tooLarge: options.tooLarge,
+        legacy: { read: () => legacy.read(), ...(legacy.records ? { records: () => legacy.records!() } : {}), empty: async () => (await legacy.empty?.()) === true },
         index: (from, messages, turns) => writeChunks(options.index, from, messages, turns),
         seed: async start => { idle(); await this.seed(id, start, claim); },
       });
