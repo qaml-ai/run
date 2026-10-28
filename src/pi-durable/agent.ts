@@ -163,15 +163,6 @@ function summaryChunks(messages: Message[], window: number, maxTokens: number): 
     `${before === undefined ? "" : `<previous-summary>\n${before.slice(0, Math.floor(Math.max(maxTokens, 1_000) * 2.5))}\n</previous-summary>\n\nThe summary above covers the conversation before this part. Summarize both together.\n\n`}<conversation>\n${content}\n</conversation>\n\n${prompt}` }] } as Message]);
 }
 
-/**
- * Whether the agent's Pi storage holds a generation that has not ended and no one stopped: a run its node was lost in
- * (one a closing host aborted ends as an abort).
- */
-export async function interruptedGeneration(storage: Pick<Storage, "scanTasks">) {
-  const page = await storage.scanTasks({ conversationId: 1 as ConversationId, kind: GenerationTask.definition.name, abortRequested: false, order: "descending" }, 8, undefined, context);
-  return page.items.some(task => task.state.status !== "terminal");
-}
-
 export async function recoverDurableMessages(storage: Pick<Storage, "scanEntries">, conversationId: ConversationId | number, after?: DurableCursor): Promise<DurableMessage[]> {
   const messages: DurableMessage[] = [];
   let cursor;
@@ -695,15 +686,6 @@ export class DurableAgent {
   async recoverMessages(after?: DurableCursor) { return recoverDurableMessages(this.options.durable.storage, this.conversation.id, after); }
 
   /** Abort handlers settle unknown work; opening itself never dispatches a task. */
-  /**
-   * Resume (`continue`) the run Pi holds from a lost node, from its checkpoint: a request in flight is made again (the
-   * partial response it left is not kept: the model is asked again), a call that was running is answered as interrupted
-   * unless its tool may run again (`replay: "safe"`).
-   */
-  async resumeInterruptedRun() {
-    await this.conversation.commit(async tx => { delete (await tx.doc(LiveDoc, this.conversation.id)).generation?.message; }, context);
-  }
-
   async discardInterruptedRun() {
     const listeners = [...this.listeners]; this.listeners.clear();
     await this.conversation.abort(context);
