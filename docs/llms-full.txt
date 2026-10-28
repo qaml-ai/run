@@ -2145,9 +2145,9 @@ A run is as durable as an agent's run, within itself. If the node running it
 dies, or a deploy retires it, the run goes on on another node from its last
 completed step:
 
-- A node that retires (a deploy) hands the run to another node at once, which
-  goes on where it was: a model request is made again, and a tool call in flight
-  is answered as interrupted (`handoffs` lists them).
+- A node that retires (a deploy) lets the step in flight finish, then hands the
+  run to another node at that step boundary. Nothing is lost and nothing runs
+  twice (`handoffs` lists them).
 - A node that dies: another node resumes the run from its transcript, at most
   two times by default (`resumes`; configurable with `AGENT_MAX_RESUMES`).
   The next loss fails it with `resume_limit`. A tool call that completed is not made again. A model call
@@ -8185,7 +8185,7 @@ token does not receive unless it lists them in `events`.
 | `turn_start` | | a model round starts (one response and its tool calls) |
 | `turn_end` | `message`, `toolResults` | a round ends |
 | `agent_end` | `messages` | the model loop ends: the messages it added |
-| `turn_resumed` | `reason`, `handoff?` | the node running this turn was lost; it continues here, with unresolved tool calls marked unknown. With `handoff` (`retire`, `drain`, `memory`): the node left the cluster, and the turn continues here where it was (a model request is made again; a tool call in flight is answered as interrupted, or made again when safe to repeat); a `turn_opened` follows, and no `agent_end` came before it (`requestId` is `""`) |
+| `turn_resumed` | `reason`, `handoff?` | the node running this turn was lost; it continues here, with unresolved tool calls marked unknown. With `handoff` (`retire`, `drain`): the node left the cluster at a step boundary, and the turn continues here with nothing lost; a `turn_opened` follows, and no `agent_end` came before it (`requestId` is `""`) |
 | `turn_recovered` | `reason` | the runtime restarted during a turn; unresolved tool calls were marked unknown (`requestId` is `""`) |
 
 ### Messages

@@ -70,7 +70,7 @@ const STOPPED_NOTICE = { stopped: "aborted", message: "The agent was stopped: th
 
 /** A running run's active time is reported at least this often. */
 const ACTIVE_REPORT_MS = 60_000;
-/** Resumes of one run's turn before it fails with resume_limit, so a turn that kills its node cannot loop. Hand-offs of a node leaving the cluster are not resumes. */
+/** Resumes of one run's turn before it fails with resume_limit, so a turn that kills its node cannot loop. Hand-offs at a step boundary are not resumes. */
 export const MAX_RESUMES = 2;
 /**
  * How many times a run's start (its busy slot, its agent's process, its run events' setting) is tried when the
@@ -99,7 +99,7 @@ export function loadDecision(request: RequestRecord, maxResumes = MAX_RESUMES): 
   if (request.abortedAt !== undefined) return "aborted";
   if (request.params !== undefined) return "queued";
   // Counted when the resumed run begins (see `run`), so a load that fails, or hands the agent back, spends none.
-  // A turn a leaving node handed off is not a resume: it always goes on.
+  // A turn handed off at a step boundary lost nothing and is not a resume: it always goes on.
   if (resumable(request)) return request.handedOff || (request.resumes ?? 0) < maxResumes ? "resume" : "resume_limit";
   return "uncertain";
 }
@@ -165,9 +165,9 @@ export class ClientSessions {
   /** Set while the node drains or retires: runs that have not begun stay queued for the next owner. */
   draining = false;
   private releasing = false;
-  /** Set while this node leaves the cluster with a peer to take its work (`handOffTurns`). */
+  /** Set while this node leaves the cluster with a peer to take its work (`handOffTurns`): running turns stop at their next step boundary. */
   private handingOff?: { reason: "retire" | "drain" | "memory"; since: number };
-  /** Agents being given up as this node leaves (`handOffAll`): in flight until they are released. */
+  /** Agents being given up as this node leaves (`park`, `handOffAll`): in flight until they are released. */
   private readonly leavingWork = new Set<Promise<void>>();
   /** Stateless runs' sessions being made here, whose slots are reserved before their header is: not the tenant's agents. */
   private readonly creatingRuns = new Set<string>();
@@ -823,7 +823,8 @@ export class ClientSessions {
           const payer = spend.modelPayer(this.spendContext, session, runningRun(session));
           const broke = payer && await this.options.endUsers?.refusal(session.header.tenant, payer.id, payer.bucket);
           if (broke) return { stopped: "spend_limit" as const, message: broke.message, limit: "end_user" as const, code: END_USER_CREDIT, reason: broke.reason, bucket: broke.bucket, endUser: broke.endUser };
-          return undefined;
+          // This node is leaving: the turn stops at this step boundary, and its next owner continues it (`park`).
+          return this.handingOff ? { stopped: "handoff" as const, message: `This node is leaving the cluster (${this.handingOff.reason}); the turn continues on another` } : undefined;
         },
         call: (name, args, signal, context) => tools.callTool(this.toolsContext, session, { name, args, signal, ...context }),
         file: ref => tools.fileData(this.toolsContext, session, ref),
@@ -864,9 +865,9 @@ export class ClientSessions {
       }
       session.handoff = result.resume;
       session.ended = result.ended;
-      // A turn a leaving node handed off simply goes on here.
+      // A turn handed off at a step boundary lost nothing: it simply goes on here.
       const handed = [...session.resuming].map(id => session.requests.get(id)).find(record => record?.handedOff);
-      if (result.resume && "continue" in result.resume && handed) this.publish(session, { type: "event", requestId: "", event: { type: "turn_resumed", handoff: handed.handoffs?.at(-1)?.reason ?? "retire", reason: "The node running this turn left the cluster; it continues here where it was" } });
+      if (result.resume && "continue" in result.resume && handed) this.publish(session, { type: "event", requestId: "", event: { type: "turn_resumed", handoff: handed.handoffs?.at(-1)?.reason ?? "retire", reason: "The node running this turn left the cluster; it continues here from the step it finished" } });
       else if (result.resume && "continue" in result.resume) this.publish(session, { type: "event", requestId: "", event: { type: "turn_resumed", reason: "The node running this turn was lost; it continues here, with unresolved tool calls marked unknown" } });
       else if (result.recovered) this.publish(session, { type: "event", requestId: "", event: { type: "turn_recovered", reason: "The runtime restarted during a turn; unresolved tool calls were marked unknown" } });
       // Starting can take longer than the idle timeout; the agent is fresh, not idle.
@@ -2164,7 +2165,7 @@ export class ClientSessions {
         // params are the runtime's, and kept: its next owner lands it (`resume`).
         const { params: queuedParams, handedOff, carried, ...rest } = session.requests.get(record.id)!;
         const notice = record.method === "prompt" && (queuedParams as { notice?: unknown } | undefined)?.notice !== undefined ? queuedParams : undefined;
-        // A turn a leaving node handed off goes on as it was: not a resume, and its time limit counts from its first begin.
+        // A turn handed off at a step boundary goes on as it was: not a resume, and its time limit counts from its first begin.
         continued = session.resuming.has(record.id) && handedOff ? { handedOff, carried } : undefined;
         record = this.upsertRequest(session, { ...rest, ...notice ? { notice } : {}, began: continued && rest.began ? rest.began : Date.now(), ...(session.resuming.has(record.id) && !continued ? { resumes: (rest.resumes ?? 0) + 1 } : {}) });
         // Code has no effect outside its sandbox until it calls a tool, and every tool call
@@ -2247,6 +2248,8 @@ export class ClientSessions {
     session.beginning = undefined;
     // Cut off here as this node leaves (`handOffAll`): the run stays open for the next owner.
     if (this.closed || session.fault || session.leaving || session.requests.get(record.id)?.state !== "running") return;
+    // Stopped at a step boundary as this node leaves: the next owner continues it.
+    if (RUN_METHODS.includes(record.method) && (value.result as { handedOff?: unknown } | undefined)?.handedOff) return this.park(session, record, value.result as Record<string, unknown>);
     // The slot is free before the run is seen to end (its record, its response, its event): a client that starts the next
     // run on seeing this one end is never refused for it. Released here, the agent is no longer counted for this run.
     if (RUN_METHODS.includes(record.method)) {
@@ -2625,41 +2628,46 @@ export class ClientSessions {
 
   /**
    * This node leaves the cluster, with a peer to take its work (`retire`: a newer deploy replaced it; `drain`: it was
-   * stopped; `memory`), or (undefined) stays after all. Every agent working here is given up at once (`handOffAll`): Pi
-   * closes mid-step without an abort, and the next owner's Pi goes on with the turn (a model request is made again, a
-   * call in flight answered as interrupted, or made again when safe to repeat). Queued runs and idle agents (one waiting
-   * on human input, say) move as `releaseIdle` gives them up.
+   * stopped), or (undefined) stays after all. While it leaves, each running turn finishes only the step it is in (the
+   * model call, or the tool calls of the latest response, all of them) and stops at that boundary, before its next model
+   * call (the host asks `runLimit` there); the agent is then handed off at once (`park`), and the next owner continues the
+   * turn from its transcript with nothing lost. Queued runs and idle agents (one waiting on human input, say) move as
+   * `releaseIdle` gives them up.
    */
   handOffTurns(reason: "retire" | "drain" | "memory" | undefined) {
-    if (!reason) { this.handingOff = undefined; return; }
+    if (!reason) {
+      this.handingOff = undefined;
+      for (const session of this.sessions.values()) session.handoffFrom = undefined;
+      return;
+    }
     if (this.handingOff) return;
-    this.handingOff = { reason, since: Date.now() };
-    void this.handOffAll(true).catch(error => console.error(JSON.stringify({ type: "handoff_failed", error: safeError(error) })));
+    const now = Date.now();
+    this.handingOff = { reason, since: now };
+    for (const session of this.sessions.values()) if (session.turn) session.handoffFrom = { at: now, step: session.step ?? "model" };
   }
 
   /**
-   * Give up every agent still working here, mid-step: their turns go on with the next owner (`leave`). With `turns`, only
-   * agents running a model turn and no code execution (which has no steps, and finishes here, up to the retire cap).
+   * Give up every agent still working here, mid-step: a retiring node at its cap (AGENT_RETIRE_MAX_MS), whose turns
+   * outlasted it. As a drain's end does: their turns resume on the next owner, with the calls they had in flight
+   * closed as of unknown outcome.
    */
-  async handOffAll(turns = false) {
-    const handed = (session: Session) => !turns || [...session.running.values()].some(request => request.began && resumable(request))
-      && ![...session.running.values()].some(request => request.began && request.method === "execute");
-    await Promise.all([...this.sessions.values()].filter(session => (this.working(session) || session.inflight) && handed(session)).map(session => this.leave(session)));
+  async handOffAll() {
+    await Promise.all([...this.sessions.values()].filter(session => this.working(session) || session.inflight).map(session => this.leave(session)));
   }
 
   /**
-   * The running turn's record as this node leaves (`leave`): marked handed off with what it gathered for its outcome so
-   * far (`carried`), for its next owner to take over (`takeOver`).
+   * A turn its agent stopped at a step boundary as this node leaves (`handOffTurns`): it stays open, marked handed off
+   * with what it gathered for its outcome so far, and the agent is given up at once, for a peer to continue the turn.
    */
-  private carry(session: Session) {
-    const record = [...session.running.values()].find(request => request.state === "running" && !session.resuming.has(request.id) && resumable(request)), id = record?.id;
-    if (!record || !id) return;
+  private async park(session: Session, record: RequestRecord, result: Record<string, unknown>) {
     const now = Date.now();
     const leaving = this.handingOff ?? { reason: "drain" as const, since: now };
-    const outputs = session.outputs;
+    const from = session.handoffFrom ?? { at: leaving.since, step: session.step ?? "tool" };
+    session.handoffFrom = undefined;
+    const id = record.id;
+    const listed = (key: string) => Array.isArray(result[key]) && (result[key] as unknown[]).length ? { [key]: result[key] } : {};
     const carried: Carried = {
-      ...outputs?.files.size ? { files: [...outputs.files.values()] } : {}, ...outputs?.presented.length ? { presented: outputs.presented } : {},
-      ...session.toolCalls?.length ? { toolCalls: session.toolCalls } : {}, ...session.toolErrors?.length ? { toolErrors: session.toolErrors } : {},
+      ...listed("files"), ...listed("presented"), ...listed("toolCalls"), ...listed("toolErrors"),
       ...(session.usage?.has(id) ? { usage: session.usage.get(id) } : {}),
       ...(session.childSpend?.has(id) ? { childSpend: session.childSpend.get(id) } : {}),
       ...(session.imageSpend?.has(id) ? { imageSpend: session.imageSpend.get(id) } : {}),
@@ -2667,11 +2675,25 @@ export class ClientSessions {
       ...(session.runLimits?.has(id) ? { spendLimit: session.runLimits.get(id) } : {}),
       ...(session.runCaps?.has(id) ? { runLimits: session.runCaps.get(id) } : {}),
     };
-    const { params: _params, ...rest } = record;
+    const { params: _params, ...rest } = session.requests.get(id)!;
     this.upsertRequest(session, {
-      ...rest, handedOff: { step: session.step ?? "model", boundaryWaitMs: 0, ...(this.options.ownership ? { from: this.options.ownership.node } : {}) },
+      ...rest, handedOff: { step: from.step, boundaryWaitMs: Math.max(0, now - from.at), ...(this.options.ownership ? { from: this.options.ownership.node } : {}) },
       handoffs: [...rest.handoffs ?? [], { reason: leaving.reason, at: now }].slice(-MAX_HANDOFFS_KEPT), ...(Object.keys(carried).length ? { carried } : {}),
     });
+    try { await this.commit(session, true); }
+    catch { return; /* Faulted: the next owner recovers the turn from storage, as after a crash. */ }
+    session.usage?.delete(id);
+    session.childSpend?.delete(id);
+    session.imageSpend?.delete(id);
+    session.decisionSpend?.delete(id);
+    session.runLimits?.delete(id);
+    session.runCaps?.delete(id);
+    session.turn = undefined;
+    session.partial = undefined;
+    // The run's span is its next owner's to end.
+    session.spans?.abandon("The turn was handed off to another node");
+    session.spans = undefined;
+    void this.leave(session);
   }
 
   /** A handed-off turn's next owner takes over what it had gathered for its outcome, and logs the hand-off (`turn_handed_off`). */
@@ -2704,8 +2726,6 @@ export class ClientSessions {
     if (session.leaving) return Promise.resolve();
     session.leaving = true;
     const work: Promise<void> = (async () => {
-      // What the turn gathered is taken before its run sees the stop and lets it go.
-      if (this.handingOff) this.carry(session);
       await this.supervisor.stop(session.header.id, { flush: false }).catch(() => {});
       try { await this.interrupt(session, "The runtime stopped during this request", true); }
       catch { /* Already faulted; the next load recovers conservatively from storage. */ }

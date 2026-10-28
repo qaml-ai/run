@@ -575,7 +575,7 @@ export const RequestRecord = z.object({
   suspension: z.string().optional().openapi({ description: "resume: the request whose turn waited on human input" }),
   metadata: z.record(z.string(), z.string()).optional().openapi({ description: "The metadata sent with the message" }),
   resumes: z.number().optional().openapi({ description: "Times a node resumed this run's turn after the node running it was lost (its calls in flight closed as of unknown outcome); default limit 2, configurable with AGENT_MAX_RESUMES" }),
-  handoffs: z.array(z.object({ reason: z.enum(["retire", "drain", "memory"]), at: z.number() })).optional().openapi({ description: "Times a node leaving the cluster (retire: a newer deploy replaced it; drain: it was stopped; memory: sustained memory pressure) handed this run's turn off, and the next owner went on with it where it was. Not resumes" }),
+  handoffs: z.array(z.object({ reason: z.enum(["retire", "drain", "memory"]), at: z.number() })).optional().openapi({ description: "Times a node leaving the cluster (retire: a newer deploy replaced it; drain: it was stopped; memory: sustained memory pressure) handed this run's turn off at a step boundary, and the next owner continued it with nothing lost. Not resumes" }),
   steeredInto: z.string().optional().openapi({ description: "A prompt with whileRunning: steer that a running turn took: that turn's request. This request completes as the turn takes the message; the turn's request has the turn's outcome (reply, output...)" }),
   steer: z.enum(["accepted", "queued"]).optional().openapi({ description: "A prompt with whileRunning: steer, as it was accepted: accepted, the running turn reads it after its current step; queued, no turn could take it, so it runs as a turn of its own" }),
   abortedAt: z.number().optional().openapi({ description: "When the agent was stopped while this run was going: it ends as aborted, and is never resumed elsewhere" }),
@@ -674,7 +674,7 @@ export const Run = z.object({
   endedAt: z.number().optional(),
   expiresAt: z.number().nullable().openapi({ description: "Once it ended: when its result, events and messages are deleted. null while it runs" }),
   resumes: z.number().optional().openapi({ description: "Times it was resumed after the node running it was lost (default limit 2, configurable with AGENT_MAX_RESUMES)" }),
-  handoffs: z.array(z.object({ reason: z.enum(["retire", "drain", "memory"]), at: z.number() })).optional().openapi({ description: "Times a node leaving the cluster handed it to another, which went on with it where it was" }),
+  handoffs: z.array(z.object({ reason: z.enum(["retire", "drain", "memory"]), at: z.number() })).optional().openapi({ description: "Times a node leaving the cluster handed it to another at a step boundary, with nothing lost" }),
 }).openapi("Run");
 export const Input = z.object({
   id: z.string(), agent: z.string(), tenant: z.string(),

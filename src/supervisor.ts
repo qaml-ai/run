@@ -549,8 +549,8 @@ export class AgentSupervisor {
   private get flushMs() { return this.options.historyFlushMs ?? HISTORY_FLUSH_MS; }
 
   private async halt(handle: Handle, flush: boolean) {
+    this.cancelTools(handle);
     if (handle.kind === "process") {
-      this.cancelTools(handle);
       // Its settled turns go to the history index first (the inline host does this as it is disposed).
       if (flush) await Promise.race([handle.rpc.request("historyFlush", {}), new Promise(resolve => setTimeout(resolve, this.flushMs).unref())]).catch(() => {});
       handle.rpc.close("Agent stopped");
@@ -558,11 +558,9 @@ export class AgentSupervisor {
       handle.child.kill("SIGKILL");
       await closed;
     } else {
-      // Callers see the same failure as a killed process; the host writes nothing more. Its tools are cancelled once Pi is
-      // closed (`dispose`), so a call in flight is the next owner's Pi's to settle, not a cancellation's error.
+      // Callers see the same failure as a killed process; the host writes nothing more.
       handle.stop(new Error("Agent stopped"));
       await handle.host.dispose(flush ? this.flushMs : 0);
-      this.cancelTools(handle);
     }
     await handle.legacy.close();
     await handle.durable?.close(BACKGROUND_CONTEXT);

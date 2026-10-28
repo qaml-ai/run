@@ -331,7 +331,7 @@ test("Pi input writes keep the whole message, as earlier readers take data.messa
   assert.deepEqual((await fake.agent.recoverMessages())[0].message, input);
 });
 
-test("Pi adapter asks again once in a resumed run whose model request a lost node left in flight (Pi ended it `interrupted`)", { timeout: 20_000 }, async () => {
+test("Pi adapter ends a resumed run whose model request a lost node left in flight, instead of sending it again", { timeout: 20_000 }, async () => {
   const { db } = await testDatabase(), sessionId = randomUUID();
   const open = () => openPiStorage({ sessionId, directory: "unused", db });
   let requests = 0;
@@ -350,17 +350,20 @@ test("Pi adapter asks again once in a resumed run whose model request a lost nod
     agents.push(first);
     void first.prompt(user("Go")).catch(() => {});
     while (requests < 1) await new Promise(resolve => setTimeout(resolve, 5));
-    // With Pi's retry off, the interrupted request is a failed attempt with none left: the run ends `interrupted`, and the
-    // adapter continues the conversation once, so the model is asked again.
-    const next = await fixture([answer("back")], {}, await open());
-    agents.push(next.agent);
-    await next.agent.continue();
-    assert.equal(requests, 1, "the lost node's request was not resent by Pi itself");
-    assert.equal(next.requests.length, 1, "asked again once");
-    assert.equal(next.agent.state.errorMessage, undefined);
+    // With Pi's retry off, the interrupted request is a failed attempt with none left: the run ends `interrupted`.
+    const next = await hanging(await open());
+    agents.push(next);
+    await next.continue();
+    assert.equal(requests, 1, "the interrupted request was not sent again");
+    assert.match(next.state.errorMessage ?? "", /host stopped while the model was answering/);
     const interrupted = reports.map(line => JSON.parse(line)).find(line => line.report === "task_interrupted");
     assert.equal(interrupted?.reason, "interrupted");
     assert.equal(interrupted?.task, "pi.generation");
+    // The conversation is free again: new input runs.
+    const fresh = await fixture([answer("back")], {}, await open());
+    agents.push(fresh.agent);
+    await fresh.agent.prompt(user("Again"));
+    assert.equal(fresh.agent.state.errorMessage, undefined);
   } finally {
     console.error = report;
     for (const agent of agents.reverse()) await agent.close(100).catch(() => {});

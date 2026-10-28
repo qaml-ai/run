@@ -37,7 +37,7 @@ test("a run handed to another node keeps its trace: each node exports the spans 
   const spans = receiver.spans.filter(span => span.traceId === trace.traceId);
   assert.equal(spans.filter(span => span.spanId === trace.spanId).length, 1, "the run's span is exported once");
   assert.equal(root.attributes["camelrun.run.status"], "completed");
-  assert.deepEqual(state.handoffs?.map((entry: { reason: string }) => entry.reason), ["drain"], "it was handed off");
+  assert.ok(Number(root.attributes["camelrun.run.resumes"]) >= 1, "it says it was resumed");
   // A's model call was cut off by its drain: exported by A as it shut down, under the same run span.
   const interrupted = spans.find(span => span.name.startsWith("chat") && span.attributes["error.type"] === "interrupted");
   assert.ok(interrupted, `A's interrupted model call: ${JSON.stringify(spans.map(span => span.name))}`);

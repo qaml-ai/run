@@ -245,26 +245,21 @@ test("the leading system message is the agent's first context, and a change foll
   assert.equal(seen[0].role, "system");
 });
 
-test("resume: a node closed mid-call leaves the run to Pi: a lost delegate call is made again, another call in flight is answered as unknown", async t => {
+test("resume: a lost delegate call is made again (it finds the child its call started), while other open calls are closed as unknown", async t => {
   const fake = await setup(t);
-  const running = Promise.withResolvers<void>();
-  let started = 0;
-  fake.respond(answer([fauxToolCall("fetch", {}, { id: "look" }), fauxToolCall("delegate", { task: "dig" }, { id: "dig" })], "toolUse"));
-  const first = await fake.start({ call: () => { if (++started === 2) running.resolve(); return new Promise(() => {}); } });
-  void first.host.handle("prompt", { text: "research both" }).catch(() => {});
-  await running.promise;
-  await first.host.dispose(0);
+  await fake.crashedTurn([user("research both"), answer([fauxToolCall("lookup", {}, { id: "look" }), fauxToolCall("delegate", { task: "dig" }, { id: "dig" })], "toolUse")]);
   const calls: string[] = [];
-  fake.respond(answer("Both done."));
   const { host, init } = await fake.start({ resume: true, call: name => { calls.push(name); return { agentId: "client_child", status: "completed", text: "the child's answer" }; } });
   assert.deepEqual(init.resume, { continue: true });
+  const repaired = await fake.history();
+  assert.deepEqual(repaired.context.filter(message => message.role === "toolResult").map(message => (message as { toolCallId: string }).toolCallId), ["look"], "only the lookup is closed");
+  fake.respond(answer("Both done."));
   const run = await host.handle("continue", {});
   assert.equal(run.reply, "Both done.");
-  assert.deepEqual(calls, ["delegate"], "the delegate call ran again; the fetch did not");
-  const results = (await fake.history()).context.filter(message => message.role === "toolResult") as { toolCallId: string }[];
-  assert.deepEqual(results.map(message => message.toolCallId).sort(), ["dig", "look"]);
-  assert.match(JSON.stringify(results.find(message => message.toolCallId === "look")), /outcome is unknown/);
-  assert.match(JSON.stringify(results.find(message => message.toolCallId === "dig")), /the child's answer/);
+  assert.deepEqual(calls, ["delegate"], "the delegate call ran again; the lookup did not");
+  const results = (await fake.history()).context.filter(message => message.role === "toolResult") as { toolCallId: string; content: { text: string }[] }[];
+  assert.deepEqual(results.map(message => message.toolCallId), ["look", "dig"]);
+  assert.match(results[1].content[0].text, /the child's answer/);
 });
 
 for (const when of ["before the host has the run", "as the host begins it"]) {
