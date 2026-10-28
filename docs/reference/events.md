@@ -182,7 +182,7 @@ token does not receive unless it lists them in `events`.
 | `turn_start` | | a model round starts (one response and its tool calls) |
 | `turn_end` | `message`, `toolResults` | a round ends |
 | `agent_end` | `messages` | the model loop ends: the messages it added |
-| `turn_resumed` | `reason`, `handoff?` | the node running this turn was lost; it continues here, with unresolved tool calls marked unknown. With `handoff` (`retire`, `drain`, `memory`): the node left the cluster, and the turn continues here where it was (a model request is made again; a tool call in flight is answered as interrupted, or made again when safe to repeat); a `turn_opened` follows, and no `agent_end` came before it (`requestId` is `""`) |
+| `turn_resumed` | `reason`, `handoff?` | the node running this turn was lost; it continues here, with unresolved tool calls marked unknown. With `handoff` (`retire`, `drain`): the node left the cluster at a step boundary, and the turn continues here with nothing lost; a `turn_opened` follows, and no `agent_end` came before it (`requestId` is `""`) |
 | `turn_recovered` | `reason` | the runtime restarted during a turn; unresolved tool calls were marked unknown (`requestId` is `""`) |
 
 ### Messages

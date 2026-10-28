@@ -91,7 +91,7 @@ test("a turn whose node died during a tool call continues with the outcome unkno
   assert.equal(result.reply, "noted the unknown outcome");
   assert.equal(executions, 1, "the call was never sent again");
   assert.equal(model.bodies.length, 2);
-  assert.ok(toolMessages(model.bodies[1]).some((content: string) => /was interrupted and may have partially run/.test(content)), "the model was told the outcome is unknown");
+  assert.ok(toolMessages(model.bodies[1]).some((content: string) => /outcome is unknown/.test(content)), "the model was told the outcome is unknown");
 });
 
 test("node-loss resumes preserve growing backoff; the loss after the limit fails and new work can run", { timeout: 120_000 }, async t => {

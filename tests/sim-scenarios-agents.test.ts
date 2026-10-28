@@ -362,7 +362,7 @@ const toolSpawnWorld = (seed: number) => Sim.create({
     if (system.includes("WORKER")) return { content: "worked", delayMs: 3_000 };
     if (JSON.stringify(last.content).includes("<agent_notification")) return { content: "heard" };
     // A call whose outcome was lost with its node is made again, once.
-    if (last.role === "tool") return /unknown|was interrupted/.test(JSON.stringify(last.content)) && !body.messages.some((message: any) => message.tool_calls?.some((call: any) => call.id === "call_again"))
+    if (last.role === "tool") return JSON.stringify(last.content).includes("unknown") && !body.messages.some((message: any) => message.tool_calls?.some((call: any) => call.id === "call_again"))
       ? { tool_calls: [{ index: 0, id: "call_again", type: "function", function: { name: "app__work_on_bot", arguments: JSON.stringify({ task: "fix it" }) } }] } : { content: "spawned" };
     return { tool_calls: [{ index: 0, id: "call_work", type: "function", function: { name: "app__work_on_bot", arguments: JSON.stringify({ task: "fix it" }) } }] };
   },

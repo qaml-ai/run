@@ -58,14 +58,13 @@ test("a run a drain left queued runs on another node's sweep, with no one readin
   await call(`/v1/agents/${agent}/prompt`, { text: "first", requestId: "first" });
   await call(`/v1/agents/${agent}/prompt`, { text: "second", requestId: "second" });
   await until(() => model.bodies.length === 1, "the first run to call the model");
-  // A drains: the first run is handed off mid-request (its request made again by the next owner); the second, never
-  // begun, is left queued for it.
+  // A drains: the first run finishes there; the second, never begun, is left queued for the next owner.
   const exited = once(a.child, "exit");
   a.child.kill("SIGTERM");
   await exited;
-  await until(() => model.bodies.length === 3, "B to go on with the first run and run the queued prompt", 20_000);
-  assert.match(JSON.stringify(model.bodies[1].messages), /first/);
-  assert.match(JSON.stringify(model.bodies[2].messages), /second/);
+  assert.equal(model.bodies.length, 1);
+  await until(() => model.bodies.length === 2, "B's sweep to run the queued prompt", 20_000);
+  assert.match(JSON.stringify(model.bodies[1].messages), /second/);
 });
 
 test("a full node's sweep leaves an orphaned turn for a node with room, and never fails it for capacity", { timeout: 90_000 }, async t => {

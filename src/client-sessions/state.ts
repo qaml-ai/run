@@ -142,6 +142,7 @@ export type Session = {
   /** What the running turn is doing: calling the model, or running the tool calls of its latest response (from its events). */
   step?: "model" | "tool";
   /** When this node began leaving while the turn ran, and what the turn was doing then: its hand-off's `boundaryWaitMs` and step kind. */
+  handoffFrom?: { at: number; step: "model" | "tool" };
   /** The assistant message streaming now, as its latest message_update carried it. */
   partial?: unknown;
   /** What each running run's model responses used so far, for its end's webhook event. */

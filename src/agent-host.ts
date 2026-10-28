@@ -31,7 +31,7 @@ import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
 import { clock } from "./node-context.ts";
 import { usageMissing } from "./platform-pricing.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
-import { DurableAgent, piRunning, type DurableAgentOptions } from "./pi-durable/agent.ts";
+import { DurableAgent, type DurableAgentOptions } from "./pi-durable/agent.ts";
 import { contextRangeSize } from "./pi-durable/storage.ts";
 import { HostJournal } from "./pi-durable/host-journal.ts";
 import { JournalHistory } from "./pi-durable/history.ts";
@@ -103,8 +103,19 @@ export interface HostIO {
 /** The messages one pass of the history index reads from the journal at most, in bytes (see `index`). */
 const INDEX_READ_BYTES = 4 * CHUNK_BYTES;
 
-/** Tools Pi makes again when a lost node left their call open (`replay: "safe"`), not answered as interrupted: each is keyed by its call (multi-agent.ts). */
+/** Tools a lost node's open call to is made again on resume, not closed as unknown: each is keyed by its call (multi-agent.ts). */
 export const RERUN = ["delegate", "spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"];
+
+/** The latest assistant message's tool calls that have no result yet. */
+export function openCalls(messages: AgentMessage[]): ToolCall[] {
+  const open = new Map<string, ToolCall>();
+  for (const message of messages) {
+    if (message.role === "assistant") { open.clear(); for (const part of message.content) if (part.type === "toolCall") open.set(part.id, part); }
+    else if (message.role === "toolResult") open.delete(message.toolCallId);
+    else if (message.role === "user") open.clear();
+  }
+  return [...open.values()];
+}
 
 /**
  * A limit's stop as a run's result carries it: its code (its own, else the kind of stop), and the limit, reason, bucket
@@ -190,6 +201,8 @@ export function createAgentHost(hostIO: HostIO) {
    * whether the latest request did.
    */
   let forcing = { left: 0, reminding: false, last: false };
+  /** Calls a lost node left open that are safe to make again (`RERUN`): made again before the resumed turn continues. */
+  let rerun: ToolCall[] = [];
   /** js_exec, which an agent has unless its codeMode is false; made at init. */
   let jsExec: AgentTool | undefined;
   /** Model requests wait for the node's lease, and are cut (`interrupt`) when it goes stale. */
@@ -290,6 +303,31 @@ export function createAgentHost(hostIO: HostIO) {
     // Pi takes the change once it is written.
     await journal.commit(() => [...cleared, change].map(message => ({ t: "system" as const, message })));
     await agent!.reload();
+  }
+
+  /**
+   * Make again the calls a lost node left open that are safe to repeat (RERUN: delegate finds the child its call started),
+   * all at once as the model made them, and record their results in order.
+   */
+  async function rerunOpenCalls(signal: AbortSignal) {
+    const calls = rerun;
+    rerun = [];
+    if (!calls.length) return;
+    for (const call of calls) io.emit({ type: "tool_execution_start", toolCallId: call.id, toolName: call.name, args: call.arguments });
+    const results = await Promise.all(calls.map(async (call): Promise<Settled> => {
+      const tool = agent!.state.tools.find(entry => entry.name === call.name);
+      try {
+        if (!tool) throw new Error(`${call.name} is no longer available to this agent`);
+        return await tool.execute(call.id, checkedArguments(tool, call), signal) as Settled;
+      } catch (error) { return { content: [{ type: "text", text: errorText(error) }], isError: true }; }
+    }));
+    for (const [index, call] of calls.entries()) {
+      const result = results[index];
+      io.emit({ type: "tool_execution_end", toolCallId: call.id, toolName: call.name, result, isError: !!result.isError });
+      const message = { role: "toolResult", toolCallId: call.id, toolName: call.name, content: result.content, ...(result.details !== undefined ? { details: result.details } : {}), isError: !!result.isError, timestamp: Date.now() } as AgentMessage;
+      await journal.push(message);
+      io.emit({ type: "message_end", message });
+    }
   }
 
   /** Whether each model call asks the supervisor for its credentials. */
@@ -446,7 +484,7 @@ export function createAgentHost(hostIO: HostIO) {
   /** The tools the model calls directly: those declared direct, or every one without js_exec (codeMode: false). */
   function directAgentTools(tools: AgentConfig["tools"]): AgentTool[] {
     return tools.filter(tool => config.codeMode === false || ["direct", "both"].includes(tool.exposure ?? "codemode")).map(tool => ({
-        name: tool.name, label: tool.name, description: tool.description, ...RERUN.includes(tool.name) ? { replay: "safe" as const } : {},
+        name: tool.name, label: tool.name, description: tool.description,
         parameters: tool.parameters as AgentTool["parameters"], executionMode: tool.executionMode,
         // Ahead of Pi's own check, whose complaint about a file named for a tool that takes none reads as a wrong path.
         prepareArguments: (args: unknown) => {
@@ -702,7 +740,7 @@ export function createAgentHost(hostIO: HostIO) {
         overflowRetried = true;
         await journal.retract();
         io.emit({ type: "message_retracted", index: journal.total });
-        if (signal.aborted) return;
+        if (signal.aborted || await handingOff()) return;
         try { await agent!.compact(signal); }
         catch {
           // Keep the provider's original error as the turn's outcome when recovery fails.
@@ -710,7 +748,7 @@ export function createAgentHost(hostIO: HostIO) {
           io.emit({ type: "message_end", message: last });
           return;
         }
-        if (signal.aborted) return;
+        if (signal.aborted || await handingOff()) return;
         await agent!.continue();
         attempt--;
         continue;
@@ -736,6 +774,12 @@ export function createAgentHost(hostIO: HostIO) {
         return;
       }
       const delayMs = interrupted ? 0 : policy.baseDelayMs * 2 ** (attempt - 1);
+      // A node leaving asks again elsewhere: the failed attempt is taken back, and the turn handed off at that boundary.
+      if (await handingOff()) {
+        await journal.retract();
+        io.emit({ type: "message_retracted", index: journal.total });
+        return;
+      }
       io.emit({ type: "auto_retry_start", attempt, maxAttempts: policy.maxAttempts, delayMs, errorMessage: last.errorMessage ?? "Unknown error", failure: modelFailure(last, failureContext()) });
       // The failed attempt is not history: drop it from the log and the live state, and say so on the stream.
       await journal.retract();
@@ -823,16 +867,15 @@ export function createAgentHost(hostIO: HostIO) {
         if (config.resume) resume = { finished: { messages: journal.total, error: null, stopped: "input_required" } };
         recovered = true;
       } else if (journal.active && config.resume) {
-        const pending = await piRunning(piStorage, SESSION_CONVERSATION_ID);
         // A response cut off when its node stopped is not history; the model is asked again.
         for (let last = await journal.last(); last?.role === "assistant" && ["aborted", "error"].includes(last.stopReason) && journal.total > journal.turnStart; last = await journal.last()) await journal.retract();
-        // Lost between Pi's runs (or before Pi ran it): calls left open are answered as of unknown outcome.
-        if (!pending) await journal.append(interruptedTurnRepairs(await journal.since(step), false));
+        // Answer tool calls whose outcome was lost as unknown, never by running them again; but for calls keyed by the call
+        // itself (a delegate call finds the child it started, and collects its answer), made again as the turn continues.
+        rerun = openCalls(await journal.since(step)).filter(call => RERUN.includes(call.name));
+        await journal.append(interruptedTurnRepairs(await journal.since(step), false, rerun.map(call => call.id)));
         const turn = await journal.since(step);
         const last = turn.at(-1);
-        // Pi still runs the turn (cut off by a close or a crash): it goes on where it was (`resume`), its calls in flight
-        // answered as interrupted, those safe to repeat (`RERUN`) made again.
-        if (pending) resume = { continue: true };
+        if (rerun.length) resume = { continue: true };
         // At a step boundary the model is simply called again; a final answer (final_output's, too) means the turn had ended.
         else if (last?.role === "toolResult" && last.toolName === OUTPUT_TOOL && !last.isError && journal.total > journal.turnStart) {
           const said = turn.findLast(message => message.role === "assistant") as AssistantMessage | undefined;
@@ -908,6 +951,12 @@ export function createAgentHost(hostIO: HostIO) {
           try { limit = await io.runLimit(); }
           catch { return; /* Unknown spend never stops a turn. */ }
           if (!limit) return;
+          if (limit.stopped === "handoff") {
+            // Messages queued for the turn live only in this process: they go in at the next step, and the turn is handed off after it.
+            if (agent!.hasQueuedMessages()) return;
+            stopped = { stopped: "handoff" };
+            return { action: "end" };
+          }
           stopped = { stopped: limit.stopped, error: limit.message, ...stopFields(limit) };
           io.emit({ type: `${limit.stopped}_reached`, message: limit.message });
           return { action: "end" };
@@ -945,14 +994,12 @@ export function createAgentHost(hostIO: HostIO) {
           emitCompaction({ type: "compaction_end", contextTokens: agent!.contextTokens, reason, tokensBefore: contextTokens(before), keptMessages, summarizedMessages: Math.max(0, held - keptMessages) });
         },
       } });
-      // A run that does not go on here: what Pi settles for it is not history, as the host closed that turn itself, above.
+      // What Pi settles for a run it was interrupted in is not history: the host closed that turn itself, above.
+      await journal.refresh();
+      const latest = journal.history.latest, before = agent.latestCursor;
       await requireContextSize();
-      if (!resume || !("continue" in resume)) {
-        await journal.refresh();
-        const latest = journal.history.latest, before = agent.latestCursor;
-        const cursor = await agent.discardInterruptedRun();
-        if (cursor && !sameCursor(cursor, before)) await journal.skip(cursor, latest);
-      }
+      const cursor = await agent.discardInterruptedRun();
+      if (cursor && !sameCursor(cursor, before)) await journal.skip(cursor, latest);
       agent.subscribe(async event => {
         if ((event.type === "message_start" || event.type === "message_update" || event.type === "message_end") && event.message.role === "system") {
           // Pi declares a tool set that no longer matches the context's; it stays in place like the runtime's own changes.
@@ -962,6 +1009,8 @@ export function createAgentHost(hostIO: HostIO) {
           }
           return;
         }
+        // A turn handed off at a step boundary goes on elsewhere: for its subscribers it has not ended.
+        if (event.type === "agent_end" && stopped?.stopped === "handoff") return;
         // A call waiting on input has no result yet: the journal keeps it open instead (`awaiting`).
         // Pi's journal holds each finished message as Pi commits it; streaming deltas are never persisted.
         if (event.type === "message_end" && !(event.message.role === "toolResult" && (event.message.details as { inputRequired?: boolean } | undefined)?.inputRequired)) {
@@ -1086,8 +1135,15 @@ export function createAgentHost(hostIO: HostIO) {
           return { messages: journal.total, error: null, ...(journal.awaiting.length ? { stopped: "input_required" } : {}) };
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
+        // The answered calls were this run's step: a node leaving hands the turn off before the model is asked.
+        if (await handingOff()) return handedOff();
         await agent.continue();
       } else if (method === "continue") {
+        if (active.signal.aborted) return await abortedBeforeLoop();
+        if (rerun.length) {
+          await rerunOpenCalls(active.signal);
+          if (await handingOff()) return handedOff();
+        }
         if (active.signal.aborted) return await abortedBeforeLoop();
         await agent.continue();
       }
@@ -1117,6 +1173,12 @@ export function createAgentHost(hostIO: HostIO) {
       await unforced(active.signal);
       await recoverFailedResponses(active.signal);
       await remindOfOutput(active.signal);
+      // Stopped at a step boundary for another node to continue (in any of the model calls above): the turn stays open
+      // (active) in the journal.
+      if (handedOffHere()) {
+        if (journal.failed !== undefined) throw journal.failed;
+        return handedOff();
+      }
       if (journal.failed !== undefined) throw journal.failed;
       await journal.setActive(false);
       // Set by finishTurn as the turn ran.
@@ -1156,14 +1218,33 @@ export function createAgentHost(hostIO: HostIO) {
   /** Between runs no run's stream carries a compaction's events: they go as the agent's background work, billed as such. */
   const emitCompaction = (event: Record<string, unknown>) => io.emit(busy ? event : { ...event, background: true });
 
+  /** Whether the current run stopped for a hand-off (a function, so the check is not narrowed away across awaits). */
+  const handedOffHere = () => stopped?.stopped === "handoff";
+
+  /** Whether the node is leaving, so the running turn stops at this step boundary (`RunStop` "handoff"). */
+  async function handingOff() {
+    if ((await io.runLimit().catch(() => undefined))?.stopped !== "handoff") return false;
+    stopped = { stopped: "handoff" };
+    return true;
+  }
+
+  /**
+   * A turn stopped at a step boundary for the next owner: left open (active) in the journal, whose last message is a
+   * tool result or the user's, so the next owner calls the model again with nothing lost (see `init`'s resume).
+   */
+  async function handedOff() {
+    await journal.refresh();
+    return { messages: journal.total, error: null, handedOff: true };
+  }
+
   /**
    * An abort that came after the run began but before Pi's loop did: Pi's own abort found no loop to stop, so the run ends
    * here, checked in the same tick as each loop starts. The turn is settled in the journal before the run is seen to
-   * end: a turn resumed from it (a lost node's) may still have calls open, which Pi's abort answers, or which are closed
-   * as unknown, never made; calls waiting on a person stay open.
+   * end: a turn resumed from it (a lost node's) may still have calls open, those to make again (`RERUN`) among them, which
+   * are closed as unknown, never made; calls waiting on a person stay open.
    */
   async function abortedBeforeLoop() {
-    await agent!.discardInterruptedRun();
+    rerun = [];
     const repairs = interruptedTurnRepairs(await journal.since(step), false, journal.awaiting);
     if (repairs.length) await journal.append(repairs);
     if (journal.active) await journal.setActive(false);
@@ -1258,17 +1339,16 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
-   * Stop serving: close Pi's journal without aborting its run, so nothing more is written and the next owner's Pi goes on
-   * with the run (a close is not a crash: a request it cut is made again); then stop what still runs here. An interrupted
-   * turn stays marked active and is resumed on next load.
+   * Stop serving: abort the run and close Pi's journal, so nothing more is written. An interrupted turn stays marked
+   * active and is recovered on next load.
    */
   async function dispose(flushMs = HISTORY_FLUSH_MS) {
+    active?.abort();
+    agent?.abort();
+    await io.cancelTools();
     // Its settled turns are indexed while the journal is still open.
     if (flushMs > 0 && agent) await Promise.race([index(true), clock().sleep(flushMs)]);
-    const closing = agent?.close();
-    active?.abort();
-    await io.cancelTools();
-    await closing;
+    await agent?.close();
   }
 
   /** Once a journal write failed, any request it ends says so, for the session to give the agent up (and reload it). */

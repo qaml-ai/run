@@ -82,6 +82,95 @@ function watch(nodes: Node[], agent: string) {
   return { frames, refusals, stop: async () => { stop.abort(); await done; } };
 }
 
+test("(a) a retiring node lets the tool call in flight finish, and the turn goes on on the new node: three deploys in a row, no outcome unknown, one model call per step, no resumes spent", { timeout: 180_000 }, async t => {
+  const c = await cluster(t);
+  const steps = 3;
+  const model = await fakeModel(t, (_body, index) => index < steps ? slowCall(index) : { role: "assistant", content: "finished after three deploys" });
+  const gated = gatedTool();
+  t.after(() => gated.releaseAll());
+  const nodes: Node[] = [await ecsNode(t, c, "a", model.env), await ecsNode(t, c, "b", model.env)];
+  const created = await new AgentRuntime({ url: nodes[0].url, apiKey: token }).createAgent({ tools: gated.tools, idempotencyKey: "three-deploys" });
+  await created.close();
+  const agent = created.session.id;
+  const client = await new AgentRuntime({ url: nodes[0].url, fetch: balancer(nodes).fetch }).connectAgent(created.session, { tools: gated.tools });
+  t.after(() => client.close());
+  const run = client.prompt("go", { idempotencyKey: "long-turn", timeoutMs: 150_000 });
+
+  for (let step = 0; step < steps; step++) {
+    const [old, next] = [nodes[step], nodes[step + 1]];
+    await gated.entered(step);
+    assert.equal(await c.owner(agent), old.url, `step ${step} runs on ${old.name}`);
+    await retire(old);
+    // Retiring does not cut the call off: it finishes on the old node, whenever it does.
+    await sleep(500);
+    assert.equal(await c.owner(agent), old.url, `${old.name} keeps the agent while its step runs`);
+    assert.equal(model.bodies.length, step + 1, "no model call while the step runs");
+    const released = Date.now();
+    gated.release(step);
+    await until(() => handedOff(next).length === 1, `${next.name} to continue the turn`, 30_000);
+    const line = handedOff(next)[0];
+    assert.equal(line.Reason, "retire");
+    assert.equal(line.Step, "tool");
+    assert.equal(line.request, "long-turn");
+    assert.ok(line.BoundaryWaitMs >= 500, JSON.stringify(line));
+    assert.ok(line.HandoffLatencyMs < 3_000, JSON.stringify(line));
+    assert.ok(Date.now() - released < 5_000, "continued within seconds of the boundary");
+    t.diagnostic(`hand-off ${step + 1}: ${old.name} to ${next.name}, waited ${line.BoundaryWaitMs} ms for the boundary, continued ${line.HandoffLatencyMs} ms after it`);
+    await until(() => model.bodies.length === step + 2, `the next model call, from ${next.name}`);
+    assert.equal(await c.owner(agent), next.url);
+    assert.equal(handedOff(old).length, step === 0 ? 0 : 1, "the old node did not continue it");
+    // The next deploy needs a node to go to.
+    if (step + 2 < steps + 1) nodes.push(await ecsNode(t, c, String.fromCharCode(99 + step), model.env));
+  }
+  const result = await run;
+  assert.equal(result.reply, "finished after three deploys");
+  assert.deepEqual(gated.calls, [0, 1, 2], "each tool call ran once");
+  assert.equal(model.bodies.length, steps + 1, "one model call per step");
+  for (const [index, body] of model.bodies.entries()) {
+    assert.ok(!unknown(body), `model call ${index} heard of no unknown outcome`);
+    if (index) assert.ok(toolMessages(body).some((content: string) => content.includes(`done-${index - 1}`)), `model call ${index} has step ${index - 1}'s result`);
+  }
+  const record = (await api(nodes.at(-1)!.url, `/v1/agents/${agent}/requests/long-turn`)).json;
+  assert.equal(record.state, "completed");
+  assert.equal(record.resumes, undefined, "hand-offs at a boundary are not resumes");
+  assert.deepEqual(record.handoffs.map((entry: any) => entry.reason), ["retire", "retire", "retire"]);
+  assert.equal(record.handedOff, undefined);
+  assert.equal(record.carried, undefined);
+  assert.equal(record.outcome.result.usage.responses, steps + 1, "usage counts every node's responses");
+  assert.deepEqual(record.outcome.result.toolCalls.map((call: any) => call.toolCallId), ["call_0", "call_1", "call_2"], "tool calls from every node");
+});
+
+test("(b) a retiring node lets the model stream in flight complete (and its tool calls run), and the next step's model call is made on the new node", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const answer = Promise.withResolvers<object>();
+  t.after(() => answer.resolve({ role: "assistant", content: "unused" }));
+  const model = await fakeModel(t, (_body, index) => index === 0 ? answer.promise : { role: "assistant", content: "next step on b" });
+  const gated = gatedTool();
+  gated.release(0);
+  const a = await ecsNode(t, c, "a", model.env);
+  const b = await ecsNode(t, c, "b", model.env);
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: gated.tools, idempotencyKey: "mid-stream" });
+  await created.close();
+  const client = await new AgentRuntime({ url: a.url, fetch: balancer([a, b]).fetch }).connectAgent(created.session, { tools: gated.tools });
+  t.after(() => client.close());
+  const run = client.prompt("go", { idempotencyKey: "streaming-turn", timeoutMs: 60_000 });
+  await until(() => model.bodies.length === 1, "A to call the model");
+  await retire(a);
+  await sleep(500);
+  answer.resolve(slowCall(0));
+  assert.equal((await run).reply, "next step on b");
+  assert.equal(model.bodies.length, 2, "the stream was not asked again");
+  assert.ok(!unknown(model.bodies[1]));
+  assert.ok(toolMessages(model.bodies[1]).some((content: string) => content.includes("done-0")), "its tool call ran on A");
+  const [line] = handedOff(b);
+  assert.equal(line?.Step, "model", JSON.stringify(line));
+  assert.ok(line.BoundaryWaitMs >= 500);
+  assert.equal(handedOff(a).length, 0);
+  const record = (await api(b.url, `/v1/agents/${created.session.id}/requests/streaming-turn`)).json;
+  assert.equal(record.resumes, undefined);
+  assert.equal(record.handoffs.length, 1);
+});
+
 test("(b2) a model call that fails while its node retires is not retried there: the failed attempt is taken back and the new node asks again", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const gate = Promise.withResolvers<void>();
@@ -113,6 +202,31 @@ test("(b2) a model call that fails while its node retires is not retried there: 
   assert.equal(record.handoffs.length, 1);
   const history = (await api(b.url, `/v1/agents/${created.session.id}/history`)).json.messages;
   assert.ok(!history.some((message: any) => message.stopReason === "error"), "the failed attempt is not history");
+});
+
+test("(c) a step that outlasts the retire cap is handed off mid-step: its call in flight is closed as of unknown outcome", { timeout: 90_000 }, async t => {
+  const c = await cluster(t);
+  const model = await fakeModel(t, (body, index) => index === 0 ? slowCall(0) : { role: "assistant", content: unknown(body) ? "noted the unknown outcome" : "unexpected" });
+  const gated = gatedTool();
+  t.after(() => gated.releaseAll());
+  const a = await ecsNode(t, c, "a", { ...model.env, AGENT_RETIRE_MAX_MS: "1500" });
+  const b = await ecsNode(t, c, "b", model.env);
+  const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: gated.tools, idempotencyKey: "outlives-cap" });
+  await created.close();
+  const client = await new AgentRuntime({ url: a.url, fetch: balancer([a, b]).fetch }).connectAgent(created.session, { tools: gated.tools });
+  t.after(() => client.close());
+  const run = client.prompt("go", { idempotencyKey: "capped-turn", timeoutMs: 60_000 });
+  await gated.entered(0);
+  await retire(a);
+  await until(() => a.logs.some(entry => entry.type === "retire_cap_reached"), "the cap to pass", 10_000);
+  assert.equal((await run).reply, "noted the unknown outcome");
+  assert.equal(await c.owner(created.session.id), b.url);
+  await until(() => a.logs.some(entry => entry.type === "retired"), "A to have nothing left");
+  await until(() => a.ecs!.state.protection.at(-1) === false, "A to drop its protection");
+  const record = (await api(b.url, `/v1/agents/${created.session.id}/requests/capped-turn`)).json;
+  assert.equal(record.resumes, 1, "a mid-step hand-off is a resume, as before");
+  assert.equal(record.handoffs, undefined);
+  assert.equal(handedOff(b).length, 0);
 });
 
 test("(d) SIGTERM: the draining node finishes the step in flight and hands the turn off at the boundary, then exits well within its drain timeout", { timeout: 90_000 }, async t => {
@@ -196,7 +310,7 @@ test("(e) a watcher following the agent across a deploy and a drain sees every e
   assert.equal(new Set(ended.map(shape)).size, ended.length, "no message twice");
 });
 
-test("(f) a draining node gives up an agent waiting on human input at once, and hands another agent's running turn off too", { timeout: 90_000 }, async t => {
+test("(f) a draining node gives up an agent waiting on human input at once, while another agent's step still runs there", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const ask = { questions: [{ question: "Proceed?", header: "Confirm", options: [{ label: "Yes" }, { label: "No" }] }] };
   const model = await fakeModel(t, (body, index) => {
@@ -229,17 +343,16 @@ test("(f) a draining node gives up an agent waiting on human input at once, and 
   await until(() => a.logs.some(entry => entry.type === "drain_started"), "A to drain");
   const signalled = Date.now();
   await until(async () => await c.owner(asker) !== a.url, "A to give up the suspended agent", 5_000);
-  assert.ok(Date.now() - signalled < 3_000, "at once");
+  assert.ok(Date.now() - signalled < 3_000, "at once, not after the busy step");
+  assert.equal(await c.owner(created.session.id), a.url, "the busy agent's step still runs on A");
   const answered = await api(b.url, `/v1/agents/${asker}/inputs/${record.outcome.result.inputs[0].id}`, { action: "accept", content: { answers: { "Proceed?": "Yes" } } });
   assert.equal(answered.status, 202, JSON.stringify(answered.json));
   await until(async () => (record = (await api(b.url, `/v1/agents/${asker}/requests/${answered.json.request.id}`)).json).state === "completed", "the answer to resume the turn on B");
   assert.equal(record.outcome.result.reply, "answer: Yes");
   assert.equal(await c.owner(asker), b.url);
 
-  // The busy turn went on on B: its call in flight on A was answered as interrupted, and the model was asked again.
-  assert.equal((await busy).reply, "busy turn done");
-  assert.equal(await c.owner(created.session.id), b.url);
   gated.release(0);
+  assert.equal((await busy).reply, "busy turn done");
   assert.equal((await exited)[0], 0);
   assert.equal(a.logs.find(entry => entry.type === "drain_finished").unfinished, 0);
 });

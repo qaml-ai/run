@@ -45,21 +45,22 @@ test("a node killed mid-turn: a peer finds it dead and calls the model again wit
   assert.equal((await call(b.url, `/v1/agents/${agent}/state`)).requests.find((request: any) => request.id === "turn-1").resumes, 1);
 });
 
-test("a drain hands its turn off at once, and a peer calls the model again within seconds", { timeout: 90_000 }, async t => {
+test("a drain that times out hands its turn off, and a peer calls the model again within seconds of the hand-off", { timeout: 90_000 }, async t => {
   const { c, model, a, b, agent } = await midTurn(t, { AGENT_DRAIN_TIMEOUT_MS: "1000" }, (_body, index) => index === 0 ? undefined : { role: "assistant", content: "resumed" });
   const exited = once(a.child, "exit");
   const signalled = Date.now();
   a.child.kill("SIGTERM");
   await until(() => model.bodies.length === 2, "B to resume the handed-off turn", 30_000);
-  const ms = Date.now() - signalled;
-  assert.ok(ms < PROMPTLY_MS, `resumed ${ms} ms after the drain began`);
+  // The drain waits 1 s for the turn, then hands it off.
+  const ms = Date.now() - signalled - 1_000;
+  assert.ok(ms < PROMPTLY_MS, `resumed ${ms} ms after the hand-off`);
   assert.equal((await exited)[0], 0);
-  assert.equal(a.logs.find(entry => entry.type === "drain_finished")?.unfinished, 0);
+  assert.equal(a.logs.find(entry => entry.type === "drain_finished")?.unfinished, 1);
   assert.ok(!b.logs.some(entry => entry.type === "node_reaped" && entry.node === a.url), "the drained node left; it was not found dead");
   assert.equal(await c.owner(agent), b.url);
 });
 
-test("a deploy: a retiring task hands its turn to the replacement at once, and the run it left queued follows it there", { timeout: 90_000 }, async t => {
+test("a deploy: a retiring task finishes its turn, and the run it left queued starts on the replacement within seconds", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const ecs = await fakeEcs(t);
   const gate = Promise.withResolvers<void>();
@@ -72,17 +73,17 @@ test("a deploy: a retiring task hands its turn to the replacement at once, and t
   ecs.state.revision = 2;
   ecs.state.created = Date.now() / 1000;
   const b = await c.start("b", { ...model.env, ...PROD });
-  const retiring = Date.now();
   await until(() => a.logs.some(entry => entry.type === "retiring"), "A to retire once B joined");
-  // The turn's request, cut by A's close, is made again on B.
-  await until(() => model.bodies.length === 2, "B to go on with the turn", 30_000);
-  assert.ok(Date.now() - retiring < PROMPTLY_MS + 10_000, "the turn moved promptly");
-  assert.match(JSON.stringify(model.bodies[1].messages), /first/);
+  // Queued behind the running turn: a retiring node leaves it for the next owner.
+  await call(a.url, `/v1/agents/${agent}/prompt`, { text: "second", requestId: "second" });
+  await sleep(300);
+  gate.resolve();
+  const released = Date.now();
+  await until(() => model.bodies.length === 2, "B to run the queued prompt", 30_000);
+  const ms = Date.now() - released;
+  assert.ok(ms < PROMPTLY_MS, `the queued run started ${ms} ms after the turn ended`);
+  assert.match(JSON.stringify(model.bodies[1].messages), /second/);
   assert.equal(await c.owner(agent), b.url);
-  // A run sent now runs on B after it.
-  await call(b.url, `/v1/agents/${agent}/prompt`, { text: "second", requestId: "second" });
-  await until(() => model.bodies.length === 3, "B to run the next prompt", 30_000);
-  assert.match(JSON.stringify(model.bodies[2].messages), /second/);
 });
 
 test("a stalled node is not taken for dead: its peer waits, and its turn carries on there when it wakes", { timeout: 90_000 }, async t => {
