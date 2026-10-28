@@ -21,7 +21,6 @@ const BUILTINS = [
   { id: "x_search", label: "x_search", help: "search X posts with Grok (an xAI key, or the platform’s; billed at xAI’s reported cost)" },
   { id: "schedule", label: "schedule", help: "set, list and cancel its own wake-ups" },
   { id: "generate_image", label: "generate_image", help: "make and edit images (an OpenAI key on Models & keys, or the platform's, billed per token on prepaid credit)" },
-  { id: "decide", label: "decide", help: "answer typed questions with probabilities, fast and in bulk (TypeSafe's Jev through OpenRouter; your OpenRouter key, or the platform's at OpenRouter's price)" },
 ];
 const DEFAULT = "default";
 /** Pretty JSON for an optional list field, or empty. */

@@ -1092,7 +1092,7 @@ export class ClientSessions {
     const name = input.name ?? (source.metadata?.name && `${source.metadata.name} (fork)`.slice(0, 120));
     const created = await this.create(source.definitions, config as Omit<AgentConfig, "id" | "directory" | "tools">, key, { ...source.metadata, ...(name ? { name } : {}) }, tenant, input.ttlMs, mounts,
       source.definition && { definition: source.definition, provision: { fork: source.provisionHash }, overrides: source.overrides, sources: source.sources }, identity,
-      { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, ...source.definition ? {} : { builtins: source.sources?.builtins, delegate: source.sources?.delegate, mcpServers: source.sources?.mcpServers }, fork: { id: made.id, from, messages: cut.messages, turns: cut.turns, model: cut.model } }, steps);
+      { keyScope: source.keyScope, ...(spend ? { spendLimit: Number(spend.usd) } : {}), toolsHash: source.toolsHash, ...source.definition ? {} : { builtins: source.sources?.builtins, delegate: source.sources?.delegate, mcpServers: source.sources?.mcpServers, ...(source.sources?.decide !== undefined ? { decide: source.sources.decide } : {}) }, fork: { id: made.id, from, messages: cut.messages, turns: cut.turns, model: cut.model } }, steps);
     // Made meanwhile by a retry: whatever it holds is the fork.
     if (created.reconfigure) return answer(this.sessions.get(created.id)?.header ?? (await this.readHeader(created.id))!.value);
     return { id: created.id, token: created.token, expiresAt: created.expiresAt, forkedFrom: from };
@@ -1663,7 +1663,7 @@ export class ClientSessions {
     // Applying a definition reads the tenant's definitions, so only the tenant may ask for it, not the agent's own token.
     const applying = body.method === "configure" && body.params.definition !== undefined;
     // Which keys an agent calls models with, and how much it may spend, are the tenant's to choose, never the agent's own.
-    for (const key of ["keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "dataCollection", "builtins", "delegate", "mcpServers", "mounts", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
+    for (const key of ["keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "dataCollection", "builtins", "delegate", "mcpServers", "decide", "mounts", ...UPSERT_KEYS]) if (body.method === "configure" && !trusted && Object.hasOwn(body.params, key)) throw new HttpError(403, `Only the tenant can change an agent's ${key}`);
     const spendLimit = body.method === "configure" && Object.hasOwn(body.params, "spendLimit") ? spend.spendInput(body.params.spendLimit) : undefined;
     // Which of its end user's buckets the agent's runs spend from: the tenant's to say, applied at once, as a spend limit is.
     const agentBucket = body.method === "configure" && Object.hasOwn(body.params, "bucket") ? body.params.bucket === null ? null : bucketInput(body.params.bucket) : undefined;
@@ -1674,15 +1674,15 @@ export class ClientSessions {
     if (applying && (!trusted || !this.options.definitionFor || Object.keys(body.params).length !== 1 || typeof body.params.definition?.id !== "string")) throw new HttpError(400, "Apply a definition with PATCH /v1/definitions/<id> and apply: \"all\"");
     try {
       if (body.method === "configure" && !applying) {
-        const { spendLimit: _limit, bucket: _bucket, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, mounts: _mounts, builtins, delegate, mcpServers, ...update } = body.params;
+        const { spendLimit: _limit, bucket: _bucket, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, mounts: _mounts, builtins, delegate, mcpServers, decide, ...update } = body.params;
         const checked = configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, configuration.scopeAfter(session.header, update)));
         // A model, thinking level, maxOutputTokens or temperature that leaves the agent asking its model for what it refuses is refused now.
         const refusal = configurationRefusal(session.header.config, checked);
         if (refusal) throw new Error(refusal);
-        const own = builtins !== undefined || delegate !== undefined || mcpServers !== undefined;
+        const own = builtins !== undefined || delegate !== undefined || mcpServers !== undefined || decide !== undefined;
         if (own && session.header.definition) throw new HttpError(400, `This agent's ${mcpServers !== undefined ? "MCP servers" : "builtins"} come from its definition; change them there`);
         // An upsert gives the whole of them, which `execute` checks as it applies them; a change of some is checked now.
-        if (own && body.params.provisionHash === undefined) configuration.ownSources(session.header.sources, { builtins, delegate, mcpServers }, configuration.inlineServers(this.configurationContext, session.header.tenant));
+        if (own && body.params.provisionHash === undefined) configuration.ownSources(session.header.sources, { builtins, delegate, mcpServers, decide }, configuration.inlineServers(this.configurationContext, session.header.tenant));
       }
       // Assistant and tool-result history is runtime-owned; callers may only add user input.
       if (["prompt", "steer"].includes(body.method) && body.params.message !== undefined) validateUserMessages(Array.isArray(body.params.message) ? body.params.message : [body.params.message]);

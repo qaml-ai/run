@@ -3546,6 +3546,10 @@
             "maxItems": 9,
             "description": "Tools the runtime answers itself (web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents, decide), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
           },
+          "decide": {
+            "type": "boolean",
+            "description": "The decide tool (typed questions answered with probabilities by a decision model; see Decisions) is every agent's by default, except one with no js_exec and no other tools. false: none; true: even then. Not for an agent made from a definition: its definition's decide applies"
+          },
           "delegate": {
             "$ref": "#/components/schemas/DelegateSettings"
           },
@@ -4201,6 +4205,13 @@
                 },
                 "description": "The tools the runtime answers itself: its own, or its definition's"
               },
+              "decide": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Its decide setting, its own or its definition's: false (none), true (asked for), or null (the default: the tool unless it has no js_exec and no other tools). The tool is offered only where the account has an OpenRouter key decisions can use; toolSources shows it"
+              },
               "delegate": {
                 "allOf": [
                   {
@@ -4353,6 +4364,7 @@
               "bucket",
               "modelHeaders",
               "builtins",
+              "decide",
               "delegate",
               "mcpServers",
               "spendLimit",
@@ -5266,6 +5278,13 @@
             },
             "maxItems": 9,
             "description": "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's"
+          },
+          "decide": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "false: no decide tool; true: the tool even with no js_exec and no other tools; null: back to the default. Not for an agent made from a definition"
           },
           "delegate": {
             "type": [
@@ -8134,6 +8153,10 @@
             "maxItems": 9,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from js_exec as tools.decide"
           },
+          "decide": {
+            "type": "boolean",
+            "description": "false: its agents get no decide tool, which every agent has by default (except one with no js_exec and no other tools); true: they get it even then"
+          },
           "webSearch": {
             "type": "object",
             "properties": {
@@ -8510,6 +8533,10 @@
             },
             "maxItems": 9,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from js_exec as tools.decide"
+          },
+          "decide": {
+            "type": "boolean",
+            "description": "false: its agents get no decide tool, which every agent has by default (except one with no js_exec and no other tools); true: they get it even then"
           },
           "webSearch": {
             "type": "object",
@@ -9036,6 +9063,13 @@
             "maxItems": 9,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from js_exec as tools.decide"
           },
+          "decide": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "false: its agents get no decide tool, which every agent has by default (except one with no js_exec and no other tools); true: they get it even then"
+          },
           "webSearch": {
             "type": [
               "object",
@@ -9483,6 +9517,10 @@
             },
             "maxItems": 9,
             "description": "Tools the runtime answers itself (generate_image gives the run a workspace for its images). Not schedule or ask_user: a run has no later and no one to ask"
+          },
+          "decide": {
+            "type": "boolean",
+            "description": "false: no decide tool. A run with no tools at all (no definition, builtins, delegate, MCP servers, files or mounts) has none unless it sends true"
           },
           "delegate": {
             "allOf": [

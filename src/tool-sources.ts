@@ -91,7 +91,11 @@ export interface OpenApiSpec {
 /** Built-in tools a definition enables, its remote MCP servers and its OpenAPI specs. */
 /** `webSearch.providers`: the order web_search tries providers in for this agent, instead of the runtime's. */
 /** `humanInput`: how long inputs wait, what happens when they expire, and who else may answer them (inputs.ts). */
-export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[]; humanInput?: HumanInputSettings; delegate?: DelegateSettings }
+/**
+ * `decide`: false, no decide tool; true, the tool even for an agent with no js_exec and no other tools; left out, the
+ * default: every agent's but those (decisions.ts).
+ */
+export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[]; humanInput?: HumanInputSettings; delegate?: DelegateSettings; decide?: boolean }
 /**
  * The agent a tool call is for, its owner's claim on it, the definition whose secrets it may unseal (OpenAPI specs and
  * MCP servers with credentials come only from one; an agent's own builtins and MCP servers have none), its mounts (for files in and out), and who

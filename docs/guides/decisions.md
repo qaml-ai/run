@@ -3,8 +3,8 @@
 `POST /v1/decisions` answers typed questions about a state (a message, a record, a document) with a decision model:
 yes/no, one of a set of options, or a level on a scale, each with calibrated probabilities instead of text. It is
 fast (a few hundred milliseconds) and cheap (about $0.00002 for three questions about a short message), so it suits
-moderation, routing, triage, and classifying or scoring a dataset. An agent asks with the `decide` builtin, and from
-`js_exec` as `tools.decide`.
+moderation, routing, triage, and classifying or scoring a dataset. Every agent has the `decide` tool by default (from
+`js_exec`, `tools.decide`); see [In an agent](#in-an-agent) for who doesn't and how to opt out.
 
 Decisions run on TypeSafe's Jev (`typesafe/jev-1.14`), through OpenRouter's decisions API, with the OpenRouter key a
 model call of yours would use: a [key scope](models-and-keys.md#key-scopes)'s, your own
@@ -85,7 +85,20 @@ answers are logged or kept.
 
 ## In an agent
 
-With the `decide` builtin, an agent asks directly (`{state, questions}` or `{items}`, as above), and from `js_exec`:
+Every agent has the `decide` tool, with no builtin to list: it asks directly (`{state, questions}` or `{items}`, as
+above), and from `js_exec` as `tools.decide`. The exceptions:
+
+- An agent with no `js_exec` (`codeMode: false`) and no tools of its own, and a run with no tools at all, have none
+  unless they ask for it (`decide: true`).
+- `decide: false` on an agent (`POST /v1/agents`, `PATCH /v1/agents/{id}/configuration`; `null` goes back to the
+  default), a run, or a definition (for its agents) opts out.
+- It is not offered where it could only fail: on an account with no OpenRouter key decisions can use (your own, a key
+  scope's, or the platform's). An agent whose `dataCollection` is `deny` has it, and its calls carry that policy.
+
+The tool adds about 300 tokens to each request's tool list (cached with the rest of the prompt). Listing `decide` in
+`builtins` is accepted and changes nothing.
+
+```js
 
 ```js
 const questions = { spam: { type: "noul", instructions: "This message is spam." } };

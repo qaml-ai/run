@@ -9,10 +9,13 @@ const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const PAYG = "payg-operator-token-at-least-24-chars";
 const OWN = "own-operator-token-at-least-24-chars";
 const OPS = "ops-operator-token-at-least-24-chars";
+const KEYLESS = "keyless-operator-token-at-least-24-chars";
 const tenantsFile = {
   tenants: {
     payg: { tokenSha256: sha(PAYG), apiKeys: {}, billing: "prepaid" },
     own: { tokenSha256: sha(OWN), apiKeys: { openrouter: "own-openrouter-key" }, platformKeys: false },
+    // Keys of its own for another provider only, and none of the platform's: no OpenRouter key decisions could use.
+    keyless: { tokenSha256: sha(KEYLESS), apiKeys: { anthropic: "keyless-anthropic-key" }, platformKeys: false },
     ops: { tokenSha256: sha(OPS), apiKeys: { openrouter: "fixture-model-key" } },
   },
   platformKeys: { openrouter: "fixture-platform-model-key" },
@@ -127,7 +130,8 @@ return { flagged, failed };`;
 test("the decide builtin answers from js_exec in batches and directly, billed to the run and the agent", async t => {
   const { r, openrouter } = await start(t, decider, 0.001);
   assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 10_000_000, reason: "test" }, token: OPS })).status, 201);
-  const agent = (await r.call("/v1/agents", { body: { builtins: ["decide"], spendLimit: { usd: 5 } }, token: PAYG })).json.id;
+  // No builtins: decide is every agent's.
+  const agent = (await r.call("/v1/agents", { body: { spendLimit: { usd: 5 } }, token: PAYG })).json.id;
   const record = await r.prompt(agent, "triage these", PAYG);
   assert.equal(record.outcome.result.code, undefined, JSON.stringify(record.outcome));
   assert.ok(r.model.bodies[0].tools.some((tool: any) => tool.function.name === "decide"), "decide is a direct tool too");
@@ -144,12 +148,62 @@ test("the decide builtin answers from js_exec in batches and directly, billed to
   assert.equal(openrouter.requests.length, 151);
 });
 
-test("an agent that denies data collection has its decide calls sent with that data policy", async t => {
+test("an agent that denies data collection has decide by default, its calls sent with that data policy", async t => {
   const { r, openrouter } = await start(t, body => toolResults(body).length ? { role: "assistant", content: `result: ${toolResults(body).at(-1)}` } : toolCall("decide", { state: "private", questions: QUESTIONS }, "call_private"), 0.001);
   assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 1_000_000, reason: "test" }, token: OPS })).status, 201);
-  const agent = (await r.call("/v1/agents", { body: { builtins: ["decide"], dataCollection: "deny" }, token: PAYG })).json.id;
+  const agent = (await r.call("/v1/agents", { body: { dataCollection: "deny" }, token: PAYG })).json.id;
   const record = await r.prompt(agent, "classify", PAYG);
   assert.match(record.outcome.result.reply, /^result: \{"model":"typesafe\/jev-1\.14-20261014","answers"/);
   assert.equal(openrouter.requests.length, 1);
   assert.deepEqual(openrouter.requests[0]!.provider, { data_collection: "deny" });
+});
+
+/** The tools the model was offered in its latest request. */
+const offered = (r: { model: { bodies: any[] } }) => (r.model.bodies.at(-1)?.tools ?? []).map((tool: any) => tool.function.name);
+
+test("decide is every agent's by default, and opts out with decide: false on the agent, its update or its definition; a toolless run and a tenant without an OpenRouter key have none", async t => {
+  const { r } = await start(t);
+  assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 1_000_000, reason: "test" }, token: OPS })).status, 201);
+  const view = async (id: string, token = PAYG) => (await r.call(`/v1/agents/${id}`, { token })).json;
+  const plain = (await r.call("/v1/agents", { body: {}, token: PAYG })).json.id;
+  await r.prompt(plain, "hi", PAYG);
+  assert.ok(offered(r).includes("decide"));
+  assert.equal((await view(plain)).decide, null, "the default");
+  assert.ok((await view(plain)).toolSources.some((source: any) => source.name === "decide"));
+  // The agent's own opt-out, then its update back and forth.
+  const off = (await r.call("/v1/agents", { body: { decide: false }, token: PAYG })).json.id;
+  await r.prompt(off, "hi", PAYG);
+  assert.ok(!offered(r).includes("decide"));
+  assert.equal((await view(off)).decide, false);
+  assert.ok([200, 202].includes((await r.call(`/v1/agents/${off}/configuration`, { method: "PATCH", body: { decide: true }, token: PAYG })).status));
+  await r.prompt(off, "again", PAYG);
+  assert.ok(offered(r).includes("decide"));
+  assert.ok([200, 202].includes((await r.call(`/v1/agents/${plain}/configuration`, { method: "PATCH", body: { decide: false }, token: PAYG })).status));
+  await r.prompt(plain, "again", PAYG);
+  assert.ok(!offered(r).includes("decide"));
+  assert.equal((await r.call("/v1/agents", { body: { decide: "no" }, token: PAYG })).status, 400);
+  // A definition's opt-out is its agents'; they cannot set their own.
+  const definition = (await r.call("/v1/definitions", { body: { name: "quiet", decide: false }, token: PAYG }));
+  assert.equal(definition.status, 201, definition.text);
+  const made = (await r.call("/v1/agents", { body: { definition: definition.json.id }, token: PAYG })).json.id;
+  await r.prompt(made, "hi", PAYG);
+  assert.ok(!offered(r).includes("decide"));
+  assert.equal((await r.call("/v1/agents", { body: { definition: definition.json.id, decide: true }, token: PAYG })).status, 400);
+  // An agent with no js_exec and no tools of its own has none unless it asks.
+  const bare = (await r.call("/v1/agents", { body: { codeMode: false }, token: PAYG })).json.id;
+  await r.prompt(bare, "hi", PAYG);
+  assert.ok(!offered(r).includes("decide"));
+  const asking = (await r.call("/v1/agents", { body: { codeMode: false, decide: true }, token: PAYG })).json.id;
+  await r.prompt(asking, "hi", PAYG);
+  assert.ok(offered(r).includes("decide"));
+  assert.equal((await view(asking)).decide, true);
+  // A run with no tools stays toolless; one that asks gets it.
+  assert.equal((await r.call("/v1/runs?wait=30", { body: { input: "hi" }, token: PAYG })).json.status, "completed");
+  assert.deepEqual(offered(r), []);
+  assert.equal((await r.call("/v1/runs?wait=30", { body: { input: "hi", decide: true }, token: PAYG })).json.status, "completed");
+  assert.deepEqual(offered(r), ["decide"]);
+  // No OpenRouter key to use: no tool that would only fail.
+  const keyless = (await r.call("/v1/agents", { body: {}, token: KEYLESS }));
+  assert.equal(keyless.status, 201, keyless.text);
+  assert.ok(!(await view(keyless.json.id, KEYLESS)).toolSources.some((source: any) => source.name === "decide"));
 });

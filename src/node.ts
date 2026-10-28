@@ -81,7 +81,7 @@ import { checkSandbox, type CodeExecutor } from "./codemode.ts";
 import { V8Exec } from "./v8-exec.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
 import { openaiTranscription, Transcriber } from "./transcription.ts";
-import { Decider } from "./decisions.ts";
+import { Decider, decideInput } from "./decisions.ts";
 import { openrouterDecisions } from "./decision-providers.ts";
 import { openaiSpeech, Synthesizer } from "./speech.ts";
 import { Imager, openaiImages } from "./images.ts";
@@ -560,7 +560,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
    * `run`: a stateless run's session (POST /v1/runs), which lives `ttlMs` at most and is never reconfigured. */
   async function provisionAgent(tenant: string, params: any, key: string | undefined, steps: Steps, outcome: { agent?: string; upsert: boolean }, parent?: { agentId: string; runId: string; toolCallId: string; depth: number }, admit?: (unchanged: boolean) => Promise<unknown>, run?: RunSettings & { ttlMs: number }) {
     // The application's tools are its attached MCP server's: the tools/list it declares.
-    const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, bucket: givenBucket, modelHeaders: headers, builtins: asked, delegate: delegating, mcpServers: servers, remount, ...rest } = params ?? {};
+    const { mcp: _mcp, subject: _subject, context: _context, keyScope, spendLimit: limit, bucket: givenBucket, modelHeaders: headers, builtins: asked, delegate: delegating, mcpServers: servers, decide: deciding, remount, ...rest } = params ?? {};
     if (remount !== undefined && typeof remount !== "boolean") throw new HttpError(400, "remount must be true or false");
     // The application's tools as it declared them, whose hash its connections are told (`toolsHash`).
     const mcpTools = params?.mcp?.tools;
@@ -569,6 +569,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (keyScope !== undefined) checkScope(keyScope);
     // An agent's own built-in tools; one made from a definition has its definition's.
     if ((asked !== undefined || delegating !== undefined) && params.definition !== undefined) throw new HttpError(400, "builtins come from the definition; change them there");
+    // The decide tool is every agent's unless it opts out (decide: false); one made from a definition has its definition's.
+    if (deciding !== undefined && params.definition !== undefined) throw new HttpError(400, "decide comes from the definition; change it there");
+    const decide = deciding === undefined ? undefined : decideInput(deciding) as boolean;
     const builtins = asked === undefined ? undefined : builtinsInput(asked);
     // Its own MCP servers, without credentials (a definition seals those); one made from a definition has its definition's.
     if (servers !== undefined && params.definition !== undefined) throw new HttpError(400, "mcpServers come from the definition; change them there");
@@ -605,7 +608,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     const lifetime = run ? run.ttlMs : ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
     const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
       made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
-      { keyScope, spendLimit, ...(bucket ? { bucket } : {}), builtins, delegate, mcpServers, ...(remount ? { remount } : {}), ...(idle && !run ? { idleTtlMs: idle * 1000 } : {}), ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
+      { keyScope, spendLimit, ...(bucket ? { bucket } : {}), builtins, delegate, mcpServers, ...(decide !== undefined ? { decide } : {}), ...(remount ? { remount } : {}), ...(idle && !run ? { idleTtlMs: idle * 1000 } : {}), ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
     outcome.agent = made_.id;
     outcome.upsert = !!reconfigure;
     const warnings = await warningsFor(tenant, made ? made.sources : builtins && { builtins });
