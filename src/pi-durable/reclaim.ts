@@ -31,17 +31,11 @@ const CHECKPOINTS: ReclaimStage = { name: "checkpoints", entries: obsolete };
 
 /**
  * Whether session $1's host transcript was retired (its first load on a release without it wrote `camel.host.disabled`
- * with `retired: "journal"`), and its history index holds every message before what its journal holds (its newest base
- * marker's `total`, less the running turn's messages the marker keeps): then nothing reads its host records any more.
+ * with `retired: "journal"`): then nothing reads its host records any more (its history before the journal is archive
+ * entries in Pi storage).
  */
 const retiredAndIndexed = `exists (select 1 from pi_durable_entries rx where rx.session_id = $1 and rx.conversation_id = 1
-    and ${json("rx.record")}->>'kind' = 'camel.host.disabled' and ${json("rx.record")}->'data'->>'retired' = 'journal')
-  and exists (select 1 from pi_durable_documents rd
-    join lateral (select rr.content from pi_durable_document_revisions rr where rr.session_id = rd.session_id and rr.document_id = rd.id and rr.kind = 'base' order by rr.seq desc limit 1) rr on true
-    join pi_durable_entries rm on rm.session_id = rd.session_id and rm.id = (${json("rr.content")}->>'entry')::bigint
-    join agent_history_index ri on ri.agent = rd.session_id
-    where rd.session_id = $1 and rd.kind = '"camel.history.base"' and rd.retired_at is null
-      and ri.indexed >= (${json("rm.record")}->'data'->>'total')::bigint - coalesce(jsonb_array_length(${json("rm.record")}->'data'->'kept'), 0))`;
+    and ${json("rx.record")}->>'kind' = 'camel.host.disabled' and ${json("rx.record")}->'data'->>'retired' = 'journal')`;
 
 /**
  * Stage 2: a retired host transcript's own data: its records, its archive (and the archive of imports from before

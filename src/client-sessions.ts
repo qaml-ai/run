@@ -34,7 +34,7 @@ import { actorInput, type AgentIdentity } from "./identity.ts";
 import { metadataInput, senderInput } from "./sender.ts";
 import { CodeGate, DEFAULT_CODE_CAPACITY } from "./codemode.ts";
 import { fileResponse, type FileRef } from "./files.ts";
-import { HistoryIndex, PAGE_BYTES, type HistoryPage } from "./history-pages.ts";
+import { AgentHistory, PAGE_BYTES, type HistoryPage } from "./history-pages.ts";
 import { inputView, resolution, type Input, type Responder } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, safeError, Steps } from "./metrics.ts";
 import { PARENT_KEYS, type DelegateSettings } from "./multi-agent.ts";
@@ -148,7 +148,7 @@ export class ClientSessions {
   readonly db: Db;
   readonly heartbeat: ReturnType<typeof setInterval>;
   /** Agents' history in pages. */
-  readonly historyIndex: HistoryIndex;
+  readonly historyReader: AgentHistory;
   /** Turns to run js_exec on this node, shared fairly among tenants. */
   readonly codeGate: CodeGate;
   private readonly eventContext: events.EventContext;
@@ -184,7 +184,7 @@ export class ClientSessions {
       idleCursor: id => this.idleCursor(id),
     };
     this.storage = options.storage ?? fileStorage(options.root!);
-    this.historyIndex = new HistoryIndex(this.db, this.storage);
+    this.historyReader = new AgentHistory(this.db);
     this.spendContext = {
       options, db: this.db, supervisor, sessions: this.sessions,
       apiKey: (session, provider, keyScope) => configuration.resolveApiKey(this.configurationContext, session, provider, keyScope),
@@ -1045,7 +1045,7 @@ export class ClientSessions {
     if (found) return answer(found);
     // Cut from the source's journal (pi-durable/fork.ts): its history, and Pi's context as of the cut.
     let cut = await steps.time("history", this.supervisor.journalFork(sourceId, {
-      messages: () => this.historyIndex.messages(sourceId), turns: () => this.historyIndex.allTurns(sourceId), cursorAt: index => this.historyIndex.cursorAt(sourceId, index),
+      messages: () => this.historyReader.messages(sourceId), turns: () => this.historyReader.allTurns(sourceId), cursorAt: index => this.historyReader.cursorAt(sourceId, index),
     }, input.atMessage));
     // A source that never started has no journal: its history is what it was created with, if anything.
     if (!cut) {
@@ -1116,8 +1116,9 @@ export class ClientSessions {
     // Its children's rows go with it; a child's own row stays for its parent, whose next sweep hears it is gone.
     await sql.query("delete from agent_children where parent = $1", [id]);
     await this.storage.removeLog(this.journalKey(id));
+    // History chunks an index before Pi storage left (history-archive moved their messages into Pi).
+    await this.storage.removeBlobs(`sessions/${id}/history/`);
     await this.supervisor.purge(id, sql);
-    await this.historyIndex.remove(id, sql);
     await deleteTail(sql, id, [this.journalKey(id), AgentSupervisor.transcriptKey(id)]);
   }
 
@@ -1393,7 +1394,7 @@ export class ClientSessions {
     const reset = session.runs.then(async () => {
       // Its host holds the context it loaded: it starts again from the reset one.
       if (this.supervisor.agents.has(id) || this.supervisor.starting.has(id)) await this.supervisor.stop(id);
-      return this.supervisor.resetContext(id, session.claim, { ...input, limit: this.options.contextRangeMaxBytes ?? CONTEXT_RANGE_MAX_BYTES, read: (from, to) => this.historyIndex.messages(id, from, to) }).catch(error => {
+      return this.supervisor.resetContext(id, session.claim, { ...input, limit: this.options.contextRangeMaxBytes ?? CONTEXT_RANGE_MAX_BYTES, read: (from, to) => this.historyReader.messages(id, from, to) }).catch(error => {
         // Started again meanwhile (a steer or a configuration starts it at once): its host has the context now.
         if (errorText(error) === "Agent is running") throw new HttpError(409, "The agent started while it was being reset; try again", "AGENT_BUSY");
         throw error;
@@ -1442,7 +1443,7 @@ export class ClientSessions {
     this.purgeSoon();
   }
 
-  /** A page of the agent's history (HistoryIndex.page), read from Pi storage by ordinal wherever the agent runs. */
+  /** A page of the agent's history (AgentHistory.page), read from Pi storage by ordinal wherever the agent runs. */
   private async historyPage(id: string, query: { before?: string; limit?: string; maxBytes?: string }): Promise<HistoryPage> {
     const before = query.before === undefined ? undefined : Number(query.before);
     const limit = query.limit === undefined ? 50 : Number(query.limit);
@@ -1452,7 +1453,7 @@ export class ClientSessions {
     if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 16_384 || maxBytes > PAGE_BYTES)) throw new HttpError(400, `maxBytes is 16384 to ${PAGE_BYTES} bytes`);
     // An agent starting here answers nothing yet: wait for it (it may write its journal's first entries as it starts).
     await this.sessions.get(id)?.starting?.catch(() => {});
-    return this.historyIndex.page(id, { before, limit, maxBytes });
+    return this.historyReader.page(id, { before, limit, maxBytes });
   }
 
   /** A tenant's view of a page of one agent's history. */
@@ -1461,10 +1462,10 @@ export class ClientSessions {
     return this.historyPage(id, query);
   }
 
-  /** The agent's full history (bounded: HistoryIndex.messages), read from Pi storage wherever it runs. */
+  /** The agent's full history (bounded: AgentHistory.messages), read from Pi storage wherever it runs. */
   private async history(id: string) {
     await this.sessions.get(id)?.starting?.catch(() => {});
-    return { messages: await this.historyIndex.messages(id) };
+    return { messages: await this.historyReader.messages(id) };
   }
 
   /**

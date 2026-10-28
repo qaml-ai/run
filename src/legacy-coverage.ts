@@ -18,11 +18,6 @@ export const LEGACY_COVERAGE_BUCKETS = [
    * enabled one, or one a rollback disabled. Refused as `host_transcript`.
    */
   "unretired_host_transcripts",
-  /**
-   * Retired, but the history index does not hold the history before the journal base (no base, no index row, or
-   * `indexed` < the base marker's `total` less its `kept`): history reads still use the retired records.
-   */
-  "retired_index_short",
   /** A journal but no journal history (no base document, no history marker): legacy format only, read from the legacy log. */
   "pi_without_journal_history",
   /** A journal with no base document: every current session has one, so its history is in a format before it (a superset of the one above). */
@@ -38,7 +33,7 @@ export type LegacyCoverageBucket = typeof LEGACY_COVERAGE_BUCKETS[number];
 type Counts = Record<LegacyCoverageBucket | "agents_total", number>;
 
 /** The counts that must be 0 before the readers go. */
-export const LEGACY_COVERAGE_GATE: readonly LegacyCoverageBucket[] = ["unretired_host_transcripts", "retired_index_short", "pi_without_journal_history", "pi_without_base_document", "no_pi_with_legacy_log_rows", "no_pi_with_legacy_log_objects"];
+export const LEGACY_COVERAGE_GATE: readonly LegacyCoverageBucket[] = ["unretired_host_transcripts", "pi_without_journal_history", "pi_without_base_document", "no_pi_with_legacy_log_rows", "no_pi_with_legacy_log_objects"];
 export const LEGACY_COVERAGE_EXAMPLES = 20;
 /** Agents per batch: each batch is a few statements, each stopped by Postgres after STATEMENT_TIMEOUT_MS. */
 export const LEGACY_COVERAGE_BATCH = 500;
@@ -138,18 +133,6 @@ const RETIRED = `select s.id, hd.id is not null as host, hd.id is null or coales
   from unnest($1::text[]) s(id)
   left join lateral (select d.id from pi_durable_documents d where d.session_id = s.id and d.kind = '"camel.host.snapshot"' order by d.id desc limit 1) hd on true`;
 
-/** Retired sessions whose history index is short of their newest journal base (as reclaim.ts's `retiredAndIndexed`). */
-const SHORT = `select s.id from unnest($1::text[]) s(id)
-  left join lateral (select (${json("m.record")}->'data'->>'total')::bigint - coalesce(jsonb_array_length(${json("m.record")}->'data'->'kept'), 0) as before_base
-    from pi_durable_documents d
-    join lateral (select r.content from pi_durable_document_revisions r where r.session_id = d.session_id and r.document_id = d.id
-      and r.kind = 'base' order by r.seq desc limit 1) r on true
-    join pi_durable_entries m on m.session_id = d.session_id and m.id = (${json("r.content")}->>'entry')::bigint
-    where d.session_id = s.id and d.kind = '"camel.history.base"' and d.retired_at is null
-    order by d.created_at desc, d.id desc limit 1) b on true
-  left join agent_history_index i on i.agent = s.id
-  where b.before_base is null or i.indexed is null or i.indexed < b.before_base`;
-
 /**
  * Of journals with no base document (few), those with no history marker either: their entries' kinds alone are read,
  * newest first (a marker ends every turn), until one is a marker.
@@ -173,14 +156,10 @@ export async function legacyBatch(db: Db, after: string, size: number, options: 
     const agents = (await sql.query<{ id: string; purged: boolean; pi: boolean; bootstrap: boolean; base: boolean; legacy_log: boolean }>(AGENTS, [after, size])).rows;
     const journals = agents.filter(agent => agent.pi).map(agent => agent.id);
     const hosts = journals.length ? (await sql.query<{ id: string; host: boolean; retired: boolean }>(RETIRED, [journals])).rows : [];
-    const bootstrapped = new Set(agents.filter(agent => agent.bootstrap).map(agent => agent.id));
     const unretired = hosts.filter(row => row.host && !row.retired).map(row => row.id);
-    // Host sessions (a generation, or a host document) that were retired: their index must reach their base.
-    const done = hosts.filter(row => (row.host || bootstrapped.has(row.id)) && row.retired).map(row => row.id);
-    const short = done.length ? (await sql.query<{ id: string }>(SHORT, [done])).rows.map(row => row.id) : [];
     const baseless = agents.filter(agent => agent.pi && !agent.base).map(agent => agent.id);
     const unmarked = baseless.length ? (await sql.query<{ id: string }>(NO_MARKER, [baseless])).rows.map(row => row.id) : [];
-    return { agents, unretired, short, baseless, unmarked };
+    return { agents, unretired, baseless, unmarked };
   });
   const live = found.agents.filter(agent => !agent.purged);
   const listed = live.filter(agent => !agent.pi && !agent.legacy_log).map(agent => agent.id);
@@ -189,7 +168,6 @@ export async function legacyBatch(db: Db, after: string, size: number, options: 
     agents: found.agents.map(agent => agent.id),
     buckets: {
       unretired_host_transcripts: found.unretired,
-      retired_index_short: found.short,
       pi_without_journal_history: found.unmarked,
       pi_without_base_document: found.baseless,
       no_pi_with_legacy_log_rows: live.filter(agent => agent.legacy_log).map(agent => agent.id),
@@ -235,4 +213,4 @@ export async function legacyCoverage(db: Db, options: { cursor?: string; budgetM
 }
 
 /** The statements a batch runs, for EXPLAIN (docs/operations/pi-durable.md). */
-export const LEGACY_COVERAGE_QUERIES = { AGENTS, RETIRED, SHORT, NO_MARKER };
+export const LEGACY_COVERAGE_QUERIES = { AGENTS, RETIRED, NO_MARKER };

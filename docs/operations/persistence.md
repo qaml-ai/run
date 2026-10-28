@@ -13,11 +13,9 @@ Nothing is serialized per streamed delta. Each agent has two append-only logs:
   only the rows it returns, on any node, whether the agent runs or not; every read
   is bounded in bytes before it reads (a page at 64 MiB, a full read or fork at
   64 MiB: 413 past it). A fork's copied history is kept in its own Pi storage, as
-  archive entries before its base. History from before the journal (retired host
-  transcripts, imports and forks before archive entries) is still read from the
-  history index's chunks (`sessions/<id>/history/<start>-<count>-<hash>`, indexed
-  in `agent_history_chunks`), which nothing writes any more, until it moves into
-  Pi storage too.
+  archive entries before its base, as is history from before the journal (retired
+  host transcripts, imports, older forks), moved from the history index, which is
+  gone; its leftover chunk blobs (`sessions/<id>/history/`) go with each agent's purge.
 - `<session>.journal.jsonl`: request state changes. It is fsynced only where
   correctness needs it: accepting a request, a run's start (before its first tool
   call can have an effect), and recording outcomes. Tool calls are not journaled:

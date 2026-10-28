@@ -45,14 +45,6 @@ export async function agentChunks(options: { db: Db; storage: Storage; journalPr
   await read("header", async () => typeof header === "string" ? JSON.parse(header) : header);
   await read("transcript", () => readLog(AgentSupervisor.transcriptKey(id)));
   await read("journal", () => readLog(`${options.journalPrefix ?? "client-sessions/"}${id}.journal`));
-  const { rows: pages } = await db.query("select start, count, hash from agent_history_chunks where agent = $1", [id]);
-  for (const page of pages) {
-    await read(`history ${page.start}`, async () => {
-      const data = await storage.readBlob(`sessions/${id}/history/${page.start}-${page.count}-${page.hash}`);
-      if (!data) throw new Error("history page is missing from storage");
-      return JSON.parse(Buffer.from(data).toString("utf8"));
-    });
-  }
   return { hashes, refs: refs.count, unreadable };
 }
 

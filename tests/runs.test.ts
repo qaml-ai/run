@@ -228,7 +228,7 @@ test("an ended run is kept for its retention, then everything it stored is delet
   assert.deepEqual(row, { tenant: "", header: { version: 3, id, revoked: true, purged: true } }, "only a tombstone");
   assert.equal(existsSync(journal), false);
   assert.equal(existsSync(join(r.root, "sessions", id)), false);
-  for (const table of ["agent_history_index", "agent_spend_limits"]) {
+  for (const table of ["agent_spend_limits"]) {
     assert.equal((await r.db.query(`select count(*)::int as n from ${table} where agent = $1`, [id])).rows[0].n, 0, table);
   }
 });

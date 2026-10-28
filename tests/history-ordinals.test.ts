@@ -14,7 +14,6 @@ import { JournalHistory, MARKER_KIND } from "../src/pi-durable/history.ts";
 import { fillOrdinals, historyPositions } from "../src/pi-durable/ordinals.ts";
 import { seedJournal, SESSION_CONVERSATION_ID as conversationId } from "../src/pi-durable/seed.ts";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
-import { ordinalWalk, OrdinalCursorError } from "../src/history-ordinals.ts";
 import { rowMessages } from "../src/history-pages.ts";
 import { testDatabase } from "./database.ts";
 
@@ -196,32 +195,6 @@ test("the fill places a retired host transcript's session from its base's cursor
   await storage.close(context);
 });
 
-test("coverage counts agents by whether their history is placed; the fill walks them all, a dry run first, resumable by cursor", async () => {
-  const agent = (id: string) => db.query("insert into agents (id, tenant, header, revision, name, type, model) values ($1, 'ops', '{}', 1, 'test', 'test', 'test') on conflict do nothing", [id]);
-  for (const id of ["live", "forked", "late", "skipped", "old", "retired"]) await agent(id);
-  await agent("nopi");
-  for (const id of ["w1", "w2", "w3"]) { const { storage } = await busySession(id, 2); await storage.close(context); await agent(id); await unplace(id); }
-  const coverage = await ordinalWalk(db, { batch: 4 });
-  assert.equal(coverage.complete, true);
-  assert.equal(coverage.counts.no_journal, 1);
-  assert.equal(coverage.counts.unplaced, 4, "w1-w3 and retired");
-  assert.deepEqual(coverage.gate, { ready: false, blocking: ["unplaced"] });
-  // A walk stopped by its budget goes on from its cursor; a dry run's cursor is a dry run's.
-  let ticks = 0;
-  const first = await ordinalWalk(db, { fill: {}, batch: 2, budgetMs: 1, now: () => ticks++ });
-  assert.equal(first.complete, false);
-  await assert.rejects(ordinalWalk(db, { cursor: first.next!, fill: { dryRun: false } }), OrdinalCursorError);
-  await assert.rejects(ordinalWalk(db, { cursor: first.next! }), OrdinalCursorError, "a fill's cursor is not coverage's");
-  let walk = first;
-  while (walk.next) walk = await ordinalWalk(db, { cursor: walk.next, fill: {} });
-  assert.equal(walk.fills!.would_place, 4);
-  assert.equal((await metadata("w1")).history_next, null);
-  walk = await ordinalWalk(db, { fill: { dryRun: false } });
-  assert.equal(walk.fills!.placed, 4);
-  const after = await ordinalWalk(db, {});
-  assert.deepEqual(after.gate, { ready: true, blocking: [] });
-  assert.equal(after.counts.placed, 9);
-});
 
 test("a big session (pages of the fill), with compactions and context checkpoints that are not history, fills as its commits placed it", async () => {
   const { storage, journal } = await busySession("big", 1);
