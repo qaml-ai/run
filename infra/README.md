@@ -129,8 +129,18 @@ infra/tenant.sh rotate-token <tenant>
 infra/tenant.sh link-github <tenant> <login>
 infra/tenant.sh set-limit <tenant> <n|default>  # hosted agents per task
 infra/tenant.sh set-spend-limit <tenant> <usd|none>  # model spend per UTC month
+infra/tenant.sh set-decision-concurrency <tenant> <n|default>  # decision calls at once per task
+infra/tenant.sh set-tier <tenant> <internal|default>  # the operator's own applications: no tenant-level limits
 infra/tenant.sh remove <tenant>
 ```
+
+`set-decision-concurrency` sets the tenant's `decisionConcurrency`: decision calls
+(`POST /v1/decisions`, `decide`) at once on one task, in place of its tier's or 16,
+at most `AGENT_DECISION_NODE_CONCURRENCY` (64). Its queue and in-flight characters
+scale with it. `set-tier internal` puts the tenant on the internal tier: no busy-agent,
+per-minute, js_exec or decision limit of its own unless its entry sets one. A task's
+own caps (agents hosted, js_exec workers, decision calls, in-flight characters, memory)
+and spend limits still apply.
 
 `set-limit` sets the tenant's `maxAgents` in the tenants secret: how many of its
 agents one task hosts at once, in place of `AGENT_MAX_AGENTS_PER_TENANT` (500);

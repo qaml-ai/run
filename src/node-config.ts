@@ -7,6 +7,7 @@ import { ADMIN_RUN_LIMITS, RUN_LIMITS } from "./client-sessions/spend.ts";
 import { STREAM_TIMEOUTS } from "./model-stream.ts";
 import { TOOL_DEADLINES } from "./tool-servers.ts";
 import { codeCapacity } from "./codemode.ts";
+import { DECISION_LIMITS } from "./limits.ts";
 import { v8Settings } from "./v8-exec.ts";
 import { agentProcessEnv } from "./rpc.ts";
 import { MULTI_AGENT_LIMITS } from "./multi-agent.ts";
@@ -132,6 +133,8 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     // agent-launcher's confinement (AGENT_SANDBOX_REQUIRED=1; the image sets it).
     v8: v8Settings(env),
     codeCapacity: codeCapacity(env),
+    // Decision calls this node makes at once, all tenants together; a tenant's own concurrency is at most this.
+    decisionNodeConcurrency: positiveSetting("AGENT_DECISION_NODE_CONCURRENCY", DECISION_LIMITS.nodeConcurrent),
     sandboxRequired: env.AGENT_SANDBOX_REQUIRED === "1",
     // What its agent processes are told of these settings.
     agentEnv: agentProcessEnv(env),

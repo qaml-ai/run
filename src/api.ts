@@ -1027,7 +1027,27 @@ export function api(context: ApiContext) {
     async c => {
       const tenant = c.var.principal.tenant;
       const [summary, runs] = await Promise.all([accounts.billing.summary(tenant), context.rateLimits?.tenantLimit(tenant, "runs")]);
-      return json(c, 200, { ...summary, runsPerMinute: runs ? { limit: runs.max, ...(runs.paid !== undefined ? { afterPurchase: runs.paid || null } : {}) } : null });
+      // afterPurchase: on free credit, what buying credit raises it to (the next tier's, or the paid default).
+      const after = summary.freeCredit && runs?.tier?.next ? runs.tier.next.limit : runs?.paid !== undefined ? runs.paid || null : undefined;
+      return json(c, 200, { ...summary, runsPerMinute: runs ? { limit: runs.max, ...(after !== undefined ? { afterPurchase: after } : {}) } : null });
+    });
+  route(createRoute({ method: "get", path: "/v1/limits", responses: { 200: reply("The account's usage tier and every per-account limit, with where each comes from and what the next tier unlocks", schema.AccountLimits) } }),
+    async c => {
+      const tenant = c.var.principal.tenant;
+      const [own, runs, creates] = await Promise.all([accounts.billing.limits(tenant), context.rateLimits?.tenantLimit(tenant, "runs"), context.rateLimits?.tenantLimit(tenant, "agentCreates")]);
+      const internal = own.tier?.name === "internal";
+      // A per-minute limit as the rate limiter applies it: none (null) when none applies.
+      const perMinute = (applied: Awaited<ReturnType<NonNullable<typeof context.rateLimits>["tenantLimit"]>>) => applied
+        ? { limit: applied.max, source: applied.source, ...(applied.tier ? { tier: applied.tier.name, paid: applied.tier.paid, ...(applied.tier.next ? { next: applied.tier.next } : {}) } : {}) }
+        : { limit: null, source: internal ? "internal" as const : "default" as const };
+      // A tenant's decisions at once are at most the node's.
+      const node = context.decisions?.decider.limits.nodeConcurrent;
+      const decisions = own.decisionConcurrency.limit === null ? { ...own.decisionConcurrency, limit: node ?? null } : { ...own.decisionConcurrency, limit: node ? Math.min(own.decisionConcurrency.limit, node) : own.decisionConcurrency.limit };
+      return json(c, 200, {
+        tier: own.tier,
+        limits: { busyAgents: own.busyAgents, runsPerMinute: perMinute(runs), agentCreatesPerMinute: perMinute(creates), codeConcurrency: own.codeConcurrency, decisionConcurrency: decisions },
+        tiers: own.tiers,
+      });
     });
   const alertService = async (tenant: string, sending = false) => {
     if (await accounts.billing.mode(tenant) !== "prepaid") throw new HttpError(400, "Billing alerts are only available for prepaid accounts");
@@ -1322,7 +1342,7 @@ export function api(context: ApiContext) {
     else if (input.maxStorageGb !== undefined) set.maxStorageBytes = Math.round(input.maxStorageGb * 1e9);
     if (input.maxBusyAgents === null) removed.push("maxBusyAgents");
     else if (input.maxBusyAgents !== undefined) set.maxBusyAgents = input.maxBusyAgents;
-    for (const key of ["agentCreatesPerMinute", "runsPerMinute", "maxRunResponses", "maxRunSeconds", "codeCpuMs", "codeMaxTimeoutMs", "codeConcurrency"] as const) {
+    for (const key of ["agentCreatesPerMinute", "runsPerMinute", "maxRunResponses", "maxRunSeconds", "codeCpuMs", "codeMaxTimeoutMs", "codeConcurrency", "decisionConcurrency"] as const) {
       if (input[key] === null) removed.push(key);
       else if (input[key] !== undefined) set[key] = input[key];
     }
@@ -1331,12 +1351,13 @@ export function api(context: ApiContext) {
     if (!row) throw new HttpError(404, `Unknown tenant ${tenant}`);
     accounts.billing.forgetLimits(tenant);
     console.log(JSON.stringify({ type: "tenant_limits_set", tenant, limits: row.limits, by }));
-    const { maxStorageBytes: bytes, maxBusyAgents: busy, agentCreatesPerMinute, runsPerMinute, maxRunResponses, maxRunSeconds, codeCpuMs, codeMaxTimeoutMs, codeConcurrency } = row.limits;
+    const { maxStorageBytes: bytes, maxBusyAgents: busy, agentCreatesPerMinute, runsPerMinute, maxRunResponses, maxRunSeconds, codeCpuMs, codeMaxTimeoutMs, codeConcurrency, decisionConcurrency } = row.limits;
     return json(c, 200, { tenant, limits: {
       ...(typeof bytes === "number" ? { maxStorageGb: bytes / 1e9 } : {}), ...(typeof busy === "number" ? { maxBusyAgents: busy } : {}),
       ...(typeof agentCreatesPerMinute === "number" ? { agentCreatesPerMinute } : {}), ...(typeof runsPerMinute === "number" ? { runsPerMinute } : {}),
       ...(typeof maxRunResponses === "number" ? { maxRunResponses } : {}), ...(typeof maxRunSeconds === "number" ? { maxRunSeconds } : {}),
       ...(typeof codeCpuMs === "number" ? { codeCpuMs } : {}), ...(typeof codeMaxTimeoutMs === "number" ? { codeMaxTimeoutMs } : {}), ...(typeof codeConcurrency === "number" ? { codeConcurrency } : {}),
+      ...(typeof decisionConcurrency === "number" ? { decisionConcurrency } : {}),
     } });
   });
   // Email and password sign-in: set by the platform operator for any tenant, or by an operator token for its own tenant (a

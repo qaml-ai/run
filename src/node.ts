@@ -73,7 +73,7 @@ import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 import { cgroupMemory } from "./process-memory.ts";
-import { recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
+import { decisionLoadLine, recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
 import { runtimeSecrets, managedDiscordSecrets } from "./secrets.ts";
 import { checkSandbox, type CodeExecutor } from "./codemode.ts";
 import { V8Exec } from "./v8-exec.ts";
@@ -357,7 +357,10 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     db, config: rateLimitConfig(env), hashKey: sessionSecret, nodes: () => liveNodes,
     free: tenant => accounts.billing.onFreeCredit(tenant),
     override: (tenant, limit) => tenants.has(tenant) ? tenants.rateLimit(tenant, limit) : accounts.billing.rateLimit(tenant, limit),
-    // Admin tenants (the operator's own applications, such as camelAI's) are never rate limited unless their entry sets a limit.
+    // A prepaid tenant's usage tier sets its limits; the internal tier has none.
+    tier: (tenant, limit) => accounts.billing.tierRateLimit(tenant, limit),
+    // Admin tenants (the operator's own applications, such as camelAI's) are not rate limited unless their entry sets a
+    // limit or they are prepaid (then their tier's).
     exempt: tenant => tenants.has(tenant),
   });
   rateLimits.start();
@@ -471,6 +474,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       return found?.apiKey ? { apiKey: found.apiKey, platform: found.platform } : undefined;
     },
     creditMultiplier: () => accounts.billing.pricing.openrouterCreditMultiplier,
+    // A tenant's calls at once on this node: set for it, its tier's, or none on the internal tier; else the default.
+    tenantConcurrency: async tenant => {
+      const found = await accounts.billing.decisionConcurrency(tenant);
+      return found.source === "default" ? undefined : found.limit;
+    },
+    limits: { nodeConcurrent: config.decisionNodeConcurrency },
   });
   // Files sent to tools as URLs bound to their call, signed with the identity tokens' key (file-arguments.ts).
   const fileUrls = new FileUrls({ signer, get volumes() { return volumes; }, publicUrl: () => links.publicUrl });
@@ -842,9 +851,10 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // A self-hosted runtime configured by its environment takes keys there too.
     ...(config.selfHostedTenant ? { modelKeyHint: "On this self-hosted runtime, AGENT_TENANT_API_KEYS in its environment sets keys too ({\"anthropic\": \"sk-ant-...\"}; restart it after)." } : {}),
     secret: sessionSecret, toolTimeoutMs, idleMs, streamTimeouts, contextRangeMaxBytes: config.contextRangeMaxBytes, ...(config.runOverrunMs !== undefined ? { runOverrunMs: config.runOverrunMs } : {}), maxAgentsPerTenant, codeCapacity: config.codeCapacity, ...(config.snapshotBytes !== undefined ? { snapshotBytes: config.snapshotBytes } : {}), orphanSweepMs: orphanMs, maxResumes: config.maxResumes, childSweepMs: config.childSweepMs, wakesPerHour: config.wakesPerHour, watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
-      // Agents hosted on this node stay within the tenant's busy limit too: its own, or its tier's (else the default).
+      // Agents hosted on this node stay within the tenant's busy limit too: its own, or its tier's (else, and on the
+      // internal tier, the node's default).
       const { limit, source } = await accounts.billing.busyLimit(tenant);
-      return source === "default" ? undefined : limit;
+      return source === "default" || source === "internal" ? undefined : limit;
     },
     apiKeyFor: async (tenant, provider, keyScope) => {
       // A tenant's own endpoint gets identity tokens, and its calls cost the runtime nothing.
@@ -1453,13 +1463,17 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     void (deps.readCgroupMemory?.() ?? Promise.resolve({})).then(cgroup => {
       const memory = process.memoryUsage();
       const media = voiceHost?.stats();
+      const decisions = decider.load();
       console.log(nodeLoadLine({
         hostedAgents: supervisor.agents.size, sessions: clients.sessions.size, volumes: volumes.size, runningTurns: clients.inFlight(), rssBytes: memory.rss,
         watchers: clients.watchers, dbConnections: db.totalCount, dbIdle: db.idleCount, dbWaiting: db.waitingCount,
         heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal, externalBytes: memory.external, arrayBuffersBytes: memory.arrayBuffers,
         ...cgroup,
         ...(media ? { voiceSessions: media.sessions, voiceWorkers: media.workers, voiceWorkerBytes: media.memoryMb * 1_048_576 } : {}),
+        decisionsActive: decisions.node.active, decisionsWaiting: decisions.node.waiting,
       }, config.serviceName, { node, retiring: retiringSince !== undefined, ...(memory.heapUsed > HEAP_NAMES_AGENTS_BYTES ? { busyAgents: clients.busyAgents() } : {}) }));
+      // Each tenant with decision calls on this node: in flight, waiting, and its slots.
+      for (const tenant of decisions.tenants) console.log(decisionLoadLine(tenant, config.serviceName));
     }).catch(error => console.error(JSON.stringify({ type: "node_load_failed", error: safeError(error) })))
       .finally(() => { loadReading = false; });
     // Every node reports the shared outboxes' backlog: read it with Maximum.

@@ -53,7 +53,7 @@ export function OverviewPage({ billing }: { billing?: Billing }) {
         { label: `Spend · ${DAYS} days`, value: summary ? formatCost(summary.spend) : "…",
           extra: summary && <p className="text-muted-foreground mt-1 text-xs">{[scope && accountSpend ? `${Math.round((summary.spend / accountSpend) * 100)}% of account` : undefined, changeLabel(summary.spend, summary.prior, DAYS)].filter(Boolean).join(" · ")}</p> },
         { label: "Running now", value: running.items ? more(running, running.items.length) : "…",
-          extra: <p className="text-muted-foreground mt-1 text-xs">{agents.items ? `of ${more(agents, agents.items.length)} agents` : ""}{busy ? ` · ${busy.limit} busy at most` : ""}</p> },
+          extra: <p className="text-muted-foreground mt-1 text-xs">{agents.items ? `of ${more(agents, agents.items.length)} agents` : ""}{busy && busy.limit !== null ? ` · ${busy.limit} busy at most` : ""}</p> },
         { label: "Responses today", value: summary ? formatNumber(summary.responsesToday) : "…",
           extra: failing.items && <p className={cn("mt-1 text-xs", failures.length ? "text-destructive" : "text-muted-foreground")}>{failures.length ? `${more(failing, failures.length)} agent${failures.length === 1 ? "" : "s"} failed · 24h` : "no failures · 24h"}</p> },
         { label: "Agents", value: agents.items ? more(agents, agents.items.length) : "…",

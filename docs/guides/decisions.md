@@ -62,9 +62,9 @@ answer alone. Tune thresholds on your own data, for the model you pinned: anothe
 
 ## Batches
 
-`items` asks about up to 100 states in one request, each with its own questions. They are answered in parallel (at
-most 16 at once for an account on a node; the rest wait), and the answer lists each item's `answers`, or its `error`,
-in order: one item failing does not fail the others, and is not billed.
+`items` asks about up to 100 states in one request, each with its own questions. They are answered in parallel, one
+provider call per state (within your account's [decision concurrency](#throughput); the rest wait), and the answer lists
+each item's `answers`, or its `error`, in order: one item failing does not fail the others, and is not billed.
 
 ```json
 { "items": [ { "state": "first message", "questions": { "spam": { "type": "noul", "instructions": "This is spam." } } },
@@ -78,10 +78,31 @@ in order: one item failing does not fail the others, and is not billed.
 ```
 
 A call the provider fails for now (rate limited, overloaded, or no answer within 10 seconds) is retried up to 3 times
-with backoff, honouring its Retry-After; a request answers within 60 seconds. A request's body is at most 2 MB, and an
-account's decisions in flight on a node are bounded (1,000 waiting, 8 million characters held): past them a request is
-refused with 429 before its body is read. Nothing is cached: send each distinct state once. Neither states nor
-answers are logged or kept.
+with backoff, honouring its Retry-After; a request answers within 60 seconds. A request's body is at most 2 MB.
+Nothing is cached: send each distinct state once. Neither states nor answers are logged or kept.
+
+### Throughput
+
+Each state is one provider call, and an account makes at most its **decision concurrency** of them at once on a
+runtime node: 16 by default, more on higher [usage tiers](../reference/limits.md#usage-tiers) (32 on Tier 1, 48 on
+Tier 2, 64 from Tier 3), or what the operator set for the account. A node makes at most 64 at once for everyone
+(`AGENT_DECISION_NODE_CONCURRENCY`), and an account's concurrency is never more than that. A batch takes one slot per
+item, so it does not raise the ceiling. At Jev's typical 300 ms a call, 16 at once is about 50 decisions a second per
+node, and 48 about 160.
+
+Calls past it wait their turn. An account's waiting calls and the characters its requests hold are bounded on each
+node: 1,000 waiting and 8 million characters at the default concurrency, scaled up with a higher one (3,000 and 24
+million at 48), the characters at most the node's 32 million. Past them a request is refused with 429 `RATE_LIMITED`
+before its body is read. `GET /v1/limits` has the account's `decisionConcurrency`, and where it comes from.
+
+The operator sees a `decision_wait` metric line (tenant, how many calls of the request waited past 250 ms, the
+longest wait, the queue's depth) and a `decision_load` gauge (calls in flight and waiting, per account), so an
+account nearing its ceiling shows before it gets 429s. Operators set an account's concurrency with
+`decisionConcurrency` (its tenants-file entry, or `PUT /v1/tenants/{id}/limits`; null returns to the tier's).
+
+The provider answers one state a call, with all of its questions answered in parallel: asking several questions about a
+state in one call is the way to get more from a call. Neither OpenRouter's decisions API nor TypeSafe's own takes
+several states in one call.
 
 ## In an agent
 

@@ -167,7 +167,7 @@ export interface Usage {
 export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustment" | "refund";
 export interface LedgerEntry { id: number; kind: LedgerKind; amount: number; metadata: Record<string, any>; createdAt: number }
 export interface BusyAgents {
-  busy?: number; limit: number; source: "tier" | "tenant" | "default"; tier?: string; paid?: number;
+  busy?: number; /** null: no limit (the internal tier). */ limit: number | null; source: "tier" | "tenant" | "internal" | "default"; tier?: string; paid?: number;
   next?: { tier: string; paid: number; limit: number };
 }
 export interface Billing {

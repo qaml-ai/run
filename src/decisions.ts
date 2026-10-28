@@ -4,7 +4,7 @@ import type { McpResult } from "./mcp-results.ts";
 import type { ToolDefinition } from "./protocol.ts";
 import { HttpError, errorStatus } from "./http.ts";
 import { DECISION_LIMITS } from "./limits.ts";
-import { safeError } from "./metrics.ts";
+import { recordDecisionWait, safeError } from "./metrics.ts";
 
 /**
  * Decisions: typed questions about one state (a message, a record, a document), answered by a decision model ("System
@@ -225,17 +225,34 @@ export interface DeciderOptions {
   creditMultiplier?: () => number;
   /** Waits between attempts; a test's may skip them. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
-  limits?: Partial<Record<"tenantConcurrent" | "nodeConcurrent" | "queued" | "tenantChars" | "nodeChars" | "attempts" | "backoffMs" | "callTimeoutMs" | "requestTimeoutMs", number>>;
+  limits?: Partial<Record<"tenantConcurrent" | "nodeConcurrent" | "queued" | "tenantChars" | "nodeChars" | "attempts" | "backoffMs" | "callTimeoutMs" | "requestTimeoutMs" | "waitLogMs", number>>;
+  /**
+   * A tenant's own decision calls at once on a node, in place of `tenantConcurrent`: set for it (an override), its
+   * usage tier's, or null for no tenant limit (the internal tier); undefined for the default. The node's
+   * `nodeConcurrent` bounds it, and its queue and in-flight characters scale with it (`Decider.bounds`).
+   */
+  tenantConcurrency?: (tenant: string) => Promise<number | null | undefined>;
 }
+
+/** A tenant's bounds on a node: calls at once, calls waiting, and characters held by its requests in flight. */
+export type DecisionBounds = { slots: number; queued: number; chars: number };
 
 /** Slots taken in order: at most `max` at once, the rest waiting (a stop takes a waiter out). */
 class Gate {
   active = 0;
   readonly waiting: { resolve: () => void; reject: (error: unknown) => void }[] = [];
-  readonly max: number;
-  constructor(max: number) { this.max = max; }
+  max: number;
+  /** A tenant's gate: its bounds, as last resolved. */
+  bounds?: DecisionBounds;
+  constructor(max: number, bounds?: DecisionBounds) { this.max = max; if (bounds) this.bounds = bounds; }
   /** Requests using it: a tenant's gate is dropped when the last one ends. */
   users = 0;
+  /** New bounds for a gate in use (an override changed): a larger one lets waiters in now; a smaller one as slots free. */
+  resize(bounds: DecisionBounds) {
+    this.bounds = bounds;
+    this.max = bounds.slots;
+    while (this.active < this.max && this.waiting.length) { this.active++; this.waiting.shift()!.resolve(); }
+  }
   async take(signal: AbortSignal) {
     if (signal.aborted) throw signal.reason;
     if (this.active < this.max) { this.active++; return; }
@@ -247,7 +264,8 @@ class Gate {
     });
   }
   give() {
-    const next = this.waiting.shift();
+    // Over a lowered max, the slot is dropped instead of handed on.
+    const next = this.active <= this.max ? this.waiting.shift() : undefined;
     if (next) next.resolve(); else this.active--;
   }
 }
@@ -289,9 +307,32 @@ export class Decider {
    * takes, or as many characters held as it may hold. A 429 then costs no body.
    */
   saturated(tenant: string): HttpError | undefined {
-    if ((this.tenants.get(tenant)?.waiting.length ?? 0) >= this.limits.queued) return new HttpError(429, `Too many decisions waiting for this account on this node (at most ${this.limits.queued}): wait for some to finish`, "RATE_LIMITED");
-    if ((this.heldBy.get(tenant) ?? 0) >= this.limits.tenantChars || this.held >= this.limits.nodeChars) return new HttpError(429, "Too many decisions in flight on this node: wait for some to finish", "RATE_LIMITED");
+    // A tenant with nothing in flight here has nothing waiting or held, so the default bounds answer for it.
+    const gate = this.tenants.get(tenant), bounds = gate?.bounds ?? this.bounds(undefined);
+    if ((gate?.waiting.length ?? 0) >= bounds.queued) return new HttpError(429, `Too many decisions waiting for this account on this node (at most ${bounds.queued}): wait for some to finish`, "RATE_LIMITED");
+    if ((this.heldBy.get(tenant) ?? 0) >= bounds.chars || this.held >= this.limits.nodeChars) return new HttpError(429, "Too many decisions in flight on this node: wait for some to finish", "RATE_LIMITED");
     return undefined;
+  }
+
+  /**
+   * A tenant's bounds on this node for its concurrency (undefined: `tenantConcurrent`; null: no tenant limit): its calls
+   * at once, at most the node's; and its queue and in-flight characters, scaled up from the defaults in proportion
+   * (never down, so a lowered limit still takes a full request), the characters at most the node's. The queue scales so
+   * a full one drains in the same time at any concurrency.
+   */
+  bounds(concurrency: number | null | undefined): DecisionBounds {
+    const { tenantConcurrent, nodeConcurrent, queued, tenantChars, nodeChars } = this.limits;
+    const slots = Math.max(1, Math.min(concurrency === undefined ? tenantConcurrent : concurrency ?? nodeConcurrent, nodeConcurrent));
+    const scale = Math.max(1, slots / tenantConcurrent);
+    return { slots, queued: Math.round(queued * scale), chars: Math.min(Math.round(tenantChars * scale), nodeChars) };
+  }
+
+  /** Calls in flight and waiting on this node, and each tenant's with calls here (a gauge for node_load's interval). */
+  load() {
+    return {
+      node: { active: this.node.active, waiting: this.node.waiting.length, slots: this.node.max },
+      tenants: [...this.tenants].map(([tenant, gate]) => ({ tenant, active: gate.active, waiting: gate.waiting.length, slots: gate.max })),
+    };
   }
 
   /** What an item is estimated to cost (USD) before it is sent: its characters as tokens, at the model's price. */
@@ -318,22 +359,30 @@ export class Decider {
     const key = await this.options.key(context.tenant, context.keyScope, provider.id);
     if (!key) throw new HttpError(400, `Decisions need an OpenRouter key: add one under Models & keys (PUT /v1/providers/${provider.id}/key)${context.keyScope ? `, or to key scope ${context.keyScope}` : ""}`, "DECISIONS_UNAVAILABLE");
     const { platform, ...credentials } = key;
+    // The tenant's own concurrency (an override, its tier's); a failed read falls back to the default rather than fail.
+    let concurrency: number | null | undefined;
+    try { concurrency = await this.options.tenantConcurrency?.(context.tenant); } catch { concurrency = undefined; }
+    const bounds = this.bounds(concurrency);
     let tenant = this.tenants.get(context.tenant);
-    if (tenant && tenant.waiting.length + request.items.length > this.limits.queued + this.limits.tenantConcurrent) throw new HttpError(429, `Too many decisions waiting for this account on this node (at most ${this.limits.queued}): wait for some to finish`, "RATE_LIMITED");
+    if (tenant && tenant.waiting.length + request.items.length > bounds.queued + bounds.slots) throw new HttpError(429, `Too many decisions waiting for this account on this node (at most ${bounds.queued}): wait for some to finish`, "RATE_LIMITED");
     // What the request holds while it runs, within the tenant's and the node's bounds.
     const chars = request.items.reduce((total, item) => total + itemChars(item), 0);
     const tenantHeld = this.heldBy.get(context.tenant) ?? 0;
-    if (tenantHeld + chars > this.limits.tenantChars || this.held + chars > this.limits.nodeChars) throw new HttpError(429, "Too many decisions in flight on this node: wait for some to finish", "RATE_LIMITED");
+    if (tenantHeld + chars > bounds.chars || this.held + chars > this.limits.nodeChars) throw new HttpError(429, "Too many decisions in flight on this node: wait for some to finish", "RATE_LIMITED");
     this.heldBy.set(context.tenant, tenantHeld + chars);
     this.held += chars;
-    if (!tenant) this.tenants.set(context.tenant, tenant = new Gate(this.limits.tenantConcurrent));
+    if (!tenant) this.tenants.set(context.tenant, tenant = new Gate(bounds.slots, bounds));
+    else if (tenant.max !== bounds.slots || tenant.bounds?.queued !== bounds.queued || tenant.bounds?.chars !== bounds.chars) tenant.resize(bounds);
     tenant.users++;
     const started = Date.now();
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(this.limits.requestTimeoutMs)]);
     let served = request.model;
+    // Items that waited for a slot past `waitLogMs`: how many, the longest wait (and the node's part of it), and the
+    // deepest queue one saw.
+    const waits = { items: 0, maxMs: 0, nodeMs: 0, queued: 0 };
     const results = await Promise.all(request.items.map(async (item): Promise<ItemResult> => {
       try {
-        const answered = await this.call(tenant, item, request.model, credentials, deadline, policy);
+        const answered = await this.call(tenant, item, request.model, credentials, deadline, policy, waits);
         if (answered.model) served = answered.model;
         const reported = typeof answered.costUsd === "number" && Number.isFinite(answered.costUsd) && answered.costUsd >= 0;
         // The provider's cost, else its tokens at the model's price, else (it said neither) the estimate: never $0 unsaid.
@@ -361,6 +410,8 @@ export class Decider {
     }
     const failed = results.filter(result => "error" in result).length;
     const ms = Date.now() - started;
+    // One line a request, not a call: a tenant nearing its ceiling shows before it gets 429s. Counts and times only.
+    if (waits.items) recordDecisionWait({ tenant: context.tenant, items: waits.items, waitMs: waits.maxMs, nodeWaitMs: waits.nodeMs, queued: waits.queued, slots: bounds.slots });
     console.log(JSON.stringify({ type: "decided", tenant: context.tenant, provider: provider.id, model: request.model, items: request.items.length, decisions, failed, inputTokens, ms }));
     const usage: UsageRecord | undefined = decisions ? {
       provider: provider.id, model: request.model, kind: "decision", platform, decisions, timestamp: Date.now(),
@@ -371,14 +422,28 @@ export class Decider {
   }
 
   /** One item, within the gates, retried while the provider fails for now and the deadline allows. */
-  private async call(tenant: Gate, item: DecisionItem, model: string, credentials: DecisionCredentials, deadline: AbortSignal, policy?: { dataCollection?: "deny" }): Promise<ProviderDecision> {
-    const { attempts, backoffMs, callTimeoutMs } = this.limits;
+  private async call(tenant: Gate, item: DecisionItem, model: string, credentials: DecisionCredentials, deadline: AbortSignal, policy: { dataCollection?: "deny" } | undefined, waits: { items: number; maxMs: number; nodeMs: number; queued: number }): Promise<ProviderDecision> {
+    const { attempts, backoffMs, callTimeoutMs, waitLogMs } = this.limits;
     const sleep = this.options.sleep ?? abortable;
+    // This item's time waiting for slots over its attempts (backoff not counted), and whether it is counted yet.
+    let waited = 0, nodeWaited = 0, counted = false;
     for (let attempt = 1; ; attempt++) {
       let failed: DecisionFailed;
-      await tenant.take(deadline);
+      const asked = Date.now();
+      // take() queues a waiter at once, so the depth read here counts this call's.
+      const taking = tenant.take(deadline);
+      waits.queued = Math.max(waits.queued, tenant.waiting.length);
+      await taking;
       try {
+        const admitted = Date.now();
         await this.node.take(deadline);
+        nodeWaited += Date.now() - admitted;
+        waited += Date.now() - asked;
+        if (waited >= waitLogMs) {
+          if (!counted) { counted = true; waits.items++; }
+          waits.maxMs = Math.max(waits.maxMs, waited);
+          waits.nodeMs = Math.max(waits.nodeMs, nodeWaited);
+        }
         const timeout = AbortSignal.timeout(callTimeoutMs);
         try {
           return await this.options.provider.decide(item, model, credentials, AbortSignal.any([deadline, timeout]), policy);

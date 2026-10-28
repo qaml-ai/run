@@ -4,7 +4,7 @@ import { transaction, type Db, type Sql } from "./db.ts";
 import type { Journey } from "./journey.ts";
 import type { Storage } from "../shared/storage.ts";
 import { HttpError } from "./http.ts";
-import { DEFAULT_PRICING, MICROS, storageCharge, usageTier, type Pricing } from "./pricing.ts";
+import { DEFAULT_PRICING, MICROS, storageCharge, usageTier, type Pricing, type TierLimitName } from "./pricing.ts";
 import { busyCount, tierLimit, type BusyLimit } from "./busy-agents.ts";
 import type { Stripe } from "./stripe.ts";
 import { AutoTopup } from "./auto-topup.ts";
@@ -12,7 +12,7 @@ import { BillingPayments, stripeId } from "./billing-payments.ts";
 import { CardCredit, CARD_CHECK } from "./card-credit.ts";
 import type { StorageUsage } from "./storage-usage.ts";
 import { safeError } from "./metrics.ts";
-import { CODE_LIMITS, SANDBOX_LIMITS } from "./limits.ts";
+import { CODE_LIMITS, DECISION_LIMITS, SANDBOX_LIMITS } from "./limits.ts";
 
 /**
  * Prepaid credit. Tenants with `billing: "prepaid"` (every tenant created by sign-in)
@@ -27,6 +27,15 @@ import { CODE_LIMITS, SANDBOX_LIMITS } from "./limits.ts";
  * bounded by one response and the time around it.
  */
 export type BillingMode = "prepaid" | "none";
+
+/**
+ * Where a tenant's limit comes from: `tenant`, set for it (its tenants-file entry, or the operator's `tenants.limits`);
+ * `internal`, the tenants file's internal tier (no limit); `tier`, its usage tier (prepaid tenants, by what they have
+ * paid); `default`, the deployment's.
+ */
+export type LimitSource = "tenant" | "internal" | "tier" | "default";
+/** A tier's value for one limit, with the next tier's (when it sets one). */
+export type TierValue = { limit: number; source: "tier"; tier: string; paid: number; next?: { tier: string; paid: number; limit: number } };
 export type LedgerKind = "grant" | "purchase" | "usage" | "storage" | "adjustment" | "refund";
 export const LEDGER_KINDS: LedgerKind[] = ["grant", "purchase", "usage", "storage", "adjustment", "refund"];
 export interface LedgerEntry { tenant: string; kind: LedgerKind; amount: number; key: string; metadata?: Record<string, unknown> }
@@ -145,7 +154,7 @@ export class Billing {
   /** Each tenant's balance, lifetime purchases and usage spend in the last hour, as last read. */
   private readonly accounts = new Map<string, Account & { until: number }>();
   private readonly reads = new Map<string, Promise<Account>>();
-  private readonly modes = new Map<string, { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; maxRunResponses?: number; maxRunSeconds?: number; codeCpuMs?: number; codeMaxTimeoutMs?: number; codeConcurrency?: number; until: number }>();
+  private readonly modes = new Map<string, { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; maxRunResponses?: number; maxRunSeconds?: number; codeCpuMs?: number; codeMaxTimeoutMs?: number; codeConcurrency?: number; decisionConcurrency?: number; until: number }>();
 
   constructor(options: BillingOptions) {
     this.options = options;
@@ -170,9 +179,9 @@ export class Billing {
     if (cached && cached.until > Date.now()) return cached;
     const row = (await sql.query("select billing, limits from tenants where id = $1", [tenant])).rows[0];
     const set = (key: string) => Number.isSafeInteger(row?.limits?.[key]) ? { [key]: row.limits[key] as number } : {};
-    const entry: { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; maxRunResponses?: number; maxRunSeconds?: number; codeCpuMs?: number; codeMaxTimeoutMs?: number; codeConcurrency?: number; until: number } = {
+    const entry: { mode: BillingMode; maxStorageBytes?: number; agentCreatesPerMinute?: number; runsPerMinute?: number; maxRunResponses?: number; maxRunSeconds?: number; codeCpuMs?: number; codeMaxTimeoutMs?: number; codeConcurrency?: number; decisionConcurrency?: number; until: number } = {
       mode: (row?.billing === "prepaid" ? "prepaid" : "none") as BillingMode, ...set("maxStorageBytes"), ...set("agentCreatesPerMinute"), ...set("runsPerMinute"),
-      ...set("maxRunResponses"), ...set("maxRunSeconds"), ...set("codeCpuMs"), ...set("codeMaxTimeoutMs"), ...set("codeConcurrency"),
+      ...set("maxRunResponses"), ...set("maxRunSeconds"), ...set("codeCpuMs"), ...set("codeMaxTimeoutMs"), ...set("codeConcurrency"), ...set("decisionConcurrency"),
       until: Date.now() + MODE_CACHE_MS,
     };
     this.modes.set(tenant, entry);
@@ -203,15 +212,91 @@ export class Billing {
    * runtime's), else a self-serve tenant's `tenants.limits`, else `CODE_LIMITS` (on free credit, `freeConcurrent` at once).
    */
   async codeLimits(tenant: string): Promise<{ cpuMs: number; maxTimeoutMs: number; concurrent: number }> {
+    const concurrent = (await this.codeConcurrency(tenant)).limit ?? Infinity;
     if (this.tenants.has(tenant)) {
       const own = this.tenants.codeLimits(tenant);
-      return { cpuMs: own.cpuMs ?? CODE_LIMITS.cpuMs, maxTimeoutMs: own.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, concurrent: own.concurrent ?? Infinity };
+      return { cpuMs: own.cpuMs ?? CODE_LIMITS.cpuMs, maxTimeoutMs: own.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, concurrent };
     }
     const row = await this.row(tenant);
     return {
       cpuMs: Math.min(row.codeCpuMs ?? CODE_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs), maxTimeoutMs: Math.min(row.codeMaxTimeoutMs ?? CODE_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs),
-      concurrent: row.codeConcurrency ?? (await this.onFreeCredit(tenant) ? CODE_LIMITS.freeConcurrent : CODE_LIMITS.concurrent),
+      concurrent,
     };
+  }
+
+  /**
+   * A prepaid tenant's usage tier's value for `field`, by what it has paid; undefined when the tenant is not prepaid
+   * or its tier leaves the field to the deployment's default.
+   */
+  async tierValue(tenant: string, field: TierLimitName): Promise<TierValue | undefined> {
+    if (await this.mode(tenant) !== "prepaid") return undefined;
+    const paid = (await this.account(tenant)).purchased;
+    const { tier, next } = usageTier(this.pricing.tiers, paid);
+    const limit = tier[field];
+    if (limit === undefined) return undefined;
+    const ahead = next?.[field];
+    return { limit, source: "tier", tier: tier.name, paid, ...(next && ahead !== undefined ? { next: { tier: next.name, paid: next.paid, limit: ahead } } : {}) };
+  }
+
+  /**
+   * A per-tenant limit, first found of: the tenant's own (`own`: its tenants-file entry's, else the operator's
+   * `tenants.limits`), none for the internal tier, its usage tier's (prepaid tenants), else undefined (the caller's
+   * default). `limit: null` is no limit.
+   */
+  private async limitFor(tenant: string, field: TierLimitName, own: number | undefined): Promise<{ limit: number | null; source: "tenant" | "internal" } | TierValue | undefined> {
+    if (own !== undefined) return { limit: own, source: "tenant" };
+    if (this.tenants.internal(tenant)) return { limit: null, source: "internal" };
+    return this.tierValue(tenant, field);
+  }
+
+  /**
+   * js_exec executions the tenant may run at once on a node: an admin tenant's entry, a self-serve tenant's
+   * `tenants.limits`, none on the internal tier, its tier's, else for an admin tenant none and for a self-serve one
+   * `CODE_LIMITS` (on free credit, `freeConcurrent`).
+   */
+  async codeConcurrency(tenant: string): Promise<{ limit: number | null; source: LimitSource } | TierValue> {
+    const admin = this.tenants.has(tenant);
+    const own = admin ? this.tenants.codeLimits(tenant).concurrent : (await this.row(tenant)).codeConcurrency;
+    const found = await this.limitFor(tenant, "codeConcurrency", own);
+    if (found) return found;
+    if (admin) return { limit: null, source: "default" };
+    return { limit: await this.onFreeCredit(tenant) ? CODE_LIMITS.freeConcurrent : CODE_LIMITS.concurrent, source: "default" };
+  }
+
+  /**
+   * Decision calls the tenant may make at once on a node: as `codeConcurrency`, else undefined (the Decider's default,
+   * `DECISION_LIMITS.tenantConcurrent`). The Decider bounds it by the node's own.
+   */
+  async decisionConcurrency(tenant: string): Promise<{ limit: number | null; source: LimitSource } | TierValue> {
+    const own = this.tenants.has(tenant) ? this.tenants.decisionConcurrency(tenant) : (await this.row(tenant)).decisionConcurrency;
+    return await this.limitFor(tenant, "decisionConcurrency", own) ?? { limit: DECISION_LIMITS.tenantConcurrent, source: "default" };
+  }
+
+  /**
+   * What GET /v1/limits shows, but the per-minute limits (rate-limits.ts has those): the tenant's tier (`internal`,
+   * else a prepaid tenant's by what it has paid, else null), its busy agents, js_exec and decision limits with where
+   * each comes from (null: no limit), and every tier.
+   */
+  async limits(tenant: string) {
+    const [busy, busyNow, code, decisions] = await Promise.all([this.busyLimit(tenant), busyCount(this.db, tenant), this.codeConcurrency(tenant), this.decisionConcurrency(tenant)]);
+    let tier: { name: string; paid?: number; next?: { name: string; paid: number } } | null = null;
+    if (this.tenants.internal(tenant)) tier = { name: "internal" };
+    else if (await this.mode(tenant) === "prepaid") {
+      const paid = (await this.account(tenant)).purchased;
+      const found = usageTier(this.pricing.tiers, paid);
+      tier = { name: found.tier.name, paid, ...(found.next ? { next: { name: found.next.name, paid: found.next.paid } } : {}) };
+    }
+    const finite = <T extends { limit: number | null }>(limit: T) => ({ ...limit, limit: limit.limit !== null && Number.isFinite(limit.limit) ? limit.limit : null });
+    return { tier, busyAgents: { busy: busyNow, ...finite(busy) }, codeConcurrency: finite(code), decisionConcurrency: finite(decisions), tiers: this.pricing.tiers.map(entry => ({ ...entry })) };
+  }
+
+  /**
+   * A per-minute rate limit from the tier: none on the internal tier (null), the tier's for a prepaid tenant, else
+   * undefined (the deployment's). A limit set for the tenant (`rateLimit`, the tenants file's) comes before this.
+   */
+  async tierRateLimit(tenant: string, limit: "agentCreates" | "runs"): Promise<TierValue | null | undefined> {
+    if (this.tenants.internal(tenant)) return null;
+    return this.tierValue(tenant, limit === "runs" ? "runsPerMinute" : "agentCreatesPerMinute");
   }
 
   /**
@@ -282,14 +367,15 @@ export class Billing {
   }
 
   /**
-   * How many agents `tenant` may have busy at once across the fleet: its tenants-file entry's `maxAgents`, else
-   * the operator's `maxBusyAgents` for a self-serve tenant (`tenants.limits`), else for a prepaid tenant its usage
+   * How many agents `tenant` may have busy at once across the fleet: its tenants-file entry's `maxAgents`, else none
+   * on the internal tier (Infinity), else the operator's `maxBusyAgents` for a self-serve tenant (`tenants.limits`), else for a prepaid tenant its usage
    * tier's, else the deployment's. The tier comes from what the tenant has paid,
    * read from its account row (in `sql`, the caller's transaction) each time, so a payment applies at once.
    */
   async busyLimit(tenant: string, sql: Sql = this.db): Promise<BusyLimit> {
     const own = this.tenants.maxAgents(tenant);
     if (own !== undefined) return { limit: own, source: "tenant" };
+    if (this.tenants.internal(tenant)) return { limit: Infinity, source: "internal" };
     // A self-serve tenant's row (the operator's maxBusyAgents, and its mode) and what it has paid, read together and afresh.
     const { rows: [row] } = await sql.query(`
       select t.billing, t.limits -> 'maxBusyAgents' as max_busy, a.purchased from (select $1::text as id) as x
@@ -405,7 +491,7 @@ export class Billing {
     const [limit, busy] = await Promise.all([this.busyLimit(tenant), busyCount(this.db, tenant)]);
     return {
       billing: mode, balance, purchased, freeCredit: mode === "prepaid" && purchased <= 0, checkout: !!this.options.stripe,
-      busyAgents: { busy, ...limit },
+      busyAgents: { busy, ...limit, limit: Number.isFinite(limit.limit) ? limit.limit : null },
       startingCredit: mode === "prepaid" ? await this.startingCredit(tenant) : { status: "not_applicable" as const, amount: 0 },
       month: { since, ...thisMonth },
       recent: (await this.ledger(tenant, { limit: 10 })).entries,

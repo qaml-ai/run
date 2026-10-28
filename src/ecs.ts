@@ -156,8 +156,10 @@ export type NodeLoad = {
   heapUsedBytes?: number; heapTotalBytes?: number; externalBytes?: number; arrayBuffersBytes?: number;
   voiceSessions?: number; voiceWorkers?: number; voiceWorkerBytes?: number;
   cgroupMemoryBytes?: number; cgroupMemoryPeakBytes?: number;
+  /** Decision calls in flight on the node, and waiting for its slots (AGENT_DECISION_NODE_CONCURRENCY). */
+  decisionsActive?: number; decisionsWaiting?: number;
 };
-const OPTIONAL_LOAD = ["watchers", "dbConnections", "dbIdle", "dbWaiting", "voiceSessions", "voiceWorkers"] as const;
+const OPTIONAL_LOAD = ["watchers", "dbConnections", "dbIdle", "dbWaiting", "voiceSessions", "voiceWorkers", "decisionsActive", "decisionsWaiting"] as const;
 const OPTIONAL_BYTES = ["heapUsedBytes", "heapTotalBytes", "externalBytes", "arrayBuffersBytes", "voiceWorkerBytes", "cgroupMemoryBytes", "cgroupMemoryPeakBytes"] as const;
 
 /**

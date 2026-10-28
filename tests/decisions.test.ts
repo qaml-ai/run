@@ -4,6 +4,7 @@ import { checkedAnswers, Decider, DecisionFailed, decisionRequest, type Decision
 import { openrouterDecisions } from "../src/decision-providers.ts";
 import { Outbound } from "../src/outbound.ts";
 import { HttpError } from "../src/http.ts";
+import { setMetricSink } from "../src/metrics.ts";
 import { listen } from "./runtime-server.ts";
 
 const QUESTIONS = {
@@ -252,4 +253,99 @@ test("characters in flight are bounded per tenant and per node: past them a requ
   await new Promise(resolve => setTimeout(resolve, 5));
   assert.equal(full.saturated("t1")?.status, 429);
   await holding;
+});
+
+/** A provider that counts calls at once per tenant (each state starts with its tenant's name), answering after `ms`. */
+function perTenantProvider(ms: number) {
+  const active = new Map<string, number>(), most = new Map<string, number>();
+  let node = 0, nodeMost = 0;
+  const provider: DecisionProvider = {
+    id: "openrouter",
+    async decide(item) {
+      const tenant = String(item.state).split(" ")[0]!;
+      active.set(tenant, (active.get(tenant) ?? 0) + 1); most.set(tenant, Math.max(most.get(tenant) ?? 0, active.get(tenant)!));
+      node++; nodeMost = Math.max(nodeMost, node);
+      try {
+        await new Promise(resolve => setTimeout(resolve, ms));
+        return { answers: LIVE.answers, model: LIVE.model, inputTokens: 444, outputTokens: 77, costUsd: LIVE.usage.cost } satisfies ProviderDecision;
+      } finally { active.set(tenant, active.get(tenant)! - 1); node--; }
+    },
+  };
+  return { provider, most, get nodeMost() { return nodeMost; } };
+}
+const batch = (tenant: string, count: number) => decisionRequest({ items: Array.from({ length: count }, (_, index) => ({ state: `${tenant} ${index}`, questions: { q: QUESTIONS.is_support } })) });
+
+test("a tenant's own decision concurrency replaces the default for its gate, other tenants keep the default, and it is clamped to the node's", async () => {
+  const fake = perTenantProvider(20);
+  const own: Record<string, number | null> = { big: 6, huge: 100, inside: null };
+  const asked: string[] = [];
+  const decider = new Decider({ provider: fake.provider, key, limits: { tenantConcurrent: 2, nodeConcurrent: 8 }, tenantConcurrency: async tenant => { asked.push(tenant); return own[tenant]; } });
+  await Promise.all([decider.decide({ tenant: "big" }, batch("big", 18), AbortSignal.timeout(10_000)), decider.decide({ tenant: "small" }, batch("small", 6), AbortSignal.timeout(10_000))]);
+  assert.equal(fake.most.get("big"), 6, "the override");
+  assert.equal(fake.most.get("small"), 2, "another tenant keeps the default");
+  assert.ok(fake.nodeMost <= 8);
+  assert.deepEqual(asked.sort(), ["big", "small"]);
+  // Above the node's, an override (or none at all, the internal tier) is the node's.
+  await decider.decide({ tenant: "huge" }, batch("huge", 20), AbortSignal.timeout(10_000));
+  assert.equal(fake.most.get("huge"), 8);
+  await decider.decide({ tenant: "inside" }, batch("inside", 20), AbortSignal.timeout(10_000));
+  assert.equal(fake.most.get("inside"), 8);
+  // A read that fails falls back to the default rather than failing the decision.
+  const failing = new Decider({ provider: fake.provider, key, limits: { tenantConcurrent: 2 }, tenantConcurrency: async () => { throw new Error("database down"); } });
+  await failing.decide({ tenant: "flaky" }, batch("flaky", 6), AbortSignal.timeout(10_000));
+  assert.equal(fake.most.get("flaky"), 2);
+});
+
+test("a tenant's queue and in-flight characters scale with its concurrency, up only, the characters within the node's", () => {
+  const decider = new Decider({ provider: fakeProvider().provider, key });
+  assert.deepEqual(decider.bounds(undefined), { slots: 16, queued: 1_000, chars: 8_000_000 });
+  assert.deepEqual(decider.bounds(48), { slots: 48, queued: 3_000, chars: 24_000_000 });
+  assert.deepEqual(decider.bounds(64), { slots: 64, queued: 4_000, chars: 32_000_000 });
+  assert.deepEqual(decider.bounds(500), { slots: 64, queued: 4_000, chars: 32_000_000 }, "clamped to the node's");
+  assert.deepEqual(decider.bounds(null), { slots: 64, queued: 4_000, chars: 32_000_000 }, "no tenant limit: the node's");
+  assert.deepEqual(decider.bounds(4), { slots: 4, queued: 1_000, chars: 8_000_000 }, "a lowered limit keeps the default queue");
+  const wider = new Decider({ provider: fakeProvider().provider, key, limits: { nodeConcurrent: 128 } });
+  assert.deepEqual(wider.bounds(128), { slots: 128, queued: 8_000, chars: 32_000_000 }, "never past the node's characters");
+});
+
+test("an override's larger queue admits what the default would refuse, and a gate in use takes a raised concurrency at once", async () => {
+  const fake = perTenantProvider(30);
+  let concurrency = 1;
+  const decider = new Decider({ provider: fake.provider, key, limits: { tenantConcurrent: 1, queued: 2 }, tenantConcurrency: async () => concurrency });
+  const first = decider.decide({ tenant: "t" }, batch("t", 3), AbortSignal.timeout(10_000));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await assert.rejects(decider.decide({ tenant: "t" }, batch("t", 2), AbortSignal.timeout(10_000)), (error: any) => error.status === 429, "the default queue");
+  concurrency = 4;
+  const second = decider.decide({ tenant: "t" }, batch("t", 6), AbortSignal.timeout(10_000));
+  await Promise.all([first, second]);
+  assert.ok(fake.most.get("t")! > 1, `the raised concurrency applied to the gate in use (${fake.most.get("t")})`);
+  assert.ok(fake.most.get("t")! <= 4);
+});
+
+test("a request whose calls waited for a slot logs one decision_wait line: tenant, how many waited, how long, the queue; no state", async () => {
+  const lines: string[] = [];
+  setMetricSink(line => lines.push(line));
+  try {
+    const decider = new Decider({ provider: perTenantProvider(40).provider, key, limits: { tenantConcurrent: 1, waitLogMs: 30 } });
+    await decider.decide({ tenant: "t" }, batch("t secret-state", 3), AbortSignal.timeout(10_000));
+    await decider.decide({ tenant: "quick" }, batch("quick", 1), AbortSignal.timeout(10_000));
+  } finally { setMetricSink(); }
+  const waits = lines.map(line => JSON.parse(line)).filter(line => line.type === "decision_wait");
+  assert.equal(waits.length, 1, "one line a request, none for one that did not wait");
+  const [wait] = waits;
+  assert.equal(wait.Tenant, "t");
+  assert.equal(wait.DecisionsWaited, 2);
+  assert.ok(wait.DecisionWaitMs >= 60, `the longest wait ${wait.DecisionWaitMs}`);
+  assert.equal(wait.DecisionQueued, 2);
+  assert.equal(wait.slots, 1);
+  assert.ok(!lines.some(line => line.includes("secret-state")), "no state in a metric line");
+});
+
+test("load() is the node's gauge: calls in flight and waiting, per tenant with calls here", async () => {
+  const decider = new Decider({ provider: perTenantProvider(30).provider, key, limits: { tenantConcurrent: 2 } });
+  const running = decider.decide({ tenant: "t" }, batch("t", 5), AbortSignal.timeout(10_000));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(decider.load(), { node: { active: 2, waiting: 0, slots: 64 }, tenants: [{ tenant: "t", active: 2, waiting: 3, slots: 2 }] });
+  await running;
+  assert.deepEqual(decider.load().tenants, []);
 });

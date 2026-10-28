@@ -65,12 +65,12 @@ function AutoSection({ state }: { state: BillingState }) {
 export function TierSection({ busy, runs }: { busy: BusyAgents; runs?: Billing["runsPerMinute"] }) {
   const next = busy.next;
   return <section className="border-t py-5">
-    <div className="flex items-center gap-3"><h2 className="text-sm font-semibold">Usage tier</h2>{busy.source === "tier" ? <Badge variant="secondary">{busy.tier}</Badge> : <Badge variant="secondary">Custom</Badge>}</div>
-    <p className="mt-2 text-sm">Up to {formatNumber(busy.limit)} agents busy at once{busy.busy !== undefined && <span className="text-muted-foreground"> · {formatNumber(busy.busy)} busy now</span>}</p>
+    <div className="flex items-center gap-3"><h2 className="text-sm font-semibold">Usage tier</h2>{busy.source === "tier" ? <Badge variant="secondary">{busy.tier}</Badge> : <Badge variant="secondary">{busy.source === "internal" ? "Internal" : "Custom"}</Badge>}</div>
+    <p className="mt-2 text-sm">{busy.limit === null ? "No limit on agents busy at once" : <>Up to {formatNumber(busy.limit)} agents busy at once</>}{busy.busy !== undefined && <span className="text-muted-foreground"> · {formatNumber(busy.busy)} busy now</span>}</p>
     {busy.source === "tier" && (next
       ? <p className="text-muted-foreground mt-2 text-xs">{formatMicros(Math.max(0, next.paid - (busy.paid ?? 0)))} more of credit unlocks {next.tier}: {formatNumber(next.limit)} busy agents (once you've paid {formatMicros(next.paid)} in total for credit). It applies as soon as the payment lands.</p>
       : <p className="text-muted-foreground mt-2 text-xs">The highest tier. Need more? <a className="underline" href="mailto:support@camelai.com">support@camelai.com</a></p>)}
-    {busy.source !== "tier" && <p className="text-muted-foreground mt-2 text-xs">Set for this account.</p>}
+    {busy.source !== "tier" && <p className="text-muted-foreground mt-2 text-xs">{busy.source === "internal" ? "The operator's own application: no per-account limits." : "Set for this account."}</p>}
     {runs && <p className="text-muted-foreground mt-2 text-xs">Up to {formatNumber(runs.limit)} runs started a minute{runs.afterPurchase !== undefined && <>; buying credit raises it to {runs.afterPurchase === null ? "no limit" : formatNumber(runs.afterPurchase)}</>}. Creating agents is limited only against abuse: design around busy agents.</p>}
   </section>;
 }

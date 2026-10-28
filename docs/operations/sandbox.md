@@ -35,7 +35,7 @@ fields. `tools.search` reads at most 500 characters and 32 words of a query.
 **Fairness.** An execution keeps its v8-exec process while it waits on tools,
 about 20 MB resident. Tenants with a concurrency limit therefore share 16
 executions at once on a node (`AGENT_CODE_WORKERS_MAX` sets another number).
-Each such tenant may run 4 at once (2 on free credit; `codeConcurrency` per tenant). Executions beyond that wait
+Each such tenant may run its usage tier's number at once (4 on Free, 8 on Tier 1, 16 from Tier 2; `codeConcurrency` per tenant). Executions beyond that wait
 for a turn, tenant by tenant in rotation, within their own `timeoutMs`, so a busy
 tenant delays only its own. Admin tenants have no limit unless their entry sets
 one: they are admitted at once and bounded only by the v8-exec processes a node

@@ -48,6 +48,17 @@ export interface Tenant {
   codeCpuMs?: number;
   codeMaxTimeoutMs?: number;
   codeConcurrency?: number;
+  /**
+   * Decision calls (POST /v1/decisions, the decide builtin) at once on one node, in place of its tier's or the default
+   * (16); at most the node's (AGENT_DECISION_NODE_CONCURRENCY, 64). Its queue and in-flight characters scale with it.
+   */
+  decisionConcurrency?: number;
+  /**
+   * "internal": the operator's own applications, with no tenant-level limit (busy agents, runs and creates a minute,
+   * js_exec and decisions at once) unless a field of the entry sets one. A node's own caps still apply, and spend
+   * limits are untouched.
+   */
+  tier?: "internal";
   /** Removed with QuickJS: js_exec runs on V8 only. "v8" is ignored; anything else is an error. */
   codeEngine?: unknown;
   /** Model spend (USD, list prices) this tenant may reach per UTC month; absent means unlimited. */
@@ -124,7 +135,8 @@ export class Tenants {
       for (const field of ["maxRunResponses", "maxRunSeconds"] as const) {
         if (tenant[field] !== undefined && (!Number.isSafeInteger(tenant[field]) || tenant[field]! < 1)) throw new Error(`Tenant ${tenant.id} has an invalid ${field}: a positive integer, or absent for no limit`);
       }
-      for (const field of ["maxAgentCreatesPerMinute", "maxRunsPerMinute", "codeConcurrency"] as const) {
+      if (tenant.tier !== undefined && tenant.tier !== "internal") throw new Error(`Tenant ${tenant.id} has an invalid tier: "internal", or absent`);
+      for (const field of ["maxAgentCreatesPerMinute", "maxRunsPerMinute", "codeConcurrency", "decisionConcurrency"] as const) {
         if (tenant[field] !== undefined && (!Number.isSafeInteger(tenant[field]) || tenant[field]! < 1)) throw new Error(`Tenant ${tenant.id} has an invalid ${field}: a positive integer, or absent for the default`);
       }
       for (const [field, most] of [["codeCpuMs", SANDBOX_LIMITS.maxCpuMs], ["codeMaxTimeoutMs", SANDBOX_LIMITS.maxTimeoutMs]] as const) {
@@ -146,6 +158,7 @@ export class Tenants {
         ...(tenant.maxRunResponses !== undefined ? { maxRunResponses: tenant.maxRunResponses } : {}), ...(tenant.maxRunSeconds !== undefined ? { maxRunSeconds: tenant.maxRunSeconds } : {}),
         ...(tenant.codeCpuMs !== undefined ? { codeCpuMs: tenant.codeCpuMs } : {}), ...(tenant.codeMaxTimeoutMs !== undefined ? { codeMaxTimeoutMs: tenant.codeMaxTimeoutMs } : {}),
         ...(tenant.codeConcurrency !== undefined ? { codeConcurrency: tenant.codeConcurrency } : {}),
+        ...(tenant.decisionConcurrency !== undefined ? { decisionConcurrency: tenant.decisionConcurrency } : {}), ...(tenant.tier ? { tier: tenant.tier } : {}),
         ...(tenant.billing ? { billing: tenant.billing } : {}), ...(tenant.platformKeys === false ? { platformKeys: false } : {}), ...(tenant.modelEndpoints ? { modelEndpoints: tenant.modelEndpoints } : {}),
       });
     }
@@ -195,6 +208,12 @@ export class Tenants {
 
   /** An admin tenant's js_exec limits, as its entry sets them. */
   codeLimits(id: string) { const tenant = this.byId.get(id); return { cpuMs: tenant?.codeCpuMs, maxTimeoutMs: tenant?.codeMaxTimeoutMs, concurrent: tenant?.codeConcurrency }; }
+
+  /** An admin tenant's decision calls at once on a node, as its entry sets it. */
+  decisionConcurrency(id: string) { return this.byId.get(id)?.decisionConcurrency; }
+
+  /** Whether the tenant's entry puts it on the internal tier: no tenant-level limit its entry does not set. */
+  internal(id: string) { return this.byId.get(id)?.tier === "internal"; }
 
   rateLimit(id: string, limit: "agentCreates" | "runs") { const tenant = this.byId.get(id); return limit === "runs" ? tenant?.maxRunsPerMinute : tenant?.maxAgentCreatesPerMinute; }
 

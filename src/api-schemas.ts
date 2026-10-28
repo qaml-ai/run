@@ -1184,14 +1184,38 @@ export const Ledger = z.object({
 }).openapi("Ledger");
 export const BusyAgents = z.object({
   busy: z.number().int().optional().openapi({ description: "Agents busy now across the runtime: each has a run open (running or queued)" }),
-  limit: z.number().int().openapi({ description: "How many may be busy at once; a run past it gets 429 BUSY_AGENT_LIMIT" }),
-  source: z.enum(["tier", "tenant", "default"]).openapi({ description: "tier: the usage tier's (prepaid tenants, by what they have paid); tenant: set for this tenant by the operator; default: the deployment's" }),
+  limit: z.number().int().nullable().openapi({ description: "How many may be busy at once; a run past it gets 429 BUSY_AGENT_LIMIT. null: no limit (the internal tier)" }),
+  source: z.enum(["tier", "tenant", "internal", "default"]).openapi({ description: "tier: the usage tier's (prepaid tenants, by what they have paid); tenant: set for this tenant by the operator; internal: the operator's own applications, no limit; default: the deployment's" }),
   tier: z.string().optional().openapi({ description: "The usage tier, with source tier", example: "Tier 1" }),
   paid: micros("What the tenant has paid for credit, net of refunds (starting credit and adjustments do not count); with source tier").optional(),
   next: z.object({
     tier: z.string(), paid: micros("Paid in total that reaches it"), limit: z.number().int().openapi({ description: "Its busy-agent limit" }),
   }).optional().openapi({ description: "The next tier up, if any" }),
 }).openapi("BusyAgents");
+const AccountLimit = z.object({
+  limit: z.number().int().nullable().openapi({ description: "The limit; null: none" }),
+  source: z.enum(["tier", "tenant", "internal", "default"]).openapi({ description: "tier: the usage tier's; tenant: set for this account by the operator; internal: the operator's own applications, no limit; default: the deployment's" }),
+  tier: z.string().optional().openapi({ description: "The usage tier, with source tier" }),
+  paid: micros("What the account has paid for credit, net of refunds; with source tier").optional(),
+  next: z.object({ tier: z.string(), paid: micros("Paid in total that reaches it"), limit: z.number().int() }).optional().openapi({ description: "The next tier up and its limit, if any" }),
+});
+export const AccountLimits = z.object({
+  tier: z.object({
+    name: z.string().openapi({ example: "Tier 1" }), paid: micros("Paid for credit in total, net of refunds").optional(),
+    next: z.object({ name: z.string(), paid: micros("Paid in total that reaches it") }).optional().openapi({ description: "The next tier up, if any" }),
+  }).nullable().openapi({ description: "The account's usage tier: by what it has paid for prepaid accounts, `internal` for the operator's own applications; null when no tier applies" }),
+  limits: z.object({
+    busyAgents: AccountLimit.extend({ busy: z.number().int().optional() }).openapi({ description: "Agents busy at once across the runtime" }),
+    runsPerMinute: AccountLimit.openapi({ description: "Runs started a minute" }),
+    agentCreatesPerMinute: AccountLimit.openapi({ description: "Agents created a minute" }),
+    codeConcurrency: AccountLimit.openapi({ description: "js_exec executions at once on one node" }),
+    decisionConcurrency: AccountLimit.openapi({ description: "Decision calls at once on one node, within the node's own cap" }),
+  }),
+  tiers: z.array(z.object({
+    name: z.string(), paid: micros("Paid in total that reaches it"), busyAgents: z.number().int(),
+    runsPerMinute: z.number().int().optional(), agentCreatesPerMinute: z.number().int().optional(), codeConcurrency: z.number().int().optional(), decisionConcurrency: z.number().int().optional(),
+  })).openapi({ description: "Every usage tier, lowest first; a limit left out is the deployment's default" }),
+}).openapi("AccountLimits");
 export const Billing = z.object({
   billing: z.enum(["prepaid", "none"]).openapi({ description: "prepaid: runs are paid from credit; none: not billed by the runtime" }),
   balance: micros("Credit left; at zero or below, runs are refused with 402"),
@@ -1407,12 +1431,13 @@ export const TenantLimitsInput = z.object({
   maxRunSeconds: z.number().int().min(1).max(31_536_000).nullable().optional().openapi({ description: "Seconds one run of the tenant's agents may take, in place of the runtime's (7,200 by default); null returns to the runtime's" }),
   codeCpuMs: z.number().int().min(1).max(30_000).nullable().optional().openapi({ description: "CPU milliseconds one js_exec execution may use, in place of the runtime's (2,000); null returns to the runtime's" }),
   codeMaxTimeoutMs: z.number().int().min(1).max(120_000).nullable().optional().openapi({ description: "The longest timeoutMs (wall time) a js_exec execution may ask for, in place of the runtime's (60,000); null returns to the runtime's" }),
-  codeConcurrency: z.number().int().min(1).max(1_000).nullable().optional().openapi({ description: "js_exec executions the tenant may run at once on one node, in place of its plan's (2 on free credit, else 4); null returns to the plan's" }),
+  codeConcurrency: z.number().int().min(1).max(1_000).nullable().optional().openapi({ description: "js_exec executions the tenant may run at once on one node, in place of its usage tier's; null returns to the tier's" }),
+  decisionConcurrency: z.number().int().min(1).max(1_000).nullable().optional().openapi({ description: "Decision calls the tenant may make at once on one node, in place of its usage tier's (16 by default), at most the node's (AGENT_DECISION_NODE_CONCURRENCY, 64); its queue and in-flight characters scale with it. null returns to the tier's" }),
   codeEngine: z.null({ error: "codeEngine was removed with QuickJS: js_exec runs on V8 only. Leave it out, or send null to clear one set before" }).optional().openapi({ deprecated: true, description: "Removed with QuickJS: js_exec runs on V8 only. null clears an engine set before; any other value is refused" }),
 }).strict().openapi("TenantLimitsInput");
 export const TenantLimits = z.object({
   tenant: z.string(),
-  limits: z.object({ maxStorageGb: z.number().optional(), maxBusyAgents: z.number().int().optional(), agentCreatesPerMinute: z.number().int().optional(), runsPerMinute: z.number().int().optional(), maxRunResponses: z.number().int().optional(), maxRunSeconds: z.number().int().optional(), codeCpuMs: z.number().int().optional(), codeMaxTimeoutMs: z.number().int().optional(), codeConcurrency: z.number().int().optional() }).openapi({ description: "The limits set for the tenant; those absent are its plan's" }),
+  limits: z.object({ maxStorageGb: z.number().optional(), maxBusyAgents: z.number().int().optional(), agentCreatesPerMinute: z.number().int().optional(), runsPerMinute: z.number().int().optional(), maxRunResponses: z.number().int().optional(), maxRunSeconds: z.number().int().optional(), codeCpuMs: z.number().int().optional(), codeMaxTimeoutMs: z.number().int().optional(), codeConcurrency: z.number().int().optional(), decisionConcurrency: z.number().int().optional() }).openapi({ description: "The limits set for the tenant; those absent are its plan's" }),
 }).openapi("TenantLimits");
 export const TenantPasswordInput = z.object({
   email: z.string().max(254).openapi({ description: "The address the tenant signs in with; another tenant's is refused (409)", example: "reviewer@example.com" }),

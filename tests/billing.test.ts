@@ -77,8 +77,10 @@ test("card-credit pricing follows the starting grant unless explicitly configure
 });
 
 test("usage tiers: the defaults, AGENT_USAGE_TIERS, its validation, and which tier an amount paid is in", () => {
-  assert.deepEqual(DEFAULT_PRICING.tiers.map(tier => [tier.name, tier.paid, tier.busyAgents]),
-    [["Free", 0, 20], ["Tier 1", micros(5), 50], ["Tier 2", micros(50), 100], ["Tier 3", micros(250), 250], ["Tier 4", micros(1000), 1000]]);
+  assert.deepEqual(DEFAULT_PRICING.tiers.map(tier => [tier.name, tier.paid, tier.busyAgents, tier.runsPerMinute, tier.agentCreatesPerMinute, tier.codeConcurrency, tier.decisionConcurrency]), [
+    ["Free", 0, 50, 300, 600, 4, 16], ["Tier 1", micros(5), 250, 1_500, 1_200, 8, 32], ["Tier 2", micros(50), 1_000, 6_000, 3_000, 16, 48],
+    ["Tier 3", micros(250), 4_000, 20_000, 6_000, 16, 64], ["Tier 4", micros(1000), 10_000, 60_000, 12_000, 16, 64],
+  ]);
   const at = (paid: number) => { const { tier, next } = usageTier(DEFAULT_PRICING.tiers, paid); return [tier.name, next?.name]; };
   assert.deepEqual(at(0), ["Free", "Tier 1"]);
   assert.deepEqual(at(-micros(5)), ["Free", "Tier 1"], "refunds beyond purchases stay free");
@@ -90,6 +92,10 @@ test("usage tiers: the defaults, AGENT_USAGE_TIERS, its validation, and which ti
 
   const custom = pricingFromEnvironment({ AGENT_USAGE_TIERS: JSON.stringify([{ name: "Trial", paidUsd: 0, busyAgents: 1 }, { name: "Paid", paidUsd: 10, busyAgents: 3 }]) });
   assert.deepEqual(custom.tiers, [{ name: "Trial", paid: 0, busyAgents: 1 }, { name: "Paid", paid: micros(10), busyAgents: 3 }]);
+  // The other limits are optional; one left out is the deployment's default.
+  const fuller = pricingFromEnvironment({ AGENT_USAGE_TIERS: JSON.stringify([{ name: "Trial", paidUsd: 0, busyAgents: 1, runsPerMinute: 10, decisionConcurrency: 4 }]) });
+  assert.deepEqual(fuller.tiers, [{ name: "Trial", paid: 0, busyAgents: 1, runsPerMinute: 10, decisionConcurrency: 4 }]);
+  assert.throws(() => pricingFromEnvironment({ AGENT_USAGE_TIERS: JSON.stringify([{ name: "A", paidUsd: 0, busyAgents: 1, codeConcurrency: 0 }]) }), /codeConcurrency must be a positive integer/);
   for (const [tiers, error] of [
     ["nope", /must be JSON/], ["[]", /non-empty array/], [[{ name: "A", paidUsd: 1, busyAgents: 1 }], /start with a tier at paidUsd 0/],
     [[{ name: "A", paidUsd: 0, busyAgents: 1 }, { name: "B", paidUsd: 0, busyAgents: 2 }], /ascending/],
