@@ -2,14 +2,13 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { JournalHistory } from "./pi-durable/history.ts";
 import { HostJournal } from "./pi-durable/host-journal.ts";
-import { legacyHistory, recordsHistory, retiredRecords, type RetiredRecord } from "./pi-durable/retired-host.ts";
 import { journalForkCut, type JournalForkCut } from "./pi-durable/fork.ts";
 import { resetContext, type ContextReset } from "./pi-durable/reset.ts";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { agentProcessEnv, childProcess, type Rpc } from "./rpc.ts";
-import type { AgentConfig, CallContext, ToolBridge } from "./protocol.ts";
+import { legacyFormatRefused, type AgentConfig, type CallContext, type ToolBridge } from "./protocol.ts";
 import type { RequestMethod } from "../shared/client-protocol.ts";
 import type { ChildProcess } from "node:child_process";
 import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
@@ -17,7 +16,7 @@ import { searchQuery, searchTools } from "./tool-search.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import type { Storage } from "../shared/storage.ts";
 import { fileAppendLog, type AppendLog, type CommitEffect } from "../shared/append-log.ts";
-import { chunksOf, type HistoryChunk } from "./history-pages.ts";
+import type { HistoryChunk } from "./history-pages.ts";
 import type { Claim } from "./ownership.ts";
 import { createAgentHost, HISTORY_FLUSH_MS, type LegacyLog } from "./agent-host.ts";
 import type { CodeExecutor } from "./codemode.ts";
@@ -40,7 +39,7 @@ export const transcriptPath = (directory: string) => join(directory, "transcript
  * processes either way (confined by agent-launcher when it started the runtime).
  */
 export type Hosting = "process" | "inline";
-type Common = { bridge: ToolBridge; calls: Set<AbortController>; listeners: Set<(event: any) => void>; legacy: AppendLog<RetiredRecord>; durable?: PiStorage };
+type Common = { bridge: ToolBridge; calls: Set<AbortController>; listeners: Set<(event: any) => void>; legacy: AppendLog<unknown>; durable?: PiStorage };
 /** An agent process's js_exec turns (`codeSlot`), by its id for them: waiting (`release` unset) or held. */
 type CodeSlots = Map<string, { controller: AbortController; release?: () => void }>;
 type ProcessHandle = Common & { kind: "process"; child: ChildProcess; rpc: Rpc; slots: CodeSlots; watchdog?: NodeJS.Timeout };
@@ -107,13 +106,13 @@ export class AgentSupervisor {
   }
 
   /** The agent's legacy log, read only (records an import too large to copy left there, before Pi held everything). */
-  private legacyLog(id: string): AppendLog<RetiredRecord> {
-    return this.options.storage ? this.options.storage.log<RetiredRecord>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<RetiredRecord>(transcriptPath(resolve(join(this.root, id))));
+  private legacyLog(id: string): AppendLog<unknown> {
+    return this.options.storage ? this.options.storage.log<unknown>(AgentSupervisor.transcriptKey(id)) : fileAppendLog<unknown>(transcriptPath(resolve(join(this.root, id))));
   }
 
   /**
    * An agent's full history without its process, read beside a live owner without writing: the messages before what
-   * its journal holds (`settled`: the history index's first ones; without it, the retired host transcript's records),
+   * its journal holds (`settled`: the history index's first ones; history only a legacy format holds is refused),
    * then the journal's.
    */
   async history(id: string, settled?: (count: number) => Promise<AgentMessage[]>): Promise<AgentMessage[]> {
@@ -140,10 +139,10 @@ export class AgentSupervisor {
    * Settle the turn a stopped agent's journal holds open (`closeInterruptedTurn`), under its owner's `claim`, without
    * starting it: for a run ended with no host to end it (one past its resumes, or stopped before its node was lost). The
    * same records the agent's next start would write, written before the run is seen to end, with what commits with each
-   * (`committing`). A session the host transcript wrote has it retired first, its history before the journal's base
-   * indexed (`index`). Whether there was a turn to settle.
+   * (`committing`). A host transcript no release retired is refused (`legacyFormatRefused`). Whether there was a turn to
+   * settle.
    */
-  async closeTurn(id: string, claim?: Claim, options: { committing?: ToolBridge["committing"]; index?: ToolBridge["history"] } = {}): Promise<boolean> {
+  async closeTurn(id: string, claim?: Claim, options: { committing?: ToolBridge["committing"] } = {}): Promise<boolean> {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
     // One at a time per agent, each reading the journal as the one before left it: two closes of one turn (a load's and
     // a run's, or two loads') never both answer its open calls. Across nodes, the owner's claim fences the write instead.
@@ -154,21 +153,19 @@ export class AgentSupervisor {
     finally { if (this.closing.get(id) === settled) this.closing.delete(id); }
   }
 
-  private async closeTurnNow(id: string, claim: Claim | undefined, options: { committing?: ToolBridge["committing"]; index?: ToolBridge["history"] }): Promise<boolean> {
+  private async closeTurnNow(id: string, claim: Claim | undefined, options: { committing?: ToolBridge["committing"] }): Promise<boolean> {
     await this.stopping.get(id);
     // A running agent's host writes its own journal.
     if (this.agents.has(id) || this.starting.has(id)) throw new Error("Agent is running");
     if (!await hasPiStorage(this.piLocation(id))) return false;
     const storage = await openPiStorage({ ...this.piLocation(id), ...(claim ? { claim } : {}),
       ...(options.committing ? { committing: async (entry, sql) => { await options.committing!(entry)?.(sql); } } : {}) });
-    const legacy = this.legacyLog(id);
     try {
-      const index = options.index;
-      const indexed = index ? await index.indexed() : null;
-      await HostJournal.retire(storage, { ...(index && indexed !== null ? { indexed, index: (from, messages, turns) => writeChunks(index, from, messages, turns) } : {}), legacy: () => legacy.read() });
+      // A host transcript no release retired holds history before the journal that only its records have.
+      if ((await JournalHistory.snapshotBase(storage))?.enabled) throw legacyFormatRefused(id, undefined, "host_transcript");
       const journal = await HostJournal.open(storage, this.options.dedupeUserEntries);
       return journal ? await closeInterruptedTurn(journal) : false;
-    } finally { await storage.close(BACKGROUND_CONTEXT); await legacy.close(); }
+    } finally { await storage.close(BACKGROUND_CONTEXT); }
   }
 
   /**
@@ -261,7 +258,7 @@ export class AgentSupervisor {
     } finally { hosted(); }
   }
 
-  private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, legacy: AppendLog<RetiredRecord>, durable?: PiStorage) {
+  private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, legacy: AppendLog<unknown>, durable?: PiStorage) {
     // A supervisor given its tenant lists directly (tests) tells its agent processes, as a node's agentEnv does.
     const lists = {
       ...(this.options.dedupeUserEntries !== undefined ? { AGENT_PI_DEDUPE_USER_ENTRIES: String(this.options.dedupeUserEntries) } : {}),
@@ -411,66 +408,48 @@ export class AgentSupervisor {
 
   /**
    * The agent's history from absolute index `from` on, and where its turns began, without its process: the journal's,
-   * after what comes before what it holds (`settled`: the history index's messages in [from, end); without it, or before the
-   * index reaches it, the retired host transcript's records). Undefined for an agent with no journal.
+   * after what comes before what it holds (`settled`: the history index's messages in [from, end)). Undefined for an
+   * agent with no journal; a history in a legacy format (`legacyFormatRefused`) is refused.
    */
   async journalBacklog(id: string, from: number, settled?: (end: number, from: number) => Promise<AgentMessage[]>): Promise<{ from: number; messages: AgentMessage[]; turns: number[] } | undefined> {
-    if (!await hasPiStorage(this.piLocation(id))) {
-      // Only a legacy log: a session from before Pi, which no release imports any more.
+    const legacyOnly = async (kind: "legacy_log" | "not_on_pi") => {
       const legacy = this.legacyLog(id);
-      try {
-        const old = recordsHistory(await legacy.read());
-        return old.messages.length ? { from, messages: old.messages.slice(from), turns: old.turns.filter(turn => turn >= from) } : undefined;
-      } finally { await legacy.close(); }
-    }
+      try { if ((await legacy.empty?.()) !== true) throw legacyFormatRefused(id, undefined, kind); }
+      finally { await legacy.close(); }
+      return undefined;
+    };
+    // Only a legacy log (a session from before Pi), or none: no journal.
+    if (!await hasPiStorage(this.piLocation(id))) return legacyOnly("legacy_log");
     // Read only: opening the storage writes nothing that is not there already, and nothing here commits.
     const storage = await openPiStorage(this.piLocation(id));
     try {
       const history = await JournalHistory.openAny(storage);
-      if (!history) {
-        // Its history still only in the legacy format: refused at start, but read.
-        const legacy = this.legacyLog(id);
-        try {
-          const records = await legacy.read();
-          if (!records.length) return undefined;
-          const old = await legacyHistory(storage, records);
-          return { from, messages: old.messages.slice(from), turns: old.turns.filter(turn => turn >= from) };
-        } finally { await legacy.close(); }
-      }
+      if (!history) return await legacyOnly("not_on_pi");
       const held = history.heldFrom;
-      let before: AgentMessage[] = [], turns: number[] = [];
+      let before: AgentMessage[] = [];
       if (from < held) {
         const indexed = settled ? await settled(held, from) : [];
-        if (indexed.length >= held - from) before = indexed.slice(0, held - from);
-        else {
-          const legacy = this.legacyLog(id);
-          try {
-            const retired = recordsHistory(await retiredRecords(storage, () => legacy.read(), true) ?? []);
-            if (retired.messages.length < held) throw new Error(`Agent ${id}'s history before its journal's base (${held} messages) is in neither its index nor its host transcript`);
-            before = retired.messages.slice(from, held);
-            turns = retired.turns.filter(turn => turn >= from && turn < held);
-          } finally { await legacy.close(); }
-        }
+        if (indexed.length < held - from) throw legacyFormatRefused(id, undefined, "history_before_base");
+        before = indexed.slice(0, held - from);
       }
       const messages = await history.messagesFrom(Math.max(from, held));
       if (!messages) return undefined;
-      return { from, messages: [...before, ...messages], turns: [...turns, ...history.turnsFrom(Math.max(from, held))] };
+      return { from, messages: [...before, ...messages], turns: history.turnsFrom(Math.max(from, held)) };
     } finally { await storage.close(BACKGROUND_CONTEXT); }
   }
 
   /** An agent process's reads of its legacy log. */
   private async legacyRequest(handle: Handle, params: { op: string }) {
-    if (params.op === "read") return handle.legacy.read();
     if (params.op === "empty") return (await handle.legacy.empty?.()) === true;
     throw new Error("Unknown legacy log operation");
   }
 
-  private async startInline(id: string, init: AgentConfig, bridge: ToolBridge, legacy: AppendLog<RetiredRecord>, durable?: PiStorage) {
+  private async startInline(id: string, init: AgentConfig, bridge: ToolBridge, legacy: AppendLog<unknown>, durable?: PiStorage) {
     const stopped = Promise.withResolvers<never>();
     stopped.promise.catch(() => {});
     const handle = { kind: "inline", bridge, calls: new Set(), listeners: new Set(), stop: stopped.reject, stopped: stopped.promise, legacy, durable } as unknown as InlineHandle;
     handle.host = createAgentHost({
-      legacyLog: { read: () => this.legacyRequest(handle, { op: "read" }), empty: () => this.legacyRequest(handle, { op: "empty" }) } as LegacyLog,
+      legacyLog: { empty: () => this.legacyRequest(handle, { op: "empty" }) } as LegacyLog,
       piStorage: async () => durable,
       emit: event => this.dispatchEvent(handle, event, true),
       tool: (name, args, call) => this.dispatchTool(handle, { name, args: structuredClone(args), ...call }),
@@ -592,14 +571,4 @@ export class AgentSupervisor {
     await this.flush([...this.agents.keys()]);
     await Promise.all([...[...this.agents.keys()].map(id => this.stop(id, { flush: false })), ...this.stopping.values()]);
   }
-}
-
-/** Write `messages` (the history's from `from`, where `turns` begin) to an agent's history index as chunks: where it ends then. */
-async function writeChunks(index: NonNullable<ToolBridge["history"]>, from: number, messages: AgentMessage[], turns: number[]): Promise<number> {
-  let indexed = from;
-  for (const chunk of chunksOf({ from, messages, sizes: messages.map(message => JSON.stringify(message).length), turns })) {
-    indexed = await index.write(chunk);
-    if (indexed !== chunk.start + chunk.messages.length) break;
-  }
-  return indexed;
 }
