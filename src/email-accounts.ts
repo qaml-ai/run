@@ -4,6 +4,7 @@ import type { AccountMail } from "./account-mail.ts";
 import { transaction, type Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
 import { checkNewPassword, hashPassword, verifyPassword } from "./passwords.ts";
+import { keptSignupSource, recordSignupSource, type SignupSource } from "./signup-source.ts";
 
 /**
  * Self-serve email and password accounts, where account mail is configured (src/account-mail.ts): sign-up, a password
@@ -26,7 +27,7 @@ export const RESET_MS = 3600_000;
 /** What following a link that expired, was used, or never existed says. */
 export const LINK_GONE = "This link has expired or was already used";
 export type LinkPurpose = "verify" | "add" | "reset";
-type Link = { purpose: LinkPurpose; email: string; tenant: string | null; hash: string | null; next: string | null };
+type Link = { purpose: LinkPurpose; email: string; tenant: string | null; hash: string | null; next: string | null; signup_source?: unknown };
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -50,10 +51,10 @@ export class EmailAccounts {
   private link(purpose: LinkPurpose, token: string) { return `${this.options.mail.config.origin}/console/${purpose === "reset" ? "reset" : "verify"}#${token}`; }
 
   /** A new link's token, stored as its hash; expired links go now and then. */
-  private async store(sql: Sql, link: Omit<Link, "next"> & { next?: string }) {
+  private async store(sql: Sql, link: Omit<Link, "next" | "signup_source"> & { next?: string; source?: SignupSource }) {
     const token = randomBytes(32).toString("base64url"), now = this.now();
-    await sql.query("insert into account_email_links (sha256, purpose, email, tenant, hash, next, created_at, expires_at) values ($1, $2, $3, $4, $5, $6, $7, $8)",
-      [sha256(token), link.purpose, link.email, link.tenant, link.hash, link.next ?? null, now, now + (link.purpose === "reset" ? RESET_MS : VERIFY_MS)]);
+    await sql.query("insert into account_email_links (sha256, purpose, email, tenant, hash, next, created_at, expires_at, signup_source) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+      [sha256(token), link.purpose, link.email, link.tenant, link.hash, link.next ?? null, now, now + (link.purpose === "reset" ? RESET_MS : VERIFY_MS), link.source ? JSON.stringify(link.source) : null]);
     if (now - this.swept > 60_000) {
       this.swept = now;
       await this.db.query("delete from account_email_links where expires_at < $1", [now]).catch(() => {});
@@ -75,14 +76,15 @@ export class EmailAccounts {
   /**
    * Sign up `email` (normalized) with `password`: mail a link that finishes it, or, where the address already has an
    * account, mail its owner instead. The caller answers the same either way. The password is checked and hashed first,
-   * whatever the address, so every request takes as long.
+   * whatever the address, so every request takes as long. `source`, where the browser came from (src/signup-source.ts),
+   * waits with the link and is kept on the account it makes.
    */
-  async signUp(email: string, password: unknown, next?: string) {
+  async signUp(email: string, password: unknown, next?: string, source?: SignupSource) {
     if (!this.signup) throw new HttpError(404, "Sign-up is not open on this runtime");
     const hash = await hashPassword(checkNewPassword(password, email));
     if (await this.passwordTenant(email)) return this.options.mail.send("exists", email);
     if (await this.googleAddress(email)) return this.options.mail.send("google", email);
-    const token = await this.store(this.db, { purpose: "verify", email, tenant: null, hash, next });
+    const token = await this.store(this.db, { purpose: "verify", email, tenant: null, hash, next, source });
     this.options.mail.send("verify", email, this.link("verify", token));
   }
 
@@ -101,7 +103,7 @@ export class EmailAccounts {
   async complete(token: unknown, password: unknown, admit?: (sql: Sql) => Promise<void>, created?: (sql: Sql, tenant: string) => Promise<void>): Promise<{ tenant: string; email: string; next?: string } | { wrong: true; email: string }> {
     if (typeof token !== "string" || !TOKEN.test(token)) throw new HttpError(400, LINK_GONE);
     const key = sha256(token);
-    const link = (await this.db.query("select purpose, email, tenant, hash, next from account_email_links where sha256 = $1 and expires_at > $2 and purpose <> 'reset'", [key, this.now()])).rows[0] as Link | undefined;
+    const link = (await this.db.query("select purpose, email, tenant, hash, next, signup_source from account_email_links where sha256 = $1 and expires_at > $2 and purpose <> 'reset'", [key, this.now()])).rows[0] as Link | undefined;
     if (!link) throw new HttpError(400, LINK_GONE);
     if (link.purpose === "verify" && !this.signup) throw new HttpError(403, "Sign-up is closed on this runtime");
     if (link.purpose === "add" && !await this.options.accounts.exists(link.tenant!)) throw new HttpError(400, LINK_GONE);
@@ -115,6 +117,9 @@ export class EmailAccounts {
       if (link.purpose === "verify") {
         await admit?.(sql);
         tenant = await this.options.accounts.createEmailTenant(sql);
+        // Where the browser that signed up came from; a link mailed before sources were kept has none.
+        const source = keptSignupSource(link.signup_source);
+        if (source) await recordSignupSource(sql, tenant, source);
       } else if ((await sql.query("select 1 from tenant_passwords where tenant = $1", [tenant])).rowCount) {
         throw new HttpError(409, "This account already has a password; change it on the Account page");
       }

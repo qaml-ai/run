@@ -9,7 +9,7 @@ support handles those requests when they arrive by email.
 is read (`src/account-export.ts`, `src/zip.ts`), so an export of any size holds only a history page
 or a file chunk in memory at a time:
 
-- `account.json`: the tenant id, the GitHub login or Google address it signs in with, the address it signs in with a password (`email`), when it was made
+- `account.json`: the tenant id, the GitHub login or Google address it signs in with, the address it signs in with a password (`email`), when it was made, where it came from when it was made (`signupSource`, [below](#sign-up-source))
 - `agents/<id>/agent.json`: each live agent's configuration (as `GET /v1/agents/:id` shows it) and schedules
 - `agents/<id>/history/<index>.json`: its whole history, a page of whole turns per file, named by the page's first message index
 - `definitions.json`, `channels.json`, `webhooks.json`, `telemetry.json`, `tokens.json`, `keys.json`, `oauth-grants.json`: as the API lists them,
@@ -187,6 +187,18 @@ logs, and are dropped when the endpoint moves to another origin. Exports go thro
 (public addresses only). A failed export logs `telemetry_export_failed` with the tenant, a span count and
 `safeError` (class and status), never a span or header. The account export holds `telemetry.json`
 (header names only), and deletion removes the settings.
+
+## Sign-up source
+
+Where a self-serve account came from is kept on it when it is made (`tenants.signup_source`, `src/signup-source.ts`),
+whether or not journey events are on: the `ref` of the link that opened the console (a tag such as `run-slack`,
+which the operator's website puts on its links) and the host of the site the browser came from. Nothing else of
+the address or the referring page is kept. A browser that sends Global Privacy Control, or whose consent cookie
+says `denied`, keeps only the link's tag. Between the start of a GitHub or Google sign-in and its callback they wait
+in a cookie of the sign-in's own (`ar_source`, path `/console/auth`, 10 minutes, cleared at the callback), and
+for an email sign-up with its mailed link (24 hours). It is never sent anywhere; the ops dashboard counts sign-ups
+by it, it is in the export's `account.json` (`signupSource`), and it goes with the account's row when the account
+is deleted.
 
 ## Journey events
 

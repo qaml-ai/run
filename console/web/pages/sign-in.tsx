@@ -8,6 +8,7 @@ import { ErrorAlert } from "@/components/common";
 import { useApi } from "@/lib/api";
 import { consoleLoginUrl, discordInstallNext } from "@/lib/discord-setup";
 import { startNext } from "@/lib/onboarding";
+import { signupSource } from "@/lib/signup-source";
 import { ForgotPasswordForm, PasswordForm, SignUpForm } from "@/pages/password-sign-in";
 
 /** Google's "G", in the button's color: the console is monochrome. */
@@ -24,6 +25,8 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   // consent page that linked here (the server checks it).
   const next = discordInstallNext(location.pathname, location.search) ?? startNext(location.pathname, location.search)
     ?? (new URLSearchParams(location.search).get("next") || undefined);
+  // Where this browser came from: kept on the account if this sign-in makes one, for the team's dashboard.
+  const source = signupSource(location.search, document.referrer, location.origin);
   const methods = useApi<{ github: boolean; google?: boolean; password?: boolean; org?: string; open?: boolean; signup?: boolean; reset?: boolean }>("/console/auth/methods");
   const [mode, setMode] = useState<Mode>(() => location.pathname === MODE_PATHS.signup ? "signup" : location.pathname === MODE_PATHS.forgot ? "forgot" : "signin");
   const choose = (chosen: Mode) => { history.replaceState(null, "", MODE_PATHS[chosen] + location.search); setMode(chosen); };
@@ -44,8 +47,8 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         <ErrorAlert error={error || undefined} title="Sign-in failed" className="mb-0" />
         {shown !== "forgot" && providers && (
           <div className="flex flex-col gap-3">
-            {methods.data!.github && <PixelButton size="hero" href={consoleLoginUrl("github", next)} className="w-full"><Github className="size-3.5" aria-hidden="true" />Continue with GitHub</PixelButton>}
-            {methods.data!.google && <PixelButton size="hero" href={consoleLoginUrl("google", next)} className="w-full"><GoogleMark className="size-3.5" />Continue with Google</PixelButton>}
+            {methods.data!.github && <PixelButton size="hero" href={consoleLoginUrl("github", next, source)} className="w-full"><Github className="size-3.5" aria-hidden="true" />Continue with GitHub</PixelButton>}
+            {methods.data!.google && <PixelButton size="hero" href={consoleLoginUrl("google", next, source)} className="w-full"><GoogleMark className="size-3.5" />Continue with Google</PixelButton>}
             <p className="text-muted-foreground text-center text-xs text-balance">{!methods.data!.github
               ? "Any Google account can sign up."
               : methods.data!.open
@@ -55,7 +58,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         )}
         {methods.data?.password && <>
           {shown !== "forgot" && providers && <div className="text-muted-foreground flex items-center gap-3 text-xs"><Separator className="flex-1" />or<Separator className="flex-1" /></div>}
-          {shown === "signup" ? <SignUpForm next={next} />
+          {shown === "signup" ? <SignUpForm next={next} source={source} />
             : shown === "forgot" ? <ForgotPasswordForm next={next} />
             : <PasswordForm onSignedIn={onSignedIn} next={next} secondary={providers} onForgot={methods.data.reset ? () => choose("forgot") : undefined} />}
           {(methods.data.signup || shown !== "signin") && <p className="text-muted-foreground text-center text-sm">

@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PixelButton } from "@/components/ui/pixel-button";
 import { api } from "@/lib/api";
+import type { SignupSource } from "@/lib/signup-source";
 
 /** The shortest password the runtime takes. */
 export const MIN_PASSWORD = 12;
@@ -72,7 +73,7 @@ function Sent({ email, children }: { email: string; children?: ReactNode }) {
  * finishes it (with this password), and answers the same whether or not the address has an account. "Send again" asks
  * once more with the same address and password.
  */
-export function SignUpForm({ next }: { next?: string }) {
+export function SignUpForm({ next, source }: { next?: string; source?: SignupSource }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -82,7 +83,7 @@ export function SignUpForm({ next }: { next?: string }) {
     event?.preventDefault();
     setBusy(true); setError("");
     try {
-      await api("/console/auth/signup", { body: { email: email.trim(), password, ...(next ? { next } : {}) } });
+      await api("/console/auth/signup", { body: { email: email.trim(), password, ...(next ? { next } : {}), ...source } });
       setSent(email.trim());
     }
     catch (caught) { setError((caught as Error).message); }

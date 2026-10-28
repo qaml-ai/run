@@ -38,7 +38,7 @@ export interface ExportOptions {
 
 const README = `This archive holds everything camelRun stores for your account, as of the time it was made.
 
-account.json               your account: its id and the identity you sign in with
+account.json               your account: its id, the identity you sign in with, and where you came from when you signed up
 agents/<id>/agent.json     each agent's configuration and schedules
 agents/<id>/history/*.json each agent's history, a page of whole turns per file, named by its first message's index
 workspaces.json            workspaces, including archived ones
@@ -74,10 +74,10 @@ export async function* exportAccount(options: ExportOptions, tenant: string): As
   const { accounts, clients } = options;
   const historyPage = options.historyPage ?? ((id: string, tenant: string, query: { before?: string; limit?: string }) => clients.historyPageFor(id, tenant, query));
   const zip = new ZipWriter();
-  const created = (await accounts.db.query("select created_at from tenants where id = $1", [tenant])).rows[0]?.created_at;
+  const { created_at: created, signup_source: signupSource } = (await accounts.db.query("select created_at, signup_source from tenants where id = $1", [tenant])).rows[0] ?? {};
   yield* zip.file("README.txt", README);
   const email = (await accounts.db.query("select email from tenant_passwords where tenant = $1", [tenant])).rows[0]?.email ?? null;
-  yield* zip.file("account.json", json({ tenant, login: await accounts.identity(tenant) ?? null, email, createdAt: created === undefined ? null : Number(created), exportedAt: new Date().toISOString() }));
+  yield* zip.file("account.json", json({ tenant, login: await accounts.identity(tenant) ?? null, email, createdAt: created === undefined ? null : Number(created), signupSource: signupSource ?? null, exportedAt: new Date().toISOString() }));
 
   yield* zip.file("computers.json", json((await accounts.db.query("select id, agent, provider, lease_seconds, daily_seconds, created_at from computer_connections where tenant=$1", [tenant])).rows));
   yield* zip.file("computer-sessions.json", json((await accounts.db.query("select id, agent, workspace, provider, state, created_at, expires_at, closed_at, error from computer_leases where tenant=$1 order by sequence", [tenant])).rows));
