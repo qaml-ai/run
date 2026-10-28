@@ -112,7 +112,6 @@ email address may sign up again as a new, empty tenant.
 | Mailed links (`account_email_links`: the address, the token's hash, a sign-up's password hash) | until used or replaced, else a day after mailing (a reset link, an hour), then swept; a tenant's go with its account |
 | Account mail at Amazon SES | SES's sending records; addresses that bounce or complain stay on the account's suppression list until removed |
 | Ledger, usage, payment and starting-credit records | kept after deletion, as above |
-| Trace export settings left from before its removal (`telemetry_exporters`: endpoint, sealed headers; nothing reads them) | until the account is deleted |
 | Journey events waiting to be sent (`journey_outbox`), where configured | until the operator's store takes them, 30 days at most; an account's go when it is deleted |
 | Audio attached to a message, and its transcript | as the agent's other attachments and history: until the agent is deleted or expires (the audio in its workspace volume, the transcript on the user message) |
 | Audio and transcripts of `POST /v1/transcriptions` | not kept: in the node's memory while the request runs |

@@ -648,22 +648,21 @@ class _RuntimeCalls:
         made with it close. The process serving the agent connects again with the new one."""
         return self._rest("POST", f"/v1/agents/{_path(agent_id)}/credentials/rotate", {}, retry=False)
 
-    def upsert_agent(self, key, *, tools=(), traceparent=None, **fields):
+    def upsert_agent(self, key, *, tools=(), **fields):
         """The agent for `key`: made if there is none, set to `fields` (create_agent's) if they differ. Returns its
         credentials ({"id", "token", "expiresAt", "reconfigured"?}); connect with connect_agent. Keyed agents live until deleted.
         `prompt` (the prompt call's body, {"text", "requestId", ...}) is sent once the agent is made: the answer's "prompt" is
         its request, or {"error": {"status", "code", "message"}} when it was refused. A retry with the same requestId sends it once.
         `initial_messages` (Pi messages) is the history it begins with, used only when the agent is made; `import_messages`
         ({"format": "anthropic" | "openai-responses" | "openai-chat", "messages": [...], "model"?}) is one in another API's
-        format, which the runtime converts (not both).
-        `traceparent` (a W3C trace context) makes that first prompt's run continue the caller's trace."""
+        format, which the runtime converts (not both)."""
         if not self.api_key:
             raise AgentError("No API key: set CAMELAI_API_KEY (or pass api_key). Create one at https://run.camelai.com/console/tokens. Coding agents: read https://run.camelai.com/SKILL.md")
         _check_key(key, "An agent's")
         # The key is the agent's idempotency key: the same key is the same agent, reconfigured when its configuration differs.
-        return self._rest("POST", "/v1/agents", _provisioning(tools, **fields), headers={"Idempotency-Key": key, **_trace_header(traceparent)})
+        return self._rest("POST", "/v1/agents", _provisioning(tools, **fields), headers={"Idempotency-Key": key})
 
-    def create_run(self, request, *, idempotency_key=None, wait=None, traceparent=None):
+    def create_run(self, request, *, idempotency_key=None, wait=None):
         """Start a stateless run (POST /v1/runs): `request` is its configuration and input ({"input", "systemPrompt"?,
         "model"?, "output"?, ...}). With `wait` (True: up to 60 s, or seconds) it answers once the run ends, else still
         running. Retries are safe: each create has an Idempotency-Key (one of its own unless given)."""
@@ -672,7 +671,7 @@ class _RuntimeCalls:
             body["wait"] = wait
         wait_seconds = 60 if wait is True else min(float(wait), 60) if wait else 0
         return self._rest("POST", "/v1/runs", body, timeout=wait_seconds + 15,
-                          headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4()), **_trace_header(traceparent)})
+                          headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())})
 
     def get_run(self, run_id, *, wait=0):
         """A stateless run: running, or how it ended. `wait` (seconds, at most 25) waits for it to end first."""
@@ -903,7 +902,7 @@ class AgentRuntime(_RuntimeCalls):
             raise
         return then(value) if then else value
 
-    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, traceparent=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
+    async def create_agent(self, *, tools, workspace_id=_DEFAULT, system_prompt=None, name=None, type=None, model=None, thinking_level=None, mounts=None, idempotency_key=None, on_event=None, on_error=None, ttl_seconds=_DEFAULT, definition=None, subject=None, context=None, key_scope=None, spend_limit=None, run_limits=None, model_headers=None, on_input=None, builtins=None, delegate=None, subagents=False, prompt=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, idle_ttl_seconds=None):
         """Provision an agent. `model` is "provider/model-id", e.g. "anthropic/claude-sonnet-5-5".
         `definition` makes it from a definition (GET /v1/definitions), which supplies the model, system prompt,
         thinking level and tool sources; `tools` are added as the agent's attached MCP server.
@@ -915,7 +914,7 @@ class AgentRuntime(_RuntimeCalls):
         (PUT /v1/key-scopes/:scope/providers/:provider) whose keys its model calls use first; `spend_limit` ({"usd": n}) the most it may spend on model calls from now on; `run_limits`
         ({"maxResponses": n, "maxSeconds": n}) the most one run may take, within the runtime's maximums (1,000 responses and
         2 hours by default), past which a run stops with stopped "turn_limit"; `model_headers` non-secret headers for each model call.
-        `prompt` (the prompt call's body) is sent once the agent is made; `traceparent` (a W3C trace context) makes its run continue that trace.
+        `prompt` (the prompt call's body) is sent once the agent is made.
         `initial_messages` is the history it begins with: Pi user, assistant, toolResult and compactionSummary messages (dicts),
         a conversation from elsewhere (see the multi-user guide).
         `mcp_servers` ([{"name", "url", "auth"?: {"type": "runtime"}, ...}]) are remote MCP servers of its own, without a
@@ -935,7 +934,7 @@ class AgentRuntime(_RuntimeCalls):
         elif idempotency_key is None and idle_ttl_seconds is None:
             body["ttlSeconds"] = 86400
         session = await _http(self.http, self.base, "/v1/agents", self.api_key, "POST", body,
-                              headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4()), **_trace_header(traceparent)})
+                              headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())})
         return await self.connect_agent(session, tools=tools, on_event=on_event, on_error=on_error, on_input=on_input, subagents=subagents)
 
     async def connect_agent(self, session, *, tools, on_event=None, on_error=None, on_input=None, attach=True, takeover=False, sync_tools=True, subagents=False, connection="eager"):
@@ -1042,9 +1041,6 @@ def _steer_receipt(record):
     return {"id": record["id"], "status": record.get("steer") or "accepted"}
 
 
-def _trace_header(traceparent):
-    """The W3C `traceparent` header, when there is one to send."""
-    return {"traceparent": traceparent} if traceparent else {}
 
 
 def _transcription_form(language=None, prompt=None, key_scope=None, subject=None, context=None, actor=None, bucket=None):
@@ -2024,10 +2020,9 @@ class AgentClient(_AgentCalls):
         finally:
             self.active.pop(key, None)
 
-    async def request(self, method, params=None, *, idempotency_key=None, timeout=None, traceparent=None):
+    async def request(self, method, params=None, *, idempotency_key=None, timeout=None):
         """Send a request and wait for its outcome, however long the run takes: `timeout` (seconds) only stops the
-        wait, as cancelling the task does; the request goes on. `traceparent` (a W3C trace context, sent as the
-        traceparent header) makes the run continue the caller's trace when the tenant exports telemetry."""
+        wait, as cancelling the task does; the request goes on."""
         if self.closed or self.closing or self.fatal:
             raise self.fatal or AgentError("Client closed")
         request_id = idempotency_key or str(uuid.uuid4())
@@ -2038,7 +2033,7 @@ class AgentClient(_AgentCalls):
         future = self._waiter(request_id)
         try:
             record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
-                                 {"id": request_id, "method": method, "params": params or {}}, headers=_trace_header(traceparent))
+                                 {"id": request_id, "method": method, "params": params or {}})
             if "outcome" in record:
                 self._settle(request_id, record["outcome"])
             return await asyncio.wait_for(self._outcome(request_id, future), timeout)
@@ -2106,8 +2101,7 @@ class AgentClient(_AgentCalls):
         it ends before its next model request once it has spent that; the agent's spend limit is unchanged. `output`
         ({"schema": a JSON Schema for an object}) asks for structured output: the run ends with an answer that fits it, as "output".
         `history` is deprecated and ignored: every run sees the agent's history (use Agents.run for a stateless run).
-        `run_limits` ({"maxResponses"?, "maxSeconds"?}) are this run's own limits, lowering the agent's.
-        `traceparent` (a W3C trace context) makes the run continue the caller's trace when the tenant exports telemetry."""
+        `run_limits` ({"maxResponses"?, "maxSeconds"?}) are this run's own limits, lowering the agent's."""
         result = await self._message("prompt", text, from_=from_, files=files, metadata=metadata, idempotency_key=idempotency_key,
                                      extra=_prompt_extra(actor, while_running, allow_disconnected, spend_limit, output, history, run_limits),
                                      **options)
@@ -2116,7 +2110,7 @@ class AgentClient(_AgentCalls):
             return await self.wait_for_request(result["steeredInto"], timeout=options.get("timeout"))
         return result
 
-    async def steer_message(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False, traceparent=None):
+    async def steer_message(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False):
         """Hand a message to the running turn (while_running="steer") and return as soon as the runtime has it, without
         waiting for the turn: {"id", "status", "steeredInto"?}. status "accepted": the running turn reads it after its current
         step; "taken": it has read it already (steeredInto names the turn, whose request has the turn's outcome); "queued": no
@@ -2129,13 +2123,13 @@ class AgentClient(_AgentCalls):
         attached = await self._attach(request_id, files) if files else None
         params = _message_params(text, attached, _prompt_extra(actor, "steer", allow_disconnected), from_, metadata)
         record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
-                             {"id": request_id, "method": "prompt", "params": params}, headers=_trace_header(traceparent))
+                             {"id": request_id, "method": "prompt", "params": params})
         if "outcome" in record:
             self._settle(request_id, record["outcome"])
         return _steer_receipt(record)
 
     async def submit(self, text, *, actor=None, from_=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False,
-                     spend_limit=None, output=None, history=None, traceparent=None, run_limits=None):
+                     spend_limit=None, output=None, history=None, run_limits=None):
         """Send a message and return as soon as the runtime has it (202), without waiting for its run: {"id", "state"},
         the request's id and whether it runs or is queued. Follow it with wait_for_request(id), the stream or a webhook."""
         if self.closed or self.closing or self.fatal:
@@ -2145,7 +2139,7 @@ class AgentClient(_AgentCalls):
         attached = await self._attach(request_id, files) if files else None
         params = _message_params(text, attached, _prompt_extra(actor, None, allow_disconnected, spend_limit, output, history, run_limits), from_, metadata)
         record = await _http(self.http, self.base, self.path + "/requests", self.session["token"], "POST",
-                             {"id": request_id, "method": "prompt", "params": params}, headers=_trace_header(traceparent))
+                             {"id": request_id, "method": "prompt", "params": params})
         if "outcome" in record:
             self._settle(request_id, record["outcome"])
         return {"id": record["id"], "state": record["state"]}
@@ -2560,7 +2554,7 @@ class Agent:
         return self.client.files
 
     async def run(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-                  allow_disconnected=False, spend_limit=None, output=None, traceparent=None, history=None, run_limits=None):
+                  allow_disconnected=False, spend_limit=None, output=None, history=None, run_limits=None):
         """Send a message and wait for the run it starts: its reply, or the input it waits on. There is no timeout
         unless `timeout` (seconds) says so, and that only stops the wait. `user` (your user id, or {"id", "name"?}) is
         who sent it: the model sees who, and tools get it as identity.user. A failed run raises RunError (with the run)
@@ -2569,29 +2563,27 @@ class Agent:
         `spend_limit` ({"usd": n}) is this run's own budget; the agent's spend limit is unchanged. `output` (a pydantic model class, or a
         JSON Schema dict for an object) asks for structured output: the agent ends the run with an answer that fits it, as run.output (an
         instance of the model); a run that ends without one fails (code "output_missing"). Not with while_running="steer".
-        `traceparent` (a W3C trace context, "00-<trace-id>-<span-id>-<flags>") makes the run's spans continue that trace
-        when the tenant exports telemetry (runtime.telemetry.set); it is not part of the run's idempotency.
         `history` is deprecated and ignored: every run sees the agent's history (use Agents.run for a stateless run).
         `run_limits` ({"maxResponses"?, "maxSeconds"?}) are this run's own
         limits, lowering the agent's: at one, it ends with stopped "turn_limit". With end-user credits on, a run its subject's credit
         stops fails with code "end_user_credit"."""
         return await self._run(text, idempotency_key or str(uuid.uuid4()), user=user, files=files, metadata=metadata, timeout=timeout,
                                throw_on_error=throw_on_error, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit,
-                               output=output, traceparent=traceparent, history=history, run_limits=run_limits)
+                               output=output, history=history, run_limits=run_limits)
 
     def stream(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, timeout=None, throw_on_error=True, while_running=None,
-               allow_disconnected=False, spend_limit=None, output=None, traceparent=None, history=None):
+               allow_disconnected=False, spend_limit=None, output=None, history=None):
         """Send a message and read the run as it happens: text as it is written, tool calls and results, the input it
         waits on and, last, "done" with the run."""
         return RunStream(self, text, {"user": user, "files": files, "metadata": metadata, "idempotency_key": idempotency_key, "timeout": timeout,
                                       "throw_on_error": throw_on_error, "while_running": while_running, "allow_disconnected": allow_disconnected,
-                                      "spend_limit": spend_limit, "output": output, "traceparent": traceparent, "history": history})
+                                      "spend_limit": spend_limit, "output": output, "history": history})
 
     async def _run(self, text, request_id, *, user=None, files=None, metadata=None, timeout=None, throw_on_error=True, while_running=None,
-                   allow_disconnected=False, spend_limit=None, output=None, traceparent=None, history=None, run_limits=None):
+                   allow_disconnected=False, spend_limit=None, output=None, history=None, run_limits=None):
         pending = self.client.prompt(text, from_=_sender(user) if user else None, files=files, metadata=metadata, idempotency_key=request_id,
                                      timeout=timeout, while_running=while_running, allow_disconnected=allow_disconnected, spend_limit=spend_limit,
-                                     output=_output_request(output), traceparent=traceparent, history=history, run_limits=run_limits)
+                                     output=_output_request(output), history=history, run_limits=run_limits)
         return await self._settle(request_id, pending, throw_on_error, output)
 
     async def _settle(self, request_id, pending, throw_on_error, output=None):
@@ -2622,12 +2614,12 @@ class Agent:
         return Run(input["requestId"], "input_required", inputs=pending)
 
     async def send(self, text, *, user=None, files=None, metadata=None, idempotency_key=None, allow_disconnected=False, spend_limit=None,
-                   output=None, traceparent=None, history=None, run_limits=None):
+                   output=None, history=None, run_limits=None):
         """Send a message and return as soon as the runtime has it, without waiting for the run: {"id", "state"} (running
         or queued). Get its outcome later with wait(id), the agent's events, or a run.completed webhook."""
         return await self.client.submit(text, from_=_sender(user) if user else None, files=files, metadata=metadata, idempotency_key=idempotency_key,
                                         allow_disconnected=allow_disconnected, spend_limit=spend_limit, output=_output_request(output),
-                                        traceparent=traceparent, history=history, run_limits=run_limits)
+                                        history=history, run_limits=run_limits)
 
     async def wait(self, request_id, *, timeout=None, throw_on_error=True):
         """A run sent with send, once it ends: as run answers (RunError if it failed, unless throw_on_error=False)."""
@@ -2652,7 +2644,7 @@ class Agent:
         if wait:
             return await self.run(text, **options, while_running="steer")
         user = options.pop("user", None)
-        unknown = set(options) - {"files", "metadata", "idempotency_key", "allow_disconnected", "traceparent"}
+        unknown = set(options) - {"files", "metadata", "idempotency_key", "allow_disconnected"}
         if unknown:
             raise TypeError(f"steer() takes {', '.join(sorted(unknown))} only with wait=True")
         return await self.client.steer_message(text, from_=_sender(user) if user else None, **options)
@@ -2791,9 +2783,9 @@ class Runs:
             fields["workspaceId"] = workspace_id
         return {key: value for key, value in fields.items() if value is not None or key == "workspaceId"}
 
-    async def create(self, input, *, idempotency_key=None, wait=None, traceparent=None, **config):
+    async def create(self, input, *, idempotency_key=None, wait=None, **config):
         """Start a run and return at once, still running (or, with `wait`, once it ends within it): its view as a dict."""
-        return await self.runtime.create_run(self._request(input, **config), idempotency_key=idempotency_key, wait=wait, traceparent=traceparent)
+        return await self.runtime.create_run(self._request(input, **config), idempotency_key=idempotency_key, wait=wait)
 
     async def get(self, run_id, *, wait=0):
         """A run by its id, as a dict: running, or how it ended. `wait` (seconds, at most 25) waits for it to end first."""
@@ -2814,17 +2806,17 @@ class Runs:
         """A run's raw event stream, to its end; see stream for one read into text, tool calls and the result."""
         return self.runtime.run_events(run_id, last_event_id=last_event_id)
 
-    async def run(self, input, *, idempotency_key=None, throw_on_error=True, traceparent=None, **config):
+    async def run(self, input, *, idempotency_key=None, throw_on_error=True, **config):
         """Run and wait for its result: see Agents.run."""
-        view = await self.create(input, idempotency_key=idempotency_key, wait=True, traceparent=traceparent, **config)
+        view = await self.create(input, idempotency_key=idempotency_key, wait=True, **config)
         if view["status"] == "running":
             view = await self.runtime.wait_for_run(view["id"])
         return _stateless_run(view, config.get("output"), throw_on_error)
 
-    async def stream(self, input=None, *, run_id=None, idempotency_key=None, throw_on_error=True, traceparent=None, **config):
+    async def stream(self, input=None, *, run_id=None, idempotency_key=None, throw_on_error=True, **config):
         """Run, reading it as it happens (or, given run_id, follow that run). Returns a StatelessRunStream."""
         if run_id is None:
-            run_id = (await self.create(input, idempotency_key=idempotency_key, traceparent=traceparent, **config))["id"]
+            run_id = (await self.create(input, idempotency_key=idempotency_key, **config))["id"]
         return StatelessRunStream(self.runtime, run_id, config.get("output"), throw_on_error)
 
 
