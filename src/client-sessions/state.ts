@@ -29,7 +29,6 @@ import type { Imager } from "../images.ts";
 import type { Decider } from "../decisions.ts";
 import type { Outbound } from "../outbound.ts";
 import type { WrittenFile } from "../volume-tools.ts";
-import type { Backlog } from "../history-pages.ts";
 import type { Inputs, RetryPlan } from "../inputs.ts";
 import type { BackgroundSpans, RunSpans, ToolSource, Tracing } from "../telemetry.ts";
 
@@ -97,8 +96,6 @@ export type JournalRecord = { t: "request"; record: RequestRecord } | { t: "anno
 export type RunUsage = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number };
 export type ClientEnv = { Bindings: HttpBindings & { operatorTenant?: string }; Variables: { session: Session } };
 export type BufferedEvent = { id: number; bytes: number; data: ClientEvent };
-/** What a running agent's history index lacks (its transcript's backlog). */
-export type HistoryTail = Pick<Backlog, "from" | "messages" | "turns">;
 export type Session = {
   header: SessionHeader;
   /** Revision of the stored header this node last read or wrote; writes are conditional on it. */

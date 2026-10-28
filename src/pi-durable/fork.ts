@@ -34,8 +34,6 @@ class ForkBeforeHead extends Error {
 
 const refused = (status: number, code: string, message: string) => Object.assign(new Error(message), { status, code });
 const callsOf = (message: AgentMessage) => message.role === "assistant" ? message.content.flatMap(part => part.type === "toolCall" ? [part.id] : []) : [];
-/** Where conversational turns begin in `messages` without turn records: at a user message after anything else. */
-const userTurns = (messages: readonly AgentMessage[]) => messages.flatMap((message, index) => message.role === "user" && messages[index - 1]?.role !== "user" ? [index] : []);
 
 /**
  * How many of the history's messages a fork at `at` keeps: by default up to the last turn that ended; at a history
@@ -85,22 +83,30 @@ export async function contextAt(storage: Storage, at: At): Promise<Message[]> {
   return view.entries.flatMap((entry, index) => entry.id <= last.id || entry.id === view.head?.id ? view.contributions[index] : []) as Message[];
 }
 
+/** A source's history as a fork reads it (by ordinal, bounded before it reads): its messages, turn starts and journal cursors. */
+export interface ForkHistory {
+  messages(): Promise<AgentMessage[]>;
+  turns(total: number): Promise<number[]>;
+  /** The journal cursor of history message `index`; undefined for one with none (archived, or kept by a base). */
+  cursorAt(index: number): Promise<At | undefined>;
+}
+
 /**
- * The fork of a session at `at` from its journal: `messages` is its whole history (the history index's settled part,
- * then the journal's), `history` its journal history. Its model starts from Pi's context as of the cut. Before the
- * retained head, or the journal base (whose messages have no cursor), it starts from raw kept history, which Pi
- * compacts on the first turn as needed.
+ * The fork of a session at `at` from its journal: `read` gives its whole history and its turn starts, `history` its
+ * turn as the journal holds it. Its model starts from Pi's context as of the cut. Before the retained head, or where a
+ * message has no journal cursor (an archived one), it starts from raw kept history, which Pi compacts on the first turn
+ * as needed.
  */
-export async function journalForkCut(storage: Storage, history: JournalHistory, messages: readonly AgentMessage[], at?: number | string): Promise<JournalForkCut> {
+export async function journalForkCut(storage: Storage, history: Pick<JournalHistory, "total" | "active" | "turnStart" | "awaiting">, read: ForkHistory, at?: number | string): Promise<JournalForkCut> {
+  const messages = await read.messages();
   if (messages.length !== history.total) throw new Error(`The agent's history has ${messages.length} messages, its journal ${history.total}`);
-  // Turn starts the journal records, and before its base, where user messages begin them.
-  const turns = [...new Set([...userTurns(messages.slice(0, history.baseTotal)), ...history.turnsFrom(0)])].sort((a, b) => a - b);
+  const turns = await read.turns(messages.length);
   const count = forkCount(history, messages, turns, at);
   const kept = messages.slice(0, count);
   if (!count) return { through: null, messages: [], turns: [], model: [] };
   // Pi's context just before the next history message: with what the journal holds between (a compaction or a
   // checkpoint that summarizes what the fork keeps, an import's summary at its cut), never anything after.
-  const cursor = history.cursorAt(count - 1), next = history.cursorAt(count);
+  const cursor = await read.cursorAt(count - 1), next = count < messages.length ? await read.cursorAt(count) : undefined;
   const through = !cursor ? undefined : !next ? { entryId: Number.MAX_SAFE_INTEGER, index: -1 } : next.index > 0 ? { entryId: next.entryId, index: next.index - 1 } : { entryId: next.entryId - 1, index: -1 };
   if (through) {
     try {

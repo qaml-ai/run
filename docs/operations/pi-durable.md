@@ -148,7 +148,14 @@ messages are history messages `msg_from` .. `msg_from + msg_count - 1`, its own
 history messages from its `msg_skip`-th on), and `turn_start` on a turn marker that
 opens a turn, at `msg_from`. `pi_durable_metadata.history_next` is the history's
 length and `history_last_id` the newest session entry committed with it. History
-reads find messages by ordinal from these (plans/thin-host-slimdown-2.md §6.1).
+reads (pages, the full history, export, fork, a context reset's kept messages) find
+messages by ordinal from these (`src/history-pages.ts`), on any node, bounded in bytes
+before they read; an agent not placed yet is placed at its first read. A fork's copied
+history is a run of `camel.history.archive` entries before its base (`data.messages`
+placed at `data.start`, one per turn, never in Pi's context). Messages before an
+agent's first placed one (retired host transcripts' and older forks') are read from
+the history index's chunks until they move into Pi storage. A turn's end moves the
+journal base on every 256 messages, so a load reads the journal from near its end.
 
 `PostgresPiStorage.commit` places each entry as it commits, under the session's
 metadata lock, as `JournalHistory` counts the journal: native messages in entry ID

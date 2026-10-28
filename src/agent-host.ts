@@ -24,7 +24,6 @@ import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
 import { describeFile, documentPayload, FILE_LIMITS, IMAGE_PAST_BUDGET, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
-import { CHUNK_BYTES, chunksOf, type HistoryChunk } from "./history-pages.ts";
 import { observeContextMetrics, observeTurns, recordCodeExecution, recordContextRange, recordToolResultSize, safeError } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
@@ -39,7 +38,6 @@ import { seedJournal, SESSION_CONVERSATION_ID } from "./pi-durable/seed.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
 /** How long a stopping agent waits to index its settled turns (see `index`). */
-export const HISTORY_FLUSH_MS = 5_000;
 
 /** Model requests of one structured run that may force final_output (see `outputChoice`). */
 const FORCED_OUTPUT_REQUESTS = 3;
@@ -96,12 +94,7 @@ export interface HostIO {
   modelOutbound?: Outbound;
   /** Wait until the node may act for the agent (its lease is fresh), before each model request and js_exec; rejects once it lost the agent. */
   lease?(): Promise<void>;
-  /** The agent's history index, which the supervisor writes: how many messages it has (null: it has none yet, or none is kept), and a chunk to add. */
-  history?: { indexed(): Promise<number | null>; write(chunk: HistoryChunk): Promise<number> };
 }
-
-/** The messages one pass of the history index reads from the journal at most, in bytes (see `index`). */
-const INDEX_READ_BYTES = 4 * CHUNK_BYTES;
 
 /** Tools Pi makes again when a lost node left their call open (`replay: "safe"`), not answered as interrupted: each is keyed by its call (multi-agent.ts). */
 export const RERUN = ["delegate", "spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"];
@@ -152,8 +145,6 @@ export function createAgentHost(hostIO: HostIO) {
   } };
   /** The agent's history and turn, in its Pi journal. */
   let journal: HostJournal;
-  /** How many of its messages the history index has (undefined: none is kept, or it could not be read at start). */
-  let indexedTo: number | undefined;
   let busy = false;
   let active: AbortController | undefined;
   /** Why the current run ended early: a spend limit, tool calls waiting on a person's input, or a hand-off (its node is leaving). */
@@ -177,10 +168,6 @@ export function createAgentHost(hostIO: HostIO) {
   let documents = false;
   /** A provider refused an intact image: omit every image for the rest of this turn only. */
   let omitImages = false;
-  /** History index writes, one at a time. */
-  let indexing = Promise.resolve();
-  /** About how much of the history the index lacks, in bytes, as messages end: a pass reads the journal only past a chunk. */
-  let unindexed = 0;
   /** Whether the running turn can still take a steer sent `whileRunning` (see `steer`). */
   let steerable = false;
   /** What the current run's final_output call gave, once the model made one that fit its schema. */
@@ -207,44 +194,6 @@ export function createAgentHost(hostIO: HostIO) {
     waiting.catch(() => {});
     try { await Promise.race([waiting, aborted.promise]); }
     finally { signal.removeEventListener("abort", abort); }
-  }
-
-  /**
-   * Add what the history index lacks to it, from the journal, in the background. Chunks are written when what the index
-   * lacks has grown past one (all but the latest message, the only one a retry retracts), and when the agent stops
-   * (`final`: the settled turns), never per turn; a turn cut off by the stop is settled at the next start, with its
-   * repairs. A failed write is tried again with the next. Settled, with every message indexed, the journal's later
-   * reads start from there (`HostJournal.rebase`).
-   */
-  function index(final = false): Promise<void> {
-    const history = io.history;
-    if (!history || !journal || indexedTo === undefined || (!final && unindexed < CHUNK_BYTES)) return Promise.resolve();
-    return indexing = indexing.then(async () => {
-      await journal.refresh();
-      const kept = journal.history;
-      if (indexedTo! < kept.heldFrom) {
-        console.error(JSON.stringify({ type: "history_index_behind_journal", agent: config.id, indexed: indexedTo, base: kept.heldFrom }));
-        return;
-      }
-      const upto = final ? (kept.active ? Math.min(kept.turnStart, kept.total) : kept.total) : kept.total - 1;
-      const sizes = (from: number, to: number) => kept.sizesFrom(from, to);
-      if (upto <= indexedTo! || (!final && sizes(indexedTo!, upto).reduce((sum, size) => sum + size, 0) < CHUNK_BYTES)) return;
-      // A pass at a time, each of what fits in INDEX_READ_BYTES.
-      while (indexedTo! < upto) {
-        const from = indexedTo!, all = sizes(from, upto);
-        let count = 0, bytes = 0;
-        while (count < all.length && (!count || bytes + all[count] <= INDEX_READ_BYTES)) bytes += all[count++];
-        const messages = await kept.messagesFrom(from, from + count);
-        if (!messages) throw new Error(`The journal does not hold messages ${from} to ${from + count}`);
-        for (const chunk of chunksOf({ from, messages, sizes: all.slice(0, count), turns: kept.turnsFrom(from) })) {
-          indexedTo = await history.write(chunk);
-          // Another writer, or a gap: the rest waits for the next pass.
-          if (indexedTo !== chunk.start + chunk.messages.length) return;
-        }
-      }
-      unindexed = sizes(indexedTo!, kept.total).reduce((sum, size) => sum + size, 0);
-      if (final || !kept.active) await journal.rebase(indexedTo!);
-    }).catch(error => console.error(JSON.stringify({ type: "history_index_failed", agent: config.id, error: errorText(error) })));
   }
 
   /** The leading system message the agent's configuration makes: a new agent's Pi context starts with it. */
@@ -789,9 +738,6 @@ export function createAgentHost(hostIO: HostIO) {
       if (agent) throw new Error("Agent already initialized");
       config = params;
       await mkdir(config.directory, { recursive: true, mode: 0o700 });
-      // Where the history index ends: the journal's history past it is indexed from here. One whose index cannot be read
-      // now (null) is left for the next start.
-      indexedTo = (io.history ? await io.history.indexed().catch(() => null) : null) ?? undefined;
       const piStorage = await io.piStorage?.();
       if (!piStorage) throw new Error("The agent's Pi durable storage is not open");
       const contextLimit = config.contextRangeMaxBytes ?? CONTEXT_RANGE_MAX_BYTES;
@@ -814,7 +760,6 @@ export function createAgentHost(hostIO: HostIO) {
       jsExec = codeTool();
       const tools = [...config.codeMode === false ? [] : [jsExec], ...directAgentTools(config.tools)];
       journal = await open(piStorage, tools.map(toToolDeclaration));
-      if (indexedTo !== undefined) unindexed = journal.history.sizesFrom(Math.max(indexedTo, journal.history.heldFrom)).reduce((sum, size) => sum + size, 0);
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
       if (journal.active && journal.awaiting.length) {
@@ -964,10 +909,6 @@ export function createAgentHost(hostIO: HostIO) {
         }
         // A call waiting on input has no result yet: the journal keeps it open instead (`awaiting`).
         // Pi's journal holds each finished message as Pi commits it; streaming deltas are never persisted.
-        if (event.type === "message_end" && !(event.message.role === "toolResult" && (event.message.details as { inputRequired?: boolean } | undefined)?.inputRequired)) {
-          unindexed += JSON.stringify(event.message).length;
-          void index();
-        }
         // A failed response's event says how it failed, for callers that would otherwise parse its message.
         io.emit(event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "error" ? { ...event, failure: modelFailure(event.message, failureContext()) } : event);
       });
@@ -976,7 +917,6 @@ export function createAgentHost(hostIO: HostIO) {
       if (kept && !config.tools.some(tool => tool.name === OUTPUT_TOOL)) agent.state.tools = [...agent.state.tools, outputTool(kept.parameters)];
       // A configuration changed elsewhere (another node, or while this agent was stopped) applies from here.
       await declareConfiguration();
-      void index();
       await journal.refresh();
       return { pid: process.pid, recovered, messages: journal.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? await endedTurn() : {}) };
     }
@@ -1007,15 +947,6 @@ export function createAgentHost(hostIO: HostIO) {
       return { configured: true };
     }
     // Before a stop: index the settled turns, so a page of them needs neither the process nor the journal.
-    if (method === "historyFlush") { await index(true); return null; }
-    // What the history index lacks yet: the running turn, and anything a failed write left. Null when nothing indexes the
-    // agent, or the journal does not hold it all.
-    if (method === "historyTail") {
-      if (indexedTo === undefined) return null;
-      await journal.refresh();
-      const from = indexedTo, messages = await journal.history.messagesFrom(from);
-      return messages ? { from, messages, turns: journal.history.turnsFrom(from) } : null;
-    }
     if (method === "steer") {
       const messages = await fittedImages(userMessages(params));
       // A prompt sent `whileRunning: "steer"`: only for the running turn, and only while it can still take it.
@@ -1143,7 +1074,6 @@ export function createAgentHost(hostIO: HostIO) {
       await io.cancelTools();
       active = undefined;
       busy = false;
-      if (method !== "execute") void index();
     }
   }
 
@@ -1262,9 +1192,7 @@ export function createAgentHost(hostIO: HostIO) {
    * with the run (a close is not a crash: a request it cut is made again); then stop what still runs here. An interrupted
    * turn stays marked active and is resumed on next load.
    */
-  async function dispose(flushMs = HISTORY_FLUSH_MS) {
-    // Its settled turns are indexed while the journal is still open.
-    if (flushMs > 0 && agent) await Promise.race([index(true), clock().sleep(flushMs)]);
+  async function dispose() {
     const closing = agent?.close();
     active?.abort();
     await io.cancelTools();

@@ -40,6 +40,8 @@ const json = <T>(value: T): T => JSON.parse(JSON.stringify(value));
  */
 export class HostJournal {
   readonly history: JournalHistory;
+  /** Where the newest base stands: the one this journal opened from, or one it wrote since. */
+  private rebasedAt?: number;
   private readonly storage: Storage;
   /** The newest message the host wrote itself: a run's new messages are the ones Pi commits after it. */
   written?: At;
@@ -157,26 +159,31 @@ export class HostJournal {
   push(message: AgentMessage) { return this.append([message]); }
   append(messages: AgentMessage[]) { return this.commit(() => messages.map(message => ({ t: "message" as const, message }))); }
   retract() { return this.commit(() => [{ t: "retract" }]); }
-  setActive(active: boolean) { return this.commit(() => [{ t: "turn", active }]); }
+  /** Open or end a turn; an ended one moves the base on once the history has grown REBASE_MESSAGES past it (`rebase`). */
+  async setActive(active: boolean) {
+    await this.commit(() => [{ t: "turn", active }]);
+    if (!active) await this.rebase();
+  }
   /** Leave tool calls open for a person's input, or (`released`) give them back to the turn. */
   await(calls: string[], released = false) { return this.commit(() => [{ t: "awaiting", calls, ...(released ? { released: true as const } : {}) }]); }
   system(message: SystemMessage) { return this.commit(() => [{ t: "system", message }]); }
   skip(cursor: At, after?: At) { return this.commit(() => [{ t: "pi", cursor, ...(after ? { after } : {}) }]); }
 
   /**
-   * Start later reads past the history as it stands, between turns, once it has grown REBASE_MESSAGES past its base and
-   * the history index holds every message before it (`indexed`): a load then reads the journal from here, not from the
-   * session's first base. Whether a base was written.
+   * Start later reads past the history as it stands, between turns, once it has grown REBASE_MESSAGES past its base: a
+   * load then reads the journal from here, not from the session's first base (history reads go by ordinal, from Pi
+   * storage, whatever the base). Whether a base was written.
    */
-  rebase(indexed: number): Promise<boolean> {
+  rebase(): Promise<boolean> {
     const run = this.line.then(async () => {
       if (this.failed !== undefined) throw this.failed;
       await this.refresh();
       const base = this.history.settledBase();
-      if (!base || base.total - this.history.baseTotal < REBASE_MESSAGES || indexed < base.total) return false;
+      if (!base || base.total - (this.rebasedAt ?? this.history.baseTotal) < REBASE_MESSAGES) return false;
       const document = await JournalHistory.baseDocument(this.storage);
       try { await this.storage.commit(baseWrites(await this.storage.mintId<EntryId>(), base, { id: document ?? await this.storage.mintId<DocumentId>(), create: !document }), () => {}, context); }
       catch (error) { this.failed = error; throw error; }
+      this.rebasedAt = base.total;
       return true;
     });
     this.line = run.catch(() => {});

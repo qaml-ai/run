@@ -29,9 +29,6 @@ test("cold history of an import before #322 (no journal history) is refused, wit
   const records: TranscriptRecord[] = [{ t: "turn", active: true }, ...old.map(message => ({ t: "message" as const, message })), { t: "turn", active: false }];
   const writeLog = async () => { const log = storage.log<TranscriptRecord>(AgentSupervisor.transcriptKey(id)); await log.rewrite(() => records); await log.close(); };
   await writeLog();
-  const index = new HistoryIndex(db, storage);
-  await index.begin(id, old.length);
-  await index.write(id, undefined, { start: 0, messages: old, turns: [0] });
 
   const journal = await openPiStorage({ sessionId: id, directory: join(directory, "agents", id), db });
   await seedWithoutGeneration(journal, id, records);
@@ -44,10 +41,11 @@ test("cold history of an import before #322 (no journal history) is refused, wit
     kind: message.role === "user" ? "pi.user" : "pi.assistant", model: [message] as any,
   } }], () => {}, context);
   await journal.close(context);
+  // A session an earlier release made has no history ordinals (it opened its storage before them).
+  await db.query("update pi_durable_metadata set history_next = null, history_last_id = null where session_id = $1", [id]);
 
   // No pending run or lagging index signals the WAL-only messages left by a failed legacy projection.
   assert.equal((await db.query("select pending_runs from agents where id = $1", [id])).rows[0].pending_runs, false);
-  assert.equal(await index.indexed(id), await index.reported(id));
   // Its history is in a legacy format this release no longer reads: refused, nothing started or written.
   await assert.rejects(sessions.historyPageFor(id, "owner", { limit: "1" }), (error: any) => error.status === 409 && /AGENT_NOT_MIGRATED: .*not_on_pi/.test(error.message));
   await assert.rejects(sessions.agentHistory(id, "owner"), /AGENT_NOT_MIGRATED/);

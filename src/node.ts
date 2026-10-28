@@ -70,7 +70,6 @@ import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson, readText, shedBodies, signInHint } from "./http.ts";
 import { outcomeEnding, type RequestRecord } from "../shared/client-protocol.ts";
-import type { HistoryPage } from "./history-pages.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
@@ -771,19 +770,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     }
   }
 
-  /** A page of an agent's history wherever it is served: here, or on the node that owns it, which alone holds its newest turns. */
-  async function historyPageAnywhere(agent: string, tenant: string, query: { before?: string; limit?: string }): Promise<HistoryPage> {
-    const owner = await clients.ownerElsewhere(agent);
-    if (!owner) return clients.historyPageFor(agent, tenant, query);
-    const response = await signedPost(owner, `/internal/agents/${agent}/history`, { tenant, query }, 60_000).catch(error => { ownership.forget(agent); throw error; });
-    if (!response.ok) {
-      ownership.forget(agent);
-      const { error } = await response.json().catch(() => ({})) as { error?: string };
-      throw new HttpError(response.status, error ?? `Owner could not read the agent's history: HTTP ${response.status}`);
-    }
-    return response.json() as Promise<HistoryPage>;
-  }
-
   const volumes = new VolumeService({
     db, storage, ownership, idleMs,
     // Volume operations on another node keep their status (and a conflict's current version).
@@ -1273,17 +1259,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       return c.json({ error: errorText(error) }, errorStatus(error, 400) as ContentfulStatusCode);
     }
   });
-  app.post("/internal/agents/:id{client_[a-f0-9]{40}}/history", async c => {
-    let body: string | undefined;
-    try { body = await signedBody(c); } catch { return c.body(null, 413); }
-    if (body === undefined) return c.body(null, 401);
-    try {
-      const { tenant, query } = JSON.parse(body);
-      return c.json(await clients.historyPageFor(c.req.param("id"), tenant, query));
-    } catch (error) {
-      return c.json({ error: errorText(error) }, errorStatus(error, 400) as ContentfulStatusCode);
-    }
-  });
   app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
     let body: string | undefined;
     try { body = await signedBody(c); } catch { return c.body(null, 413); }
@@ -1328,7 +1303,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     await rateLimits.run(tenant);
   };
-  app.route("/", api({ computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, telemetry, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, historyPage: historyPageAnywhere, verifyKeys: config.verifyKeys,
+  app.route("/", api({ computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, telemetry, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),

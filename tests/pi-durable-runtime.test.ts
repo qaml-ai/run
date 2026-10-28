@@ -56,7 +56,6 @@ for (const hosting of ["inline", "process"] as Hosting[]) test(`a session whose 
   const earlier = await kinds("earlier");
   await assert.rejects(start("earlier"), /AGENT_NOT_MIGRATED: .*host_transcript/);
   assert.deepEqual(await kinds("earlier"), earlier);
-  await assert.rejects(supervisors.at(-1)!.history("earlier"), /AGENT_NOT_MIGRATED: .*history_before_base/);
 
   // A new agent: seeded with the marker every release reads first, its journal history's base and its context.
   assert.ok(await start("new"));
@@ -85,7 +84,6 @@ for (const hosting of ["inline", "process"] as Hosting[]) test(`a fork the relea
   };
   const before = await entries();
   await assert.rejects(supervisor.start(id, { model, apiKey: "fixture", codeMode: false }, { definitions: [], call: async () => { throw new Error("No tools expected"); } }), /AGENT_NOT_MIGRATED: .*host_transcript/);
-  await assert.rejects(supervisor.history(id), /AGENT_NOT_MIGRATED/);
   assert.equal(await entries(), before);
   assert.deepEqual(await log.read(), records);
 });

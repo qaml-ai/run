@@ -101,13 +101,13 @@ for (const backend of ["sqlite", "postgres"] as const) test(`${backend} resets a
   assert.deepEqual(await again!.messagesFrom(0), all);
 
   // Kept messages come from the bounded history reader; the kept tail never starts on a tool result.
-  const kept = await resetContext(storage, { limit: 256 * 1024, keepMessages: 2, summary: "Custom summary" });
+  const kept = await resetContext(storage, { limit: 256 * 1024, keepMessages: 2, summary: "Custom summary", read: async (from, to) => all!.slice(from, to) });
   assert.equal(kept.keptMessages, 1, "the tool result without its call is left out");
   const second = await entriesFrom(storage, (await storage.findLatestHeadMarker(root, undefined, context))!.id);
   assert.deepEqual(second[0].model, [folded], "a second reset keeps the same system message");
   assert.match(JSON.stringify(second[1].model), /Custom summary/);
   assert.deepEqual(second.slice(2).map(item => item.model![0].role), ["assistant"]);
-  const three = await resetContext(storage, { limit: 256 * 1024, keepMessages: 3 });
+  const three = await resetContext(storage, { limit: 256 * 1024, keepMessages: 3, read: async (from, to) => all!.slice(from, to) });
   assert.equal(three.keptMessages, 3);
   const third = await entriesFrom(storage, (await storage.findLatestHeadMarker(root, undefined, context))!.id);
   assert.deepEqual(third.slice(2).map(item => item.model![0].role), ["assistant", "toolResult", "assistant"]);
@@ -188,14 +188,12 @@ test("kept messages before the journal's base come from the history index, and n
   const indexed = [user("one"), assistant(["c1"]), result("c1", "r1")];
   await seedJournal({ storage, sessionId: "reset-index", model: [system({ content: "BASE" })], before: { total: 3 }, messages: [assistant([], "four")] });
   const reads: [number, number][] = [];
-  const settled = async (end: number, from: number) => { reads.push([end, from]); return indexed.slice(from, end); };
+  // The history by ordinal: the three before the base (a fork's archive), then the journal's.
+  const read = async (from: number, to: number) => { reads.push([from, to]); return [...indexed, assistant([], "four")].slice(from, to); };
   const kept = async () => (await entriesFrom(storage, (await storage.findLatestHeadMarker(root, undefined, context))!.id)).slice(2).map(item => item.model![0]);
-  assert.equal((await resetContext(storage, { limit: 1 << 20, keepMessages: 3, settled })).keptMessages, 3);
-  assert.deepEqual(reads, [[3, 1]]);
+  assert.equal((await resetContext(storage, { limit: 1 << 20, keepMessages: 3, read })).keptMessages, 3);
+  assert.deepEqual(reads, [[1, 4]], "only the messages it keeps are read");
   assert.deepEqual((await kept()).map(message => message.role), ["assistant", "toolResult", "assistant"]);
-  // An index that lacks some of them: only what the journal holds.
-  assert.equal((await resetContext(storage, { limit: 1 << 20, keepMessages: 3, settled: async () => [] })).keptMessages, 1);
-  assert.deepEqual((await kept()).map(message => message.role), ["assistant"]);
 });
 
 test("a reset refuses a context with replace edits, and writes nothing when its caller's last check fails", async t => {
@@ -221,8 +219,8 @@ test("the supervisor refuses a reset when a host started while it ran", async t 
   const first = (await storage.findLatestHeadMarker(root, undefined, context))!.id;
   await storage.close(context);
   // A steer starts a host during the reset (its history read is a moment in the middle).
-  const settled = async () => { supervisor.starting.add("raced"); return []; };
-  await assert.rejects(supervisor.resetContext("raced", undefined, { limit: 1 << 20, keepMessages: 3, settled }), /Agent is running/);
+  const read = async () => { supervisor.starting.add("raced"); return []; };
+  await assert.rejects(supervisor.resetContext("raced", undefined, { limit: 1 << 20, keepMessages: 3, read }), /Agent is running/);
   supervisor.starting.delete("raced");
   const reopened = await openPiStorage({ sessionId: "raced", directory: join(root2, "raced") });
   assert.equal((await reopened.findLatestHeadMarker(root, undefined, context))!.id, first, "nothing was written");

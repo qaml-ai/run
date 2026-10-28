@@ -2,6 +2,12 @@ import type { EntryRecord, StorageWrite } from "@earendil-works/pi-durable";
 import { transaction, type Db, type Sql } from "../db.ts";
 /** `history.ts`'s MARKER_KIND and `seed.ts`'s SESSION_CONVERSATION_ID: storage.ts imports this module, which imports neither (a cycle). */
 export const MARKER_KIND = "camel.history.marker";
+/**
+ * Messages of an agent's history kept in Pi storage but never in its context (no `model`): `data.messages`, placed at
+ * `data.start` (`data.turn`: they open a turn). A fork's copied history, and (H3) history from before the journal.
+ */
+export const ARCHIVE_KIND = "camel.history.archive";
+export type ArchiveData = { start: number; messages: unknown[]; turn?: boolean };
 const SESSION_CONVERSATION_ID = 1;
 
 /**
@@ -22,6 +28,7 @@ const NATIVE_KINDS = new Set(["pi.user", "pi.assistant", "pi.tool-result", "came
 
 /** Where an entry's history messages are among its model messages (`durableEntryMessages`' cursors' indexes). */
 export function historyPositions(entry: Pick<EntryRecord, "kind" | "model" | "data">): number[] {
+  if (entry.kind === ARCHIVE_KIND) return ((entry.data as unknown as ArchiveData | undefined)?.messages ?? []).map((_, index) => index);
   if (!NATIVE_KINDS.has(entry.kind) || !entry.model?.length) return [];
   // A user message the host keeps whole in its data is one message, whatever its model form.
   if (entry.kind === "camel.user" && (entry.data as { message?: unknown } | undefined)?.message) return [0];
@@ -51,8 +58,15 @@ export async function placeEntries(sql: Executor, writes: readonly StorageWrite[
   const entries = writes.flatMap(write => write.type === "entry" && write.value.conversationId === SESSION_CONVERSATION_ID ? [write.value] : []).sort((a, b) => a.id - b.id);
   if (state.next === null || !entries.length) return undefined;
   const placements = new Map<number, Placement>();
-  let next = state.next, lastId = state.lastId;
+  let next = state.next, lastId = state.lastId, appended = false;
   for (const entry of entries) {
+    if (entry.kind === ARCHIVE_KIND) {
+      // Placed where it says, before the history the journal holds: nothing moves.
+      const archive = entry.data as unknown as ArchiveData;
+      if (archive.messages.length) placements.set(entry.id, { from: archive.start, count: archive.messages.length, skip: 0, turn: !!archive.turn });
+      lastId = Math.max(lastId, entry.id);
+      continue;
+    }
     // Where the entry goes: at the history's end, or (committed late) before the first message placed after it.
     const late = entry.id < lastId;
     const at = late ? (await sql.get<{ at: number | null }>(`SELECT min(msg_from) AS at FROM ${ENTRIES} WHERE session_id = $1 AND conversation_id = ? AND id > ? AND msg_from IS NOT NULL`, SESSION_CONVERSATION_ID, entry.id))?.at ?? next : next;
@@ -63,9 +77,9 @@ export async function placeEntries(sql: Executor, writes: readonly StorageWrite[
         const kept = Array.isArray(marker.kept) ? marker.kept.length : 0;
         // A new session's first base opens its history (a fork's starts past the messages it copied); any later one
         // stands where the history does, so one that does not is reported and left out.
-        if (next === 0 && !placements.size) {
+        if (next === 0 && !appended) {
           next = marker.total;
-          if (kept) placements.set(entry.id, { from: next - kept, count: kept, skip: 0, turn: false });
+          if (kept) { placements.set(entry.id, { from: next - kept, count: kept, skip: 0, turn: false }); appended = true; }
         } else console.error(JSON.stringify({ type: "history_ordinal_mismatch", entry: entry.id, base: marker.total, next }));
       } else if (marker.t === "retract") {
         if (next <= 0) { console.error(JSON.stringify({ type: "history_ordinal_mismatch", entry: entry.id, retract: true, next })); continue; }
@@ -84,6 +98,7 @@ export async function placeEntries(sql: Executor, writes: readonly StorageWrite[
     const count = historyPositions(entry).length;
     if (!count) continue;
     placements.set(entry.id, { from: at, count, skip: 0, turn: false });
+    appended = true;
     if (at < next) await sql.run(`UPDATE ${ENTRIES} SET msg_from = msg_from + ? WHERE session_id = $1 AND conversation_id = ? AND id > ? AND msg_from IS NOT NULL`, count, SESSION_CONVERSATION_ID, entry.id);
     next += count;
   }
@@ -288,6 +303,12 @@ export async function fillOrdinals(db: Db, agent: string, options: { dryRun: boo
     }
     const placements = replay.placements();
     if (!placements) return { agent, code: "irregular", entries, error: replay.irregular };
+    // Archives are placed where they say, wherever they are in the journal.
+    const archives = (await sql.query<{ id: string; start: number; count: number; turn: boolean }>(`SELECT id, (r->'data'->>'start')::int AS start,
+      jsonb_array_length(r->'data'->'messages') AS count, coalesce((r->'data'->>'turn')::boolean, false) AS turn
+      FROM (SELECT id, record::jsonb AS r FROM pi_durable_entries WHERE session_id = $1 AND conversation_id = $2 AND substr(record, 1, 200) LIKE '%"kind":"${ARCHIVE_KIND}"%') e
+      WHERE r->>'kind' = '${ARCHIVE_KIND}'`, [agent, SESSION_CONVERSATION_ID])).rows;
+    for (const row of archives) if (row.count) placements.set(Number(row.id), { from: row.start, count: row.count, skip: 0, turn: row.turn });
     const result = { agent, entries, messages: replay.total - (base.marker!.total! - (base.kept ?? 0)), total: replay.total };
     if (options.dryRun) return { ...result, code: "would_place" };
     await sql.query("update pi_durable_entries set msg_from = null, msg_count = null, msg_skip = 0, turn_start = false where session_id = $1 and (msg_from is not null or turn_start)", [agent]);

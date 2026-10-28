@@ -9,6 +9,7 @@ import { JournalHistory, MARKER_KIND } from "../src/pi-durable/history.ts";
 import { HOST_BOOTSTRAP_KIND, seedJournal, SESSION_CONVERSATION_ID as conversationId } from "../src/pi-durable/seed.ts";
 import { COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../src/pi-harness/messages.ts";
 import { DurableAgent } from "../src/pi-durable/agent.ts";
+import { journalForkHistory } from "./fixtures/journal-messages.ts";
 
 const user = (text: string, requestId?: string) => ({ role: "user", content: text, timestamp: 1, ...(requestId ? { requestId } : {}) }) as AgentMessage;
 const reply = (text: string) => fauxAssistantMessage(text) as AgentMessage;
@@ -90,14 +91,14 @@ test("a journal fork cut keeps the history to the cut, and its model starts from
   ]);
   const history = (await JournalHistory.open(storage))!;
   const messages = (await history.messagesFrom(0))!;
-  const cut = await journalForkCut(storage, history, messages, "r2");
+  const cut = await journalForkCut(storage, history, journalForkHistory(history, messages), "r2");
   assert.equal(cut.through, 3);
   assert.deepEqual(cut.messages, messages);
   assert.deepEqual(cut.turns, [], "where its turns began, as the journal marks them (this one marks none)");
   assert.deepEqual(roles(cut.model), ["user", "user", "assistant"]);
   assert.equal(cut.fromHistory, undefined, "the retained-context fast path");
-  await assert.rejects(journalForkCut(storage, history, messages.slice(1), "r2"), /has 3 messages, its journal 4/, "a history that is not the journal's whole is not cut");
-  const early = await journalForkCut(storage, history, messages, 1);
+  await assert.rejects(journalForkCut(storage, history, journalForkHistory(history, messages.slice(1)), "r2"), /has 3 messages, its journal 4/, "a history that is not the journal's whole is not cut");
+  const early = await journalForkCut(storage, history, journalForkHistory(history, messages), 1);
   assert.equal(early.through, 1);
   assert.equal(early.fromHistory, true);
   assert.deepEqual(early.messages, messages.slice(0, 2));
@@ -145,14 +146,14 @@ test("a fork before the journal base uses indexed history with the same request 
   const history = (await JournalHistory.open(storage))!;
   const messages = [...indexed, ...(await history.messagesFrom(indexed.length))!];
   for (const [at, count] of [[1, 3], ["r1", 4]] as const) {
-    const cut = await journalForkCut(storage, history, messages, at);
+    const cut = await journalForkCut(storage, history, journalForkHistory(history, messages), at);
     assert.equal(cut.through, count - 1);
     assert.equal(cut.fromHistory, true);
     assert.deepEqual(cut.messages, indexed.slice(0, count));
     assert.deepEqual(cut.model, cut.messages);
   }
-  for (const at of [4, "r2"]) await assert.rejects(journalForkCut(storage, history, messages, at), { status: 409, code: "FORK_POINT_RUNNING" });
-  for (const at of [5, "unknown"]) await assert.rejects(journalForkCut(storage, history, messages, at), { status: 400, code: "FORK_POINT_INVALID" });
+  for (const at of [4, "r2"]) await assert.rejects(journalForkCut(storage, history, journalForkHistory(history, messages), at), { status: 409, code: "FORK_POINT_RUNNING" });
+  for (const at of [5, "unknown"]) await assert.rejects(journalForkCut(storage, history, journalForkHistory(history, messages), at), { status: 400, code: "FORK_POINT_INVALID" });
 });
 
 for (const measured of [false, true]) test(`an over-window raw fork seed compacts in chunks${measured ? " after a provider overflow with old usage counts" : " before its first model generation"}`, async t => {

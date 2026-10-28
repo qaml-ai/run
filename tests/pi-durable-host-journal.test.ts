@@ -84,20 +84,19 @@ test("a turn interrupted mid-step is closed from its latest step: its open calls
   await storage.close(context);
 });
 
-test("once the index holds a settled history grown well past its base, later loads read the journal from a new base", async () => {
+test("once a settled history has grown well past its base, a turn's end writes a new base, and later loads read the journal from there", async () => {
   const { storage, journal } = await seeded();
   for (let index = 0; index < 150; index++) {
     await journal.setActive(true);
     await journal.append([user(`q${index}`), fauxAssistantMessage(`a${index}`)]);
     await journal.setActive(false);
   }
-  assert.equal(await journal.rebase(100), false, "not while the index lacks messages before it");
-  assert.equal(await journal.rebase(300), true);
+  assert.equal(await journal.rebase(), false, "written at the turn that passed 256 messages, not again 44 messages later");
   const document = await storage.findDocument(BASE_ADDRESS, "current", context);
   const base = (await storage.document(document!.id, "current", context))!.value as { entry: number };
   const history = (await JournalHistory.open(storage))!;
   assert.equal(history.baseId, base.entry);
-  assert.deepEqual([history.baseTotal, history.total, history.heldFrom], [300, 300, 300]);
+  assert.deepEqual([history.baseTotal, history.total, history.heldFrom], [256, 300, 256]);
   await journal.setActive(true);
   await journal.append([user("after")]);
   await history.refresh();

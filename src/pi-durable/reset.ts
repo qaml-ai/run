@@ -43,12 +43,10 @@ export type ContextReset = { keptMessages: number; before: ContextRangeSize; aft
 /**
  * Replace the agent's Pi context with a new checkpoint at the journal's tail (a head marker, as `replaceContext` and a
  * seed write it), without loading the range it replaces: its current system message (read in SQL), a summary, and the
- * last `keepMessages` history messages (`JournalHistory.messagesFrom`, which bounds what it reads, after the history
- * index's for those before what the journal holds: `settled` reads [from, end)). The history and its
- * index are untouched: the checkpoint's entries are not history. Refused (409) while the journal holds a turn open, and
+ * last `keepMessages` history messages (`read` [from, to): by ordinal, bounded before it reads). The history is untouched: the checkpoint's entries are not history. Refused (409) while the journal holds a turn open, and
  * when the new context would itself be past `limit` bytes. The caller holds the agent's claim, and no host runs it.
  */
-export async function resetContext(storage: Storage, options: { summary?: string; keepMessages?: number; limit: number; now?: number; settled?: (end: number, from: number) => Promise<AgentMessage[]>; beforeCommit?: () => void }): Promise<ContextReset> {
+export async function resetContext(storage: Storage, options: { summary?: string; keepMessages?: number; limit: number; now?: number; read?: (from: number, to: number) => Promise<AgentMessage[]>; beforeCommit?: () => void }): Promise<ContextReset> {
   const { limit, now = Date.now() } = options;
   const keepMessages = options.keepMessages ?? 0;
   const before = await contextRangeSize(storage, SESSION_CONVERSATION_ID);
@@ -58,11 +56,9 @@ export async function resetContext(storage: Storage, options: { summary?: string
     const history = await JournalHistory.openAny(storage);
     if (!history) throw new HttpError(409, "This agent's journal has no history to keep messages from; reset it with keepMessages 0");
     if (history.active || history.awaiting.length) throw new HttpError(409, "This agent's turn has not ended; abort it first", "AGENT_BUSY");
-    // Messages before what the journal holds (its base moves on as they are indexed) are the history index's.
-    const from = Math.max(0, history.total - keepMessages), held = Math.max(from, history.heldFrom);
-    const indexed = from < held && options.settled ? (await options.settled(held, from)).slice(0, held - from) : [];
-    // An index behind the journal's base would leave a gap: then only the journal's messages are kept.
-    kept = keptTail([...indexed.length === held - from ? indexed : [], ...await history.messagesFrom(held) ?? []], keepMessages);
+    const from = Math.max(0, history.total - keepMessages);
+    if (!options.read) throw new Error("A reset that keeps messages needs the history's reader");
+    kept = keptTail(await options.read(from, history.total), keepMessages);
   }
   const system = await currentSystemMessage(storage);
   const summary = createCompactionSummaryMessage(options.summary ?? defaultResetSummary(now), Math.ceil(before.bytes / 4), now);

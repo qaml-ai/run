@@ -19,6 +19,7 @@ import { AgentRuntime, schema, tool } from "../clients/node.ts";
 import { testDatabase } from "./database.ts";
 import { applicationTools } from "../src/mcp-results.ts";
 import { until } from "./runtime-server.ts";
+import { supervisorMessages } from "./fixtures/journal-messages.ts";
 
 type Context = { after(fn: () => Promise<void> | void): void };
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -396,11 +397,10 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
   const rowsUnload = await journalRows() - rowsBefore - rowsTurn;
   console.log(JSON.stringify({ type: "storage_writes", turn, unload, tailRows: tail, journalRows: { turn: rowsTurn, unload: rowsUnload } }));
   assert.equal(turn, 0, "no Storage writes during the turn");
-  const chunks = [...storage.blobs.keys()].filter(key => key.startsWith(`sessions/${agent.session.id}/history/`)).length;
-  assert.equal(chunks, 1, "the settled turn goes to the history index as one chunk, when the agent stops");
-  assert.ok(unload - chunks <= 2, `at most one segment per log on unload (was ${unload - chunks})`);
+  assert.equal([...storage.blobs.keys()].filter(key => key.startsWith(`sessions/${agent.session.id}/history/`)).length, 0, "no history index chunks: history is read from Pi storage");
+  assert.ok(unload <= 2, `at most one segment per log on unload (was ${unload})`);
   assert.equal(Number((await db.query("select count(*) as count from log_records")).rows[0].count), 0, "unloading emptied the tail");
-  const history = (await supervisor.history(agent.session.id)).map(message => message.role);
+  const history = (await supervisorMessages(supervisor, agent.session.id)).map(message => message.role);
   assert.deepEqual(history, ["user", "assistant", "toolResult", "assistant", "toolResult", "assistant"]);
   // A Pi agent writes its journal in Postgres as the turn goes: a few rows per message (the message and its host
   // record), and nothing more to unload.

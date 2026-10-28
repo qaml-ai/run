@@ -22,6 +22,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openPiJournalReader } from "../src/pi-durable/storage.ts";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { SESSION_CONVERSATION_ID as LEGACY_CONVERSATION_ID } from "../src/pi-durable/seed.ts";
+import { supervisorMessages } from "./fixtures/journal-messages.ts";
 
 type Body = { messages: { role: string; content: unknown }[] };
 const text = (body: Body) => JSON.stringify(body.messages);
@@ -105,7 +106,7 @@ test("long conversations compact into a summary; history stays complete and the 
   assert.equal(status.messages, 10);
   assert.ok(status.contextMessages < status.messages);
   // History is the full conversation, read from the log.
-  const history = ((await supervisor.history("long")) as any[]);
+  const history = ((await supervisorMessages(supervisor, "long")) as any[]);
   assert.equal(history.length, 10);
   assert.match(JSON.stringify(history[0]), /TURN-0 /);
 
@@ -134,7 +135,7 @@ test("a message whose request the history already holds is not taken again, even
   const again = await supervisor.request("steered", "prompt", { text: turn(0), requestId: "steer-1" });
   assert.equal(again.taken, true);
   assert.equal(fake.chat().length, calls, "no model call");
-  const history = ((await supervisor.history("steered")) as any[]);
+  const history = ((await supervisorMessages(supervisor, "steered")) as any[]);
   assert.equal(history.filter((message: any) => message.requestId === "steer-1").length, 1, "recorded once");
 });
 
@@ -235,7 +236,7 @@ test("a context overflow from the provider compacts and retries the turn once", 
     assert.equal(result.error, null, `turn ${index}`);
   }
   assert.ok(events.some(event => event.type === "compaction_end" && event.reason === "overflow" && event.summarizedMessages > 0), JSON.stringify(events.filter(event => event.type === "compaction_end")));
-  const history = ((await supervisor.history("overflow")) as any[]);
+  const history = ((await supervisorMessages(supervisor, "overflow")) as any[]);
   assert.equal(history.filter((message: any) => message.stopReason === "error").length, 0, "the rejected attempt is not history");
   assert.equal(history.length, 6);
   assert.equal(events.filter(event => event.type === "message_end" && event.message.stopReason === "error").length, 0, "recoverable refusals never become client answers");
@@ -327,7 +328,7 @@ test("a prompt or tool change on an agent with history is appended after the cac
   assert.equal(updates(second).length, 1);
   assert.match(JSON.stringify(updates(second)), /New rules/);
   assert.match(JSON.stringify(second.messages.at(-1)), /"role":"user".*"two"/);
-  assert.ok(((await a.history("agent")) as any[]).every((message: any) => message.role !== "system"), "system messages are not history");
+  assert.ok(((await supervisorMessages(a, "agent")) as any[]).every((message: any) => message.role !== "system"), "system messages are not history");
 
   // Another node loads the agent with its current configuration, as the stored header gives it.
   await a.stop("agent");
@@ -571,7 +572,7 @@ test("Pi applies a lowered context limit to an already loaded host", async t => 
   }
   assert.ok(fake.summarizations().length > 0, "the new limit compacts without restarting the host");
   assert.equal((await supervisor.request("live-pi-context", "status")).compacted, true);
-  assert.equal(((await supervisor.history("live-pi-context")) as any[]).length, 10);
+  assert.equal(((await supervisorMessages(supervisor, "live-pi-context")) as any[]).length, 10);
 });
 
 test("an agent whose journal keeps more messages after its compaction than the host's working set holds still starts", async t => {

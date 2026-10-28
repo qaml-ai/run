@@ -16,6 +16,7 @@ import { openPiJournalReader } from "../src/pi-durable/storage.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { testDatabase } from "./database.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { supervisorMessages } from "./fixtures/journal-messages.ts";
 
 const model = configuredModel();
 async function fixture(t: { after: (fn: () => Promise<void>) => void }, maxAgents = 4) {
@@ -123,7 +124,7 @@ test("real Pi provider loop calls codemode and persists native messages across p
   assert.ok(events.includes("tool_execution_start"));
   assert.ok(events.includes("agent_end"));
   assert.equal(await readFile(join(root, "workspaces", "pi", "pi.txt"), "utf8"), "from Pi");
-  const saved = await supervisor.history("pi");
+  const saved = await supervisorMessages(supervisor, "pi");
   assert.deepEqual(saved.map((m: any) => m.role), ["user", "assistant", "toolResult", "assistant"]);
   // Pi's journal holds the history: its own messages, as it commits them, and the host's turn markers around them; the
   // system prompt the model saw is the context's first checkpoint, and nothing is rewritten per delta or per run.
@@ -190,7 +191,7 @@ test("process death closes the interrupted turn on restart without replaying it 
   const restarted = await start("a", chosen);
   assert.equal(restarted.recovered, true);
   assert.equal(requests, 1);
-  const history = ((await supervisor.history("a")) as any[]);
+  const history = ((await supervisorMessages(supervisor, "a")) as any[]);
   assert.match(history.at(-1).content, /interrupted by a restart/);
   const next = await supervisor.request("a", "prompt", { text: "Carry on" });
   assert.equal(next.error, null);
@@ -290,11 +291,11 @@ test("native tools preserve content and imported history is owned by the service
   assert.equal(calls, 1);
   assert.ok(requests[0].tools.some((tool: any) => tool.function.name === "inspect"));
   assert.ok(requests[1].messages.some((message: any) => message.role === "tool" && message.content === "native-content-marker"));
-  const before = { messages: (await supervisor.history("native")) as any[] };
+  const before = { messages: (await supervisorMessages(supervisor, "native")) as any[] };
   assert.equal(before.messages[0].content, "import-marker");
   await supervisor.stop("native");
   await supervisor.start("native", { model: chosen, apiKey: "fixture", initialMessages: [{ role: "user", content: "must-not-overwrite", timestamp: 3 }] }, bridge);
-  assert.deepEqual(((await supervisor.history("native")) as any[]), before.messages);
+  assert.deepEqual(((await supervisorMessages(supervisor, "native")) as any[]), before.messages);
   await supervisor.request("native", "configure", { systemPrompt: "Changed role.", tools: [] });
   await supervisor.request("native", "prompt", { text: "Next" });
   assert.equal(requests.at(-1).tools.length, 1);
@@ -304,7 +305,7 @@ test("native tools preserve content and imported history is owned by the service
   assert.equal(requests.at(-1).tools.length, 1);
   assert.equal(requests.at(-1).messages.filter((message: any) => ["system", "developer"].includes(message.role)).length, 1);
   assert.ok(requests.at(-1).messages[0].content.includes("Changed role."));
-  assert.ok(((await supervisor.history("native")) as any[]).every((message: any) => message.role !== "system"));
+  assert.ok(((await supervisorMessages(supervisor, "native")) as any[]).every((message: any) => message.role !== "system"));
 });
 
 test("crash recovery closes missing tool outcomes as unknown without replaying their effects", async t => {
@@ -322,7 +323,7 @@ test("crash recovery closes missing tool outcomes as unknown without replaying t
   await supervisor.stop("crash");
   await rejected;
   assert.equal((await supervisor.start("crash", { model: chosen, apiKey: "fixture" }, bridge)).recovered, true);
-  const history = { messages: (await supervisor.history("crash")) as any[] };
+  const history = { messages: (await supervisorMessages(supervisor, "crash")) as any[] };
   assert.equal(calls, 1);
   const unknown = history.messages.find((message: any) => message.role === "toolResult");
   assert.equal(unknown.toolCallId, "uncertain_1");
@@ -359,12 +360,12 @@ test("a stream that dies mid-response is retried within the same turn, leaving n
   assert.equal(requests, 2);
   assert.ok(events.some(event => event.type === "auto_retry_start"));
   assert.ok(events.some(event => event.type === "auto_retry_end" && event.success));
-  const history = ((await supervisor.history("retry")) as any[]);
+  const history = ((await supervisorMessages(supervisor, "retry")) as any[]);
   assert.deepEqual(history.map((m: any) => m.role), ["user", "assistant"]);
   assert.equal(history[1].stopReason, "stop");
   await supervisor.stop("retry");
   await supervisor.start("retry", { model: chosen, apiKey: "fixture" }, { definitions: [], async call() { return null; } });
-  assert.deepEqual(((await supervisor.history("retry")) as any[]).map((m: any) => m.role), ["user", "assistant"]);
+  assert.deepEqual(((await supervisorMessages(supervisor, "retry")) as any[]).map((m: any) => m.role), ["user", "assistant"]);
 });
 
 /** A provider answering each request with `statuses[i]` (an error with that HTTP status), or past them with "Recovered.". */
@@ -428,7 +429,7 @@ test("a failed model call says how in the run's result and its events; retries a
   assert.equal(recovered.servedModel, "openai/fixture");
   assert.deepEqual(busyEvents.find(event => event.type === "auto_retry_start").failure, { errorClass: "rate_limit", providerStatus: 429, retryable: true, model: "openai/fixture" });
   // The failure is on the event, not the message: history keeps Pi's message as it was.
-  const history = ((await supervisor.history("busy")) as any[]);
+  const history = ((await supervisorMessages(supervisor, "busy")) as any[]);
   assert.equal(history.some((message: any) => "failure" in message), false);
 });
 

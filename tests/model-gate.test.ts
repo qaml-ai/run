@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { until } from "./runtime-server.ts";
+import { supervisorMessages } from "./fixtures/journal-messages.ts";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -63,7 +64,7 @@ test("a stale lease cuts the model request in flight, the next waits for a fresh
   assert.equal(result.reply, "answered");
   assert.equal(fake.calls.length, 2);
   assert.ok(events.some(event => event.type === "message_retracted"), "the cut response is not history");
-  const history = ((await supervisor.history("gated")) as any[]);
+  const history = ((await supervisorMessages(supervisor, "gated")) as any[]);
   assert.deepEqual(history.map((message: any) => message.role), ["user", "assistant"]);
 });
 

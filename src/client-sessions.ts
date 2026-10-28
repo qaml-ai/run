@@ -34,7 +34,7 @@ import { actorInput, type AgentIdentity } from "./identity.ts";
 import { metadataInput, senderInput } from "./sender.ts";
 import { CodeGate, DEFAULT_CODE_CAPACITY } from "./codemode.ts";
 import { fileResponse, type FileRef } from "./files.ts";
-import { chunksOf, HistoryIndex, PAGE_BYTES, type HistoryPage } from "./history-pages.ts";
+import { HistoryIndex, PAGE_BYTES, type HistoryPage } from "./history-pages.ts";
 import { inputView, resolution, type Input, type Responder } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, safeError, Steps } from "./metrics.ts";
 import { inputSpans } from "./telemetry.ts";
@@ -50,7 +50,7 @@ import * as childSessions from "./client-sessions/children.ts";
 import * as humanInput from "./client-sessions/inputs.ts";
 import { dollars } from "./client-sessions/spend.ts";
 import { historyNoneIgnored } from "./history-none.ts";
-import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type HistoryTail, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun, failureClass } from "./client-sessions/state.ts";
+import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun, failureClass } from "./client-sessions/state.ts";
 
 const has = (object: object, key: string) => Object.hasOwn(object, key);
 
@@ -177,6 +177,8 @@ export class ClientSessions {
     this.supervisor = supervisor;
     this.options = options;
     this.db = options.db;
+    // History is read from Pi storage in this database (history-pages.ts): the agents' journals are kept there.
+    supervisor.options.db ??= options.db;
     this.eventContext = {
       options, db: this.db, sessions: this.sessions, idle: this.idle,
       state: { watching: 0, tenantWatching: new Map(), watches: new WeakMap() },
@@ -187,7 +189,7 @@ export class ClientSessions {
     this.storage = options.storage ?? fileStorage(options.root!);
     this.historyIndex = new HistoryIndex(this.db, this.storage);
     this.spendContext = {
-      options, db: this.db, supervisor, sessions: this.sessions, historyIndex: this.historyIndex,
+      options, db: this.db, supervisor, sessions: this.sessions,
       apiKey: (session, provider, keyScope) => configuration.resolveApiKey(this.configurationContext, session, provider, keyScope),
       counted: (session, cost) => this.counted(session, cost), spent: (session, cost) => this.spent(session, cost),
       agentSpendLimit: session => this.agentSpendLimit(session), toolContext: session => tools.toolContext(this.toolsContext, session),
@@ -223,7 +225,7 @@ export class ClientSessions {
     };
     this.configurationContext = {
       options, db: this.db, supervisor, storage: this.storage, sessions: this.sessions, loading: this.loading,
-      creatingRuns: this.creatingRuns, historyIndex: this.historyIndex,
+      creatingRuns: this.creatingRuns,
       get eventBlock() { return options.eventBlock ?? events.EVENT_BLOCK; },
       toolsContext: this.toolsContext, spendContext: this.spendContext, delegationContext: this.delegationContext,
       load: id => this.load(id), readHeader: id => this.readHeader(id), writeHeader: session => this.writeHeader(session),
@@ -849,11 +851,6 @@ export class ClientSessions {
         lease: () => this.leased(session),
         background: event => this.backgroundEvent(session, event),
         committing: entry => spend.entryEffect(this.spendContext, session, entry),
-        history: {
-          // One whose create failed before writing its row begins it now, and is indexed from its log.
-          indexed: async () => (await this.historyIndex.indexed(id)) ?? (await this.historyIndex.begin(id), 0),
-          write: chunk => this.historyIndex.write(id, session.claim, chunk),
-        },
       }, session.claim));
       // Init can recover native responses through committing without emitting their old message_end events.
       await spend.refreshSpend(this.spendContext, session);
@@ -1020,18 +1017,12 @@ export class ClientSessions {
   async rotateToken(id: string, tenant: string): Promise<{ id: string; token: string; expiresAt: number | null }> { return configuration.rotateToken(this.configurationContext, id, tenant); }
 
   /**
-   * A fork's history before it exists, under its claim: its copied messages in its history index (again from where a
-   * create of it that failed left them), then its journal, whose history starts after them, its model from `model`.
+   * A fork's history before it exists, under its claim: its journal, whose history starts with its copied messages
+   * (archive entries, before its base), its model from `model`.
    */
   private async seedFork(id: string, claim: Claim | undefined, fork: { messages: AgentMessage[]; turns: number[]; model: Message[] }) {
-    let indexed = (await this.historyIndex.indexed(id)) ?? 0;
-    for (const chunk of chunksOf({ from: 0, messages: fork.messages, sizes: fork.messages.map(message => JSON.stringify(message).length), turns: fork.turns })) {
-      if (chunk.start + chunk.messages.length <= indexed) continue;
-      indexed = await this.historyIndex.write(id, claim, chunk, { creating: true });
-      if (indexed !== chunk.start + chunk.messages.length) throw new Error(`The fork's history index ends at ${indexed}, not ${chunk.start + chunk.messages.length}`);
-    }
     const requests = fork.messages.flatMap(message => message.role === "user" && (message as { requestId?: string }).requestId ? [(message as { requestId?: string }).requestId!] : []);
-    await this.supervisor.seed(id, { before: fork.messages.length, requests, model: fork.model }, claim);
+    await this.supervisor.seed(id, { archive: { messages: fork.messages, turns: fork.turns }, requests, model: fork.model }, claim);
   }
 
   /**
@@ -1057,8 +1048,9 @@ export class ClientSessions {
     };
     if (found) return answer(found);
     // Cut from the source's journal (pi-durable/fork.ts): its history, and Pi's context as of the cut.
-    const indexed = (await this.historyIndex.indexed(sourceId)) ?? 0;
-    let cut = await steps.time("history", this.supervisor.journalFork(sourceId, indexed, count => this.historyIndex.messages(sourceId, count), input.atMessage));
+    let cut = await steps.time("history", this.supervisor.journalFork(sourceId, {
+      messages: () => this.historyIndex.messages(sourceId), turns: () => this.historyIndex.allTurns(sourceId), cursorAt: index => this.historyIndex.cursorAt(sourceId, index),
+    }, input.atMessage));
     // A source that never started has no journal: its history is what it was created with, if anything.
     if (!cut) {
       const { messages, compaction } = source.config.initialMessages?.length ? importedHistory(source.config.initialMessages) : { messages: [], compaction: undefined };
@@ -1251,18 +1243,10 @@ export class ClientSessions {
     return { cursor: session.cursor, requests: [...session.requests.values()].map(visible), ...activityOf(session.running.values()) };
   }
 
-  /** A tenant's view of one agent's history; undefined when the agent is not theirs. */
+  /** A tenant's view of one agent's history, read from Pi storage wherever the agent runs; undefined when the agent is not theirs. */
   async agentHistory(id: string, tenant: string) {
     if (!await this.owns(id, tenant)) return undefined;
-    // An agent no node has loaded is read from storage, not loaded for it (see `unloaded`).
-    if (this.unloaded(id)) return { messages: await this.unloadedHistory(id, tenant) };
-    const session = await this.load(id);
-    return session && this.history(session);
-  }
-
-  /** An unloaded agent's full history: its index's chunks, and the journal after them. */
-  private async unloadedHistory(id: string, _tenant: string) {
-    return this.supervisor.history(id, count => this.historyIndex.messages(id, count));
+    return this.history(id);
   }
 
   /**
@@ -1413,7 +1397,7 @@ export class ClientSessions {
     const reset = session.runs.then(async () => {
       // Its host holds the context it loaded: it starts again from the reset one.
       if (this.supervisor.agents.has(id) || this.supervisor.starting.has(id)) await this.supervisor.stop(id);
-      return this.supervisor.resetContext(id, session.claim, { ...input, limit: this.options.contextRangeMaxBytes ?? CONTEXT_RANGE_MAX_BYTES, settled: (end, from) => this.historyIndex.messages(id, end, from) }).catch(error => {
+      return this.supervisor.resetContext(id, session.claim, { ...input, limit: this.options.contextRangeMaxBytes ?? CONTEXT_RANGE_MAX_BYTES, read: (from, to) => this.historyIndex.messages(id, from, to) }).catch(error => {
         // Started again meanwhile (a steer or a configuration starts it at once): its host has the context now.
         if (errorText(error) === "Agent is running") throw new HttpError(409, "The agent started while it was being reset; try again", "AGENT_BUSY");
         throw error;
@@ -1462,55 +1446,29 @@ export class ClientSessions {
     this.purgeSoon();
   }
 
-  /**
-   * A page of the agent's history (see HistoryIndex.page): settled messages from their chunks, and
-   * what the running agent has not indexed yet from it.
-   */
-  private async historyPage(session: Session | { header: { id: string; tenant: string }; unloaded: true }, query: { before?: string; limit?: string; maxBytes?: string }): Promise<HistoryPage> {
+  /** A page of the agent's history (HistoryIndex.page), read from Pi storage by ordinal wherever the agent runs. */
+  private async historyPage(id: string, query: { before?: string; limit?: string; maxBytes?: string }): Promise<HistoryPage> {
     const before = query.before === undefined ? undefined : Number(query.before);
     const limit = query.limit === undefined ? 50 : Number(query.limit);
     const maxBytes = query.maxBytes === undefined ? undefined : Number(query.maxBytes);
     if (before !== undefined && (!Number.isSafeInteger(before) || before < 0)) throw new HttpError(400, "before is a message index");
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new HttpError(400, "limit is 1 to 500 messages");
     if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 16_384 || maxBytes > PAGE_BYTES)) throw new HttpError(400, `maxBytes is 16384 to ${PAGE_BYTES} bytes`);
-    const id = session.header.id;
-    // An agent still starting answers nothing yet: wait for it (or, should it fail, read the log).
-    if (!("unloaded" in session)) await session.starting?.catch(() => {});
-    let tail = !("unloaded" in session) && this.supervisor.agents.has(id) ? await this.liveRead(id, "historyTail") as HistoryTail | null | undefined : undefined;
-    // Without a running agent to answer (or one whose journal does not hold all the index lacks), what the index lacks
-    // is read from the journal, beside its owner: an index behind (a stop that could not write its last chunks), none yet,
-    // or work its last owner never indexed (a node that died). Nothing is indexed here; an agent's own process indexes
-    // from where its index ends.
-    if (!tail) tail = await this.supervisor.journalBacklog(id, (await this.historyIndex.indexed(id)) ?? 0, (end, from) => this.historyIndex.messages(id, end, from));
-    return this.historyIndex.page(id, { before, limit, maxBytes }, tail ?? undefined);
+    // An agent starting here answers nothing yet: wait for it (it may write its journal's first entries as it starts).
+    await this.sessions.get(id)?.starting?.catch(() => {});
+    return this.historyIndex.page(id, { before, limit, maxBytes });
   }
 
   /** A tenant's view of a page of one agent's history. */
   async historyPageFor(id: string, tenant: string, query: { before?: string; limit?: string; maxBytes?: string }) {
     if (!await this.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
-    if (this.unloaded(id)) return this.historyPage({ header: { id, tenant }, unloaded: true }, query);
-    const session = await this.load(id);
-    if (!session) throw new HttpError(404, "Unknown agent");
-    return this.historyPage(session, query);
+    return this.historyPage(id, query);
   }
 
-  /** The agent's full history: its index's chunks, and its journal after them, read beside it when it runs. */
-  private async history(session: Session) {
-    // An agent still starting answers nothing yet: wait for it (it may retire its host transcript as it starts).
-    await session.starting?.catch(() => {});
-    return { messages: await this.supervisor.history(session.header.id, count => this.historyIndex.messages(session.header.id, count)) };
-  }
-
-  /**
-   * A read of the agent's running host; undefined when it stopped while answering (a run that just ended stops its
-   * agent, an idle one is unloaded): its log, read beside it, has what it held, so the read is not failed for that.
-   */
-  private async liveRead(id: string, method: "historyTail") {
-    try { return await this.supervisor.request(id, method); }
-    catch (error) {
-      if (this.supervisor.agents.has(id)) throw error;
-      return undefined;
-    }
+  /** The agent's full history (bounded: HistoryIndex.messages), read from Pi storage wherever it runs. */
+  private async history(id: string) {
+    await this.sessions.get(id)?.starting?.catch(() => {});
+    return { messages: await this.historyIndex.messages(id) };
   }
 
   /**
@@ -1572,7 +1530,7 @@ export class ClientSessions {
     // With `limit`, `before` or `maxBytes`, a page; without, the whole transcript.
     app.get(`${agent}/history`, async c => {
       const { before, limit, maxBytes } = c.req.query();
-      return json(c, 200, before !== undefined || limit !== undefined || maxBytes !== undefined ? await this.historyPage(c.var.session, { before, limit, maxBytes }) : await this.history(c.var.session));
+      return json(c, 200, before !== undefined || limit !== undefined || maxBytes !== undefined ? await this.historyPage(c.var.session.header.id, { before, limit, maxBytes }) : await this.history(c.var.session.header.id));
     });
     // The agent's files by the paths it sees them at (/workspace/...), for applications holding its token.
     app.get(`${agent}/files`, async c => {
@@ -2706,7 +2664,7 @@ export class ClientSessions {
     const work: Promise<void> = (async () => {
       // What the turn gathered is taken before its run sees the stop and lets it go.
       if (this.handingOff) this.carry(session);
-      await this.supervisor.stop(session.header.id, { flush: false }).catch(() => {});
+      await this.supervisor.stop(session.header.id).catch(() => {});
       try { await this.interrupt(session, "The runtime stopped during this request", true); }
       catch { /* Already faulted; the next load recovers conservatively from storage. */ }
       await this.unload(session);
@@ -2733,11 +2691,9 @@ export class ClientSessions {
     this.releasing = true;
     try {
       const idle = [...this.sessions.values()].filter(session => !this.working(session) && !session.inflight);
-      // Their history is indexed together first, under one deadline, not one stop at a time.
-      await this.supervisor.flush(idle.map(session => session.header.id));
       for (const session of idle) {
         if (this.working(session) || session.inflight) continue;
-        await this.supervisor.stop(session.header.id, { flush: false }).catch(() => {});
+        await this.supervisor.stop(session.header.id).catch(() => {});
         await this.unload(session);
         events.endStreams(session, false, "drain");
       }
@@ -2801,7 +2757,7 @@ export class ClientSessions {
     console.error(JSON.stringify({ type: "run_overrun", agent: id, request: run.id, maxSeconds, overMs: over }));
     // The abort ends the model request or tool call in flight at once (model-stream.ts), and the run as its time limit's.
     if (over < 2 * overrunMs) await this.supervisor.request(id, "abort", { stopped: "turn_limit", message: `This run stopped at its time limit of ${spend.duration(maxSeconds)}. Send another message to continue` });
-    else await this.supervisor.stop(id, { flush: false });
+    else await this.supervisor.stop(id);
   }
 
   /** Drop a session from memory and give up ownership so any node can serve it next. */
@@ -2812,9 +2768,6 @@ export class ClientSessions {
     await session.log.close(!!session.fault).catch(() => {});
     // A revoked agent's logs are never read again.
     if (session.header.revoked) await underClaim(this.db, session.claim, sql => deleteTail(sql, session.header.id)).catch(() => {});
-    // What its runs reported, so a page of it unloaded knows whether its index is behind (see `historyPage`).
-    const reported = Math.max(0, ...[...session.requests.values()].map(record => Number((record.outcome?.result as { messages?: unknown } | undefined)?.messages) || 0));
-    await this.db.query("update agent_history_index set reported = greatest(reported, $2) where agent = $1", [session.header.id, reported]).catch(() => {});
     // Nothing is published after this: the next owner goes on from this cursor.
     // Runs still open (queued ones a drain leaves for the next owner) keep it marked for a sweep to load; none clears the mark.
     // A faulted session's journal may be behind it (a run ended here but not durably), so it stays marked: its next load decides.
@@ -2843,7 +2796,7 @@ export class ClientSessions {
     events.endStreams(session, true);
     if (this.sessions.get(session.header.id) === session) this.sessions.delete(session.header.id);
     // Its claim is gone, so it could write no chunk: its next owner's start catches up.
-    await this.supervisor.stop(session.header.id, { flush: false }).catch(() => {});
+    await this.supervisor.stop(session.header.id).catch(() => {});
   }
 
   async close() {
@@ -2854,11 +2807,9 @@ export class ClientSessions {
     await this.sweeping;
     // Agents being handed off already finish leaving first.
     await Promise.all(this.leavingWork);
-    // Every agent's settled turns are indexed together, under one deadline, before they stop one at a time.
-    await this.supervisor.flush([...this.sessions.keys()]);
     for (const session of [...this.sessions.values()]) {
       // Stopped first, so no turn advances past what is handed off, and the next owner never shares the transcript with a live process.
-      await this.supervisor.stop(session.header.id, { flush: false }).catch(() => {});
+      await this.supervisor.stop(session.header.id).catch(() => {});
       try { await this.interrupt(session, "The runtime stopped during this request", true); }
       catch { /* Already faulted; the next load recovers conservatively from storage. */ }
       await this.unload(session);

@@ -2,7 +2,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { JournalHistory } from "./pi-durable/history.ts";
 import { HostJournal } from "./pi-durable/host-journal.ts";
-import { journalForkCut, type JournalForkCut } from "./pi-durable/fork.ts";
+import { journalForkCut, type ForkHistory, type JournalForkCut } from "./pi-durable/fork.ts";
 import { resetContext, type ContextReset } from "./pi-durable/reset.ts";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -16,9 +16,8 @@ import { searchQuery, searchTools } from "./tool-search.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import type { Storage } from "../shared/storage.ts";
 import { fileAppendLog, type AppendLog, type CommitEffect } from "../shared/append-log.ts";
-import type { HistoryChunk } from "./history-pages.ts";
 import type { Claim } from "./ownership.ts";
-import { createAgentHost, HISTORY_FLUSH_MS, type LegacyLog } from "./agent-host.ts";
+import { createAgentHost, type LegacyLog } from "./agent-host.ts";
 import type { CodeExecutor } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { buggify } from "./buggify.ts";
@@ -52,7 +51,7 @@ type SupervisorOptions = {
    * inline hosting every agent is in it, so this, not the count, is what a node runs out of first. Unset: no such check.
    */
   memoryHighBytes?: number;
-  storage?: Storage; hosting?: Hosting; /** How long stopping agents wait, all together, to index their settled turns (default 5 s). */ historyFlushMs?: number;
+  storage?: Storage; hosting?: Hosting;
   /** How long Pi's journal (in `db`) repeats a read or commit the database did not answer: a failover (default 0). */
   piRetryMs?: number;
   /** An agent process is pinged this often, and killed once a ping has gone this long unanswered (default 5 s and 30 s). */
@@ -109,26 +108,16 @@ export class AgentSupervisor {
   }
 
   /**
-   * An agent's full history without its process, read beside a live owner without writing: the messages before what
-   * its journal holds (`settled`: the history index's first ones; history only a legacy format holds is refused),
-   * then the journal's.
-   */
-  async history(id: string, settled?: (count: number) => Promise<AgentMessage[]>): Promise<AgentMessage[]> {
-    const backlog = await this.journalBacklog(id, 0, settled);
-    return backlog?.messages ?? [];
-  }
-
-  /**
    * Start a new agent's journal (a fork's) in its Pi storage under its owner's `claim`, before it is started: its
-   * history's first `before` messages are in its history index already (written by the caller), `requests` are those
-   * messages' requests, and `model` is the context it starts with.
+   * history before its base is `archive` (archive entries), `requests` are those messages' requests, and `model` is the
+   * context it starts with.
    */
-  async seed(id: string, start: { before: number; calls?: [string, number][]; requests: string[]; model: Message[] }, claim?: Claim) {
+  async seed(id: string, start: { archive: { messages: AgentMessage[]; turns: number[] }; requests: string[]; model: Message[] }, claim?: Claim) {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
     await mkdir(resolve(join(this.root, id)), { recursive: true, mode: 0o700 });
     const storage = await openPiStorage({ ...this.piLocation(id), ...(claim ? { claim } : {}) });
     try {
-      const seeded = await seedJournal({ storage, sessionId: id, model: start.model, before: { total: start.before, ...(start.calls ? { calls: start.calls } : {}) }, requests: start.requests });
+      const seeded = await seedJournal({ storage, sessionId: id, model: start.model, before: { total: start.archive.messages.length }, archive: start.archive, requests: start.requests });
       if (seeded.status !== "seeded") throw new Error("The agent's Pi storage was seeded already");
     } finally { await storage.close(BACKGROUND_CONTEXT); }
   }
@@ -171,7 +160,7 @@ export class AgentSupervisor {
    * checkpoint at its journal's tail, written without loading the range it replaces. Undefined for an agent with no
    * journal yet (nothing to reset).
    */
-  async resetContext(id: string, claim: Claim | undefined, options: { summary?: string; keepMessages?: number; limit: number; settled?: (end: number, from: number) => Promise<AgentMessage[]> }): Promise<ContextReset | undefined> {
+  async resetContext(id: string, claim: Claim | undefined, options: { summary?: string; keepMessages?: number; limit: number; read?: (from: number, to: number) => Promise<AgentMessage[]> }): Promise<ContextReset | undefined> {
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error("Invalid agent id");
     await this.stopping.get(id);
     // A running agent's host holds its context; it is stopped first.
@@ -294,7 +283,6 @@ export class AgentSupervisor {
       if (method === "model-auth") return this.modelAuth(handle);
       if (method === "model-attempt") return handle.bridge.modelAttempt?.(params) ?? false;
       if (method === "fs") return this.dispatchFs(handle, params);
-      if (method === "history") return this.historyRequest(handle, params);
       if (method === "code-slot") return this.codeSlot(handle, params?.id);
       if (method === "code-release") return this.releaseSlot(handle, params?.id);
       if (method === "lease") return (await handle.bridge.lease?.()) ?? null;
@@ -325,7 +313,7 @@ export class AgentSupervisor {
         handle.rpc.request("ping").then(() => { if (since === sent) since = undefined; }, () => {});
       } else if (Date.now() - since >= unresponsiveMs && this.agents.get(id) === handle) {
         console.error(JSON.stringify({ type: "agent_unresponsive", agent: id, ms: Date.now() - since }));
-        void this.stop(id, { flush: false });
+        void this.stop(id);
       }
     }, this.options.pingMs ?? 5_000);
     handle.watchdog.unref();
@@ -381,60 +369,18 @@ export class AgentSupervisor {
     return handle.bridge.file(ref);
   }
 
-  /** An agent's history index operations; without an index, `indexed` is null and nothing is written. */
-  private historyRequest(handle: Handle, params: { op: string; chunk?: HistoryChunk }): Promise<any> {
-    const history = handle.bridge.history;
-    if (params.op === "indexed") return history ? history.indexed() : Promise.resolve(null);
-    if (params.op === "write" && history && params.chunk) return history.write(params.chunk);
-    return Promise.reject(new Error("Unknown history operation"));
-  }
-
   /**
-   * A fork of agent `id` cut from its journal (pi-durable/fork.ts), read without its process: its history is `settled`
-   * (the history index's first `indexed` messages, which `settled` reads) then the journal's. Undefined where the
-   * journal cannot place the cut.
+   * A fork of agent `id` cut from its journal (pi-durable/fork.ts), read without its process: `read` gives its history
+   * by ordinal (bounded), and the journal its turn and Pi's context at the cut. Undefined for an agent with no journal.
    */
-  async journalFork(id: string, indexed: number, settled: (indexed: number) => Promise<AgentMessage[]>, at?: number | string): Promise<JournalForkCut | undefined> {
+  async journalFork(id: string, read: ForkHistory, at?: number | string): Promise<JournalForkCut | undefined> {
     if (!await hasPiStorage(this.piLocation(id))) return undefined;
     // Read only: opening the storage writes nothing that is not there already, and nothing here commits.
     const storage = await openPiStorage(this.piLocation(id));
     try {
       const history = await JournalHistory.openAny(storage);
-      const tail = history && await history.messagesFrom(indexed);
-      if (!history || !tail) return undefined;
-      return await journalForkCut(storage, history, [...await settled(indexed), ...tail], at);
-    } finally { await storage.close(BACKGROUND_CONTEXT); }
-  }
-
-  /**
-   * The agent's history from absolute index `from` on, and where its turns began, without its process: the journal's,
-   * after what comes before what it holds (`settled`: the history index's messages in [from, end)). Undefined for an
-   * agent with no journal; a history in a legacy format (`legacyFormatRefused`) is refused.
-   */
-  async journalBacklog(id: string, from: number, settled?: (end: number, from: number) => Promise<AgentMessage[]>): Promise<{ from: number; messages: AgentMessage[]; turns: number[] } | undefined> {
-    const legacyOnly = async (kind: "legacy_log" | "not_on_pi") => {
-      const legacy = this.legacyLog(id);
-      try { if ((await legacy.empty?.()) !== true) throw legacyFormatRefused(id, undefined, kind); }
-      finally { await legacy.close(); }
-      return undefined;
-    };
-    // Only a legacy log (a session from before Pi), or none: no journal.
-    if (!await hasPiStorage(this.piLocation(id))) return legacyOnly("legacy_log");
-    // Read only: opening the storage writes nothing that is not there already, and nothing here commits.
-    const storage = await openPiStorage(this.piLocation(id));
-    try {
-      const history = await JournalHistory.openAny(storage);
-      if (!history) return await legacyOnly("not_on_pi");
-      const held = history.heldFrom;
-      let before: AgentMessage[] = [];
-      if (from < held) {
-        const indexed = settled ? await settled(held, from) : [];
-        if (indexed.length < held - from) throw legacyFormatRefused(id, undefined, "history_before_base");
-        before = indexed.slice(0, held - from);
-      }
-      const messages = await history.messagesFrom(Math.max(from, held));
-      if (!messages) return undefined;
-      return { from, messages: [...before, ...messages], turns: history.turnsFrom(Math.max(from, held)) };
+      if (!history) return undefined;
+      return await journalForkCut(storage, history, read, at);
     } finally { await storage.close(BACKGROUND_CONTEXT); }
   }
 
@@ -464,7 +410,6 @@ export class AgentSupervisor {
       ...(this.options.codeExecutor ? { codeExecutor: this.options.codeExecutor } : {}),
       ...(this.options.modelOutbound ? { modelOutbound: this.options.modelOutbound } : {}),
       lease: async () => { await handle.bridge.lease?.(); },
-      history: { indexed: () => this.historyRequest(handle, { op: "indexed" }), write: chunk => this.historyRequest(handle, { op: "write", chunk: structuredClone(chunk) }) },
     });
     this.agents.set(id, handle);
     this.starting.delete(id);
@@ -502,8 +447,8 @@ export class AgentSupervisor {
   }
   unreserve(id: string) { this.reserved.delete(id); }
 
-  /** A request to the agent's host: a client request's method, or one of the runtime's own reads of its history. */
-  async request(id: string, method: RequestMethod | "historyTail", params: any = {}, onEvent?: (event: any) => void) {
+  /** A request to the agent's host: a client request's method. */
+  async request(id: string, method: RequestMethod, params: any = {}, onEvent?: (event: any) => void) {
     const handle = this.agents.get(id);
     if (!handle) throw new Error("Agent not found");
     const tools = method === "configure" && params.tools !== undefined;
@@ -519,10 +464,9 @@ export class AgentSupervisor {
   }
 
   /**
-   * Stop an agent. It first indexes its settled turns (`flush`, for up to `historyFlushMs`); callers
-   * stopping many at once flush them together first (`flush`), and a node that lost the agent skips it.
+   * Stop an agent.
    */
-  stop(id: string, options: { flush?: boolean } = {}): Promise<void> {
+  stop(id: string): Promise<void> {
     const handle = this.agents.get(id);
     if (!handle) {
       // Still starting, with no host yet: the start gives up, and a later start of the agent waits until it has.
@@ -534,25 +478,14 @@ export class AgentSupervisor {
       return stopped;
     }
     this.agents.delete(id);
-    const stopped = this.halt(handle, options.flush ?? true).finally(() => { if (this.stopping.get(id) === stopped) this.stopping.delete(id); });
+    const stopped = this.halt(handle).finally(() => { if (this.stopping.get(id) === stopped) this.stopping.delete(id); });
     this.stopping.set(id, stopped);
     return stopped;
   }
 
-  /** Have agents index their settled turns, all at once, waiting at most `historyFlushMs` for all of them. */
-  async flush(ids: string[]) {
-    const handles = ids.flatMap(id => this.agents.get(id) ?? []);
-    if (!handles.length) return;
-    const flushed = handles.map(handle => (handle.kind === "process" ? handle.rpc.request("historyFlush", {}) : handle.host.handle("historyFlush", {})).catch(() => {}));
-    await Promise.race([Promise.all(flushed), new Promise(resolve => setTimeout(resolve, this.flushMs).unref())]);
-  }
-  private get flushMs() { return this.options.historyFlushMs ?? HISTORY_FLUSH_MS; }
-
-  private async halt(handle: Handle, flush: boolean) {
+  private async halt(handle: Handle) {
     if (handle.kind === "process") {
       this.cancelTools(handle);
-      // Its settled turns go to the history index first (the inline host does this as it is disposed).
-      if (flush) await Promise.race([handle.rpc.request("historyFlush", {}), new Promise(resolve => setTimeout(resolve, this.flushMs).unref())]).catch(() => {});
       handle.rpc.close("Agent stopped");
       const closed = once(handle.child, "close");
       handle.child.kill("SIGKILL");
@@ -561,7 +494,7 @@ export class AgentSupervisor {
       // Callers see the same failure as a killed process; the host writes nothing more. Its tools are cancelled once Pi is
       // closed (`dispose`), so a call in flight is the next owner's Pi's to settle, not a cancellation's error.
       handle.stop(new Error("Agent stopped"));
-      await handle.host.dispose(flush ? this.flushMs : 0);
+      await handle.host.dispose();
       this.cancelTools(handle);
     }
     await handle.legacy.close();
@@ -569,7 +502,6 @@ export class AgentSupervisor {
   }
 
   async close() {
-    await this.flush([...this.agents.keys()]);
-    await Promise.all([...[...this.agents.keys()].map(id => this.stop(id, { flush: false })), ...this.stopping.values()]);
+    await Promise.all([...[...this.agents.keys()].map(id => this.stop(id)), ...this.stopping.values()]);
   }
 }

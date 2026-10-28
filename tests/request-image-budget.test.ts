@@ -11,6 +11,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { AgentSupervisor } from "../src/supervisor.ts";
 import { FILE_LIMITS } from "../src/limits.ts";
 import { IMAGE_PAST_BUDGET } from "../src/files.ts";
+import { supervisorMessages } from "./fixtures/journal-messages.ts";
 
 /** A PNG of noise, which no encoder can make small: about 2.4 MB, within what a request carries unscaled. */
 const noise = () => sharp(randomBytes(1000 * 800 * 3), { raw: { width: 1000, height: 800, channels: 3 } }).png().toBuffer();
@@ -84,7 +85,7 @@ test("a history whose images exceed the request's image budget sends the newest 
   assert.deepEqual(images(bodies.at(-1)), shown);
 
   // The stored history keeps every image as it was sent: only requests leave them out.
-  const history = await supervisor.history("bot") as any[];
+  const history = await supervisorMessages(supervisor, "bot") as any[];
   const stored = history.flatMap(message => Array.isArray(message.content) ? message.content : []).filter((part: any) => part.type === "image").map((part: any) => part.data);
   assert.deepEqual(stored, sent);
 });
