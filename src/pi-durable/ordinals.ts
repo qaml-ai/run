@@ -1,5 +1,5 @@
 import type { EntryRecord, StorageWrite } from "@earendil-works/pi-durable";
-import { transaction, type Db } from "../db.ts";
+import { transaction, type Db, type Sql } from "../db.ts";
 /** `history.ts`'s MARKER_KIND and `seed.ts`'s SESSION_CONVERSATION_ID: storage.ts imports this module, which imports neither (a cycle). */
 export const MARKER_KIND = "camel.history.marker";
 const SESSION_CONVERSATION_ID = 1;
@@ -213,6 +213,44 @@ const SHAPE = `e.id, r->>'kind' AS kind,
 type ShapeRow = { id: string | number; kind: string; marker: EntryShape["marker"] | null; kept: number; positions: number[] };
 const shapeOf = (row: ShapeRow): EntryShape => ({ id: Number(row.id), kind: row.kind, positions: row.positions, ...(row.marker ? { marker: row.marker } : {}), kept: row.kept });
 
+/** An entry's shape from its record, as SHAPE gives it in SQL. */
+function shapeOfEntry(entry: EntryRecord): EntryShape {
+  const data = entry.data as Record<string, unknown> | undefined;
+  const object = entry.kind === MARKER_KIND && !!data && typeof data === "object" && !Array.isArray(data);
+  const { kept, calls: _calls, ...marker } = object ? data : {};
+  return { id: entry.id, kind: entry.kind, positions: NATIVE_KINDS.has(entry.kind) ? historyPositions(entry) : [],
+    ...(object ? { marker: marker as EntryShape["marker"] } : {}), kept: object && Array.isArray(kept) ? kept.length : 0 };
+}
+
+/** Postgres's refusals of a record as jsonb that JSON.parse takes: a \u0000, a lone surrogate escape. */
+const UNPARSABLE = new Set(["22P02", "22P05"]);
+
+/**
+ * The shapes of up to `limit` session entries matching `where` (its parameters from $4), in ID order: parsed in Postgres,
+ * or, where Postgres refuses a record as jsonb, read and parsed here one record at a time.
+ */
+async function readShapes(sql: Sql, agent: string, where: string, params: unknown[], limit: number): Promise<EntryShape[]> {
+  const head = [agent, SESSION_CONVERSATION_ID, [...NATIVE_KINDS]];
+  await sql.query("savepoint shapes");
+  try {
+    const { rows } = await sql.query<ShapeRow>(`SELECT ${SHAPE} FROM (SELECT id, record::jsonb AS r FROM pi_durable_entries
+      WHERE session_id = $1 AND conversation_id = $2 AND ${where} ORDER BY id LIMIT ${limit}) e ORDER BY e.id`, [...head, ...params]);
+    await sql.query("release savepoint shapes");
+    return rows.map(shapeOf);
+  } catch (error) {
+    if (!UNPARSABLE.has((error as { code?: string }).code ?? "")) throw error;
+    await sql.query("rollback to savepoint shapes");
+  }
+  const { rows } = await sql.query<{ id: string }>(`SELECT id FROM pi_durable_entries
+    WHERE session_id = $1 AND conversation_id = $2 AND $3::text[] IS NOT NULL AND ${where} ORDER BY id LIMIT ${limit}`, [...head, ...params]);
+  const shapes: EntryShape[] = [];
+  for (const row of rows) {
+    const record = (await sql.query<{ record: string }>("SELECT record FROM pi_durable_entries WHERE session_id = $1 AND id = $2", [agent, row.id])).rows[0];
+    shapes.push(shapeOfEntry(JSON.parse(record.record) as EntryRecord));
+  }
+  return shapes;
+}
+
 /**
  * Place a session's entries from its first base on (`OrdinalReplay`), under its metadata row's lock (its commits wait),
  * and set its history's length: once, as a session placed and current is left alone, and again for one written since
@@ -231,25 +269,22 @@ export async function fillOrdinals(db: Db, agent: string, options: { dryRun: boo
     const last = Number(range.last ?? 0), entries = Number(range.entries);
     if (meta.history_next !== null && Number(meta.history_last_id ?? 0) >= last) return { agent, code: "current", total: meta.history_next };
     if (entries > maxEntries) return { agent, code: "too_large", entries };
-    const natives = [...NATIVE_KINDS];
-    const baseRow = (await sql.query<ShapeRow>(`SELECT ${SHAPE} FROM (SELECT id, record::jsonb AS r FROM pi_durable_entries
-      WHERE session_id = $1 AND conversation_id = $2 AND substr(record, 1, 200) LIKE '%"kind":"${MARKER_KIND}"%' AND strpos(record, '"t":"base"') > 0) e
-      WHERE r->>'kind' = '${MARKER_KIND}' AND r->'data'->>'t' = 'base' ORDER BY e.id LIMIT 1`, [agent, SESSION_CONVERSATION_ID, natives])).rows[0];
-    if (!baseRow) {
+    // The first base marker: markers by their record's first characters (the kind comes first), then by their data.
+    const base = (await readShapes(sql, agent, `substr(record, 1, 200) LIKE '%"kind":"${MARKER_KIND}"%' AND strpos(record, '"t":"base"') > 0`, [], 16))
+      .find(shape => shape.kind === MARKER_KIND && shape.marker?.t === "base");
+    if (!base) {
       if (entries) return { agent, code: "no_base", entries };
       // No entries yet: an empty history, which the session's first base opens.
       if (!options.dryRun) await sql.query("update pi_durable_metadata set history_next = 0, history_last_id = 0 where session_id = $1", [agent]);
       return { agent, code: options.dryRun ? "would_place" : "placed", entries: 0, messages: 0, total: 0 };
     }
-    const base = shapeOf(baseRow);
     const replay = new OrdinalReplay(base);
     let from = Math.min(base.id, base.marker?.through?.entryId ?? base.id);
     for (;;) {
-      const { rows } = await sql.query<ShapeRow>(`SELECT ${SHAPE} FROM (SELECT id, record::jsonb AS r FROM pi_durable_entries
-        WHERE session_id = $1 AND conversation_id = $2 AND id >= $4 ORDER BY id LIMIT $5) e ORDER BY e.id`, [agent, SESSION_CONVERSATION_ID, natives, from, FILL_PAGE]);
-      for (const row of rows) replay.apply(shapeOf(row));
-      if (rows.length < FILL_PAGE) break;
-      from = Number(rows.at(-1)!.id) + 1;
+      const shapes = await readShapes(sql, agent, "id >= $4", [from], FILL_PAGE);
+      for (const shape of shapes) replay.apply(shape);
+      if (shapes.length < FILL_PAGE) break;
+      from = shapes.at(-1)!.id + 1;
     }
     const placements = replay.placements();
     if (!placements) return { agent, code: "irregular", entries, error: replay.irregular };

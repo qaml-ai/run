@@ -242,3 +242,19 @@ test("a big session (pages of the fill), with compactions and context checkpoint
   assert.deepEqual(await columns("big"), placed);
   await storage.close(context);
 });
+
+test("records Postgres will not parse as jsonb (a \\u0000, a lone surrogate) are shaped on the node, and fill as their commits placed them", async () => {
+  const { storage, journal } = await busySession("unicode", 1);
+  await journal.setActive(true);
+  await journal.append([user("nul \u0000 here"), reply("lone \ud800 surrogate")]);
+  await journal.append([reply("a base marker's kept messages can hold them too: \u0000")]);
+  await journal.setActive(false);
+  await assertSame("unicode", storage, "unicode");
+  const placed = await columns("unicode");
+  for (const dryRun of [true, false]) {
+    await unplace("unicode");
+    assert.equal((await fillOrdinals(db, "unicode", { dryRun })).code, dryRun ? "would_place" : "placed");
+  }
+  assert.deepEqual(await columns("unicode"), placed);
+  await storage.close(context);
+});
