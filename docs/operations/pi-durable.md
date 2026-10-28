@@ -167,7 +167,7 @@ walks agents in id order, 500 at a time, for about 20 s per call (`budgetMs`, at
 most 25000) and answers `next` to go on from (a dry run's cursor goes on as a dry
 run). Each agent is placed under its session's metadata lock (its commits wait),
 from its first base marker on, reading its entries 250 at a time with their records
-parsed in Postgres (never on the node), every statement stopped after 20 s; an
+parsed in Postgres (a page with a record Postgres will not parse as jsonb, a `\u0000` or a lone surrogate escape, is read and parsed on the node a record at a time), every statement stopped after 20 s; an
 agent with more than `maxEntries` session entries (200,000 by default, at most
 2,000,000) is reported `too_large`, not read. Placing is idempotent: a placed agent
 whose newest session entry is placed is `current`; one with entries written since
