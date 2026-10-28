@@ -30,7 +30,7 @@ import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
 import { clock } from "./node-context.ts";
 import { usageMissing } from "./platform-pricing.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
-import { DurableAgent, interruptedGeneration, type DurableAgentOptions } from "./pi-durable/agent.ts";
+import { DurableAgent, type DurableAgentOptions } from "./pi-durable/agent.ts";
 import { contextRangeSize } from "./pi-durable/storage.ts";
 import { HostJournal } from "./pi-durable/host-journal.ts";
 import type { RetiredRecord } from "./pi-durable/retired-host.ts";
@@ -204,8 +204,6 @@ export function createAgentHost(hostIO: HostIO) {
   let forcing = { left: 0, reminding: false, last: false };
   /** Calls a lost node left open that are safe to make again (`RERUN`): made again before the resumed turn continues. */
   let rerun: ToolCall[] = [];
-  /** Whether Pi holds the run a lost node left, which the next `continue` resumes (see `init`). */
-  let piResumed = false;
   /** js_exec, which an agent has unless its codeMode is false; made at init. */
   let jsExec: AgentTool | undefined;
   /** Model requests wait for the node's lease, and are cut (`interrupt`) when it goes stale. */
@@ -331,9 +329,6 @@ export function createAgentHost(hostIO: HostIO) {
       io.emit({ type: "message_end", message });
     }
   }
-
-  /** Whether Pi resumes the runs a lost node left for this agent's tenant (AGENT_PI_RECOVERY_TENANTS: tenant ids, or `*`). */
-  const piRecovery = () => (process.env.AGENT_PI_RECOVERY_TENANTS ?? "").split(",").map(item => item.trim()).some(item => item === "*" || item === config.tenant);
 
   /** Whether each model call asks the supervisor for its credentials. */
   const perCall = () => config.apiKey === IDENTITY_KEY || config.apiKey === SCOPE_KEY;
@@ -491,8 +486,6 @@ export function createAgentHost(hostIO: HostIO) {
     return tools.filter(tool => config.codeMode === false || ["direct", "both"].includes(tool.exposure ?? "codemode")).map(tool => ({
         name: tool.name, label: tool.name, description: tool.description,
         parameters: tool.parameters as AgentTool["parameters"], executionMode: tool.executionMode,
-        // Keyed by its call (multi-agent.ts): Pi runs a call to it again when it resumes a run its node was lost in.
-        ...RERUN.includes(tool.name) ? { replay: "safe" as const } : {},
         // Ahead of Pi's own check, whose complaint about a file named for a tool that takes none reads as a wrong path.
         prepareArguments: (args: unknown) => {
           const refused = filesRefused(tool.name, tool.parameters, args);
@@ -880,16 +873,11 @@ export function createAgentHost(hostIO: HostIO) {
       journal = await open(piStorage, tools.map(toToolDeclaration));
       if (indexedTo !== undefined) unindexed = journal.history.sizesFrom(Math.max(indexedTo, journal.history.heldFrom)).reduce((sum, size) => sum + size, 0);
       let recovered = false;
-      // A turn its node was lost in, which Pi resumes from its own checkpoint (AGENT_PI_RECOVERY_TENANTS): decided once Pi is open.
-      piResumed = journal.active && !!config.resume && !journal.awaiting.length && piRecovery() && await interruptedGeneration(piStorage);
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
       if (journal.active && journal.awaiting.length) {
         // The turn had suspended for input when its node stopped: its other calls are closed as unknown, and it stays suspended.
         await closeInterruptedTurn(journal);
         if (config.resume) resume = { finished: { messages: journal.total, error: null, stopped: "input_required" } };
-        recovered = true;
-      } else if (piResumed) {
-        resume = { continue: true };
         recovered = true;
       } else if (journal.active && config.resume) {
         // A response cut off when its node stopped is not history; the model is asked again.
@@ -1023,14 +1011,8 @@ export function createAgentHost(hostIO: HostIO) {
       await journal.refresh();
       const latest = journal.history.latest, before = agent.latestCursor;
       await requireContextSize();
-      if (piResumed) {
-        await agent.resumeInterruptedRun();
-        console.log(JSON.stringify({ type: "pi_run_resumed", agent: config.id, tenant: config.tenant }));
-      }
-      else {
-        const cursor = await agent.discardInterruptedRun();
-        if (cursor && !sameCursor(cursor, before)) await journal.skip(cursor, latest);
-      }
+      const cursor = await agent.discardInterruptedRun();
+      if (cursor && !sameCursor(cursor, before)) await journal.skip(cursor, latest);
       agent.subscribe(async event => {
         if ((event.type === "message_start" || event.type === "message_update" || event.type === "message_end") && event.message.role === "system") {
           // Pi declares a tool set that no longer matches the context's; it stays in place like the runtime's own changes.
@@ -1175,7 +1157,6 @@ export function createAgentHost(hostIO: HostIO) {
           if (await handingOff()) return handedOff();
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
-        piResumed = false;
         await agent.continue();
       }
       else {
@@ -1276,8 +1257,6 @@ export function createAgentHost(hostIO: HostIO) {
    */
   async function abortedBeforeLoop() {
     rerun = [];
-    // Pi's run left by a lost node ends as an abort ends it: its open calls answered as aborted.
-    if (piResumed) { piResumed = false; await agent!.discardInterruptedRun(); }
     const repairs = interruptedTurnRepairs(await journal.since(step), false, journal.awaiting);
     if (repairs.length) await journal.append(repairs);
     if (journal.active) await journal.setActive(false);
