@@ -54,9 +54,9 @@
     "@browserbasehq/sdk": "2.22.0",
     "@daytona/sdk": "0.226.0",
     "@discordjs/voice": "0.19.2",
-    "@earendil-works/chord": "1.4.0",
-    "@earendil-works/pi-ai": "1.4.0",
-    "@earendil-works/pi-durable": "1.4.0",
+    "@earendil-works/chord": "file:vendor/pi/chord.tgz",
+    "@earendil-works/pi-ai": "file:vendor/pi/pi-ai.tgz",
+    "@earendil-works/pi-durable": "file:vendor/pi/pi-durable.tgz",
     "@hono/node-server": "^2.1.1",
     "@hono/zod-openapi": "^1.6.3",
     "@modelcontextprotocol/sdk": "^1.30.1",
@@ -81,7 +81,7 @@
   "devDependencies": {
     "@ai-sdk/react": "^4.0.121",
     "@babel/parser": "^7.29.9",
-    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-agent-core": "file:vendor/pi/pi-agent-core.tgz",
     "@electric-sql/pglite": "^0.5.8",
     "@fontsource-variable/figtree": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
@@ -121,5 +121,12 @@
     "vitest": "^3.2.7",
     "vue": "^3.5.43"
   },
-  "license": "AGPL-3.0-only"
+  "license": "AGPL-3.0-only",
+  "overrides": {
+    "@earendil-works/chord": "$@earendil-works/chord",
+    "@earendil-works/pi-ai": "$@earendil-works/pi-ai",
+    "@earendil-works/pi-agent-core": "$@earendil-works/pi-agent-core",
+    "@earendil-works/pi-codemode": "file:vendor/pi/pi-codemode.tgz",
+    "@earendil-works/pi-telemetry": "file:vendor/pi/pi-telemetry.tgz"
+  }
 }

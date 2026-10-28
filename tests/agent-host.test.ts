@@ -179,7 +179,7 @@ test("a write that fails leaves memory as the journal has it, and the agent refu
   let failing = false;
   const { host } = await fake.start({ storage: storage => {
     const commit = storage.commit.bind(storage);
-    storage.commit = async (writes, context) => { if (failing) throw new Error("disk full"); return commit(writes, context); };
+    storage.commit = async (writes, adopt, context) => { if (failing) throw new Error("disk full"); return commit(writes, adopt, context); };
     return storage;
   } });
   fake.respond(answer("One."));
@@ -197,10 +197,10 @@ test("the leading system message is the agent's first context, and a change foll
   const written: string[][] = [];
   const { host } = await fake.start({ storage: storage => {
     const commit = storage.commit.bind(storage);
-    storage.commit = async (writes, context) => {
+    storage.commit = async (writes, adopt, context) => {
       const kinds = writes.flatMap(write => write.type === "entry" && ["camel.system", "camel.legacy.context"].includes(write.value.kind) ? [write.value.kind] : []);
       if (kinds.length) written.push(kinds);
-      return commit(writes, context);
+      return commit(writes, adopt, context);
     };
     return storage;
   } });
@@ -418,7 +418,7 @@ test("a history tail is the journal's: what Pi committed is in it at once", asyn
   fake.respond(answer("One."));
   await host.handle("prompt", { text: "one" });
   // Pi's next response is committed; its event is still on its way to the host.
-  await journal.commit([{ type: "entry", value: { id: await journal.mintId(), conversationId: 1 as never, kind: "pi.assistant", model: [answer("Two.")] as never } }], BACKGROUND_CONTEXT);
+  await journal.commit([{ type: "entry", value: { id: await journal.mintId(), conversationId: 1 as never, kind: "pi.assistant", model: [answer("Two.")] as never } }], () => {}, BACKGROUND_CONTEXT);
   const tail = await host.handle("historyTail", {});
   assert.deepEqual(tail.messages.map((message: AgentMessage) => message.role), ["user", "assistant", "assistant"]);
 });

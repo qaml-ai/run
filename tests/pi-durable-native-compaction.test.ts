@@ -181,12 +181,12 @@ for (const byteRefusal of [false, "413 request_too_large: request too large", "s
   const storage = new MemoryStorage();
   let failed = false, calls = 0, summaries = 0;
   const backend = new Proxy(storage, { get(target, key) {
-    if (key === "commit") return async (writes: any, context: any) => {
+    if (key === "commit") return async (writes: any, adopt: any, context: any) => {
       if (!byteRefusal && writes.some((write: any) => write.type === "document.create" && write.record?.kind === "camel.context.limit")) {
         failed = true;
         throw new Error("optional limit write failed");
       }
-      return target.commit(writes, context);
+      return target.commit(writes, adopt, context);
     };
     const value = Reflect.get(target, key, target);
     return typeof value === "function" ? value.bind(target) : value;

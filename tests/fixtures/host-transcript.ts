@@ -459,7 +459,7 @@ export async function seedStorage(options: {
       value: { id: ids[nextId++] as never, conversationId: SESSION_CONVERSATION_ID, requestId, type: "input", status: "unanswered", reason: "legacy_import", detail: "Request already recorded in the history this session started with." },
     });
     writes.push(...await options.host({ generationId, contextEntryId }));
-    await storage.commit(writes, context);
+    await storage.commit(writes, () => {}, context);
     // The commit is atomic: reading back its marker confirms it landed.
     const landed = await loadSeedMarker(storage, context);
     if (!landed || !same(landed, metadata)) throw new SeedConflict("the persisted seed marker differs from the source");
@@ -709,7 +709,7 @@ export class NativeTranscript extends Transcript {
         this.prune();
         const change = this.change();
         if (change.content) writes.push({ type: "document.change", id: this.documentId, content: change.content });
-        await this.storage.commit(writes, context);
+        await this.storage.commit(writes, () => {}, context);
         this.stored = change.stored;
       } catch (error) { this.restore(before); this.failed = error; throw error; }
     });
@@ -736,7 +736,7 @@ export class NativeTranscript extends Transcript {
     return this.enqueue(async () => {
       if (await JournalHistory.findBase(this.storage)) return false;
       const base: HistoryBase = { t: "base", total: this.total, ...(this.piCursor ? { through: this.piCursor } : {}), active: this.active, turnStart: this.turnStart, awaiting: [...this.awaiting], calls: [...this.calls] };
-      try { await this.storage.commit([{ type: "entry", value: { id: await this.storage.mintId<EntryId>(), conversationId, kind: MARKER_KIND, data: json(base) } }], context); }
+      try { await this.storage.commit([{ type: "entry", value: { id: await this.storage.mintId<EntryId>(), conversationId, kind: MARKER_KIND, data: json(base) } }], () => {}, context); }
       catch (error) { this.failed = error; throw error; }
       return true;
     });

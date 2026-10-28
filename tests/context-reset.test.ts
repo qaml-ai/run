@@ -65,7 +65,7 @@ for (const backend of ["sqlite", "postgres"] as const) test(`${backend} resets a
     // An omit from an entry that names no system message counts too.
     { type: "entry", value: { id: ids[4], conversationId: root, kind: "camel.system", model: [system({ sections: { dropped: "later" } })] as never } },
     { type: "entry", value: { id: ids[5], conversationId: root, kind: "camel.context.message", model: [user("plain")] as never, edits: [{ target: ids[4], action: "omit" }] } as never },
-  ], context);
+  ], () => {}, context);
   const before = await contextRangeSize(storage, root);
   assert.ok(before.bytes > 80_000);
   const history = await JournalHistory.openAny(storage);
@@ -208,7 +208,7 @@ test("a reset refuses a context with replace edits, and writes nothing when its 
   await assert.rejects(resetContext(storage, { limit: 1 << 20, beforeCommit: () => { throw new Error("Agent is running"); } }), /Agent is running/);
   assert.equal(await marker(), first, "nothing was written");
   const id = await storage.mintId();
-  await storage.commit([{ type: "entry", value: { id, conversationId: root, kind: "camel.context.message", model: [user("x")] as never, edits: [{ target: first, action: "replace", messages: [] }] } as never }], context);
+  await storage.commit([{ type: "entry", value: { id, conversationId: root, kind: "camel.context.message", model: [user("x")] as never, edits: [{ target: first, action: "replace", messages: [] }] } as never }], () => {}, context);
   await assert.rejects(currentSystemMessage(storage), /replace edits/);
 });
 

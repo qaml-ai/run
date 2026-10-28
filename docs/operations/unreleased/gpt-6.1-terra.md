@@ -11,5 +11,6 @@ Azure use them too. Other capabilities are assumed to match each
 provider's GPT-6.1 Sol entry: Responses API, text and image input, 128,000 maximum
 output tokens, and low, medium, high, xhigh and max reasoning. Cache writes and
 the long-context tier are assumed to cost half Sol's rates at the same threshold.
-Tool-call streaming is unmeasured. Azure accepts Terra in the configured models
+Tool-call streaming is unmeasured. With the vendored Pi these are Pi's own entries, at the same prices, and Terra
+can also reason not at all (effort `none`). Azure accepts Terra in the configured models
 map, but requires a deployment before it can be used; none is added by this change.

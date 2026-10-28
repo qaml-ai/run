@@ -56,38 +56,11 @@ import type {
 } from "@earendil-works/pi-durable";
 
 /**
- * `Storage.commit`'s adoption callback in the Pi release after 1.4.0: the Session's in-memory adoption and publication
- * of the batch. A storage calls it exactly once, synchronously, once the batch is durable and before its next commit
- * starts, then resolves with the same `seq`; never for a commit that fails before the batch is durable.
+ * `Storage.commit`'s adoption callback: the Session's in-memory adoption and publication of the batch. A storage calls it
+ * exactly once, synchronously, once the batch is durable and before its next commit starts, then resolves with the same
+ * `seq`; never for a commit that fails before the batch is durable. Writers outside a Session pass `() => {}`.
  */
 export type PiAdopt = (seq: Seq) => void;
-type AnyCommit = (writes: readonly StorageWrite[], ...rest: unknown[]) => Promise<Seq>;
-
-/**
- * The two shapes of `Storage.commit`: Pi 1.4.0's `(writes, context)` and the next release's `(writes, adopt, context)`.
- * A Context is never a function, so the second argument tells them apart. Drop this once the release is installed.
- */
-export function commitArguments(adoptOrContext: PiAdopt | Context, context?: Context): { adopt?: PiAdopt; context: Context } {
-    return typeof adoptOrContext === "function" ? { adopt: adoptOrContext, context: context ?? BACKGROUND_CONTEXT } : { context: adoptOrContext };
-}
-
-/**
- * Commit `writes` to a storage of either shape and call `adopt(seq)` exactly once, once the batch is durable: inside
- * the storage's commit when it takes the callback (three parameters: ours, and Pi's own after 1.4.0), else as soon as
- * its commit resolves (Pi 1.4.0's), still before the caller can start another commit. Not for a failed commit.
- */
-export async function commitTo(storage: Pick<Storage, "commit">, writes: readonly StorageWrite[], context: Context, adopt: PiAdopt = () => {}): Promise<Seq> {
-    let adopted = false;
-    const once: PiAdopt = seq => {
-        if (adopted) throw new Error("Pi storage adopted one commit twice");
-        adopted = true;
-        adopt(seq);
-    };
-    const commit = storage.commit as unknown as AnyCommit;
-    const seq = await (commit.length >= 3 ? commit.call(storage, writes, once, context) : commit.call(storage, writes, context));
-    if (!adopted) once(seq);
-    return seq;
-}
 
 const TABLES = {
     durableMetadata: "pi_durable_metadata", recordIds: "pi_durable_record_ids",
@@ -289,11 +262,9 @@ export async function openPiStorage(options: { sessionId: string; directory: str
         };
         if (!options.committing) return storage;
         const inner = { commit: storage.commit.bind(storage) };
-        // Three parameters, so `commitTo` passes the adoption callback on; the shape Pi calls it with is forwarded.
-        (storage as unknown as { commit: AnyCommit }).commit = async (writes: readonly StorageWrite[], adoptOrContext: unknown, maybeContext?: unknown) => {
-            const { adopt, context } = commitArguments(adoptOrContext as PiAdopt | Context, maybeContext as Context | undefined);
+        storage.commit = async (writes: readonly StorageWrite[], adopt: PiAdopt, context: Context) => {
             for (const write of writes) if (write.type === "entry") await options.committing!(write.value);
-            return adopt ? commitTo(inner, writes, context, adopt) : inner.commit(writes, context);
+            return inner.commit(writes, adopt, context);
         };
         return storage;
     } catch (error) { await database.close().catch(() => {}); throw error; }
@@ -402,7 +373,7 @@ export async function storageRequest(storage: Storage, request: PiStorageRequest
         const [writes] = request.args;
         if (!Array.isArray(writes)) throw new Error("Invalid Pi storage argument");
         // The adoption callback cannot cross the process boundary: the child adopts once this answers.
-        return commitTo(storage, writes as StorageWrite[], BACKGROUND_CONTEXT);
+        return storage.commit(writes as StorageWrite[], () => {}, BACKGROUND_CONTEXT);
     }
     if (request.method === "contextRangeSize") {
         const [conversationId] = request.args as number[];
@@ -474,11 +445,10 @@ export function remotePiStorage(request: (request: PiStorageRequest) => Promise<
         const undefinedArgs = args.flatMap((value, index) => value === undefined ? [index] : []);
         return request({ method, args, ...(undefinedArgs.length ? { undefinedArgs } : {}) });
     }]));
-    // The batch is durable once the owner answers: adopt it then, before this resolves (both commit shapes).
-    methods.commit = async (writes: readonly StorageWrite[], adoptOrContext: PiAdopt | Context, maybeContext?: Context): Promise<Seq> => {
-        const { adopt } = commitArguments(adoptOrContext, maybeContext);
+    // The batch is durable once the owner answers: adopt it then, before this resolves.
+    methods.commit = async (writes: readonly StorageWrite[], adopt: PiAdopt): Promise<Seq> => {
         const seq = await request({ method: "commit", args: [writes] }) as Seq;
-        adopt?.(seq);
+        adopt(seq);
         return seq;
     };
     return methods as unknown as Storage;
@@ -619,9 +589,8 @@ export class PostgresPiStorage implements Storage {
         return new PostgresPiStorage(database, { tables: TABLES }, Number(metadata.next_id), committing);
     }
 
-	/** Both shapes (`commitArguments`): `adopt`, when given, runs once the transaction has committed, before this resolves. */
-	async commit(writes: readonly StorageWrite[], adoptOrContext: PiAdopt | Context, context?: Context): Promise<Seq> {
-		const { adopt } = commitArguments(adoptOrContext, context);
+	/** `adopt` runs once the transaction has committed (also after a lost answer that landed), before this resolves. */
+	async commit(writes: readonly StorageWrite[], adopt: PiAdopt, _context?: Context): Promise<Seq> {
 		this.assertOpen();
 		const documentActions = this.prepareDocumentActions(writes);
 		const candidateNextId = this.candidateNextId(writes);
@@ -645,7 +614,7 @@ export class PostgresPiStorage implements Storage {
 			return committedSeq;
 		}, { nextId: candidateNextId }), async () => attempted !== undefined && await this.landed(writes, attempted) ? { value: attempted } : undefined);
 		this.nextId = Math.max(this.nextId, candidateNextId);
-		adopt?.(seq);
+		adopt(seq);
 		return seq;
 	}
 

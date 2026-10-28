@@ -94,7 +94,7 @@ test("a page behind the journal base reads only its missing indexed range", asyn
     const document = await JournalHistory.baseDocument(storage);
     await storage.commit(baseWrites(await storage.mintId<EntryId>(), history.settledBase()!, {
       id: document ?? await storage.mintId<DocumentId>(), create: !document,
-    }), BACKGROUND_CONTEXT);
+    }), () => {}, BACKGROUND_CONTEXT);
   } finally { await storage.close(BACKGROUND_CONTEXT); }
   // The marker lags the journal base, but another writer has already stored the missing chunk.
   await r.db.query("update agent_history_index set indexed = 2 where agent = $1", [agent]);
@@ -220,7 +220,7 @@ test("oversized indexed histories return 413 for unloaded reads, runs and forks 
       const document = await JournalHistory.baseDocument(storage);
       await storage.commit(baseWrites(await storage.mintId<EntryId>(), history.settledBase()!, {
         id: document ?? await storage.mintId<DocumentId>(), create: !document,
-      }), BACKGROUND_CONTEXT);
+      }), () => {}, BACKGROUND_CONTEXT);
     } finally { await storage.close(BACKGROUND_CONTEXT); }
     await r.db.query("update agent_history_chunks set bytes = $2 where agent = $1", [id, FULL_HISTORY_READ_BYTES + 1]);
     if (id === runAgent) continue; // Ephemeral runs are read through /v1/runs, not agent routes.

@@ -1,6 +1,6 @@
 # Pi durable sessions
 
-Every agent runs on `@earendil-works/pi-durable` 1.3.0, in process or inline
+Every agent runs on `@earendil-works/pi-durable`, built from a commit of Pi's main ([Vendored Pi](pi-vendoring.md)), in process or inline
 hosting. The earlier pi-agent-core loop (the "legacy" engine) was removed: no
 session runs on it, and nothing rolls a session back to it. `AGENT_ENGINE`,
 `AGENT_PI_CANARY_AGENTS` and `AGENT_PI_CANARY_TENANTS` are ignored; a node that has

@@ -8,7 +8,7 @@ import { fauxAssistantMessage, fauxToolCall, type AssistantMessage, type FauxRes
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAgentHost, type HostIO } from "../src/agent-host.ts";
-import { commitArguments, commitTo, openPiStorage } from "../src/pi-durable/storage.ts";
+import { openPiStorage } from "../src/pi-durable/storage.ts";
 import type { StorageWrite } from "@earendil-works/pi-durable";
 import { recoverDurableMessages } from "../src/pi-durable/agent.ts";
 import type { ToolDefinition } from "../src/protocol.ts";
@@ -46,16 +46,14 @@ async function fixture(t: TestContext) {
     stores.push(storage);
     if (options.fault) {
       const inner = { commit: storage.commit.bind(storage) };
-      // Both commit shapes (Pi 1.4.0's and the next release's, with its adoption callback).
-      (storage as any).commit = async (writes: readonly StorageWrite[], adoptOrContext: any, maybeContext?: any) => {
-        const { adopt, context } = commitArguments(adoptOrContext, maybeContext);
+      (storage as any).commit = async (writes: readonly StorageWrite[], adopt: (seq: number) => void, context: any) => {
         // The host's write of the turn's end, after Pi committed its final answer.
         const target = writes.some(write => write.type === "entry" && write.value.kind === "camel.history.marker" && (write.value.data as any)?.t === "turn" && (write.value.data as any)?.active === false);
         if (target) {
-          if (options.fault === "torn") await commitTo(inner, writes, context); // committed, acknowledgement lost: never adopted
+          if (options.fault === "torn") await inner.commit(writes, () => {}, context); // committed, acknowledgement lost: never adopted
           throw new Error("projection disk unavailable");
         }
-        return commitTo(inner, writes, context, adopt);
+        return inner.commit(writes, adopt, context);
       };
     }
     const events: any[] = [];

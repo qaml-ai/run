@@ -13,6 +13,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - [Backups and restore](backup-restore.md): what is kept and for how long, the restore drill, restoring production
 - [Journal checkpoint reclaim](journal-reclaim.md): size and remove superseded context copies in idle sessions
 - [Pi durable sessions](pi-durable.md): the execution engine, importing legacy sessions, storage, recovery and billing
+- [Vendored Pi](pi-vendoring.md): Pi built from a commit into `vendor/pi/`; bumping it; versions that cannot be rolled back
 - [Billing](billing.md): prepaid credit, the ledger, storage metering, Stripe, which keys a tenant's calls use
 - [Tenants](tenants.md): admin tenants and `infra/tenant.sh`: tokens, keys, agent and spend limits, other limits
 - [Anthropic federation](anthropic-federation.md): platform Anthropic credentials from the ECS task role
@@ -39,6 +40,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 - `src/` server, supervisor, agent host, sessions, scheduler, REST API, sandbox
 - `migrations/` Postgres schema, applied at startup
 - `shared/` storage backends (file, S3), wire protocol
+- `vendor/pi/` Pi's packages, built from one commit of its main branch (`scripts/vendor-pi.sh`, [Vendored Pi](pi-vendoring.md))
 - `clients/` TypeScript and Python SDKs; `sdk/` publishes `@camelai/run`
 - `console/` tenant console (React); `studio/` local chat/trace UI
 - `infra/` AWS provisioning and deploy scripts; `deploy/smoke.ts` live smoke test; `deploy/selfhost/` Docker Compose for self-hosting

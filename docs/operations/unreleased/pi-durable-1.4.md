@@ -15,9 +15,8 @@ at the top level, 1.3.0 inside pi-durable; there is now one copy).
   lost, and parks a task after 5 restarts in a row without progress. A clean close (drain, retire, memory hand-off) does not
   count. `AGENT_MAX_RESUMES` (default 2) still ends a turn first: the third node loss fails the run with `resume_limit`
   before Pi's count reaches 5. Pi's guard is a backstop for work our count does not cover, and for `AGENT_MAX_RESUMES` ≥ 5.
-  A resumed run whose generation Pi parked now fails at once instead of waiting forever. The error is "cut off by repeated
-  node failures", and the turn's abort handler settles what it left open. New input then runs normally. `pi_report` logs
-  now carry `report` (for example `task_parked`, `task_faulted`) and the task kind and id.
+  `pi_report` logs now carry `report` (for example `task_faulted`) and the task kind and id. (Parking is gone again with
+  the vendored Pi: see "Pi from its main branch, vendored".)
 - **No Pi attribution headers.** Pi 1.4.0 attributes every model request to pi by default: OpenRouter `HTTP-Referer:
   https://pi.dev` and `X-OpenRouter-Title: pi`, plus NVIDIA and OpenCode origin headers. The runtime sets `identity: {
   attribution: null }`, so it sends none of these (as before). `User-Agent` stays pi-ai's default `pi/<version> (…)`,

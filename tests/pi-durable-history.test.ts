@@ -42,7 +42,7 @@ test("cold history of an import before #322 (no journal history) is refused, wit
   for (const message of fresh) await journal.commit([{ type: "entry", value: {
     id: await journal.mintId<EntryId>(), conversationId: 1 as ConversationId,
     kind: message.role === "user" ? "pi.user" : "pi.assistant", model: [message] as any,
-  } }], context);
+  } }], () => {}, context);
   await journal.close(context);
 
   // No pending run or lagging index signals the WAL-only messages left by a failed legacy projection.
