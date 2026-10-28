@@ -29,7 +29,7 @@ import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
 import { clock } from "./node-context.ts";
 import { usageMissing } from "./platform-pricing.ts";
-import type { Storage as PiStorage } from "@earendil-works/pi-durable";
+import type { FailedAttempt, RetryDecision, Storage as PiStorage } from "@earendil-works/pi-durable";
 import { DurableAgent, piRunning, type DurableAgentOptions } from "./pi-durable/agent.ts";
 import { contextRangeSize } from "./pi-durable/storage.ts";
 import { HostJournal } from "./pi-durable/host-journal.ts";
@@ -168,6 +168,8 @@ export function createAgentHost(hostIO: HostIO) {
   let documents = false;
   /** A provider refused an intact image: omit every image for the rest of this turn only. */
   let omitImages = false;
+  /** This run's failed model requests Pi made again (`retryDecision`), and whether the latest answer came from a retry. */
+  let retries = { failed: 0, pending: 0 };
   /** Whether the running turn can still take a steer sent `whileRunning` (see `steer`). */
   let steerable = false;
   /** What the current run's final_output call gave, once the model made one that fit its schema. */
@@ -295,16 +297,37 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
-   * A request with final_output forced that the provider refused (one that takes no such tool_choice): taken back, as
-   * a failed response is, and asked again without forcing for the rest of the run.
+   * Whether Pi makes a failed model request again (its `beforeRetry`; a retried attempt leaves no entry). Asked again at
+   * once: a request a crash or a close cut, one this node's stale lease cut (not counted), one with final_output forced
+   * that the provider refused (then without forcing for the rest of the run), and one refused for an image it cannot read
+   * (then without images for the rest of the run). Otherwise what the API reports as `retryable` (model-errors.ts: a
+   * tenant's own endpoint has retried already) is asked again with backoff, up to the agent's retry policy. Never one that
+   * credit or the context bound refused, nor an overflow (`recoverOverflow`).
    */
-  async function unforced(signal: AbortSignal) {
-    const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
-    if (!forcing.last || signal.aborted || stopped || last?.role !== "assistant" || last.stopReason !== "error" || isRetryableAssistantError(last) || isContextOverflow(last, config.model.contextWindow)) return;
-    forcing = { left: 0, reminding: false, last: false };
-    await journal.retract();
-    io.emit({ type: "message_retracted", index: journal.total });
-    await agent!.continue();
+  function retryDecision(failed: FailedAttempt): RetryDecision {
+    if (active?.signal.aborted || stopped?.code === END_USER_CREDIT || stopped?.code === CONTEXT_TOO_LARGE) return { retry: false };
+    const last = failed.message as AssistantMessage | undefined;
+    if (failed.reason === "interrupted" || last?.errorMessage === MODEL_INTERRUPTED) return { retry: true, delayMs: 0 };
+    if (!last || isContextOverflow(last, config.model.contextWindow)) return { retry: false };
+    if (forcing.last && !isRetryableAssistantError(last)) {
+      forcing = { left: 0, reminding: false, last: false };
+      return { retry: true, delayMs: 0 };
+    }
+    if (!omitImages && isImageRejection(last.errorMessage)) {
+      omitImages = true;
+      console.log(JSON.stringify({ type: "image_rejected", agent: config.id }));
+      return { retry: true, delayMs: 0 };
+    }
+    if (!retriesModelError(last, failureContext())) return { retry: false };
+    const policy = config.retry ?? DEFAULT_RETRY, attempt = ++retries.failed;
+    if (attempt > policy.maxAttempts) {
+      io.emit({ type: "auto_retry_end", success: false, attempt: attempt - 1, finalError: last.errorMessage, failure: modelFailure(last, failureContext()) });
+      return { retry: false };
+    }
+    const delayMs = policy.baseDelayMs * 2 ** (attempt - 1);
+    io.emit({ type: "auto_retry_start", attempt, maxAttempts: policy.maxAttempts, delayMs, errorMessage: last.errorMessage ?? "Unknown error", failure: modelFailure(last, failureContext()) });
+    retries.pending = attempt;
+    return { retry: true, delayMs };
   }
 
   /**
@@ -629,73 +652,26 @@ export function createAgentHost(hostIO: HostIO) {
     io.emit({ type: "message_retracted", index: journal.total });
     forcing.reminding = true;
     await agent!.continue();
-    await unforced(signal);
-    await recoverFailedResponses(signal);
+    await recoverOverflow(signal);
   }
 
   /**
-   * Recover failed responses within the same turn: transient provider failures retry with backoff; an image refusal
-   * gets one try without images. The failed response is retracted, so it never becomes history.
+   * Pi compacts once for a context overflow. One refused again learned a smaller window: the refusal is taken back, the
+   * context compacted once more against that window, and the model asked again.
    */
-  async function recoverFailedResponses(signal: AbortSignal) {
-    const policy = config.retry ?? DEFAULT_RETRY;
-    let overflowRetried = false;
-    for (let attempt = 1; ; attempt++) {
-      const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
-      if (signal.aborted || !last || last.role !== "assistant" || last.stopReason !== "error") return;
-      // Credit or the context bound refused it: asking again would be refused again.
-      if (stopped?.code === END_USER_CREDIT || stopped?.code === CONTEXT_TOO_LARGE) return;
-      // Pi retries one overflow per generation. A second refusal learned a smaller window: compact once against it.
-      if (isContextOverflow(last, config.model.contextWindow)) {
-        if (overflowRetried) return;
-        overflowRetried = true;
-        await journal.retract();
-        io.emit({ type: "message_retracted", index: journal.total });
-        if (signal.aborted) return;
-        try { await agent!.compact(signal); }
-        catch {
-          // Keep the provider's original error as the turn's outcome when recovery fails.
-          await journal.push(last);
-          io.emit({ type: "message_end", message: last });
-          return;
-        }
-        if (signal.aborted) return;
-        await agent!.continue();
-        attempt--;
-        continue;
-      }
-      // Cut by this node's stale lease: made again at once, as its gate allows, and not counted as a provider failure.
-      const interrupted = last.errorMessage === MODEL_INTERRUPTED;
-      // A provider that cannot read an image in the history refuses every request carrying it, whether it calls that
-      // retryable or not: asked once more without images, outside the retry budget; what that ask gets is handled as any.
-      if (!omitImages && isImageRejection(last.errorMessage)) {
-        omitImages = true;
-        console.log(JSON.stringify({ type: "image_rejected", agent: config.id }));
-        await journal.retract();
-        io.emit({ type: "message_retracted", index: journal.total });
-        await agent!.continue();
-        attempt--;
-        continue;
-      }
-      // What the API reports as `retryable` (model-errors.ts): a tenant's own endpoint has retried already, so its errors
-      // (a credit gate's 402, say) end the turn; a stream that went quiet is retried like any.
-      if (!retriesModelError(last, failureContext())) return;
-      if (!interrupted && attempt > policy.maxAttempts) {
-        io.emit({ type: "auto_retry_end", success: false, attempt: attempt - 1, finalError: last.errorMessage, failure: modelFailure(last, failureContext()) });
-        return;
-      }
-      const delayMs = interrupted ? 0 : policy.baseDelayMs * 2 ** (attempt - 1);
-      io.emit({ type: "auto_retry_start", attempt, maxAttempts: policy.maxAttempts, delayMs, errorMessage: last.errorMessage ?? "Unknown error", failure: modelFailure(last, failureContext()) });
-      // The failed attempt is not history: drop it from the log and the live state, and say so on the stream.
-      await journal.retract();
-      io.emit({ type: "message_retracted", index: journal.total });
-      try { await clock().sleep(delayMs, { signal }); }
-      catch { return; }
-      await agent!.continue();
-      if ((agent!.state.messages.at(-1) as AssistantMessage | undefined)?.stopReason !== "error") {
-        io.emit({ type: "auto_retry_end", success: true, attempt });
-      }
+  async function recoverOverflow(signal: AbortSignal) {
+    const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
+    if (signal.aborted || stopped || last?.role !== "assistant" || last.stopReason !== "error" || !isContextOverflow(last, config.model.contextWindow)) return;
+    await journal.retract();
+    io.emit({ type: "message_retracted", index: journal.total });
+    try { await agent!.compact(signal); }
+    catch {
+      // Keep the provider's original error as the turn's outcome when recovery fails.
+      await journal.push(last);
+      io.emit({ type: "message_end", message: last });
+      return;
     }
+    if (!signal.aborted) await agent!.continue();
   }
 
   /**
@@ -868,6 +844,7 @@ export function createAgentHost(hostIO: HostIO) {
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own
         // writes fails. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
         onStorageFailure: error => { journal.failed ??= error; },
+        beforeRetry: retryDecision,
         // Summaries share credential/network gates but not the run's output
         // schema, temperature or max-output settings.
         summaryStream,
@@ -911,6 +888,11 @@ export function createAgentHost(hostIO: HostIO) {
         // Pi's journal holds each finished message as Pi commits it; streaming deltas are never persisted.
         // A failed response's event says how it failed, for callers that would otherwise parse its message.
         io.emit(event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "error" ? { ...event, failure: modelFailure(event.message, failureContext()) } : event);
+        // A retried request that then answered.
+        if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason !== "error" && retries.pending) {
+          io.emit({ type: "auto_retry_end", success: true, attempt: retries.pending });
+          retries.pending = 0;
+        }
       });
       // final_output, declared by a prompt with an output schema, stays until a prompt without one.
       const kept = getCurrentTools(agent.state.messages).find(tool => tool.name === OUTPUT_TOOL);
@@ -955,7 +937,7 @@ export function createAgentHost(hostIO: HostIO) {
       for (const message of messages) agent.steer(message, params.whileRunning === "steer");
       return params.whileRunning === "steer" ? { steered: true } : { queued: true, running: busy };
     }
-    // The node's lease went stale: its model requests in flight are cut, and made again once it is fresh (`recoverFailedResponses`).
+    // The node's lease went stale: its model requests in flight are cut, and made again once it is fresh (`retryDecision`).
     if (method === "interrupt") {
       const open = [...gate.open];
       gate.open.clear();
@@ -986,6 +968,7 @@ export function createAgentHost(hostIO: HostIO) {
     stopped = undefined;
     refused = undefined;
     omitImages = false;
+    retries = { failed: 0, pending: 0 };
     output = undefined;
     forcing = { left: FORCED_OUTPUT_REQUESTS, reminding: false, last: false };
     active = new AbortController();
@@ -1045,8 +1028,7 @@ export function createAgentHost(hostIO: HostIO) {
         const messages = await fittedImages(promptMessages!);
         await agent.prompt(messages);
       }
-      await unforced(active.signal);
-      await recoverFailedResponses(active.signal);
+      await recoverOverflow(active.signal);
       await remindOfOutput(active.signal);
       if (journal.failed !== undefined) throw journal.failed;
       await journal.setActive(false);

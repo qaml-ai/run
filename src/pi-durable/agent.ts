@@ -5,8 +5,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, LiveDoc, createRegistry, createSession, defineDoc, section,
-  type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Report, type Storage,
+  GenerationTask, Harness, LiveDoc, createRegistry, createSession, defineDoc, hook, section,
+  type Conversation, type ConversationId, type EntryRecord, type FailedAttempt, type HarnessOptions, type RetryDecision, type RegistryReader, type RegistrySnapshot, type Report, type Storage,
 } from "@earendil-works/pi-durable";
 
 /** Small latest-value document: loading an agent never scans its journal for a limit. */
@@ -50,6 +50,8 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
      * must be given up and reopened from what was committed.
      */
     onStorageFailure?: (error: unknown) => void;
+    /** Whether Pi makes a failed model request again (`beforeRetry`); without, it does not. Failed attempts it retries leave no entry. */
+    beforeRetry?: (failed: FailedAttempt) => RetryDecision | undefined;
   };
 };
 type Listener = (event: AgentEvent & { durable?: DurableCursor }, signal: AbortSignal) => void | Promise<void>;
@@ -374,7 +376,7 @@ export class DurableAgent {
         // they only bound what a lost node's run keeps, so each costs a journal write once a second, not every 100 ms.
         // Pi defers storing them by up to `persistWithinMs` (default 1 s); 0 stores each right after its commit, as before.
         progress: { partialIntervalMs: 1_000, outputIntervalMs: 1_000, persistWithinMs: 0 },
-        retry: { enabled: false }, toolExecution: options.toolExecution ?? "parallel",
+        retry: { enabled: false, keepRetried: false }, toolExecution: options.toolExecution ?? "parallel",
         steeringMode: options.steeringMode ?? "one-at-a-time", contextRetentionMs: 0 },
     }, context);
     agent.conversation = options.durable.conversationId === undefined ? await agent.harness.root(context) :
@@ -657,7 +659,7 @@ export class DurableAgent {
           ...(result.structuredContent === undefined || !tool.outputSchema ? {} : { structuredOutput: result.structuredContent }),
           ...(result.usage === undefined ? {} : { usage: result.usage }), ...(result.terminate ? { control: { terminate: true } } : {}) };
       },
-    })) });
+    })), hooks: [hook(GenerationTask, { beforeRetry: failed => this.options.durable.beforeRetry?.(failed) })] });
   }
 
   /**
@@ -858,13 +860,6 @@ export class DurableAgent {
         // continue runs on the context as it is; one that ends in an answer has nothing to answer (`nothing_to_answer`).
         if (live?.run === undefined) await this.conversation.submit({ type: "continue" }, context);
         this.harness.resume();
-        // A crash cut its model request (Pi's retry is off, so the run ended `interrupted`): it is asked again.
-        await this.conversation.waitForIdle(context);
-        if ((await this.harness.snapshot(LiveDoc, this.conversation.id, context))?.runFailure?.reason === "interrupted" && !this.signal?.aborted) {
-          await this.flushEvents();
-          this.errorMessage = undefined;
-          await this.conversation.submit({ type: "continue" }, context);
-        }
       }
       while (true) {
         await this.conversation.waitForIdle(context);
