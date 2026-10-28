@@ -35,9 +35,26 @@ export const ARCHIVE_BUCKETS = [
 export type ArchiveBucket = typeof ARCHIVE_BUCKETS[number];
 export const ARCHIVE_GATE: readonly ArchiveBucket[] = ["pending", "short", "unplaced"];
 
+/** `moved`: chunks were moved or duplicate archive entries removed (`duplicates`), and Pi storage holds it all now. */
 export const ARCHIVE_CODES = ["moved", "would_move", "current", "skipped_busy", "short", "unplaced", "no_journal", "failed"] as const;
 export type ArchiveCode = typeof ARCHIVE_CODES[number];
-export type ArchiveResult = { agent: string; code: ArchiveCode; chunks?: number; messages?: number; bytes?: number; error?: string };
+export type ArchiveResult = { agent: string; code: ArchiveCode; chunks?: number; messages?: number; bytes?: number; duplicates?: number; error?: string };
+
+/** An agent's archive entries that repeat another's place (two moves of one chunk at once): all but the first of each. */
+const DUPLICATES = `select id from (select id, row_number() over (partition by msg_from order by id) as n from pi_durable_entries
+    where session_id = $1 and msg_from is not null and msg_count > 0 and substr(record, 1, 200) like '%"kind":"${ARCHIVE_KIND}"%') d where n > 1`;
+
+/** Remove an agent's duplicate archive entries, under its metadata lock (its commits wait); how many. */
+async function removeDuplicates(db: Db, agent: string): Promise<number> {
+  return transaction(db, async sql => {
+    await sql.query("select 1 from pi_durable_metadata where session_id = $1 for update", [agent]);
+    const ids = (await sql.query<{ id: number }>(DUPLICATES, [agent])).rows.map(row => row.id);
+    if (!ids.length) return 0;
+    await sql.query("delete from pi_durable_entries where session_id = $1 and id = any($2::bigint[])", [agent, ids]);
+    await sql.query("delete from pi_durable_record_ids where session_id = $1 and id = any($2::bigint[])", [agent, ids]);
+    return ids.length;
+  });
+}
 
 const BATCH = 500;
 const BUDGET_MS = 20_000;
@@ -85,13 +102,25 @@ async function busy(sql: Pick<Db, "query">, agent: string): Promise<boolean> {
  * `deadline`. Chunks whose first message an archive entry holds already are skipped.
  */
 export async function archiveAgent(db: Db, storage: Storage, agent: string, options: { dryRun: boolean; deadline?: number; now?: () => number }): Promise<ArchiveResult> {
+  // One move of an agent at a time, across nodes: two would both find a chunk unmoved and both move it.
+  const lock = await db.connect();
+  try {
+    if (!(await lock.query<{ held: boolean }>("select pg_try_advisory_lock(hashtext('history-archive:' || $1)) as held", [agent])).rows[0].held) return { agent, code: "skipped_busy" };
+    try { return await archiveLocked(db, storage, agent, options); }
+    finally { await lock.query("select pg_advisory_unlock(hashtext('history-archive:' || $1))", [agent]); }
+  } finally { lock.release(); }
+}
+
+async function archiveLocked(db: Db, storage: Storage, agent: string, options: { dryRun: boolean; deadline?: number; now?: () => number }): Promise<ArchiveResult> {
   const now = options.now ?? Date.now;
+  const duplicates = options.dryRun ? (await db.query(DUPLICATES, [agent])).rowCount ?? 0 : await removeDuplicates(db, agent);
+  const extra = duplicates ? { duplicates } : {};
   const { bucket, journal: placed } = await bucketOf(db, agent);
-  if (bucket !== "pending" && bucket !== "short") return { agent, code: bucket === "archived" ? "current" : bucket };
+  if (bucket !== "pending" && bucket !== "short") return { agent, code: bucket === "archived" ? duplicates ? options.dryRun ? "would_move" : "moved" : "current" : bucket, ...extra };
   const { rows, whole } = await chunksBefore(db, agent, placed!);
-  if (!whole) return { agent, code: "short", chunks: rows.length };
+  if (!whole) return { agent, code: "short", chunks: rows.length, ...extra };
   const bytes = rows.reduce((sum, chunk) => sum + chunk.bytes, 0);
-  if (options.dryRun) return { agent, code: "would_move", chunks: rows.length, messages: placed, bytes };
+  if (options.dryRun) return { agent, code: "would_move", chunks: rows.length, messages: placed, bytes, ...extra };
   if (await busy(db, agent)) return { agent, code: "skipped_busy" };
   const pi = await PostgresPiStorage.open(db, agent);
   let moved = 0, stoppedAt: number | undefined;
@@ -114,8 +143,11 @@ export async function archiveAgent(db: Db, storage: Storage, agent: string, opti
       moved++;
     }
   } finally { await pi.close(context); }
-  if (stoppedAt !== undefined) return { agent, code: "failed", chunks: moved, messages: placed, bytes, error: `stopped by the call's budget at message ${stoppedAt}; the next call goes on` };
-  return { agent, code: "moved", chunks: moved, messages: placed, bytes };
+  if (stoppedAt !== undefined) return { agent, code: "failed", chunks: moved, messages: placed, bytes, ...extra, error: `stopped by the call's budget at message ${stoppedAt}; the next call goes on` };
+  // Every chunk moved: archive entries must now hold every message before the journal's, or something else is wrong.
+  const after = await bucketOf(db, agent);
+  if (after.bucket !== "archived") return { agent, code: "failed", chunks: moved, messages: placed, bytes, ...extra, error: `after the move the agent is ${after.bucket}, not archived` };
+  return { agent, code: moved || duplicates ? "moved" : "current", chunks: moved, messages: placed, bytes, ...extra };
 }
 
 type Counts = Record<ArchiveBucket | "agents_total", number>;
