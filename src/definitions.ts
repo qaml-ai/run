@@ -35,6 +35,8 @@ export interface DefinitionSpec {
   temperature?: number;
   /** Its agents' OpenRouter data policy: "deny" for hosts that do not collect their data (`provider.data_collection`). */
   dataCollection?: "deny";
+  /** Its agents' primary language, a canonical BCP 47 tag (language.ts). */
+  language?: string;
   limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null };
   /** The most one run of its agents may take (model responses, seconds), within the runtime's maximums. */
   runLimits?: RunLimits;
@@ -76,9 +78,9 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
-export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "fileTools", "codeMode", "runLimits"] as const;
+export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 /** Definitions a self-serve tenant may have; a tenant of the tenants file has its own limit (`maxDefinitions` option). */
 export const MAX_DEFINITIONS = 200;
@@ -260,7 +262,7 @@ export class Definitions {
   /**
    * The parameters to create an agent from `params.definition`: the definition's, with
    * the per-agent fields given alongside it (name, type, ttlSeconds, mounts, its attached
-   * server's tools, initialMessages). `model`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `fileTools`, `codeMode`
+   * server's tools, initialMessages). `model`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `language`, `fileTools`, `codeMode`
    * and `runLimits` given here are the agent's own (`overrides`): applying the definition later leaves them. `systemPromptAppend` follows
    * the definition's prompt, whatever revision it takes. `provision` identifies the request for
    * idempotency, whatever the definition's revision.
@@ -311,7 +313,8 @@ export class Definitions {
     }
     try {
       const model = spec.model !== undefined ? resolveModel(spec.model, this.accounts?.tenants.modelEndpoints(tenant), await this.customProviders?.(tenant)) : undefined;
-      const settings = configurationUpdate(Object.fromEntries((["systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection"] as const).filter(key => spec[key] !== undefined).map(key => [key, spec[key]])));
+      const settings = configurationUpdate(Object.fromEntries((["systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language"] as const).filter(key => spec[key] !== undefined).map(key => [key, spec[key]])));
+      if (settings.language) spec.language = settings.language;
       // Without a model of its own, its agents' model (the runtime's default, or their own) is checked as each is made.
       const refusal = model && modelSettingsRefusal(model, settings);
       if (refusal) throw new Error(refusal);

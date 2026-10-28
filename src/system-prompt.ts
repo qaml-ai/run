@@ -4,6 +4,7 @@ import { supportsDocuments } from "./files.ts";
 import { SANDBOX_LIMITS } from "./limits.ts";
 import { namespaceOf } from "./tool-search.ts";
 import { scratchMount, type AgentConfig } from "./protocol.ts";
+import { languageInstructions } from "./language.ts";
 
 const FILE_RULES = `Files:
 - Attached files are named in the message by path, type and size, text files with their first lines.
@@ -65,6 +66,11 @@ export const INSTRUCTIONS = "instructions";
 export const APPLICATION = "application";
 /** The section summarizing the agent's environment, generated from its configuration. */
 export const ENVIRONMENT = "environment";
+/**
+ * The section asking for replies in the agent's `language`, after the environment: one fixed sentence per language, so
+ * the prompt is the same on every turn. A language set later is declared as a change, keeping the cached prefix.
+ */
+export const LANGUAGE = "language";
 /** The tool a run that asks for structured output (a prompt's `output.schema`) answers with. */
 export const OUTPUT_TOOL = "final_output";
 /** The section declared with final_output, for as long as it is: models answer in text unless told the tool is the answer. */
@@ -124,12 +130,13 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
  * summary of the environment as named sections. Rendered, they are joined by blank lines. Without
  * js_exec (codeMode: false) the runtime's text covers only the tools the agent has, if any.
  */
-export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "mounts" | "model" | "tools" | "fileTools" | "codeMode" | "codeLimits">, tools: Tool[]): SystemMessage {
+export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "language" | "mounts" | "model" | "tools" | "fileTools" | "codeMode" | "codeLimits">, tools: Tool[]): SystemMessage {
   const environment = environmentSummary(config);
   return {
     role: "system", content: config.codeMode !== false ? runtimeInstructions : bare(config) ? bareInstructions : directInstructions, timestamp: 0,
     sections: {
       [APPLICATION]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), ...environment !== null ? { [ENVIRONMENT]: environment } : {},
+      ...(config.language ? { [LANGUAGE]: languageInstructions(config.language) } : {}),
       ...(tools.some(tool => tool.name === OUTPUT_TOOL) ? { [OUTPUT]: OUTPUT_INSTRUCTIONS } : {}),
     },
     ...(tools.length ? { toolsAdded: tools } : {}),

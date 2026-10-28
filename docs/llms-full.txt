@@ -2080,7 +2080,8 @@ The fields an agent takes, plus the input:
 - `definition`: a definition's key or id, so the configuration is not sent each
   time. Fields given alongside override it, as for an agent.
 - `model`, `systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`,
-  `temperature` (see [Output length and temperature](https://run.camelai.com/docs/guides/models-and-keys.md#output-length-and-temperature)), `builtins`
+  `temperature` (see [Output length and temperature](https://run.camelai.com/docs/guides/models-and-keys.md#output-length-and-temperature)),
+  `language` (see [Language](https://run.camelai.com/docs/guides/models-and-keys.md#language)), `builtins`
   (`web_fetch`, `web_search`, `x_search`, `delegate`, `generate_image`: [generate_image](https://run.camelai.com/docs/guides/images.md#in-an-agent) gives the run a
   workspace for its images), `delegate`, `keyScope`, `modelHeaders`,
   `runLimits`, `subject`, `context`.
@@ -4984,6 +4985,39 @@ Compaction summaries keep the runtime's own settings. If a later change makes a
 temperature inapplicable (a definition applied with a new model or thinking level),
 the agent's calls leave it out rather than fail.
 
+### Language
+
+`language` is an agent's primary language, as a BCP 47 tag: `"en"`, `"es"`,
+`"es-ES"`, `"pt-BR"`, `"zh-Hant"` (at most 35 characters). The runtime stores it
+in canonical case (`pt-br` becomes `pt-BR`) and refuses a tag that is not well
+formed or names no language (`400`). With one set, the system prompt gets one
+line after the application's instructions and the environment summary, for
+example:
+
+```text
+Language: reply in Spanish (español) by default. If the person clearly writes in another language, reply in that language instead.
+```
+
+The language is named in English and in itself. The line is the same text on
+every turn, so it does not break the prompt cache; changing the language changes
+the prompt once. Without a language there is no line, and the model follows the
+conversation as before.
+
+Set it when you make an agent, for a [stateless run](https://run.camelai.com/docs/guides/stateless-runs.md), or for
+every agent of a [definition](https://run.camelai.com/docs/guides/definitions.md) (an agent's own wins). Change it
+with `PATCH /v1/agents/:id/configuration`; `null` removes it. `GET /v1/agents/:id`
+shows it (`null` when unset). An upsert (`POST /v1/agents` with an
+`Idempotency-Key`) that leaves `language` out keeps the agent's; `null` removes it.
+
+```json
+{"systemPrompt": "You help people build Discord bots.", "language": "es-ES"}
+```
+
+Compaction summaries are unchanged: they keep the summarizer's fixed format and
+headings, and are read by the model, not shown to people. The language line
+stays in the system prompt, which compaction does not summarize, so replies after
+a compaction keep the agent's language.
+
 ### Prompt caching
 
 The runtime marks the system prompt and tools (and the latest message) as a
@@ -5417,7 +5451,7 @@ leaves alone:
  "systemPromptAppend": "Thread thr_123 in workspace ws_9."}
 ```
 
-- `model`, `thinkingLevel`, `maxOutputTokens`, `temperature` and `runLimits` given
+- `model`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `language` and `runLimits` given
   at creation, or later through `PATCH /v1/agents/:id/configuration`, and
   `fileTools` given at creation, are the agent's own: an apply changes every other
   field and keeps them. `null` set through configuration is the agent's own too.
@@ -5469,7 +5503,7 @@ an `error`. On the console's Channels page, **Model & prompt** opens a channel's
 definition with apply selected.
 
 `PATCH /v1/agents/:id/configuration` changes one agent's `model`,
-`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `keyScope`, `spendLimit` or `modelHeaders` without touching its definition or history:
+`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `language`, `keyScope`, `spendLimit` or `modelHeaders` without touching its definition or history:
 
 ```http
 PATCH /v1/agents/client_…/configuration
@@ -6756,6 +6790,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `definition` | `definition=` | make it from a definition (its model, prompt and tool sources) |
 | `thinkingLevel` | `thinking_level=` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `maxOutputTokens`, `temperature` | `max_output_tokens=`, `temperature=` | the most the model writes in a response, and its sampling temperature (0 to 2; refused for a model or thinking level that takes none). See [Output length and temperature](https://run.camelai.com/docs/guides/models-and-keys.md#output-length-and-temperature) |
+| `language` | `language=` | its primary language, a BCP 47 tag (`"es-ES"`): it replies in it unless the person writes in another. See [Language](https://run.camelai.com/docs/guides/models-and-keys.md#language) |
 | `subject`, `context` | `subject=`, `context=` | whom it acts for, and claims for its tools; fixed at creation |
 | `keyScope`, `spendLimit`, `runLimits`, `modelHeaders` | `key_scope=`, `spend_limit=`, `run_limits=`, `model_headers=` | see [Models and keys](https://run.camelai.com/docs/guides/models-and-keys.md) |
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
@@ -6808,7 +6843,7 @@ what changed without keeping a manifest. It is opaque: compare it, never parse i
 | `agent.history()`, `historyPage({ before, limit, maxBytes })` | `history()`, `history_page(before=, limit=, max_bytes=)` | the whole history (a list of messages, oldest first), or a page of whole turns |
 | `agent.send(text, options)`, `agent.wait(id)` | `await send(text, …)`, `await wait(id)` | send a message without waiting: resolves once the runtime has taken it, with `{id, state}` (`POST …/prompt`'s 202); `wait(id)` is its `Run` later, from this process or another. For work queues and webhooks that should not hold a connection for the whole run |
 | `agent.steer(text, options)` | `steer(text, …)` | hand the running turn a message (else start one), answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}`. `wait: true` (`wait=True`) resolves with the run that took it instead, as `run(text, { whileRunning: "steer" })` |
-| `agent.configure({ model, instructions, thinkingLevel, tools, maxOutputTokens, temperature })` | `configure(…)` | change it between runs; `null` (`None`) removes `maxOutputTokens` or `temperature` |
+| `agent.configure({ model, instructions, thinkingLevel, tools, maxOutputTokens, temperature, language })` | `configure(…)` | change it between runs; `null` (`None`) removes `maxOutputTokens`, `temperature` or `language` |
 | `agent.schedule({ text, inSeconds, at, everySeconds, calendar, email })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
 | `agent.files` | `agent.files` | `list`, `download`, `upload`, `link` by the paths the agent sees |
 | `agent.abort({ queued })` | `abort(queued=)` | stop the agent: its running turn, and the runs queued behind it (each fails with code `cancelled`); `queued: "keep"` stops the running turn only. Resolves with `{aborted, cancelled}` |

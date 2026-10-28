@@ -8,6 +8,7 @@ import { GEMINI_LIVE } from "./voice/realtime/gemini.ts";
 import { MIN_CONTEXT_TOKENS } from "./protocol.ts";
 import { MODEL_ERROR_CLASSES } from "./model-errors.ts";
 import { CREDIT_REASONS } from "./end-user-credits.ts";
+import { languageInput, MAX_LANGUAGE_LENGTH } from "./language.ts";
 
 /** An end user's credit refusal's fields, the same on a 402, a run's error, run.failed and voice.session.ended. */
 const creditReason = z.enum(CREDIT_REASONS).openapi({ description: "Why an end user's credit refused or stopped it (see the errors reference): balance (no credit left: nothing of the bucket's free allowance today, and no paid balance), daily_limit (the end user's daily credit limit on paid spend), bucket_limit (the bucket's own daily limit on paid spend; a bucket limited to 0 spends only its allowance). More may be added: treat an unknown one as a credit refusal of no particular kind" });
@@ -367,6 +368,11 @@ export const DataCollection = z.enum(["deny"]).openapi("DataCollection", {
   description: "\"deny\": the agent's OpenRouter model calls (turns and compaction summaries) go only to hosts that do not collect their data: OpenRouter's provider.data_collection, which skips providers whose data policy says they may train on it. A filter, so OpenRouter still balances load among the rest. Default: none (OpenRouter's default). Other providers ignore it",
 });
 
+export const Language = z.string().max(MAX_LANGUAGE_LENGTH).refine(value => { try { languageInput(value); return true; } catch { return false; } }, { message: `a BCP 47 language tag of at most ${MAX_LANGUAGE_LENGTH} characters, such as "en", "es-ES", "pt-BR" or "zh-Hant"` }).openapi("Language", {
+  description: "The agent's primary language, a BCP 47 tag such as \"en\", \"es-ES\", \"pt-BR\" or \"zh-Hant\" (at most 35 characters; stored in canonical case). The system prompt then asks the model to reply in it by default, and in the person's language when they clearly write in another. Default: none (the model follows the conversation). Compaction summaries are unchanged",
+  example: "es-ES",
+});
+
 export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeaders", {
   description: "Non-secret headers sent on each of the agent's model calls, after a key scope entry's, e.g. cf-aig-metadata. At most 20 and 8 KB; never authorization, x-api-key, x-goog-api-key, cf-aig-authorization, chatgpt-account-id, x-agent-runtime-identity, x-amz-* or transport headers",
 });
@@ -490,7 +496,7 @@ export const Workspace = z.object({ id: z.string(), name: z.string(), archived: 
 export const AgentInput = z.object({
   workspaceId,
   mcp: z.object({ tools: z.array(z.unknown()) }).optional().openapi({ description: "The application's attached MCP server: its tools/list, whose tools the agent calls back through the application's connection. The SDKs send it" }),
-  definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel, maxOutputTokens, temperature, fileTools, codeMode and runLimits given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
+  definition: z.string().optional().openapi({ description: "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel, maxOutputTokens, temperature, language, fileTools, codeMode and runLimits given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend" }),
   name: z.string().optional(),
   type: z.string().optional(),
   model: z.string().optional().openapi({ description: "A model id from GET /v1/models; the runtime default when omitted" }),
@@ -500,6 +506,7 @@ export const AgentInput = z.object({
   maxOutputTokens: MaxOutputTokens.optional(),
   temperature: Temperature.optional(),
   dataCollection: DataCollection.optional(),
+  language: Language.nullable().optional().openapi({ description: "Its primary language (Language). On an upsert of an existing agent, null removes it and leaving it out keeps the one it has" }),
   initialMessages: z.array(z.unknown()).optional().openapi({ description: "History to begin with (a conversation from elsewhere): Pi user, assistant and toolResult messages, and compactionSummary messages, the last of which stands in for everything before it. Only when the agent is made; at most 16 MB of JSON. See the multi-user guide" }),
   importMessages: z.object({
     format: z.enum(["anthropic", "openai-responses", "openai-chat"]).openapi({ description: "anthropic: Messages API messages; openai-responses: Responses API input items; openai-chat: Chat Completions messages" }),
@@ -617,6 +624,7 @@ export const RunInput = z.strictObject({
   maxOutputTokens: MaxOutputTokens.optional(),
   temperature: Temperature.optional(),
   dataCollection: DataCollection.optional(),
+  language: Language.optional(),
   builtins: z.array(z.enum(["web_fetch", "web_search", "x_search", "delegate", "generate_image", "decide"])).max(9).optional().openapi({ description: "Tools the runtime answers itself (generate_image gives the run a workspace for its images). Not schedule or ask_user: a run has no later and no one to ask" }),
   decide: z.boolean().optional().openapi({ description: "false: no decide tool. A run with no tools at all (no definition, builtins, delegate, MCP servers, files or mounts) has none unless it sends true" }),
   delegate: DelegateSettings.optional(),
@@ -753,6 +761,7 @@ export const AgentDetail = AgentSummary.extend({
   maxOutputTokens: MaxOutputTokens.nullable().openapi({ description: "The most its model writes in one response, as set; null: the model's maximum" }),
   temperature: Temperature.nullable().openapi({ description: "Its model's sampling temperature, as set; null: the provider's default" }),
   dataCollection: DataCollection.nullable().openapi({ description: "Its OpenRouter calls' data policy, as set; null: OpenRouter's default" }),
+  language: Language.nullable().openapi({ description: "Its primary language, its own or its definition's; null: none" }),
   forkedFrom: ForkedFrom.optional().openapi({ description: "For a fork (POST /v1/agents/{id}/fork): the agent and message it was forked from" }),
   ...Activity.shape,
   cursor: z.number(),
@@ -998,6 +1007,7 @@ const definitionFields = {
   maxOutputTokens: MaxOutputTokens,
   temperature: Temperature,
   dataCollection: DataCollection,
+  language: Language.openapi({ description: "Its agents' primary language (Language); an agent given its own keeps it when the definition is applied" }),
   fileTools: z.boolean().openapi({ description: "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own" }),
   codeMode: z.boolean().openapi({ description: "false: its agents get no js_exec and call every tool directly (AgentInput.codeMode)" }),
   limits: DefinitionLimits,
@@ -1058,6 +1068,7 @@ export const ConfigureInput = z.object({
   maxOutputTokens: MaxOutputTokens.nullable().optional().openapi({ description: "Replaces the most its model writes in one response; null removes it (the model's maximum)" }),
   temperature: Temperature.nullable().optional().openapi({ description: "Replaces its model's sampling temperature; null removes it (the provider's default). Refused (400) when the agent's model or thinking level, after this change, takes none" }),
   dataCollection: DataCollection.nullable().optional().openapi({ description: "Replaces its OpenRouter calls' data policy; null removes it (OpenRouter's default)" }),
+  language: Language.nullable().optional().openapi({ description: "Replaces its primary language from its next turn; null removes it. Set here on an agent from a definition, it stays when the definition is applied" }),
   keyScope: z.string().nullable().optional().openapi({ description: "The key scope its model calls take keys from first; null for the tenant's keys. Applying a definition keeps it" }),
   spendLimit: SpendLimitInput.nullable().optional().openapi({ description: "A new budget from now, applied at once, ahead of queued runs; null removes it" }),
   bucket: z.string().nullable().optional().openapi({ description: "The bucket of its subject's credit its runs spend from, applied at once; null: \"default\"" }),

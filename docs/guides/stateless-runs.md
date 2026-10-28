@@ -64,7 +64,8 @@ The fields an agent takes, plus the input:
 - `definition`: a definition's key or id, so the configuration is not sent each
   time. Fields given alongside override it, as for an agent.
 - `model`, `systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`,
-  `temperature` (see [Output length and temperature](models-and-keys.md#output-length-and-temperature)), `builtins`
+  `temperature` (see [Output length and temperature](models-and-keys.md#output-length-and-temperature)),
+  `language` (see [Language](models-and-keys.md#language)), `builtins`
   (`web_fetch`, `web_search`, `x_search`, `delegate`, `generate_image`: [generate_image](images.md#in-an-agent) gives the run a
   workspace for its images), `delegate`, `keyScope`, `modelHeaders`,
   `runLimits`, `subject`, `context`.

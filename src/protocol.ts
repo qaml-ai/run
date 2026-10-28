@@ -114,6 +114,8 @@ export interface AgentConfig {
   temperature?: number | null;
   /** "deny": its OpenRouter calls go only to hosts that do not collect their data (`provider.data_collection`); null or absent: OpenRouter's default. */
   dataCollection?: "deny" | null;
+  /** Its primary language, a canonical BCP 47 tag ("es", "pt-BR"): the system prompt asks for replies in it unless the person writes in another (language.ts). Null or absent: none. */
+  language?: string | null;
   /** The most one run may take, set by the tenant: model responses and seconds. The runtime's maximums apply over them (client-sessions.ts). */
   runLimits?: RunLimits | null;
   /** Headers the tenant set for every model call of this agent (non-secret, never auth headers). */
