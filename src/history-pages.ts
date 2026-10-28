@@ -113,7 +113,7 @@ export class HistoryIndex {
     const more = async () => {
       if (cursor > placed) {
         const rows = (await this.db.query<OrdinalRow>(`select id, msg_from, msg_count, msg_skip, octet_length(record) as bytes from pi_durable_entries
-          where session_id = $1 and msg_from < $2 and msg_count > 0 order by msg_from desc limit $3`, [agent, cursor, ROWS])).rows;
+          where session_id = $1 and msg_from < $2 and msg_from >= $4 and msg_count > 0 order by msg_from desc limit $3`, [agent, cursor, ROWS, placed])).rows;
         const low = rows.length === ROWS ? rows.at(-1)!.msg_from : placed;
         const turns = await this.turns(agent, low, cursor);
         for (const row of rows) pieces.push({ start: row.msg_from, count: Math.min(row.msg_count, end - row.msg_from), bytes: Number(row.bytes), row: Number(row.id), skip: row.msg_skip,

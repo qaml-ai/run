@@ -95,3 +95,44 @@ test("history before the journal moves into Pi storage as archive entries, a chu
   assert.deepEqual(done.counts, { archived: 2, pending: 0, short: 1, unplaced: 0, no_journal: 1, agents_total: 4 });
   assert.deepEqual(done.examples, { short: ["client_c"] });
 });
+
+test("archive entries two moves wrote at once are found and removed, pages never show them twice, and moves of one agent run one at a time", async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "history-archive-dup-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const blobs = fileStorage(root);
+  const index = new HistoryIndex(db, blobs);
+  const old = [user("o1"), assistant("O1"), user("o2"), assistant("O2"), user("o3"), assistant("O3")];
+  await retired(db, blobs, root, "client_dup", old, [user("new"), assistant("N")]);
+  const whole = await index.messages("client_dup");
+  const pages = async () => {
+    const seen: number[] = [];
+    for (let before: number | null | undefined; before !== null;) {
+      const page = await index.page("client_dup", { limit: 1, ...(before !== undefined ? { before } : {}) });
+      seen.unshift(...page.entries.map(entry => entry.index));
+      before = page.next;
+    }
+    return seen;
+  };
+  // Half moved, then that half moved again by a second mover at the same time: its archive entries twice.
+  let ticks = 0;
+  await archiveAgent(db, blobs, "client_dup", { dryRun: false, deadline: 1, now: () => ticks++ });
+  await db.query(`insert into pi_durable_entries (session_id, id, conversation_id, head, commit_seq, record, msg_from, msg_count, msg_skip, turn_start)
+    select session_id, id + 100000, conversation_id, head, commit_seq, record, msg_from, msg_count, msg_skip, turn_start from pi_durable_entries
+    where session_id = 'client_dup' and record like '%camel.history.archive%'`);
+  assert.deepEqual(await pages(), [0, 1, 2, 3, 4, 5, 6, 7], "a page reads the index's chunks below the journal, never archive entries twice");
+  assert.deepEqual(await index.messages("client_dup"), whole);
+  assert.equal((await archiveWalk(db, blobs, {})).counts.pending, 1);
+  const dry = await archiveAgent(db, blobs, "client_dup", { dryRun: true });
+  assert.deepEqual([dry.code, dry.duplicates], ["would_move", 1]);
+  // Two movers at once: one waits its turn (skipped), the other removes the duplicate and moves the rest.
+  const [first, second] = await Promise.all([archiveAgent(db, blobs, "client_dup", { dryRun: false }), archiveAgent(db, blobs, "client_dup", { dryRun: false })]);
+  assert.deepEqual([first.code, second.code].sort(), ["moved", "skipped_busy"]);
+  const moved = first.code === "moved" ? first : second;
+  assert.deepEqual([moved.duplicates, moved.chunks], [1, 2]);
+  assert.equal((await db.query("select count(*)::int as n from pi_durable_entries where session_id = 'client_dup' and record like '%camel.history.archive%'")).rows[0].n, 3);
+  await db.query("delete from agent_history_chunks where agent = 'client_dup'");
+  assert.deepEqual(await index.messages("client_dup"), whole);
+  assert.deepEqual(await pages(), [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.equal((await archiveAgent(db, blobs, "client_dup", { dryRun: false })).code, "current");
+});
