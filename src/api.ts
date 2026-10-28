@@ -46,7 +46,8 @@ import { languageInput, transcribeRequest, type TranscriptionService } from "./t
 import { speechChoiceInput, speechInput, speechRequest, type SpeechService } from "./speech-api.ts";
 import { DEFAULT_VOICE } from "./speech.ts";
 import { imageOptions, imageRequest, type Hold, type ImageService, type ImageSource } from "./images.ts";
-import { AUDIO_LIMITS, IMAGE_LIMITS } from "./limits.ts";
+import { decisionRequest, decisionsRequest, type DecisionService } from "./decisions.ts";
+import { AUDIO_LIMITS, DECISION_LIMITS, IMAGE_LIMITS } from "./limits.ts";
 import { declaredType, downloadHeaders, fileResponse, type FileLinks } from "./files.ts";
 import type { FileUrls } from "./file-arguments.ts";
 import { tar } from "./tar.ts";
@@ -130,6 +131,8 @@ export interface ApiContext {
   voiceLibraryKey?: (tenant: string) => Promise<string | undefined>;
   /** `POST /v1/images`; without it, image generation is not enabled. */
   images?: ImageService;
+  /** `POST /v1/decisions`; without it, decisions are not enabled. */
+  decisions?: DecisionService;
   /** The tenant's own users' credit (`/v1/end-users`, end-user-credits.ts); without it, end users are not metered. */
   endUsers?: EndUserCredits;
   /** `/v1/voice/sessions`: calls the runtime holds for the tenant's bots; without it, voice is not enabled. */
@@ -346,7 +349,7 @@ export function api(context: ApiContext) {
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
   app.use("/v1/*", idempotency({
     db: () => clients.db, tenant: c => c.var.principal.tenant, lockMs: context.idempotencyLockMs,
-    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || path === "/v1/speech" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
+    skip: path => path === "/v1/agents" || path === "/v1/definitions" || path === "/v1/runs" || path === "/v1/transcriptions" || path === "/v1/images" || path === "/v1/speech" || path === "/v1/decisions" || /^\/v1\/agents\/[^/]+\/(?:prompt|fork)$/.test(path),
     // Answers with a secret shown once: API tokens (a new tenant's too), signing secrets, browser tokens, signed links.
     secret: path => /^\/v1\/(?:tokens|tenants|webhooks|webhooks\/[^/]+\/secret|usage-webhook\/secret|agents\/[^/]+\/(?:browser-tokens|links|credentials\/rotate)|volumes\/[^/]+\/links)$/.test(path),
   }));
@@ -941,6 +944,27 @@ export function api(context: ApiContext) {
     return json(c, 200, await transcribeRequest(service, c.var.principal.tenant, {
       audio: bytes ? { bytes } : { url: input.url! }, ...(language ? { language } : {}), ...(input.prompt ? { prompt: input.prompt } : {}),
       ...(input.keyScope ? { keyScope: input.keyScope } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
+    }, c.req.raw.signal));
+  });
+
+  route(createRoute({
+    method: "post", path: "/v1/decisions",
+    request: { body: { content: { "application/json": { schema: schema.DecisionInput } } } },
+    responses: { 200: reply("Typed answers with probabilities: one state's, or a batch's in order", schema.Decisions) },
+  }), async c => {
+    const service = context.decisions;
+    if (!service) throw new HttpError(404, "Decisions are not enabled on this runtime");
+    const body = await readJson(c.req.raw.body, DECISION_LIMITS.requestBytes);
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "Send a JSON object: {state, questions} or {items}");
+    const { keyScope, subject, context: claims, actor: asked, bucket, ...rest } = body as Record<string, unknown>;
+    const request = decisionRequest(rest);
+    if (keyScope !== undefined && typeof keyScope !== "string") throw new HttpError(400, "keyScope is a key scope's name");
+    if (bucket !== undefined && typeof bucket !== "string") throw new HttpError(400, "bucket is a bucket's name");
+    const identity = identityInput({ subject, context: claims });
+    const actor = actorInput(asked);
+    const hold = endUserHold(c.var.principal.tenant, identity?.subject, bucket as string | undefined, "decision");
+    return json(c, 200, await decisionsRequest(service, c.var.principal.tenant, {
+      ...request, ...(keyScope ? { keyScope: keyScope as string } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
     }, c.req.raw.signal));
   });
 

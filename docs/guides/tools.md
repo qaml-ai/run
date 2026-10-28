@@ -707,7 +707,7 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents"]`.
+`"builtins": ["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide"]`.
 
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or
@@ -756,6 +756,11 @@ it is made from (whose builtins it then has):
   else the platform's, charged per token on prepaid credit, and counts against
   the agent's and the run's spend limits. Saving a definition or an agent with
   it and no OpenAI key answers with a warning. See [Images](images.md#in-an-agent).
+- `decide` (`{state, questions}` or `{items}`) answers typed questions about a
+  state (yes/no, a choice, a score) with probabilities, through a decision model
+  (TypeSafe's Jev on OpenRouter). From `js_exec`, `tools.decide({items})` takes up
+  to 100 states a call, for classifying or scoring a dataset. It counts against
+  the agent's and the run's spend limits. See [Decisions](decisions.md).
 - `agents` (with the same settings) starts sub-agents in the background
   (`spawn_agent`, `wait_agent`, `list_agents`); each one's answer arrives as a
   notification. See [Background sub-agents](multi-agent.md#background-sub-agents).
