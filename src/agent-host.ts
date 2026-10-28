@@ -1023,7 +1023,10 @@ export function createAgentHost(hostIO: HostIO) {
       await journal.refresh();
       const latest = journal.history.latest, before = agent.latestCursor;
       await requireContextSize();
-      if (piResumed) await agent.resumeInterruptedRun();
+      if (piResumed) {
+        await agent.resumeInterruptedRun();
+        console.log(JSON.stringify({ type: "pi_run_resumed", agent: config.id, tenant: config.tenant }));
+      }
       else {
         const cursor = await agent.discardInterruptedRun();
         if (cursor && !sameCursor(cursor, before)) await journal.skip(cursor, latest);

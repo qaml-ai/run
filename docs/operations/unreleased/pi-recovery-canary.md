@@ -7,3 +7,5 @@ running is answered as interrupted, in Pi's words ("Tool X was interrupted and m
 may run again (the delegation tools, as before). A run a closing node aborted (drain, retire, memory hand-off) and a
 turn waiting on a person's input recover as before. `AGENT_MAX_RESUMES` and the sweep backoff still bound resumes.
 Watch `task_parked` (`pi_report`), `resume_limit` outcomes and model attempts per resumed run.
+
+Each run Pi resumes this way logs `pi_run_resumed` (agent, tenant).
