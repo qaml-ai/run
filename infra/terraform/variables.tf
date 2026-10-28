@@ -181,6 +181,8 @@ variable "runtime_env" {
     AGENT_HOSTING     = "inline"
     # Operator tenants that may post manual credit adjustments (POST /v1/billing/adjustments).
     AGENT_BILLING_ADMINS = "miguel"
+    # Tenants whose agents' runs a lost node left are resumed by Pi from its checkpoint (canary; docs/operations/configuration.md).
+    AGENT_PI_RECOVERY_TENANTS = "miguel"
   }
 }
 
@@ -290,11 +292,5 @@ variable "admin_access_aud" {
   description = "The AUD tag of the ops dashboard's Access application (\"camelRun admin\" in Zero Trust → Access → Applications), whose destinations must include admin_hostname with admin_path."
   type        = string
   default     = "041fd04d6d1fb5bc79df2e24d35bde86085109e322819cdc0964501ba5bd3478"
-}
-
-variable "agent_native_sections_tenants" {
-  description = "AGENT_NATIVE_SECTIONS_TENANTS: tenants whose agents' system sections are native Pi sections, comma-separated, or * for every tenant; empty for none"
-  type        = string
-  default     = ""
 }
 

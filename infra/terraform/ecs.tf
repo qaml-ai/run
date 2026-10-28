@@ -74,8 +74,6 @@ locals {
     # work to a peer, below the -task-memory alarm (3 GB of 4) and well below the OOM kill.
     AGENT_MEMORY_RETIRE_MS  = "600000"
     AGENT_MEMORY_HIGH_BYTES = tostring(floor(var.task_memory * 0.65) * 1048576)
-    # Tenants whose agents' system sections are native Pi sections (the canary of the instructions section's move).
-    AGENT_NATIVE_SECTIONS_TENANTS = var.agent_native_sections_tenants
     # node_load every 5 s while Pi's memory is watched (cgroup current and peak); the default is 60 s.
     AGENT_LOAD_INTERVAL_MS = "5000"
     # Tool sources (MCP servers, HTTP tools, web_fetch) never reach the VPC, on top of the private ranges the runtime always refuses.
