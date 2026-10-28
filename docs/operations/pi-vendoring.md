@@ -13,8 +13,8 @@ npm release, so a fix or change on Pi's main reaches us without waiting for a re
 | `pi-telemetry.tgz` | `@earendil-works/pi-telemetry` | a dependency of pi-durable, pi-ai and chord |
 | `pi-agent-core.tgz` | `@earendil-works/pi-agent-core` | devDependency: we import only its types (`AgentMessage`, `AgentTool`, `StreamFn`) |
 
-Each package's version is Pi's with the commit appended (`1.4.0-main.02a2b2532d8f`; the script stamps it from the
-next bump on, so the packages vendored first still say `1.4.0`), which tells the lockfile, pi-ai's `User-Agent` and
+Each package's version is Pi's with the commit appended (`1.4.0-main.02a2b2532d8f`, and `-camel.<n>` with our patches, below;
+the vendored packages say `1.4.0-main.02a2b2532d8f-camel.4`), which tells the lockfile, pi-ai's `User-Agent` and
 telemetry a vendored build from the npm release. `vendor/pi/PI_COMMIT` names the commit, its date, and the upstream changes since the commit vendored before it.
 `vendor/pi/LICENSE` is Pi's MIT notice. `package.json` `overrides` pin every `@earendil-works/*` package, also the ones
 only Pi's packages depend on, to these tarballs, so nothing of Pi comes from npm (`package-lock.json` resolves each to
@@ -45,6 +45,31 @@ published to npm. The self-host image is the runtime image, which has Pi install
    `landed-compaction`, `close-turn-at-load`, `history-pages`, `stream-deltas`, `loop-reliability`), then `npm test`
    and `AGENT_HOSTING=inline npm test`, and `npm run sim` when recovery changed.
 4. Open a PR with the sha, the upstream changes that matter to us, and a release note in `docs/operations/unreleased/`.
+
+## Our patches
+
+`vendor/pi/patches/*.patch` are changes of ours to Pi, one feature each, written against the vendored commit in Pi's
+style (its tests, changelog entry and docs in the patch) so each can go upstream as it is. The script applies them in
+name order with `git am` on top of the commit before it builds, and stops when one does not apply: on a bump, rebase it
+onto the new commit, or delete it once upstream has the change. `PI_COMMIT` lists each applied patch with its git blob
+hash, and every package is versioned `<upstream version>-main.<short sha>-camel.<number of patches>` (just
+`-main.<short sha>` without patches), so a build of ours never passes for an npm release.
+
+To change a patch: check Pi out at the vendored commit, `git am vendor/pi/patches/*.patch`, edit and amend the commit,
+run Pi's checks and the package's tests there (`npm run check`; from `packages/durable`,
+`node ../../node_modules/vitest/dist/cli.js --run test/<file>.test.ts`, after `npm run build` in `telemetry`, `chord`,
+`codemode` and `ai`), then `git format-patch --no-signature --zero-commit -o vendor/pi/patches <commit>..HEAD` and run
+the script again.
+
+| Patch | Adds | Unblocks |
+|---|---|---|
+| `0001` | `GenerationHooks.beforeRetry`: the host decides whether and when a failed request is retried | Pi's retry instead of `recoverFailedResponses` |
+| `0002` | `settings.retry.keepRetried: false`: retried attempts stay out of the transcript (usage still counted) | no retract of failed attempts |
+| `0003` | `afterTools` returning `{ end: true }` ends the run after the round | deleting the `tools`-phase override |
+| `0004` | `readStoredContext(storage, conversationId, context, { at })` | deleting `contextAt`'s derivation and `piOrdered` |
+
+The script also drops the six packages' entries from `package-lock.json` and `node_modules`, so the `npm install` after
+it records the new tarballs' integrity instead of reusing the cached ones.
 
 pi-ai's build generates its model catalog from upstream sources (models.dev, OpenRouter, Vercel AI Gateway) when the
 script runs, so two runs at the same commit can differ in catalog data: the tarball keeps the snapshot it was built
