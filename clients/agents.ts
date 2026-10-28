@@ -86,6 +86,8 @@ export interface AgentConfig {
   temperature?: number;
   /** "deny": its OpenRouter calls go only to hosts that do not collect their data (OpenRouter's provider.data_collection; skips providers that may train on it). Default: OpenRouter's. */
   dataCollection?: "deny";
+  /** Its primary language, a BCP 47 tag ("en", "es-ES", "pt-BR", "zh-Hant"): it replies in it by default, and in the person's language when they clearly write in another. Default: none. */
+  language?: string;
   /** Who the agent acts for (a user id in your app): `identity.subject` in its tool calls. Set when it is made. */
   subject?: string;
   /** Claims your tools need (org, workspace…): `identity.context` in its tool calls. Set when it is made. */
@@ -383,7 +385,7 @@ export class Agents {
 }
 
 /** A stateless run's configuration (an agent's, but for tools that need a connected process) and its input. */
-export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "mcpServers" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "dataCollection" | "subject" | "context" | "workspaceId" | "keyScope" | "bucket" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
+export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "mcpServers" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "dataCollection" | "language" | "subject" | "context" | "workspaceId" | "keyScope" | "bucket" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
   /** js_exec. Default: on for a run with tools (builtins, MCP servers, a definition, files), off for a tool-less run. */
   codeMode?: boolean;
   /** What the run is asked. It may be empty when `files` has audio, whose transcript is then the input. */
@@ -712,8 +714,8 @@ export class Agent {
     const { whileRunning: _whileRunning, spendLimit: _spendLimit, output: _output, ...message } = promptOptions(rest.idempotencyKey ?? globalThis.crypto.randomUUID(), rest);
     return this.client.steerMessage(text, message);
   }
-  /** Change its model, instructions, thinking level, tools, maxOutputTokens, temperature or dataCollection (null removes any of the three) between runs. */
-  configure(config: Pick<AgentConfig, "model" | "instructions" | "thinkingLevel" | "tools" | "mcp"> & { maxOutputTokens?: number | null; temperature?: number | null; dataCollection?: "deny" | null }) {
+  /** Change its model, instructions, thinking level, tools, maxOutputTokens, temperature, dataCollection or language (null removes any of the last four) between runs. */
+  configure(config: Pick<AgentConfig, "model" | "instructions" | "thinkingLevel" | "tools" | "mcp"> & { maxOutputTokens?: number | null; temperature?: number | null; dataCollection?: "deny" | null; language?: string | null }) {
     const { instructions, ...rest } = config;
     return this.client.configure({ ...rest, ...(instructions !== undefined ? { systemPrompt: instructions } : {}) });
   }

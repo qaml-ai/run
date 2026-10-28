@@ -6,6 +6,7 @@ import { attachedTools } from './mcp-results.ts';
 import { checkScope } from './key-scopes.ts';
 import { openRouterApi } from './catalog.ts';
 import { HttpError } from './http.ts';
+import { languageInput } from './language.ts';
 
 type SessionConfig = Omit<AgentConfig, 'id' | 'directory' | 'tools' | 'apiKey'>;
 
@@ -234,6 +235,7 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
     ...(input.maxOutputTokens !== undefined ? { maxOutputTokens: input.maxOutputTokens } : {}),
     ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
     ...(input.dataCollection !== undefined ? { dataCollection: input.dataCollection } : {}),
+    ...(input.language !== undefined ? { language: input.language } : {}),
   });
   const refusal = modelSettingsRefusal(model, updates);
   if (refusal) throw new HttpError(400, refusal);
@@ -247,9 +249,9 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
  * Scoped credentials can change behavior, tools and the model, but never a model
  * endpoint or credentials: a model can only be named from Pi's catalog.
  */
-export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'runLimits' | 'maxOutputTokens' | 'temperature' | 'dataCollection'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
+export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'runLimits' | 'maxOutputTokens' | 'temperature' | 'dataCollection' | 'language'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
-  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'runLimits', 'maxOutputTokens', 'temperature', 'dataCollection'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'runLimits', 'maxOutputTokens', 'temperature', 'dataCollection', 'language'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
   if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
   if (input.codeMode !== undefined && typeof input.codeMode !== 'boolean') throw new Error('codeMode must be true or false');
   if (input.keyScope !== undefined && input.keyScope !== null) checkScope(input.keyScope);
@@ -259,6 +261,7 @@ export function configurationUpdate(input: any, endpoints?: ModelEndpoints, cust
   if (input.maxOutputTokens !== undefined) input = { ...input, maxOutputTokens: maxOutputTokensInput(input.maxOutputTokens) };
   if (input.temperature !== undefined) input = { ...input, temperature: temperatureInput(input.temperature) };
   if (input.dataCollection !== undefined) input = { ...input, dataCollection: dataCollectionInput(input.dataCollection) };
+  if (input.language !== undefined) input = { ...input, language: languageInput(input.language) };
   // The application's attached MCP server's tools/list replaces its tools.
   if (input.mcp !== undefined) {
     const { mcp, ...rest } = input;

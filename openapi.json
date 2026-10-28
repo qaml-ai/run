@@ -3420,7 +3420,7 @@
           },
           "definition": {
             "type": "string",
-            "description": "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel, maxOutputTokens, temperature, fileTools, codeMode and runLimits given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend"
+            "description": "Make the agent from this definition (GET /v1/definitions). It supplies the model, system prompt, thinking level, fileTools and tool sources; name, type, ttlSeconds, mounts and initialMessages given here override its defaults. model, thinkingLevel, maxOutputTokens, temperature, language, fileTools, codeMode and runLimits given here are the agent's own: applying the definition later keeps them. systemPrompt cannot be given with a definition; use systemPromptAppend"
           },
           "name": {
             "type": "string"
@@ -3460,6 +3460,9 @@
           },
           "dataCollection": {
             "$ref": "#/components/schemas/DataCollection"
+          },
+          "language": {
+            "$ref": "#/components/schemas/Language"
           },
           "initialMessages": {
             "type": "array",
@@ -3602,6 +3605,12 @@
           "deny"
         ],
         "description": "\"deny\": the agent's OpenRouter model calls (turns and compaction summaries) go only to hosts that do not collect their data: OpenRouter's provider.data_collection, which skips providers whose data policy says they may train on it. A filter, so OpenRouter still balances load among the rest. Default: none (OpenRouter's default). Other providers ignore it"
+      },
+      "Language": {
+        "type": "string",
+        "maxLength": 35,
+        "description": "The agent's primary language, a BCP 47 tag such as \"en\", \"es-ES\", \"pt-BR\" or \"zh-Hant\" (at most 35 characters; stored in canonical case). The system prompt then asks the model to reply in it by default, and in the person's language when they clearly write in another. Default: none (the model follows the conversation). Compaction summaries are unchanged",
+        "example": "es-ES"
       },
       "MountInput": {
         "anyOf": [
@@ -4312,6 +4321,20 @@
                   }
                 ]
               },
+              "language": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Language"
+                  },
+                  {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Its primary language, its own or its definition's; null: none"
+                  }
+                ]
+              },
               "forkedFrom": {
                 "$ref": "#/components/schemas/ForkedFrom"
               },
@@ -4372,6 +4395,7 @@
               "maxOutputTokens",
               "temperature",
               "dataCollection",
+              "language",
               "busy",
               "activeRun",
               "queuedRuns",
@@ -5189,6 +5213,15 @@
               null
             ],
             "description": "Replaces its OpenRouter calls' data policy; null removes it (OpenRouter's default)"
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 35,
+            "description": "Replaces its primary language from its next turn; null removes it. Set here on an agent from a definition, it stays when the definition is applied",
+            "example": "es-ES"
           },
           "keyScope": {
             "type": [
@@ -8116,6 +8149,16 @@
           "dataCollection": {
             "$ref": "#/components/schemas/DataCollection"
           },
+          "language": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Language"
+              },
+              {
+                "description": "Its agents' primary language (Language); an agent given its own keeps it when the definition is applied"
+              }
+            ]
+          },
           "fileTools": {
             "type": "boolean",
             "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts stay open to fs in js_exec, attachments and tool outputs. For applications with file tools of their own"
@@ -8496,6 +8539,16 @@
           },
           "dataCollection": {
             "$ref": "#/components/schemas/DataCollection"
+          },
+          "language": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Language"
+              },
+              {
+                "description": "Its agents' primary language (Language); an agent given its own keeps it when the definition is applied"
+              }
+            ]
           },
           "fileTools": {
             "type": "boolean",
@@ -9000,6 +9053,20 @@
               }
             ]
           },
+          "language": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Language"
+              },
+              {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Its agents' primary language (Language); an agent given its own keeps it when the definition is applied"
+              }
+            ]
+          },
           "fileTools": {
             "type": [
               "boolean",
@@ -9501,6 +9568,9 @@
           },
           "dataCollection": {
             "$ref": "#/components/schemas/DataCollection"
+          },
+          "language": {
+            "$ref": "#/components/schemas/Language"
           },
           "builtins": {
             "type": "array",

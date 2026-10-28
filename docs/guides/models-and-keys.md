@@ -135,6 +135,38 @@ Compaction summaries keep the runtime's own settings. If a later change makes a
 temperature inapplicable (a definition applied with a new model or thinking level),
 the agent's calls leave it out rather than fail.
 
+### Language
+
+`language` is an agent's primary language, as a BCP 47 tag: `"en"`, `"es"`,
+`"es-ES"`, `"pt-BR"`, `"zh-Hant"` (at most 35 characters). The runtime stores it
+in canonical case (`pt-br` becomes `pt-BR`) and refuses a tag that is not well
+formed or names no language (`400`). With one set, the system prompt gets one
+line after the application's instructions and the environment summary, for
+example:
+
+```text
+Language: reply in Spanish (español) by default. If the person clearly writes in another language, reply in that language instead.
+```
+
+The language is named in English and in itself. The line is the same text on
+every turn, so it does not break the prompt cache; changing the language changes
+the prompt once. Without a language there is no line, and the model follows the
+conversation as before.
+
+Set it when you make an agent, for a [stateless run](stateless-runs.md), or for
+every agent of a [definition](definitions.md) (an agent's own wins). Change it
+with `PATCH /v1/agents/:id/configuration`; `null` removes it. `GET /v1/agents/:id`
+shows it (`null` when unset).
+
+```json
+{"systemPrompt": "You help people build Discord bots.", "language": "es-ES"}
+```
+
+Compaction summaries are unchanged: they keep the summarizer's fixed format and
+headings, and are read by the model, not shown to people. The language line
+stays in the system prompt, which compaction does not summarize, so replies after
+a compaction keep the agent's language.
+
 ### Prompt caching
 
 The runtime marks the system prompt and tools (and the latest message) as a

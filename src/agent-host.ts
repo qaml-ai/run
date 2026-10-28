@@ -10,7 +10,8 @@ import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
 import { errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, legacyFormatRefused, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
-import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
+import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, LANGUAGE, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
+import { languageInstructions } from "./language.ts";
 import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, step, validateInitialMessages, validateUserMessages } from "./history.ts";
@@ -292,6 +293,7 @@ export function createAgentHost(hostIO: HostIO) {
     }
     const wanted = {
       [APPLICATION]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
+      [LANGUAGE]: config.language ? languageInstructions(config.language) : null,
       [OUTPUT]: tools.some(tool => tool.name === OUTPUT_TOOL) ? OUTPUT_INSTRUCTIONS : null,
     };
     const sections = Object.fromEntries(Object.entries(wanted).filter(([name, text]) => (current[name] ?? null) !== text));
@@ -1049,9 +1051,10 @@ export function createAgentHost(hostIO: HostIO) {
       if (params.maxOutputTokens !== undefined) config.maxOutputTokens = params.maxOutputTokens;
       if (params.temperature !== undefined) config.temperature = params.temperature;
       if (params.dataCollection !== undefined) config.dataCollection = params.dataCollection;
+      if (params.language !== undefined) config.language = params.language;
       if (params.tools !== undefined) config.tools = params.tools;
       if (params.tools !== undefined || params.codeMode !== undefined) agent.state.tools = [...config.codeMode === false ? [] : [jsExec!], ...directAgentTools(config.tools)];
-      if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.model !== undefined) await declareConfiguration();
+      if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.language !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.model !== undefined) await declareConfiguration();
       return { configured: true };
     }
     // Before a stop: index the settled turns, so a page of them needs neither the process nor the journal.

@@ -59,7 +59,7 @@ leaves alone:
  "systemPromptAppend": "Thread thr_123 in workspace ws_9."}
 ```
 
-- `model`, `thinkingLevel`, `maxOutputTokens`, `temperature` and `runLimits` given
+- `model`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `language` and `runLimits` given
   at creation, or later through `PATCH /v1/agents/:id/configuration`, and
   `fileTools` given at creation, are the agent's own: an apply changes every other
   field and keeps them. `null` set through configuration is the agent's own too.
@@ -111,7 +111,7 @@ an `error`. On the console's Channels page, **Model & prompt** opens a channel's
 definition with apply selected.
 
 `PATCH /v1/agents/:id/configuration` changes one agent's `model`,
-`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `keyScope`, `spendLimit` or `modelHeaders` without touching its definition or history:
+`systemPrompt`, `systemPromptAppend`, `thinkingLevel`, `maxOutputTokens`, `temperature`, `language`, `keyScope`, `spendLimit` or `modelHeaders` without touching its definition or history:
 
 ```http
 PATCH /v1/agents/client_…/configuration

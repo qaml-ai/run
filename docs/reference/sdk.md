@@ -83,6 +83,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `definition` | `definition=` | make it from a definition (its model, prompt and tool sources) |
 | `thinkingLevel` | `thinking_level=` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `maxOutputTokens`, `temperature` | `max_output_tokens=`, `temperature=` | the most the model writes in a response, and its sampling temperature (0 to 2; refused for a model or thinking level that takes none). See [Output length and temperature](../guides/models-and-keys.md#output-length-and-temperature) |
+| `language` | `language=` | its primary language, a BCP 47 tag (`"es-ES"`): it replies in it unless the person writes in another. See [Language](../guides/models-and-keys.md#language) |
 | `subject`, `context` | `subject=`, `context=` | whom it acts for, and claims for its tools; fixed at creation |
 | `keyScope`, `spendLimit`, `runLimits`, `modelHeaders` | `key_scope=`, `spend_limit=`, `run_limits=`, `model_headers=` | see [Models and keys](../guides/models-and-keys.md) |
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
@@ -135,7 +136,7 @@ what changed without keeping a manifest. It is opaque: compare it, never parse i
 | `agent.history()`, `historyPage({ before, limit, maxBytes })` | `history()`, `history_page(before=, limit=, max_bytes=)` | the whole history (a list of messages, oldest first), or a page of whole turns |
 | `agent.send(text, options)`, `agent.wait(id)` | `await send(text, …)`, `await wait(id)` | send a message without waiting: resolves once the runtime has taken it, with `{id, state}` (`POST …/prompt`'s 202); `wait(id)` is its `Run` later, from this process or another. For work queues and webhooks that should not hold a connection for the whole run |
 | `agent.steer(text, options)` | `steer(text, …)` | hand the running turn a message (else start one), answered as soon as the runtime has it: `{id, status: "accepted" \| "taken" \| "queued", steeredInto?}`. `wait: true` (`wait=True`) resolves with the run that took it instead, as `run(text, { whileRunning: "steer" })` |
-| `agent.configure({ model, instructions, thinkingLevel, tools, maxOutputTokens, temperature })` | `configure(…)` | change it between runs; `null` (`None`) removes `maxOutputTokens` or `temperature` |
+| `agent.configure({ model, instructions, thinkingLevel, tools, maxOutputTokens, temperature, language })` | `configure(…)` | change it between runs; `null` (`None`) removes `maxOutputTokens`, `temperature` or `language` |
 | `agent.schedule({ text, inSeconds, at, everySeconds, calendar, email })` | `schedule(…)` | wake it later; `schedules()`, `unschedule(id)` |
 | `agent.files` | `agent.files` | `list`, `download`, `upload`, `link` by the paths the agent sees |
 | `agent.abort({ queued })` | `abort(queued=)` | stop the agent: its running turn, and the runs queued behind it (each fails with code `cancelled`); `queued: "keep"` stops the running turn only. Resolves with `{aborted, cancelled}` |

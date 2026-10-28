@@ -82,7 +82,7 @@ function reconfiguration(header: SessionHeader, definitions: ToolDefinition[], c
     ...remounted ? { mounts } : {},
     provisionHash, model: `${config.model.provider}/${config.model.id}`, thinkingLevel: config.thinkingLevel ?? "off",
     systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, codeMode: config.codeMode !== false, runLimits: config.runLimits ?? null,
-    maxOutputTokens: config.maxOutputTokens ?? null, temperature: config.temperature ?? null, dataCollection: config.dataCollection ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
+    maxOutputTokens: config.maxOutputTokens ?? null, temperature: config.temperature ?? null, dataCollection: config.dataCollection ?? null, language: config.language ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
     // Only a definition's own fields are the agent's: the rest follow its definition.
     ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions, builtins: own.builtins ?? [], delegate: own.delegate ?? null, mcpServers: own.mcpServers ?? [], decide: own.decide ?? null },
   };
@@ -101,7 +101,7 @@ function upsertChanges(header: SessionHeader, target: Record<string, any>) {
   if ("systemPrompt" in target && differs(current.systemPrompt, target.systemPrompt)) changes.systemPrompt = target.systemPrompt;
   if ("modelHeaders" in target && differs(current.modelHeaders, target.modelHeaders)) changes.modelHeaders = target.modelHeaders;
   if ("runLimits" in target && differs(current.runLimits, target.runLimits)) changes.runLimits = target.runLimits;
-  for (const key of ["maxOutputTokens", "temperature", "dataCollection"] as const) if (key in target && differs(current[key], target[key])) changes[key] = target[key] as never;
+  for (const key of ["maxOutputTokens", "temperature", "dataCollection", "language"] as const) if (key in target && differs(current[key], target[key])) changes[key] = target[key] as never;
   if (target.tools !== undefined && differs(header.definitions, target.tools)) changes.tools = target.tools;
   if (target.builtins !== undefined && differs(header.sources?.builtins ?? [], target.builtins)) changes.builtins = target.builtins;
   if (target.delegate !== undefined && differs(header.sources?.delegate, target.delegate)) changes.delegate = target.delegate;
@@ -402,7 +402,7 @@ export async function inspect(ctx: ConfigurationContext, id: string, tenant: str
     builtins: session.header.sources?.builtins ?? [], delegate: session.header.sources?.delegate ?? null, mcpServers: (session.header.sources?.mcpServers ?? []).map(mcpServerView), decide: session.header.sources?.decide ?? null,
     ...(session.header.parent ? { parentAgentId: session.header.parent.agentId, parentRunId: session.header.parent.runId } : {}),
     spendLimit: await ctx.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }), runLimits: session.header.config.runLimits ?? null,
-    maxOutputTokens: session.header.config.maxOutputTokens ?? null, temperature: session.header.config.temperature ?? null, dataCollection: session.header.config.dataCollection ?? null,
+    maxOutputTokens: session.header.config.maxOutputTokens ?? null, temperature: session.header.config.temperature ?? null, dataCollection: session.header.config.dataCollection ?? null, language: session.header.config.language ?? null,
     ...(session.header.forkedFrom ? { forkedFrom: session.header.forkedFrom } : {}),
     ...activityOf(session.running.values()), cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].map(visible) };
 }
