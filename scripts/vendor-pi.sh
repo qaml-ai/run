@@ -60,6 +60,23 @@ echo "Installing Pi's dependencies (npm ci, its lockfile)"
 # No install scripts: the packages we build need only tsc, and Pi's prepare (husky) wants a full clone.
 (cd "$src" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error)
 
+# Stamp the version as `<upstream version>-main.<short sha>` (and the dependencies among them to match), so the lockfile,
+# User-Agent and telemetry tell a vendored build from the npm release of the same number.
+dirs=()
+for entry in "${packages[@]}"; do read -r dir _ _ <<< "$entry"; dirs+=("$src/packages/$dir/package.json"); done
+node -e '
+  const fs = require("node:fs");
+  const [short, ...files] = process.argv.slice(1);
+  const manifests = files.map(file => ({ file, manifest: JSON.parse(fs.readFileSync(file, "utf8")) }));
+  const versions = Object.fromEntries(manifests.map(({ manifest }) => [manifest.name, `${manifest.version}-main.${short}`]));
+  for (const { file, manifest } of manifests) {
+    manifest.version = versions[manifest.name];
+    for (const field of ["dependencies", "peerDependencies", "devDependencies"])
+      for (const name of Object.keys(manifest[field] ?? {})) if (versions[name]) manifest[field][name] = versions[name];
+    fs.writeFileSync(file, JSON.stringify(manifest, null, "\t") + "\n");
+  }
+' "${commit:0:12}" "${dirs[@]}"
+
 for entry in "${packages[@]}"; do
   read -r dir name file <<< "$entry"
   echo "Building $name"

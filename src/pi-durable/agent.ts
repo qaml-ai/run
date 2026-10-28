@@ -45,8 +45,9 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     onSummary?: (message: AssistantMessage) => void | Promise<void>;
     onCompaction?: (state: { summary: string; keptMessages: number; at: number; reason: "threshold" | "overflow" }) => void | Promise<void>;
     /**
-     * Pi's Session failed (`session_failed`: a storage call failed past the Storage's own retries, by Pi's rule) and closed
-     * the Storage: the host must be given up and reopened from what was committed.
+     * Pi's Session failed (`storage_failed`: a storage call failed past the Storage's own retries, by Pi's rule) and closed
+     * the Storage, or the agent's commit observer failed or was ended, so what it holds may lag what is stored: the host
+     * must be given up and reopened from what was committed.
      */
     onStorageFailure?: (error: unknown) => void;
   };
@@ -334,6 +335,9 @@ export class DurableAgent {
       return Math.min(Math.floor(window() * 0.15), (Number.isFinite(output) ? output : 0) + 16_384);
     };
     agent.compactAt = () => window() - reserve();
+    // The host gives the agent up (and reopens it from what was committed) once, whichever failure says so first.
+    let givenUp = false;
+    const giveUp = (error: unknown) => { if (!givenUp) { givenUp = true; options.durable.onStorageFailure?.(error); } };
     agent.harness = await Harness.open(options.durable.storage, { registry, models: models as unknown as HarnessOptions["models"],
       // Pi 1.4 attributes every request to pi by default (OpenRouter `HTTP-Referer: https://pi.dev` and
       // `X-OpenRouter-Title: pi`, NVIDIA and OpenCode origin headers): requests are the tenant's, so send none.
@@ -343,7 +347,7 @@ export class DurableAgent {
       // A task cut off `restartLimit` times in a row ends (`task_interrupted`, reason `restart_limit`; a generation ends
       // its run with `runFailure`), and so does a run whose model request a lost node left in flight (reason `interrupted`).
       onReport: (report: Report) => {
-        if (report.kind === "storage_failed") options.durable.onStorageFailure?.(report.error);
+        if (report.kind === "storage_failed") giveUp(report.error);
         const task = "task" in report ? report.task : undefined;
         console.error(JSON.stringify({ type: "pi_report", report: report.kind,
           ...task ? { task: task.kind, taskId: task.id } : {}, ..."reason" in report ? { reason: report.reason } : {},
@@ -373,7 +377,19 @@ export class DurableAgent {
     const limit = await agent.harness.snapshot(ContextLimitDoc, agent.conversation.id, context);
     if (limit?.provider === agent.state.model.provider && limit.model === agent.state.model.id && Number.isFinite(limit.window) && limit.window > 0)
       agent.overflowWindow = Math.max(limit.window, limitFloor(agent.state.model));
-    agent.harness.observeCommits({ end: () => {}, advance: publication => {
+    // Pi detaches an observer that throws (ending it `listener_error`), and ends it `failed` when the Session fails. Either
+    // way the agent no longer sees what is committed (it would go stale, and a turn could end on an older answer): the
+    // host gives it up and reopens it, as after a storage failure. An error here is caught, so the commit it missed does
+    // not go unnoticed either.
+    const observerFailed = (error: unknown) => {
+      console.error(JSON.stringify({ type: "pi_observer_error", error: error instanceof Error ? error.name : typeof error,
+        message: error instanceof Error ? error.message : String(error) }));
+      giveUp(error);
+    };
+    agent.harness.observeCommits({ end: end => {
+      if (end.kind === "listener_error") observerFailed(end.error);
+      else if (end.kind === "failed") giveUp(end.error);
+    }, advance: publication => { try {
       // A generation that ended without an answer fails the run: one that failed, and one whose phase threw (faulted) or
       // that no installed definition could take (orphaned), which would otherwise end the run as if it had answered.
       for (const change of publication.changes) if (change.type === "task" && change.value.kind === original.name && change.value.state.status === "terminal") {
@@ -400,7 +416,7 @@ export class DurableAgent {
         }
         for (const item of items) agent.queueEvent(() => agent.committedMessage(item));
       }
-    } });
+    } catch (error) { observerFailed(error); } } });
     await agent.reload();
     agent._latestCursor = options.durable.cursor ?? await latestDurableCursor(options.durable.storage, agent.conversation.id);
     return agent;
