@@ -7,7 +7,7 @@ import { CONTEXT_TOO_LARGE } from "../protocol.ts";
 import { convertToLlm, createCompactionSummaryMessage } from "../pi-harness/messages.ts";
 import { JournalHistory } from "./history.ts";
 import { contextWrites, SESSION_CONVERSATION_ID } from "./seed.ts";
-import { contextRangeSize, contextSystemRows, type ContextRangeSize } from "./storage.ts";
+import { commitTo, contextRangeSize, contextSystemRows, type ContextRangeSize } from "./storage.ts";
 
 /** The most history messages a reset keeps after its summary. */
 export const RESET_KEEP_MAX = 20;
@@ -76,6 +76,6 @@ export async function resetContext(storage: Storage, options: { summary?: string
   if (bytes > limit) throw new HttpError(409, `The reset context would be ${bytes} bytes, past the ${limit} bytes a run can load; keep fewer messages or give a shorter summary`, CONTEXT_TOO_LARGE);
   // The caller's last check (no host started meanwhile), right before the write.
   options.beforeCommit?.();
-  await storage.commit(writes, context);
+  await commitTo(storage, writes, context);
   return { keptMessages: kept.length, before, after: await contextRangeSize(storage, SESSION_CONVERSATION_ID) };
 }

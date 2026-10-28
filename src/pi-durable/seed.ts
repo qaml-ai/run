@@ -5,6 +5,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ConversationId, DocumentId, EntryId, Storage, StorageWrite } from "@earendil-works/pi-durable";
 import { baseWrites, HOST_MESSAGE_KIND, HOST_USER_KIND, MARKER_KIND } from "./history.ts";
+import { commitTo } from "./storage.ts";
 
 /**
  * The marker every session's Pi storage starts with (`seedJournal`): releases before #326 refuse a root whose first entry
@@ -163,7 +164,7 @@ export async function seedJournal(options: {
       type: "submission",
       value: { id: ids[nextId++] as never, conversationId: SESSION_CONVERSATION_ID, requestId, type: "input", status: "unanswered", reason: "legacy_import", detail: "Request already recorded in the history this session started with." },
     });
-    await storage.commit(writes, context);
+    await commitTo(storage, writes, context);
     // The commit is atomic: reading back its marker confirms it landed.
     const landed = await loadSeedMarker(storage, context);
     if (!landed || !same(landed, metadata)) throw new SeedConflict("the persisted seed marker differs from the source");

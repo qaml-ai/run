@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createStorageConformance, type StorageConformanceAssertions } from "@earendil-works/pi-durable/testing";
-import type { ConversationId, EntryId, Storage } from "@earendil-works/pi-durable";
-import { deletePiStorage, hasPiStorage, openPiStorage, PostgresPiStorage, purgePiStorage, remotePiStorage, storageRequest } from "../src/pi-durable/storage.ts";
+import type { ConversationId, EntryId, Seq, Storage, StorageWrite } from "@earendil-works/pi-durable";
+import { commitTo, deletePiStorage, hasPiStorage, openPiStorage, PostgresPiStorage, purgePiStorage, remotePiStorage, storageRequest } from "../src/pi-durable/storage.ts";
 import { LostClaim, Ownership } from "../src/ownership.ts";
 import { testDatabase } from "./database.ts";
 import { transaction } from "../src/db.ts";
@@ -197,7 +197,9 @@ test("Pi shared storage rides out a database it cannot reach: reads are asked ag
     { type: "entry" as const, value: { id: entry as EntryId, conversationId: conversation as ConversationId, kind: "test" } },
   ];
   loseCommit = true;
-  const seq = await storage.commit(write as never, context);
+  let adopted: number[] = [];
+  const seq = await storage.commit(write as never, (seq: Seq) => adopted.push(seq), context);
+  assert.deepEqual(adopted, [seq], "adopted once, though its answer was lost");
   const entries = (await db.query("select id from pi_durable_entries where session_id = $1", [sessionId])).rows;
   assert.deepEqual(entries.map(row => Number(row.id)), [entry], "written once, though its answer was lost");
   down = 3;
@@ -419,3 +421,86 @@ test("Pi shared entryIds lists a conversation's entry IDs in a range without the
   const remote = remotePiStorage(request => storageRequest(storage, request)) as typeof storage;
   assert.deepEqual(await remote.entryIds(conversationId, ids[0], ids[4]), ids);
 });
+
+// The Pi release after 1.4.0 calls `commit(writes, adopt, context)`; 1.4.0 calls `commit(writes, context)`. Both work.
+type Adopting = (writes: readonly StorageWrite[], adopt: (seq: Seq) => void, ctx: typeof context) => Promise<Seq>;
+const storageModes = ["sqlite", "sqlite-committing", "postgres", "remote-postgres"] as const;
+async function openMode(mode: typeof storageModes[number], sessionId: string, directory: string): Promise<{ storage: Storage; close(): Promise<void> }> {
+  const sqlite = mode === "sqlite" || mode === "sqlite-committing";
+  const storage = await openPiStorage({ sessionId, directory, ...(sqlite ? {} : { db: (await database).db }),
+    ...(mode === "sqlite-committing" ? { committing: async () => {} } : {}) });
+  const selected = mode === "remote-postgres" ? remotePiStorage(async request => {
+    const answer = await storageRequest(storage, JSON.parse(JSON.stringify(request)));
+    return answer === undefined ? undefined : JSON.parse(JSON.stringify(answer));
+  }) : storage;
+  return { storage: selected, close: () => storage.close(context) };
+}
+
+for (const mode of storageModes) {
+  test(`Pi ${mode}: commit takes both shapes and adopts each durable batch once, before it resolves and before the next commit`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-adopt-"));
+    const { storage, close } = await openMode(mode, randomUUID(), directory);
+    try {
+      const root = await storage.mintId<ConversationId>();
+      // Pi 1.4.0's shape.
+      const first = await storage.commit([{ type: "conversation", value: { id: root } }], context);
+      const order: string[] = [];
+      const entry = async () => ({ type: "entry" as const, value: { id: await storage.mintId<EntryId>(), conversationId: root, kind: "test" } });
+      const step = async (name: string) => {
+        const write = await entry();
+        // Adoption runs when the batch is durable: a read started inside it already sees the batch.
+        let visible: Promise<unknown> | undefined;
+        const commit = (adopt: (seq: Seq) => void) => storage.commit.length >= 3
+          ? (storage.commit as unknown as Adopting)([write], adopt, context)
+          : commitTo(storage, [write], context, adopt);
+        const seq = await commit(seq => { order.push(`adopt ${name} ${seq}`); visible = storage.entry(write.value.id, context); });
+        order.push(`resolved ${name} ${seq}`);
+        assert.ok(await visible, "adopted after the batch is durable");
+        return seq;
+      };
+      const a = await step("a");
+      const b = await step("b");
+      assert.ok(a > first && b > a);
+      assert.deepEqual(order, [`adopt a ${a}`, `resolved a ${a}`, `adopt b ${b}`, `resolved b ${b}`]);
+      // A batch that fails before it is durable (an ID that names another record) is never adopted.
+      let adopted = 0;
+      const clash = [{ type: "entry" as const, value: { id: root as unknown as EntryId, conversationId: root, kind: "test" } }];
+      await assert.rejects((storage.commit.length >= 3 ? (storage.commit as unknown as Adopting)(clash, () => adopted++, context) : commitTo(storage, clash, context, () => adopted++)));
+      await assert.rejects(commitTo(storage, clash, context, () => adopted++));
+      assert.equal(adopted, 0);
+      // The helper adopts exactly once whichever shape the storage takes.
+      let once = 0;
+      await commitTo(storage, [await entry()], context, () => once++);
+      assert.equal(once, 1);
+    } finally {
+      await close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test(`Pi ${mode}: mintId is above every ID minted since open and every ID stored, stored ones also across reopen`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-mint-"));
+    const sessionId = randomUUID();
+    let opened = await openMode(mode, sessionId, directory);
+    try {
+      const minted: number[] = [];
+      for (let i = 0; i < 5; i++) minted.push(await opened.storage.mintId<EntryId>());
+      assert.ok(minted.every((id, index) => index === 0 || id > minted[index - 1]));
+      // A record stored with an ID above everything minted (as an import's reserved range writes).
+      const stored = minted.at(-1)! + 1_000;
+      await commitTo(opened.storage, [{ type: "conversation", value: { id: stored as ConversationId } }], context);
+      const after = await opened.storage.mintId<EntryId>();
+      assert.ok(after > stored, `${after} > stored ${stored}`);
+      await opened.close();
+      opened = await openMode(mode, sessionId, directory);
+      const reopened = await opened.storage.mintId<EntryId>();
+      // Across reopen the contract covers stored IDs; minted IDs never stored may be minted again (SQLite does).
+      assert.ok(reopened > stored, `${reopened} > stored ${stored}`);
+      const last = (await commitTo(opened.storage, [{ type: "conversation", value: { id: reopened as unknown as ConversationId } }], context), reopened);
+      assert.ok(await opened.storage.mintId<EntryId>() > last);
+    } finally {
+      await opened.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}

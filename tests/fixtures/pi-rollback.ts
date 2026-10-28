@@ -7,6 +7,7 @@
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ConversationId, DocumentId, EntryId, JsonObject, Storage } from "@earendil-works/pi-durable";
 import type { AppendLog } from "../../shared/append-log.ts";
+import { commitTo } from "../../src/pi-durable/storage.ts";
 import { nativeTranscriptRecords, type TranscriptRecord } from "./host-transcript.ts";
 
 const ADDRESS = { kind: "camel.host.snapshot", scope: { kind: "session" as const } };
@@ -22,7 +23,7 @@ export async function rollBack(storage: Storage, log: AppendLog<TranscriptRecord
 export async function disableGeneration(storage: Storage) {
   const document = await storage.findDocument(ADDRESS, "current", context);
   const stored = await storage.document(document!.id as DocumentId, "current", context);
-  await storage.commit([
+  await commitTo(storage, [
     { type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId: 1 as ConversationId, kind: "camel.host.disabled" } },
     { type: "document.change", id: document!.id as DocumentId, content: { version: 1, kind: "base", value: { ...stored!.value as JsonObject, enabled: false } } },
   ], context);

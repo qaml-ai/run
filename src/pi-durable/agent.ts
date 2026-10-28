@@ -6,7 +6,7 @@ import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
   GenerationTask, Harness, LiveDoc, createRegistry, createSession, defineDoc, section,
-  type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Storage, type TaskId,
+  type CommitPublication, type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type ReportInfo, type Storage, type TaskId,
 } from "@earendil-works/pi-durable";
 
 /** Small latest-value document: loading an agent never scans its journal for a limit. */
@@ -175,6 +175,27 @@ export async function recoverDurableMessages(storage: Pick<Storage, "scanEntries
     cursor = page.next;
   } while (cursor !== undefined);
   return messages;
+}
+
+/**
+ * A report to `HarnessOptions.onReport` in either shape: Pi 1.4.0 calls `onReport(error, info)` (`info.type`), the next
+ * release `onReport(report)` (`report.kind`, `report.error`; `session_failed` is `storage_failed`, `task_parked` is gone).
+ */
+type PiReport = { kind?: string; error: unknown; task?: { kind: string; id: TaskId } };
+export function piReport(first: unknown, info?: ReportInfo): PiReport {
+  if (info === undefined && first !== null && typeof first === "object" && typeof (first as { kind?: unknown }).kind === "string" && "error" in first) return first as PiReport;
+  return { kind: info?.type, error: first, ...info && "task" in info && info.task ? { task: info.task } : {} };
+}
+
+/**
+ * Observe stored commits: `subscribeCommits(listener)` on Pi 1.4.0, `observeCommits(observer)` on the release after it,
+ * which removes `subscribeCommits`. Either way, one call per stored commit, with what it stored. (1.4.0 has an internal
+ * `observeCommits(listener)` of another shape, so the test is for `subscribeCommits`.)
+ */
+export function observeCommits(harness: Harness, listener: (publication: CommitPublication) => void): void {
+  if (typeof (harness as Partial<Harness>).subscribeCommits === "function") { harness.subscribeCommits(publication => listener(publication)); return; }
+  const next = harness as unknown as { observeCommits(observer: { advance(publication: CommitPublication, context: unknown): void; end(end: unknown): void }): unknown };
+  next.observeCommits({ advance: publication => listener(publication), end: () => {} });
 }
 
 /**
@@ -372,12 +393,13 @@ export class DurableAgent {
       identity: { attribution: null },
       // What Pi contains rather than throws (a faulted phase, a throwing hook or section, a dropped progress commit) is
       // otherwise silent.
-      onReport: (error, info) => {
-        if (info?.type === "session_failed") options.durable.onStorageFailure?.(error);
-        if (info?.type === "task_parked" && info.task.kind === original.name) agent.parked.add(info.task.id);
-        console.error(JSON.stringify({ type: "pi_report", ...info ? { report: info.type } : {},
-          ...info && "task" in info && info.task ? { task: info.task.kind, taskId: info.task.id } : {},
-          error: error instanceof Error ? error.message : String(error) }));
+      onReport: (first: unknown, info?: ReportInfo) => {
+        const report = piReport(first, info);
+        if (report.kind === "session_failed" || report.kind === "storage_failed") options.durable.onStorageFailure?.(report.error);
+        if (report.kind === "task_parked" && report.task?.kind === original.name) agent.parked.add(report.task.id);
+        console.error(JSON.stringify({ type: "pi_report", ...report.kind ? { report: report.kind } : {},
+          ...report.task ? { task: report.task.kind, taskId: report.task.id } : {},
+          error: report.error instanceof Error ? report.error.message : String(report.error) }));
       },
       settings: { compaction: { enabled: true,
         get reserveTokens() { return reserve(); },
@@ -402,7 +424,7 @@ export class DurableAgent {
     const limit = await agent.harness.snapshot(ContextLimitDoc, agent.conversation.id, context);
     if (limit?.provider === agent.state.model.provider && limit.model === agent.state.model.id && Number.isFinite(limit.window) && limit.window > 0)
       agent.overflowWindow = Math.max(limit.window, limitFloor(agent.state.model));
-    agent.harness.subscribeCommits(publication => {
+    observeCommits(agent.harness, publication => {
       // A generation that ended without an answer fails the run: one that failed, and one whose phase threw (faulted) or
       // that no installed definition could take (orphaned), which would otherwise end the run as if it had answered.
       for (const change of publication.changes) if (change.type === "task" && change.value.kind === original.name && change.value.state.status === "terminal") {
@@ -804,7 +826,7 @@ export class DurableAgent {
   async compactLanded(landed: AgentMessage[], fits: () => Promise<boolean>) {
     const live = await this.harness.snapshot(LiveDoc, this.conversation.id, context);
     if (live?.compactions) return this.harness.resume();
-    if (live?.run || Date.now() < this.landedRetryAt) return;
+    if (live?.run !== undefined || Date.now() < this.landedRetryAt) return;
     if (this.landedTokens !== undefined) this.landedTokens += landed.reduce((sum, message) => sum + estimateMessageTokens(message as Message), 0);
     if (this.landedTokens !== undefined && this.landedTokens <= this.compactAt() || !await fits()) return;
     this.landedTokens = estimateContextTokens((await this.conversation.context(context)).messages).tokens;
@@ -878,7 +900,8 @@ export class DurableAgent {
       }
       if (!input.length) {
         const live = await this.harness.snapshot(LiveDoc, this.conversation.id, context);
-        if (!live?.run) {
+        // Idle is `run === undefined`: after a run that ended without an answer `pi.live` is not empty (`runFailure`).
+        if (live?.run === undefined) {
           await this.conversation.commit(async tx => {
             const live = await tx.doc(LiveDoc, this.conversation.id);
             live.run = { taskId: await tx.createTask(GenerationTask, {}, { ownership: { kind: "conversation" }, conversationId: this.conversation.id }), inputs: [] };
