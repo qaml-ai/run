@@ -57,7 +57,7 @@ answer alone. Tune thresholds on your own data, for the model you pinned: anothe
 | `model` | `typesafe/jev-1.14` (default) or `typesafe/jev-1.13`: a pinned version, so answers do not shift under your thresholds |
 | `maxUsd` | refuse (402) before anything is sent if the estimate is more |
 | `keyScope` | a key scope whose OpenRouter key goes first (not its `baseUrl`: decisions always go to OpenRouter) |
-| `dataCollection` | `"deny"`: only where the provider does not keep the state. OpenRouter's decisions API is not yet confirmed to take a data policy, so for now `deny` is refused (400 `DECISIONS_DATA_POLICY`) and nothing is sent; an agent whose `dataCollection` is `deny` is refused its `decide` calls the same way |
+| `dataCollection` | `"deny"`: only hosts that do not keep the state (sent on as OpenRouter's `provider.data_collection`; TypeSafe, Jev's only host, serves it). An agent's `decide` calls carry its own `dataCollection` |
 | `subject`, `context`, `actor`, `bucket` | who it is for, who asked, and the end user's credit bucket, as for an agent's runs |
 
 ## Batches
@@ -109,7 +109,7 @@ estimate before it is sent.
 | 400 | | a malformed request, said before anything is sent |
 | 400 | `DECISION_REFUSED` | the provider refused the request (its reason, without your state) |
 | 400 | `DECISIONS_UNAVAILABLE` | no OpenRouter key for this account |
-| 400 | `DECISIONS_DATA_POLICY` | `dataCollection: "deny"` (the request's, or the agent's), which decisions cannot honour yet |
+| 400 | `DECISIONS_DATA_POLICY` | `dataCollection: "deny"` (the request's, or the agent's), and no host serves the model without collecting data |
 | 402 | `SPEND_LIMIT` | the estimate is more than `maxUsd` or the run's budget |
 | 413 | `DECISION_TOO_LARGE` | a state over 64,000 characters, or a state and its questions over 96,000 |
 | 429 | `RATE_LIMITED` | too many decisions waiting for the account on a node |

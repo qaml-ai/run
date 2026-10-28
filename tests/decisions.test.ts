@@ -158,6 +158,10 @@ test("the OpenRouter adapter sends TypeSafe's body to /decisions with the key, r
   };
   await fails(404, { error: { message: "Not Found", code: 404 } }, error => error.status === 502 && error.code === "DECISIONS_UNAVAILABLE" && !error.transient && /alpha/.test(error.message));
   await fails(410, {}, error => error.code === "DECISIONS_UNAVAILABLE");
+  // A 404 for a request with a data policy: no host serves the model so.
+  reply = { status: 404, body: { error: { message: "No endpoints found matching your data policy", code: 404 } } };
+  await assert.rejects(provider.decide(item, "typesafe/jev-1.14", credentials, AbortSignal.timeout(5_000), { dataCollection: "deny" }), (error: any) => error instanceof DecisionFailed && error.status === 400 && error.code === "DECISIONS_DATA_POLICY");
+  assert.deepEqual(seen.at(-1)!.body.provider, { data_collection: "deny" });
   // A validation error names where, never the input it quotes.
   await fails(422, { detail: [{ loc: ["body", "questions", "q", "criteria"], msg: "Field required", type: "missing", input: STATE }] }, error => error.status === 400 && error.code === "DECISION_REFUSED" && /body\.questions\.q\.criteria: Field required/.test(error.message) && !error.message.includes("password"));
   await fails(429, { error: { message: "Rate limited" } }, error => error.transient && error.retryAfterMs === 2_000, { "Retry-After": "2" });

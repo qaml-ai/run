@@ -292,7 +292,7 @@ export class Decider {
   async decide(context: { tenant: string; keyScope?: string; budget?: number; dataCollection?: "deny" | null }, request: DecisionRequest, signal: AbortSignal): Promise<Decided> {
     const { provider } = this.options;
     // States are sent only where the agent's data policy holds: refused, not sent, where it cannot be passed on.
-    if (context.dataCollection === "deny" && !provider.dataPolicy) throw new HttpError(400, "Decisions cannot honour dataCollection \"deny\" yet: OpenRouter's decisions API has not been confirmed to take a data policy, so nothing was sent", "DECISIONS_DATA_POLICY");
+    if (context.dataCollection === "deny" && !provider.dataPolicy) throw new HttpError(400, `Decisions cannot honour dataCollection "deny" with ${provider.id}: it does not pass a data policy on, so nothing was sent`, "DECISIONS_DATA_POLICY");
     const policy = context.dataCollection === "deny" ? { dataCollection: "deny" as const } : undefined;
     const estimate = this.estimate(request.items, request.model);
     if (request.maxUsd !== undefined && estimate > request.maxUsd) throw new HttpError(402, `These decisions cost about $${estimate.toFixed(6)}, more than maxUsd ($${request.maxUsd})`, "SPEND_LIMIT");

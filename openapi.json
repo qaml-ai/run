@@ -6460,7 +6460,7 @@
               "deny",
               null
             ],
-            "description": "deny: only providers that do not collect the state. Until OpenRouter's decisions API is confirmed to take a data policy, a request with deny is refused (400 DECISIONS_DATA_POLICY) and nothing is sent; so is an agent's decide call when its dataCollection is deny"
+            "description": "deny: only hosts that do not collect the state (sent to OpenRouter as provider.data_collection; TypeSafe, Jev's only host, serves it). An agent's decide calls carry its own dataCollection. If no host would serve the model so, 400 DECISIONS_DATA_POLICY"
           },
           "subject": {
             "type": "string",

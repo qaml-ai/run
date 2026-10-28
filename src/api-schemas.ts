@@ -889,7 +889,7 @@ export const DecisionInput = z.strictObject({
   model: z.string().optional().openapi({ description: "The decision model: typesafe/jev-1.14 (default) or typesafe/jev-1.13" }),
   maxUsd: z.number().optional().openapi({ description: "Refuse (402) before anything is sent if the estimate is more than this" }),
   keyScope: z.string().optional().openapi({ description: "A key scope whose OpenRouter key is used first, before the tenant's own (its baseUrl, a chat gateway's, is not used)" }),
-  dataCollection: z.enum(["deny"]).nullable().optional().openapi({ description: "deny: only providers that do not collect the state. Until OpenRouter's decisions API is confirmed to take a data policy, a request with deny is refused (400 DECISIONS_DATA_POLICY) and nothing is sent; so is an agent's decide call when its dataCollection is deny" }),
+  dataCollection: z.enum(["deny"]).nullable().optional().openapi({ description: "deny: only hosts that do not collect the state (sent to OpenRouter as provider.data_collection; TypeSafe, Jev's only host, serves it). An agent's decide calls carry its own dataCollection. If no host would serve the model so, 400 DECISIONS_DATA_POLICY" }),
   subject: TranscriptionFields.subject, context: TranscriptionFields.context, actor: TranscriptionFields.actor, bucket: TranscriptionFields.bucket,
 }).openapi("DecisionInput");
 const DecisionAnswer = z.union([
