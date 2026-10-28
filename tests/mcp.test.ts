@@ -169,7 +169,7 @@ test("an agent shows every tool source and what its model gets, connecting to MC
   let requests = mcp.seen.requests;
   const detail = (await r.call(`/v1/agents/${agent}`)).json;
   let sources = byName(detail.toolSources);
-  assert.deepEqual(detail.toolSources.map((source: any) => `${source.kind}:${source.name}`), ["application:application", "files:files", "builtin:web_fetch", "mcp:kb", "mcp:gone"]);
+  assert.deepEqual(detail.toolSources.map((source: any) => `${source.kind}:${source.name}`), ["application:application", "files:files", "builtin:decide", "builtin:web_fetch", "mcp:kb", "mcp:gone"]);
   assert.deepEqual(sources.application, { kind: "application", name: "application", status: "listed", connected: false, tools: [{ name: "web_fetch", description: "The application's own fetch", exposure: "both" }] });
   assert.equal(sources.web_fetch.tools[0].excluded, "an earlier source has a tool of this name", "the application's tool of the same name wins");
   assert.equal(sources.files.tools.every((tool: any) => !tool.excluded && !tool.parameters), true, "schemas only when asked");

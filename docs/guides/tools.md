@@ -758,9 +758,13 @@ it is made from (whose builtins it then has):
   it and no OpenAI key answers with a warning. See [Images](images.md#in-an-agent).
 - `decide` (`{state, questions}` or `{items}`) answers typed questions about a
   state (yes/no, a choice, a score) with probabilities, through a decision model
-  (TypeSafe's Jev on OpenRouter). From `js_exec`, `tools.decide({items})` takes up
-  to 100 states a call, for classifying or scoring a dataset. It counts against
-  the agent's and the run's spend limits. See [Decisions](decisions.md).
+  (TypeSafe's Jev on OpenRouter). It is on by default and needs no listing here:
+  every agent has it but one with no `js_exec` and no tools of its own; opt out
+  with `decide: false` on the agent, run or definition. From `js_exec`,
+  `tools.decide({items})` takes up to 100 states a call, for classifying or
+  scoring a dataset. Each call is billed (on the platform's key, to prepaid
+  credit) and counts against the agent's and the run's spend limits. See
+  [Decisions](decisions.md#in-an-agent).
 - `agents` (with the same settings) starts sub-agents in the background
   (`spawn_agent`, `wait_agent`, `list_agents`); each one's answer arrives as a
   notification. See [Background sub-agents](multi-agent.md#background-sub-agents).

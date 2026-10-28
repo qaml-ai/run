@@ -224,7 +224,7 @@ test("fileTools: false leaves the model present_file alone, with the mounts stil
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
   assert.equal((await r.call(`/v1/agents/${agent}`)).json.fileTools, false);
   await r.prompt(agent, "take notes");
-  assert.deepEqual(direct(r.model.bodies[0]), ["js_exec", "present_file"]);
+  assert.deepEqual(direct(r.model.bodies[0]), ["decide", "js_exec", "present_file"]);
   assert.match(toolResults(r.model.bodies[1]).at(-1), /hi/, "fs still reaches the workspace");
   assert.match(systemText(r.model.bodies[0]), /Work on them with fs in js_exec/);
   assert.doesNotMatch(systemText(r.model.bodies[0]), /The file tools \(read/);
@@ -234,10 +234,10 @@ test("fileTools: false leaves the model present_file alone, with the mounts stil
   await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { fileTools: null, apply: "all" } });
   await until(async () => (await r.call(`/v1/definitions/${definition.id}/agents`)).json.every((entry: any) => entry.revision === 2), "the apply");
   await r.prompt(agent, "again");
-  assert.deepEqual(direct(r.model.bodies.at(-1)), ["edit", "glob", "grep", "js_exec", "ls", "present_file", "read", "write"]);
+  assert.deepEqual(direct(r.model.bodies.at(-1)), ["decide", "edit", "glob", "grep", "js_exec", "ls", "present_file", "read", "write"]);
   assert.match(systemText(r.model.bodies.at(-1)) + JSON.stringify(r.model.bodies.at(-1).messages), /The file tools \(read/);
   await r.prompt(own, "hello");
-  assert.deepEqual(direct(r.model.bodies.at(-1)), ["js_exec", "present_file"]);
+  assert.deepEqual(direct(r.model.bodies.at(-1)), ["decide", "js_exec", "present_file"]);
 });
 
 test("the SDK makes an agent from a definition with its attached server's tools, which survive an apply", async t => {

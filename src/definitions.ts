@@ -10,6 +10,7 @@ import type { Accounts } from "./accounts.ts";
 import type { Outbound } from "./outbound.ts";
 import { builtinsInput, managedBuiltinsRefusal } from "./builtins.ts";
 import { delegateSettings, startsChildren, type DelegateSettings } from "./multi-agent.ts";
+import { decideInput } from "./decisions.ts";
 import { searchOrder } from "./web-search.ts";
 import { canonical } from "../shared/durable-json.ts";
 import { humanInputSettings, type HumanInputSettings } from "./inputs.ts";
@@ -54,6 +55,8 @@ export interface DefinitionSpec {
   humanInput?: HumanInputSettings;
   /** With the delegate or agents builtin: the agents its agents may start or message, and how deep and wide (multi-agent.ts). */
   delegate?: DelegateSettings;
+  /** false: its agents get no decide tool; true: they get it even with no js_exec and no other tools (decisions.ts). */
+  decide?: boolean;
   /** Made for this channel, and deleted with it. */
   channel?: string;
   /** true: a save that makes a new revision also applies it to every live agent made from it, as `apply: "all"` does. */
@@ -73,7 +76,7 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "applyOnUpdate"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
 export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "fileTools", "codeMode", "runLimits"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
@@ -86,6 +89,7 @@ export function sources(spec: DefinitionSpec): Sources | undefined {
     ...(spec.builtins?.length ? { builtins: spec.builtins } : {}), ...(spec.webSearch && spec.builtins?.includes("web_search") ? { webSearch: spec.webSearch } : {}), ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}),
     ...(spec.openApi?.length ? { openApi: spec.openApi } : {}), ...(spec.humanInput ? { humanInput: spec.humanInput } : {}),
     ...(spec.delegate && startsChildren(spec.builtins) ? { delegate: spec.delegate } : {}),
+    ...(spec.decide !== undefined ? { decide: spec.decide } : {}),
   };
   return Object.keys(found).length ? found : undefined;
 }
@@ -323,6 +327,7 @@ export class Definitions {
     if (spec.fileTools !== undefined && typeof spec.fileTools !== "boolean") throw new HttpError(400, "fileTools must be true or false");
     if (spec.codeMode !== undefined && typeof spec.codeMode !== "boolean") throw new HttpError(400, "codeMode must be true or false");
     if (spec.applyOnUpdate !== undefined && typeof spec.applyOnUpdate !== "boolean") throw new HttpError(400, "applyOnUpdate must be true or false");
+    if (spec.decide !== undefined) decideInput(spec.decide);
     if (spec.applyOnUpdate === false) delete spec.applyOnUpdate;
     if (spec.runLimits !== undefined && !runLimitsInput(spec.runLimits)) delete spec.runLimits;
     if (spec.mounts !== undefined && (!Array.isArray(spec.mounts) || spec.mounts.length > 16)) throw new HttpError(400, "mounts must be an array of at most 16");

@@ -433,6 +433,8 @@ export interface CreateAgentOptions extends AgentOptions {
   remount?: boolean;
   /** Tools the runtime answers itself, for an agent without a definition (one made from a definition has its definition's). */
   builtins?: Builtin[];
+  /** false: no decide tool, which every agent has by default (one made from a definition has its definition's). */
+  decide?: boolean;
   /** Who the agent may hand tasks to (sub-agents), without a definition; it adds the delegate builtin. See the multi-agent guide. */
   delegate?: DelegateSettings;
   /**
@@ -506,6 +508,8 @@ export interface DefinitionInput {
   /** false: its agents get no js_exec, and call every tool directly. */
   codeMode?: boolean;
   limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; mounts?: unknown[]; builtins?: Builtin[];
+  /** false: its agents get no decide tool, which every agent has by default. */
+  decide?: boolean;
   /** The most one of its agents' runs may take; an agent given its own keeps them when the definition is applied. */
   runLimits?: { maxResponses?: number; maxSeconds?: number; firstTokenSeconds?: number; idleSeconds?: number; contextTokens?: number };
   /** Who its agents may hand tasks to (sub-agents); it adds the delegate builtin. */
@@ -1030,7 +1034,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
@@ -1796,6 +1800,8 @@ export interface RunRequest {
   /** "deny": its OpenRouter calls go only to hosts that do not collect their data (OpenRouter's provider.data_collection; skips providers that may train on it). Default: OpenRouter's. */
   dataCollection?: "deny";
   builtins?: ("web_fetch" | "web_search" | "x_search" | "delegate")[]; delegate?: DelegateSettings;
+  /** false: no decide tool; a run with no tools at all has none unless true. */
+  decide?: boolean;
   /** Remote MCP servers the run may call, without credentials (auth `{ type: "runtime" }` or none). */
   mcpServers?: InlineMcpServer[];
   /** true: a workspace volume and file tools. Default: none, unless the input has files. */

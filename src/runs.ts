@@ -130,10 +130,10 @@ export function runRoutes(route: Route, context: () => RunsContext) {
     if (context().runPrecheck && !(given !== undefined && await clients.owns(clients.agentId(tenant, key), tenant))) await context().runPrecheck!(tenant);
     // No volume unless the run needs files: its inputs', file tools it asks for, or images it may make. A run with no tools at all (no
     // definition, builtins, delegate, MCP servers, files or mounts) has no js_exec or file tools either, unless it asks: its model
-    // sees only the instructions and the input. What a run sets itself wins.
+    // sees only the instructions and the input (nor the decide tool). What a run sets itself wins.
     const toolless = config.definition === undefined && !config.builtins?.length && !config.delegate && !config.mcpServers?.length && !files.length && !mounts?.length && !config.fileTools;
     const params = {
-      ...toolless ? { codeMode: false, fileTools: false } : {}, ...config, type: "run", ...(name !== undefined ? { name } : {}),
+      ...toolless ? { codeMode: false, fileTools: false, decide: false } : {}, ...config, type: "run", ...(name !== undefined ? { name } : {}),
       // A run's own mounts are all it gets: no workspace beside them unless it names one.
       mounts: mounts ? (mounts.some(mount => "workspace" in mount) ? mounts : [...mounts, { workspace: false }]) : files.length || config.fileTools || config.builtins?.includes("generate_image") ? undefined : [{ workspace: false }],
     };

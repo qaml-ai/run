@@ -121,15 +121,20 @@ export function imageServer(ctx: SpendContext, session: Session, sources: Source
 }
 
 /**
- * The decide tool of an agent whose sources enable it, answered here rather than by a tool source: its decisions are
- * billed like a model response, with the run's facts, and count against the agent's spend limit and the run's.
+ * The decide tool, answered here rather than by a tool source: its decisions are billed like a model response, with the
+ * run's facts, and count against the agent's spend limit and the run's. Every agent's unless its sources opt out
+ * (`decide: false`), or it is `plain` (no js_exec, no tools of its own) and did not ask (`decide: true`). Not offered
+ * where it could only fail: no OpenRouter key decisions could use (the tenant's own, its key scope's or the platform's),
+ * or an agent that denies data collection while the provider cannot pass that on.
  */
-export function decisionServer(ctx: SpendContext, session: Session, sources: Sources | undefined): ToolServer | undefined {
+export function decisionServer(ctx: SpendContext, session: Session, sources: Sources | undefined, plain = false): ToolServer | undefined {
   const { decider } = ctx.options;
-  if (!decider || !sources?.builtins?.includes("decide")) return undefined;
+  if (!decider || sources?.decide === false || (plain && sources?.decide !== true)) return undefined;
+  if (session.header.config.dataCollection === "deny" && !decider.options.provider.dataPolicy) return undefined;
+  const offered = async () => await decider.available(session.header.tenant, session.header.keyScope) ? [DECIDE] : [];
   return {
-    tools: () => [DECIDE],
-    sources: async () => [{ kind: "builtin", name: "decide", status: "listed", tools: [DECIDE] }],
+    tools: offered,
+    sources: async () => { const tools = await offered(); return tools.length ? [{ kind: "builtin", name: "decide", status: "listed", tools }] : []; },
     call: async call => {
       if (call.name !== "decide") throw new Error(`Unknown tool ${call.name}`);
       const { header } = session;

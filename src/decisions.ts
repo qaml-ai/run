@@ -116,6 +116,15 @@ export function decisionItem(value: unknown, where = "The request"): DecisionIte
 export type DecisionRequest = { items: DecisionItem[]; batch: boolean; model: string; maxUsd?: number };
 
 /** A request as `POST /v1/decisions` and the decide tool take it (other fields are the caller's to take out first). */
+/**
+ * `decide` as an agent, a run or a definition gives it: false opts out of the decide tool; true asks for it even with no
+ * js_exec and no other tools; null (where a change takes it) goes back to the default.
+ */
+export function decideInput(value: unknown, nullable = false): boolean | null {
+  if (typeof value !== "boolean" && !(nullable && value === null)) throw new HttpError(400, `decide must be true or false${nullable ? ", or null for the default" : ""}`);
+  return value as boolean | null;
+}
+
 export function decisionRequest(value: Record<string, unknown>): DecisionRequest {
   const { state, questions, items, model, maxUsd } = value;
   const extra = Object.keys(value).filter(key => !["state", "questions", "items", "model", "maxUsd"].includes(key));
@@ -265,6 +274,15 @@ export class Decider {
   }
 
   get provider() { return this.options.provider.id; }
+
+  /**
+   * Whether a tenant (in a key scope) has a key decisions can use: its own, the scope's, or the platform's. Without one
+   * the decide tool is not offered, rather than offered to fail. A key refused for now (spent credit) still counts: the
+   * call then says why.
+   */
+  async available(tenant: string, keyScope: string | undefined) {
+    try { return !!await this.options.key(tenant, keyScope, this.options.provider.id); } catch { return true; }
+  }
 
   /**
    * Why a tenant may not ask now on this node, before its request is read: as many of its decisions waiting as the queue
@@ -421,24 +439,27 @@ export function decisionsAnswer(decided: Decided, batch: boolean) {
 }
 
 const QUESTIONS_SCHEMA = {
-  type: "object", description: "Questions about the state, by an id you choose; answers come back under the same ids",
+  type: "object", description: "By an id you choose",
   additionalProperties: { type: "object", required: ["type", "instructions"], properties: {
     type: { type: "string", enum: ["noul", "choice", "score"] },
-    instructions: { type: "string", description: "noul: a yes/no question or statement; choice: what to decide; score: what to rate" },
-    criteria: { description: "noul: {true?, false?} (optional); choice: {option: description}, 2 to 255; score: levels lowest first, 2 to 10" },
+    instructions: { type: "string" },
+    criteria: { description: "choice: {option: description}; score: levels, lowest first; noul: {true?, false?}" },
   } },
 };
 
-/** The decide builtin: an agent's, called directly or from js_exec as `tools.decide(...)`. */
+/**
+ * The decide tool: every agent's unless it opts out (`decide: false`), called directly or from js_exec as
+ * `tools.decide(...)`. Short, since every agent's prompt carries it, and neutral: it says what it does, not when to use it.
+ * Answers: `{answers: {id: answer}}`, or for items `{results: [{answers} | {error}]}` in order.
+ */
 export const DECIDE: ToolDefinition = {
   name: "decide", exposure: "both",
-  description: "Answer typed questions about a state (text or JSON) fast and cheaply with a decision model, with calibrated probabilities: noul (yes/no: the probability of yes), choice (one of named options), score (a level on a scale). Ask every question about one state in one call: they are answered together. For many states pass items (up to 100 per call; in js_exec, call tools.decide({items}) for each chunk of a dataset and await a few chunks at a time). About $0.00002 a call of three questions. Answers: {answers: {id: {type, noul} | {type, choice, confidence, probabilities} | {type, score, confidence, probabilities}}}, or for items {results: [{answers} | {error}]} in order. Nothing is cached: send each distinct state once.",
+  description: "Answer typed questions about text or JSON with calibrated probabilities, in about 0.3 s for a fraction of a cent: noul (yes/no), choice (one of named options), score (a level on a scale). For classifying, scoring or routing many items, call it from js_exec with items (up to 100 states a call).",
   parameters: { type: "object", additionalProperties: false, properties: {
-    state: { description: "What every question is about: a string, object or array (at most 64,000 characters)" },
+    state: { description: "A string, object or array" },
     questions: QUESTIONS_SCHEMA,
-    items: { type: "array", maxItems: DECISION_LIMITS.items, description: "A batch instead of state and questions: [{state, questions}]", items: { type: "object", required: ["state", "questions"], properties: { state: {}, questions: QUESTIONS_SCHEMA } } },
-    model: { type: "string", enum: Object.keys(DECISION_MODELS), description: `Default ${DECISION_MODEL}` },
-    maxUsd: { type: "number", description: "Refuse before anything is sent if the estimate is more" },
+    items: { type: "array", maxItems: DECISION_LIMITS.items, description: "Instead of state and questions: [{state, questions}]", items: { type: "object", required: ["state", "questions"], properties: { state: {}, questions: { type: "object" } } } },
+    maxUsd: { type: "number" },
   } },
 };
 
