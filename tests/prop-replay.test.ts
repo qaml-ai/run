@@ -37,7 +37,7 @@ const nodes: Internals[] = [];
 after(async () => { for (const node of nodes) await node.close(); });
 /** A node with nothing loaded: only its event plumbing is used, and its database only for event ids. */
 function node(eventBytes?: number, options: { db?: Db; eventBlock?: number } = {}): Internals {
-  const supervisor = { agents: new Map(), flush: async () => {}, stop: async () => {} } as unknown as AgentSupervisor;
+  const supervisor = { agents: new Map(), options: {}, stop: async () => {} } as unknown as AgentSupervisor;
   const made = new ClientSessions(supervisor, { secret: "s".repeat(32), db: options.db ?? {} as Db, storage: {} as Storage, ...(eventBytes ? { eventBytes } : {}), ...(options.eventBlock ? { eventBlock: options.eventBlock } : {}) }) as unknown as Internals;
   nodes.push(made);
   return made;
