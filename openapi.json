@@ -6279,7 +6279,7 @@
           },
           "costUsd": {
             "type": "number",
-            "description": "What it cost: charged to prepaid credit when it ran on the platform's key"
+            "description": "What the provider charged (OpenRouter's usage.cost). On the platform's key, prepaid credit (and an end user's) is charged this times the OpenRouter credit multiplier, as for model calls on it; on your own key, nothing"
           },
           "ms": {
             "type": "number"
@@ -6449,7 +6449,18 @@
           },
           "keyScope": {
             "type": "string",
-            "description": "A key scope whose OpenRouter key is used first, before the tenant's own"
+            "description": "A key scope whose OpenRouter key is used first, before the tenant's own (its baseUrl, a chat gateway's, is not used)"
+          },
+          "dataCollection": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "deny",
+              null
+            ],
+            "description": "deny: only providers that do not collect the state. Until OpenRouter's decisions API is confirmed to take a data policy, a request with deny is refused (400 DECISIONS_DATA_POLICY) and nothing is sent; so is an agent's decide call when its dataCollection is deny"
           },
           "subject": {
             "type": "string",

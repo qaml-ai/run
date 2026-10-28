@@ -74,6 +74,10 @@ test("POST /v1/decisions answers one state or a batch on the platform's OpenRout
   const sent = openrouter.requests.length;
   assert.equal((await r.call("/v1/decisions", { body: { state: "x", questions: { q: { type: "choice", instructions: "x", criteria: { a: "" } } } }, token: PAYG })).status, 400);
   assert.equal((await r.call("/v1/decisions", { body: { state: "x", questions: QUESTIONS, maxUsd: 1e-9 }, token: PAYG })).status, 402);
+  // Until OpenRouter's decisions API is confirmed to take a data policy, deny is refused rather than sent.
+  const denied = await r.call("/v1/decisions", { body: { state: "x", questions: QUESTIONS, dataCollection: "deny" }, token: PAYG });
+  assert.equal(denied.status, 400, denied.text);
+  assert.equal(denied.json.code, "DECISIONS_DATA_POLICY");
   assert.equal((await r.call("/v1/decisions", { body: { state: "refused", questions: QUESTIONS }, token: PAYG })).json.code, "DECISION_REFUSED", "one state's failure is the request's");
   assert.equal(openrouter.requests.length, sent + 1);
 
@@ -138,4 +142,13 @@ test("the decide builtin answers from js_exec in batches and directly, billed to
   const dear = await r.prompt(agent, "too dear", PAYG);
   assert.match(dear.outcome.result.reply, /^failed: .*more than maxUsd/);
   assert.equal(openrouter.requests.length, 151);
+});
+
+test("an agent that denies data collection is refused decide calls, and nothing is sent", async t => {
+  const { r, openrouter } = await start(t, body => toolResults(body).length ? { role: "assistant", content: `result: ${toolResults(body).at(-1)}` } : toolCall("decide", { state: "private", questions: QUESTIONS }, "call_private"), 0.001);
+  assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 1_000_000, reason: "test" }, token: OPS })).status, 201);
+  const agent = (await r.call("/v1/agents", { body: { builtins: ["decide"], dataCollection: "deny" }, token: PAYG })).json.id;
+  const record = await r.prompt(agent, "classify", PAYG);
+  assert.match(record.outcome.result.reply, /cannot honour dataCollection "deny"/);
+  assert.equal(openrouter.requests.length, 0);
 });

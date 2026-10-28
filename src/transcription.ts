@@ -192,8 +192,8 @@ export async function transcribeRequest(service: TranscriptionService, tenant: s
   try { done = await service.transcriber.transcribe({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}) }, { bytes, header }, options, signal); }
   catch (error) { await held?.release(); throw error; }
   const { transcript, usage } = done;
-  await held?.settle(usage.usage.cost.total as number);
   service.record(tenant, { ...usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
+  await held?.settle(usage.usage.cost.total as number);
   return {
     text: transcript.text, language: transcript.language ?? null, durationSeconds: transcript.seconds, model: `${service.transcriber.provider}/${transcript.model}`,
     costUsd: usage.usage.cost.total as number,

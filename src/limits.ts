@@ -118,10 +118,12 @@ export const IMAGE_LIMITS = Object.freeze({
 export const DECISION_LIMITS = Object.freeze({
   items: 100, questions: 32, idChars: 64, instructionChars: 4_000, criterionChars: 1_000, choices: 255, levels: 10,
   stateChars: 64_000, itemChars: 96_000,
-  /** A request's JSON body: a full batch of large states. */
-  requestBytes: 8 * 1024 * 1024,
+  /** A request's JSON body (a batch's states are about 20,000 characters each at most). */
+  requestBytes: 2 * 1024 * 1024,
   /** Provider calls at once: a tenant's on one node, and the node's; past them calls wait, at most `queued` a tenant. */
   tenantConcurrent: 16, nodeConcurrent: 64, queued: 1_000,
+  /** Characters of state and question held by requests in flight on a node: a tenant's, and all of them (then 429). */
+  tenantChars: 8_000_000, nodeChars: 32_000_000,
   /** Attempts of a call a provider failed for now (rate limited, overloaded, 5xx), backing off from `backoffMs`. */
   attempts: 3, backoffMs: 250,
   /** One provider call (Jev answers in 70–500 ms), and a whole request with its waits and retries. */

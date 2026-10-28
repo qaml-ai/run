@@ -330,8 +330,8 @@ export async function imageRequest(service: ImageService, tenant: string, reques
   try { made = await service.imager.generate({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}) }, { prompt: request.prompt, images, ...(mask ? { mask } : {}), options: request.options }, signal); }
   catch (error) { await held?.release(); throw error; }
   const { generated, usage } = made;
-  await held?.settle(usage.usage.cost.total as number);
   service.record(tenant, { ...usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
+  await held?.settle(usage.usage.cost.total as number);
   const volume = request.volume;
   const stamp = `${new Date().toISOString().replace(/[-:]/g, "").slice(0, 15)}-${randomBytes(3).toString("hex")}`;
   const answered = await Promise.all(generated.images.map(async (image, index) => {

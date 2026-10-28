@@ -3776,7 +3776,8 @@ answer alone. Tune thresholds on your own data, for the model you pinned: anothe
 | `items` | a batch instead: 1 to 100 `{state, questions}` (below) |
 | `model` | `typesafe/jev-1.14` (default) or `typesafe/jev-1.13`: a pinned version, so answers do not shift under your thresholds |
 | `maxUsd` | refuse (402) before anything is sent if the estimate is more |
-| `keyScope` | a key scope whose OpenRouter key goes first |
+| `keyScope` | a key scope whose OpenRouter key goes first (not its `baseUrl`: decisions always go to OpenRouter) |
+| `dataCollection` | `"deny"`: only where the provider does not keep the state. OpenRouter's decisions API is not yet confirmed to take a data policy, so for now `deny` is refused (400 `DECISIONS_DATA_POLICY`) and nothing is sent; an agent whose `dataCollection` is `deny` is refused its `decide` calls the same way |
 | `subject`, `context`, `actor`, `bucket` | who it is for, who asked, and the end user's credit bucket, as for an agent's runs |
 
 ## Batches
@@ -3796,8 +3797,10 @@ in order: one item failing does not fail the others, and is not billed.
   "usage": { "inputTokens": 120, "outputTokens": 12 }, "costUsd": 0.000005, "ms": 290 }
 ```
 
-A call the provider fails for now (rate limited, overloaded) is retried up to 3 times with backoff, honouring its
-Retry-After; a request answers within 60 seconds. Nothing is cached: send each distinct state once. Neither states nor
+A call the provider fails for now (rate limited, overloaded, or no answer within 10 seconds) is retried up to 3 times
+with backoff, honouring its Retry-After; a request answers within 60 seconds. A request's body is at most 2 MB, and an
+account's decisions in flight on a node are bounded (1,000 waiting, 8 million characters held): past them a request is
+refused with 429 before its body is read. Nothing is cached: send each distinct state once. Neither states nor
 answers are logged or kept.
 
 ## In an agent
@@ -3826,6 +3829,7 @@ estimate before it is sent.
 | 400 | | a malformed request, said before anything is sent |
 | 400 | `DECISION_REFUSED` | the provider refused the request (its reason, without your state) |
 | 400 | `DECISIONS_UNAVAILABLE` | no OpenRouter key for this account |
+| 400 | `DECISIONS_DATA_POLICY` | `dataCollection: "deny"` (the request's, or the agent's), which decisions cannot honour yet |
 | 402 | `SPEND_LIMIT` | the estimate is more than `maxUsd` or the run's budget |
 | 413 | `DECISION_TOO_LARGE` | a state over 64,000 characters, or a state and its questions over 96,000 |
 | 429 | `RATE_LIMITED` | too many decisions waiting for the account on a node |
@@ -3833,7 +3837,10 @@ estimate before it is sent.
 
 ## Cost
 
-What OpenRouter charges: Jev is $0.042 per million input tokens, and output is free. Each question adds about 100
+`costUsd` is what OpenRouter charged. On your own OpenRouter key that is all, and the runtime charges nothing. On the
+platform's key a prepaid account (and an end user's credit) pays it times the OpenRouter credit multiplier, as for
+model calls on that key (see [Pricing](https://run.camelai.com/docs/pricing.md)). A provider answer that reports neither a cost nor tokens is
+billed at the request's estimate, never at nothing. Jev is $0.042 per million input tokens, and output is free. Each question adds about 100
 tokens of the provider's own prompt to the state's, so three questions about a short message come to about 450 tokens
 ($0.00002). Usage shows decisions as their own kind (`decision`, `responses` counting the questions answered), and each
 request is a `usage.recorded` event with `decisions`.

@@ -954,9 +954,13 @@ export function api(context: ApiContext) {
   }), async c => {
     const service = context.decisions;
     if (!service) throw new HttpError(404, "Decisions are not enabled on this runtime");
+    // A tenant at its bounds on this node is refused before its body is read.
+    const saturated = service.decider.saturated(c.var.principal.tenant);
+    if (saturated) throw saturated;
     const body = await readJson(c.req.raw.body, DECISION_LIMITS.requestBytes);
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "Send a JSON object: {state, questions} or {items}");
-    const { keyScope, subject, context: claims, actor: asked, bucket, ...rest } = body as Record<string, unknown>;
+    const { keyScope, subject, context: claims, actor: asked, bucket, dataCollection, ...rest } = body as Record<string, unknown>;
+    if (dataCollection !== undefined && dataCollection !== null && dataCollection !== "deny") throw new HttpError(400, "dataCollection is \"deny\" or null");
     const request = decisionRequest(rest);
     if (keyScope !== undefined && typeof keyScope !== "string") throw new HttpError(400, "keyScope is a key scope's name");
     if (bucket !== undefined && typeof bucket !== "string") throw new HttpError(400, "bucket is a bucket's name");
@@ -964,7 +968,7 @@ export function api(context: ApiContext) {
     const actor = actorInput(asked);
     const hold = endUserHold(c.var.principal.tenant, identity?.subject, bucket as string | undefined, "decision");
     return json(c, 200, await decisionsRequest(service, c.var.principal.tenant, {
-      ...request, ...(keyScope ? { keyScope: keyScope as string } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
+      ...request, ...(keyScope ? { keyScope: keyScope as string } : {}), ...(dataCollection === "deny" ? { dataCollection } : {}), ...(identity ? { identity } : {}), ...(actor ? { actor } : {}), ...(hold ? { hold } : {}),
     }, c.req.raw.signal));
   });
 

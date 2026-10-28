@@ -10,18 +10,24 @@ import { safeError } from "./metrics.ts";
  * version). Being alpha, it may move or change shape: a 404 or 410 says decisions are unavailable, and an answer this
  * cannot read is a 502 that names what was missing, never a crash. Neither the state nor a provider's error detail that
  * may quote it is logged.
+ *
+ * Always OpenRouter's own address: a key scope's `baseUrl` (a chat gateway) and headers are for its model calls, not
+ * this API. `dataPolicy`: whether `provider.data_collection: "deny"` is sent, which OpenRouter's docs do not yet say the
+ * decisions API takes (off until a live call shows it does; agents that deny data collection are refused meanwhile).
  */
-export function openrouterDecisions(options: { outbound: Outbound; baseUrl?: string; timeoutMs?: number }): DecisionProvider {
-  const { outbound, baseUrl = "https://openrouter.ai/api/alpha", timeoutMs = DECISION_LIMITS.callTimeoutMs } = options;
+export function openrouterDecisions(options: { outbound: Outbound; baseUrl?: string; timeoutMs?: number; dataPolicy?: boolean }): DecisionProvider {
+  const { outbound, baseUrl = "https://openrouter.ai/api/alpha", timeoutMs = DECISION_LIMITS.callTimeoutMs, dataPolicy = false } = options;
   return {
     id: "openrouter",
-    async decide(item, model, credentials, signal) {
-      const url = `${(credentials.baseUrl ?? baseUrl).replace(/\/+$/, "")}/decisions`;
+    dataPolicy,
+    async decide(item, model, credentials, signal, policy) {
+      const url = `${baseUrl.replace(/\/+$/, "")}/decisions`;
+      const provider = dataPolicy && policy?.dataCollection === "deny" ? { provider: { data_collection: "deny" } } : {};
       let response: Response;
       try {
         response = await outbound.fetch(url, {
-          method: "POST", body: JSON.stringify({ model, state: item.state, questions: item.questions }),
-          headers: { Accept: "application/json", "Content-Type": "application/json", ...credentials.headers },
+          method: "POST", body: JSON.stringify({ model, state: item.state, questions: item.questions, ...provider }),
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
           secrets: credentials.apiKey ? { Authorization: `Bearer ${credentials.apiKey}` } : {}, timeoutMs, maxBytes: 1024 * 1024, signal,
         });
       } catch (error) {

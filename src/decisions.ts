@@ -135,12 +135,17 @@ const itemChars = (item: DecisionItem) => (typeof item.state === "string" ? item
 /** What a provider answered for one state, before it is checked against the questions. */
 export type ProviderDecision = { answers: unknown; model?: string; inputTokens: number; outputTokens: number; costUsd?: number };
 /** A provider's key, as a model call resolves it: its key scope's, the tenant's own, else the platform's (`platform`). */
-export type DecisionCredentials = { apiKey: string; baseUrl?: string; headers?: Record<string, string> };
+export type DecisionCredentials = { apiKey: string };
 
 export interface DecisionProvider {
   /** The provider key it uses: PUT /v1/providers/<id>/key, as for that provider's models. */
   id: string;
-  decide(item: DecisionItem, model: string, credentials: DecisionCredentials, signal: AbortSignal): Promise<ProviderDecision>;
+  /**
+   * Whether it sends `dataCollection: "deny"` on to its provider (and the provider honours it). Without it, an agent or a
+   * request that denies data collection is refused rather than sent.
+   */
+  dataPolicy?: boolean;
+  decide(item: DecisionItem, model: string, credentials: DecisionCredentials, signal: AbortSignal, policy?: { dataCollection?: "deny" }): Promise<ProviderDecision>;
 }
 
 /** Why a provider did not decide: `status` as the runtime answers it. `transient`: it may succeed if asked again soon. */
@@ -196,16 +201,22 @@ export type ItemResult =
   | { answers: Record<string, Answer>; usage: { inputTokens: number; outputTokens: number }; costUsd: number }
   | { error: { status: number; code?: string; message: string } };
 
-/** A request's outcome: each item's, and its usage record for the caller to record (none when nothing was answered). */
-export type Decided = { model: string; results: ItemResult[]; usage?: UsageRecord; costUsd: number; inputTokens: number; outputTokens: number; ms: number };
+/**
+ * A request's outcome: each item's, and its usage record for the caller to record (none when nothing was answered).
+ * `costUsd` is what the provider charged; `chargedUsd` what the tenant pays for it (on the platform's key, what its
+ * OpenRouter credits cost: `creditMultiplier` times), which an end user's hold settles at.
+ */
+export type Decided = { model: string; results: ItemResult[]; usage?: UsageRecord; costUsd: number; chargedUsd: number; inputTokens: number; outputTokens: number; ms: number };
 
 export interface DeciderOptions {
   provider: DecisionProvider;
   /** The provider's key for a tenant (in a key scope), and whether it is the platform's; throws when the tenant may not use it (spent credit). */
   key(tenant: string, keyScope: string | undefined, provider: string): Promise<(DecisionCredentials & { platform: boolean }) | undefined>;
+  /** Dollars paid per dollar the provider charges on the platform's key (OpenRouter's credits); 1 by default. */
+  creditMultiplier?: () => number;
   /** Waits between attempts; a test's may skip them. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
-  limits?: Partial<Record<"tenantConcurrent" | "nodeConcurrent" | "queued" | "attempts" | "backoffMs" | "callTimeoutMs" | "requestTimeoutMs", number>>;
+  limits?: Partial<Record<"tenantConcurrent" | "nodeConcurrent" | "queued" | "tenantChars" | "nodeChars" | "attempts" | "backoffMs" | "callTimeoutMs" | "requestTimeoutMs", number>>;
 }
 
 /** Slots taken in order: at most `max` at once, the rest waiting (a stop takes a waiter out). */
@@ -244,6 +255,9 @@ export class Decider {
   readonly limits: Record<keyof typeof DECISION_LIMITS, number>;
   private readonly node: Gate;
   private readonly tenants = new Map<string, Gate>();
+  /** Characters of state and question held by requests in flight: the node's, and each tenant's. */
+  private held = 0;
+  private readonly heldBy = new Map<string, number>();
   constructor(options: DeciderOptions) {
     this.options = options;
     this.limits = { ...DECISION_LIMITS, ...options.limits };
@@ -251,6 +265,16 @@ export class Decider {
   }
 
   get provider() { return this.options.provider.id; }
+
+  /**
+   * Why a tenant may not ask now on this node, before its request is read: as many of its decisions waiting as the queue
+   * takes, or as many characters held as it may hold. A 429 then costs no body.
+   */
+  saturated(tenant: string): HttpError | undefined {
+    if ((this.tenants.get(tenant)?.waiting.length ?? 0) >= this.limits.queued) return new HttpError(429, `Too many decisions waiting for this account on this node (at most ${this.limits.queued}): wait for some to finish`, "RATE_LIMITED");
+    if ((this.heldBy.get(tenant) ?? 0) >= this.limits.tenantChars || this.held >= this.limits.nodeChars) return new HttpError(429, "Too many decisions in flight on this node: wait for some to finish", "RATE_LIMITED");
+    return undefined;
+  }
 
   /** What an item is estimated to cost (USD) before it is sent: its characters as tokens, at the model's price. */
   estimate(items: DecisionItem[], model: string) {
@@ -265,8 +289,11 @@ export class Decider {
    * the request's deadline). An item that fails does not fail the others. The usage record (cost in `usage.cost.total`,
    * `platform` when on the platform's key) is the caller's to record, with the run's facts.
    */
-  async decide(context: { tenant: string; keyScope?: string; budget?: number }, request: DecisionRequest, signal: AbortSignal): Promise<Decided> {
+  async decide(context: { tenant: string; keyScope?: string; budget?: number; dataCollection?: "deny" | null }, request: DecisionRequest, signal: AbortSignal): Promise<Decided> {
     const { provider } = this.options;
+    // States are sent only where the agent's data policy holds: refused, not sent, where it cannot be passed on.
+    if (context.dataCollection === "deny" && !provider.dataPolicy) throw new HttpError(400, "Decisions cannot honour dataCollection \"deny\" yet: OpenRouter's decisions API has not been confirmed to take a data policy, so nothing was sent", "DECISIONS_DATA_POLICY");
+    const policy = context.dataCollection === "deny" ? { dataCollection: "deny" as const } : undefined;
     const estimate = this.estimate(request.items, request.model);
     if (request.maxUsd !== undefined && estimate > request.maxUsd) throw new HttpError(402, `These decisions cost about $${estimate.toFixed(6)}, more than maxUsd ($${request.maxUsd})`, "SPEND_LIMIT");
     if (context.budget !== undefined && estimate > context.budget) throw new HttpError(402, `These decisions cost about $${estimate.toFixed(6)}, more than the $${Math.max(0, context.budget).toFixed(6)} left of this run's spend limit`, "SPEND_LIMIT");
@@ -275,6 +302,12 @@ export class Decider {
     const { platform, ...credentials } = key;
     let tenant = this.tenants.get(context.tenant);
     if (tenant && tenant.waiting.length + request.items.length > this.limits.queued + this.limits.tenantConcurrent) throw new HttpError(429, `Too many decisions waiting for this account on this node (at most ${this.limits.queued}): wait for some to finish`, "RATE_LIMITED");
+    // What the request holds while it runs, within the tenant's and the node's bounds.
+    const chars = request.items.reduce((total, item) => total + itemChars(item), 0);
+    const tenantHeld = this.heldBy.get(context.tenant) ?? 0;
+    if (tenantHeld + chars > this.limits.tenantChars || this.held + chars > this.limits.nodeChars) throw new HttpError(429, "Too many decisions in flight on this node: wait for some to finish", "RATE_LIMITED");
+    this.heldBy.set(context.tenant, tenantHeld + chars);
+    this.held += chars;
     if (!tenant) this.tenants.set(context.tenant, tenant = new Gate(this.limits.tenantConcurrent));
     tenant.users++;
     const started = Date.now();
@@ -282,10 +315,12 @@ export class Decider {
     let served = request.model;
     const results = await Promise.all(request.items.map(async (item): Promise<ItemResult> => {
       try {
-        const answered = await this.call(tenant, item, request.model, credentials, deadline);
+        const answered = await this.call(tenant, item, request.model, credentials, deadline, policy);
         if (answered.model) served = answered.model;
         const reported = typeof answered.costUsd === "number" && Number.isFinite(answered.costUsd) && answered.costUsd >= 0;
-        const costUsd = reported ? answered.costUsd! : answered.inputTokens * (DECISION_MODELS[request.model]!.inputPerMillion) / 1_000_000;
+        // The provider's cost, else its tokens at the model's price, else (it said neither) the estimate: never $0 unsaid.
+        const costUsd = reported ? answered.costUsd! : answered.inputTokens > 0 ? answered.inputTokens * (DECISION_MODELS[request.model]!.inputPerMillion) / 1_000_000 : this.estimate([item], request.model);
+        if (!reported) console.log(JSON.stringify({ type: "decision_usage_untrusted", tenant: context.tenant, provider: provider.id, model: request.model, inputTokens: answered.inputTokens, usd: costUsd }));
         return { answers: checkedAnswers(item.questions, answered.answers), usage: { inputTokens: answered.inputTokens, outputTokens: answered.outputTokens }, costUsd };
       } catch (error) {
         if (signal.aborted) throw error;
@@ -293,7 +328,12 @@ export class Decider {
         const message = deadline.aborted ? `No answer within ${this.limits.requestTimeoutMs} ms` : error instanceof HttpError ? error.message : `The decision failed (${safeError(error)})`;
         return { error: { status, ...(error instanceof HttpError && error.code ? { code: error.code } : {}), message } };
       }
-    })).finally(() => { if (--tenant.users === 0) this.tenants.delete(context.tenant); });
+    })).finally(() => {
+      if (--tenant.users === 0) this.tenants.delete(context.tenant);
+      this.held -= chars;
+      const left = (this.heldBy.get(context.tenant) ?? 0) - chars;
+      if (left > 0) this.heldBy.set(context.tenant, left); else this.heldBy.delete(context.tenant);
+    });
     // Billed for the items answered; one that failed (a malformed answer included) is not.
     let inputTokens = 0, outputTokens = 0, costUsd = 0, decisions = 0;
     for (const [index, result] of results.entries()) {
@@ -308,11 +348,12 @@ export class Decider {
       provider: provider.id, model: request.model, kind: "decision", platform, decisions, timestamp: Date.now(),
       usage: { input: inputTokens, output: outputTokens, cost: { total: costUsd } },
     } : undefined;
-    return { model: served, results, ...(usage ? { usage } : {}), costUsd, inputTokens, outputTokens, ms };
+    const chargedUsd = platform ? costUsd * (this.options.creditMultiplier?.() ?? 1) : costUsd;
+    return { model: served, results, ...(usage ? { usage } : {}), costUsd, chargedUsd, inputTokens, outputTokens, ms };
   }
 
   /** One item, within the gates, retried while the provider fails for now and the deadline allows. */
-  private async call(tenant: Gate, item: DecisionItem, model: string, credentials: DecisionCredentials, deadline: AbortSignal): Promise<ProviderDecision> {
+  private async call(tenant: Gate, item: DecisionItem, model: string, credentials: DecisionCredentials, deadline: AbortSignal, policy?: { dataCollection?: "deny" }): Promise<ProviderDecision> {
     const { attempts, backoffMs, callTimeoutMs } = this.limits;
     const sleep = this.options.sleep ?? abortable;
     for (let attempt = 1; ; attempt++) {
@@ -320,8 +361,13 @@ export class Decider {
       await tenant.take(deadline);
       try {
         await this.node.take(deadline);
+        const timeout = AbortSignal.timeout(callTimeoutMs);
         try {
-          return await this.options.provider.decide(item, model, credentials, AbortSignal.any([deadline, AbortSignal.timeout(callTimeoutMs)]));
+          return await this.options.provider.decide(item, model, credentials, AbortSignal.any([deadline, timeout]), policy);
+        } catch (error) {
+          // The call's own timeout (not the request's): a slow call, which another attempt may answer.
+          if (timeout.aborted && !deadline.aborted) throw new DecisionFailed(502, `No answer within ${callTimeoutMs} ms`, { transient: true });
+          throw error;
         } finally { this.node.give(); }
       } catch (error) {
         if (deadline.aborted || !(error instanceof DecisionFailed && error.transient) || attempt >= attempts) throw error;
@@ -336,6 +382,8 @@ export class Decider {
 /** What `POST /v1/decisions` is asked, checked (`decisionRequest`), with who it is for and who pays. */
 export type DecisionsRequest = DecisionRequest & {
   keyScope?: string;
+  /** "deny": only where the provider takes the data policy, as an agent's dataCollection; refused otherwise. */
+  dataCollection?: "deny";
   /** Who it is for and who asked, as an agent's identity and a run's actor say (`usage.recorded`'s subject, context and actor). */
   identity?: AgentIdentity; actor?: string;
   /** When its end user pays for it: holds the estimate (USD) of their credit before anything is sent. */
@@ -355,10 +403,10 @@ export async function decisionsRequest(service: DecisionService, tenant: string,
   await service.admit(tenant);
   const held = await request.hold?.(service.decider.estimate(request.items, request.model));
   let decided: Decided;
-  try { decided = await service.decider.decide({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}) }, request, signal); }
+  try { decided = await service.decider.decide({ tenant, ...(request.keyScope ? { keyScope: request.keyScope } : {}), ...(request.dataCollection ? { dataCollection: request.dataCollection } : {}) }, request, signal); }
   catch (error) { await held?.release(); throw error; }
-  await held?.settle(decided.costUsd);
   if (decided.usage) service.record(tenant, { ...decided.usage, ...(request.actor ? { actor: request.actor } : {}), ...(request.identity ? { identity: request.identity } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}) });
+  await held?.settle(decided.chargedUsd);
   return decisionsAnswer(decided, request.batch);
 }
 
@@ -398,14 +446,14 @@ export const DECIDE: ToolDefinition = {
  * A decide call: its arguments checked, answered within `budget` (USD, when the run or agent has a limit). `record` takes
  * its usage as soon as it is answered. `hold`, when its end user pays for it, holds the estimate of their credit first.
  */
-export async function decideTool(decider: Decider, context: { tenant: string; keyScope?: string; budget?: number; record(usage: UsageRecord): void; hold?: DecisionsRequest["hold"] }, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
+export async function decideTool(decider: Decider, context: { tenant: string; keyScope?: string; budget?: number; dataCollection?: "deny" | null; record(usage: UsageRecord): void; hold?: DecisionsRequest["hold"] }, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
   const request = decisionRequest(args ?? {});
   const held = await context.hold?.(decider.estimate(request.items, request.model));
   let decided: Decided;
-  try { decided = await decider.decide({ tenant: context.tenant, ...(context.keyScope ? { keyScope: context.keyScope } : {}), ...(context.budget !== undefined ? { budget: context.budget } : {}) }, request, signal); }
+  try { decided = await decider.decide({ tenant: context.tenant, ...(context.keyScope ? { keyScope: context.keyScope } : {}), ...(context.budget !== undefined ? { budget: context.budget } : {}), ...(context.dataCollection ? { dataCollection: context.dataCollection } : {}) }, request, signal); }
   catch (error) { await held?.release(); throw error; }
   if (decided.usage) context.record(decided.usage);
-  await held?.settle(decided.costUsd);
+  await held?.settle(decided.chargedUsd);
   const value = decisionsAnswer(decided, request.batch);
   return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value };
 }
