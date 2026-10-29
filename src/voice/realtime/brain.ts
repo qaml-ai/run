@@ -1,5 +1,5 @@
 import { clock as nodeClock, type Clock } from "../../node-context.ts";
-import type { HttpError } from "../../http.ts";
+import { HttpError } from "../../http.ts";
 import { metricLine, safeError, writeMetricLine } from "../../metrics.ts";
 import type { Playback, Player } from "../../voice-speech.ts";
 import type { Cut } from "../../voice-audio.ts";
@@ -28,6 +28,10 @@ import { NO_USAGE, realtimePrice, realtimeCost, realtimeTranscriptionCost, type 
  * - **Audio out** plays on the session's connection, one response at a time. A person talking over it pauses it, and
  *   the echo guard decides: their own speech stops it, the response is cancelled, and its item is truncated at what was
  *   heard (`truncate`), so the model's history matches what people heard. Echo resumes it.
+ * - **The bot's code** may have it say given words (`say`: text to speech in the call's voice, else the model reads them
+ *   out), or speak up unprompted (`prompt`). Both wait their turn: behind what the bot is saying and answers people are
+ *   waiting for, and for nobody to be mid-turn (unless `interrupt`). Barge-in stops them as it stops an answer, and the
+ *   model hears what was said, as context. While the bot speaks, music it plays holds (`speaking`).
  * - **Tools.** `ask_agent(request)` runs the bot's agent (its tools, memory and system prompt), and the model speaks
  *   its answer; the model fills the wait itself ("let me check"). `stay_silent()` answers nothing.
  * - **Money.** Tokens, or audio duration and text items, are priced and recorded (`usage`), with end-user credit
@@ -56,6 +60,8 @@ export const REALTIME_LIMITS = Object.freeze({
   historyLines: 20,
   /** The longest an answer waits for the floor (someone else mid-turn, the answer before it still playing). */
   waitMs: 8_000,
+  /** What the bot's code asks it to say or speak up about, waiting at most; and the longest such text. */
+  announcements: 10, sayChars: 4_000, promptChars: 2_000,
   /** The model's audio is about this long, for the playback buffer's start (it comes faster than real time). */
   expectedMs: 3_000,
 });
@@ -89,6 +95,13 @@ export function realtimeInstructions(persona: string | undefined, options: { age
     "- If someone talks over you, you were cut off at that point: do not repeat what you already said unless asked.",
   ].join("\n");
 }
+/** What a response is told when the bot's code has the model read words out (no text to speech for its voice). */
+export const sayVerbatim = (text: string) =>
+  `The bot's code asks you to say the following aloud now, exactly as written, word for word, and nothing else: no greeting, no answer to it, no comment, no tool calls.\n"""\n${text}\n"""`;
+/** What a response is told when the bot's code asks it to speak up unprompted. */
+export const speakUp = (instructions: string) =>
+  `Nobody spoke to you just now: the bot's code asks you to speak up on your own, in character and briefly. ${instructions}`;
+
 /** What a response to a turn that did not clearly address the bot is told. */
 export const NOT_ADDRESSED_HINT = "This turn did not name you, and its speaker is not talking with you. Unless it is clearly meant for you, call stay_silent.";
 
@@ -122,12 +135,23 @@ export interface BrainHooks {
   /** A committed item's transcript (voice.utterance) and what transcribing it cost. */
   heard(heard: { speaker: string; speakers: string[]; text: string; seconds: number; costUsd: number; startedAt: number; endedAt: number; addressed?: Addressed }): void;
   /** A response began playing (voice.speech.started), and ended (voice.speech.ended, with what it cost). */
-  spoke(event: { type: "started"; id: string; latencyMs: number; turn?: TurnClock } | { type: "ended"; id: string; reason: "done" | "interrupted" | "error"; by?: string; seconds: number; costUsd: number }): void;
+  spoke(event: ({ type: "started"; id: string; latencyMs: number; turn?: TurnClock } | { type: "ended"; id: string; reason: "done" | "interrupted" | "error"; by?: string; seconds: number; costUsd: number }) & { /** Words the bot's code had it say (`say`), made by text to speech. */ say?: true }): void;
   /** The provider cannot be reached any more: the session ends. */
   failed(detail: string, error?: string): void;
+  /**
+   * Text to speech in the call's voice, for what the bot's code has it say: its PCM (24 kHz mono 16-bit) as it is
+   * made, and `settled` with what it cost once made. Without it, or when it fails before any audio, the model reads
+   * the words out itself.
+   */
+  synthesize?(text: string, signal: AbortSignal, settled: (costUsd: number) => void): Promise<AsyncIterable<Uint8Array>>;
+  /** The bot began speaking (true), or stopped with nothing more to say for now (false): music it plays holds meanwhile. */
+  speaking?(on: boolean): void;
   /** Structured log lines: never words. */
   log(type: string, fields?: Record<string, unknown>): void;
 }
+
+/** What the bot's code asked for: words said (`say`) or the model speaking up (`prompt`). */
+type Announcement = { kind: "say" | "prompt"; id: string; text: string; /** Said over people mid-turn too. */ urgent?: boolean };
 
 export type BrainOptions = {
   session: string; tenant: string;
@@ -190,6 +214,8 @@ type Response = {
   tool?: boolean; silent?: boolean; costUsd: number;
   hold?: Promise<Hold | undefined>;
   askedAt: number;
+  /** Words the bot's code had it say, made by text to speech (not the model's): its id, and how to stop making it. */
+  clip?: { id: string; abort: AbortController };
 };
 
 export class RealtimeBrain {
@@ -226,7 +252,11 @@ export class RealtimeBrain {
   private readonly agentCalls = new Set<AbortController>();
   private guard?: BargeInGuard;
   private readonly history: { who: string; text: string }[] = [];
+  /** What the bot's code asked it to say or speak up about, in order, waiting for the floor. */
+  private readonly announcements: Announcement[] = [];
+  private announced = 0;
   readonly stats = {
+    says: 0, prompts: 0,
     turns: 0, responses: 0, spoken: 0, speculative: 0, speculativeDiscarded: 0, superseded: 0, askAgent: 0, askAgentFailed: 0, askAgentLate: 0,
     staySilent: 0, unaddressed: 0, bargeIns: 0, echoRejected: 0, reconnects: 0, azureFallbacks: 0, costUsd: 0, inputSeconds: 0, outputSeconds: 0,
   };
@@ -335,7 +365,7 @@ export class RealtimeBrain {
     if (!this.fresh) { this.turns.delete(speaker); return; }
     const turn = new TurnClock(cut.endedAt, { session: this.options.session, tenant: this.options.tenant, ...this.ttsInfo(), speculative: false }).via("realtime").mark("turnCommit");
     // A response held for this speaker's turn is replaced by one that hears it.
-    if (current && !current.played && !current.tool && !current.cancelled) this.supersede(current);
+    if (current && !current.played && !current.tool && !current.cancelled && !current.clip) this.supersede(current);
     void this.decide(speaker, turnSoFar, turn);
   }
 
@@ -377,7 +407,87 @@ export class RealtimeBrain {
     }
     this.waitingRespond?.turn?.end("interrupted");
     this.waitingRespond = undefined;
+    stopped += this.announcements.splice(0).length;
     return stopped;
+  }
+
+  /**
+   * Say `text` (the bot's code): made by text to speech in the call's voice (`synthesize`), else read out by the model.
+   * It waits behind what the bot is saying and answers people wait for, and for nobody to be mid-turn; `interrupt`
+   * cuts off what the bot is saying (and what waits) and says it now. Answers its id and how many are ahead of it.
+   */
+  say(text: string, options: { interrupt?: boolean } = {}) {
+    return this.announce({ kind: "say", text: text.slice(0, REALTIME_LIMITS.sayChars) }, options.interrupt);
+  }
+
+  /** Speak up unprompted (the bot's code): the model answers `instructions` once the floor is free, as `say` waits. */
+  prompt(instructions: string, options: { interrupt?: boolean } = {}) {
+    return this.announce({ kind: "prompt", text: instructions.slice(0, REALTIME_LIMITS.promptChars) }, options.interrupt);
+  }
+
+  private announce(request: Omit<Announcement, "id">, interrupt?: boolean) {
+    if (this.closed) throw new HttpError(409, "The voice session ended");
+    if (interrupt) this.stopSpeaking();
+    if (this.announcements.length >= REALTIME_LIMITS.announcements) throw new HttpError(429, `At most ${REALTIME_LIMITS.announcements} things wait to be said: wait, or interrupt`, "VOICE_SAY_QUEUE_FULL");
+    const id = `say_${this.options.session.slice(3, 11)}_${++this.announced}`;
+    const queued = this.announcements.length + (this.current && !this.current.cancelled ? 1 : 0) + (this.waitingRespond ? 1 : 0);
+    this.announcements.push({ ...request, id, ...(interrupt ? { urgent: true } : {}) });
+    this.next();
+    return { id, queued };
+  }
+
+  /** The first of what the bot's code asked for, if the floor is free: said, or the model asked. */
+  private next() {
+    if (this.closed || !this.announcements.length) return;
+    // A response being made, held or played goes first, and an answer waiting for the floor.
+    if (this.current || (this.playing && !this.playing.cancelled) || this.waitingRespond) return;
+    if (!this.announcements[0].urgent && this.speaking.size) return;
+    const item = this.announcements.shift()!;
+    this.hooks.log("voice_realtime_announcement", { kind: item.kind, chars: item.text.length, tts: item.kind === "say" && !!this.hooks.synthesize });
+    if (item.kind === "prompt") { this.stats.prompts++; this.respondNow({ instructions: speakUp(item.text) }); return; }
+    this.stats.says++;
+    if (!this.hooks.synthesize) { this.respondNow({ instructions: sayVerbatim(item.text) }); return; }
+    this.clip(item);
+  }
+
+  /** Ask the model now (the floor is free), however the provider takes turns. */
+  private respondNow(request: { instructions: string }) {
+    if (this.options.ownsTurns) { this.connection?.respond(request); return; }
+    this.ask({ ...request, held: false, speculative: false });
+  }
+
+  /** Words made by text to speech, played as a response is: barge-in, stopSpeaking and the queue treat it as one. */
+  private clip(item: Announcement) {
+    const response = this.response({});
+    const abort = new AbortController();
+    response.clip = { id: item.id, abort };
+    response.said = item.text;
+    this.current = response;
+    void (async () => {
+      let heard = false;
+      try {
+        const pcm = await this.hooks.synthesize!(item.text, abort.signal, costUsd => { response.costUsd = costUsd; this.stats.costUsd += costUsd; });
+        for await (const chunk of pcm) {
+          if (response.cancelled || this.closed) break;
+          heard = true;
+          response.audio.push(chunk);
+          this.play(response);
+        }
+      } catch (error) {
+        if (!response.cancelled && !this.closed) this.hooks.log("voice_realtime_say_failed", { error: safeError(error), audio: heard });
+        // Nothing made: the model reads the words out instead.
+        if (!heard && !response.cancelled && !this.closed) {
+          response.done = true;
+          if (this.current === response) this.current = undefined;
+          this.respondNow({ instructions: sayVerbatim(item.text) });
+          return;
+        }
+      }
+      response.done = true;
+      response.audio.end();
+      if (this.current === response && (response.cancelled || !response.audio.bytes)) this.current = undefined;
+      this.release();
+    })();
   }
 
   /** The session ended or moved: nothing more is said, the agent's runs are let go, the stats are logged. */
@@ -388,8 +498,10 @@ export class RealtimeBrain {
     this.mixer.close();
     this.guard?.close();
     for (const call of this.agentCalls) call.abort();
+    this.announcements.splice(0);
     for (const response of [this.current, this.playing]) {
       if (!response) continue;
+      response.clip?.abort.abort();
       response.cancelled ??= "close";
       response.audio.end();
       response.playback?.stop();
@@ -517,7 +629,7 @@ export class RealtimeBrain {
           this.current = response;
           this.stats.responses++;
           this.reserve(response);
-        } else if (this.current && !this.current.id) this.current.id = id;
+        } else if (this.current && !this.current.id && !this.current.clip) this.current.id = id;
       },
       interrupted: () => {
         // With barge-in off, people talking over the bot never stop it.
@@ -805,9 +917,11 @@ export class RealtimeBrain {
       const { at, ...request } = this.waitingRespond;
       this.waitingRespond = undefined;
       // An answer that waited too long would answer what is no longer being talked about: the next turn will be.
-      if (at !== undefined && this.clock.now() - at > REALTIME_LIMITS.waitMs) { request.turn?.end("no_reply"); return; }
-      this.ask({ ...request, held: false, speculative: false });
+      if (at !== undefined && this.clock.now() - at > REALTIME_LIMITS.waitMs) request.turn?.end("no_reply");
+      else this.ask({ ...request, held: false, speculative: false });
     }
+    // Then what the bot's code asked it to say.
+    this.next();
   }
 
   /** A response not yet heard that a newer turn replaces. */
@@ -824,7 +938,10 @@ export class RealtimeBrain {
     response.heardMs = heardMs;
     response.audio.end();
     response.playback?.stop();
-    if (!response.done) this.connection?.cancel();
+    if (response.clip) {
+      response.clip.abort.abort();
+      response.done = true;
+    } else if (!response.done) this.connection?.cancel();
     if (response.id && (response.audio.bytes || response.played)) this.connection?.truncate(response.id, heardMs);
     if (!response.played) response.turn?.end(why === "resume" || why === "superseded" ? "interrupted" : why === "budget" ? "error" : "interrupted");
     if (this.current === response && response.done) this.current = undefined;
@@ -837,7 +954,8 @@ export class RealtimeBrain {
     const player = this.hooks.player();
     if (!player) return;
     this.playing = response;
-    const id = `rt_${this.options.session.slice(3, 11)}_${response.key}`;
+    this.hooks.speaking?.(true);
+    const id = response.clip?.id ?? `rt_${this.options.session.slice(3, 11)}_${response.key}`;
     response.playback = player.play(response.audio, () => {
       response.played = true;
       response.playedAt = this.clock.now();
@@ -845,7 +963,7 @@ export class RealtimeBrain {
       turn?.mark("firstPacket").end("spoken");
       this.stats.spoken++;
       if (response.speaker) this.options.floor.answered(response.speaker);
-      this.hooks.spoke({ type: "started", id, latencyMs: Math.round(this.clock.now() - response.askedAt), ...(turn ? { turn } : {}) });
+      this.hooks.spoke({ type: "started", id, latencyMs: Math.round(this.clock.now() - response.askedAt), ...(turn ? { turn } : {}), ...(response.clip ? { say: true as const } : {}) });
     }, REALTIME_LIMITS.expectedMs);
     void response.playback.done.then(result => {
       if (this.playing === response) this.playing = undefined;
@@ -853,16 +971,21 @@ export class RealtimeBrain {
       const seconds = Math.round(response.audio.bytes / 48 / 10) / 100;
       this.stats.outputSeconds += seconds;
       if (response.said) this.remember("You", response.cancelled ? `${spokenPart(response)}… (cut off)` : response.said);
+      // Words the model didn't make: it hears that the bot said them (what was heard of them).
+      if (response.clip && response.played && response.said) {
+        this.connection?.note(`[You said this aloud just now, as the bot's code had you say it${response.cancelled ? ", and were cut off" : ""}] ${response.cancelled ? spokenPart(response) : response.said}`);
+      }
       const by = response.cancelled === "resume" ? "superseded" : response.cancelled === "close" ? "end" : response.cancelled;
-      if (response.played) this.hooks.spoke({ type: "ended", id, reason: response.cancelled ? "interrupted" : result === "error" ? "error" : "done", ...(by ? { by } : {}), seconds, costUsd: response.costUsd });
+      if (response.played) this.hooks.spoke({ type: "ended", id, reason: response.cancelled ? "interrupted" : result === "error" ? "error" : "done", ...(by ? { by } : {}), seconds, costUsd: response.costUsd, ...(response.clip ? { say: true as const } : {}) });
       // The next response's audio may be waiting for this one to end.
       if (this.current && this.current !== response) this.play(this.current);
       this.release();
+      if (!this.playing) this.hooks.speaking?.(false);
     });
   }
 
   private responseDone(id: string, outcome: { status: string; usage: RealtimeUsage; error?: string }) {
-    const response = this.byId(id) ?? (this.current && !this.current.id ? this.current : undefined);
+    const response = this.byId(id) ?? (this.current && !this.current.id && !this.current.clip ? this.current : undefined);
     const costUsd = this.metered ? this.flushMeter(outcome.usage, (response?.audio.bytes ?? 0) / 48_000) : realtimeCost(this.options.reference, outcome.usage);
     if (!this.metered) {
       this.stats.costUsd += costUsd;

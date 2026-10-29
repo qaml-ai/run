@@ -1218,7 +1218,10 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         # This runtime runs without AGENT_VOICE: each call reaches the API and is answered that voice is off.
         discord = {"guildId": "1", "channelId": "2", "userId": "3", "sessionId": "s", "endpoint": "c-1.discord.media", "token": "t"}
         for call in (lambda: self.agents.voice.create(discord, subject="user_1", agent=None, silence_ms=600, voice="coral"), lambda: self.runtime.voice.list(state="live"),
-                     lambda: self.runtime.voice.end("vs_000000000000000000000000"), lambda: self.agents.voice.stop_speaking("vs_000000000000000000000000")):
+                     lambda: self.runtime.voice.end("vs_000000000000000000000000"), lambda: self.agents.voice.stop_speaking("vs_000000000000000000000000"),
+                     lambda: self.agents.voice.say("vs_000000000000000000000000", "Hello"), lambda: self.agents.voice.prompt("vs_000000000000000000000000", "Say hi"),
+                     lambda: self.agents.voice.play("vs_000000000000000000000000", "https://example.com/song.mp3"), lambda: self.agents.voice.play("vs_000000000000000000000000", file=b"RIFF"),
+                     lambda: self.agents.voice.audio("vs_000000000000000000000000"), lambda: self.agents.voice.control_audio("vs_000000000000000000000000", action="pause")):
             with self.assertRaises(AgentError) as refused:
                 await call()
             self.assertEqual(refused.exception.status, 404)

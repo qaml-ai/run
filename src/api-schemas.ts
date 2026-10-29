@@ -130,7 +130,7 @@ export const KeyScope = z.object({
   })),
 }).openapi("KeyScope");
 
-const eventTypes = z.array(z.enum(EVENT_TYPES)).openapi({ description: "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, the end_user.* events and the billing.* events" });
+const eventTypes = z.array(z.enum(EVENT_TYPES)).openapi({ description: "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, voice.audio.started, voice.audio.ended, the end_user.* events and the billing.* events" });
 export const WebhookEndpointInput = z.object({
   url: z.string().openapi({ description: "An HTTPS URL that receives the events, each a POST signed per Standard Webhooks", example: "https://example.com/hooks/agents" }),
   events: eventTypes,
@@ -261,6 +261,7 @@ export const WebhookEvents = {
   "voice.speech.started": envelope("voice.speech.started", z.object({
     ...voiceFacts, speechId: z.string(), latencyMs: z.number().openapi({ description: "From the brain asking for the answer to its first audio going out" }),
     startedAt: z.number().openapi({ description: "When its first audio went out (ms)" }),
+    source: z.literal("say").optional().openapi({ description: "say: words your app had it say (POST …/say), made by text to speech; absent for the model's answers" }),
     turn: z.object({
       path: z.literal("realtime"),
       stagesMs: z.record(z.string(), z.number()).openapi({ description: "Each stage of the turn, in ms since the end of the person's speech: turnCommit, ttsFirstAudio (the model's first audio), firstPacket (its first audio out)" }),
@@ -272,11 +273,20 @@ export const WebhookEvents = {
     reason: z.enum(["done", "interrupted", "error"]).openapi({ description: "done: said whole; interrupted: cut short (by); error: it could not be played" }),
     by: z.enum(["requested", "barge_in", "end", "superseded", "budget"]).optional().openapi({ description: "With interrupted: DELETE …/speak; a person started talking (bargeIn); the session ended or moved; a newer turn took its place; credit ran out" }),
     seconds: z.number().openapi({ description: "Seconds of speech played" }), costUsd: z.number().openapi({ description: "What its tokens cost (the session's usage already counts it)" }),
+    source: z.literal("say").optional().openapi({ description: "say: words your app had it say (POST …/say); costUsd is then its text to speech" }),
     brain: z.literal("realtime"),
   }), "An answer ended"),
   "voice.recording.ended": envelope("voice.recording.ended", z.object({
     ...voiceFacts, recording: VoiceRecording,
   }), "A voice session's recording ended: its files are ready (or it failed), until recording.expiresAt"),
+  "voice.audio.started": envelope("voice.audio.started", z.object({
+    ...voiceFacts, trackId: z.string(), title: z.string().nullable(), source: z.enum(["url", "upload"]),
+  }), "Audio your app queued (POST …/audio) started playing"),
+  "voice.audio.ended": envelope("voice.audio.ended", z.object({
+    ...voiceFacts, trackId: z.string(), title: z.string().nullable(), source: z.enum(["url", "upload"]),
+    reason: z.enum(["done", "skipped", "stopped", "error"]).openapi({ description: "done: played to its end (or its length limit); skipped or stopped: PATCH …/audio; error: it could not be read or decoded (error says why)" }),
+    seconds: z.number().openapi({ description: "Seconds of it heard" }), error: z.string().optional(),
+  }), "Audio your app queued ended"),
   "end_user.balance.low": envelope("end_user.balance.low", z.object({
     endUser: z.string(), balance: z.number().int().openapi({ description: "The balance now (charged micro-USD)" }),
     threshold: z.number().int().openapi({ description: "The threshold that applied: the person's own lowBalance, else the tenant's" }), previousBalance: z.number().int(),
@@ -1575,6 +1585,7 @@ export const VoiceSession = z.object({
   }).optional().openapi({ description: "Its realtime brain's settings (none for a session from before them)" }),
   speakers: z.record(z.string(), z.string()).optional().openapi({ description: "Speakers' names by user id, as given" }),
   speeches: z.number().openapi({ description: "Speeches played (each counted when it ended having made speech)" }), spokenSeconds: z.number().openapi({ description: "Seconds of speech made (billed)" }),
+  tracks: z.number().openapi({ description: "Audio tracks your app had it play (POST …/audio) that were heard" }), playedSeconds: z.number().openapi({ description: "Seconds of them heard (not billed)" }),
   utterances: z.number(), speechSeconds: z.number().openapi({ description: "Seconds of speech transcribed (billed)" }), costUsd: z.number(),
   createdAt: z.number(), startedAt: z.number().nullable(), lastSpeechAt: z.number().nullable(), endedAt: z.number().nullable(),
 }).openapi("VoiceSession");
@@ -1593,7 +1604,37 @@ export const VoiceSessionCreated = VoiceSession.extend({
 export const VoiceBrowserToken = z.object({
   url: z.string().openapi({ description: "The session's WebSocket" }), token: z.string().openapi({ description: "Opens it once, as ?token=" }), expiresAt: z.number(),
 }).openapi("VoiceBrowserToken");
-export const VoiceSpeechStopped = z.object({ stopped: z.number().openapi({ description: "Answers stopped: the one playing and the one being made" }) }).openapi("VoiceSpeechStopped");
+export const VoiceSpeechStopped = z.object({ stopped: z.number().openapi({ description: "Answers stopped (the one playing and the one being made), and what waited to be said" }) }).openapi("VoiceSpeechStopped");
+export const VoiceSayInput = z.strictObject({
+  text: z.string().min(1).max(4_000).openapi({ description: "What the bot says, word for word, in its call's voice" }),
+  interrupt: z.boolean().optional().openapi({ description: "Cut off what the bot is saying (and what waits to be said) and say this now, even over people mid-turn. Default false: it waits its turn" }),
+}).openapi("VoiceSayInput");
+export const VoicePromptInput = z.strictObject({
+  instructions: z.string().min(1).max(2_000).openapi({ description: "What to speak up about: the realtime model says it in its own words, in character", example: "Tell everyone the raid starts in five minutes." }),
+  interrupt: z.boolean().optional().openapi({ description: "As say's" }),
+}).openapi("VoicePromptInput");
+export const VoiceQueued = z.object({
+  id: z.string().openapi({ description: "The speech's id, as its voice.speech.* events name it (say)" }),
+  queued: z.number().openapi({ description: "How many are ahead of it: what the bot is saying, an answer waiting, and what waits to be said" }),
+}).openapi("VoiceQueued");
+export const VoiceAudioInput = z.strictObject({
+  url: z.string().openapi({ description: "An https URL of an audio file or stream: MP3, Ogg Opus or WAV. Read as it plays, through the outbound guard" }),
+  title: z.string().max(200).optional().openapi({ description: "A name for it, echoed in voice.audio.* events" }),
+  next: z.boolean().optional().openapi({ description: "Before the others waiting, not after" }),
+  volume: z.number().min(0).max(1).optional().openapi({ description: "Set the volume (0 to 1; default 0.5)" }),
+}).openapi("VoiceAudioInput");
+const voiceTrack = { id: z.string(), title: z.string().nullable(), source: z.enum(["url", "upload"]), addedAt: z.number() };
+export const VoiceAudioState = z.object({
+  playing: z.object({ ...voiceTrack, positionMs: z.number(), paused: z.boolean() }).nullable(),
+  queue: z.array(z.object(voiceTrack)), volume: z.number(), paused: z.boolean(),
+}).openapi("VoiceAudioState");
+export const VoiceAudioQueued = z.object({
+  track: z.object(voiceTrack), position: z.number().openapi({ description: "0: playing now; else its place in the queue" }),
+}).openapi("VoiceAudioQueued");
+export const VoiceAudioControl = z.strictObject({
+  action: z.enum(["pause", "resume", "skip", "stop"]).optional().openapi({ description: "pause and resume what plays; skip to the next; stop: end what plays and empty the queue" }),
+  volume: z.number().min(0).max(1).optional(),
+}).openapi("VoiceAudioControl");
 export const VoiceSessionEnded = VoiceSession.extend({
   leave: z.object({ op: z.literal(4), d: z.object({ guild_id: z.string(), channel_id: z.null(), self_mute: z.boolean(), self_deaf: z.boolean() }) })
     .openapi({ description: "Send this on your gateway to leave the channel: ending the session stops the listening, not the bot's presence" }),

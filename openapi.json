@@ -1213,6 +1213,13 @@
                 "type": "number",
                 "description": "When its first audio went out (ms)"
               },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "say"
+                ],
+                "description": "say: words your app had it say (POST …/say), made by text to speech; absent for the model's answers"
+              },
               "turn": {
                 "type": "object",
                 "properties": {
@@ -1349,6 +1356,13 @@
               "costUsd": {
                 "type": "number",
                 "description": "What its tokens cost (the session's usage already counts it)"
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "say"
+                ],
+                "description": "say: words your app had it say (POST …/say); costUsd is then its text to speech"
               },
               "brain": {
                 "type": "string",
@@ -1598,6 +1612,209 @@
           "files",
           "expiresAt"
         ]
+      },
+      "Event_voice_audio.started": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "voice.audio.started"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string",
+                "description": "The voice session (vs_…)"
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "discord",
+                  "browser"
+                ]
+              },
+              "guildId": {
+                "type": "string"
+              },
+              "channelId": {
+                "type": "string"
+              },
+              "botUserId": {
+                "type": "string"
+              },
+              "subject": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The session's end user"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "The session's metadata, as set"
+              },
+              "trackId": {
+                "type": "string"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "url",
+                  "upload"
+                ]
+              }
+            },
+            "required": [
+              "session",
+              "provider",
+              "guildId",
+              "channelId",
+              "botUserId",
+              "subject",
+              "metadata",
+              "trackId",
+              "title",
+              "source"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "Audio your app queued (POST …/audio) started playing"
+      },
+      "Event_voice_audio.ended": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "voice.audio.ended"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string",
+                "description": "The voice session (vs_…)"
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "discord",
+                  "browser"
+                ]
+              },
+              "guildId": {
+                "type": "string"
+              },
+              "channelId": {
+                "type": "string"
+              },
+              "botUserId": {
+                "type": "string"
+              },
+              "subject": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The session's end user"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "The session's metadata, as set"
+              },
+              "trackId": {
+                "type": "string"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "url",
+                  "upload"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "done",
+                  "skipped",
+                  "stopped",
+                  "error"
+                ],
+                "description": "done: played to its end (or its length limit); skipped or stopped: PATCH …/audio; error: it could not be read or decoded (error says why)"
+              },
+              "seconds": {
+                "type": "number",
+                "description": "Seconds of it heard"
+              },
+              "error": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "session",
+              "provider",
+              "guildId",
+              "channelId",
+              "botUserId",
+              "subject",
+              "metadata",
+              "trackId",
+              "title",
+              "source",
+              "reason",
+              "seconds"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "Audio your app queued ended"
       },
       "Event_end_user_balance.low": {
         "type": "object",
@@ -2804,10 +3021,12 @@
                 "voice.utterance",
                 "voice.speech.started",
                 "voice.speech.ended",
-                "voice.recording.ended"
+                "voice.recording.ended",
+                "voice.audio.started",
+                "voice.audio.ended"
               ]
             },
-            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, the end_user.* events and the billing.* events"
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, voice.audio.started, voice.audio.ended, the end_user.* events and the billing.* events"
           },
           "description": {
             "type": "string"
@@ -2870,10 +3089,12 @@
                 "voice.utterance",
                 "voice.speech.started",
                 "voice.speech.ended",
-                "voice.recording.ended"
+                "voice.recording.ended",
+                "voice.audio.started",
+                "voice.audio.ended"
               ]
             },
-            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, the end_user.* events and the billing.* events"
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, voice.audio.started, voice.audio.ended, the end_user.* events and the billing.* events"
           },
           "description": {
             "type": "string",
@@ -2925,10 +3146,12 @@
                 "voice.utterance",
                 "voice.speech.started",
                 "voice.speech.ended",
-                "voice.recording.ended"
+                "voice.recording.ended",
+                "voice.audio.started",
+                "voice.audio.ended"
               ]
             },
-            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, the end_user.* events and the billing.* events"
+            "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, voice.audio.started, voice.audio.ended, the end_user.* events and the billing.* events"
           },
           "description": {
             "type": "string",
@@ -11320,6 +11543,14 @@
             "type": "number",
             "description": "Seconds of speech made (billed)"
           },
+          "tracks": {
+            "type": "number",
+            "description": "Audio tracks your app had it play (POST …/audio) that were heard"
+          },
+          "playedSeconds": {
+            "type": "number",
+            "description": "Seconds of them heard (not billed)"
+          },
           "utterances": {
             "type": "number"
           },
@@ -11371,6 +11602,8 @@
           "endOfTurn",
           "speeches",
           "spokenSeconds",
+          "tracks",
+          "playedSeconds",
           "utterances",
           "speechSeconds",
           "costUsd",
@@ -11802,7 +12035,7 @@
         "properties": {
           "stopped": {
             "type": "number",
-            "description": "Answers stopped: the one playing and the one being made"
+            "description": "Answers stopped (the one playing and the one being made), and what waited to be said"
           }
         },
         "required": [
@@ -11895,6 +12128,245 @@
           "id",
           "deleted"
         ]
+      },
+      "VoiceQueued": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The speech's id, as its voice.speech.* events name it (say)"
+          },
+          "queued": {
+            "type": "number",
+            "description": "How many are ahead of it: what the bot is saying, an answer waiting, and what waits to be said"
+          }
+        },
+        "required": [
+          "id",
+          "queued"
+        ]
+      },
+      "VoiceSayInput": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "What the bot says, word for word, in its call's voice"
+          },
+          "interrupt": {
+            "type": "boolean",
+            "description": "Cut off what the bot is saying (and what waits to be said) and say this now, even over people mid-turn. Default false: it waits its turn"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "VoicePromptInput": {
+        "type": "object",
+        "properties": {
+          "instructions": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "What to speak up about: the realtime model says it in its own words, in character",
+            "example": "Tell everyone the raid starts in five minutes."
+          },
+          "interrupt": {
+            "type": "boolean",
+            "description": "As say's"
+          }
+        },
+        "required": [
+          "instructions"
+        ],
+        "additionalProperties": false
+      },
+      "VoiceAudioQueued": {
+        "type": "object",
+        "properties": {
+          "track": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "url",
+                  "upload"
+                ]
+              },
+              "addedAt": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "source",
+              "addedAt"
+            ]
+          },
+          "position": {
+            "type": "number",
+            "description": "0: playing now; else its place in the queue"
+          }
+        },
+        "required": [
+          "track",
+          "position"
+        ]
+      },
+      "VoiceAudioInput": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "An https URL of an audio file or stream: MP3, Ogg Opus or WAV. Read as it plays, through the outbound guard"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "A name for it, echoed in voice.audio.* events"
+          },
+          "next": {
+            "type": "boolean",
+            "description": "Before the others waiting, not after"
+          },
+          "volume": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Set the volume (0 to 1; default 0.5)"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "additionalProperties": false
+      },
+      "VoiceAudioState": {
+        "type": "object",
+        "properties": {
+          "playing": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "url",
+                  "upload"
+                ]
+              },
+              "addedAt": {
+                "type": "number"
+              },
+              "positionMs": {
+                "type": "number"
+              },
+              "paused": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "source",
+              "addedAt",
+              "positionMs",
+              "paused"
+            ]
+          },
+          "queue": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "url",
+                    "upload"
+                  ]
+                },
+                "addedAt": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "id",
+                "title",
+                "source",
+                "addedAt"
+              ]
+            }
+          },
+          "volume": {
+            "type": "number"
+          },
+          "paused": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "playing",
+          "queue",
+          "volume",
+          "paused"
+        ]
+      },
+      "VoiceAudioControl": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "pause",
+              "resume",
+              "skip",
+              "stop"
+            ],
+            "description": "pause and resume what plays; skip to the next; stop: end what plays and empty the queue"
+          },
+          "volume": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "additionalProperties": false
       },
       "VoiceSessionEnded": {
         "allOf": [
@@ -21919,6 +22391,292 @@
         }
       }
     },
+    "/v1/voice/sessions/{id}/say": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceSayInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued: the bot says it in its call's voice once its turn comes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceQueued"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/voice/sessions/{id}/prompt": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoicePromptInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued: the model speaks up once the floor is free",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceQueued"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/voice/sessions/{id}/audio": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "With a file as the body: a name for it"
+            },
+            "required": false,
+            "description": "With a file as the body: a name for it",
+            "name": "title",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "With a file as the body: before the others waiting"
+            },
+            "required": false,
+            "description": "With a file as the body: before the others waiting",
+            "name": "next",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "With a file as the body: set the volume (0 to 1)"
+            },
+            "required": false,
+            "description": "With a file as the body: set the volume (0 to 1)",
+            "name": "volume",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceAudioInput"
+              }
+            },
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary",
+                "description": "The file itself (MP3, Ogg Opus or WAV; 10 MB at most), as audio/* or application/octet-stream"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued: it plays after what plays and waits (or at once)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceAudioQueued"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What plays, and what waits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceAudioState"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceAudioControl"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What plays, and what waits, after it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceAudioState"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agents/{id}/mounts": {
       "get": {
         "parameters": [
@@ -23341,6 +24099,44 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Event_voice_recording.ended"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "voice.audio.started": {
+      "post": {
+        "summary": "voice.audio.started",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_voice_audio.started"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "voice.audio.ended": {
+      "post": {
+        "summary": "voice.audio.ended",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_voice_audio.ended"
               }
             }
           }

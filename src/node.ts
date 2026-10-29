@@ -667,8 +667,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       const owner = await (agent ? clients.ownerElsewhere(agent) : volumes.ownerElsewhere(actor));
       return owner ? { node: owner, actor } : undefined;
     }
-    // Speech plays on the node that holds the voice session's connection.
-    const spoken = /^\/v1\/voice\/sessions\/(vs_[a-f0-9]{24})\/speak(?:[/?]|$)/.exec(url)?.[1];
+    // Speech and audio play on the node that holds the voice session's connection.
+    const spoken = /^\/v1\/voice\/sessions\/(vs_[a-f0-9]{24})\/(?:speak|say|prompt|audio)(?:[/?]|$)/.exec(url)?.[1];
     if (spoken) {
       const owner = await ownership.route(`voice:${spoken}`);
       return owner && owner !== node ? { node: owner, actor: `voice:${spoken}` } : undefined;
@@ -947,13 +947,15 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (id === "gemini") return [id, geminiLive(config.voice.geminiLiveUrl ? { baseUrl: config.voice.geminiLiveUrl } : {})];
     return [id, openaiRealtime(config.voice.realtimeUrl ? { baseUrl: config.voice.realtimeUrl } : {})];
   })) : undefined;
+  // A voice session spends while the account may (its answers are not runs: no rate limit).
+  const admitVoice = async (tenant: string) => {
+    const refused = await accounts.runLimit(tenant);
+    if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
+  };
   const voice = voiceTransports && new VoiceSessions({
     // Recordings are kept in the node's object storage, under recordings/.
     db, storage, accounts, node, ownership, transports: voiceTransports, ...(deps.voiceEndpoints ? { endpoints: deps.voiceEndpoints } : {}),
-    admit: async tenant => {
-      const refused = await accounts.runLimit(tenant);
-      if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
-    },
+    admit: admitVoice,
     agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
     // Listening sessions' utterances are transcribed and billed as POST /v1/transcriptions is.
     transcriber,
@@ -965,6 +967,10 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     perTenant: tenant => tenants.maxVoiceSessions(tenant) ?? config.voice.perTenant, perNode: config.voice.perNode,
     // A voice.utterance goes out at once (the outbox's scan is every 5 s).
     kickWebhooks: () => webhooks.kick(),
+    // What the bot's code has it say is made as POST /v1/speech makes it; audio it plays from URLs is read through the
+    // outbound guard, as URLs a model picks are (never the operator's allowed origins).
+    speech: { synthesizer, admit: admitVoice, record: (tenant, usage) => accounts.recordUsage(tenant, "", usage) },
+    audioOutbound: outbound.withoutOrigins(),
     // A browser call's socket is on this thread, so its media is too; Discord's runs in media workers.
     media: (transport, provider) => provider === "browser" ? inlineMedia(transport, turnModels) : deps.voiceMedia ? deps.voiceMedia(transport) : voiceHost ? voiceHost.factory() : inlineMedia(transport, turnModels),
     ...(browserTransport ? { browser: { secret: sessionSecret!, url: (id: string) => `${(browserUrl || links.publicUrl).replace(/^http/, "ws")}/v1/voice/sessions/${id}/socket` } } : {}),

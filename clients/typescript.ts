@@ -674,6 +674,8 @@ export type WebhookEvent = { id: string; created: number } & (
       startedAt?: number;
       /** For the answer to a person's turn: each stage, in ms since the end of their speech (turnCommit, ttsFirstAudio, firstPacket). */
       turn?: { path: "realtime"; stagesMs: Record<string, number> };
+      /** Words your app had it say (`say`). */
+      source?: "say";
       /** The session's realtime brain answered. */
       brain: "realtime";
     } }
@@ -683,10 +685,17 @@ export type WebhookEvent = { id: string; created: number } & (
       by?: "requested" | "barge_in" | "end" | "superseded" | "budget";
       /** Seconds played, and what its tokens cost (the session's usage already counts it). */
       seconds: number; costUsd: number;
+      /** Words your app had it say (`say`): costUsd is its text to speech. */
+      source?: "say";
       brain: "realtime";
     } }
   /** A recording ended: its files are ready (or it failed), until `recording.expiresAt`. */
-  | { type: "voice.recording.ended"; data: VoiceFacts & { recording: VoiceRecording } });
+  | { type: "voice.recording.ended"; data: VoiceFacts & { recording: VoiceRecording } }
+  | { type: "voice.audio.started"; data: VoiceFacts & { trackId: string; title: string | null; source: "url" | "upload" } }
+  | { type: "voice.audio.ended"; data: VoiceFacts & {
+      trackId: string; title: string | null; source: "url" | "upload";
+      reason: "done" | "skipped" | "stopped" | "error"; seconds: number; error?: string;
+    } });
 /** What every voice.* event says of its session. */
 type VoiceFacts = { session: string; provider: "discord"; guildId: string; channelId: string; botUserId: string; subject: string | null; metadata: Record<string, unknown> };
 /**
@@ -1423,6 +1432,8 @@ export interface VoiceSession {
   utterances: number; speechSeconds: number;
   /** Speeches played, and seconds of speech made. */
   speeches: number; spokenSeconds: number;
+  /** Audio tracks your app had it play (`play`) that were heard, and the seconds heard (not billed). */
+  tracks: number; playedSeconds: number;
   costUsd: number;
   createdAt: number; startedAt: number | null; lastSpeechAt: number | null; endedAt: number | null;
 }
@@ -1445,6 +1456,10 @@ export type VoiceRecording = {
   files: Array<{ name: string; contentType: "audio/ogg"; bytes: number; seconds: number; speakerId?: string }>;
   error?: string; expiresAt: number | null;
 };
+/** A track of audio a voice session plays (POST …/audio). */
+export type VoiceTrack = { id: string; title: string | null; source: "url" | "upload"; addedAt: number };
+export type VoiceAudioQueued = { track: VoiceTrack; position: number };
+export type VoiceAudioState = { playing: (VoiceTrack & { positionMs: number; paused: boolean }) | null; queue: VoiceTrack[]; volume: number; paused: boolean };
 export type VoiceSessionEnded = VoiceSession & { leave: { op: 4; d: { guild_id: string; channel_id: null; self_mute: boolean; self_deaf: boolean } } };
 
 export interface VoiceSearchOptions {
@@ -1504,8 +1519,36 @@ export class Voice {
   update(id: string, input: { discord?: Partial<Pick<DiscordVoiceGrant, "channelId" | "sessionId" | "endpoint" | "token">>; ignoreUserIds?: string[]; metadata?: Record<string, unknown>; speakers?: Record<string, string> }): Promise<VoiceSession> {
     return this.transport.json(this.path(id), this.key(), "PATCH", input);
   }
-  /** Stop what the bot is saying, and what it was going to. */
+  /** Stop what the bot is saying, and what it was going to (what waits to be said too). */
   stopSpeaking(id: string): Promise<{ stopped: number }> { return this.transport.json(`${this.path(id)}/speak`, this.key(), "DELETE"); }
+  /**
+   * Have the bot say `text`, word for word, in its call's voice (text to speech), after what it is saying (or at once,
+   * cutting it off, with `interrupt`). Its voice.speech.* events have `source: "say"` and the answer's `id`.
+   */
+  say(id: string, text: string, options: { interrupt?: boolean } = {}): Promise<{ id: string; queued: number }> {
+    return this.transport.json(`${this.path(id)}/say`, this.key(), "POST", { text, ...options }, false);
+  }
+  /** Have the bot speak up unprompted: its realtime model says `instructions` in its own words, once the floor is free. */
+  prompt(id: string, instructions: string, options: { interrupt?: boolean } = {}): Promise<{ id: string; queued: number }> {
+    return this.transport.json(`${this.path(id)}/prompt`, this.key(), "POST", { instructions, ...options }, false);
+  }
+  /**
+   * Play audio in the call: an https URL of an MP3, Ogg Opus or WAV file or stream (read as it plays), or the file's
+   * bytes (10 MB at most). It queues after what plays; the bot's speech holds it. voice.audio.* events say how it went.
+   */
+  async play(id: string, source: { url: string } | { file: Uint8Array | Blob }, options: { title?: string; next?: boolean; volume?: number } = {}): Promise<VoiceAudioQueued> {
+    if ("url" in source) return this.transport.json(`${this.path(id)}/audio`, this.key(), "POST", { url: source.url, ...options }, false);
+    const query = new URLSearchParams(Object.entries(options).flatMap(([name, value]) => value === undefined ? [] : [[name, String(value)]]));
+    const body = source.file instanceof Blob ? source.file : new Blob([source.file as Uint8Array<ArrayBuffer>]);
+    const response = await this.transport.raw(`${this.path(id)}/audio${query.size ? `?${query}` : ""}`, this.key(), { method: "POST", body, headers: { "Content-Type": "application/octet-stream" } });
+    return response.json();
+  }
+  /** What plays, and what waits. */
+  audio(id: string): Promise<VoiceAudioState> { return this.transport.json(`${this.path(id)}/audio`, this.key()); }
+  /** Pause, resume, skip or stop (the queue too) what plays, and set its volume (0 to 1). */
+  controlAudio(id: string, input: { action?: "pause" | "resume" | "skip" | "stop"; volume?: number }): Promise<VoiceAudioState> {
+    return this.transport.json(`${this.path(id)}/audio`, this.key(), "PATCH", input);
+  }
   /** End it; send the answer's `leave` on your gateway to leave the channel. Ending an ended session answers it again. */
   end(id: string): Promise<VoiceSessionEnded> { return this.transport.json(this.path(id), this.key(), "DELETE"); }
   /**

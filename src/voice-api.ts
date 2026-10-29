@@ -2,7 +2,8 @@ import { createRoute, z, type RouteConfig } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { VoiceSessions } from "./voice-sessions.ts";
-import { HttpError, readJson } from "./http.ts";
+import { HttpError, readBytes, readJson } from "./http.ts";
+import { AUDIO_LIMITS } from "./voice/jukebox.ts";
 import * as schema from "./api-schemas.ts";
 
 type Route = (config: RouteConfig, handler: (c: Context<any>) => Promise<Response> | Response) => void;
@@ -78,6 +79,44 @@ export function voiceRoutes(route: Route, voice: () => VoiceSessions | undefined
   });
   route(createRoute({ method: "delete", path: "/v1/voice/recordings/{id}", request: { params: sessionId }, responses: { 200: reply("The recording and its files, deleted", schema.VoiceRecordingDeleted) } }),
     async c => json(c, 200, await service().deleteRecording(c.var.principal.tenant, c.req.param("id")!)));
+  route(createRoute({
+    method: "post", path: "/v1/voice/sessions/{id}/say", request: { params: sessionId, body: body(schema.VoiceSayInput) },
+    responses: { 202: reply("Queued: the bot says it in its call's voice once its turn comes", schema.VoiceQueued) },
+  }), async c => json(c, 202, await service().say(c.var.principal.tenant, c.req.param("id")!, await parse(schema.VoiceSayInput, c) as { text: string; interrupt?: boolean })));
+  route(createRoute({
+    method: "post", path: "/v1/voice/sessions/{id}/prompt", request: { params: sessionId, body: body(schema.VoicePromptInput) },
+    responses: { 202: reply("Queued: the model speaks up once the floor is free", schema.VoiceQueued) },
+  }), async c => json(c, 202, await service().prompt(c.var.principal.tenant, c.req.param("id")!, await parse(schema.VoicePromptInput, c) as { instructions: string; interrupt?: boolean })));
+  route(createRoute({
+    method: "post", path: "/v1/voice/sessions/{id}/audio",
+    request: {
+      params: sessionId,
+      query: z.object({
+        title: z.string().optional().openapi({ description: "With a file as the body: a name for it" }),
+        next: z.enum(["true", "false"]).optional().openapi({ description: "With a file as the body: before the others waiting" }),
+        volume: z.string().optional().openapi({ description: "With a file as the body: set the volume (0 to 1)" }),
+      }),
+      body: { content: { "application/json": { schema: schema.VoiceAudioInput }, "application/octet-stream": { schema: z.string().openapi({ format: "binary", description: "The file itself (MP3, Ogg Opus or WAV; 10 MB at most), as audio/* or application/octet-stream" }) } } },
+    },
+    responses: { 202: reply("Queued: it plays after what plays and waits (or at once)", schema.VoiceAudioQueued) },
+  }), async c => {
+    const type = c.req.header("content-type") ?? "";
+    const tenant = c.var.principal.tenant, id = c.req.param("id")!;
+    if (/^application\/json(;|$)/i.test(type)) return json(c, 202, await service().play(tenant, id, await parse(schema.VoiceAudioInput, c) as { url: string; title?: string; next?: boolean; volume?: number }));
+    if (!/^(audio\/[\w.+-]+|application\/octet-stream)(;|$)/i.test(type)) throw new HttpError(415, "Send JSON with a url, or the file as audio/* or application/octet-stream");
+    const bytes = new Uint8Array(await readBytes(c.req.raw.body, AUDIO_LIMITS.uploadBytes));
+    const volume = c.req.query("volume");
+    return json(c, 202, await service().play(tenant, id, {
+      bytes, ...(c.req.query("title") !== undefined ? { title: c.req.query("title") } : {}), ...(c.req.query("next") === "true" ? { next: true } : {}),
+      ...(volume !== undefined ? { volume: Number(volume) } : {}),
+    }));
+  });
+  route(createRoute({ method: "get", path: "/v1/voice/sessions/{id}/audio", request: { params: sessionId }, responses: { 200: reply("What plays, and what waits", schema.VoiceAudioState) } }),
+    async c => json(c, 200, await service().audio(c.var.principal.tenant, c.req.param("id")!)));
+  route(createRoute({
+    method: "patch", path: "/v1/voice/sessions/{id}/audio", request: { params: sessionId, body: body(schema.VoiceAudioControl) },
+    responses: { 200: reply("What plays, and what waits, after it", schema.VoiceAudioState) },
+  }), async c => json(c, 200, await service().controlAudio(c.var.principal.tenant, c.req.param("id")!, await parse(schema.VoiceAudioControl, c) as { action?: "pause" | "resume" | "skip" | "stop"; volume?: number })));
   route(createRoute({
     method: "delete", path: "/v1/voice/sessions/{id}", request: { params: sessionId },
     responses: { 200: reply("The session, ended; and the OP 4 your app sends to leave the channel", schema.VoiceSessionEnded) },

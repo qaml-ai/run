@@ -20,6 +20,10 @@ import type { TurnModels } from "./voice/turns/inference.ts";
 import { assemble, Recorder, RECORDING_LIMITS, type RecordedPacket, type RecordingFile, type RecordingTracks } from "./voice/recorder.ts";
 import type { Storage } from "../shared/storage.ts";
 import { RealtimeBrain, ASK_AGENT, STAY_SILENT, REALTIME_LIMITS, realtimeInstructions, type BrainHooks } from "./voice/realtime/brain.ts";
+import { Jukebox, AUDIO_LIMITS, type AudioSource } from "./voice/jukebox.ts";
+import { speechRequest, type SpeechService } from "./speech-api.ts";
+import type { Outbound } from "./outbound.ts";
+import { FILE_LIMITS } from "./limits.ts";
 import { realtimePrice, REALTIME_PROVIDERS, REALTIME_TRANSCRIPTION, realtimeVoice, type RealtimeCredentials, type RealtimeProvider, type RealtimeProviderId } from "./voice/realtime/provider.ts";
 
 /**
@@ -211,6 +215,8 @@ type Row = {
   id: string; tenant: string; provider: string; guild: string; bot_user: string; channel: string; state: VoiceState;
   end_reason: string | null; sealed: Sealed | null; options: VoiceOptions & { ending?: Ending }; revision: number;
   utterances: number; speech_seconds: number; cost: string | number; speeches: number; spoken_seconds: string | number;
+  /** Audio the bot played (POST …/audio): seconds heard, and tracks. */
+  played_seconds?: string | number; tracks?: number;
   created_at: string | number; started_at: string | number | null; last_speech_at: string | number | null; ended_at: string | number | null; updated_at: string | number;
 };
 const num = (value: string | number | null) => value === null ? null : Number(value);
@@ -265,6 +271,7 @@ export function sessionView(row: Row) {
     endOfTurn: options.endOfTurn ?? { mode: "silence" as const, ...SMART_DEFAULTS },
     addressing: options.addressing ?? { ...DEFAULT_ADDRESSING },
     utterances: row.utterances, speechSeconds: row.speech_seconds, speeches: row.speeches ?? 0, spokenSeconds: Number(row.spoken_seconds ?? 0),
+    tracks: row.tracks ?? 0, playedSeconds: Number(row.played_seconds ?? 0),
     costUsd: Number(row.cost) / 1_000_000,
     createdAt: num(row.created_at)!, startedAt: num(row.started_at), lastSpeechAt: num(row.last_speech_at), endedAt: num(row.ended_at),
   };
@@ -459,6 +466,14 @@ export interface VoiceSessionsOptions {
   endpoints?: RegExp;
   /** Send the webhook outbox now (Webhooks.kick): a voice event is waited on, by a bot that answers aloud. */
   kickWebhooks?(): void;
+  /**
+   * Text to speech, as POST /v1/speech makes it, for what the bot's code has it say (POST …/say) in the call's voice
+   * (OpenAI's for an OpenAI brain, ElevenLabs' for an ElevenLabs one); without it, or for another brain, the model
+   * reads the words out.
+   */
+  speech?: SpeechService;
+  /** How audio URLs are read (POST …/audio): the outbound guard without the operator's allowed origins. Without it, only uploads play. */
+  audioOutbound?: Outbound;
   /** Browser sessions' sockets: the secret their tokens are signed with, and where pages reach them. */
   browser?: { secret: string; url(session: string): string };
   /**
@@ -509,6 +524,8 @@ type Held = {
   recording?: { id: string; recorder: Recorder };
   /** Work on its recording (start, chunks, end), one at a time. */
   recordingWork?: Promise<void>;
+  /** Audio the bot plays into the call (POST …/audio), once it has played any. */
+  jukebox?: Jukebox;
 };
 export class VoiceSessions {
   readonly db: Db;
@@ -792,6 +809,129 @@ export class VoiceSessions {
     const held = this.held.get(id);
     if (!held) throw new HttpError(503, "This voice session is moving between nodes; retry");
     return { stopped: held.brain?.stopSpeaking() ?? 0 };
+  }
+
+  /** The session, held here and speaking, for what the bot's code has it say or play. */
+  private async speaker(tenant: string, id: string): Promise<Held & { brain: RealtimeBrain }> {
+    const row = await this.row(tenant, id);
+    if (row.options.brain === "listen") throw new HttpError(409, "This voice session listens and does not speak", "VOICE_SPEAK_DISABLED");
+    if (row.state === "ended") throw new HttpError(409, "This voice session ended", "VOICE_SESSION_ENDED");
+    const held = this.held.get(id);
+    if (!held?.brain) throw new HttpError(503, "This voice session is moving between nodes; retry");
+    return held as Held & { brain: RealtimeBrain };
+  }
+
+  /**
+   * Have the bot say `text` (POST …/say): in its call's voice, after what it is saying and answers people wait for
+   * (`interrupt`: cutting that off, now). Answers the speech's id (its voice.speech.* events') and how many are ahead.
+   */
+  async say(tenant: string, id: string, input: { text: string; interrupt?: boolean }) {
+    const text = input.text.trim();
+    if (!text) throw new HttpError(400, "text must say something");
+    if (text.length > REALTIME_LIMITS.sayChars) throw new HttpError(400, `text must be at most ${REALTIME_LIMITS.sayChars} characters`);
+    const held = await this.speaker(tenant, id);
+    return held.brain.say(text, { interrupt: input.interrupt === true });
+  }
+
+  /** Have the bot speak up unprompted (POST …/prompt): its model answers `instructions` once the floor is free. */
+  async prompt(tenant: string, id: string, input: { instructions: string; interrupt?: boolean }) {
+    const instructions = input.instructions.trim();
+    if (!instructions) throw new HttpError(400, "instructions must say something");
+    if (instructions.length > REALTIME_LIMITS.promptChars) throw new HttpError(400, `instructions must be at most ${REALTIME_LIMITS.promptChars} characters`);
+    const held = await this.speaker(tenant, id);
+    return held.brain.prompt(instructions, { interrupt: input.interrupt === true });
+  }
+
+  /** Queue audio to play in the call (POST …/audio): an https URL, or bytes given. Answers the track and its place. */
+  async play(tenant: string, id: string, input: { url?: string; bytes?: Uint8Array; title?: string; next?: boolean; volume?: number }) {
+    let source: AudioSource;
+    if (input.bytes) source = { bytes: input.bytes };
+    else if (typeof input.url === "string") {
+      if (!this.options.audioOutbound) throw new HttpError(404, "Playing audio from URLs is not enabled on this runtime");
+      try { this.options.audioOutbound.check(input.url); }
+      catch (error) { throw new HttpError(400, `url: ${(error as Error).message}`); }
+      source = { url: input.url };
+    } else throw new HttpError(400, "Give the audio: a url, or the file as the body");
+    if (input.title !== undefined && input.title.length > AUDIO_LIMITS.titleChars) throw new HttpError(400, `title must be at most ${AUDIO_LIMITS.titleChars} characters`);
+    const held = await this.speaker(tenant, id);
+    return (held.jukebox ??= this.jukeboxOf(held)).add(source, input);
+  }
+
+  /** What plays and waits (GET …/audio). */
+  async audio(tenant: string, id: string) {
+    const held = await this.speaker(tenant, id);
+    return held.jukebox?.state() ?? { playing: null, queue: [], volume: 0.5, paused: false };
+  }
+
+  /** Control what plays (PATCH …/audio): pause, resume, skip or stop (the queue too), and its volume. */
+  async controlAudio(tenant: string, id: string, input: { action?: "pause" | "resume" | "skip" | "stop"; volume?: number }) {
+    const held = await this.speaker(tenant, id);
+    const jukebox = held.jukebox ??= this.jukeboxOf(held);
+    if (input.volume !== undefined) jukebox.setVolume(input.volume);
+    switch (input.action) {
+      case "pause": return jukebox.pause();
+      case "resume": return jukebox.resume();
+      case "skip": return jukebox.skip();
+      case "stop": return jukebox.stop();
+      default: return jukebox.state();
+    }
+  }
+
+  /**
+   * A held session's jukebox: on its media, reading URLs through the outbound guard as they play. What plays keeps the
+   * session from idling; each track's start and end go out as voice.audio.* events, and the seconds played are counted.
+   */
+  private jukeboxOf(held: Held): Jukebox {
+    const outbound = this.options.audioOutbound;
+    const log = (type: string, fields: Record<string, unknown> = {}) => console.log(JSON.stringify({ type, session: held.id, node: this.options.node, ...fields }));
+    return new Jukebox({
+      player: () => held.media?.speaks ? held.media : undefined,
+      open: async (source, signal) => {
+        if ("bytes" in source) return (async function* () { yield source.bytes; })();
+        if (!outbound) throw new HttpError(404, "Playing audio from URLs is not enabled on this runtime");
+        const address = new URL(source.url);
+        const where = `${address.origin}${address.pathname}`.slice(0, 200);
+        let response: Response;
+        try {
+          response = await outbound.fetch(address, { signal, stream: true, timeoutMs: FILE_LIMITS.urlMs, maxBytes: Number.POSITIVE_INFINITY, maxRedirects: FILE_LIMITS.urlRedirects });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          throw new HttpError(400, `Could not fetch ${where} (${safeError(error).slice(0, 200)})`);
+        }
+        if (!response.ok || !response.body) { await response.body?.cancel(); throw new HttpError(400, `Could not fetch ${where} (HTTP ${response.status})`); }
+        const body = response.body;
+        // At most fileBytes of it: a stream ends there.
+        return (async function* () {
+          let bytes = 0;
+          for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
+            const room = AUDIO_LIMITS.fileBytes - bytes;
+            if (room <= 0) break;
+            bytes += chunk.byteLength;
+            yield chunk.byteLength > room ? chunk.subarray(0, room) : chunk;
+          }
+          await body.cancel().catch(() => {});
+        })();
+      },
+      active: () => {
+        const now = Date.now();
+        void underClaim(this.db, held.claim, sql => sql.query("update voice_sessions set last_speech_at = greatest(coalesce(last_speech_at, 0), $2), updated_at = $2 where id = $1 and state <> 'ended'", [held.id, now]))
+          .catch(error => log("voice_audio_write_failed", { error: safeError(error) }));
+      },
+      event: event => {
+        const track = { trackId: event.track.id, title: event.track.title, source: event.track.source };
+        const data = event.type === "started" ? track : { ...track, reason: event.reason, seconds: event.seconds, ...(event.error ? { error: event.error } : {}) };
+        void transaction(this.db, async sql => {
+          const query = event.type === "ended"
+            ? sql.query("update voice_sessions set played_seconds = played_seconds + $2, tracks = tracks + $3, updated_at = $4 where id = $1 returning *", [held.id, event.seconds, event.seconds > 0 ? 1 : 0, Date.now()])
+            : sql.query("select * from voice_sessions where id = $1", [held.id]);
+          const row = (await query).rows[0] as Row | undefined;
+          if (row?.options.deliver.webhooks) await enqueueEvents(sql, [this.event(row, `voice.audio.${event.type}`, data, `voice:${held.id}:audio.${event.type}:${event.track.id}`)]);
+          if (row) held.row = { ...held.row, played_seconds: row.played_seconds, tracks: row.tracks };
+        }).then(() => this.options.kickWebhooks?.(), error => log("voice_audio_event_failed", { error: safeError(error) }));
+        held.media?.notify?.({ type: "audio", state: event.type, trackId: event.track.id, ...(event.type === "ended" ? { reason: event.reason } : {}) });
+      },
+      log,
+    });
   }
 
   /** End a session (`requested`): answers it, and the OP 4 the app sends to leave the channel. */
@@ -1303,6 +1443,7 @@ export class VoiceSessions {
     if (this.held.get(held.id) !== held) return;
     this.held.delete(held.id);
     held.brain?.close();
+    held.jukebox?.close();
     // What turn-taking did in this session, for tuning: likely ends spoken past (resumes) are speculation discarded.
     if (held.turnStats) {
       const { likelyEnds, resumes, turns } = held.turnStats;
@@ -1543,6 +1684,23 @@ export class VoiceSessions {
     };
     const unnamed = new Map<string, string>();
     let asks = 0;
+    // What the bot's code has it say, by text to speech in the call's voice: OpenAI's voices for an OpenAI brain,
+    // ElevenLabs' for an ElevenLabs one, as POST /v1/speech makes and bills it (kind speech), on the session's subject.
+    const tts = this.options.speech;
+    const choice = provider.id === "openai" ? {} : provider.id === "elevenlabs" ? { providers: ["elevenlabs/eleven_flash_v2_5"], voices: { elevenlabs: realtime.voice } } : undefined;
+    const speech: BrainHooks["synthesize"] = tts && choice ? async (text, signal, settled) => {
+      const { keyScope, subject, bucket } = options();
+      const made = await speechRequest(tts, held.tenant, {
+        text, voice: provider.id === "openai" ? realtime.voice : DEFAULT_VOICE, format: "pcm", ...(keyScope ? { keyScope } : {}),
+        ...(choice.providers ? { choice } : {}), identity: identity(), actor: `voice:${held.id}`,
+        ...(subject !== undefined && this.options.credit ? { hold: (usd: number) => this.options.credit!.hold(held.tenant, subject, bucket ?? DEFAULT_BUCKET, usd, "voice_say", { session: held.id }) } : {}),
+        settled: ({ costUsd }) => {
+          settled(costUsd);
+          if (costUsd > 0) void write("update voice_sessions set cost = cost + $2, updated_at = $3 where id = $1 returning *", [Math.round(costUsd * 1_000_000), Date.now()]);
+        },
+      }, signal);
+      return made.body as unknown as AsyncIterable<Uint8Array>;
+    } : undefined;
     const log = (type: string, fields: Record<string, unknown> = {}) => console.log(JSON.stringify({ type, session: held.id, node: this.options.node, ...fields }));
     const counted = (row: Row) => { held.row = { ...held.row, utterances: row.utterances, last_speech_at: row.last_speech_at, speeches: row.speeches, spoken_seconds: row.spoken_seconds, cost: row.cost, speech_seconds: row.speech_seconds }; };
     /** A change to the session's counts, and the event it makes (if any), in one transaction. */
@@ -1636,20 +1794,23 @@ export class VoiceSessions {
           const startedAt = Date.now();
           const answers = spoke.turn ? { turn: { path: "realtime", stagesMs: spoke.turn.stages() } } : {};
           held.media?.notify?.({ type: "speech", state: "started", speechId: spoke.id, latencyMs: spoke.latencyMs, startedAt, ...answers });
-          void write("select * from voice_sessions where id = $1", [], { type: "voice.speech.started", key: `voice:${held.id}:voice.speech.started:${spoke.id}`, data: () => ({ speechId: spoke.id, latencyMs: spoke.latencyMs, startedAt, ...answers }) });
+          void write("select * from voice_sessions where id = $1", [], { type: "voice.speech.started", key: `voice:${held.id}:voice.speech.started:${spoke.id}`, data: () => ({ speechId: spoke.id, latencyMs: spoke.latencyMs, startedAt, ...answers, ...(spoke.say ? { source: "say" } : {}) }) });
           return;
         }
         held.media?.notify?.({ type: "speech", state: "ended", speechId: spoke.id, reason: spoke.reason, ...(spoke.by ? { by: spoke.by } : {}), seconds: spoke.seconds });
         // Its cost is the session's already (usage): the speech is counted here.
         void write("update voice_sessions set speeches = speeches + 1, spoken_seconds = spoken_seconds + $2, updated_at = $3 where id = $1 returning *", [spoke.seconds, Date.now()], {
           type: "voice.speech.ended", key: `voice:${held.id}:voice.speech.ended:${spoke.id}`,
-          data: () => ({ speechId: spoke.id, reason: spoke.reason, ...(spoke.by ? { by: spoke.by } : {}), seconds: spoke.seconds, costUsd: spoke.costUsd }),
+          data: () => ({ speechId: spoke.id, reason: spoke.reason, ...(spoke.by ? { by: spoke.by } : {}), seconds: spoke.seconds, costUsd: spoke.costUsd, ...(spoke.say ? { source: "say" } : {}) }),
         });
       },
       failed: (detail, error) => {
         void this.finish(this.held.get(held.id) === held ? held : undefined, held.id, { reason: "error", detail, ...(error ? { error } : {}) })
           .catch(error => console.error(JSON.stringify({ type: "voice_finish_failed", session: held.id, error: safeError(error) })));
       },
+      ...(speech ? { synthesize: speech } : {}),
+      // Music the bot plays holds while it speaks.
+      speaking: on => held.jukebox?.duck(on),
       log,
     };
     const policy = interruption(options());
@@ -1663,7 +1824,7 @@ export class VoiceSessions {
   }
 
   /** An event about a session, for the tenant's webhook endpoints. */
-  protected event(row: Row, type: "voice.session.started" | "voice.session.ended" | "voice.session.error" | "voice.utterance" | "voice.speech.started" | "voice.speech.ended" | "voice.recording.ended", data: Record<string, unknown>, key: string): WebhookEvent {
+  protected event(row: Row, type: "voice.session.started" | "voice.session.ended" | "voice.session.error" | "voice.utterance" | "voice.speech.started" | "voice.speech.ended" | "voice.recording.ended" | "voice.audio.started" | "voice.audio.ended", data: Record<string, unknown>, key: string): WebhookEvent {
     const { options } = row;
     return webhookEvent(type, row.tenant, {
       session: row.id, provider: row.provider, guildId: row.guild, channelId: row.channel, botUserId: row.bot_user,

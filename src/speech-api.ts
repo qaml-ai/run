@@ -31,6 +31,8 @@ export type SpeechRequest = {
   choice?: SpeechChoice;
   identity?: AgentIdentity; actor?: string;
   hold?: (usd: number) => Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
+  /** What was made and its cost, once billed (a voice session counts it as its own). */
+  settled?: (made: { costUsd: number; seconds: number }) => void;
 };
 
 /**
@@ -95,6 +97,7 @@ export async function speechRequest(service: SpeechService, tenant: string, requ
       speeches: 1, audioSeconds: seconds, timestamp: Date.now(),
       ...(request.identity ? { identity: request.identity } : {}), ...(request.actor ? { actor: request.actor } : {}), ...(request.keyScope ? { keyScope: request.keyScope } : {}),
     } as UsageRecord);
+    request.settled?.({ costUsd, seconds });
     console.log(JSON.stringify({ type: "speech_made", tenant, chars: request.text.length, seconds, format: request.format, aborted: abort.signal.aborted }));
   };
   let first: IteratorResult<Uint8Array>;
