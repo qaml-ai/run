@@ -148,8 +148,8 @@ and the time taken (`transcribed`), and error classes; never audio, a transcript
 A voice session (`src/voice-sessions.ts`, [Voice calls](../guides/voice-calls.md)) keeps a `voice_sessions` row: the
 Discord server, channel and bot ids, its settings (with the tenant's `subject`, `context` and `metadata`), counts and
 times. The voice credentials the app forwarded (session id, endpoint, token) are sealed with `AGENT_SECRETS_KEY` and
-dropped when the session ends; ended rows are deleted after 30 days, and with the account. Audio is never written
-anywhere: it streams from the owning node's memory to the session's realtime provider (OpenAI's Realtime API or Google's
+dropped when the session ends; ended rows are deleted after 30 days, and with the account. Audio is not written
+anywhere unless the tenant records the call (`voice_recordings`, below): it streams from the owning node's memory to the session's realtime provider (OpenAI's Realtime API or Google's
 Gemini Live, on the tenant's key or the platform's), which transcribes it and answers aloud, under its API data policy
 (on the platform's OpenAI key, Microsoft's Azure OpenAI instead when the operator sends it there, as for transcription,
 with OpenAI only when Azure cannot take the session);
@@ -158,6 +158,14 @@ never written. A transcript lives in the `voice.utterance` webhook delivery unti
 what the model asks `deliver.agent` (`ask_agent`) stays in that agent's history as a prompt. Logs carry ids,
 lengths, counts and close codes (`voice_*` lines), never audio, transcripts or the credentials;
 @discordjs/voice's own debug output, which prints the voice gateway's packets, stays off.
+
+A recording (`POST /v1/voice/sessions/{id}/recording`, `src/voice/recorder.ts`) is the one way a call's audio is
+written: only when the tenant asks, with a notice its app posts in the call. While it records, the owning node writes
+the audio heard and played to object storage (`recordings/<tenant>/<id>/chunks/`), listed in a `voice_recordings` row
+(the session, its settings and `metadata`, times, sizes). When it ends the chunks are made into Ogg Opus files
+(`recordings/<tenant>/<id>/<name>`) and deleted; the files and the row are deleted `retentionHours` after it ended
+(default 24 hours, at most 30 days) by the hourly prune, sooner with `DELETE /v1/voice/recordings/{id}`, and with the
+account. They are not in the account export. Logs carry ids, sizes, lengths and reasons, never audio.
 
 ## Images
 

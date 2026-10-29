@@ -5,6 +5,7 @@ import { TurnSegmenter } from "./turns/segmenter.ts";
 import type { Playback } from "../voice-speech.ts";
 import { opusFromPcm, Segmenter, type Cut, type SegmenterOptions } from "../voice-audio.ts";
 import { safeError } from "../metrics.ts";
+import type { RecordedPacket } from "./recorder.ts";
 
 /**
  * A voice session's media plane (docs/operations/voice-pipeline.md): the call's connection, each speaker's audio cut
@@ -36,6 +37,8 @@ export type MediaOptions = {
    * node's turn models; else on silence (Segmenter).
    */
   endOfTurn?: EndOfTurn;
+  /** The session is recording: every packet heard and played goes to `recorded` (src/voice/recorder.ts). */
+  record?: boolean;
 };
 
 /** What the media reports to its session. Each is called on the session's thread. */
@@ -63,6 +66,8 @@ export interface MediaEvents {
   cut(cut: Cut): void;
   /** Turn-taking's events, with smart end of turn (likely_end, resume, turn_end…), after the segmenter acted on each. */
   turn?(event: TurnEvent): void;
+  /** With `record`: packets heard (by speaker) and played (the bot's own user), as they came, in batches. */
+  recorded?(packets: RecordedPacket[]): void;
   /**
    * The media died (its worker crashed, ran out of memory or stopped answering): no event follows, and its playbacks
    * ended `error`. Only media in a worker can. `kind`: crashed, out_of_memory, unresponsive or memory_limit.
@@ -93,6 +98,9 @@ export interface Media {
   close(flush: "handoff" | "end" | "error"): Promise<void>;
 }
 
+/** How often packets for a recording cross to the session, at most. */
+const RECORD_BATCH_MS = 200;
+
 /** Opens a session's media. */
 export type MediaFactory = (session: string, credentials: VoiceCredentials, options: MediaOptions, events: MediaEvents) => Media;
 
@@ -120,6 +128,9 @@ export class MediaSession implements Media {
   private readonly barged = new Set<string>();
   private paused = false;
   private closed = false;
+  /** Packets for the recording, sent in a batch every RECORD_BATCH_MS. */
+  private recording: RecordedPacket[] = [];
+  private recordTimer?: ReturnType<typeof setTimeout>;
 
   constructor(transport: VoiceTransport, credentials: VoiceCredentials, options: MediaOptions, events: MediaEvents, models?: TurnModels) {
     this.options = { ...options, ignoreUserIds: [...options.ignoreUserIds] };
@@ -147,7 +158,9 @@ export class MediaSession implements Media {
       packet: (speaker, packet, lost) => {
         if (this.closed || speaker === this.self || this.options.ignoreUserIds.includes(speaker)) return;
         this.segmenter.packet(speaker, packet, lost);
+        if (this.options.record) this.record(speaker, packet);
       },
+      played: packet => { if (!this.closed && this.options.record) this.record(this.self, packet); },
       broken: speaker => { if (!this.closed) this.segmenter.broken(speaker); },
       lost: (reason, detail) => { if (!this.closed) events.lost(reason, detail); },
       diagnostic: (event, fields) => { if (!this.closed) events.diagnostic(event, fields); },
@@ -191,6 +204,22 @@ export class MediaSession implements Media {
 
   configure(options: Partial<MediaOptions>) {
     this.options = { ...this.options, ...options };
+    if (!this.options.record) this.sendRecorded();
+  }
+
+  /** A packet for the recording: copied (the transport may reuse its buffer), and sent with the next batch. */
+  private record(speaker: string, packet: Uint8Array) {
+    this.recording.push({ speaker, at: Date.now(), packet: Uint8Array.from(packet) });
+    this.recordTimer ??= setTimeout(() => this.sendRecorded(), RECORD_BATCH_MS);
+  }
+
+  private sendRecorded() {
+    clearTimeout(this.recordTimer);
+    this.recordTimer = undefined;
+    if (!this.recording.length) return;
+    const batch = this.recording;
+    this.recording = [];
+    this.events.recorded?.(batch);
   }
 
   others() { return this.connection.others(); }
@@ -219,6 +248,7 @@ export class MediaSession implements Media {
     try { this.segmenter.flush(flush); }
     catch (error) { this.events.diagnostic("audio_failed", { error: safeError(error) }); }
     this.closed = true;
+    this.sendRecorded();
     for (const playback of this.playing) playback.stop();
     // A handoff leaves the call to the next node: the voice session must stay valid for it.
     this.connection.close(flush === "handoff" ? "handoff" : "end");

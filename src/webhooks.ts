@@ -20,7 +20,7 @@ import { deliveryLine, recordEventMetrics, writeMetricLine } from "./metrics.ts"
  * body, as before: nodes of an earlier release, which send from that outbox during a deploy, never see
  * an endpoint's deliveries, and a change they make to the usage webhook is the one every node reads.
  */
-export const EVENT_TYPES = ["run.started", "run.completed", "run.failed", "input.requested", "input.resolved", "usage.recorded", "billing.balance.low", "billing.balance.depleted", "billing.topup.receipt", "billing.topup.declined", "billing.topup.action_required", "billing.topup.no_card", "billing.topup.limit", "billing.topup.reconcile", "end_user.balance.low", "end_user.credit.exhausted", "end_user.credit.granted", "end_user.credit.refunded", "end_user.credit.adjusted", "end_user.allowance.low", "voice.session.started", "voice.session.ended", "voice.session.error", "voice.utterance", "voice.speech.started", "voice.speech.ended"] as const;
+export const EVENT_TYPES = ["run.started", "run.completed", "run.failed", "input.requested", "input.resolved", "usage.recorded", "billing.balance.low", "billing.balance.depleted", "billing.topup.receipt", "billing.topup.declined", "billing.topup.action_required", "billing.topup.no_card", "billing.topup.limit", "billing.topup.reconcile", "end_user.balance.low", "end_user.credit.exhausted", "end_user.credit.granted", "end_user.credit.refunded", "end_user.credit.adjusted", "end_user.allowance.low", "voice.session.started", "voice.session.ended", "voice.session.error", "voice.utterance", "voice.speech.started", "voice.speech.ended", "voice.recording.ended"] as const;
 export type EventType = typeof EVENT_TYPES[number];
 /** An event for the tenant's endpoints; `legacy` is a usage event's body for the usage webhook. */
 /**

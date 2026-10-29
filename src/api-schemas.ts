@@ -183,6 +183,22 @@ const voiceFacts = {
   guildId: z.string(), channelId: z.string(), botUserId: z.string(),
   subject: z.string().nullable().openapi({ description: "The session's end user" }), metadata: z.record(z.string(), z.unknown()).openapi({ description: "The session's metadata, as set" }),
 };
+export const VoiceRecording = z.object({
+  id: z.string().openapi({ example: "vr_3f9c0a1b2c3d4e5f60718293" }), session: z.string().openapi({ description: "The voice session it records (vs_…)" }),
+  state: z.enum(["recording", "stopping", "ready", "failed"]).openapi({ description: "recording; stopping: ended, its files being made; ready: its files can be downloaded until expiresAt; failed: its files could not be made (error)" }),
+  tracks: z.enum(["mixed", "speakers"]).openapi({ description: "mixed: one file, everyone and the bot mixed (mono); speakers: a file per speaker, the bot's own speech among them, all the same length" }),
+  maxMinutes: z.number(), maxBytes: z.number(), retentionHours: z.number(), metadata: z.record(z.string(), z.unknown()),
+  bytes: z.number().openapi({ description: "Audio recorded so far (what maxBytes counts; the files add Ogg's framing and the silence between speech)" }),
+  startedAt: z.number(), endedAt: z.number().nullable(),
+  endReason: z.enum(["stopped", "max_duration", "max_size", "session_ended", "error"]).nullable().openapi({ description: "stopped: DELETE …/recording; max_duration, max_size: its limits; session_ended: the session ended while it recorded; error: its files could not be made" }),
+  seconds: z.number().nullable().openapi({ description: "Its length, once ready" }),
+  files: z.array(z.object({
+    name: z.string().openapi({ description: "recording.ogg, or <speaker id>.ogg for each speaker" }), contentType: z.literal("audio/ogg"), bytes: z.number(), seconds: z.number(),
+    speakerId: z.string().optional().openapi({ description: "With tracks speakers: whose track it is (the bot's user id for its own speech)" }),
+  })).openapi({ description: "Ogg Opus files, once ready: GET /v1/voice/recordings/{id}/files/{name}" }),
+  error: z.string().optional(),
+  expiresAt: z.number().nullable().openapi({ description: "When its files are deleted (retentionHours after it ended)" }),
+}).openapi("VoiceRecording");
 export const WebhookEvents = {
   "run.started": envelope("run.started", z.object({ ...runFacts, resumes: z.number().optional().openapi({ description: "Set when a node resumed a turn whose node was lost" }) }), "A run began"),
   "run.completed": envelope("run.completed", z.object({
@@ -258,6 +274,9 @@ export const WebhookEvents = {
     seconds: z.number().openapi({ description: "Seconds of speech played" }), costUsd: z.number().openapi({ description: "What its tokens cost (the session's usage already counts it)" }),
     brain: z.literal("realtime"),
   }), "An answer ended"),
+  "voice.recording.ended": envelope("voice.recording.ended", z.object({
+    ...voiceFacts, recording: VoiceRecording,
+  }), "A voice session's recording ended: its files are ready (or it failed), until recording.expiresAt"),
   "end_user.balance.low": envelope("end_user.balance.low", z.object({
     endUser: z.string(), balance: z.number().int().openapi({ description: "The balance now (charged micro-USD)" }),
     threshold: z.number().int().openapi({ description: "The threshold that applied: the person's own lowBalance, else the tenant's" }), previousBalance: z.number().int(),
@@ -1579,6 +1598,20 @@ export const VoiceSessionEnded = VoiceSession.extend({
   leave: z.object({ op: z.literal(4), d: z.object({ guild_id: z.string(), channel_id: z.null(), self_mute: z.boolean(), self_deaf: z.boolean() }) })
     .openapi({ description: "Send this on your gateway to leave the channel: ending the session stops the listening, not the bot's presence" }),
 }).openapi("VoiceSessionEnded");
+export const VoiceRecordingInput = z.strictObject({
+  tracks: z.enum(["mixed", "speakers"]).optional().openapi({ description: "mixed (the default): one file, everyone mixed; speakers: a file per speaker" }),
+  maxMinutes: z.number().int().optional().openapi({ description: "It ends after this long: 1 to 240, default 60" }),
+  maxBytes: z.number().int().optional().openapi({ description: "It ends once it holds this much audio: 1 MiB to 100 MiB, default 25 MiB" }),
+  retentionHours: z.number().int().optional().openapi({ description: "Its files are kept this long after it ends: 1 to 720 (30 days), default 24" }),
+  metadata: z.record(z.string(), z.unknown()).optional().openapi({ description: "Anything, at most 4 KB of JSON, given back with it" }),
+}).openapi("VoiceRecordingInput");
+export const VoiceRecordingStarted = VoiceRecording.extend({
+  notice: z.object({
+    required: z.literal(true), channelId: z.string(),
+    text: z.string().openapi({ description: "Post this in the voice channel's chat now: people must know they are recorded (and tell anyone who joins while it records)" }),
+  }),
+}).openapi("VoiceRecordingStarted");
+export const VoiceRecordingDeleted = z.object({ id: z.string(), deleted: z.literal(true) }).openapi("VoiceRecordingDeleted");
 export const VoiceSessionList = z.object({
   sessions: z.array(VoiceSession), next: z.string().nullable().openapi({ description: "Pass as after for the next page; null at the end" }),
 }).openapi("VoiceSessionList");

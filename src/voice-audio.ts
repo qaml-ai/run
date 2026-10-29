@@ -60,7 +60,10 @@ function oggPage(packets: Uint8Array[], granule: bigint, serial: number, sequenc
   return page;
 }
 
-/** Ogg Opus (RFC 7845) of these packets: OpusHead and OpusTags pages, then up to 50 packets (a second) a page. */
+/**
+ * Ogg Opus (RFC 7845) of these packets: OpusHead and OpusTags pages, then up to 50 packets (a second) a page, fewer
+ * when their lacing would pass a page's 255 segments (large packets: 255 bytes each take a segment).
+ */
 export function oggOpus(packets: Uint8Array[], channels = 2): Buffer {
   const serial = randomInt(0, 0xffffffff);
   const head = Buffer.alloc(19);
@@ -76,10 +79,16 @@ export function oggOpus(packets: Uint8Array[], channels = 2): Buffer {
   vendor.copy(tags, 12);
   const pages = [oggPage([head], 0n, serial, 0, 0x02), oggPage([tags], 0n, serial, 1, 0)];
   let granule = 0n;
-  for (let i = 0; i < packets.length; i += 50) {
-    const chunk = packets.slice(i, i + 50);
-    for (const packet of chunk) granule += BigInt(packetSamples(packet));
-    pages.push(oggPage(chunk, granule, serial, pages.length, i + 50 >= packets.length ? 0x04 : 0));
+  for (let i = 0; i < packets.length;) {
+    const chunk: Uint8Array[] = [];
+    for (let segments = 0; i < packets.length && chunk.length < 50; i++) {
+      const needs = Math.floor(packets[i].length / 255) + 1;
+      if (chunk.length && segments + needs > 255) break;
+      segments += needs;
+      chunk.push(packets[i]);
+      granule += BigInt(packetSamples(packets[i]));
+    }
+    pages.push(oggPage(chunk, granule, serial, pages.length, i >= packets.length ? 0x04 : 0));
   }
   return Buffer.concat(pages);
 }

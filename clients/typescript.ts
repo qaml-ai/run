@@ -684,7 +684,9 @@ export type WebhookEvent = { id: string; created: number } & (
       /** Seconds played, and what its tokens cost (the session's usage already counts it). */
       seconds: number; costUsd: number;
       brain: "realtime";
-    } });
+    } }
+  /** A recording ended: its files are ready (or it failed), until `recording.expiresAt`. */
+  | { type: "voice.recording.ended"; data: VoiceFacts & { recording: VoiceRecording } });
 /** What every voice.* event says of its session. */
 type VoiceFacts = { session: string; provider: "discord"; guildId: string; channelId: string; botUserId: string; subject: string | null; metadata: Record<string, unknown> };
 /**
@@ -1431,6 +1433,18 @@ export type VoiceSessionCreated = VoiceSession & {
   join: { self_mute: boolean; self_deaf: false };
 };
 /** An ended session, and the OP 4 your gateway sends to leave the channel (ending stops the listening, not the bot's presence). */
+/** A voice session's recording (`agents.voice.record`): `ready` with its Ogg Opus files once it ended. */
+export type VoiceRecording = {
+  id: string; session: string; state: "recording" | "stopping" | "ready" | "failed"; tracks: "mixed" | "speakers";
+  maxMinutes: number; maxBytes: number; retentionHours: number; metadata: Record<string, unknown>;
+  /** Audio recorded so far (what maxBytes counts). */
+  bytes: number; startedAt: number; endedAt: number | null;
+  endReason: "stopped" | "max_duration" | "max_size" | "session_ended" | "error" | null;
+  seconds: number | null;
+  /** `recording.ogg`, or `<speaker id>.ogg` each with tracks speakers (the bot's own speech among them). */
+  files: Array<{ name: string; contentType: "audio/ogg"; bytes: number; seconds: number; speakerId?: string }>;
+  error?: string; expiresAt: number | null;
+};
 export type VoiceSessionEnded = VoiceSession & { leave: { op: 4; d: { guild_id: string; channel_id: null; self_mute: boolean; self_deaf: boolean } } };
 
 export interface VoiceSearchOptions {
@@ -1494,6 +1508,23 @@ export class Voice {
   stopSpeaking(id: string): Promise<{ stopped: number }> { return this.transport.json(`${this.path(id)}/speak`, this.key(), "DELETE"); }
   /** End it; send the answer's `leave` on your gateway to leave the channel. Ending an ended session answers it again. */
   end(id: string): Promise<VoiceSessionEnded> { return this.transport.json(this.path(id), this.key(), "DELETE"); }
+  /**
+   * Record the call: post the answer's `notice` in the voice channel's chat. Throws 409 VOICE_RECORDING_EXISTS while it
+   * records already.
+   */
+  record(id: string, input: { tracks?: "mixed" | "speakers"; maxMinutes?: number; maxBytes?: number; retentionHours?: number; metadata?: Record<string, unknown> } = {}): Promise<VoiceRecording & { notice: { required: true; channelId: string; text: string } }> {
+    return this.transport.json(`${this.path(id)}/recording`, this.key(), "POST", input, false);
+  }
+  /** Stop recording: the recording, ready with its files (or `stopping`, if they take over 20 seconds; voice.recording.ended says when). */
+  stopRecording(id: string): Promise<VoiceRecording> { return this.transport.json(`${this.path(id)}/recording`, this.key(), "DELETE", undefined, false, {}, 30_000); }
+  recording(id: string): Promise<VoiceRecording> { return this.transport.json(`/v1/voice/recordings/${encodeURIComponent(id)}`, this.key()); }
+  /** One of a ready recording's files, by name: Ogg Opus. */
+  async recordingFile(id: string, name: string): Promise<{ data: Uint8Array; contentType: string }> {
+    const response = await this.transport.raw(`/v1/voice/recordings/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`, this.key());
+    return { data: new Uint8Array(await response.arrayBuffer()), contentType: contentTypeOf(response) };
+  }
+  /** Delete a recording and its files before they expire. */
+  deleteRecording(id: string): Promise<{ id: string; deleted: true }> { return this.transport.json(`/v1/voice/recordings/${encodeURIComponent(id)}`, this.key(), "DELETE"); }
 }
 
 /** Trusted-backend SDK. Only createAgent needs the operator key. */

@@ -126,6 +126,23 @@ test("speech plays through a media worker: the brain's PCM down, encoded and pla
   assert.equal(host.stats().workers, 1, "its worker ended; the spare waits");
 });
 
+test("a recording crosses from a media worker: what people say and the bot's speech, in the session's files", { timeout: 120_000 }, async t => {
+  const host = new MediaHost({ transport: TRANSPORT, speaks: true, tickMs: 200, spare: 0 });
+  const { a, fakes, session } = await workerCluster(t, host);
+  const one = await session("100000000000000008");
+  const recording = await a.voice.startRecording("alice", one.id, { tracks: "speakers" });
+  await sleep(300);
+  fakes.send({ guild: one.guild, cmd: "talk", speaker: "400000000000000006", seconds: 0.5 });
+  await until(() => one.model.responses === 1, "the answer asked for", 20_000);
+  await one.model.answer("resp_1", { ms: 400 });
+  await until(() => fakes.reports.some(report => report.guild === one.guild && report.event === "played"), "the answer played", 20_000);
+  await sleep(500);
+  const stopped = await a.voice.stopRecording("alice", one.id);
+  assert.equal(stopped.state, "ready");
+  assert.deepEqual(stopped.files.map(file => file.speakerId).sort(), ["300000000000000003", "400000000000000006"], "the person, and the bot's own speech");
+  assert.equal(recording.id, stopped.id);
+});
+
 test("a media worker's memory limit counts each byte once (Buffers are in `external` already), and its end logs what the worker held", { timeout: 120_000 }, async t => {
   const fakes = workerFakes();
   const host = new MediaHost({ transport: TRANSPORT, speaks: true, maxMb: 200, tickMs: 100, spare: 0 });

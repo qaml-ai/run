@@ -151,6 +151,7 @@ class BrowserVoice implements VoiceConnection {
           if (stopped || self.closed) break;
           if (!sent) started();
           self.out(packet);
+          self.handlers.played?.(packet);
           sent++;
           // Paced from the first: a late frame is caught up on, not added to.
           const wait = begun + sent * 20 - performance.now();

@@ -49,7 +49,7 @@ const TENANT_TABLES = [
   "discord_setup_attempts", "discord_server_bindings",
   "console_sessions", "tenant_passwords", "account_email_links", "api_tokens", "oauth_grants", "provider_keys", "key_scope_providers", "model_providers", "definitions",
   "webhook_deliveries", "webhook_endpoints", "usage_webhook_outbox", "pi_usage_receipts", "usage_webhooks", "idempotency_keys",
-  "agent_inputs", "schedules", "channel_agents", "volume_watchers", "channels", "voice_sessions",
+  "agent_inputs", "schedules", "channel_agents", "volume_watchers", "channels", "voice_sessions", "voice_recordings",
   "chunk_pins", "chunk_touches", "gc_candidates", "storage_gc",
   "billing_email_outbox", "billing_recipients", "billing_events", "billing_alert_settings", "billing_auto_settings", "help_requests",
   // The tenant's own users' credit: their ids are the tenant's customers' data.
@@ -160,6 +160,8 @@ export class AccountDeletions {
     }
     // Files' contents: every chunk the tenant stored, referenced or not.
     await this.options.storage.removeBlobs(`chunks/${tenant}/`);
+    // Voice recordings' chunks and files.
+    await this.options.storage.removeBlobs(`recordings/${tenant}/`);
     await this.options.flushStorageUsage?.();
     await this.deleteCustomers(tenant);
     await transaction(db, async sql => {

@@ -51,6 +51,8 @@ export type FromMedia =
   | { t: "pcm"; session: string; speaker: string; pcm: ArrayBuffer }
   | { t: "drop"; session: string; speaker: string }
   | { t: "cut"; session: string; cut: WireCut }
+  /** Packets for the session's recording: their bytes in one buffer, by length, with each one's speaker and time. */
+  | { t: "recorded"; session: string; packets: ArrayBuffer; lengths: number[]; speakers: string[]; at: number[] }
   | { t: "others"; session: string; users: string[] | null }
   | { t: "started"; session: string; id: number }
   | { t: "played"; session: string; id: number; result: "done" | "stopped" | "error"; stats?: Record<string, unknown> }

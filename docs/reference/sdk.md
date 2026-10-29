@@ -457,7 +457,9 @@ retried, as each attempt is billed.
 Discord answered your gateway's OP 4), `get`, `list({ state, limit, after })`, `update` (Discord moved the call) and
 `end` (its answer's `leave` is the OP 4 that takes the bot out of the channel). A realtime model answers in the call,
 asking `deliver.agent` (Python `agent=`) for anything beyond talk; `realtime` sets it up (model, voice, persona).
-`stopSpeaking(id)` (Python `stop_speaking(id)`) stops what the bot is saying. See [Voice calls](../guides/voice-calls.md).
+`stopSpeaking(id)` (Python `stop_speaking(id)`) stops what the bot is saying. `record(id, options)` and
+`stopRecording(id)` record the call (TypeScript; `recording(id)`, `recordingFile(id, name)` and `deleteRecording(id)`
+read and delete what it made). See [Voice calls](../guides/voice-calls.md).
 
 ```ts
 const session = await agents.voice.create({ discord: { guildId, channelId, userId, sessionId, endpoint, token }, subject: ownerId });

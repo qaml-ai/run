@@ -1381,6 +1381,224 @@
         ],
         "description": "An answer ended"
       },
+      "Event_voice_recording.ended": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "voice.recording.ended"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "session": {
+                "type": "string",
+                "description": "The voice session (vs_…)"
+              },
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "discord",
+                  "browser"
+                ]
+              },
+              "guildId": {
+                "type": "string"
+              },
+              "channelId": {
+                "type": "string"
+              },
+              "botUserId": {
+                "type": "string"
+              },
+              "subject": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The session's end user"
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "The session's metadata, as set"
+              },
+              "recording": {
+                "$ref": "#/components/schemas/VoiceRecording"
+              }
+            },
+            "required": [
+              "session",
+              "provider",
+              "guildId",
+              "channelId",
+              "botUserId",
+              "subject",
+              "metadata",
+              "recording"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "A voice session's recording ended: its files are ready (or it failed), until recording.expiresAt"
+      },
+      "VoiceRecording": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "vr_3f9c0a1b2c3d4e5f60718293"
+          },
+          "session": {
+            "type": "string",
+            "description": "The voice session it records (vs_…)"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "recording",
+              "stopping",
+              "ready",
+              "failed"
+            ],
+            "description": "recording; stopping: ended, its files being made; ready: its files can be downloaded until expiresAt; failed: its files could not be made (error)"
+          },
+          "tracks": {
+            "type": "string",
+            "enum": [
+              "mixed",
+              "speakers"
+            ],
+            "description": "mixed: one file, everyone and the bot mixed (mono); speakers: a file per speaker, the bot's own speech among them, all the same length"
+          },
+          "maxMinutes": {
+            "type": "number"
+          },
+          "maxBytes": {
+            "type": "number"
+          },
+          "retentionHours": {
+            "type": "number"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "bytes": {
+            "type": "number",
+            "description": "Audio recorded so far (what maxBytes counts; the files add Ogg's framing and the silence between speech)"
+          },
+          "startedAt": {
+            "type": "number"
+          },
+          "endedAt": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "endReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "stopped",
+              "max_duration",
+              "max_size",
+              "session_ended",
+              "error",
+              null
+            ],
+            "description": "stopped: DELETE …/recording; max_duration, max_size: its limits; session_ended: the session ended while it recorded; error: its files could not be made"
+          },
+          "seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Its length, once ready"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "recording.ogg, or <speaker id>.ogg for each speaker"
+                },
+                "contentType": {
+                  "type": "string",
+                  "enum": [
+                    "audio/ogg"
+                  ]
+                },
+                "bytes": {
+                  "type": "number"
+                },
+                "seconds": {
+                  "type": "number"
+                },
+                "speakerId": {
+                  "type": "string",
+                  "description": "With tracks speakers: whose track it is (the bot's user id for its own speech)"
+                }
+              },
+              "required": [
+                "name",
+                "contentType",
+                "bytes",
+                "seconds"
+              ]
+            },
+            "description": "Ogg Opus files, once ready: GET /v1/voice/recordings/{id}/files/{name}"
+          },
+          "error": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "When its files are deleted (retentionHours after it ended)"
+          }
+        },
+        "required": [
+          "id",
+          "session",
+          "state",
+          "tracks",
+          "maxMinutes",
+          "maxBytes",
+          "retentionHours",
+          "metadata",
+          "bytes",
+          "startedAt",
+          "endedAt",
+          "endReason",
+          "seconds",
+          "files",
+          "expiresAt"
+        ]
+      },
       "Event_end_user_balance.low": {
         "type": "object",
         "properties": {
@@ -2585,7 +2803,8 @@
                 "voice.session.error",
                 "voice.utterance",
                 "voice.speech.started",
-                "voice.speech.ended"
+                "voice.speech.ended",
+                "voice.recording.ended"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, the end_user.* events and the billing.* events"
@@ -2650,7 +2869,8 @@
                 "voice.session.error",
                 "voice.utterance",
                 "voice.speech.started",
-                "voice.speech.ended"
+                "voice.speech.ended",
+                "voice.recording.ended"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, the end_user.* events and the billing.* events"
@@ -2704,7 +2924,8 @@
                 "voice.session.error",
                 "voice.utterance",
                 "voice.speech.started",
-                "voice.speech.ended"
+                "voice.speech.ended",
+                "voice.recording.ended"
               ]
             },
             "description": "The event types it receives: run.started, run.completed, run.failed, input.requested, input.resolved, usage.recorded, voice.session.started, voice.session.ended, voice.session.error, voice.utterance, voice.speech.started, voice.speech.ended, the end_user.* events and the billing.* events"
@@ -11586,6 +11807,93 @@
         },
         "required": [
           "stopped"
+        ]
+      },
+      "VoiceRecordingStarted": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/VoiceRecording"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "notice": {
+                "type": "object",
+                "properties": {
+                  "required": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  },
+                  "channelId": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string",
+                    "description": "Post this in the voice channel's chat now: people must know they are recorded (and tell anyone who joins while it records)"
+                  }
+                },
+                "required": [
+                  "required",
+                  "channelId",
+                  "text"
+                ]
+              }
+            },
+            "required": [
+              "notice"
+            ]
+          }
+        ]
+      },
+      "VoiceRecordingInput": {
+        "type": "object",
+        "properties": {
+          "tracks": {
+            "type": "string",
+            "enum": [
+              "mixed",
+              "speakers"
+            ],
+            "description": "mixed (the default): one file, everyone mixed; speakers: a file per speaker"
+          },
+          "maxMinutes": {
+            "type": "integer",
+            "description": "It ends after this long: 1 to 240, default 60"
+          },
+          "maxBytes": {
+            "type": "integer",
+            "description": "It ends once it holds this much audio: 1 MiB to 100 MiB, default 25 MiB"
+          },
+          "retentionHours": {
+            "type": "integer",
+            "description": "Its files are kept this long after it ends: 1 to 720 (30 days), default 24"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Anything, at most 4 KB of JSON, given back with it"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VoiceRecordingDeleted": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "deleted"
         ]
       },
       "VoiceSessionEnded": {
@@ -21406,6 +21714,211 @@
         }
       }
     },
+    "/v1/voice/sessions/{id}/recording": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceRecordingInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The recording, started: the call's audio is kept until it stops, then made into Ogg Opus files. and the notice your app must post in the channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceRecordingStarted"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The recording, stopped: ready with its files, or stopping if they take longer than 20 seconds to make (voice.recording.ended says when they are)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceRecording"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/voice/recordings/{id}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The recording",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceRecording"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The recording and its files, deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceRecordingDeleted"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/voice/recordings/{id}/files/{name}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file: Ogg Opus",
+            "content": {
+              "audio/ogg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agents/{id}/mounts": {
       "get": {
         "parameters": [
@@ -22809,6 +23322,25 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Event_voice_speech.ended"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "voice.recording.ended": {
+      "post": {
+        "summary": "voice.recording.ended",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_voice_recording.ended"
               }
             }
           }

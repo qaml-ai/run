@@ -43,6 +43,9 @@ retry.
 | 409 | `VOICE_SESSION_EXISTS` | The bot already has a voice session in this server (`session` names it): update or end it |
 | 409 | `VOICE_SESSION_ENDED` | The voice session ended; start a new one |
 | 409 | `VOICE_SPEAK_DISABLED` | The voice session listens only (`brain: "listen"`) and never speaks |
+| 409 | `VOICE_RECORDING_EXISTS` | The voice session is recording already (`recording` names it): stop it first |
+| 409 | `VOICE_NOT_RECORDING` | The voice session is not recording |
+| 409 | `VOICE_RECORDING_ACTIVE` | The recording is still going: stop it before deleting it |
 | 409 | `APPLICATION_CONNECTED` | Another connection serves this agent's tools; connect with `?takeover=true` to replace it |
 | 409 | `APPLICATION_NOT_CONNECTED` | The agent's tools need its application and none is connected; connect it, or send `allowDisconnected: true` |
 | 409 | `AGENT_BUSY` | A context reset while a run is active or queued; abort it or wait for it to end, then reset |
