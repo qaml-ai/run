@@ -110,7 +110,8 @@ const CLASSES: [string, RegExp][] = [
   // The runtime's own timeout on a model stream that went quiet (model-stream.ts), ahead of the timeouts providers report.
   ["stream_stalled", /^Model stream stalled/],
   // An intact container a provider cannot decode: the host can ask once without images.
-  ["image_rejected", /failed to load image|cannot identify image|invalid image|could not process image|unable to process image|image could not be decoded|decode image/i],
+  // OpenRouter relays a host's "unsupported image"; Azure says the image data "does not represent a valid image".
+  ["image_rejected", /failed to load image|cannot identify image|invalid image|unsupported image|not represent a valid image|could not process image|unable to process image|image could not be decoded|decode image/i],
   // A request carrying more image content than the provider takes (OpenRouter's 413 past 30 MB): the request's image
   // budget (agent-host.ts `hydrate`) is meant to keep under it, so one is a bug of ours, as reasoning_replay is.
   ["image_limit", /exceeded maximum number of images|image content cannot exceed|too many images|images? (is |are )?too (large|big)/i],

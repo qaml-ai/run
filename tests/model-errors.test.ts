@@ -99,3 +99,17 @@ test("image-load errors have a private metric class and a separate one-shot reco
   assert.equal(modelFailure(failed(limit), { ownEndpoint: false }).errorClass, "image_limit");
   assert.equal(isImageRejection("400 invalid request"), false);
 });
+
+test("OpenRouter's and Azure's image refusals get the no-images retry, not backoff or a failed turn", () => {
+  const openrouter = '400 {"error":{"message":"Provider returned error","code":400,"metadata":{"raw":"{\\"error\\":{\\"message\\":\\"unsupported image\\"}}","provider_name":"Chutes"}}}';
+  const azure = 'Azure OpenAI API error (400): {"error":{"message":"The image data you provided does not represent a valid image. Please check your input and try again with one of the supported image formats: [\'image/jpeg\', \'image/png\', \'image/gif\', \'image/webp\'].","type":"invalid_request_error","param":null,"code":"invalid_image_format"}}';
+  for (const message of [openrouter, azure]) {
+    assert.equal(isImageRejection(message), true, message);
+    assert.equal(errorClass(message), "image_rejected");
+  }
+  // A 400 about something else keeps its class and its retry decision.
+  for (const message of ['400 {"error":{"message":"Provider returned error","code":400,"metadata":{"raw":"invalid tool schema"}}}', 'Azure OpenAI API error (400): {"error":{"message":"Invalid value for \'temperature\'","code":"invalid_value"}}']) {
+    assert.equal(isImageRejection(message), false, message);
+    assert.notEqual(errorClass(message), "image_rejected");
+  }
+});
