@@ -10,6 +10,7 @@ import { ASK_AGENT, STAY_SILENT } from "../src/voice/realtime/brain.ts";
 import { NO_USAGE, realtimeCost, realtimePrice, realtimeVoice, type RealtimeEvents } from "../src/voice/realtime/provider.ts";
 import { sleep, testBrain, tone, until, utter } from "./voice-realtime-fakes.ts";
 import { safeError } from "../src/metrics.ts";
+import { DEFAULT_BARGE_IN } from "../src/voice/echo-guard.ts";
 import { testDatabase } from "./database.ts";
 
 // Synthetic rates only; real rates are supplied privately at runtime.
@@ -192,7 +193,7 @@ for (const late of [false, true]) test(`ElevenLabs brain: ask_agent ${late ? "la
 
 test("ElevenLabs brain: stay_silent returns a client result, interruption stops buffered playback and drops stale audio", async t => {
   const fake = await fakeElevenLabs(t);
-  const state = testBrain({ provider: elevenlabsAgents({ baseUrl: fake.base }), reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true });
+  const state = testBrain({ provider: elevenlabsAgents({ baseUrl: fake.base }), reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true, bargeIn: DEFAULT_BARGE_IN });
   t.after(() => state.brain.close());
   await until(() => state.logs.some(e => e.type === "voice_realtime_ready"), "ready");
   await utter(state.brain, "1", 200);
@@ -209,6 +210,33 @@ test("ElevenLabs brain: stay_silent returns a client result, interruption stops 
   await until(() => state.playback.plays[0].stopped, "playback stopped");
   await sleep(20);
   assert.equal(state.playback.plays.length, 1);
+});
+
+test("ElevenLabs with barge-in off: an agent made without interruptions, and an interruption never stops what plays", async t => {
+  const fake = await fakeElevenLabs(t);
+  const provider = elevenlabsAgents({ baseUrl: fake.base });
+  const state = testBrain({ provider, reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true });
+  t.after(() => state.brain.close());
+  await until(() => state.logs.some(e => e.type === "voice_realtime_ready"), "ready");
+  const creates = () => fake.seen.requests.filter(r => r.url.endsWith("agents/create")).map(r => r.body);
+  assert.equal(creates().length, 1);
+  createAgentSchema.parse(creates()[0]);
+  assert.equal(creates()[0].name, ELEVENLABS_AGENTS.uninterruptibleName);
+  assert.ok(!creates()[0].conversation_config.conversation.client_events.includes("interruption"));
+  await utter(state.brain, "1", 200);
+  fake.send(transcript("Mochi, hello"));
+  fake.send(audio());
+  await until(() => state.playback.plays.some(p => p.started), "playing");
+  fake.send({ type: "interruption", interruption_event: { event_id: 2 } });
+  await sleep(50);
+  assert.ok(!state.playback.plays[0].stopped, "what plays goes on");
+  assert.equal(state.brain.stats.bargeIns, 0);
+  // A session with barge-in on gets the interruptible agent: a separate one per credential.
+  const other = provider.connect({ ...config, interruptible: true }, { apiKey: "fixture" }, recorder().events);
+  t.after(() => other.close());
+  await until(() => creates().length === 2, "second agent");
+  assert.equal(creates()[1].name, ELEVENLABS_AGENTS.name);
+  assert.ok(creates()[1].conversation_config.conversation.client_events.includes("interruption"));
 });
 
 test("ElevenLabs close and protocol errors carry redacted reasons; provisioning failure is reported safely", async t => {

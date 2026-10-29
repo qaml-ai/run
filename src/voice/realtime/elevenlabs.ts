@@ -28,6 +28,12 @@ export const ELEVENLABS_AGENTS = Object.freeze({
   // v3: conversations last up to maxDurationSeconds (v2 agents kept ElevenLabs' 10-minute default). The agent is found
   // by name, so a changed creation setting needs a new name.
   name: "camelRun realtime voice v3",
+  /**
+   * The agent for sessions with barge-in off: ElevenLabs stops the agent whenever its VAD hears someone (the
+   * `interruption` client event) and per-conversation overrides cannot turn that off, so those sessions use an agent
+   * made without it.
+   */
+  uninterruptibleName: "camelRun realtime voice v3 (no interruptions)",
   connectTimeoutMs: 20_000,
   maxDurationSeconds: 1_800,
 });
@@ -154,19 +160,20 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
     }
     return pending;
   }
-  async function resolveAgent(apiKey: string, sessionVoice: string, publicOwnerId?: string): Promise<string> {
+  async function resolveAgent(apiKey: string, sessionVoice: string, publicOwnerId: string | undefined, interruptible: boolean): Promise<string> {
+    const name = interruptible ? ELEVENLABS_AGENTS.name : ELEVENLABS_AGENTS.uninterruptibleName;
     let cursor: string | undefined;
     do {
       const query = new URLSearchParams({ search: ELEVENLABS_AGENTS.name, page_size: "100", ...(cursor ? { cursor } : {}) });
       const page = await api(apiKey, "list agents", `/v1/convai/agents?${query}`);
-      const found = page.agents?.find((agent: any) => agent.name === ELEVENLABS_AGENTS.name);
+      const found = page.agents?.find((agent: any) => agent.name === name);
       if (typeof found?.agent_id === "string") return found.agent_id;
       cursor = page.has_more ? page.next_cursor : undefined;
       if (page.has_more && !cursor) throw new ElevenLabsFailure("list agents", "no next cursor", false);
     } while (cursor);
     const voice = await ensureVoice(apiKey, sessionVoice, publicOwnerId);
     const created = await api(apiKey, "create agent", "/v1/convai/agents/create", {
-      name: ELEVENLABS_AGENTS.name,
+      name,
       conversation_config: {
         agent: { first_message: "", language: "en", prompt: {
           prompt: "You are the bot's voice. Delegate anything beyond small talk to ask_agent.",
@@ -177,7 +184,7 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
         asr: { user_input_audio_format: "pcm_16000" },
         tts: { voice_id: voice, model_id: "eleven_v4_turbo", agent_output_audio_format: "pcm_24000" },
         turn: { turn_eagerness: "normal", turn_timeout: 7, silence_end_call_timeout: -1 },
-        conversation: { max_duration_seconds: ELEVENLABS_AGENTS.maxDurationSeconds, client_events: ["conversation_initiation_metadata", "ping", "audio", "interruption", "user_transcript", "agent_response", "client_tool_call", "agent_response_complete", "client_error"] },
+        conversation: { max_duration_seconds: ELEVENLABS_AGENTS.maxDurationSeconds, client_events: ["conversation_initiation_metadata", "ping", "audio", ...interruptible ? ["interruption"] : [], "user_transcript", "agent_response", "client_tool_call", "agent_response_complete", "client_error"] },
       },
       platform_settings: {
         auth: { enable_auth: true }, privacy: { record_voice: false },
@@ -191,10 +198,11 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
     id: "elevenlabs", key: "elevenlabs", models: ELEVENLABS_AGENTS.models, defaultModel: ELEVENLABS_AGENTS.defaultModel,
     voices: [ELEVENLABS_AGENTS.voice], voiceFor: VOICE_FOR, customVoices: true, ownsTurns: true,
     connect(config, { apiKey }, events) {
-      const identity = createHash("sha256").update(apiKey).digest("hex");
+      const interruptible = config.interruptible !== false;
+      const identity = `${createHash("sha256").update(apiKey).digest("hex")}:${interruptible ? "interruptible" : "uninterruptible"}`;
       let agent = agents.get(identity);
       if (!agent) {
-        agent = resolveAgent(apiKey, config.voice, config.publicOwnerId);
+        agent = resolveAgent(apiKey, config.voice, config.publicOwnerId, interruptible);
         agents.set(identity, agent);
         void agent.catch(() => agents.delete(identity));
       }

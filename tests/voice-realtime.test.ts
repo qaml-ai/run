@@ -127,6 +127,36 @@ test("barge-in: someone talks over the answer, the echo guard confirms, and the 
   brain.close();
 });
 
+test("barge-in in a group: people talking among themselves don't cut the bot off; the one it talks with does (camel-bots #540)", async () => {
+  const { brain, connection, playback, logs } = testBrain({ humans: 3, addressing: { mode: "addressed", names: ["mochi"] }, bargeIn: { minMs: 100, confirmMs: 150, resumeMs: 2_000 } });
+  const c = connection();
+  // Ana names it: it answers her, at length.
+  await utter(brain, "1", 300);
+  c.events.heard(c.of("commit")[0].tag, "Mochi, tell us a story", 1);
+  await until(() => c.responses === 1, "the named turn answered");
+  void c.answer("r1", { ms: 3_000 });
+  await until(() => playback.plays[0]?.started, "the answer to play");
+  // Ben talks to Cy over it: the media paused at minMs, and it goes on at once.
+  playback.plays[0].paused = true;
+  brain.speechStart("2");
+  brain.bargeIn("2", 100, Date.now());
+  for (let i = 0; i < 10; i++) { brain.speechProgress("2", 100 + (i + 1) * 20); await sleep(20); }
+  assert.equal(playback.plays[0].paused, false, "resumed");
+  assert.equal(playback.plays[0].stopped, false);
+  assert.equal(c.of("truncate").length, 0);
+  assert.equal(brain.stats.bargeIns, 0);
+  assert.equal(logs.find(line => line.type === "voice_barge_in_ignored")?.fields?.why, "not_addressed");
+  // Ana talks over it: she is in a conversation with it, so it stops for her.
+  playback.plays[0].paused = true;
+  brain.speechStart("1");
+  brain.bargeIn("1", 100, Date.now());
+  for (let i = 0; i < 10; i++) { brain.speechProgress("1", 100 + (i + 1) * 20); await sleep(20); }
+  await until(() => c.of("truncate")[0], "the truncate");
+  assert.equal(playback.plays[0].stopped, true);
+  assert.equal(brain.stats.bargeIns, 1);
+  brain.close();
+});
+
 test("echo: speech over the bot that the guard rejects resumes it, and is dropped rather than committed", async () => {
   const { brain, connection, playback } = testBrain({ bargeIn: { minMs: 100, confirmMs: 1_000, resumeMs: 500 } });
   await utter(brain, "1", 300);
