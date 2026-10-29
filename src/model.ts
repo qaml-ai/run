@@ -28,3 +28,29 @@ export function defaultModels(head: Model<Api>, fallbacks = process.env.AGENT_MO
   }
   return models;
 }
+
+/**
+ * Models whose provider's content filter blocks ordinary answers (Azure's Prompt Shields calls DeepSeek's coding
+ * replies jailbreaks), each with the same model elsewhere: a request the filter blocks is made once more there.
+ */
+const CONTENT_FILTER_FALLBACKS = "azure/deepseek-v4.1-flash=openrouter/deepseek/deepseek-v4.1-flash-1017:nitro";
+
+/**
+ * The content-filter fallbacks, by `provider/model-id`: AGENT_CONTENT_FILTER_FALLBACKS (`from=to` references,
+ * comma-separated; empty for none), else CONTENT_FILTER_FALLBACKS. An agent on a `from` model whose request the
+ * provider's content filter blocks has it made once more on `to` (content-filter-fallback.ts), on the agent's key for
+ * `to`'s provider.
+ */
+export function contentFilterFallbacks(given = process.env.AGENT_CONTENT_FILTER_FALLBACKS): Map<string, Model<Api>> {
+  const fallbacks = new Map<string, Model<Api>>();
+  for (const entry of (given ?? CONTENT_FILTER_FALLBACKS).split(",").map(entry => entry.trim()).filter(Boolean)) {
+    const [from, to, ...rest] = entry.split("=").map(part => part.trim());
+    if (!from || !to || rest.length) throw new Error(`AGENT_CONTENT_FILTER_FALLBACKS: ${entry} is not from=to`);
+    let source: Model<Api>, target: Model<Api>;
+    try { source = resolveModel(from); target = resolveModel(to); }
+    catch (error) { throw new Error(`AGENT_CONTENT_FILTER_FALLBACKS: ${(error as Error).message}`); }
+    if (source.provider === target.provider) throw new Error(`AGENT_CONTENT_FILTER_FALLBACKS: ${entry} stays on ${source.provider}, whose filter blocked it`);
+    fallbacks.set(`${source.provider}/${source.id}`, target);
+  }
+  return fallbacks;
+}

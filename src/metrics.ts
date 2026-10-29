@@ -381,6 +381,17 @@ export function observeTurns(model: () => { provider: string; id: string } | und
 }
 
 /**
+ * A model request made again on another provider's model (content-filter-fallback.ts): from which model to
+ * which, and why (`content_filter`: the provider's content filter blocked it). Names only, never what was blocked.
+ */
+export function recordModelFallback(fallback: { tenant?: string; agent: string; from: string; to: string; reason: "content_filter" }) {
+  emit("model_fallback", {
+    dimensions: { From: fallback.from, To: fallback.to, Reason: fallback.reason }, rollups: [["Reason"], ["From", "To", "Reason"]],
+    metrics: { ModelFallbacks: 1 }, properties: { agent: fallback.agent, ...(fallback.tenant ? { tenant: fallback.tenant } : {}) },
+  });
+}
+
+/**
  * A run failed for credit at its model's provider (a 402, a quota used up), by whose key (`keyOwner`): the platform's,
  * or one the operator set for the tenant (its provider account running dry: ours to top up); the tenant's own; or the
  * tenant's endpoint (its gateway, often answering for its own users' credit). Alarms watch the platform's alone.

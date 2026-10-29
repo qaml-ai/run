@@ -17,7 +17,7 @@ const host = createAgentHost({
   runLimit: async () => (await rpc.request("run-limit")) ?? undefined,
   search: query => rpc.request("search", query),
   file: ref => rpc.request("file", ref),
-  modelAuth: () => rpc.request("model-auth"),
+  modelAuth: provider => rpc.request("model-auth", provider === undefined ? undefined : { provider }),
   modelAttempt: event => rpc.request("model-attempt", event),
   fs: (op, args) => rpc.request("fs", { op, args }),
   codeSlot: signal => codeSlot(rpc, signal),

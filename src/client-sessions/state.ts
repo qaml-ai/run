@@ -3,6 +3,7 @@ import type { AttemptAck, ModelAttemptHook } from "../model-attempt.ts";
 import type { EndUserCredits } from "../end-user-credits.ts";
 import type { ServerResponse } from "node:http";
 import type { HttpBindings } from "@hono/node-server";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentConfig, Credentials, RunLimits, ToolDefinition } from "../protocol.ts";
 import type { CustomProviders, ModelEndpoints } from "../session-config.ts";
 import type { AppendLog } from "../../shared/append-log.ts";
@@ -293,6 +294,8 @@ export interface ClientSessionOptions {
   /** Stop an agent's process, and unload its session, after this long without activity. */
   idleMs?: number;
   retry?: AgentConfig["retry"];
+  /** Models a provider's content filter blocks wrongly, each with the same model elsewhere (model.ts `contentFilterFallbacks`). */
+  contentFilterFallbacks?: Map<string, Model<Api>>;
   /** How long a model request may go quiet before it fails as stalled (model-stream.ts); an agent's runLimits may set its own. */
   streamTimeouts?: AgentConfig["streamTimeouts"];
   contextRangeMaxBytes?: number;
