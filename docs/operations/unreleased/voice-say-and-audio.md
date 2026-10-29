@@ -12,4 +12,4 @@ A voice session's bot can now speak from your app, not only in answer to people:
 
 The TypeScript and Python clients have `say`, `prompt`, `play`, `audio` and `controlAudio` (`control_audio`).
 Implementation: `src/voice/jukebox.ts`, `src/voice/audio-decode.ts` (minimp3, Apache-2.0, for MP3), and the brain's
-`say`/`prompt` in `src/voice/realtime/brain.ts`. Migration `096_voice_audio.sql`.
+`say`/`prompt` in `src/voice/realtime/brain.ts`. Migration `097_voice_audio.sql`.
