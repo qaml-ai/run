@@ -80,15 +80,6 @@ export async function loadSeedMarker(storage: Storage, context: Context = BACKGR
 
 const lines = new WeakMap<Storage, Promise<unknown>>();
 
-/**
- * Start a session's journal (a new agent's, an import's, a fork's) in one commit, under the session's claim: the seed
- * marker, the history's base (`before`: how many messages come before it, which the history index holds: a fork's),
- * the history the session starts with as native entries, each turn marked (`messages`: an import's), the context
- * checkpoint Pi starts from (`model`: its head, before the history's message `headAt`, so Pi's context is the head and
- * the messages after it, which are not copied), and the request IDs of that history as terminal submissions (so a
- * retried one is never run again): a failed commit leaves nothing. Seeding the same source again finds it seeded
- * (`existing`).
- */
 /** About as much as one archive entry holds: a turn larger than it takes several. */
 const ARCHIVE_BYTES = 1_000_000;
 
@@ -109,6 +100,16 @@ export function archiveEntries(messages: AgentMessage[], turns: readonly number[
   return entries;
 }
 
+/**
+ * Start a session's journal (a new agent's, an import's, a fork's) in one commit, under the session's claim: the seed
+ * marker, the history's base (`before`: how many messages come before it, which the history index holds: a fork's),
+ * the history the session starts with as native entries, each turn marked (`messages`: an import's), the context
+ * checkpoint Pi starts from (`model`: its head, before the history's message `headAt`, so Pi's context is the head and
+ * the messages after it, which are not copied), and the request IDs of that history as terminal submissions (so a
+ * retried one is never run again): a failed commit leaves nothing. Seeding the same source again finds it seeded
+ * (`existing`). Storage skips commit effects for the whole batch identified by its seed marker: copied usage is
+ * retained for context accounting, but never charged again.
+ */
 export async function seedJournal(options: {
   storage: Storage;
   sessionId: string;
