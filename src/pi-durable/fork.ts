@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { readStoredContext, type EntryId, type Storage } from "@earendil-works/pi-durable";
+import { Harness, createRegistry, type EntryId, type Storage } from "@earendil-works/pi-durable";
 import { convertToLlm } from "../pi-harness/messages.ts";
 import type { At, JournalHistory } from "./history.ts";
 import { SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
@@ -65,7 +65,7 @@ export function forkCount(history: Pick<JournalHistory, "total" | "active" | "tu
 
 /**
  * Pi's model context through journal cursor `at` (`index` -1: the whole entry; past every entry: the journal's end), as
- * Pi derives it (`context({ at })`), read from storage alone (`readStoredContext`). Refused before the
+ * Pi derives it (`context({ at })`), read on a viewer Harness that writes and recovers nothing. Refused before the
  * newest head marker, whose superseded checkpoints reclaim may have deleted, and inside an entry of several messages,
  * which Pi cannot cut.
  */
@@ -76,11 +76,21 @@ export async function contextAt(storage: Storage, at: At): Promise<Message[]> {
   // Pi cuts after a stored entry: the newest through `end`.
   const last = end === undefined ? undefined : (await storage.scanEntries({ conversationId, order: "descending", maxEntryId: end }, 1, undefined, context)).items[0];
   if (end !== undefined && (!last || last.id === end && at.index >= 0 && at.index < (last.model?.length ?? 0) - 1)) throw new ForkBeforeHead();
-  // A compaction marker can follow the first messages it keeps, and the context before it may be reclaimed: a cut
-  // between them is the marker's context through the cut.
-  const view = await readStoredContext(storage, conversationId, context, last ? { at: Math.max(last.id, head?.id ?? 0) as EntryId } : undefined);
-  if (!last || !head || last.id >= head.id) return view.messages as Message[];
-  return view.entries.flatMap((entry, index) => entry.id <= last.id || entry.id === view.head?.id ? view.contributions[index] : []) as Message[];
+  // The caller owns the storage: the viewer's close leaves it open.
+  const viewer = await Harness.open(new Proxy(storage, { get(target, key) {
+    if (key === "close") return async () => {};
+    const value = Reflect.get(target, key, target);
+    return typeof value === "function" ? value.bind(target) : value;
+  } }),
+    { registry: createRegistry(), models: { getModel: () => undefined, getAuth: () => undefined } as never, readOnly: true }, context);
+  try {
+    const conversation = (await viewer.conversation(conversationId, context))!;
+    // A compaction marker can follow the first messages it keeps, and the context before it may be reclaimed: a cut
+    // between them is the marker's context through the cut.
+    const view = await conversation.context(context, last ? { at: Math.max(last.id, head?.id ?? 0) as EntryId } : undefined);
+    if (!last || !head || last.id >= head.id) return view.messages as Message[];
+    return view.entries.flatMap((entry, index) => entry.id <= last.id || entry.id === view.head?.id ? view.contributions[index] : []) as Message[];
+  } finally { await viewer.close(context); }
 }
 
 /** A source's history as a fork reads it (by ordinal, bounded before it reads): its messages, turn starts and journal cursors. */
