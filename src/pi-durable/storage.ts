@@ -24,6 +24,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import { apply, type Op } from "@earendil-works/chord/delta";
 import { StorageRequestError } from "@earendil-works/pi-durable";
 import { placeEntries, type Placement } from "./ordinals.ts";
+import { SEED_MARKER_KIND } from "./seed.ts";
 
 import type {
 	ConversationId,
@@ -71,6 +72,13 @@ const TABLES = {
 } as const;
 type PgSchema = { tables: typeof TABLES };
 export type PiCommitEffect = (entry: EntryRecord, sql?: Sql) => Promise<void>;
+
+/** A seed copies history, including its original usage. None of its entries incurred new spend. */
+async function commitEffects(writes: readonly StorageWrite[], committing?: PiCommitEffect, sql?: Sql): Promise<void> {
+    // Inspect the batch itself so this also holds across the host process boundary and on retries.
+    if (!committing || writes.some(write => write.type === "entry" && write.value.kind === SEED_MARKER_KIND)) return;
+    for (const write of writes) if (write.type === "entry") await committing(write.value, sql);
+}
 
 type PgExecutor = {
     sql: Sql;
@@ -264,7 +272,7 @@ export async function openPiStorage(options: { sessionId: string; directory: str
         if (!options.committing) return storage;
         const inner = { commit: storage.commit.bind(storage) };
         storage.commit = async (writes: readonly StorageWrite[], adopt: PiAdopt, context: Context) => {
-            for (const write of writes) if (write.type === "entry") await options.committing!(write.value);
+            await commitEffects(writes, options.committing);
             return inner.commit(writes, adopt, context);
         };
         return storage;
@@ -617,7 +625,7 @@ export class PostgresPiStorage implements Storage {
 			const after = await this.applyDocumentActions(transaction, statements, documentActions, committedSeq, existing);
 			await statements.flush();
 			for (const id of after) await transaction.run(`DELETE FROM ${this.schema.tables.documentRevisions} WHERE session_id = $1 AND document_id = ?`, id);
-            for (const write of writes) if (write.type === "entry") await this.committing?.(write.value, transaction.sql);
+            await commitEffects(writes, this.committing, transaction.sql);
 			return committedSeq;
 		}, { nextId: candidateNextId }), async () => attempted !== undefined && await this.landed(writes, attempted) ? { value: attempted } : undefined);
 		this.nextId = Math.max(this.nextId, candidateNextId);
