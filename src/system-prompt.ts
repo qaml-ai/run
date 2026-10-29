@@ -64,6 +64,12 @@ export const INSTRUCTIONS = "instructions";
  * (declareConfiguration, agent-host.ts).
  */
 export const APPLICATION = "application";
+/**
+ * The section holding the runtime's own rules (tools, files, results, who sent a message), first and untagged, so the
+ * prompt reads as it did when they were the system message's content. Content is not a section: Pi's baseline after a
+ * compaction writes none, so the rules held there were gone from every request after the first compaction.
+ */
+export const RUNTIME = "runtime";
 /** The section summarizing the agent's environment, generated from its configuration. */
 export const ENVIRONMENT = "environment";
 /**
@@ -125,17 +131,21 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
   ].join("\n");
 }
 
+/** The runtime's instructions: without js_exec (codeMode: false) they cover only the tools the agent has, if any. */
+export function runtimeRules(config: Pick<AgentConfig, "codeMode" | "tools">): string {
+  return config.codeMode !== false ? runtimeInstructions : bare(config) ? bareInstructions : directInstructions;
+}
+
 /**
- * The context's first system message: the runtime's instructions, then the application's and a
- * summary of the environment as named sections. Rendered, they are joined by blank lines. Without
- * js_exec (codeMode: false) the runtime's text covers only the tools the agent has, if any.
+ * The context's first system message: the runtime's instructions, the application's and a summary of the environment,
+ * each a named section. Rendered, they are joined by blank lines.
  */
 export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "language" | "mounts" | "model" | "tools" | "fileTools" | "codeMode" | "codeLimits">, tools: Tool[]): SystemMessage {
   const environment = environmentSummary(config);
   return {
-    role: "system", content: config.codeMode !== false ? runtimeInstructions : bare(config) ? bareInstructions : directInstructions, timestamp: 0,
+    role: "system", content: "", timestamp: 0,
     sections: {
-      [APPLICATION]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), ...environment !== null ? { [ENVIRONMENT]: environment } : {},
+      [RUNTIME]: runtimeRules(config), [APPLICATION]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), ...environment !== null ? { [ENVIRONMENT]: environment } : {},
       ...(config.language ? { [LANGUAGE]: languageInstructions(config.language) } : {}),
       ...(tools.some(tool => tool.name === OUTPUT_TOOL) ? { [OUTPUT]: OUTPUT_INSTRUCTIONS } : {}),
     },
