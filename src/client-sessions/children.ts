@@ -65,7 +65,9 @@ export function multiAgentServer(ctx: ChildrenContext, session: Session, sources
     sources: async () => (await tools()).map((tool): ToolSourceView => ({ kind: "builtin", name: tool.name, status: "listed", tools: [tool] })),
     call: async call => {
       if (call.name === "delegate" && delegating) return delegation.delegate(ctx, session, settings!, call);
-      if (call.name === "spawn_agent" && spawning) return spawnAgent(ctx, session, settings!, call);
+      if (call.name === "spawn_agent" && spawning) return starting(session, spawnAgent(ctx, session, settings!, call));
+      // A response may start a sub-agent and, beside it, wait for or message it: those calls run once it has started.
+      if (["wait_agent", "list_agents", "send_message", "interrupt_agent"].includes(call.name)) await Promise.allSettled([...session.spawnsStarting ?? []]);
       if (call.name === "wait_agent" && spawning) return waitAgents(ctx, session, call);
       if (call.name === "list_agents" && spawning) return jsonResult({ agents: shown(session, await childrenOf(ctx, session.header.id)) });
       if (call.name === "report_progress" && reporting) return reportProgress(ctx, session, call);
@@ -74,6 +76,13 @@ export function multiAgentServer(ctx: ChildrenContext, session: Session, sources
       throw new Error(`Unknown tool ${call.name}`);
     },
   };
+}
+
+/** A spawn_agent call in progress, which the agent's other agents tools wait for. */
+function starting<T>(session: Session, work: Promise<T>): Promise<T> {
+  const spawns = session.spawnsStarting ??= new Set();
+  spawns.add(work);
+  return work.finally(() => spawns.delete(work));
 }
 
 /**

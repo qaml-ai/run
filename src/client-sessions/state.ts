@@ -253,6 +253,8 @@ export type Session = {
    */
   agentMessages?: Map<string, string>;
   messageWaiters?: Set<(name: string) => void>;
+  /** spawn_agent calls in progress: the agents tools a response calls beside them wait for them (`afterSpawns`). */
+  spawnsStarting?: Set<Promise<unknown>>;
 };
 /** What a run handed off at a step boundary had gathered for its outcome, which its next owner takes over (`takeOver`). */
 export type Carried = { usage?: RunUsage; childSpend?: number; imageSpend?: number; decisionSpend?: number; spendLimit?: number; runLimits?: RunLimits; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };

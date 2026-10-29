@@ -160,3 +160,23 @@ test("a child's message cuts its parent's wait_agent short, and the parent reads
   assert.equal(lastUserText(bodies[2]), '<agent_message name="w">\nneed the staging URL\n</agent_message>');
   assert.equal(JSON.parse(toolResults(bodies[3])[2]).agents[0].text, "worker done");
 });
+
+test("a response that starts a sub-agent and, beside it, messages and waits for it: those calls run once it has started", async t => {
+  const r = await runtime(t, body => {
+    if (systemText(body).includes("WORKER")) return tools(body) === 0 ? toolCall("report_progress", { text: "on it" }, "p1") : { role: "assistant", content: `worker done; heard: ${body.messages.filter((message: any) => message.role === "user").length > 1}` };
+    if (tools(body)) return { role: "assistant", content: toolResults(body).join("\n") };
+    const call = (id: string, name: string, args: object, index: number) => ({ index, id, type: "function", function: { name, arguments: JSON.stringify(args) } });
+    return { role: "assistant", tool_calls: [
+      call("spawn", "spawn_agent", { instructions: "You are a WORKER.", task: "work", name: "w" }, 0),
+      call("say", "send_message", { to: "w", text: "also do X" }, 1),
+      call("wait", "wait_agent", { agents: ["w"] }, 2),
+    ] };
+  });
+  const parent = await r.call("/v1/agents", { body: { systemPrompt: "You are LEAD.", builtins: ["agents"], delegate: { instructions: true } } }).then(made => made.json.id as string);
+  const reply = (await r.prompt(parent, "go")).outcome.result.reply as string;
+  const [spawned, said, waited] = reply.split("\n").map(line => JSON.parse(line));
+  assert.equal(spawned.name, "w");
+  assert.equal(said.sent, true);
+  assert.equal(waited.agents[0].status, "completed");
+  assert.match(waited.agents[0].text, /^worker done/);
+});
