@@ -95,7 +95,7 @@ export interface HostIO {
 }
 
 /** Tools Pi makes again when a lost node left their call open (`replay: "safe"`), not answered as interrupted: each is keyed by its call (multi-agent.ts). */
-export const RERUN = ["delegate", "spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"];
+export const RERUN = ["delegate", "run_workflow", "spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"];
 
 /**
  * A limit's stop as a run's result carries it: its code (its own, else the kind of stop), and the limit, reason, bucket

@@ -30,6 +30,9 @@ const GLUE: &str = include_str!("glue.js");
 const OUTPUT_EVENTS: usize = 1024;
 const TOOL_CALLS: usize = 256;
 const CONCURRENT_TOOLS: usize = 32;
+const WORKFLOW_TOOL_CALLS: usize = 8192;
+const WORKFLOW_CONCURRENT_TOOLS: usize = 64;
+const WORKFLOW_ARGUMENT_BYTES: i32 = 1024 * 1024;
 const ARGUMENT_BYTES: i32 = 128 * 1024;
 const RESULT_BYTES: i32 = 1024 * 1024;
 const EMIT_CHARS: i32 = 128_000;
@@ -52,6 +55,7 @@ static REFUSED: AtomicBool = AtomicBool::new(false);
 static EXECUTION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 struct Exec {
+  workflow: bool,
   remaining: usize,
   events: usize,
   output: Vec<String>,
@@ -66,7 +70,7 @@ struct Exec {
 
 thread_local! {
   static EXEC: std::cell::RefCell<Exec> = std::cell::RefCell::new(Exec {
-    remaining: 0, events: 0, output: vec![], truncated: false, returned: None, calls: 0, inflight: Default::default(), outbox: vec![],
+    workflow: false, remaining: 0, events: 0, output: vec![], truncated: false, returned: None, calls: 0, inflight: Default::default(), outbox: vec![],
   });
 }
 
@@ -141,13 +145,14 @@ fn send_cb(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v
   if name.length() > 80 { return throw(scope, "Sandbox bridge string exceeds size limit", false); }
   let name = name.to_rust_string_lossy(scope);
   // fs.writeFile carries a file's bytes: up to a tool result's size, not a tool call's.
-  let limit = if name == "fs.writeFile" { RESULT_BYTES } else { ARGUMENT_BYTES };
+  let workflow = EXEC.with(|exec| exec.borrow().workflow);
+  let limit = if name == "fs.writeFile" { RESULT_BYTES } else if workflow { WORKFLOW_ARGUMENT_BYTES } else { ARGUMENT_BYTES };
   if json.length() > limit as usize { return throw(scope, "Sandbox bridge string exceeds size limit", false); }
   let refused = EXEC.with(|exec| {
     let mut exec = exec.borrow_mut();
     exec.calls += 1;
-    if exec.calls > TOOL_CALLS { return Some("Codemode tool call limit exceeded"); }
-    if exec.inflight.len() >= CONCURRENT_TOOLS { return Some("Too many concurrent tool calls"); }
+    if exec.calls > (if workflow { WORKFLOW_TOOL_CALLS } else { TOOL_CALLS }) { return Some("Codemode tool call limit exceeded"); }
+    if exec.inflight.len() >= (if workflow { WORKFLOW_CONCURRENT_TOOLS } else { CONCURRENT_TOOLS }) { return Some("Too many concurrent tool calls"); }
     exec.inflight.insert(id);
     None
   });
@@ -379,7 +384,12 @@ fn main() {
   let tools = params["tools"].to_string();
   let budget = params["cpuMs"].as_u64().unwrap_or(2_000).clamp(1, 30_000) as usize;
   CPU_MS.store(budget, Ordering::SeqCst);
-  EXEC.with(|exec| exec.borrow_mut().remaining = params["maxOutputCharacters"].as_u64().unwrap_or(32_000) as usize);
+  EXEC.with(|exec| {
+    let mut exec = exec.borrow_mut();
+    exec.remaining = params["maxOutputCharacters"].as_u64().unwrap_or(32_000) as usize;
+    // Only the trusted host's execution request selects this profile; guest code cannot change it.
+    exec.workflow = params["workflow"].as_bool().unwrap_or(false);
+  });
 
   // The CPU budget: the watchdog terminates V8 at it, and exits if V8 has not stopped 250 ms later;
   // RLIMIT_CPU (whole seconds, past both) kills a process that got around the watchdog.

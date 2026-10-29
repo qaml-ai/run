@@ -707,7 +707,7 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide"]`.
+`"builtins": ["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide", "workflow"]`.
 
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or

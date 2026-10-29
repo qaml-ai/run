@@ -93,6 +93,7 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
         const budget = await spend.holdBudget(ctx.spendContext, session, run.id);
         held = budget;
         if (budget !== undefined && budget <= 0) throw new Error("This run has no budget left for a sub-agent: its spend limit is reached");
+        call.signal.throwIfAborted();
         record = await submit(agent, tenant, { id: requestId, method: "prompt", params: childPrompt(ctx, session, run, call, { agent, requestId, depth, maxDepth, chain, task, output, budget }) });
       } catch (error) {
         // Refused (the tenant's busy agents, its spend, the child's own limits): the call fails with why, and the row is done.
@@ -317,11 +318,14 @@ function relay(ctx: DelegationContext, session: Session, runId: string, at: { to
  * here, whose ending waits for this (`stoppingChildren`). Those still running then are logged, and left to the sweep
  * (`sweepDelegate`). Never rejects.
  */
-export function stopDelegates(ctx: DelegationContext, session: Session): Promise<void> {
+export function stopDelegates(ctx: DelegationContext, session: Session, scope?: { run: string; toolCallId: string }): Promise<void> {
   const { id } = session.header;
   const deadline = Date.now() + STOP_CHILDREN_MS;
   const stopping = (async () => {
-    const { rows } = await ctx.db.query("select * from agent_children where parent = $1 and kind = 'delegate' and ended_at is null", [id]);
+    // A scope stops one call's children (a workflow's, when its script ends); no scope stops every child the agent has.
+    const { rows } = scope
+      ? await ctx.db.query("select * from agent_children where parent = $1 and kind = 'delegate' and ended_at is null and parent_run = $2 and tool_call_id = $3", [id, scope.run, scope.toolCallId])
+      : await ctx.db.query("select * from agent_children where parent = $1 and kind = 'delegate' and ended_at is null", [id]);
     if (!rows.length) return;
     const ended = new Set<string>();
     const stopped = Promise.all(rows.map(row => stopDelegate(ctx, session, row, deadline).then(running => { if (!running) ended.add(row.id); }, error => {

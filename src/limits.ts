@@ -12,6 +12,13 @@ export const SANDBOX_LIMITS = Object.freeze({
    * `maxOutputCharacters`). A tenant's longest timeoutMs is `CODE_LIMITS.maxTimeoutMs` unless set otherwise, within this.
    */
   timeoutMs: 30_000, maxTimeoutMs: 120_000, outputCharacters: 32_000, maxOutputCharacters: 128_000,
+  /**
+   * A workflow script's wall clock and transfer budget: it coordinates agents and mostly waits, so its deadline is the
+   * run's, and its calls (a prompt and an answer per agent) add up past what one js_exec call transfers. Host-enforced
+   * with `executeCode({ workflow: true })`; CPU and heap limits stay unchanged.
+   */
+  workflowTimeoutMs: 3_600_000, workflowToolBytes: 128 * 1024 * 1024,
+  workflowToolCalls: 8192, workflowConcurrentTools: 64, workflowArgumentBytes: 1024 * 1024,
   toolCalls: 256,
   concurrentTools: 32,
   argumentBytes: 128 * 1024,

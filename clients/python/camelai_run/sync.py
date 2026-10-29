@@ -706,7 +706,7 @@ class Agents:
 
     def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                key_scope=None, spend_limit=None, run_limits=None, model_headers=None, mounts=None, remount=None, name=None, instructions_append=None, file_tools=None,
-               builtins=None, delegate=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None):
+               builtins=None, delegate=None, workflow=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None):
         """The agent for `key`, made now if there is none, and set to this configuration if it differs (see
         camelai_run.Agents.upsert). `tools` are declared, never served here: a process with the async SDK serves them
         (Agents().get(key, tools=...)). Tools for serverless or many workers: serve_tools and a definition. An upsert
@@ -719,7 +719,7 @@ class Agents:
         session = self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                             subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits,
                                             model_headers=model_headers, mounts=mounts, remount=remount, name=name, system_prompt_append=instructions_append, file_tools=file_tools,
-                                            builtins=builtins, delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
+                                            builtins=builtins, delegate=delegate, workflow=workflow, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
                                             max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers, bucket=bucket)
         agent = self.agent(session, tools=tools)
         agent.config_hash = session.get("configHash")

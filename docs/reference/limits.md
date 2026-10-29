@@ -288,3 +288,16 @@ spend limits like any other.
 | Run limits | 1,000 model responses and 2 hours a run (see [Runs and requests](#runs-and-requests)): `stopped: "turn_limit"` |
 | A tenant's monthly cap (`maxMonthlyCost`) | 402 for new runs once reached |
 | Prepaid credit | 402 at a zero balance, for runs and for storing files; free credit allows $1 of usage per hour (429 past it) |
+
+## Workflows
+
+| | |
+| --- | --- |
+| `run_workflow` agent calls per workflow (`workflow.maxAgents`) | 256 by default, 1–4,096; past it the workflow is stopped |
+| Agent calls in flight per workflow (`workflow.maxParallel`) | 16 by default, 1–64; the rest queue inside the script |
+| Workflow depth (`workflow.maxDepth`) | 2 by default, 1–5, counted with `delegate`'s |
+| Items in one `parallel()` or `pipeline()` | 16,384 |
+| A workflow script | 128,000 characters; its `args` 256 KB; its return value 256 KB; a task 100,000 characters (a text answer is cut at 128 KB) |
+| `phase()` titles and `log()` lines | 512 and 1,000 (500-character titles, 2,000-character lines) |
+| A workflow's sandbox | 60 minutes of wall clock, 128 MB of transfer; 8,192 tool calls, 64 at once; `js_exec`'s CPU and heap caps |
+| Top-level workflows running at once | 16 per node, 8 per tenant; nested workflows bypass this gate and remain bounded by agent capacity, depth and spend |

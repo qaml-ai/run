@@ -194,7 +194,8 @@ export class AgentSupervisor {
 
   /** Validate and dispatch an agent's application tool call, with the same limits in either hosting mode. */
   private async dispatchTool(handle: Handle, params: { name: string; args: unknown } & Partial<CallContext>) {
-    const checked = validateToolCall(handle.bridge.definitions, params.name, params.args);
+    const checked = validateToolCall(handle.bridge.definitions, params.name, params.args,
+      params.name === "run_workflow" ? SANDBOX_LIMITS.workflowArgumentBytes : SANDBOX_LIMITS.argumentBytes);
     const controller = new AbortController();
     handle.calls.add(controller);
     try {

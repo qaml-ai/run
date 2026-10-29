@@ -3808,8 +3808,8 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 9,
-            "description": "Tools the runtime answers itself (web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents, decide), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
+            "maxItems": 10,
+            "description": "Tools the runtime answers itself (web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents, decide, workflow), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
           },
           "decide": {
             "type": "boolean",
@@ -3817,6 +3817,9 @@
           },
           "delegate": {
             "$ref": "#/components/schemas/DelegateSettings"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowSettings"
           },
           "mcpServers": {
             "type": "array",
@@ -3939,9 +3942,10 @@
           "delegate",
           "generate_image",
           "agents",
-          "decide"
+          "decide",
+          "workflow"
         ],
-        "description": "agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings"
+        "description": "agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings; workflow: run_workflow, a script that coordinates sub-agents, with the workflow settings"
       },
       "DelegateSettings": {
         "type": "object",
@@ -4005,6 +4009,43 @@
             "additionalProperties": false
           }
         ]
+      },
+      "WorkflowSettings": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentTarget"
+            },
+            "maxItems": 32,
+            "description": "Who a workflow script may coordinate: definitions (a new child agent for each agent() call) and existing agents by key"
+          },
+          "instructions": {
+            "type": "boolean",
+            "description": "Let the script start a child with instructions of its own instead, on its own model"
+          },
+          "maxAgents": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096,
+            "description": "The most agent() calls one workflow run may make. Default 256"
+          },
+          "maxDepth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "description": "How deep a chain of agents may go: a child is depth 1, its child depth 2. Default 2"
+          },
+          "maxParallel": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64,
+            "description": "Agent calls of one workflow in flight at once; more queue inside the script. Default 16"
+          }
+        },
+        "additionalProperties": false,
+        "description": "With the workflow builtin: who the agent's workflow scripts may coordinate. Not with a definition, whose own it takes"
       },
       "InlineMcpServerInput": {
         "type": "object",
@@ -4491,6 +4532,20 @@
                   }
                 ]
               },
+              "workflow": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/WorkflowSettings"
+                  },
+                  {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "description": "Who its workflow scripts may coordinate, with the workflow builtin"
+                  }
+                ]
+              },
               "mcpServers": {
                 "type": "array",
                 "items": {
@@ -4634,6 +4689,7 @@
               "builtins",
               "decide",
               "delegate",
+              "workflow",
               "mcpServers",
               "spendLimit",
               "runLimits",
@@ -5563,7 +5619,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 9,
+            "maxItems": 10,
             "description": "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's"
           },
           "decide": {
@@ -5606,6 +5662,46 @@
             },
             "additionalProperties": false,
             "description": "Replaces who the agent may delegate to (with the delegate builtin); null removes it"
+          },
+          "workflow": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "agents": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AgentTarget"
+                },
+                "maxItems": 32,
+                "description": "Who a workflow script may coordinate: definitions (a new child agent for each agent() call) and existing agents by key"
+              },
+              "instructions": {
+                "type": "boolean",
+                "description": "Let the script start a child with instructions of its own instead, on its own model"
+              },
+              "maxAgents": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4096,
+                "description": "The most agent() calls one workflow run may make. Default 256"
+              },
+              "maxDepth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5,
+                "description": "How deep a chain of agents may go: a child is depth 1, its child depth 2. Default 2"
+              },
+              "maxParallel": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 64,
+                "description": "Agent calls of one workflow in flight at once; more queue inside the script. Default 16"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Replaces who the agent's workflow scripts may coordinate (with the workflow builtin); null removes it"
           },
           "mcpServers": {
             "type": [
@@ -8840,7 +8936,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 9,
+            "maxItems": 10,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from js_exec as tools.decide"
           },
           "decide": {
@@ -8893,6 +8989,16 @@
               },
               {
                 "description": "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+              }
+            ]
+          },
+          "workflow": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowSettings"
+              },
+              {
+                "description": "With the workflow builtin: who a workflow script may coordinate, and how wide and deep. See the workflows guide"
               }
             ]
           },
@@ -9231,7 +9337,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 9,
+            "maxItems": 10,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from js_exec as tools.decide"
           },
           "decide": {
@@ -9288,6 +9394,16 @@
               },
               {
                 "description": "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+              }
+            ]
+          },
+          "workflow": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowSettings"
+              },
+              {
+                "description": "With the workflow builtin: who a workflow script may coordinate, and how wide and deep. See the workflows guide"
               }
             ]
           },
@@ -9770,7 +9886,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 9,
+            "maxItems": 10,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from js_exec as tools.decide"
           },
           "decide": {
@@ -9843,6 +9959,20 @@
                   "null"
                 ],
                 "description": "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+              }
+            ]
+          },
+          "workflow": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowSettings"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "With the workflow builtin: who a workflow script may coordinate, and how wide and deep. See the workflows guide"
               }
             ]
           },
@@ -10232,10 +10362,11 @@
                 "x_search",
                 "delegate",
                 "generate_image",
-                "decide"
+                "decide",
+                "workflow"
               ]
             },
-            "maxItems": 9,
+            "maxItems": 7,
             "description": "Tools the runtime answers itself (generate_image gives the run a workspace for its images). Not schedule or ask_user: a run has no later and no one to ask"
           },
           "decide": {
@@ -10249,6 +10380,16 @@
               },
               {
                 "description": "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+              }
+            ]
+          },
+          "workflow": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowSettings"
+              },
+              {
+                "description": "With the workflow builtin: who a workflow script may coordinate, and how wide and deep. See the workflows guide"
               }
             ]
           },

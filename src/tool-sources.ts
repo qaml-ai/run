@@ -17,6 +17,7 @@ import type { WebRender } from "./web-render.ts";
 import type { XSearch } from "./x-search.ts";
 import { builtinDefinitions, builtinNames, runBuiltin } from "./builtins.ts";
 import type { DelegateSettings } from "./multi-agent.ts";
+import type { WorkflowSettings } from "./workflows.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { jsonResult, callMeta, declaredTimeout, defaultExposure, timedOut, TOOL_DEADLINES, type ToolServer, type ToolSourceView } from "./tool-servers.ts";
 import { callScope, type AgentIdentity, type RuntimeSigner } from "./identity.ts";
@@ -95,7 +96,7 @@ export interface OpenApiSpec {
  * `decide`: false, no decide tool; true, the tool even for an agent with no js_exec and no other tools; left out, the
  * default: every agent's but those (decisions.ts).
  */
-export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[]; humanInput?: HumanInputSettings; delegate?: DelegateSettings; decide?: boolean }
+export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[]; humanInput?: HumanInputSettings; delegate?: DelegateSettings; workflow?: WorkflowSettings; decide?: boolean }
 /**
  * The agent a tool call is for, its owner's claim on it, the definition whose secrets it may unseal (OpenAPI specs and
  * MCP servers with credentials come only from one; an agent's own builtins and MCP servers have none), its mounts (for files in and out), and who

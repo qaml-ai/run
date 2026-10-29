@@ -115,13 +115,13 @@ export function filesRefused(name: string, parameters: unknown, args: unknown) {
 
 const indexes = new WeakMap<ToolDefinition[], Map<string, ToolDefinition>>();
 
-export function validateToolCall(definitions: ToolDefinition[], name: unknown, args: unknown) {
+export function validateToolCall(definitions: ToolDefinition[], name: unknown, args: unknown, maxBytes: number = SANDBOX_LIMITS.argumentBytes) {
   let index = indexes.get(definitions);
   if (!index) indexes.set(definitions, index = new Map(definitions.map(tool => [tool.name, tool])));
   const tool = typeof name === "string" ? index.get(name) : undefined;
   if (!tool) throw new Error("Unknown tool");
   if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Tool arguments must be a JSON object");
-  const json = jsonWithinLimit(args, SANDBOX_LIMITS.argumentBytes, "Tool arguments");
+  const json = jsonWithinLimit(args, maxBytes, "Tool arguments");
   const check = validator(tool.parameters);
   if (!check.Check(args)) {
     const refused = filesRefused(tool.name, tool.parameters, args);
