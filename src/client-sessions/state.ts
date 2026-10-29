@@ -388,6 +388,8 @@ export interface ClientSessionOptions {
   childSweepMs?: number;
   /** Turns sub-agent notifications may start per chain root and hour; MULTI_AGENT_LIMITS.wakesPerHour by default. */
   wakesPerHour?: number;
+  /** How long a wait_agent with untilProgress waits at least before a progress report answers it; MULTI_AGENT_LIMITS.progressWaitMs by default. */
+  progressWaitMs?: number;
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
 export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "codeMode" | "runLimits" | "maxOutputTokens" | "temperature" | "dataCollection" | "language">; sources?: Sources; description?: string };

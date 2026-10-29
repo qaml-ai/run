@@ -68,6 +68,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   if (!Number.isInteger(childSweepMs) || childSweepMs < 0) throw new Error("AGENT_CHILD_SWEEP_MS must be a non-negative integer (0: no sweep)");
   // Turns sub-agent notifications may start per chain root and hour: past it they land without one, so agents cannot wake each other forever.
   const wakesPerHour = positiveSetting("AGENT_WAKES_PER_HOUR", MULTI_AGENT_LIMITS.wakesPerHour);
+  const progressWaitMs = positiveSetting("AGENT_PROGRESS_WAIT_MS", MULTI_AGENT_LIMITS.progressWaitMs);
   const hosting = (env.AGENT_HOSTING ?? "process") as Hosting;
   if (!["process", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process or inline");
   // Settings of the legacy engine and of the sweep that moved its agents to Pi, which are gone: every agent runs on Pi
@@ -125,7 +126,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     publicUrlSet: !!env.AGENT_PUBLIC_URL,
     // Where browsers reach the runtime, as browser tokens say: AGENT_PUBLIC_URL unless set; empty for none.
     browserUrl: env.AGENT_BROWSER_URL?.replace(/\/+$/, ""),
-    maxAgents, memoryHighBytes, memoryRetireMs, memoryRetireFallbackMs, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, hosting, ignored, toolTimeoutMs, contextRangeMaxBytes, runLimits, adminRunLimits, streamTimeouts, runRetentionSeconds, idleMs,
+    maxAgents, memoryHighBytes, memoryRetireMs, memoryRetireFallbackMs, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, progressWaitMs, hosting, ignored, toolTimeoutMs, contextRangeMaxBytes, runLimits, adminRunLimits, streamTimeouts, runRetentionSeconds, idleMs,
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,

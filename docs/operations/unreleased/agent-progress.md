@@ -17,3 +17,18 @@ prompt does, instead of waiting for that turn to end: it starts no turn (and so 
 `steeredInto` the turn. A parent's `wait_agent` returns as soon as one of its sub-agents messages it, with `messaged`
 naming who, so the model reads the message next. An idle parent still gets it as a turn of its own. The call answers
 `into: "its running turn"` or `"a new turn of its own"`.
+
+### A waiting parent can watch its sub-agents' progress
+
+`wait_agent({ untilProgress: true })` also returns when a sub-agent it waits on reports progress the parent has not
+seen, with `updated` naming whose and each one's latest `progress`, so the model can correct a sub-agent that went off
+track while it works. It answers no sooner than `AGENT_PROGRESS_WAIT_MS` (default 15 seconds) into the wait, so a
+sub-agent reporting each step costs its parent at most one model call per that long. Without it, a report never ends
+a wait.
+
+### Starting a sub-agent and messaging it in one response
+
+`wait_agent`, `send_message`, `list_agents` and `interrupt_agent` called in the same response as `spawn_agent` now run
+once the sub-agent has started: `send_message` found no agent, and `wait_agent` recorded the sub-agent as failed while
+it went on to run. A message to a sub-agent whose turn has not begun yet waits up to 10 seconds for it and joins it,
+instead of queuing behind the whole task.

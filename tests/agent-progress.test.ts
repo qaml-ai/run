@@ -180,3 +180,34 @@ test("a response that starts a sub-agent and, beside it, messages and waits for 
   assert.equal(waited.agents[0].status, "completed");
   assert.equal(waited.agents[0].text, "worker done; heard: true", "the message joined its first turn, not one after it");
 });
+
+test("wait_agent with untilProgress returns on a report it has not seen, after its floor, so the parent can correct a sub-agent mid-run", async t => {
+  const release = deferred();
+  const bodies: any[] = [];
+  let waitStarted = 0, waitEnded = 0;
+  const r = await runtime(t, body => {
+    if (systemText(body).includes("WORKER")) {
+      if (tools(body) === 0) return toolCall("report_progress", { text: "fetching the 2019 report" }, "p1");
+      if (tools(body) === 1) return { role: "assistant", content: "x", wait: release.promise, ...toolCall("report_progress", { text: "still on 2019" }, "p2") };
+      const corrected = body.messages.some((message: any) => message.role === "user" && JSON.stringify(message.content).includes("use 2025"));
+      return { role: "assistant", content: corrected ? "used 2025" : "used 2019" };
+    }
+    bodies.push(body);
+    const results = toolResults(body);
+    if (!results.length) return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "get the report", name: "w" }, "spawn");
+    if (results.length === 1) { waitStarted = Date.now(); return toolCall("wait_agent", { untilProgress: true, timeoutMs: 120_000 }, "watch"); }
+    if (results.length === 2) { waitEnded = Date.now(); release.resolve(); return toolCall("send_message", { to: "w", text: "wrong year: use 2025" }, "fix"); }
+    if (results.length === 3) return toolCall("wait_agent", {}, "wait");
+    return { role: "assistant", content: "lead done" };
+  }, { AGENT_PROGRESS_WAIT_MS: "1000" });
+  const parent = await r.call("/v1/agents", { body: { systemPrompt: "You are LEAD.", builtins: ["agents"], delegate: { instructions: true } } }).then(made => made.json.id as string);
+  const run = await r.prompt(parent, "start");
+  assert.equal(run.outcome.result.reply, "lead done");
+  const watched = JSON.parse(toolResults(bodies[2])[1]);
+  assert.deepEqual(watched.updated, ["w"]);
+  assert.equal(watched.agents[0].status, "running");
+  assert.equal(watched.agents[0].progress, "fetching the 2019 report");
+  assert.ok(waitEnded - waitStarted >= 900 && waitEnded - waitStarted < 30_000, `it waited its floor and no more (${waitEnded - waitStarted} ms)`);
+  assert.doesNotMatch(toolResults(bodies[2])[1], /<agent_updates>/, "what it answered is not repeated");
+  assert.equal(JSON.parse(toolResults(bodies[4])[3]).agents[0].text, "used 2025", "the correction reached it while it worked");
+});

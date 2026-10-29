@@ -32,6 +32,11 @@ export const MULTI_AGENT_LIMITS = Object.freeze({
   noticeChars: 100_000,
   /** A progress report's length, and report_progress calls of one run. */
   progressChars: 500, progressPerRun: 100,
+  /**
+   * How long a wait_agent with untilProgress waits at least before a progress report answers it (AGENT_PROGRESS_WAIT_MS),
+   * from the start of the wait: reports of a child reporting each step are coalesced, the latest each, into one answer.
+   */
+  progressWaitMs: 15_000,
 });
 
 /** A delegate target: a definition (by id or key) or an existing agent (by key), named for the model. */
@@ -174,10 +179,11 @@ export function agentsTools(settings: DelegateSettings, describe: (target: Agent
     } },
   }, {
     name: "wait_agent", exposure: "direct",
-    description: `Wait until one of your running sub-agents finishes (by default any of them; or those named), or until timeoutMs passes (default ${minutes(MULTI_AGENT_LIMITS.waitMs)}, at most ${minutes(MULTI_AGENT_LIMITS.maxWaitMs)}). Returns each one's status, with the answer of any that finished (those answers do not arrive again as notifications), and the latest progress of those still running. A message from one of them ends the wait at once (messaged names who sent it): read it, then wait again if you need to.`,
+    description: `Wait until one of your running sub-agents finishes (by default any of them; or those named), or until timeoutMs passes (default ${minutes(MULTI_AGENT_LIMITS.waitMs)}, at most ${minutes(MULTI_AGENT_LIMITS.maxWaitMs)}). Returns each one's status, with the answer of any that finished (those answers do not arrive again as notifications), and the latest progress of those still running. A message from one of them ends the wait at once (messaged names who sent it): read it, then wait again if you need to. With untilProgress, a new progress report ends it too (updated names whose), at most one answer per ${MULTI_AGENT_LIMITS.progressWaitMs / 1000} seconds of waiting, with each one's latest: use it to keep watch over long work and correct a sub-agent that goes off track (send_message reaches it while it works).`,
     parameters: { type: "object", additionalProperties: false, properties: {
       agents: { type: "array", items: { type: "string" }, maxItems: MULTI_AGENT_LIMITS.parallelCeiling, description: "Names or agentIds of the sub-agents to wait for (default: all running ones)" },
       timeoutMs: { type: "integer", minimum: 1_000, maximum: MULTI_AGENT_LIMITS.maxWaitMs },
+      untilProgress: { type: "boolean", description: "Also return when one of them reports progress you have not seen (default false)" },
     } },
   }, {
     name: "list_agents", exposure: "direct",

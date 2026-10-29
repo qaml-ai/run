@@ -326,7 +326,8 @@ async function reportProgress(ctx: ChildrenContext, session: Session, call: Tool
 async function waitAgents(ctx: ChildrenContext, session: Session, call: ToolCall): Promise<McpResult> {
   const run = runningRun(session);
   if (!run || call.innerCallId) throw new Error("wait_agent is called directly, not from js_exec");
-  const { agents: names, timeoutMs } = call.args as { agents?: unknown; timeoutMs?: unknown };
+  const { agents: names, timeoutMs, untilProgress } = call.args as { agents?: unknown; timeoutMs?: unknown; untilProgress?: unknown };
+  if (untilProgress !== undefined && typeof untilProgress !== "boolean") throw new Error("untilProgress is true or false");
   if (names !== undefined && (!Array.isArray(names) || names.some(name => typeof name !== "string"))) throw new Error("agents is a list of names or agentIds");
   if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || (timeoutMs as number) < 1_000 || (timeoutMs as number) > MULTI_AGENT_LIMITS.maxWaitMs)) throw new Error(`timeoutMs is an integer from 1000 to ${MULTI_AGENT_LIMITS.maxWaitMs}`);
   const parent = session.header.id, tenant = session.header.tenant;
@@ -345,6 +346,23 @@ async function waitAgents(ctx: ChildrenContext, session: Session, call: ToolCall
   if (!chosen.length) return jsonResult({ agents: [], message: "No sub-agents are running" });
   // A sub-agent's message cuts the wait short, as does one already on its way to the model: it reads it next.
   const messaged = new Set(session.agentMessages?.values() ?? []);
+  // With untilProgress, a report it has not seen ends the wait too, once it has waited progressWaitMs: reports coalesce.
+  const updated = new Set<string>();
+  const earliest = Date.now() + (ctx.options.progressWaitMs ?? MULTI_AGENT_LIMITS.progressWaitMs);
+  const reported = async (signal: AbortSignal) => {
+    if (!untilProgress) return new Promise<never>(() => {});
+    const pause = (ms: number) => new Promise<void>(resolve => { const timer = setTimeout(resolve, ms); signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true }); });
+    await pause(earliest - Date.now());
+    while (!signal.aborted) {
+      const watched = new Set(chosen.filter(row => row.ended_at === null).map(row => row.child as string));
+      for (const report of (await progressOf(ctx, parent)).values()) {
+        if (watched.has(report.child) && Number(report.progress_seq) > (session.progressShown?.get(report.id) ?? 0)) updated.add(report.name);
+      }
+      if (updated.size) return;
+      await pause(1_000);
+    }
+    return new Promise<never>(() => {});
+  };
   let wake: (() => void) | undefined;
   const waiter = (name: string) => { messaged.add(name); wake?.(); };
   (session.messageWaiters ??= new Set()).add(waiter);
@@ -354,7 +372,7 @@ async function waitAgents(ctx: ChildrenContext, session: Session, call: ToolCall
     const ready = () => chosen.some(row => open(row) && row.ended_at !== null) || !chosen.some(waitable);
     const deadline = Date.now() + ((timeoutMs as number | undefined) ?? MULTI_AGENT_LIMITS.waitMs);
     // Until one of them ends, or the timeout: a run folded into another (a steered message) ends without being an answer.
-    while (!ready() && !messaged.size && Date.now() < deadline) {
+    while (!ready() && !messaged.size && !updated.size && Date.now() < deadline) {
       const stop = new AbortController();
       const abort = () => stop.abort();
       wake = abort;
@@ -362,7 +380,7 @@ async function waitAgents(ctx: ChildrenContext, session: Session, call: ToolCall
       const timer = setTimeout(abort, deadline - Date.now());
       const timedOut = new Promise<void>(resolve => stop.signal.addEventListener("abort", () => resolve(), { once: true }));
       try {
-        await Promise.race([timedOut, ...chosen.filter(waitable).map(async row => {
+        await Promise.race([timedOut, reported(stop.signal), ...chosen.filter(waitable).map(async row => {
           let record: RequestRecord | undefined;
           try { record = await delegation.childOutcome(ctx, row.child, tenant, row.request_id, stop.signal); }
           catch (error) {
@@ -393,6 +411,7 @@ async function waitAgents(ctx: ChildrenContext, session: Session, call: ToolCall
   }
   const senders = [...messaged];
   if (senders.length) return jsonResult({ agents: answers, messaged: senders, message: `${senders.join(", ")} sent you a message, which follows this result: read it, then wait again if you need to` });
+  if (updated.size && answers.some(answer => answer.status === "running")) return jsonResult({ agents: answers, updated: [...updated] });
   return jsonResult({ agents: answers, ...(answers.every(answer => answer.status === "running") ? { timedOut: true } : {}) });
 }
 

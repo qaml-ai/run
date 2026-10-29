@@ -5858,7 +5858,7 @@ const lead = await agents.upsert("research-lead", {
 | Tool | |
 | --- | --- |
 | `spawn_agent({ agent \| instructions, task, output?, name? })` | Starts a sub-agent, as `delegate` would, and returns `{ agentId, name }` at once. `name` is the model's handle for it, unique among its running sub-agents (default: the agent's name and a number, `researcher-1`) |
-| `wait_agent({ agents?, timeoutMs? })` | Waits until one of the given sub-agents (names or ids; default: any running one) ends, one of them sends a message, or `timeoutMs` passes (default 5 minutes, at most 10). Returns each one's `status`, with the answer (`text`, `output?`, `error?`) of those that ended and the `progress` of those running; `messaged` names who sent a message, which the model reads next |
+| `wait_agent({ agents?, timeoutMs?, untilProgress? })` | Waits until one of the given sub-agents (names or ids; default: any running one) ends, one of them sends a message, with `untilProgress: true` one of them [reports progress](https://run.camelai.com/docs/guides/multi-agent.md#progress), or `timeoutMs` passes (default 5 minutes, at most 10). Returns each one's `status`, with the answer (`text`, `output?`, `error?`) of those that ended and the `progress` of those running; `messaged` names who sent a message, which the model reads next |
 | `list_agents()` | The agent's sub-agents: `{ agentId, name, status, startedAt, endedAt?, progress?, progressAt? }`, `status` being `running`, `completed`, `failed`, `aborted` or `input_required`, and `progress` a running one's latest [report](https://run.camelai.com/docs/guides/multi-agent.md#progress) |
 | `send_message({ to, text })` | Messages one of its sub-agents (name or id) or, from a sub-agent, its parent (`"parent"`). See [Messages](https://run.camelai.com/docs/guides/multi-agent.md#messages) |
 | `interrupt_agent({ agent })` | Aborts one of its running sub-agents; its notification follows with status `aborted` |
@@ -5935,6 +5935,14 @@ starts a turn or counts against the wake cap:
 - **`list_agents` and `wait_agent` show it** as `progress` and `progressAt` of
   each running sub-agent; what they showed is not repeated with the next
   result.
+- **A waiting parent can watch it.** `wait_agent` does not end for a report,
+  unless the model asks: with `untilProgress: true`, a report it has not seen
+  ends the wait too, with `updated: ["researcher-1"]` and each one's latest
+  `progress`. It answers no sooner than 15 seconds into the wait
+  (`AGENT_PROGRESS_WAIT_MS`), so a sub-agent reporting each step costs its
+  parent one model call per 15 seconds at most, with its latest report. The
+  model reads how the work goes, and corrects a sub-agent that went off track
+  with `send_message`, which reaches it while it works.
 - **An ending supersedes it.** Once a sub-agent's run ends, its reports are
   shown no more: its notification (or `wait_agent`) carries its answer.
 - **Watchers see it at once**, as `subagent_progress` (see [Events](https://run.camelai.com/docs/guides/multi-agent.md#events)),
