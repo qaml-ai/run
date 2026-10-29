@@ -93,7 +93,7 @@ either:
 
 | Field | |
 | --- | --- |
-| `language` | ISO 639-1 (`en`) or a locale (`pt-BR`); detected when left out |
+| `language` | ISO 639-1 (`en`) or a locale (`pt-BR`, sent as `pt`); detected when left out, or when OpenAI does not take it (`so`) |
 | `prompt` | names, jargon or the conversation so far, as a hint (at most 2,000 characters) |
 | `keyScope` | a key scope whose OpenAI key goes first |
 | `subject`, `context`, `actor` | who it is for and who asked, carried to its `usage.recorded` event, as an agent's identity is |

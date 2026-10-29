@@ -40,6 +40,7 @@ function recorder() {
   const got: { type: string; [key: string]: unknown }[] = [];
   const events: RealtimeEvents = {
     ready: () => got.push({ type: "ready" }),
+    language: detail => got.push({ type: "language", detail }),
     responseStarted: id => got.push({ type: "started", id }),
     audio: (id, pcm) => got.push({ type: "audio", id, bytes: pcm.byteLength }),
     said: (id, text) => got.push({ type: "said", id, text }),
@@ -217,4 +218,17 @@ test("Grok meters only transmitted audio and text items, excluding tool results 
   connection.append(tone(200));
   connection.note("not sent");
   assert.equal(metered.length, 3, "closed connections do not charge unsent events");
+});
+
+test("the language hint as Grok takes it (pt-BR, es-MX, a base code), left out and said where it takes none (so, bare es)", async t => {
+  const fake = await fakeGrok(t);
+  for (const [language, hint] of [["pt-BR", "pt-BR"], ["es-MX", "es-MX"], ["en-US", "en"], ["ja", "ja"], ["so", undefined], ["es", undefined], ["pt-AO", undefined]] as const) {
+    const { got, events } = recorder();
+    const connection = grokRealtime({ baseUrl: fake.base }).connect({ model: "grok-voice-latest", voice: "ara", instructions: "x", transcribe: true, language, tools: [] }, { apiKey: "xai-fixture-key" }, events);
+    await until(() => got.some(event => event.type === "ready"), "ready");
+    const session = fake.seen.events.filter(event => event.type === "session.update").at(-1).session;
+    assert.deepEqual(session.audio.input.transcription, hint ? { language_hint: hint } : undefined, language);
+    assert.equal(got.filter(event => event.type === "language").length, hint ? 0 : 1, language);
+    connection.close();
+  }
 });

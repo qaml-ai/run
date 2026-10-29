@@ -15,7 +15,7 @@ import { sleep, testBrain, tone, until, utter } from "./voice-realtime-fakes.ts"
  * As Azure's resource too: `refuse` answers the handshake with that HTTP status (a 429, a 404 for a deployment
  * missing), `sessionError` answers session.update with an error instead of session.updated.
  */
-async function fakeOpenAI(t: { after(fn: () => unknown): void }, options: { refuse?: number; sessionError?: boolean } = {}) {
+async function fakeOpenAI(t: { after(fn: () => unknown): void }, options: { refuse?: number; sessionError?: boolean; refuseLanguages?: string[] } = {}) {
   const server = createServer();
   const seen = { urls: [] as string[], auth: [] as string[], apiKeys: [] as string[], refused: 0, events: [] as any[] };
   const sockets = new WebSocketServer({
@@ -32,7 +32,11 @@ async function fakeOpenAI(t: { after(fn: () => unknown): void }, options: { refu
       ws.on("message", data => {
         const event = JSON.parse(String(data));
         seen.events.push(event);
-        if (event.type === "session.update" && options.sessionError) ws.send(JSON.stringify({ type: "error", error: { type: "invalid_request_error", code: "invalid_value", message: "The transcription deployment does not exist" } }));
+        const language = event.session?.audio?.input?.transcription?.language;
+        // As Azure answered "so" (2026-10-29): invalid_value naming it, the session not updated.
+        if (event.type === "session.update" && language && options.refuseLanguages?.includes(language)) {
+          ws.send(JSON.stringify({ type: "error", error: { type: "invalid_request_error", code: "invalid_value", message: `Invalid value: '${language}'. Supported values are: 'af', 'ar', 'az'.`, param: "session.audio.input.transcription.language" } }));
+        } else if (event.type === "session.update" && options.sessionError) ws.send(JSON.stringify({ type: "error", error: { type: "invalid_request_error", code: "invalid_value", message: "The transcription deployment does not exist" } }));
         else if (event.type === "session.update") ws.send(JSON.stringify({ type: "session.updated", session: event.session }));
         if (event.type === "input_audio_buffer.commit") ws.send(JSON.stringify({ type: "input_audio_buffer.committed", item_id: `item_${seen.events.filter(e => e.type === "input_audio_buffer.commit").length}` }));
       });
@@ -50,6 +54,7 @@ function recorder() {
   const events: RealtimeEvents = {
     ready: () => got.push({ type: "ready" }),
     fallback: detail => got.push({ type: "fallback", detail }),
+    language: detail => got.push({ type: "language", detail }),
     responseStarted: id => got.push({ type: "started", id }),
     audio: (id, pcm) => got.push({ type: "audio", id, bytes: pcm.byteLength }),
     said: (id, text) => got.push({ type: "said", id, text }),
@@ -275,11 +280,12 @@ test("the brain logs voice_realtime_azure_fallback and names the host it ran on 
   assert.deepEqual(metrics[0]._aws.CloudWatchMetrics[0].Dimensions.map((names: string[]) => names.filter(name => name !== "ServiceName")), [[], ["Host"]]);
 });
 
-test("OpenAI transcription language normalizes BCP-47 to known ISO-639-1 codes", () => {
-  for (const [input, expected] of [["es-ES", "es"], ["pt-BR", "pt"], ["en-US", "en"], ["en", "en"], ["ES", "es"], ["zh-Hant-TW", "zh"], ["fr-CA", "fr"], ["tl", "tl"], ["tl-PH", "tl"], ["bh", "bh"]]) {
+test("OpenAI transcription language: BCP-47 as the base code its transcription takes, none for a language it does not", () => {
+  for (const [input, expected] of [["es-ES", "es"], ["pt-BR", "pt"], ["en-US", "en"], ["en", "en"], ["ES", "es"], ["zh-Hant-TW", "zh"], ["fr-CA", "fr"], ["tl", "tl"], ["tl-PH", "tl"], ["fil", "tl"], ["iw", "he"], ["nb-NO", "no"]]) {
     assert.equal(transcriptionLanguage(input), expected);
   }
-  for (const input of [undefined, "", "zz", "zz-ZZ", "unknown", "en_US", "en-", "x-private", "und", "en-US-bogus!"]) {
+  // Somali and the rest Whisper's list leaves out: OpenAI and Azure refuse them (invalid_value), so none is sent.
+  for (const input of [undefined, "", "so", "so-SO", "som", "bh", "am", "yo", "zz", "zz-ZZ", "unknown", "en_US", "en-", "x-private", "und", "en-US-bogus!"]) {
     assert.equal(transcriptionLanguage(input), undefined, String(input));
   }
 });
@@ -307,4 +313,62 @@ test("an unknown language is omitted from the OpenAI transcription session", asy
   await until(() => got.some(event => event.type === "ready"), "provider ready");
   assert.equal(Object.hasOwn(fake.seen.events[0].session.audio.input.transcription, "language"), false);
   connection.close();
+});
+
+// A language hint never fails a call: Somali (Discord locale "so") ended calls on 2026-10-29 when Azure and OpenAI
+// both refused it in the session and the connection never went live.
+
+test("a language transcription does not take (so) is left out, said once, and the session goes live on Azure", async t => {
+  const azure = await fakeOpenAI(t, { refuseLanguages: ["so"] });
+  const openai = await fakeOpenAI(t, { refuseLanguages: ["so"] });
+  const { got, events } = recorder();
+  const connection = openaiRealtime({ baseUrl: openai.base }).connect({ ...SESSION, language: "so" }, onAzure(azure.origin), events);
+  await until(() => got.some(event => event.type === "ready"), "ready");
+  assert.equal(connection.host, "azure");
+  assert.deepEqual(azure.seen.events[0].session.audio.input.transcription, { model: "transcribe-eastus2" });
+  assert.deepEqual(got.filter(event => event.type === "language").length, 1);
+  assert.ok(!got.some(event => event.type === "fallback" || event.type === "closed"));
+  connection.close();
+});
+
+test("pt-BR goes to transcription as pt", async t => {
+  const openai = await fakeOpenAI(t);
+  const { got, events } = recorder();
+  const connection = openaiRealtime({ baseUrl: openai.base }).connect({ ...SESSION, language: "pt-BR" }, { apiKey: "sk-tenant" }, events);
+  await until(() => got.some(event => event.type === "ready"), "ready");
+  assert.equal(openai.seen.events[0].session.audio.input.transcription.language, "pt");
+  assert.ok(!got.some(event => event.type === "language"));
+  connection.close();
+});
+
+for (const [where, credentials] of [["on Azure", "azure"], ["on OpenAI alone", "openai"]] as const) {
+  test(`a language refused anyway (invalid_value naming it) ${where}: the session again without it on the same host, not a lost connection`, async t => {
+    const azure = await fakeOpenAI(t, { refuseLanguages: ["pt"] });
+    const openai = await fakeOpenAI(t, { refuseLanguages: ["pt"] });
+    const { got, events } = recorder();
+    const connection = openaiRealtime({ baseUrl: openai.base }).connect({ ...SESSION, language: "pt-BR" }, credentials === "azure" ? onAzure(azure.origin) : { apiKey: "sk-tenant" }, events);
+    connection.append(tone(200));
+    await until(() => got.some(event => event.type === "ready"), "ready");
+    const host = credentials === "azure" ? azure : openai;
+    assert.equal(connection.host, credentials);
+    const updates = host.seen.events.filter(event => event.type === "session.update").map(event => event.session.audio.input.transcription);
+    assert.deepEqual(updates, [{ model: credentials === "azure" ? "transcribe-eastus2" : "gpt-transcribe", language: "pt" }, { model: credentials === "azure" ? "transcribe-eastus2" : "gpt-transcribe" }]);
+    assert.ok(!got.some(event => event.type === "fallback" || event.type === "closed" || event.type === "warning"), JSON.stringify(got));
+    assert.match(String(got.find(event => event.type === "language")?.detail), /refused by .*'pt'/);
+    if (credentials === "azure") assert.equal(openai.seen.urls.length, 0);
+    assert.equal(connection.commit("t1"), true);
+    await until(() => host.seen.events.some(event => event.type === "input_audio_buffer.commit"), "the commit");
+    connection.close();
+  });
+}
+
+test("the brain logs voice_realtime_language_omitted once a session, and the call goes on", async t => {
+  const azure = await fakeOpenAI(t, { refuseLanguages: ["so"] });
+  const openai = await fakeOpenAI(t, { refuseLanguages: ["so"] });
+  const { brain, logs } = testBrain({ provider: openaiRealtime({ baseUrl: openai.base }), credentials: onAzure(azure.origin), language: "so" });
+  await until(() => logs.some(log => log.type === "voice_realtime_ready"), "ready");
+  await utter(brain, "1", 200);
+  assert.deepEqual(logs.filter(log => log.type === "voice_realtime_language_omitted").length, 1);
+  assert.ok(!logs.some(log => log.type === "voice_realtime_azure_fallback" || log.type === "voice_realtime_lost"), JSON.stringify(logs.map(log => log.type)));
+  brain.close();
 });

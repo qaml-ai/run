@@ -1,3 +1,4 @@
+import { grokTranscriptionLanguage } from "../../language.ts";
 import type { SocketFactory } from "../../voice-providers/socket.ts";
 import { openaiCompatibleRealtime } from "./openai.ts";
 import type { RealtimeConfig, RealtimeProvider } from "./provider.ts";
@@ -30,7 +31,7 @@ export function grokRealtime(options: { baseUrl?: string; socket?: SocketFactory
     id: "grok", key: "xai", models: GROK_REALTIME.models, defaultModel: GROK_REALTIME.defaultModel,
     voices: GROK_REALTIME.voices, voiceFor: VOICE_FOR,
   }, {
-    ...options, baseUrl: options.baseUrl ?? "https://api.x.ai/v1", session: grokSession, legacyAudioEvents: true, nativeTranscription: true, metered: true,
+    ...options, baseUrl: options.baseUrl ?? "https://api.x.ai/v1", session: grokSession, language: grokTranscriptionLanguage, legacyAudioEvents: true, nativeTranscription: true, metered: true,
     redact: text => text.replace(/\bxai-[\w-]+/g, "[redacted]"),
   });
 }

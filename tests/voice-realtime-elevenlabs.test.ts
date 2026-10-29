@@ -86,6 +86,7 @@ function recorder() {
   const got: { type: string; [key: string]: any }[] = [];
   const events: RealtimeEvents = {
     ready: () => got.push({ type: "ready" }), responseStarted: id => got.push({ type: "started", id }),
+    language: detail => got.push({ type: "language", detail }),
     audio: (id, pcm) => got.push({ type: "audio", id, pcm }), said: (id, text) => got.push({ type: "said", id, text }),
     toolCall: call => got.push({ type: "tool", ...call }), responseDone: (id, outcome) => got.push({ type: "done", id, ...outcome }),
     heard: (tag, text, seconds) => got.push({ type: "heard", tag, text, seconds }), interrupted: () => got.push({ type: "interrupted" }),
@@ -676,4 +677,18 @@ test("ElevenLabs using an existing account voice never adopts it for eviction", 
   await until(() => got.some(event => event.type === "ready"), "existing voice ready");
   assert.deepEqual((await db.query("select * from elevenlabs_voices")).rows, []);
   assert.ok(!fake.seen.requests.some(request => request.url === "/v1/user/subscription" || request.url.startsWith("/v1/voices/add/")));
+});
+
+test("ElevenLabs takes the language as its code (pt-BR → pt, tl → fil, so); one it does not take is the agent's default (en), said", async t => {
+  const fake = await fakeElevenLabs(t);
+  const provider = elevenlabsAgents({ baseUrl: fake.base });
+  for (const [language, sent] of [["pt-BR", "pt"], ["tl", "fil"], ["so", "so"], ["zz", "en"]] as const) {
+    const { got, events } = recorder();
+    const connection = provider.connect({ ...config, language }, { apiKey: "tenant-key" }, events);
+    await until(() => got.some(e => e.type === "ready"), "ready");
+    const init = fake.seen.events.filter(e => e.type === "conversation_initiation_client_data").at(-1);
+    assert.equal(init.conversation_config_override.agent.language, sent, language);
+    assert.equal(got.filter(e => e.type === "language").length, language === "zz" ? 1 : 0, language);
+    connection.close();
+  }
 });

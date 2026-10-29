@@ -60,7 +60,7 @@ Discord allows one voice connection per user and server: a second `POST` for the
 | `subject`, `context`, `keyScope` | whose usage it is (`usage.recorded`'s `subject`), your claims in its `context`, and a [key scope](models-and-keys.md#key-scopes) whose key for the realtime provider is used |
 | `bucket` | with end-user credits on: which of the subject's buckets pays |
 | `deliver` | `agent`: the bot's agent, which the model asks for anything beyond talk (`ask_agent`); `webhooks` (default `true`): `voice.*` events to your endpoints |
-| `language`, `prompt` | the language spoken (`en`, `pt-BR`; detected when left out), and words to expect (names, jargon), for the transcripts. OpenAI transcription uses the ISO-639-1 base language (`pt-BR` → `pt`, `es-ES` → `es`); invalid or unknown codes are omitted for auto-detection |
+| `language`, `prompt` | the language spoken (`en`, `pt-BR`; detected when left out), and words to expect (names, jargon), for the transcripts. A hint, never a reason to fail: each provider gets it as it takes it (OpenAI and Azure transcription the base language, `pt-BR` → `pt`; Grok its locales; ElevenLabs its codes), and one a provider does not take (Somali on OpenAI) is left out for auto-detection, as is one it refuses at setup |
 | `addressing` | which turns are the bot's in a group call: `{names, mode, conversationMs}`; see [who it answers](#who-it-answers) (default: every turn) |
 | `endOfTurn` | how a speaker's turn ends: `smart` (the default where the runtime has the models) or `silence`, or `{mode, commitMs, threshold, maxSilenceMs}`; see [turns](#turns) |
 | `silenceMs` | with `endOfTurn: silence`: silence that ends a turn: 200 to 5000, default 800 |

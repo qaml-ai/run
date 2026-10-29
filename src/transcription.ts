@@ -2,6 +2,7 @@ import type { Outbound } from "./outbound.ts";
 import type { UsageRecord } from "./client-sessions/state.ts";
 import { audioHeader, AUDIO_FORMATS, type AudioFormat, type AudioHeader } from "./audio-header.ts";
 import { HttpError } from "./http.ts";
+import { openaiTranscriptionLanguage } from "./language.ts";
 import type { AgentIdentity } from "./identity.ts";
 import { AUDIO_LIMITS, FILE_LIMITS } from "./limits.ts";
 import { MICROS } from "./pricing.ts";
@@ -50,50 +51,64 @@ export const TRANSCRIPTION_MODEL = "gpt-transcribe";
 
 /**
  * OpenAI's transcription API, with `gpt-transcribe`. OpenAI names the format by the file's extension, so the upload is
- * named for what its header says it is.
+ * named for what its header says it is. The language asked for goes as OpenAI takes it (its base code: pt-BR → pt), and
+ * not at all where it takes none (so) or refuses it anyway: OpenAI then detects the language.
  */
 export function openaiTranscription(options: { outbound: Outbound; baseUrl?: string; timeoutMs?: number }): TranscriptionProvider {
   const { outbound, baseUrl = "https://api.openai.com/v1", timeoutMs = AUDIO_LIMITS.timeoutMs } = options;
   return {
     id: "openai",
     model: TRANSCRIPTION_MODEL,
-    async transcribe({ bytes, header }, asked, credentials, signal) {
-      const form = new FormData();
-      const provider = credentials.via === "azure" ? "Azure OpenAI" : "OpenAI";
-      form.set("model", credentials.model ?? TRANSCRIPTION_MODEL);
-      form.set("file", new Blob([bytes as Uint8Array<ArrayBuffer>], { type: header.contentType }), `audio.${EXTENSIONS[header.format]}`);
-      if (asked.language) form.set("language", asked.language);
-      if (asked.prompt) form.set("prompt", asked.prompt);
-      const url = `${(credentials.baseUrl ?? baseUrl).replace(/\/+$/, "")}/audio/transcriptions${credentials.query ? `?${credentials.query}` : ""}`;
-      let response: Response;
-      try {
-        // Encoded here: the guarded fetch is undici's own, which takes this runtime's FormData as an opaque object.
-        const encoded = new Response(form);
-        const body = Buffer.from(await encoded.arrayBuffer());
-        response = await outbound.fetch(url, { method: "POST", body, headers: { Accept: "application/json", ...credentials.headers, "Content-Type": encoded.headers.get("content-type")! }, secrets: credentials.secrets ?? (credentials.apiKey ? { Authorization: `Bearer ${credentials.apiKey}` } : {}), timeoutMs, maxBytes: 4 * 1024 * 1024, signal });
-      } catch (error) {
-        if (signal.aborted) throw error;
-        throw new TranscriptionFailed(502, `${provider} could not be reached to transcribe the audio (${safeError(error)})`, true);
+    async transcribe(audio, asked, credentials, signal) {
+      const language = openaiTranscriptionLanguage(asked.language);
+      try { return await transcribe(audio, { ...asked, language }, credentials, signal); } catch (error) {
+        if (!(language && error instanceof LanguageRefused)) throw error;
+        return await transcribe(audio, { ...asked, language: undefined }, credentials, signal);
       }
-      if (!response.ok) {
-        // OpenAI's error message names the parameter at fault (never the audio's content).
-        const detail = await response.json().then((body: any) => typeof body?.error?.message === "string" ? body.error.message.slice(0, 300) : "", () => "");
-        const status = response.status;
-        if (status === 401 || status === 403) throw new TranscriptionFailed(502, `${provider} rejected the API key (HTTP ${status})`);
-        // Azure's deployment missing (renamed, or still being made) is the operator's to fix; meanwhile OpenAI serves.
-        if (status === 404 && credentials.via === "azure") throw new TranscriptionFailed(502, `${provider} has no such deployment (HTTP 404)`, true);
-        if (status === 400 || status === 413 || status === 415) throw new TranscriptionFailed(400, `${provider} could not transcribe the audio (HTTP ${status}${detail ? `: ${detail}` : ""})`);
-        throw new TranscriptionFailed(502, `${provider} failed to transcribe the audio (HTTP ${status})`, status === 408 || status === 429 || status >= 500);
-      }
-      const body: any = await response.json().catch(() => undefined);
-      if (typeof body?.text !== "string") throw new TranscriptionFailed(502, `${provider} answered without a transcript`);
-      // What OpenAI bills: whole seconds of audio (`usage.duration`), else the header's length.
-      const seconds = body.usage?.type === "duration" && Number.isFinite(body.usage.seconds) ? Number(body.usage.seconds) : Math.ceil(header.seconds ?? 0);
-      const language = typeof body.languages?.[0]?.code === "string" ? body.languages[0].code : undefined;
-      return { text: body.text.trim(), ...(language ? { language } : {}), seconds, model: TRANSCRIPTION_MODEL };
     },
   };
+
+  async function transcribe({ bytes, header }: { bytes: Uint8Array; header: AudioHeader }, asked: TranscriptionOptions, credentials: TranscriptionCredentials, signal: AbortSignal): Promise<Transcript> {
+    const form = new FormData();
+    const provider = credentials.via === "azure" ? "Azure OpenAI" : "OpenAI";
+    form.set("model", credentials.model ?? TRANSCRIPTION_MODEL);
+    form.set("file", new Blob([bytes as Uint8Array<ArrayBuffer>], { type: header.contentType }), `audio.${EXTENSIONS[header.format]}`);
+    if (asked.language) form.set("language", asked.language);
+    if (asked.prompt) form.set("prompt", asked.prompt);
+    const url = `${(credentials.baseUrl ?? baseUrl).replace(/\/+$/, "")}/audio/transcriptions${credentials.query ? `?${credentials.query}` : ""}`;
+    let response: Response;
+    try {
+      // Encoded here: the guarded fetch is undici's own, which takes this runtime's FormData as an opaque object.
+      const encoded = new Response(form);
+      const body = Buffer.from(await encoded.arrayBuffer());
+      response = await outbound.fetch(url, { method: "POST", body, headers: { Accept: "application/json", ...credentials.headers, "Content-Type": encoded.headers.get("content-type")! }, secrets: credentials.secrets ?? (credentials.apiKey ? { Authorization: `Bearer ${credentials.apiKey}` } : {}), timeoutMs, maxBytes: 4 * 1024 * 1024, signal });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      throw new TranscriptionFailed(502, `${provider} could not be reached to transcribe the audio (${safeError(error)})`, true);
+    }
+    if (!response.ok) {
+      // OpenAI's error message names the parameter at fault (never the audio's content).
+      const error = await response.json().then((body: any) => body?.error, () => undefined);
+      const detail = typeof error?.message === "string" ? error.message.slice(0, 300) : "";
+      const status = response.status;
+      if (status === 400 && asked.language && (error?.param === "language" || detail.includes(`'${asked.language}'`))) throw new LanguageRefused();
+      if (status === 401 || status === 403) throw new TranscriptionFailed(502, `${provider} rejected the API key (HTTP ${status})`);
+      // Azure's deployment missing (renamed, or still being made) is the operator's to fix; meanwhile OpenAI serves.
+      if (status === 404 && credentials.via === "azure") throw new TranscriptionFailed(502, `${provider} has no such deployment (HTTP 404)`, true);
+      if (status === 400 || status === 413 || status === 415) throw new TranscriptionFailed(400, `${provider} could not transcribe the audio (HTTP ${status}${detail ? `: ${detail}` : ""})`);
+      throw new TranscriptionFailed(502, `${provider} failed to transcribe the audio (HTTP ${status})`, status === 408 || status === 429 || status >= 500);
+    }
+    const body: any = await response.json().catch(() => undefined);
+    if (typeof body?.text !== "string") throw new TranscriptionFailed(502, `${provider} answered without a transcript`);
+    // What OpenAI bills: whole seconds of audio (`usage.duration`), else the header's length.
+    const seconds = body.usage?.type === "duration" && Number.isFinite(body.usage.seconds) ? Number(body.usage.seconds) : Math.ceil(header.seconds ?? 0);
+    const language = typeof body.languages?.[0]?.code === "string" ? body.languages[0].code : undefined;
+    return { text: body.text.trim(), ...(language ? { language } : {}), seconds, model: TRANSCRIPTION_MODEL };
+  }
 }
+
+/** OpenAI refused the language asked for: transcribed again without it. */
+class LanguageRefused extends Error {}
 
 /** Audio as given to be transcribed, checked: its format and length, within the limits. */
 export function checkedAudio(bytes: Uint8Array, name = "The audio"): AudioHeader & { seconds: number } {

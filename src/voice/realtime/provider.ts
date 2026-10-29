@@ -25,6 +25,7 @@ export type RealtimeConfig = {
   tools: RealtimeTool[];
   /** Transcribe what people say (each committed item), for addressing by name and voice.utterance. */
   transcribe: boolean;
+  /** The language spoken, a BCP 47 tag: a hint each provider takes as it can (or not at all), never a reason to fail. */
   language?: string;
   /** Words to expect, for the transcription's prompt. */
   prompt?: string;
@@ -53,6 +54,8 @@ export interface RealtimeEvents {
   ready(): void;
   /** The first host (Azure) refused or failed before the session was live: it goes on on OpenAI instead. */
   fallback?(detail: string): void;
+  /** The session's language was left out (the provider does not take it) or refused: the provider detects the language. */
+  language?(detail: string): void;
   /** Billable audio seconds and text input items, as they cross the provider connection. */
   meter?(audioSeconds: number, textInputs: number): void;
   /** The provider detected barge-in: stop buffered playback too. */

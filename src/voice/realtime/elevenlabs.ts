@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { createHash } from "node:crypto";
 import { transaction, type Db, type Sql } from "../../db.ts";
+import { elevenlabsLanguage } from "../../language.ts";
 import { closeDetail, redactDetail, messageJson, openSocket, type Socket, type SocketFactory } from "../../voice-providers/socket.ts";
 import { Resampler24To16 } from "../turns/features.ts";
 import { ASK_AGENT, STAY_SILENT } from "./brain.ts";
@@ -198,6 +199,10 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
     id: "elevenlabs", key: "elevenlabs", models: ELEVENLABS_AGENTS.models, defaultModel: ELEVENLABS_AGENTS.defaultModel,
     voices: [ELEVENLABS_AGENTS.voice], voiceFor: VOICE_FOR, customVoices: true, ownsTurns: true,
     connect(config, { apiKey }, events) {
+      // The agent's language as ElevenLabs takes it; one it does not take leaves the agent's default (en).
+      const language = elevenlabsLanguage(config.language);
+      if (config.language && !language) events.language?.(`'${config.language}' is not a language ElevenLabs Agents takes: the agent's default (en) instead`);
+      config = { ...config, language };
       const interruptible = config.interruptible !== false;
       const identity = `${createHash("sha256").update(apiKey).digest("hex")}:${interruptible ? "interruptible" : "uninterruptible"}`;
       let agent = agents.get(identity);
