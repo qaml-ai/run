@@ -89,8 +89,9 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
 | `codeMode` | `code_mode=` | `false`: no `js_exec`; every tool is called directly, and an agent with no tools at all gets little more than its instructions as its system prompt. See [Tools](../guides/tools.md#without-code-codemode-false) |
 | `name` | `name=` | a label, shown in the console |
-| `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `x_search`, `schedule`, `ask_user`, `delegate`, `agents` |
+| `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `x_search`, `schedule`, `ask_user`, `delegate`, `agents`, `workflow` |
 | `delegate` | `delegate=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`); brings its builtin. See [Multi-agent](../guides/multi-agent.md) |
+| `workflow` | `workflow=` | who its workflow scripts may coordinate (`{ agents, instructions?, maxAgents?, maxParallel?, maxDepth? }`); brings its builtin. See [Workflows](../guides/workflows.md) |
 | `mcpServers` | `mcp_servers=` | remote MCP servers of its own, without a definition: `[{ name, url, auth?: { type: "runtime" }, allowTools?, … }]`, no credentials. See [An agent's own MCP servers](../guides/tools.md#an-agents-own-mcp-servers) |
 | `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_event`, `subagent_end` events, and stream parts |
 | `attach` | `attach=` | `false`: declare `tools` without serving them (another process does) |
@@ -790,6 +791,9 @@ Needs runtime 0.4.0 or later (run.camelai.com has it).
   (Python `subagents=True`) relays `subagent_start` / `subagent_event` / `subagent_end`; `run.toolCalls[].agentId`
   names the sub-agent, and `run.usage.subagentCostUsd` its spend. `@camelai/run-react`'s chat shows a sub-agent's
   transcript under its delegate call (`watch: { subagents: true }`). CLI manifests take `delegate`.
+- Workflows: `workflow` settings on `upsert` / definitions (`workflow: { agents, instructions?, maxAgents?,
+  maxParallel?, maxDepth? }`, Python `workflow=`) turn on the `workflow` built-in and its `run_workflow` tool; a
+  workflow's own progress arrives with the sub-agents' events (`workflow_start`, `workflow_progress`, `workflow_end`).
 
 ## 0.14.0 (TypeScript) / 0.10.0 (Python), 2026-10-03
 

@@ -211,6 +211,7 @@ An agent's tools come from four kinds of place. Pick by where your code runs:
 | A third-party API | **OpenAPI** or **MCP** sources in a definition | the runtime calls the API itself, with credentials it stores sealed |
 | Web search, fetching pages, scheduling, asking the user | **Built-ins**, on the agent or in its definition | `builtins: ["web_search", "web_fetch", "schedule", "ask_user"]` |
 | Other agents doing tasks for this one | The **`delegate`** built-in, with the agents it may reach | `delegate: { agents: ["researcher"] }`. See [Multi-agent](guides/multi-agent.md) |
+| Many agents, coordinated by a plan | The **`workflow`** built-in: the model writes a script that calls agents | `workflow: { agents: ["researcher"] }`, and `run_workflow`. See [Workflows](guides/workflows.md) |
 
 The same `tool({...})` definitions work attached and served, so you can start
 attached and move to served without changing a tool (see [Several processes,

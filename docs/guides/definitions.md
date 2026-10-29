@@ -45,6 +45,10 @@ for when another definition can delegate to it.
 definitions not saved yet, so two can name each other. See
 [Multi-agent](multi-agent.md).
 
+`workflow`, with its builtin, lets them run a script that coordinates those
+agents: `"builtins": ["workflow"], "workflow": {"agents": ["researcher"],
+"maxAgents": 40}`. See [Workflows](workflows.md).
+
 The definition supplies the model, prompt, thinking level, `maxOutputTokens`,
 `temperature` and tool sources;
 `name`, `ttlSeconds` (or `idleTtlSeconds`), `mounts` and `initialMessages` given alongside it override

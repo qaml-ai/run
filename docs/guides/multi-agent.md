@@ -11,6 +11,11 @@ The `agents` built-in starts sub-agents in the **background** instead: the
 model goes on at once, and each one's answer arrives as a message of its own
 when it ends. See [Background sub-agents](#background-sub-agents).
 
+For a plan with many sub-agents — a sweep, a migration, research cross-checked
+across sources — the **`workflow`** built-in has the model write a script that
+coordinates them, and only the script's result comes back. See
+[Workflows](workflows.md).
+
 camelRun has no handoffs: an agent cannot pass its conversation to another
 agent. See [Coming from the OpenAI Agents SDK](#coming-from-the-openai-agents-sdk).
 

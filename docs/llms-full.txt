@@ -430,6 +430,7 @@ An agent's tools come from four kinds of place. Pick by where your code runs:
 | A third-party API | **OpenAPI** or **MCP** sources in a definition | the runtime calls the API itself, with credentials it stores sealed |
 | Web search, fetching pages, scheduling, asking the user | **Built-ins**, on the agent or in its definition | `builtins: ["web_search", "web_fetch", "schedule", "ask_user"]` |
 | Other agents doing tasks for this one | The **`delegate`** built-in, with the agents it may reach | `delegate: { agents: ["researcher"] }`. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md) |
+| Many agents, coordinated by a plan | The **`workflow`** built-in: the model writes a script that calls agents | `workflow: { agents: ["researcher"] }`, and `run_workflow`. See [Workflows](https://run.camelai.com/docs/guides/workflows.md) |
 
 The same `tool({...})` definitions work attached and served, so you can start
 attached and move to served without changing a tool (see [Several processes,
@@ -1623,7 +1624,7 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide"]`.
+`"builtins": ["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide", "workflow"]`.
 
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or
@@ -5563,6 +5564,10 @@ for when another definition can delegate to it.
 definitions not saved yet, so two can name each other. See
 [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md).
 
+`workflow`, with its builtin, lets them run a script that coordinates those
+agents: `"builtins": ["workflow"], "workflow": {"agents": ["researcher"],
+"maxAgents": 40}`. See [Workflows](https://run.camelai.com/docs/guides/workflows.md).
+
 The definition supplies the model, prompt, thinking level, `maxOutputTokens`,
 `temperature` and tool sources;
 `name`, `ttlSeconds` (or `idleTtlSeconds`), `mounts` and `initialMessages` given alongside it override
@@ -5662,6 +5667,11 @@ node.
 The `agents` built-in starts sub-agents in the **background** instead: the
 model goes on at once, and each one's answer arrives as a message of its own
 when it ends. See [Background sub-agents](https://run.camelai.com/docs/guides/multi-agent.md#background-sub-agents).
+
+For a plan with many sub-agents — a sweep, a migration, research cross-checked
+across sources — the **`workflow`** built-in has the model write a script that
+coordinates them, and only the script's result comes back. See
+[Workflows](https://run.camelai.com/docs/guides/workflows.md).
 
 camelRun has no handoffs: an agent cannot pass its conversation to another
 agent. See [Coming from the OpenAI Agents SDK](https://run.camelai.com/docs/guides/multi-agent.md#coming-from-the-openai-agents-sdk).
@@ -7202,8 +7212,9 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
 | `codeMode` | `code_mode=` | `false`: no `js_exec`; every tool is called directly, and an agent with no tools at all gets little more than its instructions as its system prompt. See [Tools](https://run.camelai.com/docs/guides/tools.md#without-code-codemode-false) |
 | `name` | `name=` | a label, shown in the console |
-| `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `x_search`, `schedule`, `ask_user`, `delegate`, `agents` |
+| `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `x_search`, `schedule`, `ask_user`, `delegate`, `agents`, `workflow` |
 | `delegate` | `delegate=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`); brings its builtin. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md) |
+| `workflow` | `workflow=` | who its workflow scripts may coordinate (`{ agents, instructions?, maxAgents?, maxParallel?, maxDepth? }`); brings its builtin. See [Workflows](https://run.camelai.com/docs/guides/workflows.md) |
 | `mcpServers` | `mcp_servers=` | remote MCP servers of its own, without a definition: `[{ name, url, auth?: { type: "runtime" }, allowTools?, … }]`, no credentials. See [An agent's own MCP servers](https://run.camelai.com/docs/guides/tools.md#an-agents-own-mcp-servers) |
 | `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_event`, `subagent_end` events, and stream parts |
 | `attach` | `attach=` | `false`: declare `tools` without serving them (another process does) |
@@ -7903,6 +7914,9 @@ Needs runtime 0.4.0 or later (run.camelai.com has it).
   (Python `subagents=True`) relays `subagent_start` / `subagent_event` / `subagent_end`; `run.toolCalls[].agentId`
   names the sub-agent, and `run.usage.subagentCostUsd` its spend. `@camelai/run-react`'s chat shows a sub-agent's
   transcript under its delegate call (`watch: { subagents: true }`). CLI manifests take `delegate`.
+- Workflows: `workflow` settings on `upsert` / definitions (`workflow: { agents, instructions?, maxAgents?,
+  maxParallel?, maxDepth? }`, Python `workflow=`) turn on the `workflow` built-in and its `run_workflow` tool; a
+  workflow's own progress arrives with the sub-agents' events (`workflow_start`, `workflow_progress`, `workflow_end`).
 
 ## 0.14.0 (TypeScript) / 0.10.0 (Python), 2026-10-03
 
