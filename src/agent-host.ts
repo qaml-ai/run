@@ -851,13 +851,6 @@ export function createAgentHost(hostIO: HostIO) {
         onSummary: message => emitCompaction({ type: "compaction_usage", provider: message.provider,
           model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
         onCompaction: async ({ keptMessages, reason }) => {
-          // Pi compacts after a context overflow with the refused response in its journal: as the legacy loop did, that
-          // response is taken back from history, and the stream told so.
-          const refused = await journal.last() as AssistantMessage | undefined;
-          if (reason === "overflow" && refused?.role === "assistant" && refused.stopReason === "error" && isContextOverflow(refused) && journal.total > journal.turnStart) {
-            await journal.retract();
-            io.emit({ type: "message_retracted", index: journal.total });
-          }
           // The context as the agent held it when Pi compacted it: its history messages less those the summary keeps.
           const before = agent!.state.messages;
           const held = before.filter(message => message.role !== "system" && !isSummary(message)).length;
