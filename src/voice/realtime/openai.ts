@@ -1,3 +1,4 @@
+import { openaiTranscriptionLanguage } from "../../language.ts";
 import { closeDetail, messageJson, openSocket, wsBase, type Socket, type SocketFactory } from "../../voice-providers/socket.ts";
 import { NO_USAGE, REALTIME_TRANSCRIPTION, type AzureRealtime, type RealtimeConfig, type RealtimeConnection, type RealtimeEvents, type RealtimeProvider, type RealtimeUsage } from "./provider.ts";
 
@@ -24,6 +25,10 @@ import { NO_USAGE, REALTIME_TRANSCRIPTION, type AzureRealtime, type RealtimeConf
  * error), answers session.update with an error, or is not live within azureConnectTimeoutMs, the connection goes on
  * on OpenAI with the platform's key, the session and everything sent so far sent again (`fallback`, logged as
  * voice_realtime_azure_fallback). Once live, a drop is the brain's to handle: it reconnects, which tries Azure first again.
+ *
+ * The session's language goes to the input transcription only as the provider takes it (`language`): one it does not
+ * take is left out, so transcription detects it. One refused anyway (invalid_value naming it) is dropped and the
+ * session sent again without it, on the same host: a language hint never fails a call.
  */
 
 export const OPENAI_REALTIME = Object.freeze({
@@ -47,7 +52,7 @@ export function openaiRealtime(options: { baseUrl?: string; socket?: SocketFacto
   return openaiCompatibleRealtime({
     id: "openai", key: "openai",
     models: OPENAI_REALTIME.models, defaultModel: OPENAI_REALTIME.defaultModel, voices: OPENAI_REALTIME.voices,
-  }, { ...options, baseUrl: options.baseUrl ?? "https://api.openai.com/v1", azure: true });
+  }, { ...options, baseUrl: options.baseUrl ?? "https://api.openai.com/v1", azure: true, language: openaiTranscriptionLanguage });
 }
 
 type RealtimeProtocol = {
@@ -60,10 +65,15 @@ type RealtimeProtocol = {
   redact?: (text: string) => string;
   /** Connect to the platform's Azure deployment first, where the credentials name one (OpenAI's models only). */
   azure?: boolean;
+  /** The session's language as the provider's transcription takes it, or undefined where it takes none. */
+  language: (tag: string | undefined) => string | undefined;
 };
 
-/** A host the connection may open on: its address and headers, and the session it is configured with. */
-type Target = { host: string; url: string; headers: Record<string, string>; session: string; timeoutMs: number };
+/**
+ * A host the connection may open on: its address and headers, and the session it is configured with (and the same
+ * session without its language, to send instead when the language is refused).
+ */
+type Target = { host: string; url: string; headers: Record<string, string>; session: string; bare?: string; timeoutMs: number };
 
 /** The OpenAI wire protocol, with a provider's session fields and optional older audio event names. */
 export function openaiCompatibleRealtime(
@@ -74,23 +84,30 @@ export function openaiCompatibleRealtime(
   return {
     ...provider,
     connect(config, credentials, events) {
-      const session = (model: string, transcription?: string) => JSON.stringify({ type: "session.update", session: options.session ? options.session(config) : openaiSession({ ...config, model }, transcription) });
+      const language = config.transcribe ? options.language(config.language) : undefined;
+      if (config.transcribe && config.language && !language) events.language?.(`'${config.language}' is not a language ${provider.id} transcription takes: it detects the language instead`);
+      const configured = { ...config, language };
+      const message = (config: RealtimeConfig, model: string, transcription?: string) => JSON.stringify({ type: "session.update", session: options.session ? options.session(config) : openaiSession({ ...config, model }, transcription) });
+      const session = (model: string, transcription?: string) => ({
+        session: message(configured, model, transcription),
+        ...language ? { bare: message({ ...configured, language: undefined }, model, transcription) } : {},
+      });
       const own: Target = {
         host: provider.id, url: `${wsBase(options.baseUrl)}/realtime?model=${encodeURIComponent(config.model)}`,
-        headers: { Authorization: `Bearer ${credentials.apiKey}` }, session: session(config.model), timeoutMs: OPENAI_REALTIME.connectTimeoutMs,
+        headers: { Authorization: `Bearer ${credentials.apiKey}` }, ...session(config.model), timeoutMs: OPENAI_REALTIME.connectTimeoutMs,
       };
       const azure = options.azure ? azureTarget(config, credentials.azure, session) : undefined;
-      return new OpenAIRealtime(socket, azure ? [azure, own] : [own], config, events, options);
+      return new OpenAIRealtime(socket, azure ? [azure, own] : [own], configured, events, options);
     },
   };
 }
 
 /** The platform's Azure deployment, where a session may go there (a transcribed one needs a transcription deployment). */
-function azureTarget(config: RealtimeConfig, azure: AzureRealtime | undefined, session: (model: string, transcription?: string) => string): Target | undefined {
+function azureTarget(config: RealtimeConfig, azure: AzureRealtime | undefined, session: (model: string, transcription?: string) => { session: string; bare?: string }): Target | undefined {
   if (!azure || (config.transcribe && !azure.transcriptionDeployment)) return undefined;
   return {
     host: "azure", url: `${wsBase(azure.endpoint)}/openai/v1/realtime?model=${encodeURIComponent(azure.deployment)}`,
-    headers: { "api-key": azure.apiKey }, session: session(azure.deployment, azure.transcriptionDeployment), timeoutMs: OPENAI_REALTIME.azureConnectTimeoutMs,
+    headers: { "api-key": azure.apiKey }, ...session(azure.deployment, azure.transcriptionDeployment), timeoutMs: OPENAI_REALTIME.azureConnectTimeoutMs,
   };
 }
 
@@ -104,6 +121,8 @@ class OpenAIRealtime implements RealtimeConnection {
   private readonly legacyAudioEvents: boolean;
   private readonly redact: (text: string) => string;
   private readonly metered: boolean;
+  /** The language the session's transcription was given, until a host refuses it. */
+  private language: string | undefined;
   private open = false;
   private ready = false;
   private ended = false;
@@ -131,6 +150,7 @@ class OpenAIRealtime implements RealtimeConnection {
       ...events, heard: (tag, text) => { if (config.transcribe) events.heard(tag, text, 0); },
     } : events;
     this.metered = options.metered ?? false;
+    this.language = config.language;
     this.instructions = config.instructions;
     this.redact = options.redact ?? (text => text);
     this.legacyAudioEvents = options.legacyAudioEvents ?? false;
@@ -258,6 +278,12 @@ class OpenAIRealtime implements RealtimeConnection {
     this.events.closed("error", detail);
   }
 
+  /** An error that refuses the transcription's language: invalid_value on its field, or naming the language sent. */
+  private refusesLanguage(code: string, param: string, message: string) {
+    if (!this.language || !this.targets[0]!.bare) return false;
+    return param.endsWith("language") || (code === "invalid_value" && message.includes(`'${this.language}'`));
+  }
+
   private message(event: any) {
     if (!event || typeof event.type !== "string" || this.ended) return;
     // Azure documents both families of audio event names (its samples use the older ones too): either is taken there.
@@ -322,6 +348,14 @@ class OpenAIRealtime implements RealtimeConnection {
       case "error": {
         const code = String(event.error?.code ?? event.error?.type ?? "error");
         if (BENIGN.has(code)) return;
+        if (!this.ready && this.refusesLanguage(code, String(event.error?.param ?? ""), String(event.error?.message ?? ""))) {
+          // The language refused (as Azure refused "so"): the session again without it, here and on any host after.
+          this.language = undefined;
+          for (const target of this.targets) if (target.bare) { target.session = target.bare; target.bare = undefined; }
+          this.events.language?.(`refused by ${this.host}: ${this.redact(String(event.error?.message ?? code)).slice(0, 200)}`);
+          this.transmit(this.targets[0]!.session);
+          return;
+        }
         // Refused before it is live (its session, a deployment it names): the next host instead.
         if (!this.ready && this.targets.length > 1) { this.fail(`${code}: ${String(event.error?.message ?? "")}`); return; }
         this.events.warning(this.redact(code), this.redact(String(event.error?.message ?? "")).slice(0, 300));
@@ -342,30 +376,12 @@ export function usageOf(usage: any): RealtimeUsage {
   };
 }
 
-/** ISO-639-1 language hints only; unknown or malformed tags leave transcription on auto-detect. */
-const ISO_639_1 = new Set((
-  "aa ab ae af ak am an ar as av ay az ba be bg bh bi bm bn bo br bs ca ce ch co cr cs cu cv cy da de dv dz " +
-  "ee el en eo es et eu fa ff fi fj fo fr fy ga gd gl gn gu gv ha he hi ho hr ht hu hy hz ia id ie ig ii ik " +
-  "io is it iu ja jv ka kg ki kj kk kl km kn ko kr ks ku kv kw ky la lb lg li ln lo lt lu lv mg mh mi mk " +
-  "ml mn mr ms mt my na nb nd ne ng nl nn no nr nv ny oc oj om or os pa pi pl ps pt qu rm rn ro ru rw " +
-  "sa sc sd se sg si sk sl sm sn so sq sr ss st su sv sw ta te tg th ti tk tl tn to tr ts tt tw ty ug uk " +
-  "ur uz ve vi vo wa wo xh yi yo za zh zu"
-).split(" "));
-
-export function transcriptionLanguage(language?: string): string | undefined {
-  if (!language) return undefined;
-  try {
-    const locale = new Intl.Locale(language);
-    // Keep valid two-letter codes such as tl, which Intl canonicalizes to fil.
-    const primary = language.split("-")[0].toLowerCase();
-    const code = ISO_639_1.has(primary) ? primary : locale.language;
-    return ISO_639_1.has(code) ? code : undefined;
-  } catch { return undefined; }
-}
+/** The session's language as OpenAI's transcription takes it (language.ts), or undefined: it detects the language then. */
+export const transcriptionLanguage = openaiTranscriptionLanguage;
 
 /** The session OpenAI's GA protocol takes; on Azure, `model` is the realtime deployment and `transcription` the transcription one. */
 function openaiSession(config: RealtimeConfig, transcription: string = REALTIME_TRANSCRIPTION.model) {
-  const language = transcriptionLanguage(config.language);
+  const language = config.language;
   const prompt = [config.prompt].filter(Boolean).join("\n");
   return {
     type: "realtime", model: config.model, instructions: config.instructions, output_modalities: ["audio"],

@@ -120,7 +120,7 @@ export function fakePlayer(everyMs = 2) {
 }
 
 /** A brain over a fake provider and player, with hooks recording what it reports. */
-export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; hold?: BrainHooks["hold"]; provider?: RealtimeProvider; credentials?: RealtimeCredentials; refuse?: boolean } = {}) {
+export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; hold?: BrainHooks["hold"]; provider?: RealtimeProvider; credentials?: RealtimeCredentials; refuse?: boolean; language?: string } = {}) {
   const realtime = fakeRealtimeProvider();
   const playback = fakePlayer();
   const usage: Parameters<BrainHooks["usage"]>[0][] = [];
@@ -131,7 +131,7 @@ export function testBrain(options: Partial<BrainOptions> & { addressing?: Partia
   const budget: string[] = [];
   const names: Record<string, string> = { "1": "Ana", "2": "Ben", "3": "Cy" };
   const state = { humans: options.humans ?? 1 };
-  const config: RealtimeConfig = { model: options.reference?.split("/").slice(1).join("/") ?? "gpt-realtime-2.1", voice: "marin", instructions: "Be nice.", tools: [], transcribe: options.transcribed ?? true, ...(options.bargeIn ? {} : { interruptible: false }) };
+  const config: RealtimeConfig = { model: options.reference?.split("/").slice(1).join("/") ?? "gpt-realtime-2.1", voice: "marin", instructions: "Be nice.", tools: [], transcribe: options.transcribed ?? true, ...(options.bargeIn ? {} : { interruptible: false }), ...(options.language ? { language: options.language } : {}) };
   const brain = new RealtimeBrain({
     session: "vs_000000000000000000000001", tenant: "alice", reference: options.reference ?? "openai/gpt-realtime-2.1", floor: new Floor(options.addressing ?? {}),
     speculative: options.speculative ?? false, transcribed: options.transcribed ?? true, ...(options.bargeIn ? { bargeIn: options.bargeIn } : {}),

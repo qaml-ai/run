@@ -88,7 +88,8 @@ async function fakeOpenAI(t: Parameters<typeof listen>[0], answer: (form: FormDa
 }
 
 test("OpenAI's provider sends the audio named by its format, on the key given, and reads the transcript and billed seconds", async t => {
-  const openai = await fakeOpenAI(t, form => form.get("language") === "xx" ? { status: 400, body: { error: { message: "Invalid language 'xx'" } } }
+  const openai = await fakeOpenAI(t, form => form.get("language") === "so" || form.get("language") === "tl" ? { status: 400, body: { error: { message: `Invalid value: '${form.get("language")}'. Supported values are: 'af', 'ar'.`, param: "language", code: "invalid_value" } } }
+    : form.get("model") === "refuse-audio" ? { status: 400, body: { error: { message: "Audio file might be corrupted" } } }
     : form.get("prompt") === "denied" ? { status: 401, body: { error: { message: "bad key" } } }
     : { body: { text: "Hello from camelRun.", languages: [{ code: "en" }], usage: { type: "duration", seconds: 5 } } });
   const provider = openaiTranscription({ outbound: new Outbound({ allowHttp: true, allow: ["127.0.0.1/32"] }), baseUrl: openai.base });
@@ -104,7 +105,14 @@ test("OpenAI's provider sends the audio named by its format, on the key given, a
 
   assert.equal(sent.form.get("response_format"), null, "plain json, the one format gpt-transcribe answers in");
 
-  await assert.rejects(provider.transcribe(audio, { language: "xx" }, { apiKey: "sk-test" }, signal), (error: any) => error.status === 400 && /Invalid language 'xx'/.test(error.message));
+  // A language as OpenAI takes it (pt-BR → pt); none where it takes none (so, xx), or where it refuses one anyway (tl
+  // here): transcribed with the language detected, never refused for the hint.
+  for (const [language, sent] of [["pt-BR", ["pt"]], ["so", [null]], ["xx", [null]], ["tl", ["tl", null]]] as const) {
+    const before = openai.requests.length;
+    assert.equal((await provider.transcribe(audio, { language }, { apiKey: "sk-test" }, signal)).text, "Hello from camelRun.", language);
+    assert.deepEqual(openai.requests.slice(before).map(request => request.form.get("language")), sent, language);
+  }
+  await assert.rejects(provider.transcribe(audio, { language: "en" }, { apiKey: "sk-test", model: "refuse-audio" }, signal), (error: any) => error.status === 400 && /corrupted/.test(error.message));
   await assert.rejects(provider.transcribe(audio, { prompt: "denied" }, { apiKey: "sk-bad" }, signal), (error: any) => error.status === 502 && error.code === "TRANSCRIPTION_FAILED" && /rejected the API key/.test(error.message) && !error.message.includes("sk-bad"));
   // A key scope's own address wins.
   const other = await fakeOpenAI(t, () => ({ body: { text: "via gateway", usage: { type: "duration", seconds: 2 } } }));

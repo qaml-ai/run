@@ -232,6 +232,8 @@ export class RealtimeBrain {
   };
   /** Where the model runs (the live connection's host: azure or openai for OpenAI's models), for the metrics. */
   private host?: string;
+  /** voice_realtime_language_omitted was logged. */
+  private languageOmitted = false;
 
   constructor(options: BrainOptions, hooks: BrainHooks) {
     this.options = options;
@@ -492,6 +494,12 @@ export class RealtimeBrain {
         if (!live()) return;
         this.stats.azureFallbacks++;
         this.hooks.log("voice_realtime_azure_fallback", { reason: detail.slice(0, 300) });
+      },
+      // Once a session: a reconnect leaves it out again, saying so again.
+      language: detail => {
+        if (!live() || this.languageOmitted) return;
+        this.languageOmitted = true;
+        this.hooks.log("voice_realtime_language_omitted", { reason: detail.slice(0, 300) });
       },
       // close() may report its final billable interval after playback has stopped.
       meter: (seconds, textInputs) => { if (generation === this.generation && this.metered) this.meter(seconds, textInputs); },
