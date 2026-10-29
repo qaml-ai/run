@@ -18,7 +18,7 @@ The first decision wins: { retry: true, delayMs? } retries, also past
 maxRetries or with the policy disabled; { retry: false } ends the run; no
 decision leaves it to the policy.
 ---
- packages/durable/CHANGELOG.md                 |   2 +
+ packages/durable/CHANGELOG.md                 |   1 +
  packages/durable/README.md                    |   2 +-
  packages/durable/docs/spec.md                 |  26 ++++
  packages/durable/src/harness/generation.ts    |  63 ++++++--
@@ -26,23 +26,22 @@ decision leaves it to the policy.
  packages/durable/src/index.ts                 |   2 +
  .../durable/test/harness-generation.test.ts   | 134 ++++++++++++++++++
  .../test/harness-restart-failure.test.ts      |  26 ++++
- 8 files changed, 269 insertions(+), 14 deletions(-)
+ 8 files changed, 268 insertions(+), 14 deletions(-)
 
 diff --git a/packages/durable/CHANGELOG.md b/packages/durable/CHANGELOG.md
-index 46658af..ad20c64 100644
+index 92430f3e..eca607d9 100644
 --- a/packages/durable/CHANGELOG.md
 +++ b/packages/durable/CHANGELOG.md
-@@ -114,6 +114,8 @@
- - `HookApi.entry()` and `entries()`, and `TaskRuntime.entries()`: a hook or task reads the conversation's raw history, which compaction never changes, so a range bounded by entry IDs reads the same before and after a compaction and on a rerun ([#11141](https://github.com/earendil-works/pi/issues/11141))
+@@ -118,6 +118,7 @@
  - Run-end tasks: a `GenerationHooks.afterRun(run, api)` hook returns `{ tasks }`, built with the typed `runEndTask(task, input)`, after a run answered (a final answer or a `terminate` round; not when an `onYield` continuation is taken, not after a failure or an abort). The answer is committed and the run's inputs settle `done` first, so `Submission.wait()` resolves at the answer; the generation then creates the tasks as its children and waits for them, keeping `pi.live.run` (with `run.afterRun`) and the conversation busy, so idle waits include them, Stop aborts them, and a crash resumes them. Input queued meanwhile, steers included, is placed when they are terminal and starts the next run; a task admits a model-visible write or a fix-run follow-up in its own commit with `submit(tx, draft)`. A crash before the tasks exist asks the hooks again; a broken request (an uninstalled or built-in task, a non-JSON input, a throwing `initial()`) is reported and skipped. `run` names the run's entries: `first` (`pi.live.run.first`, carried into `runFailure.first` so a continue covers a failed run's history), `answer`, and `last` ([#11141](https://github.com/earendil-works/pi/issues/11141))
  
+ - `registryReader(value, context)`: a `RegistryReader` over a Chord v2 registry value whose composition is a registry snapshot (`RegistryValue<RegistrySnapshot>`): `snapshot()` reads the current composition, `subscribe` observes its compositions synchronously inside Chord's batch, so a Harness opened in a Chord object takes its extensions from a Chord registry.
 +- `GenerationHooks.beforeRetry(failed, api)`: a host decides whether and when a failed request attempt is tried again, instead of `settings.retry`. It is asked for a failed message (`reason: "model_error"`, with the message) and for a request or poll the host stopped during (`interrupted`), with the attempt, the error text, and the policy's own decision (`delayMs`, absent when the policy would end the run). The first decision wins: `{ retry: true, delayMs? }` retries after `delayMs` (default the policy's backoff), also past `maxRetries` or with the policy disabled; `{ retry: false }` ends the run with the failure; no decision leaves it to the policy. Not asked for an overflow that starts a compaction. New types `FailedAttempt` and `RetryDecision`
-+
+ 
  ### Changed
  
- - Document, conversation view, and task graph watches use Chord's watch handles (`Watch`).
 diff --git a/packages/durable/README.md b/packages/durable/README.md
-index bdf5928..2381afb 100644
+index d87c54d3..777ca2b4 100644
 --- a/packages/durable/README.md
 +++ b/packages/durable/README.md
 @@ -659,7 +659,7 @@ const Guard = defineExtension({
@@ -55,7 +54,7 @@ index bdf5928..2381afb 100644
  
  To limit a hook to some conversations, select its extension only there, for example with `configure({ extensions: { add: [Guard] } })`.
 diff --git a/packages/durable/docs/spec.md b/packages/durable/docs/spec.md
-index 4f3795e..b730d85 100644
+index 385f8e94..3d3dfdc4 100644
 --- a/packages/durable/docs/spec.md
 +++ b/packages/durable/docs/spec.md
 @@ -3289,6 +3289,7 @@ consuming commit may rerun them. Abort errors always propagate.
@@ -113,7 +112,7 @@ index 4f3795e..b730d85 100644
  - `retry` runs once the backoff's sleep is due and returns to `prepare` with the
    next attempt, so agent and settings changes made during the backoff apply.
 diff --git a/packages/durable/src/harness/generation.ts b/packages/durable/src/harness/generation.ts
-index b86af2e..096b3a5 100644
+index b86af2ed..096b3a5f 100644
 --- a/packages/durable/src/harness/generation.ts
 +++ b/packages/durable/src/harness/generation.ts
 @@ -53,9 +53,11 @@ import type {
@@ -244,7 +243,7 @@ index b86af2e..096b3a5 100644
  			status: "terminal",
  			outcome: { status: "failed", error: { message: text, detail: { reason: "model_error" } } },
 diff --git a/packages/durable/src/harness/types.ts b/packages/durable/src/harness/types.ts
-index d7f4a05..59e7e31 100644
+index d7f4a05e..59e7e31b 100644
 --- a/packages/durable/src/harness/types.ts
 +++ b/packages/durable/src/harness/types.ts
 @@ -972,6 +972,14 @@ export interface GenerationHooks {
@@ -290,10 +289,10 @@ index d7f4a05..59e7e31 100644
  export type RunSummary = {
  	/** A final answer, or a tool round whose every call asked to `terminate`. */
 diff --git a/packages/durable/src/index.ts b/packages/durable/src/index.ts
-index 4b46711..0362bd8 100644
+index 59068ad1..9a8779e2 100644
 --- a/packages/durable/src/index.ts
 +++ b/packages/durable/src/index.ts
-@@ -94,6 +94,7 @@ export type {
+@@ -95,6 +95,7 @@ export type {
  	ConversationWatch,
  	EnvTarget,
  	Extension,
@@ -301,7 +300,7 @@ index 4b46711..0362bd8 100644
  	GenerationHooks,
  	HarnessInspection,
  	HarnessOptions,
-@@ -113,6 +114,7 @@ export type {
+@@ -114,6 +115,7 @@ export type {
  	Registry,
  	RegistryReader,
  	RegistrySnapshot,
@@ -310,7 +309,7 @@ index 4b46711..0362bd8 100644
  	RunSummary,
  	Settings,
 diff --git a/packages/durable/test/harness-generation.test.ts b/packages/durable/test/harness-generation.test.ts
-index a835aea..351756b 100644
+index a835aea3..351756b0 100644
 --- a/packages/durable/test/harness-generation.test.ts
 +++ b/packages/durable/test/harness-generation.test.ts
 @@ -13,9 +13,12 @@ import {
@@ -465,7 +464,7 @@ index a835aea..351756b 100644
  		const setup = chatSetup();
  		addSection(setup.registry, "cwd", () => "/repo");
 diff --git a/packages/durable/test/harness-restart-failure.test.ts b/packages/durable/test/harness-restart-failure.test.ts
-index 356f231..6d63107 100644
+index 356f2318..6d63107c 100644
 --- a/packages/durable/test/harness-restart-failure.test.ts
 +++ b/packages/durable/test/harness-restart-failure.test.ts
 @@ -16,9 +16,14 @@ import {

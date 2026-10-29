@@ -365,7 +365,8 @@ export class DurableAgent {
     // Pi detaches an observer that throws (ending it `listener_error`), and ends it `failed` when the Session fails. Either
     // way the agent no longer sees what is committed (it would go stale, and a turn could end on an older answer): the
     // host gives it up and reopens it, as after a storage failure. An error here is caught, so the commit it missed does
-    // not go unnoticed either.
+    // not go unnoticed either. Pi also ends it `failed` ("session closed") when the Session closes: after close() that is
+    // the agent's own close, not a failure.
     const observerFailed = (error: unknown) => {
       console.error(JSON.stringify({ type: "pi_observer_error", error: error instanceof Error ? error.name : typeof error,
         message: error instanceof Error ? error.message : String(error) }));
@@ -373,7 +374,7 @@ export class DurableAgent {
     };
     agent.harness.observeCommits({ end: end => {
       if (end.kind === "listener_error") observerFailed(end.error);
-      else if (end.kind === "failed") giveUp(end.error);
+      else if (end.kind === "failed" && !agent.closed) giveUp(end.error);
     }, advance: publication => { try {
       // A generation that ended without an answer fails the run: one that failed, and one whose phase threw (faulted) or
       // that no installed definition could take (orphaned), which would otherwise end the run as if it had answered.

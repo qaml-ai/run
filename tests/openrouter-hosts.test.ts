@@ -49,8 +49,7 @@ test("an agent's calls send their model's hosts: V4.1 Flash five, 1017 two ignor
       assert.ok(Array.isArray(body.messages), "Chat Completions (deepseek-replay.ts)");
     }
     const most = sent[0].max_completion_tokens ?? sent[0].max_tokens;
-    if (model === FLASH_1017.id) assert.ok(most <= 131_072, String(most));
-    else assert.equal(most, getModel("openrouter", model)!.maxTokens, `V4.1 Flash keeps Pi's longest reply: ${most}`);
+    assert.ok(most <= 131_072, `${model}: ${most}`);
   }
   onlyOnly(host.bodies);
 });

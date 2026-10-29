@@ -78,12 +78,14 @@ const AZURE = "azure";
  * maxTokens, and OpenRouter routes it only to the hosts that serve that much: 1017's 943,718 (V4.1 Flash's longest
  * endpoint, which ADDED copies) leaves out DeepSeek's own endpoint (393,216), Baseten's (262,144), DeepInfra's,
  * Prime Intellect's and InferenceNet's (131,072), so 1017 asks for 131,072, which every host of its full context
- * serves. V4.1 Flash keeps Pi's: its hosts serve that much. Azure Flash has no separate output cap (measured
- * 2026-10-26), but input plus max_tokens must fit its window; default to 131,072 there too.
+ * serves. V4.1 Flash asks for 131,072 too: Pi's catalog moved it to 943,718 (2026-10-29), which leaves out Nebius
+ * (943,200), one of its five allowed hosts (OPENROUTER_HOSTS), and with a long input asks for more than the window
+ * holds. Azure Flash has no separate output cap (measured 2026-10-26), but input plus max_tokens must fit its window;
+ * default to 131,072 there too.
  */
 const MAX_TOKENS: Record<string, Record<string, number>> = {
   azure: { "deepseek-v4.1-flash": 131_072 },
-  openrouter: { "deepseek/deepseek-v4.1-flash-1017": 131_072 },
+  openrouter: { "deepseek/deepseek-v4.1-flash": 131_072, "deepseek/deepseek-v4.1-flash-1017": 131_072 },
 };
 const limited = (model: Model<Api>): Model<Api> => {
   const most = MAX_TOKENS[model.provider]?.[model.id];

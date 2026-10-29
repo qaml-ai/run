@@ -75,12 +75,13 @@ test("OpenRouter models the platform's apps run on are at OpenRouter's list pric
   assert.equal(withCatalogPrices(stored).cost.output, 0.6);
 });
 
-test("DeepSeek V4.1 Flash 1017 asks for at most what all its hosts serve (DeepInfra, Prime Intellect and InferenceNet 131,072), agents made before included; V4.1 Flash keeps Pi's", () => {
+test("DeepSeek V4.1 Flash and 1017 ask for at most 131,072 (what all 1017's hosts serve; Pi's 943,718 leaves out Nebius for V4.1 Flash), agents made before included", () => {
+  for (const id of ["deepseek/deepseek-v4.1-flash-1017", "deepseek/deepseek-v4.1-flash"]) {
+    assert.equal(getModel("openrouter", id)!.maxTokens, 131_072, id);
+    assert.equal(getModels("openrouter").find(entry => entry.id === id)!.maxTokens, 131_072, id);
+    assert.equal(withCatalogPrices({ ...getModel("openrouter", id)!, maxTokens: 943_718 }).maxTokens, 131_072, id);
+  }
   const id = "deepseek/deepseek-v4.1-flash-1017";
-  assert.equal(getModel("openrouter", id)!.maxTokens, 131_072);
-  assert.equal(getModels("openrouter").find(entry => entry.id === id)!.maxTokens, 131_072);
-  assert.equal(withCatalogPrices({ ...getModel("openrouter", id)!, maxTokens: 943_718 }).maxTokens, 131_072);
-  assert.equal(getModel("openrouter", "deepseek/deepseek-v4.1-flash")!.maxTokens, 131_072, "the vendored pi-ai's catalog");
   // A tenant's endpoint keeps its own.
   const elsewhere = { ...getModel("openrouter", id)!, maxTokens: 943_718, baseUrl: "https://llm.example.com" };
   assert.equal(withCatalogPrices(elsewhere), elsewhere);

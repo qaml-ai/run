@@ -314,6 +314,14 @@ test("Pi adapter reports only the storage failures that fail Pi's Session", asyn
   // An invalid read fails only that call: Pi keeps its Session, and the host keeps the agent.
   await assert.rejects((agent as any).conversation.entries({}, 10, { bogus: true }, BACKGROUND_CONTEXT), StorageRequestError);
   assert.deepEqual(failures, []);
+  // Closing ends Pi's commit observer `failed` ("session closed"): the agent's own close is no failure.
+  const closed = await DurableAgent.create({
+    initialState: { model, messages: [], tools: [] },
+    streamFn: () => { throw new Error("Unexpected model request"); },
+    durable: { storage: new MemoryStorage(), onStorageFailure: error => { failures.push(error); } },
+  });
+  await closed.close();
+  assert.deepEqual(failures, []);
   // A failed write fails the Session, and is reported.
   storage.commit = async () => { throw new Error("disk gone"); };
   await assert.rejects(agent.prompt(user("Hello")));
