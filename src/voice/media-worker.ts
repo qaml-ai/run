@@ -128,7 +128,7 @@ function handle(transport: VoiceTransport, message: ToMedia) {
     case "configure": held.media.configure(message.options); return;
     case "play": {
       const pcm = new Pushed();
-      const playback = held.media.play(pcm, () => post({ t: "started", session, id: message.id }), message.expectedMs);
+      const playback = held.media.play(pcm, () => post({ t: "started", session, id: message.id }), message.expectedMs, message.music ? { music: true } : undefined);
       held.playing.set(message.id, { pcm, playback });
       void playback.done.then(result => {
         held.playing.delete(message.id);

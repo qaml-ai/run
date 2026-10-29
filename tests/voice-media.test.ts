@@ -59,3 +59,21 @@ test("a media session plays PCM as Opus; a person starting to talk stops it ther
   assert.deepEqual(order, ["session heard", "playback stopped"]);
   await media.close("end");
 });
+
+test("music the bot plays goes on when a person talks over it (barge-in is for speech); close stops it", async () => {
+  const fake = fakeTransport(20);
+  const { events } = recorder();
+  const media = new MediaSession(fake.transport, discordGrant(), { silenceMs: 200, ignoreUserIds: [], bargeIn: true, live: false }, events);
+  const [connection] = fake.connections;
+  const music = media.play(tone(2), () => {}, undefined, { music: true });
+  await until(() => connection.played[0]?.length >= 5, "music playing");
+  let result: string | undefined;
+  void music.done.then(value => { result = value; });
+  speak(connection, "400000000000000004", 0.1);
+  await sleep(100);
+  assert.equal(result, undefined, "still playing");
+  const before = connection.played[0].length;
+  await until(() => connection.played[0].length > before + 2, "more of it");
+  await media.close("end");
+  assert.equal(await music.done, "stopped");
+});

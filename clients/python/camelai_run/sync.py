@@ -85,6 +85,13 @@ class AgentRuntime(_RuntimeCalls):
             raise AgentError(_error(response), response.status_code)
         return response.json()
 
+    def _upload(self, path, content):
+        """A file's bytes POSTed with the API key (audio for a voice session), not retried: its answer."""
+        response = self.http.post(self.base + path, content=content, headers={"Authorization": f"Bearer {self._operator()}", "Content-Type": "application/octet-stream"})
+        if not response.is_success:
+            raise AgentError(_error(response), response.status_code)
+        return response.json()
+
     def _rest(self, method, path, body=None, *, retry=True, headers=None, timeout=None, then=None, missing=_DEFAULT):
         """One request with the API key: its answer (`then` of it), or `missing` for a 404 when given."""
         try:

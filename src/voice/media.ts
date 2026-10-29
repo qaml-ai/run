@@ -2,7 +2,7 @@ import type { EndOfTurn, VoiceConnection, VoiceCredentials, VoiceTransport } fro
 import type { TurnModels } from "./turns/inference.ts";
 import type { TurnEvent } from "./turns/turn-taker.ts";
 import { TurnSegmenter } from "./turns/segmenter.ts";
-import type { Playback } from "../voice-speech.ts";
+import type { Playback, PlayOptions } from "../voice-speech.ts";
 import { opusFromPcm, Segmenter, type Cut, type SegmenterOptions } from "../voice-audio.ts";
 import { safeError } from "../metrics.ts";
 import type { RecordedPacket } from "./recorder.ts";
@@ -89,9 +89,9 @@ export interface Media {
   resume(): void;
   /**
    * Play speech: 24 kHz mono 16-bit PCM as it is made. The media frames and encodes it, and plays it on the call;
-   * `started` is called as its first packet goes out.
+   * `started` is called as its first packet goes out. Barge-in pauses or stops speech, never `music`.
    */
-  play(pcm: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): Playback;
+  play(pcm: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number, options?: PlayOptions): Playback;
   /** A session's event for the far end, when the transport shows them (a browser call's page). */
   notify?(event: Record<string, unknown>): void;
   /** Close: each speaker's speech so far is cut (`flush`) and reported before it resolves, then the connection closes. */
@@ -122,8 +122,10 @@ export class MediaSession implements Media {
   private options: MediaOptions;
   private self: string;
   private readonly events: MediaEvents;
-  /** Speech playing now, to stop on barge-in. */
+  /** Speech playing now, to stop on barge-in (music is not in it). */
   private readonly playing = new Set<Playback>();
+  /** Music playing now: stopped on close. */
+  private readonly music = new Set<Playback>();
   /** Speakers whose utterance has acted on barge-in (once each), and whether playback is paused for barge-in. */
   private readonly barged = new Set<string>();
   private paused = false;
@@ -226,15 +228,20 @@ export class MediaSession implements Media {
 
   /** What it holds now, counted: the connection's, the segmenter's, playbacks. For the media worker's memory report. */
   sizes(): Record<string, number> {
-    return { ...this.connection.sizes?.(), ...this.segmenter.sizes(), playing: this.playing.size, barged: this.barged.size };
+    return { ...this.connection.sizes?.(), ...this.segmenter.sizes(), playing: this.playing.size, music: this.music.size, barged: this.barged.size };
   }
 
   notify(event: Record<string, unknown>) { this.connection.notify?.(event); }
 
-  play(pcm: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): Playback {
+  play(pcm: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number, options?: PlayOptions): Playback {
     const play = this.connection.play;
     if (!play || this.closed) return { done: Promise.resolve("error"), stop: () => {} };
     const playback = play.call(this.connection, opusFromPcm(pcm), started, expectedMs);
+    if (options?.music) {
+      this.music.add(playback);
+      void playback.done.finally(() => this.music.delete(playback));
+      return playback;
+    }
     this.playing.add(playback);
     // Speech that starts during a barge-in pause starts paused.
     if (this.paused) playback.pause?.();
@@ -249,7 +256,7 @@ export class MediaSession implements Media {
     catch (error) { this.events.diagnostic("audio_failed", { error: safeError(error) }); }
     this.closed = true;
     this.sendRecorded();
-    for (const playback of this.playing) playback.stop();
+    for (const playback of [...this.playing, ...this.music]) playback.stop();
     // A handoff leaves the call to the next node: the voice session must stay valid for it.
     this.connection.close(flush === "handoff" ? "handoff" : "end");
   }

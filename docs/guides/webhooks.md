@@ -48,8 +48,10 @@ Every event is an envelope:
 | `voice.session.error` | A voice session's audio failed: it reconnects at once (`restarting`), or after 3 failures in 5 minutes ends; or it needs new Discord credentials (`credentials_needed`) | the voice facts, `code` (`media_crashed`, `credentials_needed`), `detail`, `restarting`, `attempt?`, `waitMs?` |
 | `voice.utterance` | A person's utterance in a voice session, transcribed | as above, and `speakerId`, `seq`, `text`, `language`, `seconds`, `startedAt`, `endedAt`, `ended`, `costUsd`, `addressed?`, `addressedBy?`, `speakers?`, `brain` |
 | `voice.speech.started` | A voice session's bot started saying an [answer](voice-calls.md#speaking) | the voice facts, `speechId`, `latencyMs`, `startedAt`, `turn?`, `brain` |
-| `voice.speech.ended` | It ended | the voice facts, `speechId`, `reason`, `by`, `seconds`, `costUsd`, `brain` |
+| `voice.speech.ended` | It ended | the voice facts, `speechId`, `reason`, `by`, `seconds`, `costUsd`, `source?` (`say`), `brain` |
 | `voice.recording.ended` | A voice session's [recording](voice-calls.md#recording) ended: its files are ready, or it failed | the voice facts, `recording` (as `GET /v1/voice/recordings/{id}`: `state`, `endReason`, `seconds`, `files`, `expiresAt`…) |
+| `voice.audio.started` | Audio your app [queued](voice-calls.md#playing-audio) started playing | the voice facts, `trackId`, `title`, `source` |
+| `voice.audio.ended` | It ended | the voice facts, `trackId`, `title`, `source`, `reason` (`done`, `skipped`, `stopped`, `error`), `seconds`, `error?` |
 | `billing.balance.low` | Funded balance crosses below the alert threshold (default $2) | `balance`, `previousBalance`, `threshold` (integer micro-USD), `source` |
 | `billing.balance.depleted` | Positive balance reaches zero or below | Same balance fields |
 | `end_user.balance.low` | An [end user's](end-user-credits.md) balance is below their threshold (their own `lowBalance`, else yours) | `endUser`, `balance`, `previousBalance`, `threshold` (integer micro-USD), `cause` |

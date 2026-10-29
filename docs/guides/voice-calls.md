@@ -303,6 +303,64 @@ retry (the SDKs do).
 What the bot says is never heard back as speech (Discord does not send a bot its own audio, and the session ignores the
 bot's user), and does not count as speech for `idleMinutes` or company for `emptySeconds`.
 
+### Saying words and speaking up
+
+Your app can have the bot say given words in its call, from anything it handles (a command, a schedule, a message
+in chat), with nobody having spoken:
+
+```ts
+await agents.voice.say(session.id, "The raid starts in five minutes.");     // POST …/say {text, interrupt?}
+await agents.voice.prompt(session.id, "Welcome Ana, who just joined.");      // POST …/prompt {instructions, interrupt?}
+```
+
+- `say` says `text` (at most 4,000 characters) word for word, in the call's voice: made by text to speech (OpenAI's
+  `gpt-4o-mini-tts` in the same voice for an OpenAI brain, ElevenLabs' Flash in its voice for an ElevenLabs one), and
+  billed as [`POST /v1/speech`](voice.md) is (`usage.recorded` `kind: "speech"`, per second made, the session's
+  subject's; the session's `costUsd` counts it). For a Gemini or Grok brain, or when text to speech fails before any
+  audio, the model reads the words out itself. The model hears that the bot said them.
+- `prompt` asks the model to speak up on its own about `instructions` (at most 2,000 characters), in character and
+  in its own words, billed as its answers are.
+- Both wait their turn: behind what the bot is saying and answers people wait for, and for nobody to be mid-turn.
+  `interrupt: true` cuts off what the bot is saying (and what waits) and speaks now. At most 10 wait (429
+  `VOICE_SAY_QUEUE_FULL`). Barge-in stops them as it stops an answer, and `DELETE …/speak` drops what waits.
+- The answer is `{id, queued}`: `queued` is how many are ahead of it, and `id` is the speech's id in its
+  `voice.speech.*` events, which carry `source: "say"`.
+- A listening session does not speak: 409 `VOICE_SPEAK_DISABLED`.
+
+### Playing audio
+
+Your app can have the bot play audio in its call: files it has, or https URLs of audio files and streams.
+
+```ts
+await agents.voice.play(session.id, { url: "https://example.com/theme.mp3" }, { title: "Theme" });  // POST …/audio
+await agents.voice.play(session.id, { file: await readFile("chime.wav") });                        // the file as the body
+await agents.voice.controlAudio(session.id, { action: "pause" });                                   // PATCH …/audio
+const { playing, queue } = await agents.voice.audio(session.id);                                    // GET …/audio
+```
+
+- **Formats:** MP3, Ogg Opus (`.opus`, and `.ogg` with Opus in it, as Discord's voice messages are) and WAV (PCM or
+  32-bit float), told by their first bytes. Ogg Vorbis, AAC, FLAC and video are refused (415 `AUDIO_UNSUPPORTED`).
+  It plays as 24 kHz mono, the call's speech quality.
+- **Sources:** a URL is read as it plays, through the runtime's outbound guard (https, public addresses, 3 redirects),
+  so a stream plays as it comes. A file sent as the body (`audio/*` or `application/octet-stream`; `title`, `next`
+  and `volume` as query parameters) is held in memory until it plays: 10 MB each, 40 MB queued.
+- **A queue:** each plays after what plays and waits (`next: true`: before the others), 20 waiting at most (429
+  `AUDIO_QUEUE_FULL`). `PATCH …/audio` takes `action` (`pause`, `resume`, `skip`, `stop`: the one playing and the
+  queue) and `volume` (0 to 1, default 0.5). The answers are the queue's state: `playing` (with `positionMs`),
+  `queue`, `volume`, `paused`.
+- **Speech first:** while the bot speaks (an answer, `say`, `prompt`), what plays holds, and goes on where it stopped
+  a moment after. People talking over it do not stop it: barge-in is for speech.
+- **Limits:** a track plays at most 30 minutes, and at most 50 MB of a URL is read (a stream ends there).
+- **Events:** `voice.audio.started`, and `voice.audio.ended` with `reason` (`done`, `skipped`, `stopped`, `error`
+  with `error`: an unreachable URL, a format it does not play) and the `seconds` heard. The session counts `tracks`
+  and `playedSeconds`. Audio playing keeps the session from idling (`idleMinutes`), but is not company
+  (`emptySeconds`).
+- **Cost:** none beyond the bandwidth: nothing is billed for playing audio.
+- A session moving to another node (a deploy) starts there with an empty queue.
+
+Play only audio you have the rights to play in the call. The runtime does not fetch from streaming services (pages
+such as YouTube's or Spotify's are not audio files) and does nothing to get around DRM.
+
 ### Barge-in
 
 With `bargeIn` (the default), a person talking over the bot (not the bot, not `ignoreUserIds`) stops its answer
@@ -448,6 +506,9 @@ and camelRun cannot check it.
 | --- | --- |
 | Live sessions per account | 10 (`AGENT_VOICE_SESSIONS_PER_TENANT`; an operator can set an account's own, `maxVoiceSessions`) |
 | Sessions per bot and server | 1 |
+| Words waiting to be said (`say`, `prompt`) | 10 |
+| Audio waiting to play; an upload, and uploads queued | 20 tracks; 10 MB, 40 MB |
+| A track of audio | 30 minutes, 50 MB read |
 | Session length | `maxMinutes`, at most 720 |
 | Turn | 300 ms to 30 s |
 | Reconnect wait for new credentials | 15 s |

@@ -1,7 +1,7 @@
 import { Worker } from "node:worker_threads";
 import type { TurnModelsHost } from "./turns/inference.ts";
 import type { VoiceCredentials, VoiceTransport } from "../voice-sessions.ts";
-import type { Playback } from "../voice-speech.ts";
+import type { Playback, PlayOptions } from "../voice-speech.ts";
 import { metricLine, safeError, writeMetricLine } from "../metrics.ts";
 import type { Media, MediaEvents, MediaFactory, MediaOptions } from "./media.ts";
 import { fromWireCut, MEDIA_PROTOCOL, own, type FromMedia, type MediaWorkerInit, type ToMedia, type TransportSpec, type WorkerMemory } from "./protocol.ts";
@@ -248,14 +248,14 @@ class WorkerMedia implements Media {
   others() { return this.users; }
   resume() { if (!this.gone) this.shard.post({ t: "resume", session: this.session }); }
 
-  play(pcm: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number): Playback {
+  play(pcm: AsyncIterable<Uint8Array>, started: () => void, expectedMs?: number, options?: PlayOptions): Playback {
     const id = ++this.nextId;
     let stopped = false, stats: Record<string, unknown> | undefined;
     const done = new Promise<"done" | "stopped" | "error">(resolve => {
       this.playing.set(id, { started, settle: (result, given) => { stats = given; this.playing.delete(id); resolve(result); } });
     });
     if (this.gone) this.playing.get(id)!.settle("error");
-    else this.shard.post({ t: "play", session: this.session, id, ...(expectedMs !== undefined ? { expectedMs } : {}) });
+    else this.shard.post({ t: "play", session: this.session, id, ...(expectedMs !== undefined ? { expectedMs } : {}), ...(options?.music ? { music: true } : {}) });
     // The speech goes to the worker as it is made; a playback stopped (or a worker gone) stops reading it.
     void (async () => {
       try {

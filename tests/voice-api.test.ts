@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -268,3 +269,71 @@ test("a session on the platform's OpenAI key talks to the platform's Azure deplo
   assert.equal(openai.of("session.update")[0].session.audio.input.transcription.model, "gpt-transcribe");
   assert.equal(azure.seen.urls.length, 1);
 });
+
+test("say, prompt and audio over HTTP from a node that doesn't hold the call reach the one that does; an upload goes as the body", async t => {
+  // OpenAI's speech API (text to speech, for say) and a file server (for audio by URL), on loopback.
+  const spoken: { input: string; voice: string }[] = [];
+  const pcm = Buffer.alloc(24_000, 0x22);
+  const servers = createServer(async (req, res) => {
+    if (req.url === "/v1/audio/speech") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      spoken.push({ input: body.input, voice: body.voice });
+      res.writeHead(200, { "Content-Type": "audio/pcm" }).end(pcm);
+      return;
+    }
+    if (req.url === "/song.wav") { res.writeHead(200, { "Content-Type": "audio/wav" }).end(wavFile(0.3)); return; }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>(resolve => servers.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => servers.close(resolve)));
+  const local = `http://127.0.0.1:${(servers.address() as { port: number }).port}`;
+  const openai = await fakeOpenAIRealtime(t);
+  const { fake, bases, call } = await twoNodes(t, openai.url, { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_SPEECH_URL: `${local}/v1` });
+  const created = await call(bases[0], "POST", "/v1/voice/sessions", { discord: discordGrant(), voice: "coral" });
+  assert.equal(created.status, 201, JSON.stringify(created.json));
+  const id = created.json.id;
+  const connection = await until(() => fake.open()[0], "the connection");
+  connection.others = ["400000000000000004"];
+  connection.handlers.ready();
+  await until(() => openai.of("session.update").length === 1, "the model's session");
+  // say from node b: made by text to speech in the call's voice, played by node a.
+  const said = await call(bases[1], "POST", `/v1/voice/sessions/${id}/say`, { text: "Welcome everyone" });
+  assert.equal(said.status, 202, JSON.stringify(said.json));
+  assert.match(said.json.id, /^say_/);
+  await until(() => connection.played.length === 1 && !connection.playing, "the words played");
+  assert.deepEqual(spoken, [{ input: "Welcome everyone", voice: "coral" }]);
+  assert.equal(openai.seen.responses, 0, "the model made none of it");
+  const prompted = await call(bases[1], "POST", `/v1/voice/sessions/${id}/prompt`, { instructions: "Greet the room." });
+  assert.equal(prompted.status, 202);
+  await until(() => openai.seen.responses === 1, "the model asked to speak up");
+  await until(() => connection.played.length === 2 && !connection.playing, "its answer played");
+  // An upload from node b, as the body; then a URL.
+  const upload = await fetch(`${bases[1]}/v1/voice/sessions/${id}/audio?title=Intro`, {
+    method: "POST", body: wavFile(0.3), headers: { Authorization: `Bearer ${token}`, "Content-Type": "audio/wav" },
+  });
+  const queued = await upload.json() as any;
+  assert.equal(upload.status, 202, JSON.stringify(queued));
+  assert.equal(queued.track.title, "Intro");
+  const byUrl = await call(bases[1], "POST", `/v1/voice/sessions/${id}/audio`, { url: `${local}/song.wav` });
+  assert.equal(byUrl.status, 202, JSON.stringify(byUrl.json));
+  await until(async () => (await call(bases[1], "GET", `/v1/voice/sessions/${id}`)).json.tracks === 2, "both played", 10_000);
+  const state = await call(bases[1], "GET", `/v1/voice/sessions/${id}/audio`);
+  assert.deepEqual([state.status, state.json.playing, state.json.queue], [200, null, []]);
+  const control = await call(bases[1], "PATCH", `/v1/voice/sessions/${id}/audio`, { action: "pause", volume: 0.3 });
+  assert.deepEqual([control.status, control.json.paused, control.json.volume], [200, true, 0.3]);
+  const wrongType = await fetch(`${bases[0]}/v1/voice/sessions/${id}/audio`, { method: "POST", body: "hello", headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/plain" } });
+  assert.equal(wrongType.status, 415);
+});
+
+/** A WAV file: `seconds` at 24 kHz mono 16-bit. */
+function wavFile(seconds: number) {
+  const data = Buffer.alloc(Math.round(seconds * 24_000) * 2, 0x10);
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0); header.writeUInt32LE(36 + data.length, 4); header.write("WAVE", 8);
+  header.write("fmt ", 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(24_000, 24); header.writeUInt32LE(48_000, 28); header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
+  header.write("data", 36); header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+}

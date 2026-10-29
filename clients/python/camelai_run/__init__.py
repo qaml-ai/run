@@ -885,6 +885,13 @@ class AgentRuntime(_RuntimeCalls):
         self.voice = Voice(self)
         self.voices = Voices(self)
 
+    async def _upload(self, path, content):
+        """A file's bytes POSTed with the API key (audio for a voice session), not retried: its answer."""
+        response = await self.http.post(self.base + path, content=content, headers={"Authorization": f"Bearer {self._operator()}", "Content-Type": "application/octet-stream"})
+        if not response.is_success:
+            raise _failure(response)
+        return response.json()
+
     async def _form(self, path, fields, file):
         """A multipart POST with the API key (a transcription's audio), not retried: its answer."""
         response = await self.http.post(self.base + path, data=fields, files=[file], headers={"Authorization": f"Bearer {self._operator()}"}, timeout=_TRANSCRIPTION_TIMEOUT)
@@ -1310,8 +1317,40 @@ class Voice:
         return self._runtime._rest("PATCH", f"/v1/voice/sessions/{quote(session_id, safe='')}", body)
 
     def stop_speaking(self, session_id):
-        """Stop what the bot is saying, and what it was going to: {"stopped"}."""
+        """Stop what the bot is saying, and what it was going to (what waits to be said too): {"stopped"}."""
         return self._runtime._rest("DELETE", f"/v1/voice/sessions/{quote(session_id, safe='')}/speak")
+
+    def say(self, session_id, text, *, interrupt=None):
+        """Have the bot say `text`, word for word, in its call's voice, after what it is saying (or at once with
+        `interrupt`): {"id", "queued"}. Its voice.speech.* events have source "say"."""
+        body = {"text": text, **({"interrupt": interrupt} if interrupt is not None else {})}
+        return self._runtime._rest("POST", f"/v1/voice/sessions/{quote(session_id, safe='')}/say", body, retry=False)
+
+    def prompt(self, session_id, instructions, *, interrupt=None):
+        """Have the bot speak up unprompted: its realtime model says `instructions` in its own words: {"id", "queued"}."""
+        body = {"instructions": instructions, **({"interrupt": interrupt} if interrupt is not None else {})}
+        return self._runtime._rest("POST", f"/v1/voice/sessions/{quote(session_id, safe='')}/prompt", body, retry=False)
+
+    def play(self, session_id, url=None, *, file=None, title=None, next=None, volume=None):
+        """Play audio in the call: an https `url` of an MP3, Ogg Opus or WAV file or stream, or `file` (its bytes, 10 MB
+        at most). It queues after what plays: {"track", "position"}. voice.audio.* events say how it went."""
+        if (url is None) == (file is None):
+            raise AgentError("Give the audio as url or file, one of them")
+        options = {key: value for key, value in {"title": title, "next": next, "volume": volume}.items() if value is not None}
+        path = f"/v1/voice/sessions/{quote(session_id, safe='')}/audio"
+        if url is not None:
+            return self._runtime._rest("POST", path, {"url": url, **options}, retry=False)
+        query = urlencode({key: str(value).lower() if isinstance(value, bool) else value for key, value in options.items()})
+        return self._runtime._upload(path + (f"?{query}" if query else ""), file)
+
+    def audio(self, session_id):
+        """What plays, and what waits: {"playing", "queue", "volume", "paused"}."""
+        return self._runtime._rest("GET", f"/v1/voice/sessions/{quote(session_id, safe='')}/audio")
+
+    def control_audio(self, session_id, *, action=None, volume=None):
+        """Pause, resume, skip or stop (the queue too) what plays (`action`), and set its `volume` (0 to 1)."""
+        body = {key: value for key, value in {"action": action, "volume": volume}.items() if value is not None}
+        return self._runtime._rest("PATCH", f"/v1/voice/sessions/{quote(session_id, safe='')}/audio", body)
 
     def end(self, session_id):
         """End it. The answer's "leave" is the OP 4 your gateway sends to leave the channel."""
