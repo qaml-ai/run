@@ -22,10 +22,10 @@ scanEntries) and returns the view Conversation.context() returns.
  5 files changed, 51 insertions(+), 3 deletions(-)
 
 diff --git a/packages/durable/CHANGELOG.md b/packages/durable/CHANGELOG.md
-index 345d2bb..38f5d49 100644
+index a1a4dbd7..e4d12156 100644
 --- a/packages/durable/CHANGELOG.md
 +++ b/packages/durable/CHANGELOG.md
-@@ -117,6 +117,7 @@
+@@ -121,6 +121,7 @@
  - `GenerationHooks.beforeRetry(failed, api)`: a host decides whether and when a failed request attempt is tried again, instead of `settings.retry`. It is asked for a failed message (`reason: "model_error"`, with the message) and for a request or poll the host stopped during (`interrupted`), with the attempt, the error text, and the policy's own decision (`delayMs`, absent when the policy would end the run). The first decision wins: `{ retry: true, delayMs? }` retries after `delayMs` (default the policy's backoff), also past `maxRetries` or with the policy disabled; `{ retry: false }` ends the run with the failure; no decision leaves it to the policy. Not asked for an overflow that starts a compaction. New types `FailedAttempt` and `RetryDecision`
  - `settings.retry.keepRetried` (default `true`): with `false`, a failed attempt that is asked again (a retry, an overflow that starts a compaction, an interrupted request) appends no `pi.assistant` entry and records only its usage in `pi.usage`, so the transcript holds the attempt that answered, or the last one that failed, and readers of the history need not skip superseded failures. `pi.live.generation.retry` still shows the error during the backoff
  - `GenerationHooks.afterTools` can end the run after the round: `{ end: true }` from any hook ends it as a round whose every call asked to `terminate` does (no further request; inputs settled `done` with the tool-calling answer, the final boundary, `afterRun` with reason `terminate`). A host that decides from the round's results, such as a call waiting for input or a budget, no longer needs every tool to return `control.terminate`
@@ -34,7 +34,7 @@ index 345d2bb..38f5d49 100644
  ### Changed
  
 diff --git a/packages/durable/README.md b/packages/durable/README.md
-index 74c3f2d..e168c44 100644
+index f9aa36f6..d59d425e 100644
 --- a/packages/durable/README.md
 +++ b/packages/durable/README.md
 @@ -666,6 +666,8 @@ To limit a hook to some conversations, select its extension only there, for exam
@@ -47,7 +47,7 @@ index 74c3f2d..e168c44 100644
  
  An `afterRun` hook starts durable work after a run answered, without a tool call: for example the project's tests after a run that edited files. It returns tasks, built with `runEndTask()`, and the generation creates them as its children and waits for them before the run ends:
 diff --git a/packages/durable/src/harness/context.ts b/packages/durable/src/harness/context.ts
-index aa56608..10ed516 100644
+index aa566080..10ed5167 100644
 --- a/packages/durable/src/harness/context.ts
 +++ b/packages/durable/src/harness/context.ts
 @@ -10,6 +10,24 @@ const SCAN_PAGE_SIZE = 256;
@@ -103,7 +103,7 @@ index aa56608..10ed516 100644
  	range: Omit<EntryQuery, "conversationId">,
  	context: Context,
 diff --git a/packages/durable/src/index.ts b/packages/durable/src/index.ts
-index 0362bd8..d9f5af2 100644
+index 9a8779e2..b4aebbda 100644
 --- a/packages/durable/src/index.ts
 +++ b/packages/durable/src/index.ts
 @@ -31,6 +31,7 @@ export {
@@ -115,7 +115,7 @@ index 0362bd8..d9f5af2 100644
  export {
  	type GenerationCheckpoint,
 diff --git a/packages/durable/test/harness-context.test.ts b/packages/durable/test/harness-context.test.ts
-index f3a9ada..7b13dbb 100644
+index f3a9ada0..7b13dbbf 100644
 --- a/packages/durable/test/harness-context.test.ts
 +++ b/packages/durable/test/harness-context.test.ts
 @@ -10,6 +10,7 @@ import {

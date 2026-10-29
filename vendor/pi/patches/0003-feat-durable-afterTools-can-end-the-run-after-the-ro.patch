@@ -22,11 +22,11 @@ with reason terminate. Hooks are still all asked; any end ends the run.
  6 files changed, 49 insertions(+), 12 deletions(-)
 
 diff --git a/packages/durable/CHANGELOG.md b/packages/durable/CHANGELOG.md
-index 11ad707..345d2bb 100644
+index 73887711..a1a4dbd7 100644
 --- a/packages/durable/CHANGELOG.md
 +++ b/packages/durable/CHANGELOG.md
-@@ -116,6 +116,7 @@
- 
+@@ -120,6 +120,7 @@
+ - `registryReader(value, context)`: a `RegistryReader` over a Chord v2 registry value whose composition is a registry snapshot (`RegistryValue<RegistrySnapshot>`): `snapshot()` reads the current composition, `subscribe` observes its compositions synchronously inside Chord's batch, so a Harness opened in a Chord object takes its extensions from a Chord registry.
  - `GenerationHooks.beforeRetry(failed, api)`: a host decides whether and when a failed request attempt is tried again, instead of `settings.retry`. It is asked for a failed message (`reason: "model_error"`, with the message) and for a request or poll the host stopped during (`interrupted`), with the attempt, the error text, and the policy's own decision (`delayMs`, absent when the policy would end the run). The first decision wins: `{ retry: true, delayMs? }` retries after `delayMs` (default the policy's backoff), also past `maxRetries` or with the policy disabled; `{ retry: false }` ends the run with the failure; no decision leaves it to the policy. Not asked for an overflow that starts a compaction. New types `FailedAttempt` and `RetryDecision`
  - `settings.retry.keepRetried` (default `true`): with `false`, a failed attempt that is asked again (a retry, an overflow that starts a compaction, an interrupted request) appends no `pi.assistant` entry and records only its usage in `pi.usage`, so the transcript holds the attempt that answered, or the last one that failed, and readers of the history need not skip superseded failures. `pi.live.generation.retry` still shows the error during the backoff
 +- `GenerationHooks.afterTools` can end the run after the round: `{ end: true }` from any hook ends it as a round whose every call asked to `terminate` does (no further request; inputs settled `done` with the tool-calling answer, the final boundary, `afterRun` with reason `terminate`). A host that decides from the round's results, such as a call waiting for input or a budget, no longer needs every tool to return `control.terminate`
@@ -34,7 +34,7 @@ index 11ad707..345d2bb 100644
  ### Changed
  
 diff --git a/packages/durable/README.md b/packages/durable/README.md
-index bdf0535..74c3f2d 100644
+index 674e0406..f9aa36f6 100644
 --- a/packages/durable/README.md
 +++ b/packages/durable/README.md
 @@ -659,7 +659,7 @@ const Guard = defineExtension({
@@ -47,7 +47,7 @@ index bdf0535..74c3f2d 100644
  
  To limit a hook to some conversations, select its extension only there, for example with `configure({ extensions: { add: [Guard] } })`.
 diff --git a/packages/durable/docs/spec.md b/packages/durable/docs/spec.md
-index 2295181..f195f01 100644
+index 30448cb8..0b281def 100644
 --- a/packages/durable/docs/spec.md
 +++ b/packages/durable/docs/spec.md
 @@ -3295,7 +3295,7 @@ consuming commit may rerun them. Abort errors always propagate.
@@ -93,7 +93,7 @@ index 2295181..f195f01 100644
    applies the final boundary. When the phase's agent selects an `afterRun`
    hook, it keeps `run` instead and moves to `finish` (section 8.3) with
 diff --git a/packages/durable/src/harness/generation.ts b/packages/durable/src/harness/generation.ts
-index b336765..3c995b8 100644
+index b336765e..3c995b85 100644
 --- a/packages/durable/src/harness/generation.ts
 +++ b/packages/durable/src/harness/generation.ts
 @@ -1092,7 +1092,7 @@ async function startToolRound(
@@ -124,7 +124,7 @@ index b336765..3c995b8 100644
  	// The last handoff in call order wins.
  	const handoff = ordered.findLast((control) => control?.handoff !== undefined)?.handoff;
 diff --git a/packages/durable/src/harness/types.ts b/packages/durable/src/harness/types.ts
-index 2ebf497..ecb5df4 100644
+index 2ebf4970..ecb5df48 100644
 --- a/packages/durable/src/harness/types.ts
 +++ b/packages/durable/src/harness/types.ts
 @@ -989,8 +989,16 @@ export interface GenerationHooks {
@@ -156,7 +156,7 @@ index 2ebf497..ecb5df4 100644
  	/**
  	 * The run's first entry (`LiveRun.first`): the first one the boundary that started it placed, for a continue the failed
 diff --git a/packages/durable/test/harness-tools.test.ts b/packages/durable/test/harness-tools.test.ts
-index 6849861..77449db 100644
+index 6849861b..77449dba 100644
 --- a/packages/durable/test/harness-tools.test.ts
 +++ b/packages/durable/test/harness-tools.test.ts
 @@ -703,6 +703,25 @@ describe("tool results", () => {

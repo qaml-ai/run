@@ -27,19 +27,19 @@ still shows the retry's error during the backoff. Default true, unchanged.
  9 files changed, 110 insertions(+), 10 deletions(-)
 
 diff --git a/packages/durable/CHANGELOG.md b/packages/durable/CHANGELOG.md
-index ad20c64..11ad707 100644
+index eca607d9..73887711 100644
 --- a/packages/durable/CHANGELOG.md
 +++ b/packages/durable/CHANGELOG.md
-@@ -115,6 +115,7 @@
- - Run-end tasks: a `GenerationHooks.afterRun(run, api)` hook returns `{ tasks }`, built with the typed `runEndTask(task, input)`, after a run answered (a final answer or a `terminate` round; not when an `onYield` continuation is taken, not after a failure or an abort). The answer is committed and the run's inputs settle `done` first, so `Submission.wait()` resolves at the answer; the generation then creates the tasks as its children and waits for them, keeping `pi.live.run` (with `run.afterRun`) and the conversation busy, so idle waits include them, Stop aborts them, and a crash resumes them. Input queued meanwhile, steers included, is placed when they are terminal and starts the next run; a task admits a model-visible write or a fix-run follow-up in its own commit with `submit(tx, draft)`. A crash before the tasks exist asks the hooks again; a broken request (an uninstalled or built-in task, a non-JSON input, a throwing `initial()`) is reported and skipped. `run` names the run's entries: `first` (`pi.live.run.first`, carried into `runFailure.first` so a continue covers a failed run's history), `answer`, and `last` ([#11141](https://github.com/earendil-works/pi/issues/11141))
+@@ -119,6 +119,7 @@
  
+ - `registryReader(value, context)`: a `RegistryReader` over a Chord v2 registry value whose composition is a registry snapshot (`RegistryValue<RegistrySnapshot>`): `snapshot()` reads the current composition, `subscribe` observes its compositions synchronously inside Chord's batch, so a Harness opened in a Chord object takes its extensions from a Chord registry.
  - `GenerationHooks.beforeRetry(failed, api)`: a host decides whether and when a failed request attempt is tried again, instead of `settings.retry`. It is asked for a failed message (`reason: "model_error"`, with the message) and for a request or poll the host stopped during (`interrupted`), with the attempt, the error text, and the policy's own decision (`delayMs`, absent when the policy would end the run). The first decision wins: `{ retry: true, delayMs? }` retries after `delayMs` (default the policy's backoff), also past `maxRetries` or with the policy disabled; `{ retry: false }` ends the run with the failure; no decision leaves it to the policy. Not asked for an overflow that starts a compaction. New types `FailedAttempt` and `RetryDecision`
 +- `settings.retry.keepRetried` (default `true`): with `false`, a failed attempt that is asked again (a retry, an overflow that starts a compaction, an interrupted request) appends no `pi.assistant` entry and records only its usage in `pi.usage`, so the transcript holds the attempt that answered, or the last one that failed, and readers of the history need not skip superseded failures. `pi.live.generation.retry` still shows the error during the backoff
  
  ### Changed
  
 diff --git a/packages/durable/README.md b/packages/durable/README.md
-index 2381afb..bdf0535 100644
+index 777ca2b4..674e0406 100644
 --- a/packages/durable/README.md
 +++ b/packages/durable/README.md
 @@ -414,7 +414,7 @@ const harness = await Harness.open(storage, {
@@ -52,7 +52,7 @@ index 2381afb..bdf0535 100644
  		progress: { partialIntervalMs: 100, outputIntervalMs: 100, persistWithinMs: 1_000 },
  		toolExecution: "parallel",
 diff --git a/packages/durable/docs/spec.md b/packages/durable/docs/spec.md
-index b730d85..2295181 100644
+index 3d3dfdc4..30448cb8 100644
 --- a/packages/durable/docs/spec.md
 +++ b/packages/durable/docs/spec.md
 @@ -466,12 +466,14 @@ type ConversationStreamOptions = {
@@ -94,7 +94,7 @@ index b730d85..2295181 100644
  - `retry` runs once the backoff's sleep is due and returns to `prepare` with the
    next attempt, so agent and settings changes made during the backoff apply.
 diff --git a/packages/durable/src/harness/agent.ts b/packages/durable/src/harness/agent.ts
-index df15a9f..810d72a 100644
+index df15a9f1..810d72ab 100644
 --- a/packages/durable/src/harness/agent.ts
 +++ b/packages/durable/src/harness/agent.ts
 @@ -22,6 +22,7 @@ export const DEFAULT_RETRY_POLICY: ConversationRetryPolicy = {
@@ -106,7 +106,7 @@ index df15a9f..810d72a 100644
  
  export const DEFAULT_COMPACTION_POLICY: CompactionPolicy = {
 diff --git a/packages/durable/src/harness/generation.ts b/packages/durable/src/harness/generation.ts
-index 096b3a5..b336765 100644
+index 096b3a5f..b336765e 100644
 --- a/packages/durable/src/harness/generation.ts
 +++ b/packages/durable/src/harness/generation.ts
 @@ -513,7 +513,8 @@ async function interrupted(
@@ -190,7 +190,7 @@ index 096b3a5..b336765 100644
   * Start a run for `inputs`, placed input submissions, whose first entry is `first` (`LiveRun.first`): a new generation
   * takes `pi.live.run`. Removes `runFailure`, unless `keepFailure`: a run started in the commit that ended the failed one
 diff --git a/packages/durable/src/harness/types.ts b/packages/durable/src/harness/types.ts
-index 59e7e31..2ebf497 100644
+index 59e7e31b..2ebf4970 100644
 --- a/packages/durable/src/harness/types.ts
 +++ b/packages/durable/src/harness/types.ts
 @@ -543,12 +543,19 @@ export type ConversationStreamOptions = {
@@ -215,7 +215,7 @@ index 59e7e31..2ebf497 100644
  
  /** Automatic compaction thresholds (spec §8.7); manual compaction ignores `enabled`. */
 diff --git a/packages/durable/test/harness-compaction.test.ts b/packages/durable/test/harness-compaction.test.ts
-index b60eb2d..83f0930 100644
+index b60eb2da..83f09301 100644
 --- a/packages/durable/test/harness-compaction.test.ts
 +++ b/packages/durable/test/harness-compaction.test.ts
 @@ -1874,6 +1874,21 @@ describe("compaction and the inbox", () => {
@@ -241,7 +241,7 @@ index b60eb2d..83f0930 100644
  		const chat = await open();
  		await history(chat);
 diff --git a/packages/durable/test/harness-generation.test.ts b/packages/durable/test/harness-generation.test.ts
-index 351756b..3f2cf5e 100644
+index 351756b0..3f2cf5e6 100644
 --- a/packages/durable/test/harness-generation.test.ts
 +++ b/packages/durable/test/harness-generation.test.ts
 @@ -25,6 +25,7 @@ import {
@@ -295,7 +295,7 @@ index 351756b..3f2cf5e 100644
  			progress: { partialIntervalMs: 100, outputIntervalMs: 100, persistWithinMs: 1000 },
  			toolExecution: "parallel",
 diff --git a/packages/durable/test/harness-restart-failure.test.ts b/packages/durable/test/harness-restart-failure.test.ts
-index 6d63107..bd3dfa9 100644
+index 6d63107c..bd3dfa9f 100644
 --- a/packages/durable/test/harness-restart-failure.test.ts
 +++ b/packages/durable/test/harness-restart-failure.test.ts
 @@ -254,6 +254,21 @@ describe("a generation interrupted while the model answers (#11139)", () => {
