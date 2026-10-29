@@ -297,7 +297,7 @@ spend limits like any other.
 | Agent calls in flight per workflow (`workflow.maxParallel`) | 4 by default, 1–16; the rest queue inside the script |
 | Workflow depth (`workflow.maxDepth`) | 2 by default, 1–5, counted with `delegate`'s |
 | Items in one `parallel()` or `pipeline()` | 512 |
-| A workflow script | 32,000 characters; its `args` 64 KB; its return value 64 KB; a task 24,000 characters (an answer is cut at 24,000) |
+| A workflow script | 32,000 characters; its `args` 64 KB; its return value 64 KB; a task 24,000 characters (a text answer is cut at 24,000 bytes) |
 | `phase()` titles and `log()` lines | 64 and 100 (500 characters each) |
 | A workflow's sandbox | 10 minutes of wall clock, 24 MB of transfer; `js_exec`'s CPU, tool-call and concurrency caps |
-| Workflows running at once | 4 per node, 2 per tenant; the rest wait for a sandbox slot |
+| Top-level workflows running at once | 4 per node, 2 per tenant; nested workflows bypass this gate and remain bounded by agent capacity, depth and spend |

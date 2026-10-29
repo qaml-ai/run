@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Agents } from "../clients/node.ts";
 import { OPERATOR, runtime, toolCall, toolResults, until, watchEvents } from "./runtime-server.ts";
 
 /** The model request's system text: its system messages, wherever they are, in order. */
@@ -15,6 +16,20 @@ phase("each")
 const out = await pipeline(list.items, item => agent(\`work \${item}\`, { agent: "worker", label: String(item) }))
 log(\`worked \${out.length}\`)
 return { items: list.items, out }`;
+
+test("the SDK runs a stateless workflow with its builtin added automatically", async t => {
+  const r = await runtime(t, body => {
+    if (systemText(body).includes("WORKER")) return { role: "assistant", content: "worked" };
+    return toolResults(body).length
+      ? { role: "assistant", content: JSON.parse(toolResults(body).at(-1)).value }
+      : toolCall("run_workflow", { script: `return await agent("work", { instructions: "You are WORKER." })` });
+  });
+  const agents = new Agents({ url: r.base, apiKey: OPERATOR });
+  t.after(() => agents.close());
+  const result = await agents.run({ input: "go", workflow: { instructions: true } });
+  assert.equal(result.text, "worked");
+  assert.ok(result.toolCalls.some(call => call.tool === "run_workflow" && call.ok));
+});
 
 test("run_workflow coordinates child agents from a script and returns only the script's value", async t => {
   const r = await runtime(t, body => {

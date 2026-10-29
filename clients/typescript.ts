@@ -1829,7 +1829,7 @@ export interface RunRequest {
   dataCollection?: "deny";
   /** Its primary language, a BCP 47 tag ("en", "es-ES", "pt-BR", "zh-Hant"): it replies in it by default, and in the person's language when they clearly write in another. Default: none. */
   language?: string;
-  builtins?: ("web_fetch" | "web_search" | "x_search" | "delegate")[]; delegate?: DelegateSettings;
+  builtins?: ("web_fetch" | "web_search" | "x_search" | "delegate" | "workflow")[]; delegate?: DelegateSettings; workflow?: WorkflowSettings;
   /** false: no decide tool; a run with no tools at all has none unless true. */
   decide?: boolean;
   /** Remote MCP servers the run may call, without credentials (auth `{ type: "runtime" }` or none). */

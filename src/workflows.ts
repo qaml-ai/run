@@ -143,8 +143,8 @@ export type ScriptRunOptions = {
   /**
    * Wait for a sandbox slot. A workflow a run started directly takes one; one started inside a child agent does not, because
    * its parent already holds a slot and a child waiting on the gate its parent holds would deadlock. Nested workflows are
-   * bounded instead by the agents that can be running (the supervisor's `maxAgents` per node) and by the chain's signed
-   * agent budget, so the count of ungated sandboxes is bounded too.
+   * bounded instead by the agents that can be running (the supervisor's `maxAgents` per node), the tenant's busy-agent
+   * limit, delegation depth and spend limits. There is no aggregate agent-call cap across a subtree.
    */
   waitForSlot?: boolean;
   /** At most this many agent calls run at once (the sandbox bounds concurrent tool calls; the rest queue in the script). */

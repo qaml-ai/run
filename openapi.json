@@ -3808,8 +3808,8 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 9,
-            "description": "Tools the runtime answers itself (web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents, decide), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
+            "maxItems": 10,
+            "description": "Tools the runtime answers itself (web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents, decide, workflow), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none"
           },
           "decide": {
             "type": "boolean",
@@ -5619,7 +5619,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 9,
+            "maxItems": 10,
             "description": "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's"
           },
           "decide": {
@@ -8936,7 +8936,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 9,
+            "maxItems": 10,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from js_exec as tools.decide"
           },
           "decide": {
@@ -9337,7 +9337,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 9,
+            "maxItems": 10,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from js_exec as tools.decide"
           },
           "decide": {
@@ -9886,7 +9886,7 @@
             "items": {
               "$ref": "#/components/schemas/Builtin"
             },
-            "maxItems": 9,
+            "maxItems": 10,
             "description": "Tools the runtime answers itself: web_fetch reads a public page as text (rendering JavaScript-only pages through Firecrawl when a firecrawl key resolves); web_search searches the web through the first search provider with a key that answers (the tenant's own, else the platform's, which a prepaid tenant pays for per search at that provider's price); x_search searches X posts through Grok with handle and date filters, using the tenant's xAI key or the platform's and charging its reported total cost; schedule lets the agent set, list and cancel its own wake-ups; ask_user lets the model ask the user questions, suspending its turn until they answer; generate_image makes or edits an image (OpenAI's gpt-image-2.5-flare on the tenant's OpenAI key, else the platform's, billed per token) and saves it to the workspace; decide answers typed questions (noul, choice, score) about a state with a decision model (TypeSafe's Jev through OpenRouter), one state or a batch of up to 100, from js_exec as tools.decide"
           },
           "decide": {
@@ -10362,10 +10362,11 @@
                 "x_search",
                 "delegate",
                 "generate_image",
-                "decide"
+                "decide",
+                "workflow"
               ]
             },
-            "maxItems": 9,
+            "maxItems": 7,
             "description": "Tools the runtime answers itself (generate_image gives the run a workspace for its images). Not schedule or ask_user: a run has no later and no one to ask"
           },
           "decide": {

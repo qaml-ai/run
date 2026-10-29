@@ -47,7 +47,7 @@ A definition takes the same pair, for every agent made from it:
 | --- | --- |
 | `agents` | Who a script may coordinate: definition keys or ids (a new child agent for each `agent()` call), or `{ agent: "key" }` for an existing agent that keeps its history. Up to 32. |
 | `instructions` | `true`: the script may start a child with instructions of its own instead, on its own model (the runner-up to naming an agent). |
-| `maxAgents` | The most `agent()` calls one workflow may make: 32 by default, up to 256. The ceiling is a hard stop, not a warning. |
+| `maxAgents` | The most `agent()` calls one workflow may make: 32 by default, up to 120. The ceiling is a hard stop, not a warning. |
 | `maxParallel` | Agent calls in flight at once: 4 by default, up to 16. The rest wait their turn. |
 | `maxDepth` | How deep a chain of agents may go, counted with `delegate`'s: 2 by default, 1–5. |
 
@@ -157,8 +157,8 @@ Ask for a run's children's events and the workflow's own arrive with them —
 | --- | --- |
 | `workflow_start` | `{ toolCallId }`: the script began |
 | `workflow_progress` | `{ toolCallId, phase? , log? }`: a phase began, or a log line |
-| `subagent_start`, `subagent_end` | one per `agent()` call, as for `delegate` (the `name` is the call's `label`) |
-| `workflow_end` | `{ toolCallId, status, agents, ms, error? }`: the script ended |
+| `subagent_start`, `subagent_end` | one per `agent()` call, as for `delegate` (the `name` is the target's name) |
+| `workflow_end` | `{ toolCallId, status, agents, error? }`: the script ended |
 
 The children's own streams and histories always have everything; these are the
 parent's view.
@@ -171,10 +171,10 @@ parent's view.
 | Agent calls in flight | 4 by default, at most 16 (`maxParallel`); the rest queue inside the script |
 | Items per `parallel()` / `pipeline()` | 512 |
 | A script | 32,000 characters; its `args` 64 KB; its return value 64 KB |
-| A task (one `agent()` prompt) | 24,000 characters; an answer is cut at 24,000 characters with a marker |
+| A task (one `agent()` prompt) | 24,000 characters; an answer is cut at 24,000 bytes with a marker |
 | `phase()` calls / `log()` lines | 64 / 100 (500 characters each) |
-| Answer size | text is cut at 24,000 characters with a marker; a JSON answer over 24,000 bytes answers `null` |
-| Workflows running at once per node / per tenant | 4 / 2; the rest wait for a sandbox slot |
+| Answer size | text is cut at 24,000 bytes with a marker; a JSON answer over 24,000 bytes fails the workflow |
+| Top-level workflows running at once per node / per tenant | 4 / 2; the rest wait for a sandbox slot |
 | Deadline | 10 minutes, then the sandbox is killed |
 | Depth | counted with `delegate`'s `maxDepth` (2 by default) |
 
@@ -187,9 +187,12 @@ cannot hold the node. What a script can do is what its `agent()` calls can do, a
 nothing more; `import()` is refused before it starts.
 
 A workflow holds a sandbox for minutes rather than seconds, so the node admits a
-few at once (4 by default, 2 per tenant); the rest wait for a slot. Everything else
-the sandbox enforces — CPU, tool calls, argument and transfer sizes — is `js_exec`'s,
-and is what a workflow's own caps stay inside.
+few top-level workflows at once (4 per node, 2 per tenant); the rest wait for a slot.
+Nested workflows do not take another slot, to avoid waiting on the slot their
+parent holds. They remain bounded by the node's agent capacity, the tenant's
+busy-agent limit, chain depth and spend limits. Each workflow has a 10-minute
+deadline and a 24 MB transfer budget; CPU, tool-call and per-message limits are
+`js_exec`'s.
 
 ## Running a workflow without the model
 
@@ -199,81 +202,16 @@ method, `POST /v1/agents/{id}/workflow`, and `agent.workflow(script)` in the
 SDKs — is a follow-up. Until it lands, drive one from code with a prompt, or keep
 the script in a prompt the agent calls verbatim.
 
-## Where the script runs
-
-The script runs in the runtime's sandbox — the same `v8-exec` isolate `js_exec`
-uses: a bare V8 with no Node globals, no filesystem, no network, and no module
-loader. It is killed at its deadline or when the run stops, so a loop in a script
-cannot hold the node. What a script can do is what its `agent()` calls can do, and
-nothing more; `import()` is refused before it starts.
-
-A workflow holds a sandbox for minutes rather than seconds, so the node admits a
-few at once (4 by default, 2 per tenant); the rest wait for a slot. Everything else
-the sandbox enforces — CPU, tool calls, argument and transfer sizes — is `js_exec`'s,
-and is what a workflow's own caps stay inside.
-
-## Running a workflow yourself
-
-An application can run a script without a model turn: the same tool the model
-would call, on demand.
-
-```ts
-const run = await agent.workflow(`
-  const [a, b] = await parallel([
-    agent("Summarize src/auth.ts", { agent: "worker" }),
-    agent("Summarize src/billing.ts", { agent: "worker" }),
-  ])
-  return { a, b }
-`, { args: { ticket: "ENG-42" }, spendLimit: { usd: 0.50 } })
-
-if (run.status !== "completed") console.error(run.error, run.agents)
-console.log(run.value)
-```
-
-```python
-run = await agent.workflow("""
-  files = await agent("List the .ts files under src/", agent="worker",
-                      schema={"type": "object", "required": ["files"], "properties": {"files": {"type": "array", "items": {"type": "string"}}}})
-  return await parallel([agent(f"Check {f}", agent="worker") for f in files["files"]])
-""", spend_limit={"usd": 0.5}, args={"ticket": "ENG-42"})
-if run["status"] != "completed":
-    print(run["error"], run["agents"])
-```
-
-```http
-POST /v1/agents/{id}/workflow
-Idempotency-Key: 8a1f…
-{ "script": "return await agent('hi', { agent: 'worker' })", "args": { "ticket": "ENG-42" },
-  "spendLimit": { "usd": 0.5 } }
-```
-
-`run` is `{ status, agents, value, error? }`, plus `code: "aborted"` if the run was
-stopped. It is the run's outcome (`GET /v1/agents/{id}/requests/{requestId}`): the
-request settles when the script does, and its children are that run's sub-agents
-(`run.toolCalls`, `usage.subagentCostUsd`). The agent needs the `workflow` builtin
-and its settings, exactly as when its model calls the tool.
-
-`spendLimit` bounds the run and is shared by the children the script starts.
-Idempotency is the request's: the same id runs the script once.
-
-In the SDKs: `agent.workflow(script, options)` in TypeScript and Python, the
-low-level `agent.request("workflow", { script, args })` on an agent client, and
-`POST /v1/agents/{id}/workflow` in REST.
-
 ## Notes
 
 - Named targets (`{ agent: "key" }`) are real agents with their own queue: two
   calls to one in the same script run one after the other, so a fan-out over one
   named agent is sequential. Definition targets make a new child per call and are
   the parallel choice.
-- A workflow that stops names each child's request when it aborts it, so it cannot
-  stop another caller's turn or cancel another caller's suspended questions on a
-  shared named agent.
-- `maxAgents` bounds one `run_workflow` call, and every workflow call is also
-  bounded by the chain's signed agent budget: a run starts with 120 agent calls for
-  its whole subtree, a workflow takes `min(maxAgents, budget)` of them, and each
-  child inherits an even share of the rest. A definition that also enables `workflow`
-  therefore cannot fan out past the chain's budget, and `delegate` passes the share on.
-- A workflow a child agent starts does not take a second sandbox slot (its parent
-  already holds one, and waiting on the gate it holds would deadlock). What bounds
-  it is the number of agents a node may run and that same chain budget.
+- When a script returns, fails or reaches its deadline, it stops any children it
+  left running. When a node drains or loses ownership, those children stay running
+  for the next owner to collect. An explicit user abort stops the workflow and its
+  children.
+- `maxAgents` bounds one `run_workflow` call, not an entire subtree. A child whose
+  definition enables `workflow` can start another workflow within the chain's depth,
+  spend and busy-agent limits. There is no signed subtree agent budget.

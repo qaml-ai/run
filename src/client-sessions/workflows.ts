@@ -116,12 +116,11 @@ async function runWorkflow(ctx: ChildrenContext, session: Session, settings: Wor
       callAgent: agentCall,
     });
   } finally {
-    // Nothing the script left running may outlive it: its children were delegate calls, so the stop that ends the wait
-    // ends them (`stopDelegates`/`abortChild`), and their spend was charged as they answered.
-    // A child this call started and the script no longer waits for is stopped, not left spending: `stopDelegates` ends
-    // each one's row (the same path an abort takes), so its spend is charged and its notification lands once.
+    // Stop waiting in this attempt. Host cancellation also means a drain or lost ownership: leave those children
+    // for the next owner to collect. An explicit user abort already stops them through ClientSessions.stop.
+    // Only a script that ends here (return, error or deadline) owns cleanup of the children it left running.
     stopping.abort();
-    await delegation.stopDelegates(ctx, session, { run: run.id, toolCallId });
+    if (!call.signal.aborted) await delegation.stopDelegates(ctx, session, { run: run.id, toolCallId });
   }
 
   const status = outcome.status;
