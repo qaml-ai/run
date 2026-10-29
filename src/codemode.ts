@@ -205,7 +205,7 @@ export async function executeCode(options: {
   limits?: Partial<Pick<CodeLimits, "cpuMs" | "maxTimeoutMs">>;
   /** Wait for the tenant's turn on the node (`CodeGate`); resolves with the function that gives it back. */
   admit?: (signal: AbortSignal) => Promise<() => void>;
-  /** A workflow script: it may hold the sandbox for `workflowTimeoutMs` and transfer `workflowToolBytes`. Every other cap is js_exec's. */
+  /** A workflow script: use the workflow wall-time, transfer, argument, tool-call and concurrency caps. */
   workflow?: boolean;
 }): Promise<CodeResult> {
   const ceiling = options.workflow ? SANDBOX_LIMITS.workflowTimeoutMs : SANDBOX_LIMITS.maxTimeoutMs;
@@ -217,7 +217,7 @@ export async function executeCode(options: {
   const timeoutMs = Math.min(requested, maxTimeoutMs);
   if (!Number.isInteger(maxTimeoutMs) || maxTimeoutMs < 1 || !Number.isInteger(cpuMs) || cpuMs < 1) throw new Error("Invalid codemode limits");
   if (!Number.isInteger(maxOutputCharacters) || maxOutputCharacters < 1 || maxOutputCharacters > SANDBOX_LIMITS.maxOutputCharacters) throw new Error(`maxOutputCharacters must be 1..${SANDBOX_LIMITS.maxOutputCharacters}`);
-  if (typeof options.code !== "string" || options.code.length > 256_000) throw new Error("Invalid or oversized code");
+  if (typeof options.code !== "string" || options.code.length > (options.workflow ? 512_000 : 256_000)) throw new Error("Invalid or oversized code");
   // The deadline and cancellation hold from here, before anything looks at the code or waits for a turn.
   // Nothing of the code is parsed on this thread: v8-exec strips TypeScript and compiles it (sandbox/v8-exec).
   const started = performance.now();
@@ -254,8 +254,11 @@ export async function executeCode(options: {
     const link = guest;
     const channel = rpc = new Rpc(message => link.send(message));
     let received = 0;
+    const toolCallCap = options.workflow ? SANDBOX_LIMITS.workflowToolCalls : SANDBOX_LIMITS.toolCalls;
+    const concurrentCap = options.workflow ? SANDBOX_LIMITS.workflowConcurrentTools : SANDBOX_LIMITS.concurrentTools;
+    const argumentCap = options.workflow ? SANDBOX_LIMITS.workflowArgumentBytes : SANDBOX_LIMITS.argumentBytes;
     link.listen(message => {
-      if (++received > GUEST_MESSAGE_LIMIT) return stop("Codemode sandbox sent too many messages");
+      if (++received > (options.workflow ? toolCallCap + SANDBOX_LIMITS.outputEvents + 8 : GUEST_MESSAGE_LIMIT)) return stop("Codemode sandbox sent too many messages");
       let checked: WireMessage;
       try { checked = guestMessage(message); }
       catch (error) { return stop(errorText(error)); }
@@ -277,7 +280,7 @@ export async function executeCode(options: {
     channel.handler = async (method, params) => {
       if (method !== "tool") throw new Error("Unknown tool");
       if (Object.values(HOST_CALLS).includes(params.name)) {
-        if (++calls > SANDBOX_LIMITS.toolCalls) throw new Error("Codemode tool call limit exceeded");
+        if (++calls > toolCallCap) throw new Error("Codemode tool call limit exceeded");
         return JSON.stringify(await hostCall(options.bridge, params.name, params.args));
       }
       // fs calls go to the runtime's file tools, whatever other tools are named; their arguments are checked there.
@@ -285,9 +288,9 @@ export async function executeCode(options: {
       if (fs && !options.bridge.fs) throw new Error("fs is not available: this agent has no files");
       if (fs && (!params.args || typeof params.args !== "object" || Array.isArray(params.args))) throw new Error("Invalid fs arguments");
       const checked = fs ? { tool: { name: params.name }, args: params.args as Record<string, unknown>, bytes: Buffer.byteLength(jsonWithinLimit(params.args, SANDBOX_LIMITS.resultBytes, "fs arguments")) }
-        : validateToolCall(options.bridge.definitions, params.name, params.args);
-      if (++calls > SANDBOX_LIMITS.toolCalls) throw new Error("Codemode tool call limit exceeded");
-      if (inflight >= SANDBOX_LIMITS.concurrentTools) throw new Error("Too many concurrent tool calls");
+        : validateToolCall(options.bridge.definitions, params.name, params.args, argumentCap);
+      if (++calls > toolCallCap) throw new Error("Codemode tool call limit exceeded");
+      if (inflight >= concurrentCap) throw new Error("Too many concurrent tool calls");
       transferred += checked.bytes;
       if (transferred > transferCap) throw new Error("Codemode transfer limit exceeded");
       controller.signal.throwIfAborted();
@@ -310,7 +313,7 @@ export async function executeCode(options: {
     // Rounded up, so the guest's own deadline never falls before this side's timer: its
     // answer at that moment is a wall-clock failure, which should read as the timeout.
     const remainingMs = Math.max(1, Math.ceil(timeoutMs - (performance.now() - started)));
-    const result = await channel.request("execute", { code: options.code, tools: names, maxOutputCharacters, timeoutMs: remainingMs, cpuMs });
+    const result = await channel.request("execute", { code: options.code, tools: names, maxOutputCharacters, timeoutMs: remainingMs, cpuMs, ...(options.workflow ? { workflow: true } : {}) });
     return guestResult(result, maxOutputCharacters);
   } catch (error) {
     if (controller.signal.aborted) throw controller.signal.reason;

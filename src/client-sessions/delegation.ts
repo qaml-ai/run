@@ -93,6 +93,7 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
         const budget = await spend.holdBudget(ctx.spendContext, session, run.id);
         held = budget;
         if (budget !== undefined && budget <= 0) throw new Error("This run has no budget left for a sub-agent: its spend limit is reached");
+        call.signal.throwIfAborted();
         record = await submit(agent, tenant, { id: requestId, method: "prompt", params: childPrompt(ctx, session, run, call, { agent, requestId, depth, maxDepth, chain, task, output, budget }) });
       } catch (error) {
         // Refused (the tenant's busy agents, its spend, the child's own limits): the call fails with why, and the row is done.

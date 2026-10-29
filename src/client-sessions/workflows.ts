@@ -4,7 +4,7 @@ import type { Sources } from "../tool-sources.ts";
 import type { McpResult } from "../mcp-results.ts";
 import { errorText } from "../protocol.ts";
 import type { DelegateSettings } from "../multi-agent.ts";
-import { runWorkflowScript, WORKFLOW_LIMITS, workflowTool, type ScriptAgentRequest, type ScriptAgentOutcome, type WorkflowSettings } from "../workflows.ts";
+import { runWorkflowScript, workflowAgentSummary, WORKFLOW_LIMITS, workflowTool, type ScriptAgentRequest, type ScriptAgentOutcome, type WorkflowSettings } from "../workflows.ts";
 import type { ChildrenContext } from "./children.ts";
 import * as delegation from "./delegation.ts";
 import { runningRun, type Session } from "./state.ts";
@@ -33,7 +33,7 @@ export function workflowServer(ctx: ChildrenContext, session: Session, sources: 
 function delegationSettings(settings: WorkflowSettings): DelegateSettings {
   return {
     ...(settings.agents !== undefined ? { agents: settings.agents } : {}), ...(settings.instructions !== undefined ? { instructions: settings.instructions } : {}),
-    ...(settings.maxDepth !== undefined ? { maxDepth: settings.maxDepth } : {}), ...(settings.maxParallel !== undefined ? { maxParallel: settings.maxParallel } : {}),
+    ...(settings.maxDepth !== undefined ? { maxDepth: settings.maxDepth } : {}), maxParallel: settings.maxParallel ?? WORKFLOW_LIMITS.maxParallel,
   };
 }
 
@@ -116,15 +116,15 @@ async function runWorkflow(ctx: ChildrenContext, session: Session, settings: Wor
       callAgent: agentCall,
     });
   } finally {
-    // Stop waiting in this attempt. Host cancellation also means a drain or lost ownership: leave those children
-    // for the next owner to collect. An explicit user abort already stops them through ClientSessions.stop.
-    // Only a script that ends here (return, error or deadline) owns cleanup of the children it left running.
+    // A drain, shutdown or lost ownership leaves children for the next owner. Other cancellations, including
+    // time and spend limits, stop the children here; the user-abort path also stops them through ClientSessions.stop.
+    const handoff = call.signal.aborted && (session.leaving || session.fault || ctx.isClosed());
     stopping.abort();
-    if (!call.signal.aborted) await delegation.stopDelegates(ctx, session, { run: run.id, toolCallId });
+    if (!handoff) await delegation.stopDelegates(ctx, session, { run: run.id, toolCallId });
   }
 
   const status = outcome.status;
   ctx.publish(session, { type: "event", requestId: run.id, event: { type: "workflow_end", ...at, status, ...(outcome.error ? { error: outcome.error } : {}), agents: outcome.agents } });
-  const value = { status, agents: [...children].sort((a, b) => a.index - b.index), ...(outcome.value !== undefined ? { value: outcome.value } : {}), ...(outcome.error ? { error: outcome.error } : {}) };
+  const value = { status, ...workflowAgentSummary([...children].sort((a, b) => a.index - b.index)), ...(outcome.value !== undefined ? { value: outcome.value } : {}), ...(outcome.error ? { error: outcome.error } : {}) };
   return { ...jsonResult(value), ...(status === "completed" ? {} : { isError: true }) };
 }

@@ -16,8 +16,8 @@ const api = (url: string) => async (path: string, body?: unknown, key?: string) 
   return value;
 };
 
-for (const ending of ["drain", "crash", "abort"] as const) {
-  test(`workflow children ${ending === "abort" ? "stop on an explicit abort" : `survive a parent node ${ending} and are collected once`}`, { timeout: 90_000 }, async t => {
+for (const ending of ["drain", "crash", "abort", "limit"] as const) {
+  test(`workflow children ${ending === "abort" ? "stop on an explicit abort" : ending === "limit" ? "stop when their parent reaches its time limit" : `survive a parent node ${ending} and are collected once`}`, { timeout: 90_000 }, async t => {
     const c = await cluster(t);
     const asked = Promise.withResolvers<void>();
     const answer = Promise.withResolvers<void>();
@@ -35,17 +35,25 @@ for (const ending of ["drain", "crash", "abort"] as const) {
         name: "run_workflow", arguments: JSON.stringify({ script: `return await agent("work", { agent: "child" })` }),
       } }] };
     });
-    const a = await c.start("a", { ...model.env, AGENT_DRAIN_TIMEOUT_MS: "500" });
+    const a = await c.start("a", { ...model.env, AGENT_DRAIN_TIMEOUT_MS: "500", ...(ending === "limit" ? { AGENT_RUN_OVERRUN_MS: "1000", AGENT_IDLE_MS: "1000" } : {}) });
     const b = await c.start("b", model.env);
     const onA = api(a.url), onB = api(b.url);
     const child = await onB("/v1/agents", { systemPrompt: "You are CHILD." }, "child");
-    const parent = await onA("/v1/agents", { builtins: ["workflow"], workflow: { agents: [{ agent: "child" }] } });
+    const parent = await onA("/v1/agents", { builtins: ["workflow"], workflow: { agents: [{ agent: "child" }] }, ...(ending === "limit" ? { runLimits: { maxSeconds: 1 } } : {}) });
     await onA(`/v1/agents/${parent.id}/prompt`, { text: "go", requestId: "turn" });
     await asked.promise;
     assert.notEqual(await c.owner(parent.id), await c.owner(child.id), "the child runs on the surviving node");
 
-    if (ending === "abort") {
-      await onA(`/v1/agents/${parent.id}/abort`, {});
+    if (ending === "abort" || ending === "limit") {
+      if (ending === "abort") await onA(`/v1/agents/${parent.id}/abort`, {});
+      else {
+        let record: any;
+        await until(async () => {
+          record = await onA(`/v1/agents/${parent.id}/requests/turn`);
+          return record.state === "completed";
+        }, "the parent stopped at its time limit", 10_000);
+        assert.equal(record.outcome.result.stopped, "turn_limit");
+      }
       const rows = (await c.db.query("select ended_at, status from agent_children where parent = $1", [parent.id])).rows;
       assert.equal(rows.length, 1);
       assert.notEqual(rows[0].ended_at, null);

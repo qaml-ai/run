@@ -16,8 +16,8 @@ const lead = await agents.upsert("migration-lead", { workflow: { agents: ["worke
 lead = await agents.upsert("migration-lead", workflow={"agents": ["worker"], "maxAgents": 40})
 ```
 
-`workflow` takes `agents`, `instructions`, `maxAgents` (32 by default, up to 120),
-`maxParallel` (4, up to 16) and `maxDepth`; it goes with the builtin, as `delegate`
+`workflow` takes `agents`, `instructions`, `maxAgents` (256 by default, up to 4,096),
+`maxParallel` (16, up to 64) and `maxDepth`; it goes with the builtin, as `delegate`
 does, on an agent, a definition and a stateless run. Progress reaches streams that
 ask for sub-agents' events (`?subagents=1`): `workflow_start`,
 `workflow_progress`, `workflow_end`, beside each child's `subagent_start` and

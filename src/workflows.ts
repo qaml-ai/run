@@ -20,21 +20,21 @@ import type { ToolBridge } from "./protocol.ts";
  */
 export const WORKFLOW_LIMITS = Object.freeze({
   /** agent() calls one run may make by default, and the most a setting may allow. */
-  agents: 32, agentsCeiling: 120,
+  agents: 256, agentsCeiling: 4096,
   /** Agent calls of one run in flight at once by default (more queue in the script), and the most a setting may allow. */
-  maxParallel: 4, parallelCeiling: 16,
+  maxParallel: 16, parallelCeiling: 64,
   /** How deep a chain of agents goes by default (as delegate's), and the most a setting may allow. */
   maxDepth: 2, depthCeiling: 5,
   /** Script length, a task's length and the labels it gives. */
-  scriptChars: 32_000, taskChars: 24_000, answerChars: 24_000, instructionsChars: 16_000, labelChars: 200, logLines: 100, logChars: 500, phases: 64,
+  scriptChars: 128_000, taskChars: 100_000, answerChars: 128 * 1024, instructionsChars: 32_000, labelChars: 500, logLines: 1000, logChars: 2000, phases: 512,
   /** Items one parallel() or pipeline() call may take, by default and at most. */
-  items: 512, itemsCeiling: 4096,
+  items: 16_384, itemsCeiling: 65_536,
   /** How long a workflow may run before it is stopped: the script's own deadline, tool calls included. */
-  timeMs: 600_000,
+  timeMs: 3_600_000,
   /** Sandbox executions of workflows one node runs at once, and one tenant (they hold a sandbox for minutes, not seconds). */
-  concurrent: 4, tenantConcurrent: 2,
+  concurrent: 16, tenantConcurrent: 8,
   /** The workflow's return value, serialized, and the arguments it was given. */
-  valueBytes: 64 * 1024, argsBytes: 64 * 1024,
+  valueBytes: 256 * 1024, argsBytes: 256 * 1024,
 });
 
 /** What a workflow may coordinate: the agents the model may name, whether it may invent one, and how wide and deep. */
@@ -48,7 +48,7 @@ export interface WorkflowSettings {
   maxParallel?: number;
 }
 /** The delegate limits a workflow's settings may not exceed: one chain, one set of rules. */
-export const WORKFLOW_AGENT_LIMITS = Object.freeze({ parallel: MULTI_AGENT_LIMITS.maxParallel, parallelCeiling: MULTI_AGENT_LIMITS.parallelCeiling, depth: MULTI_AGENT_LIMITS.maxDepth, depthCeiling: MULTI_AGENT_LIMITS.depthCeiling });
+export const WORKFLOW_AGENT_LIMITS = Object.freeze({ parallel: WORKFLOW_LIMITS.maxParallel, parallelCeiling: WORKFLOW_LIMITS.parallelCeiling, depth: MULTI_AGENT_LIMITS.maxDepth, depthCeiling: MULTI_AGENT_LIMITS.depthCeiling });
 
 /** Stream events of a workflow, sent with an agent's children's events to subscribers that ask for them (`?subagents=1`). */
 export const WORKFLOW_EVENTS: readonly string[] = ["workflow_start", "workflow_progress", "workflow_end"];
@@ -267,7 +267,7 @@ export async function runWorkflowScript(options: ScriptRunOptions): Promise<Scri
   const mark = randomUUID();
   // Stable across attempts of the same run, unlike the marker: the script's dice are its run's, not its attempt's.
   const seed = fnv1a(options.seed ?? mark);
-  // The sandbox counts every call's arguments and result against one transfer budget (8 MB). Stay inside it in bytes,
+  // The sandbox counts every call's arguments and result against one workflow transfer budget. Stay inside it in bytes,
   // with a reserve for the script's return value, so a large fan-out refuses a call it cannot afford instead of turning
   // every later call into a silent null.
   const RESERVE = 512 * 1024;
@@ -321,7 +321,7 @@ export async function runWorkflowScript(options: ScriptRunOptions): Promise<Scri
       // where the script can see it was, at a UTF-8 boundary; an object (a schema answer) would lose its shape if cut, so
       // the call fails instead.
       if (typeof answer === "string" && Buffer.byteLength(answer, "utf8") > WORKFLOW_LIMITS.answerChars) {
-        const cut = Buffer.from(answer, "utf8").subarray(0, WORKFLOW_LIMITS.answerChars).toString("utf8");
+        const cut = new TextDecoder().decode(Buffer.from(answer, "utf8").subarray(0, WORKFLOW_LIMITS.answerChars), { stream: true });
         answer = `${cut}\n\n[answer cut at ${WORKFLOW_LIMITS.answerChars} bytes]`;
       }
       const received = serializedBytes(answer);
@@ -382,3 +382,16 @@ export async function runWorkflowScript(options: ScriptRunOptions): Promise<Scri
 /** `outputInput` for a script's schema, as the tool gives it: an object JSON Schema. */
 export const workflowSchema = (value: unknown) => outputInput({ schema: value }).schema;
 
+
+/** Keep child metadata within the tool transport envelope even for large fan-outs. */
+export function workflowAgentSummary<T>(children: T[]): { agents: T[]; agentsOmitted?: number } {
+  let bytes = 2;
+  const agents: T[] = [];
+  for (const child of children) {
+    const size = Buffer.byteLength(JSON.stringify(child), "utf8") + 1;
+    if (bytes + size > 128 * 1024) break;
+    bytes += size;
+    agents.push(child);
+  }
+  return { agents, ...(agents.length < children.length ? { agentsOmitted: children.length - agents.length } : {}) };
+}

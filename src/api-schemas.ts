@@ -403,9 +403,9 @@ export const DelegateSettings = z.strictObject({
 export const WorkflowSettings = z.strictObject({
   agents: z.array(AgentTarget).max(32).optional().openapi({ description: "Who a workflow script may coordinate: definitions (a new child agent for each agent() call) and existing agents by key" }),
   instructions: z.boolean().optional().openapi({ description: "Let the script start a child with instructions of its own instead, on its own model" }),
-  maxAgents: z.number().int().min(1).max(120).optional().openapi({ description: "The most agent() calls one workflow run may make. Default 32" }),
+  maxAgents: z.number().int().min(1).max(4096).optional().openapi({ description: "The most agent() calls one workflow run may make. Default 256" }),
   maxDepth: z.number().int().min(1).max(5).optional().openapi({ description: "How deep a chain of agents may go: a child is depth 1, its child depth 2. Default 2" }),
-  maxParallel: z.number().int().min(1).max(16).optional().openapi({ description: "Agent calls of one workflow in flight at once; more queue inside the script. Default 4" }),
+  maxParallel: z.number().int().min(1).max(64).optional().openapi({ description: "Agent calls of one workflow in flight at once; more queue inside the script. Default 16" }),
 }).openapi("WorkflowSettings", { description: "With the workflow builtin: who a workflow script may coordinate, and how wide and deep. See the workflows guide" });
 export const AbortInput = z.strictObject({
   queued: z.enum(["cancel", "keep"]).optional().openapi({ description: "cancel (default): the runs queued behind the running one (prompts, steered messages not yet read, continues, executions) are cancelled too, each ending with code cancelled, so nothing runs after the stop. keep: only the running turn is stopped, and the next queued run starts" }),

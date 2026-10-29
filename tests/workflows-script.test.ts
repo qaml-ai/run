@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runWorkflowScript, WORKFLOW_LIMITS } from "../src/workflows.ts";
+import { runWorkflowScript, workflowAgentSummary, WORKFLOW_LIMITS } from "../src/workflows.ts";
 
 
 const call = (answer: (prompt: string) => unknown) => async (request: { prompt: string }) => ({ value: answer(request.prompt) });
@@ -104,12 +104,13 @@ test("a script's clock and randomness are fixed for its run, so a replay asks th
 test("answers are measured in bytes, cut at a UTF-8 boundary, and a wide non-ASCII fan-out fits", async () => {
   const long = await runWorkflowScript({
     script: `return await agent("big")`, maxAgents: 2, items: 4, timeMs: 30_000,
-    callAgent: async () => ({ value: "é".repeat(20_000) }),
+    callAgent: async () => ({ value: "x" + "é".repeat(WORKFLOW_LIMITS.answerChars) }),
   });
   assert.equal(long.status, "completed", long.error);
   const answer = String(long.value);
-  assert.match(answer, /\[answer cut at 24000 bytes\]$/);
-  assert.ok(Buffer.byteLength(answer.split("\n\n")[0], "utf8") <= 24_000, "cut on a byte boundary");
+  assert.ok(answer.endsWith(`[answer cut at ${WORKFLOW_LIMITS.answerChars} bytes]`));
+  assert.ok(Buffer.byteLength(answer.split("\n\n")[0], "utf8") <= WORKFLOW_LIMITS.answerChars, "cut on a byte boundary");
+  assert.ok(!answer.includes("\uFFFD"), "a multibyte character crossing the boundary is omitted, not corrupted");
 
   // 120 calls of 12,000 two-byte characters each: 2.9 MB of answers, inside the workflow's budget.
   const wide = await runWorkflowScript({
@@ -127,4 +128,38 @@ test("answers are measured in bytes, cut at a UTF-8 boundary, and a wide non-ASC
   });
   assert.equal(huge.status, "failed");
   assert.match(huge.error ?? "", /return value is larger than the sandbox carries/);
+});
+
+test("large workflows exceed the ordinary sandbox call, concurrency and transfer caps", async () => {
+  let active = 0, peak = 0;
+  const result = await runWorkflowScript({
+    script: `return await pipeline(Array.from({ length: 512 }, (_, i) => i), async i => (await agent("item " + i)).length)`,
+    maxAgents: WORKFLOW_LIMITS.agentsCeiling, items: WORKFLOW_LIMITS.items, timeMs: 60_000, parallel: 64,
+    callAgent: async () => {
+      active++; peak = Math.max(peak, active);
+      await new Promise(resolve => setTimeout(resolve, 1));
+      active--;
+      return { value: "x".repeat(64 * 1024) };
+    },
+  });
+  assert.equal(result.status, "completed", result.error);
+  assert.equal(result.agents, 512);
+  assert.ok(peak > 32 && peak <= 64, `workflow concurrency: ${peak}`);
+  assert.deepEqual(result.value, Array(512).fill(64 * 1024));
+});
+
+
+test("large workflow arguments and return values cross the sandbox", async () => {
+  const text = "x".repeat(200_000);
+  const result = await runWorkflowScript({ script: "return args.text", args: { text }, maxAgents: 1, items: 1, timeMs: 10_000, callAgent: call(() => null) });
+  assert.equal(result.status, "completed");
+  assert.equal(result.value, text);
+});
+
+test("large workflow child metadata fits the tool envelope with an explicit omitted count", () => {
+  const children = Array.from({ length: 4096 }, (_, index) => ({ index, label: "x".repeat(500), agentId: "a".repeat(50) }));
+  const summary = workflowAgentSummary(children);
+  assert.ok(Buffer.byteLength(JSON.stringify(summary.agents)) <= 128 * 1024);
+  assert.equal(summary.agents.length + summary.agentsOmitted!, children.length);
+  assert.deepEqual(workflowAgentSummary(children.slice(0, 2)), { agents: children.slice(0, 2) });
 });

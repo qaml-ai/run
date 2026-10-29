@@ -467,7 +467,7 @@ export type AgentTarget = string | { name?: string; definition: string; descript
 /** Sub-agents: who the model may delegate to, whether it may write a child's instructions itself, and how deep (default 2) and wide (default 4 at once). */
 /**
  * Workflows: who a workflow script may coordinate (definitions, or agents by key), whether it may write a child's
- * instructions itself, and how many agent calls one workflow may make (default 32) and run at once (default 4).
+ * instructions itself, and how many agent calls one workflow may make (default 256) and run at once (default 16).
  */
 export interface WorkflowSettings { agents?: AgentTarget[]; instructions?: boolean; maxAgents?: number; maxDepth?: number; maxParallel?: number }
 export interface DelegateSettings { agents?: AgentTarget[]; instructions?: boolean; maxDepth?: number; maxParallel?: number }

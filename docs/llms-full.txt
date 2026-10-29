@@ -6111,8 +6111,8 @@ A definition takes the same pair, for every agent made from it:
 | --- | --- |
 | `agents` | Who a script may coordinate: definition keys or ids (a new child agent for each `agent()` call), or `{ agent: "key" }` for an existing agent that keeps its history. Up to 32. |
 | `instructions` | `true`: the script may start a child with instructions of its own instead, on its own model (the runner-up to naming an agent). |
-| `maxAgents` | The most `agent()` calls one workflow may make: 32 by default, up to 120. The ceiling is a hard stop, not a warning. |
-| `maxParallel` | Agent calls in flight at once: 4 by default, up to 16. The rest wait their turn. |
+| `maxAgents` | The most `agent()` calls one workflow may make: 256 by default, up to 4,096. The ceiling is a hard stop, not a warning. |
+| `maxParallel` | Agent calls in flight at once: 16 by default, up to 64. The rest wait their turn. |
 | `maxDepth` | How deep a chain of agents may go, counted with `delegate`'s: 2 by default, 1–5. |
 
 ## What the model writes
@@ -6171,7 +6171,7 @@ returns; a schema failure makes that call `null` rather than failing the workflo
 }
 ```
 
-A script that throws, runs past its deadline (10 minutes), asks past `maxAgents`, or
+A script that throws, runs past its deadline (60 minutes), asks past `maxAgents`, or
 is stopped answers `status: "failed"` (or `"canceled"`) with an `error`, and the call
 is an error result. A child that fails is `null` to the script instead, so a script
 can decide what a partial failure means.
@@ -6231,15 +6231,15 @@ parent's view.
 
 | | |
 | --- | --- |
-| `agent()` calls per workflow | 32 by default, at most 120 (`maxAgents`) |
-| Agent calls in flight | 4 by default, at most 16 (`maxParallel`); the rest queue inside the script |
-| Items per `parallel()` / `pipeline()` | 512 |
-| A script | 32,000 characters; its `args` 64 KB; its return value 64 KB |
-| A task (one `agent()` prompt) | 24,000 characters; an answer is cut at 24,000 bytes with a marker |
-| `phase()` calls / `log()` lines | 64 / 100 (500 characters each) |
-| Answer size | text is cut at 24,000 bytes with a marker; a JSON answer over 24,000 bytes fails the workflow |
-| Top-level workflows running at once per node / per tenant | 4 / 2; the rest wait for a sandbox slot |
-| Deadline | 10 minutes, then the sandbox is killed |
+| `agent()` calls per workflow | 256 by default, at most 4,096 (`maxAgents`) |
+| Agent calls in flight | 16 by default, at most 64 (`maxParallel`); the rest queue inside the script |
+| Items per `parallel()` / `pipeline()` | 16,384 |
+| A script | 128,000 characters; its `args` 256 KB; its return value 256 KB |
+| A task (one `agent()` prompt) | 100,000 characters; an answer is cut at 128 KB with a marker |
+| `phase()` calls / `log()` lines | 512 / 1,000 (500-character titles, 2,000-character lines) |
+| Answer size | text is cut at 128 KB with a marker; a JSON answer over 128 KB fails the workflow |
+| Top-level workflows running at once per node / per tenant | 16 / 8; the rest wait for a sandbox slot |
+| Deadline | 60 minutes, then the sandbox is killed |
 | Depth | counted with `delegate`'s `maxDepth` (2 by default) |
 
 ## Where the script runs
@@ -6251,12 +6251,12 @@ cannot hold the node. What a script can do is what its `agent()` calls can do, a
 nothing more; `import()` is refused before it starts.
 
 A workflow holds a sandbox for minutes rather than seconds, so the node admits a
-few top-level workflows at once (4 per node, 2 per tenant); the rest wait for a slot.
+few top-level workflows at once (16 per node, 8 per tenant); the rest wait for a slot.
 Nested workflows do not take another slot, to avoid waiting on the slot their
 parent holds. They remain bounded by the node's agent capacity, the tenant's
-busy-agent limit, chain depth and spend limits. Each workflow has a 10-minute
-deadline and a 24 MB transfer budget; CPU, tool-call and per-message limits are
-`js_exec`'s.
+busy-agent limit, chain depth and spend limits. Each workflow has a 60-minute
+deadline and a 128 MB transfer budget; The workflow profile allows 8,192 tool calls and 64 concurrent calls, with
+1 MB arguments per call; CPU and heap limits are `js_exec`'s.
 
 ## Running a workflow without the model
 
@@ -6279,6 +6279,8 @@ the script in a prompt the agent calls verbatim.
 - `maxAgents` bounds one `run_workflow` call, not an entire subtree. A child whose
   definition enables `workflow` can start another workflow within the chain's depth,
   spend and busy-agent limits. There is no signed subtree agent budget.
+
+For large fan-outs, the tool result includes up to 128 KB of child metadata in `agents`; `agentsOmitted` reports how many additional records were omitted. Child events and history remain available, and the script still receives every child answer.
 
 ---
 
@@ -8946,14 +8948,14 @@ spend limits like any other.
 
 | | |
 | --- | --- |
-| `run_workflow` agent calls per workflow (`workflow.maxAgents`) | 32 by default, 1–120; past it the workflow is stopped |
-| Agent calls in flight per workflow (`workflow.maxParallel`) | 4 by default, 1–16; the rest queue inside the script |
+| `run_workflow` agent calls per workflow (`workflow.maxAgents`) | 256 by default, 1–4,096; past it the workflow is stopped |
+| Agent calls in flight per workflow (`workflow.maxParallel`) | 16 by default, 1–64; the rest queue inside the script |
 | Workflow depth (`workflow.maxDepth`) | 2 by default, 1–5, counted with `delegate`'s |
-| Items in one `parallel()` or `pipeline()` | 512 |
-| A workflow script | 32,000 characters; its `args` 64 KB; its return value 64 KB; a task 24,000 characters (a text answer is cut at 24,000 bytes) |
-| `phase()` titles and `log()` lines | 64 and 100 (500 characters each) |
-| A workflow's sandbox | 10 minutes of wall clock, 24 MB of transfer; `js_exec`'s CPU, tool-call and concurrency caps |
-| Top-level workflows running at once | 4 per node, 2 per tenant; nested workflows bypass this gate and remain bounded by agent capacity, depth and spend |
+| Items in one `parallel()` or `pipeline()` | 16,384 |
+| A workflow script | 128,000 characters; its `args` 256 KB; its return value 256 KB; a task 100,000 characters (a text answer is cut at 128 KB) |
+| `phase()` titles and `log()` lines | 512 and 1,000 (500-character titles, 2,000-character lines) |
+| A workflow's sandbox | 60 minutes of wall clock, 128 MB of transfer; 8,192 tool calls, 64 at once; `js_exec`'s CPU and heap caps |
+| Top-level workflows running at once | 16 per node, 8 per tenant; nested workflows bypass this gate and remain bounded by agent capacity, depth and spend |
 
 ---
 
