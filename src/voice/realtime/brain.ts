@@ -347,6 +347,13 @@ export class RealtimeBrain {
       if (this.playing) this.interrupt({ type: "confirmed", why: "immediate", pausedMs: 0, speechMs });
       return;
     }
+    // In a group whose turns the floor sorts, only someone the bot is talking with stops it: people talking among
+    // themselves (turns it would ignore) don't cut it off mid-word, with nothing said after.
+    if (!this.options.floor.standing(speaker, this.hooks.humans())) {
+      this.hooks.log("voice_barge_in_ignored", { brain: "realtime", why: "not_addressed", speechMs });
+      this.hooks.resumeMedia();
+      return;
+    }
     if (guard.candidate(speaker, speechMs, startedAt)) this.candidates.add(speaker);
     else this.hooks.resumeMedia();
   }
