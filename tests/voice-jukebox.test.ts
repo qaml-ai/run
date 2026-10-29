@@ -44,12 +44,12 @@ function realtimePlayer() {
   return { player, plays };
 }
 
-function testJukebox(options: { open?: JukeboxHooks["open"] } = {}) {
+function testJukebox(options: { open?: JukeboxHooks["open"]; media?: { up: boolean } } = {}) {
   const { player, plays } = realtimePlayer();
   const events: Parameters<JukeboxHooks["event"]>[0][] = [];
   let active = 0;
   const jukebox = new Jukebox({
-    player: () => player,
+    player: () => options.media?.up === false ? undefined : player,
     open: options.open ?? (async source => (async function* () { if ("bytes" in source) yield source.bytes; })()),
     event: event => events.push(event), active: () => { active++; }, log: () => {},
   });
@@ -145,6 +145,17 @@ test("a track that can't be read or decoded ends with why, and the next plays", 
   assert.match(errors[0].type === "ended" ? errors[0].error! : "", /HTTP 404/);
   assert.match(errors[1].type === "ended" ? errors[1].error! : "", /MP3, Ogg Opus or WAV/);
   assert.equal(jukebox.stats.errors, 2);
+});
+
+test("while the call's media reconnects, audio waits for it, then plays", async () => {
+  const media = { up: false };
+  const { jukebox, plays, events } = testJukebox({ media });
+  jukebox.add({ bytes: wav(0.2) });
+  await sleep(300);
+  assert.equal(plays.length, 0);
+  media.up = true;
+  await until(() => events.some(event => event.type === "ended"), "it to play once the media is back", 5_000);
+  assert.equal(plays.length, 1);
 });
 
 test("limits: tracks waiting, an upload's size and the uploads held", () => {

@@ -32,8 +32,8 @@ export const AUDIO_LIMITS = Object.freeze({
   trackSeconds: 30 * 60,
   /** How far ahead of where it plays audio is handed to the media. */
   leadMs: 1_000,
-  /** How long after the bot stops speaking music goes on. */
-  resumeMs: 400,
+  /** How long after the bot stops speaking music goes on; how often it looks for the call's media while it reconnects. */
+  resumeMs: 400, retryMs: 1_000,
   /** A track's title. */
   titleChars: 200,
 });
@@ -148,6 +148,7 @@ export class Jukebox {
   /** Bots' speech holds it (`duck`), and when it may go on. */
   private ducked = false;
   private resumeTimer?: ReturnType<Clock["setTimeout"]>;
+  private retryTimer?: ReturnType<Clock["setTimeout"]>;
   private volume = 0.5;
   private closed = false;
   readonly stats = { tracks: 0, playedMs: 0, errors: 0 };
@@ -231,6 +232,7 @@ export class Jukebox {
     if (this.closed) return;
     this.closed = true;
     this.clock.clearTimeout(this.resumeTimer);
+    this.clock.clearTimeout(this.retryTimer);
     const current = this.current;
     this.current = undefined;
     this.queue.splice(0);
@@ -267,7 +269,12 @@ export class Jukebox {
     const current: Current | undefined = this.current;
     if (!current || current.playback || this.paused || this.ducked || this.closed) return;
     const player = this.hooks.player();
-    if (!player) return;
+    // The call's media is reconnecting: it plays once it is back.
+    if (!player) {
+      this.clock.clearTimeout(this.retryTimer);
+      this.retryTimer = this.clock.setTimeout(() => { this.retryTimer = undefined; this.start(); }, AUDIO_LIMITS.retryMs);
+      return;
+    }
     const playing: Current = current;
     const { cursor } = current;
     cursor.seek(current.playedMs);
