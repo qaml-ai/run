@@ -769,20 +769,6 @@ export class DurableAgent {
     const messages = typeof message === "string" ? [{ role: "user", content: images.length ? [{ type: "text", text: message }, ...images] : message, timestamp: Date.now() } as AgentMessage] : Array.isArray(message) ? message : [message];
     return this.run(messages);
   }
-  async compact(signal?: AbortSignal): Promise<void> {
-    signal?.throwIfAborted();
-    const task = await this.conversation.compact(undefined, context);
-    const abort = () => { void this.conversation.abort(context).catch(() => {}); };
-    signal?.addEventListener("abort", abort, { once: true });
-    if (signal?.aborted) abort();
-    let result;
-    try { result = await this.harness.waitForTask(task, context); }
-    finally { signal?.removeEventListener("abort", abort); }
-    signal?.throwIfAborted();
-    if (result.state.outcome.status !== "completed") throw new Error("Context compaction failed");
-    await this.flushEvents();
-    await this.reload();
-  }
   /**
    * Pi checks its threshold only as it prepares a request: messages that land without a turn (`landed`) get the same
    * check here, and past it Pi's own compaction, unless one is listed (then restarted, if a closed host left it). The
