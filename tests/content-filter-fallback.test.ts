@@ -123,18 +123,40 @@ test("an agent with no key for the fallback's provider ends as the content filte
   assert.equal(r.model.bodies.length, 0);
 });
 
-test("both attempts are billed as their own: the blocked Azure call from the platform's credit, the fallback on the scope's key", { timeout: 120_000 }, async t => {
+test("billing: the blocked Azure call is the platform's cost, recorded but never charged; the account pays once, for the fallback's answer", { timeout: 120_000 }, async t => {
   const { r } = await start(t);
+  const hooks: any[] = [];
+  const receiver = await listen(t, async (req, res) => {
+    let body = "";
+    for await (const part of req) body += part;
+    hooks.push(JSON.parse(body));
+    res.writeHead(204).end();
+  });
+  assert.equal((await r.call("/v1/webhooks", { body: { url: `${receiver}/hook`, events: ["usage.recorded"] }, token: PAYG })).status, 201);
   assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: micros(10), reason: "test" }, token: OPS })).status, 201);
   assert.equal((await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: r.model.url }, token: PAYG })).status, 200);
   const agent = (await r.call("/v1/agents", { body: { model: "azure/deepseek-v4.1-flash", keyScope: "hosted" }, token: PAYG })).json.id;
+
+  // A plain Azure answer, for scale: charged from credit at Flash's catalog price.
+  assert.equal((await r.prompt(agent, "hello", PAYG)).outcome.result.reply, "from azure");
+  await until(async () => (await r.call("/v1/billing", { token: PAYG })).json.balance === micros(10) - micros(AZURE_COST), "the Azure answer charged");
+
+  // Blocked after it streamed part of an answer (Azure counts those tokens), then answered on the scope's OpenRouter key.
   const done = await r.prompt(agent, "blocked-stream: go on", PAYG);
   assert.equal(done.outcome.result.reply, "from openrouter", JSON.stringify(done));
-  const usage = await until(async () => { const usage = (await r.call("/v1/usage", { token: PAYG })).json; return usage.totals.responses >= 2 && usage; }, "both attempts' usage");
-  // The blocked call, with what Azure reported it took, on the platform's key at Flash's catalog price; the fallback on the scope's key.
-  const days = usage.days.map((day: any) => [day.model, day.input, day.output, day.platformResponses]);
-  assert.deepEqual(days.sort(), [["azure/deepseek-v4.1-flash", 100_000, 1_000, 1], ["openrouter/deepseek/deepseek-v4.1-flash-1017:nitro", 10, 2, 0]]);
-  assert.equal((await r.call("/v1/billing", { token: PAYG })).json.balance, micros(10) - micros(AZURE_COST), "only the platform's Azure call is charged to credit");
+  const events = await until(() => { const usage = hooks.filter(hook => hook.type === "usage.recorded").map(hook => hook.data); return usage.length === 3 && usage; }, "three usage events");
+  const [answered, blocked, fallback] = events.sort((a: any, b: any) => a.at - b.at);
+  assert.deepEqual([answered.provider, answered.superseded], ["azure", undefined]);
+  // The blocked call: what it took, for the books, marked as not the answer; then the fallback's answer, unmarked.
+  assert.deepEqual([blocked.provider, blocked.model, blocked.input, blocked.output, blocked.superseded], ["azure", "deepseek-v4.1-flash", 100_000, 1_000, "content_filter"]);
+  assert.ok(blocked.cost.usd > 0);
+  assert.deepEqual([fallback.provider, fallback.model, fallback.superseded, fallback.keyScope], ["openrouter", "deepseek/deepseek-v4.1-flash-1017:nitro", undefined, "hosted"]);
+
+  // Credit: only the first answer's Azure call. The blocked call is not charged, and the fallback ran on the account's own key.
+  assert.equal((await r.call("/v1/billing", { token: PAYG })).json.balance, micros(10) - micros(AZURE_COST));
+  // Usage totals: the answers only.
+  const usage = (await r.call("/v1/usage", { token: PAYG })).json;
+  assert.deepEqual(usage.days.map((day: any) => [day.model, day.responses]).sort(), [["azure/deepseek-v4.1-flash", 1], ["openrouter/deepseek/deepseek-v4.1-flash-1017:nitro", 1]]);
 });
 
 test("a content filter's block is told from the model's own refusal and from other errors", () => {

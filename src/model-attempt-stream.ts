@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type AssistantMessageEventStream, type Model } from "@earendil-works/pi-ai";
-import { attemptAck, type AttemptAck, type AttemptEstimate, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
+import { attemptAck, type AttemptAck, type AttemptEstimate, type CreditStop, type ModelAttemptHook, type Superseded } from "./model-attempt.ts";
 import { PERSISTENCE_FAILED } from "./protocol.ts";
 
 /** How often a streaming call reports activity; also renews metered calls within the hold's ten-minute life. */
@@ -16,10 +16,12 @@ const zeroUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tot
  * the refusal's words as the response's error. A call that streams reports how far it got (`progress`) each time it
  * reaches the characters its last acknowledgment named, ahead of where its hold ends; with nothing more to hold, it is
  * cut there (`halt`, which `start`'s request listens to), billed for what it streamed, and ends with the refusal's
- * words. `onRefused` hears of a call refused or cut so, as it happens.
+ * words. `onRefused` hears of a call refused or cut so, as it happens. `supersede` says of a failed response that another
+ * call replaces it (`finish`'s `superseded`), so it is recorded but not charged.
  */
 export async function attemptStream(model: Model<Api>, key: string, kind: "response" | "compaction", hook: ModelAttemptHook | undefined,
-  start: (sink: UsageSink, halt: AbortSignal) => AssistantMessageEventStream, estimate?: AttemptEstimate, onRefused?: (stop: CreditStop) => void, gateway = false): Promise<AssistantMessageEventStream> {
+  start: (sink: UsageSink, halt: AbortSignal) => AssistantMessageEventStream, estimate?: AttemptEstimate, onRefused?: (stop: CreditStop) => void, gateway = false,
+  supersede?: (message: AssistantMessage) => Superseded | undefined): Promise<AssistantMessageEventStream> {
   const id = randomUUID(), at = Date.now();
   let ack: AttemptAck;
   try { ack = attemptAck(await hook?.({ type: "begin", id, at, provider: model.provider, model: model.id, kind, keyHash: createHash("sha256").update(key).digest("hex"), reconciliationEligible: !!key && !gateway, ...(!key || gateway ? { reconciliationDisabled: "Gateway credential has no direct provider reconciliation; reported usage is final" } : {}), ...(estimate ? { estimate } : {}) })); }
@@ -91,7 +93,8 @@ export async function attemptStream(model: Model<Api>, key: string, kind: "respo
           // Empty envelopes do not prove a provider generated billable output.
           const billed = message.content.length ? JSON.stringify(message.content).length : 0;
           try {
-            await hook!({ type: "finish", id, usage: message.usage, chars: billed, completed: event.type === "done" && cut === undefined });
+            const superseded = event.type === "error" && cut === undefined ? supersede?.(message) : undefined;
+            await hook!({ type: "finish", id, usage: message.usage, chars: billed, completed: event.type === "done" && cut === undefined, ...(superseded ? { superseded } : {}) });
             Object.assign(message.usage, { billingAttemptId: id });
           } catch {
             // The durable begin/generation remains recoverable. Do not retry the model because billing failed.

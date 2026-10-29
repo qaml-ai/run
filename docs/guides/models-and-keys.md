@@ -104,8 +104,9 @@ Where the operator names the same model on another provider for it
 `openrouter/deepseek/deepseek-v4.1-flash-1017:nitro`) and the agent has a key for
 that provider (its key scope's, or the account's), a request the filter blocks is
 made there instead, once, within the same request: history keeps only that
-answer, and each attempt is billed as its own call (the blocked one at Azure's
-price, the fallback at its model's). The next request goes to Azure again.
+answer, and you pay for that answer alone. The blocked call is the platform's
+cost: its `usage.recorded` event says `superseded: "content_filter"`, and it is not
+charged. The next request goes to Azure again.
 
 ### Output length and temperature
 

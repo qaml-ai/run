@@ -19,7 +19,7 @@ import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } fro
 import { requestImageLimit } from "./request-images.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
-import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isImageRejection } from "./model-errors.ts";
+import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isContentFilterBlock, isImageRejection } from "./model-errors.ts";
 import { withContentFilterFallback } from "./content-filter-fallback.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, schemaAccepts } from "./tool-policy.ts";
@@ -749,9 +749,11 @@ export function createAgentHost(hostIO: HostIO) {
         recovered = true;
       }
       // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
+      // A response the agent's content-filter fallback replaces (`streamFn`) is recorded but never charged: the platform's filter blocked it.
+      const replaced = (message: AssistantMessage) => config.contentFilterFallback?.from === `${config.model.provider}/${config.model.id}` && isContentFilterBlock(message) ? "content_filter" as const : undefined;
       const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
-        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, io.modelAttempt, creditStop);
+        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, io.modelAttempt, creditStop, replaced);
       const viaFallback = explicitKeyStream(() => io.modelAuth(config.contentFilterFallback!.model.provider), () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
         stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.contentFilterFallback!.model.provider, model: config.contentFilterFallback!.model.id }), io.modelOutbound, io.modelAttempt, creditStop);

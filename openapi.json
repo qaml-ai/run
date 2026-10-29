@@ -651,6 +651,13 @@
               },
               "at": {
                 "type": "number"
+              },
+              "superseded": {
+                "type": "string",
+                "enum": [
+                  "content_filter"
+                ],
+                "description": "A response that is not the answer, and not charged: content_filter, its provider's content filter blocked it and the request was made again on the same model elsewhere (AGENT_CONTENT_FILTER_FALLBACKS), whose own usage.recorded follows. Its usage and cost are what the blocked call took, for your books; do not charge your users for it"
               }
             },
             "required": [
