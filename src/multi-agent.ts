@@ -174,7 +174,7 @@ export function agentsTools(settings: DelegateSettings, describe: (target: Agent
     } },
   }, {
     name: "wait_agent", exposure: "direct",
-    description: `Wait until one of your running sub-agents finishes (by default any of them; or those named), or until timeoutMs passes (default ${minutes(MULTI_AGENT_LIMITS.waitMs)}, at most ${minutes(MULTI_AGENT_LIMITS.maxWaitMs)}). Returns each one's status, with the answer of any that finished (those answers do not arrive again as notifications), and the latest progress of those still running.`,
+    description: `Wait until one of your running sub-agents finishes (by default any of them; or those named), or until timeoutMs passes (default ${minutes(MULTI_AGENT_LIMITS.waitMs)}, at most ${minutes(MULTI_AGENT_LIMITS.maxWaitMs)}). Returns each one's status, with the answer of any that finished (those answers do not arrive again as notifications), and the latest progress of those still running. A message from one of them ends the wait at once (messaged names who sent it): read it, then wait again if you need to.`,
     parameters: { type: "object", additionalProperties: false, properties: {
       agents: { type: "array", items: { type: "string" }, maxItems: MULTI_AGENT_LIMITS.parallelCeiling, description: "Names or agentIds of the sub-agents to wait for (default: all running ones)" },
       timeoutMs: { type: "integer", minimum: 1_000, maximum: MULTI_AGENT_LIMITS.maxWaitMs },
@@ -198,7 +198,7 @@ export function agentsTools(settings: DelegateSettings, describe: (target: Agent
  */
 export const SEND_MESSAGE: ToolDefinition = {
   name: "send_message", exposure: "direct",
-  description: `Send a message to one of your sub-agents (by name or agentId), or to "parent", the agent that started you. A sub-agent gets it in its running turn, or as a new turn that keeps its history (one that had finished works again, and its answer comes back as a new notification). Your parent gets it as an <agent_message> block, without your turn ending. At most ${MULTI_AGENT_LIMITS.messagesPerRun} messages per turn.`,
+  description: `Send a message to one of your sub-agents (by name or agentId), or to "parent", the agent that started you. A sub-agent gets it in its running turn, or as a new turn that keeps its history (one that had finished works again, and its answer comes back as a new notification). Your parent gets it as an <agent_message> block at its next step, interrupting what it is doing (or as a new turn, if it is idle), and your turn goes on. For status that needs no answer, use report_progress instead, if you have it: it never interrupts. At most ${MULTI_AGENT_LIMITS.messagesPerRun} messages per turn.`,
   parameters: { type: "object", additionalProperties: false, required: ["to", "text"], properties: {
     to: { type: "string", description: "A sub-agent's name or agentId, or \"parent\"" },
     text: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.taskChars },

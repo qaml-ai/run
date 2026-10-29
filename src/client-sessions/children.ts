@@ -334,33 +334,41 @@ async function waitAgents(ctx: ChildrenContext, session: Session, call: ToolCall
   };
   let chosen = pick(await rows());
   if (!chosen.length) return jsonResult({ agents: [], message: "No sub-agents are running" });
-  // A resume not yet sent (its person has not answered) is answered as waiting on them, not waited for.
-  const waitable = (row: any) => row.ended_at === null && row.kind !== "resume";
-  const ready = () => chosen.some(row => open(row) && row.ended_at !== null) || !chosen.some(waitable);
-  const deadline = Date.now() + ((timeoutMs as number | undefined) ?? MULTI_AGENT_LIMITS.waitMs);
-  // Until one of them ends, or the timeout: a run folded into another (a steered message) ends without being an answer.
-  while (!ready() && Date.now() < deadline) {
-    const stop = new AbortController();
-    const abort = () => stop.abort();
-    call.signal.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(abort, deadline - Date.now());
-    const timedOut = new Promise<void>(resolve => stop.signal.addEventListener("abort", () => resolve(), { once: true }));
-    try {
-      await Promise.race([timedOut, ...chosen.filter(waitable).map(async row => {
-        let record: RequestRecord | undefined;
-        try { record = await delegation.childOutcome(ctx, row.child, tenant, row.request_id, stop.signal); }
-        catch (error) {
-          if (stop.signal.aborted) return new Promise<never>(() => {});
-          record = { status: "failed", error: errorText(error) } as RequestRecord;
-        }
-        await recordEnding(ctx, row, record);
-      })]);
-    } catch (error) { if (!stop.signal.aborted) throw error; }
-    finally { clearTimeout(timer); call.signal.removeEventListener("abort", abort); stop.abort(); }
-    call.signal.throwIfAborted();
-    chosen = pick(await rows());
-    if (!chosen.length) return jsonResult({ agents: [], message: "No sub-agents are running" });
-  }
+  // A sub-agent's message cuts the wait short, as does one already on its way to the model: it reads it next.
+  const messaged = new Set(session.agentMessages?.values() ?? []);
+  let wake: (() => void) | undefined;
+  const waiter = (name: string) => { messaged.add(name); wake?.(); };
+  (session.messageWaiters ??= new Set()).add(waiter);
+  try {
+    // A resume not yet sent (its person has not answered) is answered as waiting on them, not waited for.
+    const waitable = (row: any) => row.ended_at === null && row.kind !== "resume";
+    const ready = () => chosen.some(row => open(row) && row.ended_at !== null) || !chosen.some(waitable);
+    const deadline = Date.now() + ((timeoutMs as number | undefined) ?? MULTI_AGENT_LIMITS.waitMs);
+    // Until one of them ends, or the timeout: a run folded into another (a steered message) ends without being an answer.
+    while (!ready() && !messaged.size && Date.now() < deadline) {
+      const stop = new AbortController();
+      const abort = () => stop.abort();
+      wake = abort;
+      call.signal.addEventListener("abort", abort, { once: true });
+      const timer = setTimeout(abort, deadline - Date.now());
+      const timedOut = new Promise<void>(resolve => stop.signal.addEventListener("abort", () => resolve(), { once: true }));
+      try {
+        await Promise.race([timedOut, ...chosen.filter(waitable).map(async row => {
+          let record: RequestRecord | undefined;
+          try { record = await delegation.childOutcome(ctx, row.child, tenant, row.request_id, stop.signal); }
+          catch (error) {
+            if (stop.signal.aborted) return new Promise<never>(() => {});
+            record = { status: "failed", error: errorText(error) } as RequestRecord;
+          }
+          await recordEnding(ctx, row, record);
+        })]);
+      } catch (error) { if (!stop.signal.aborted) throw error; }
+      finally { clearTimeout(timer); call.signal.removeEventListener("abort", abort); stop.abort(); }
+      call.signal.throwIfAborted();
+      chosen = pick(await rows());
+      if (!chosen.length) return jsonResult({ agents: [], message: "No sub-agents are running" });
+    }
+  } finally { session.messageWaiters.delete(waiter); }
   const answers = [];
   const progress = await progressOf(ctx, parent);
   for (const row of chosen) {
@@ -374,6 +382,8 @@ async function waitAgents(ctx: ChildrenContext, session: Session, call: ToolCall
     // Shown here, so its next tool result's <agent_updates> does not repeat it.
     if (!taken && row.ended_at === null && progress.has(row.child)) markShown(session, progress.get(row.child));
   }
+  const senders = [...messaged];
+  if (senders.length) return jsonResult({ agents: answers, messaged: senders, message: `${senders.join(", ")} sent you a message, which follows this result: read it, then wait again if you need to` });
   return jsonResult({ agents: answers, ...(answers.every(answer => answer.status === "running") ? { timedOut: true } : {}) });
 }
 
@@ -596,8 +606,9 @@ async function sendMessage(ctx: ChildrenContext, session: Session, settings: Del
     // The parent's name for this agent, as its notifications say.
     const named = (await ctx.db.query("select name from agent_children where parent = $1 and child = $2 order by created_at desc limit 1", [lineage.parent, header.id])).rows[0]?.name as string | undefined;
     const message = agentMessage({ agentId: header.id, name: named ?? header.metadata?.name ?? "subagent", root: lineage.root }, text, "parent");
-    await submit(lineage.parent, tenant, { id: requestId, method: "prompt", params: { ...message, allowDisconnected: true } });
-    return jsonResult({ sent: true, to: "parent" });
+    // Its running turn takes it in at its next step (a wait_agent of its answers at once); an idle parent, as a turn of its own.
+    const record = await submit(lineage.parent, tenant, { id: requestId, method: "prompt", params: { ...message, allowDisconnected: true, whileRunning: "steer" } });
+    return jsonResult({ sent: true, to: "parent", into: record.steer === "accepted" || record.steeredInto ? "its running turn" : "a new turn of its own" });
   }
   const latest = await childNamed(ctx, header.id, to);
   if (!latest) throw new Error(`You have no sub-agent ${to}: you can message the sub-agents you started (by name or agentId), and "parent"`);
@@ -643,6 +654,25 @@ async function interruptAgent(ctx: ChildrenContext, session: Session, call: Tool
   return jsonResult({ agentId: latest.child, name: latest.name, interrupted: true, message: "Its turn is being aborted: its notification follows" });
 }
 
+/**
+ * A child's message the agent's running turn accepted (`whileRunning: "steer"`): the model gets it at its next step. Until
+ * then it is pending (`agentMessages`), and a wait_agent call in progress answers now, so the model is not kept from it.
+ */
+export function messageAccepted(session: Session, id: string, params: any) {
+  const metadata = params?.notice?.metadata;
+  if (metadata?.kind !== "message" || metadata.to !== "parent" || !session.running.has(id)) return;
+  (session.agentMessages ??= new Map()).set(id, String(metadata.name ?? "a sub-agent"));
+  for (const wake of session.messageWaiters ?? []) wake(String(metadata.name ?? "a sub-agent"));
+}
+
+/** A child's message the running turn `turn` took: the model has it. Shown on the stream, as a message's own turn shows it. */
+export function messageTaken(ctx: ChildrenContext, session: Session, id: string, params: any, turn: string) {
+  const notice = params?.notice;
+  if (notice?.metadata?.kind !== "message" || notice.metadata.to !== "parent") return;
+  session.agentMessages?.delete(id);
+  ctx.publish(session, { type: "event", requestId: turn, event: { type: "subagent_message", agentId: notice.source.agentId, name: notice.source.name, text: params.text } });
+}
+
 /** Abort the agent's running background children: its abort or deletion cascades to them (`children: "keep"` opts out). */
 export function abortBackground(ctx: ChildrenContext, session: Session) {
   const { id, tenant } = session.header;
@@ -678,6 +708,7 @@ async function landNotice(ctx: ChildrenContext, session: Session, record: Reques
     }
   }
   if (message) {
+    session.agentMessages?.delete(record.id);
     if (metadata.to === "parent" && fresh) ctx.publish(session, { type: "event", requestId: record.id, event: { type: "subagent_message", agentId: notice.source.agentId, name: notice.source.name, text: params.text } });
   } else if (fresh) {
     // What the child spent counts before the spend check below.

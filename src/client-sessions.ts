@@ -1717,8 +1717,8 @@ export class ClientSessions {
     // A child's notification (`notice`) is the runtime's alone. Its child's run was counted and checked already, and it is
     // never refused at a limit: it lands without a turn instead (`landNotice`).
     const notice = params.notice !== undefined;
-    // A parent's message to its child may join the child's running turn; anything else of the runtime's is a turn of its own.
-    const steerable = params.notice?.metadata?.kind === "message" && params.notice.metadata.to === "child";
+    // A message between an agent and its child or parent may join the recipient's running turn; anything else of the runtime's is a turn of its own.
+    const steerable = params.notice?.metadata?.kind === "message" && ["child", "parent"].includes(params.notice.metadata.to);
     if (notice && (!trusted || body.method !== "prompt" || (params.whileRunning !== undefined && !steerable) || !childSessions.validNotice(params.notice))) throw new HttpError(400, "Invalid request");
     const rate = isRun && body.method !== "resume" && !notice ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
     const limited = body.method === "resume" || notice ? undefined : await spend.runLimit(this.spendContext, session, body.method, bucket);
@@ -1801,6 +1801,7 @@ export class ClientSessions {
       // A steer is answered at once: the running turn has it (accepted), or it runs as a turn of its own (queued).
       if (params.whileRunning === "steer") {
         const steer = await this.steerTurn(session, params) ? "accepted" : "queued";
+        if (steer === "accepted") childSessions.messageAccepted(session, record.id, params);
         const current = session.requests.get(record.id);
         if (current?.state === "running") return { status: 202, record: visible(this.upsertRequest(session, { ...current, steer })), ...(rate ? { rate } : {}) };
         // Taken already, before the answer came back.
@@ -2274,6 +2275,8 @@ export class ClientSessions {
       if (done.announce) void this.announce(session, [done]);
       // A parent's message its running turn took: the turn's own row answers for it.
       if (id.startsWith("msg_") && done.metadata?.[PARENT_KEYS.agent]) await childSessions.childEnded(this.childrenContext, session.header.id, visible(done));
+      // A child's message: the model has it now.
+      childSessions.messageTaken(this.childrenContext, session, id, queued.params, turn);
     })().catch(() => { /* The fault is reported to every later request. */ });
   }
 

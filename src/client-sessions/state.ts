@@ -247,6 +247,12 @@ export type Session = {
    * is shown once, or again after the agent moved to another node.
    */
   progressShown?: Map<string, number>;
+  /**
+   * Its children's messages its running turn accepted and the model has not had yet (by request id: the sender's name),
+   * and the wait_agent calls to tell when one comes: a wait answers at once, so the model reads the message.
+   */
+  agentMessages?: Map<string, string>;
+  messageWaiters?: Set<(name: string) => void>;
 };
 /** What a run handed off at a step boundary had gathered for its outcome, which its next owner takes over (`takeOver`). */
 export type Carried = { usage?: RunUsage; childSpend?: number; imageSpend?: number; decisionSpend?: number; spendLimit?: number; runLimits?: RunLimits; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };

@@ -9,3 +9,11 @@ sub-agents (`?subagents=1`) get `subagent_progress`, and a delegate sub-agent's 
 `tool_execution_update`, which `<AgentChat>` shows under the call. The SDKs leave the block out of a tool result's
 `output` and of the chat's `ToolPart.result` (`agentUpdates` has it). Migration 098 adds `progress`, `progress_seq`
 and `progress_at` to `agent_children`. See [Progress](../guides/multi-agent.md#progress).
+
+### A sub-agent's message reaches its busy parent at once
+
+`send_message` to `"parent"` now joins the parent's running turn at its next step, as a `whileRunning: "steer"`
+prompt does, instead of waiting for that turn to end: it starts no turn (and so counts no wake), and its request ends
+`steeredInto` the turn. A parent's `wait_agent` returns as soon as one of its sub-agents messages it, with `messaged`
+naming who, so the model reads the message next. An idle parent still gets it as a turn of its own. The call answers
+`into: "its running turn"` or `"a new turn of its own"`.

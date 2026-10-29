@@ -99,3 +99,64 @@ test("only a sub-agent reports progress, and a report is short", async t => {
   const run = await r.prompt(parent, "go");
   assert.match(run.outcome.result.reply, /report_progress[\s\S]*must not have more than 500 characters/);
 });
+
+const lastUserText = (body: any) => { const message = body.messages.findLast((entry: any) => entry.role === "user"); return typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""); };
+
+test("a child's message joins its busy parent's running turn at its next step, without a turn of its own", async t => {
+  const sent = deferred(), release = deferred();
+  const bodies: any[] = [];
+  const r = await runtime(t, body => {
+    if (systemText(body).includes("WORKER")) {
+      if (tools(body) === 0) return toolCall("send_message", { to: "parent", text: "found the bug" }, "m1");
+      sent.resolve();
+      return { role: "assistant", content: "worker done", wait: release.promise };
+    }
+    bodies.push(body);
+    const results = toolResults(body);
+    if (!results.length) return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "find it", name: "w" }, "spawn");
+    if (results.length === 1) return { ...toolCall("list_agents", {}, "l1"), wait: sent.promise };
+    if (results.length === 2) { release.resolve(); return toolCall("wait_agent", { agents: ["w"] }, "wait"); }
+    return { role: "assistant", content: "lead done" };
+  });
+  const parent = await r.call("/v1/agents", { body: { systemPrompt: "You are LEAD.", builtins: ["agents"], delegate: { instructions: true } } }).then(made => made.json.id as string);
+  const events = await watchEvents(t, `${r.base}/v1/agents/${parent}/events`, { Authorization: `Bearer ${OPERATOR}` }, { query: "watch=1&subagents=1" });
+  const run = await r.prompt(parent, "start");
+  assert.equal(run.outcome.result.reply, "lead done");
+  // The model read it in the same turn, after list_agents' result.
+  const read = bodies.findIndex(body => lastUserText(body).startsWith("<agent_message"));
+  assert.ok(read > 0, "the message reached the running turn");
+  assert.equal(lastUserText(bodies[read]), '<agent_message name="w">\nfound the bug\n</agent_message>');
+  assert.equal(toolResults(bodies[read]).length, 2);
+  const message = await until(async () => (await requests(r, parent)).find(request => request.id.startsWith("msg_") && request.state === "completed"), "the message's request");
+  assert.equal(message.steeredInto, run.id);
+  const event = await until(() => events.frames.find(frame => frame.data.event?.type === "subagent_message")?.data, "subagent_message");
+  assert.equal(event.requestId, run.id);
+  assert.equal(event.event.text, "found the bug");
+});
+
+test("a child's message cuts its parent's wait_agent short, and the parent reads it next", async t => {
+  const release = deferred();
+  const bodies: any[] = [];
+  const r = await runtime(t, body => {
+    if (systemText(body).includes("WORKER")) {
+      return tools(body) === 0 ? toolCall("send_message", { to: "parent", text: "need the staging URL" }, "m1") : { role: "assistant", content: "worker done", wait: release.promise };
+    }
+    bodies.push(body);
+    const results = toolResults(body);
+    if (!results.length) return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "deploy", name: "w" }, "spawn");
+    if (results.length === 1) return toolCall("wait_agent", { timeoutMs: 600_000 }, "wait1");
+    if (results.length === 2) { release.resolve(); return toolCall("wait_agent", {}, "wait2"); }
+    return { role: "assistant", content: "lead done" };
+  });
+  const parent = await r.call("/v1/agents", { body: { systemPrompt: "You are LEAD.", builtins: ["agents"], delegate: { instructions: true } } }).then(made => made.json.id as string);
+  const started = Date.now();
+  const run = await r.prompt(parent, "start");
+  assert.equal(run.outcome.result.reply, "lead done");
+  assert.ok(Date.now() - started < 60_000, "the first wait did not run to its timeout");
+  const first = JSON.parse(toolResults(bodies[2])[1]);
+  assert.deepEqual(first.messaged, ["w"]);
+  assert.equal(first.agents[0].status, "running");
+  assert.match(first.message, /w sent you a message, which follows this result/);
+  assert.equal(lastUserText(bodies[2]), '<agent_message name="w">\nneed the staging URL\n</agent_message>');
+  assert.equal(JSON.parse(toolResults(bodies[3])[2]).agents[0].text, "worker done");
+});

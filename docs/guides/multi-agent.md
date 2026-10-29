@@ -201,7 +201,7 @@ const lead = await agents.upsert("research-lead", {
 | Tool | |
 | --- | --- |
 | `spawn_agent({ agent \| instructions, task, output?, name? })` | Starts a sub-agent, as `delegate` would, and returns `{ agentId, name }` at once. `name` is the model's handle for it, unique among its running sub-agents (default: the agent's name and a number, `researcher-1`) |
-| `wait_agent({ agents?, timeoutMs? })` | Waits until one of the given sub-agents (names or ids; default: any running one) ends, or `timeoutMs` passes (default 5 minutes, at most 10). Returns each one's `status`, with the answer (`text`, `output?`, `error?`) of those that ended |
+| `wait_agent({ agents?, timeoutMs? })` | Waits until one of the given sub-agents (names or ids; default: any running one) ends, one of them sends a message, or `timeoutMs` passes (default 5 minutes, at most 10). Returns each one's `status`, with the answer (`text`, `output?`, `error?`) of those that ended and the `progress` of those running; `messaged` names who sent a message, which the model reads next |
 | `list_agents()` | The agent's sub-agents: `{ agentId, name, status, startedAt, endedAt?, progress?, progressAt? }`, `status` being `running`, `completed`, `failed`, `aborted` or `input_required`, and `progress` a running one's latest [report](#progress) |
 | `send_message({ to, text })` | Messages one of its sub-agents (name or id) or, from a sub-agent, its parent (`"parent"`). See [Messages](#messages) |
 | `interrupt_agent({ agent })` | Aborts one of its running sub-agents; its notification follows with status `aborted` |
@@ -284,7 +284,7 @@ starts a turn or counts against the wake cap:
   while the parent runs on the sub-agent's node.
 
 Use `send_message` to `"parent"` instead for something the parent must act on:
-that interrupts it.
+that interrupts it (see [Messages](#messages)).
 
 ### Messages
 
@@ -296,11 +296,17 @@ else:
   again, and its answer comes back as a new notification. The sub-agent reads
   `<agent_message name="parent">…</agent_message>`.
 - **Sub-agent to parent:** `to: "parent"`, which the runtime resolves through
-  the run's signed chain. It reaches the parent as a notification does, without
-  the sub-agent's turn ending, as `<agent_message name="researcher-1">…`, with
-  `source` and `metadata.kind: "message"`. The parent's stream has
-  `subagent_message` (`{ agentId, name, text }`). A sub-agent the runtime made has
-  `send_message` even without the builtin.
+  the run's signed chain, without the sub-agent's turn ending. A parent that is
+  running takes it into that turn at its next step, after the tool calls it
+  is making, as a person's `whileRunning: "steer"` prompt is taken. It starts
+  no turn, and its request ends `steeredInto` that turn. A `wait_agent` in
+  progress returns at once, with `messaged: ["researcher-1"]`, so the model
+  reads the message next. An idle parent gets it as a turn of its own, as a
+  notification. Either way the model reads `<agent_message
+  name="researcher-1">…`, with `source` and `metadata.kind: "message"`, and the
+  parent's stream has `subagent_message` (`{ agentId, name, text }`). The call
+  answers `into: "its running turn"` or `"a new turn of its own"`. A sub-agent
+  the runtime made has `send_message` even without the builtin.
 
 A turn sends at most 20 messages, and the turns messages start count against
 the wake cap below, so two agents messaging each other stop.
