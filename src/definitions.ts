@@ -10,6 +10,7 @@ import type { Accounts } from "./accounts.ts";
 import type { Outbound } from "./outbound.ts";
 import { builtinsInput, managedBuiltinsRefusal } from "./builtins.ts";
 import { delegateSettings, startsChildren, type DelegateSettings } from "./multi-agent.ts";
+import { workflowSettings, type WorkflowSettings } from "./workflows.ts";
 import { decideInput } from "./decisions.ts";
 import { searchOrder } from "./web-search.ts";
 import { canonical } from "../shared/durable-json.ts";
@@ -57,6 +58,8 @@ export interface DefinitionSpec {
   humanInput?: HumanInputSettings;
   /** With the delegate or agents builtin: the agents its agents may start or message, and how deep and wide (multi-agent.ts). */
   delegate?: DelegateSettings;
+  /** With the workflow builtin: who its agents' workflow scripts may coordinate, and how wide and deep (workflows.ts). */
+  workflow?: WorkflowSettings;
   /** false: its agents get no decide tool; true: they get it even with no js_exec and no other tools (decisions.ts). */
   decide?: boolean;
   /** Made for this channel, and deleted with it. */
@@ -78,7 +81,7 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "limits", "runLimits", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "workflow", "decide", "applyOnUpdate"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
 export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits"] as const;
 const PROVISION_FIELDS = ["name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
@@ -91,6 +94,7 @@ export function sources(spec: DefinitionSpec): Sources | undefined {
     ...(spec.builtins?.length ? { builtins: spec.builtins } : {}), ...(spec.webSearch && spec.builtins?.includes("web_search") ? { webSearch: spec.webSearch } : {}), ...(spec.mcpServers?.length ? { mcpServers: spec.mcpServers } : {}),
     ...(spec.openApi?.length ? { openApi: spec.openApi } : {}), ...(spec.humanInput ? { humanInput: spec.humanInput } : {}),
     ...(spec.delegate && startsChildren(spec.builtins) ? { delegate: spec.delegate } : {}),
+    ...(spec.workflow && spec.builtins?.includes("workflow") ? { workflow: spec.workflow } : {}),
     ...(spec.decide !== undefined ? { decide: spec.decide } : {}),
   };
   return Object.keys(found).length ? found : undefined;
@@ -343,6 +347,8 @@ export class Definitions {
     if (spec.humanInput !== undefined) humanInputSettings(spec.humanInput);
     const delegate = delegateSettings(spec.builtins, spec.delegate);
     if (delegate) spec.delegate = delegate;
+    const workflow = workflowSettings(spec.builtins, spec.workflow);
+    if (workflow) spec.workflow = workflow;
     const prefixes = [...spec.mcpServers ?? [], ...spec.openApi ?? []].map(source => source.name);
     const twice = prefixes.find((name, index) => prefixes.indexOf(name) !== index);
     if (twice) throw new HttpError(400, `${twice} names both an MCP server and an OpenAPI source; their tools would share ${twice}__`);

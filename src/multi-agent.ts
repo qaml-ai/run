@@ -43,7 +43,9 @@ export interface DelegateSettings {
 }
 
 /** Stream events of an agent's children, sent only to subscribers that ask for them (`?subagents=1`). */
-export const SUBAGENT_EVENTS: readonly string[] = ["subagent_start", "subagent_event", "subagent_end", "subagent_message"];
+export const SUBAGENT_EVENTS: readonly string[] = ["subagent_start", "subagent_event", "subagent_end", "subagent_message",
+  // A workflow's own progress, relayed with its children's events: the same delegation, at plan scale.
+  "workflow_start", "workflow_progress", "workflow_end"];
 /**
  * What a child's run carries in its prompt's metadata: who started it, and where it is in the chain. Where it is counts
  * only with `signature`, the runtime's MAC over it for that agent and run (ClientSessions' `delegation`): a caller's
@@ -60,7 +62,7 @@ const integer = (value: unknown, field: string, min: number, max: number) => {
 };
 
 /** One allowlist: definition keys or ids as strings, or `{ name?, definition | agent, description? }`. */
-function targetsInput(value: unknown, field: string): AgentTarget[] {
+export function targetsInput(value: unknown, field: string): AgentTarget[] {
   const shape = `${field} is a list of definition keys or ids, or { name?, definition | agent, description? }`;
   if (!Array.isArray(value) || value.length > MULTI_AGENT_LIMITS.targets) throw new HttpError(400, `${shape}, at most ${MULTI_AGENT_LIMITS.targets}`);
   const targets = value.map((entry): AgentTarget => {

@@ -384,7 +384,7 @@ export const ModelHeaders = z.record(z.string(), z.string()).openapi("ModelHeade
 });
 
 // Documentation only: sessionConfig validates provisioning, with the messages the SDKs rely on.
-const Builtin = z.enum(["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide"]).openapi("Builtin", { description: "agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings" });
+const Builtin = z.enum(["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide", "workflow"]).openapi("Builtin", { description: "agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings; workflow: run_workflow, a script that coordinates sub-agents, with the workflow settings" });
 const AgentTarget = z.union([
   z.string().openapi({ description: "A definition's key or id; the model sees it by that name" }),
   z.strictObject({
@@ -400,6 +400,13 @@ export const DelegateSettings = z.strictObject({
   maxDepth: z.number().int().min(1).max(5).optional().openapi({ description: "How deep delegation may go: a child is depth 1, its child depth 2. Default 2" }),
   maxParallel: z.number().int().min(1).max(16).optional().openapi({ description: "delegate calls of one run in flight at once (more wait their turn), and the agent's background sub-agents running at once (spawn_agent past it is refused). Default 4" }),
 }).openapi("DelegateSettings", { description: "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide" });
+export const WorkflowSettings = z.strictObject({
+  agents: z.array(AgentTarget).max(32).optional().openapi({ description: "Who a workflow script may coordinate: definitions (a new child agent for each agent() call) and existing agents by key" }),
+  instructions: z.boolean().optional().openapi({ description: "Let the script start a child with instructions of its own instead, on its own model" }),
+  maxAgents: z.number().int().min(1).max(120).optional().openapi({ description: "The most agent() calls one workflow run may make. Default 32" }),
+  maxDepth: z.number().int().min(1).max(5).optional().openapi({ description: "How deep a chain of agents may go: a child is depth 1, its child depth 2. Default 2" }),
+  maxParallel: z.number().int().min(1).max(16).optional().openapi({ description: "Agent calls of one workflow in flight at once; more queue inside the script. Default 4" }),
+}).openapi("WorkflowSettings", { description: "With the workflow builtin: who a workflow script may coordinate, and how wide and deep. See the workflows guide" });
 export const AbortInput = z.strictObject({
   queued: z.enum(["cancel", "keep"]).optional().openapi({ description: "cancel (default): the runs queued behind the running one (prompts, steered messages not yet read, continues, executions) are cancelled too, each ending with code cancelled, so nothing runs after the stop. keep: only the running turn is stopped, and the next queued run starts" }),
   children: z.enum(["abort", "keep"]).optional().openapi({ description: "abort (default): the agent's running background sub-agents (spawn_agent) are aborted too, and their notifications follow with status aborted. keep: they go on" }),
@@ -530,6 +537,7 @@ export const AgentInput = z.object({
   builtins: z.array(Builtin).max(9).optional().openapi({ description: "Tools the runtime answers itself (web_fetch, web_search, x_search, schedule, ask_user, delegate, generate_image, agents, decide), for an agent without a definition; one made from a definition has its definition's. An upsert without builtins leaves the agent none" }),
   decide: z.boolean().optional().openapi({ description: "The decide tool (typed questions answered with probabilities by a decision model; see Decisions) is every agent's by default, except one with no js_exec and no other tools. false: none; true: even then. Not for an agent made from a definition: its definition's decide applies" }),
   delegate: DelegateSettings.optional().openapi({ description: "With the delegate or agents builtin: who the agent may hand tasks to. Not with a definition, whose own it takes" }),
+  workflow: WorkflowSettings.optional().openapi({ description: "With the workflow builtin: who the agent's workflow scripts may coordinate. Not with a definition, whose own it takes" }),
   mcpServers: z.array(InlineMcpServerInput).max(64).optional().openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent, for an agent without a definition; one made from a definition has its definition's. No credentials: auth \"runtime\" or none. An upsert without mcpServers leaves the agent none" }),
   keyScope: z.string().optional().openapi({ description: "A key scope (PUT /v1/key-scopes/{scope}/providers/{provider}) whose keys the agent's model calls use first, before the tenant's own", example: "org_abc123" }),
   spendLimit: SpendLimitInput.optional(),
@@ -629,6 +637,7 @@ export const RunInput = z.strictObject({
   builtins: z.array(z.enum(["web_fetch", "web_search", "x_search", "delegate", "generate_image", "decide"])).max(9).optional().openapi({ description: "Tools the runtime answers itself (generate_image gives the run a workspace for its images). Not schedule or ask_user: a run has no later and no one to ask" }),
   decide: z.boolean().optional().openapi({ description: "false: no decide tool. A run with no tools at all (no definition, builtins, delegate, MCP servers, files or mounts) has none unless it sends true" }),
   delegate: DelegateSettings.optional(),
+  workflow: WorkflowSettings.optional(),
   mcpServers: z.array(InlineMcpServerInput).max(64).optional().openapi({ description: "Remote MCP servers whose tools the run may call, as an agent's own: no credentials (auth \"runtime\" or none). A server that cannot be listed shows in sourceErrors" }),
   fileTools: z.boolean().optional().openapi({ description: "true: the run gets a workspace volume and file tools. Default: none, unless input has files" }),
   codeMode: z.boolean().optional().openapi({ description: "true: the model gets js_exec. Default: true when the run has tools (builtins, MCP servers, a definition, files), false for a tool-less run, whose model then sees only your instructions" }),
@@ -755,6 +764,7 @@ export const AgentDetail = AgentSummary.extend({
   builtins: z.array(Builtin).openapi({ description: "The tools the runtime answers itself: its own, or its definition's" }),
   decide: z.boolean().nullable().openapi({ description: "Its decide setting, its own or its definition's: false (none), true (asked for), or null (the default: the tool unless it has no js_exec and no other tools). The tool is offered only where the account has an OpenRouter key decisions can use; toolSources shows it" }),
   delegate: DelegateSettings.nullable().openapi({ description: "Who it may delegate to, with the delegate or agents builtin" }),
+  workflow: WorkflowSettings.nullable().openapi({ description: "Who its workflow scripts may coordinate, with the workflow builtin" }),
   mcpServers: z.array(McpServer).openapi({ description: "Its remote MCP servers: its own, or its definition's (without credentials' values)" }),
   parentRunId: z.string().optional().openapi({ description: "For a child a delegate or spawn_agent call made: the run of parentAgentId that made it" }),
   spendLimit: z.object({ usd: z.number(), spent: z.number().openapi({ description: "Model spend since the limit was set" }) }).nullable(),
@@ -1022,6 +1032,7 @@ const definitionFields = {
   mcpServers: z.array(McpServerInput).max(64).openapi({ description: "Remote MCP servers whose tools the runtime calls for the agent" }),
   openApi: z.array(OpenApiInput).max(64).openapi({ description: "OpenAPI specs whose operations the runtime calls for the agent, as tools" }),
   delegate: DelegateSettings,
+  workflow: WorkflowSettings,
   humanInput: z.strictObject({
     expiresInSeconds: z.number().int().min(60).max(30 * 86_400).optional().openapi({ description: "How long an input waits for an answer: 7 days by default, at most 30, and never past the agent's own expiry" }),
     onExpire: z.enum(["close", "resume"]).optional().openapi({ description: "close (default): an expired input closes its call and the turn without the model; resume: the model is told and continues" }),
@@ -1078,6 +1089,7 @@ export const ConfigureInput = z.object({
   builtins: z.array(Builtin).max(9).optional().openapi({ description: "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's" }),
   decide: z.boolean().nullable().optional().openapi({ description: "false: no decide tool; true: the tool even with no js_exec and no other tools; null: back to the default. Not for an agent made from a definition" }),
   delegate: DelegateSettings.nullable().optional().openapi({ description: "Replaces who the agent may delegate to (with the delegate builtin); null removes it" }),
+  workflow: WorkflowSettings.nullable().optional().openapi({ description: "Replaces who the agent's workflow scripts may coordinate (with the workflow builtin); null removes it" }),
   mcpServers: z.array(InlineMcpServerInput).max(64).nullable().optional().openapi({ description: "Replaces the agent's own MCP servers; null or [] removes them. No credentials: auth \"runtime\" or none. Not for an agent made from a definition, whose servers are its definition's" }),
 }).strict().refine(input => Object.keys(input).some(key => key !== "requestId"), "Give at least one configuration field").openapi("ConfigureInput", { description: "On an agent made from a definition, a model, thinkingLevel, maxOutputTokens, temperature or runLimits set here stays when the definition is applied; a systemPrompt set here is replaced by it" });
 

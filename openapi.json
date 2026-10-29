@@ -3818,6 +3818,9 @@
           "delegate": {
             "$ref": "#/components/schemas/DelegateSettings"
           },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowSettings"
+          },
           "mcpServers": {
             "type": "array",
             "items": {
@@ -3939,9 +3942,10 @@
           "delegate",
           "generate_image",
           "agents",
-          "decide"
+          "decide",
+          "workflow"
         ],
-        "description": "agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings"
+        "description": "agents: sub-agents in the background (spawn_agent, wait_agent, list_agents), with the delegate settings; workflow: run_workflow, a script that coordinates sub-agents, with the workflow settings"
       },
       "DelegateSettings": {
         "type": "object",
@@ -4005,6 +4009,43 @@
             "additionalProperties": false
           }
         ]
+      },
+      "WorkflowSettings": {
+        "type": "object",
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentTarget"
+            },
+            "maxItems": 32,
+            "description": "Who a workflow script may coordinate: definitions (a new child agent for each agent() call) and existing agents by key"
+          },
+          "instructions": {
+            "type": "boolean",
+            "description": "Let the script start a child with instructions of its own instead, on its own model"
+          },
+          "maxAgents": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120,
+            "description": "The most agent() calls one workflow run may make. Default 32"
+          },
+          "maxDepth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "description": "How deep a chain of agents may go: a child is depth 1, its child depth 2. Default 2"
+          },
+          "maxParallel": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16,
+            "description": "Agent calls of one workflow in flight at once; more queue inside the script. Default 4"
+          }
+        },
+        "additionalProperties": false,
+        "description": "With the workflow builtin: who the agent's workflow scripts may coordinate. Not with a definition, whose own it takes"
       },
       "InlineMcpServerInput": {
         "type": "object",
@@ -4491,6 +4532,20 @@
                   }
                 ]
               },
+              "workflow": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/WorkflowSettings"
+                  },
+                  {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "description": "Who its workflow scripts may coordinate, with the workflow builtin"
+                  }
+                ]
+              },
               "mcpServers": {
                 "type": "array",
                 "items": {
@@ -4634,6 +4689,7 @@
               "builtins",
               "decide",
               "delegate",
+              "workflow",
               "mcpServers",
               "spendLimit",
               "runLimits",
@@ -5606,6 +5662,46 @@
             },
             "additionalProperties": false,
             "description": "Replaces who the agent may delegate to (with the delegate builtin); null removes it"
+          },
+          "workflow": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "agents": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AgentTarget"
+                },
+                "maxItems": 32,
+                "description": "Who a workflow script may coordinate: definitions (a new child agent for each agent() call) and existing agents by key"
+              },
+              "instructions": {
+                "type": "boolean",
+                "description": "Let the script start a child with instructions of its own instead, on its own model"
+              },
+              "maxAgents": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 120,
+                "description": "The most agent() calls one workflow run may make. Default 32"
+              },
+              "maxDepth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5,
+                "description": "How deep a chain of agents may go: a child is depth 1, its child depth 2. Default 2"
+              },
+              "maxParallel": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 16,
+                "description": "Agent calls of one workflow in flight at once; more queue inside the script. Default 4"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Replaces who the agent's workflow scripts may coordinate (with the workflow builtin); null removes it"
           },
           "mcpServers": {
             "type": [
@@ -8896,6 +8992,16 @@
               }
             ]
           },
+          "workflow": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowSettings"
+              },
+              {
+                "description": "With the workflow builtin: who a workflow script may coordinate, and how wide and deep. See the workflows guide"
+              }
+            ]
+          },
           "humanInput": {
             "type": "object",
             "properties": {
@@ -9288,6 +9394,16 @@
               },
               {
                 "description": "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+              }
+            ]
+          },
+          "workflow": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowSettings"
+              },
+              {
+                "description": "With the workflow builtin: who a workflow script may coordinate, and how wide and deep. See the workflows guide"
               }
             ]
           },
@@ -9846,6 +9962,20 @@
               }
             ]
           },
+          "workflow": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowSettings"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "With the workflow builtin: who a workflow script may coordinate, and how wide and deep. See the workflows guide"
+              }
+            ]
+          },
           "humanInput": {
             "type": [
               "object",
@@ -10249,6 +10379,16 @@
               },
               {
                 "description": "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide"
+              }
+            ]
+          },
+          "workflow": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowSettings"
+              },
+              {
+                "description": "With the workflow builtin: who a workflow script may coordinate, and how wide and deep. See the workflows guide"
               }
             ]
           },

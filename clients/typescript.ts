@@ -439,6 +439,8 @@ export interface CreateAgentOptions extends AgentOptions {
   decide?: boolean;
   /** Who the agent may hand tasks to (sub-agents), without a definition; it adds the delegate builtin. See the multi-agent guide. */
   delegate?: DelegateSettings;
+  /** Who the agent's workflow scripts may coordinate, without a definition; it adds the workflow builtin. See the workflows guide. */
+  workflow?: WorkflowSettings;
   /**
    * Remote MCP servers of the agent's own, without a definition (one made from a definition has its definition's). They
    * carry no credentials: auth `{ type: "runtime" }` (identity tokens) or none. A server that needs a token or headers goes in a definition.
@@ -455,7 +457,7 @@ export interface CreateAgentOptions extends AgentOptions {
  * delegate (sub-agents: needs `delegate` settings), or agents (sub-agents in the background: spawn_agent, wait_agent and
  * list_agents, with the same settings).
  */
-export type Builtin = "web_fetch" | "web_search" | "x_search" | "schedule" | "ask_user" | "delegate" | "generate_image" | "agents" | "decide";
+export type Builtin = "web_fetch" | "web_search" | "x_search" | "schedule" | "ask_user" | "delegate" | "generate_image" | "agents" | "decide" | "workflow";
 /**
  * A delegate target: a definition's key or id, as a string or `{ definition }`, or an existing agent's key
  * (`{ agent }`, which keeps its own history across calls). `name` is what the model calls it (default: the key); `description`
@@ -463,6 +465,11 @@ export type Builtin = "web_fetch" | "web_search" | "x_search" | "schedule" | "as
  */
 export type AgentTarget = string | { name?: string; definition: string; description?: string } | { name?: string; agent: string; description?: string };
 /** Sub-agents: who the model may delegate to, whether it may write a child's instructions itself, and how deep (default 2) and wide (default 4 at once). */
+/**
+ * Workflows: who a workflow script may coordinate (definitions, or agents by key), whether it may write a child's
+ * instructions itself, and how many agent calls one workflow may make (default 32) and run at once (default 4).
+ */
+export interface WorkflowSettings { agents?: AgentTarget[]; instructions?: boolean; maxAgents?: number; maxDepth?: number; maxParallel?: number }
 export interface DelegateSettings { agents?: AgentTarget[]; instructions?: boolean; maxDepth?: number; maxParallel?: number }
 /** A volume the agent's file tools see at `path`; `notify` prompts the agent when others change files there. */
 /**
@@ -1042,15 +1049,20 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "mcpServers", "prompt"] as const;
+  const fields = ["workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "builtins", "decide", "delegate", "workflow", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
-function withMultiAgent<T extends { builtins?: Builtin[]; delegate?: unknown }>(input: T): T {
+function withMultiAgent<T extends { builtins?: Builtin[]; delegate?: unknown; workflow?: unknown }>(input: T): T {
   // Settings with targets bring their builtin; limits alone (maxParallel, maxDepth) need none, and must have none.
   const delegate = input.delegate as { agents?: unknown[]; instructions?: boolean } | null | undefined;
   const targets = !!delegate && (!!delegate.agents?.length || !!delegate.instructions);
-  return targets && !input.builtins?.some(name => name === "delegate" || name === "agents") ? { ...input, builtins: [...input.builtins ?? [], "delegate"] } : input;
+  const workflow = input.workflow as { agents?: unknown[]; instructions?: boolean } | null | undefined;
+  const scripted = !!workflow && (!!workflow.agents?.length || !!workflow.instructions);
+  let builtins = [...input.builtins ?? []];
+  if (targets && !builtins.some(name => name === "delegate" || name === "agents")) builtins.push("delegate");
+  if (scripted && !builtins.includes("workflow")) builtins.push("workflow");
+  return builtins.length === (input.builtins ?? []).length ? input : { ...input, builtins };
 }
 
 /** What to transcribe: the audio (bytes, a Blob or File, or a URL the runtime fetches) and how. */

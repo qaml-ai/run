@@ -36,6 +36,7 @@ export const BUILTINS = {
   delegate: [],
   generate_image: [],
   agents: [],
+  workflow: [],
   decide: [],
 } as const;
 export type Builtin = keyof typeof BUILTINS;

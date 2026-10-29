@@ -11,7 +11,7 @@
  */
 import {
   AgentClient, AgentError, AgentRuntime, RunError, toolServer,
-  type AgentFiles, type Builtin, type DelegateSettings, type InlineMcpServer, type RecordedMessage, type AgentInput, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
+  type AgentFiles, type Builtin, type DelegateSettings, type WorkflowSettings, type InlineMcpServer, type RecordedMessage, type AgentInput, type AgentOptions, type Attachment, type CreateAgentOptions, type HistoryPage, type InputAnswer,
   type ContextReset, type ForkedFrom, type ForkOptions, type MountInput, type RunResult, type RunUsage, type RuntimeOptions, type Sender, type SessionCredentials, type ToolError, type RunToolCall, type ToolServer, type Tools, type AgentFile, type SteerReceipt,
   type RunFrame, type RunInputPart, type RunRequest, type StatelessRun, type CreditReason,
 } from "./typescript.ts";
@@ -72,6 +72,11 @@ export interface AgentConfig {
    * the delegate builtin comes with it. See the multi-agent guide.
    */
   delegate?: DelegateSettings;
+  /**
+   * Workflows: who the agent's workflow scripts may coordinate, with `run_workflow` as their tool. Without a definition;
+   * the workflow builtin comes with it. See the workflows guide.
+   */
+  workflow?: WorkflowSettings;
   /**
    * Remote MCP servers of the agent's own, without a definition. No credentials: auth `{ type: "runtime" }` (identity
    * tokens naming the agent and its subject) or none. A server that needs a token or headers goes in a definition.
@@ -380,7 +385,7 @@ export class Agents {
 }
 
 /** A stateless run's configuration (an agent's, but for tools that need a connected process) and its input. */
-export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "mcpServers" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "dataCollection" | "language" | "subject" | "context" | "workspaceId" | "keyScope" | "bucket" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
+export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "workflow" | "mcpServers" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "dataCollection" | "language" | "subject" | "context" | "workspaceId" | "keyScope" | "bucket" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
   /** js_exec. Default: on for a run with tools (builtins, MCP servers, a definition, files), off for a tool-less run. */
   codeMode?: boolean;
   /** What the run is asked. It may be empty when `files` has audio, whose transcript is then the input. */

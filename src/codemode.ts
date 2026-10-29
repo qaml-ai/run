@@ -205,8 +205,11 @@ export async function executeCode(options: {
   limits?: Partial<Pick<CodeLimits, "cpuMs" | "maxTimeoutMs">>;
   /** Wait for the tenant's turn on the node (`CodeGate`); resolves with the function that gives it back. */
   admit?: (signal: AbortSignal) => Promise<() => void>;
+  /** A workflow script: it may hold the sandbox for `workflowTimeoutMs` and transfer `workflowToolBytes`. Every other cap is js_exec's. */
+  workflow?: boolean;
 }): Promise<CodeResult> {
-  const maxTimeoutMs = Math.min(options.limits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
+  const ceiling = options.workflow ? SANDBOX_LIMITS.workflowTimeoutMs : SANDBOX_LIMITS.maxTimeoutMs;
+  const maxTimeoutMs = Math.min(options.limits?.maxTimeoutMs ?? ceiling, ceiling);
   const cpuMs = Math.min(options.limits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs);
   const requested = options.timeoutMs ?? SANDBOX_LIMITS.timeoutMs;
   const maxOutputCharacters = options.maxOutputCharacters ?? SANDBOX_LIMITS.outputCharacters;
@@ -270,6 +273,7 @@ export async function executeCode(options: {
     let calls = 0;
     let inflight = 0;
     let transferred = 0;
+    const transferCap = options.workflow ? SANDBOX_LIMITS.workflowToolBytes : SANDBOX_LIMITS.totalToolBytes;
     channel.handler = async (method, params) => {
       if (method !== "tool") throw new Error("Unknown tool");
       if (Object.values(HOST_CALLS).includes(params.name)) {
@@ -285,7 +289,7 @@ export async function executeCode(options: {
       if (++calls > SANDBOX_LIMITS.toolCalls) throw new Error("Codemode tool call limit exceeded");
       if (inflight >= SANDBOX_LIMITS.concurrentTools) throw new Error("Too many concurrent tool calls");
       transferred += checked.bytes;
-      if (transferred > SANDBOX_LIMITS.totalToolBytes) throw new Error("Codemode transfer limit exceeded");
+      if (transferred > transferCap) throw new Error("Codemode transfer limit exceeded");
       controller.signal.throwIfAborted();
       inflight++;
       const name = fs ? params.name : checked.tool.name;
@@ -295,7 +299,7 @@ export async function executeCode(options: {
         controller.signal.throwIfAborted();
         const json = jsonWithinLimit(result, SANDBOX_LIMITS.resultBytes, "Tool result");
         transferred += Buffer.byteLength(json);
-        if (transferred > SANDBOX_LIMITS.totalToolBytes) throw new Error("Codemode transfer limit exceeded");
+        if (transferred > transferCap) throw new Error("Codemode transfer limit exceeded");
         return json;
       } finally {
         inflight--;

@@ -30,6 +30,7 @@ model-written code in a sandbox, and wakes agents when there is work.
    - [Webhooks](guides/webhooks.md): run and input events, signatures, delivery
    - [Models and keys](guides/models-and-keys.md): the catalog, your own keys and endpoints, key scopes, spend limits
    - [Definitions](guides/definitions.md): reusable configurations and rolling out changes
+   - [Workflows](guides/workflows.md): a script the agent runs to coordinate many sub-agents, one result back
    - [Channels](guides/channels.md): Slack, Telegram, Discord, GitHub, email and any service that sends webhooks
    - [Agents as MCP servers](guides/mcp-server.md): connect Claude or Cursor to an agent
    - [Coming from the OpenAI Agents SDK or LangGraph](guides/migrating.md): each concept mapped, and what camelRun does not have
