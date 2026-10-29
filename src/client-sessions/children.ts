@@ -633,7 +633,11 @@ async function sendMessage(ctx: ChildrenContext, session: Session, settings: Del
   const now = Date.now();
   // Written first, as a spawn's row is; a running turn of the child takes the message in (whileRunning: steer), and its
   // row is then folded into that turn's (`recordEnding`).
-  const running = (await ctx.db.query("select 1 from agent_children where parent = $1 and child = $2 and state = 'running' and ended_at is null and kind in ('spawn', 'message') and id <> $3 limit 1", [header.id, child, requestId])).rows.length > 0;
+  const open = (await ctx.db.query("select request_id from agent_children where parent = $1 and child = $2 and state = 'running' and ended_at is null and kind in ('spawn', 'message') and id <> $3 order by created_at desc limit 1", [header.id, child, requestId])).rows[0];
+  const running = !!open;
+  // A turn the child was just given (a spawn of this response) may not have begun: wait a moment for it, so the message
+  // joins it rather than queuing behind all of it.
+  if (open) await turnBegun(ctx, child, tenant, open.request_id, call.signal);
   await transaction(ctx.db, async sql => {
     const { rows } = await sql.query(`insert into agent_children (id, tenant, parent, child, request_id, name, depth, root, parent_run, tool_call_id, kind, made, checked_at, created_at, updated_at)
       values ($1, $2, $3, $4, $1, $5, $6, $7, $8, $9, 'message', $10, $11, $11, $11) on conflict do nothing returning id`, [requestId, tenant, header.id, child, latest.name, depth, chain[0], run.id, call.toolCallId, latest.made, now]);
@@ -648,6 +652,17 @@ async function sendMessage(ctx: ChildrenContext, session: Session, settings: Del
   } catch (error) {
     if ((error as HttpError).code !== "IDEMPOTENCY_CONFLICT") await ctx.db.query("update agent_children set state = 'notified', status = 'failed', updated_at = $2 where id = $1 and ended_at is null", [requestId, Date.now()]);
     throw error;
+  }
+}
+
+/** How long a message waits for its child's accepted turn to begin, before it queues behind it. */
+const TURN_BEGIN_WAIT_MS = 10_000;
+async function turnBegun(ctx: ChildrenContext, child: string, tenant: string, requestId: string, signal: AbortSignal) {
+  for (const deadline = Date.now() + TURN_BEGIN_WAIT_MS; Date.now() < deadline;) {
+    const record = await delegation.requestOf(ctx, child, tenant, requestId, 0, signal).catch(() => undefined);
+    if (!record || record.began || record.state === "completed") return;
+    await new Promise(resolve => setTimeout(resolve, 100));
+    signal.throwIfAborted();
   }
 }
 

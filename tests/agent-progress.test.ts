@@ -178,5 +178,5 @@ test("a response that starts a sub-agent and, beside it, messages and waits for 
   assert.equal(spawned.name, "w");
   assert.equal(said.sent, true);
   assert.equal(waited.agents[0].status, "completed");
-  assert.match(waited.agents[0].text, /^worker done/);
+  assert.equal(waited.agents[0].text, "worker done; heard: true", "the message joined its first turn, not one after it");
 });
