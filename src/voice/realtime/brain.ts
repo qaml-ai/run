@@ -505,7 +505,8 @@ export class RealtimeBrain {
         } else if (this.current && !this.current.id) this.current.id = id;
       },
       interrupted: () => {
-        if (!live()) return;
+        // With barge-in off, people talking over the bot never stop it.
+        if (!live() || !this.options.bargeIn) return;
         this.interrupt({ type: "confirmed", why: "immediate", pausedMs: 0, speechMs: 0 });
         this.stopSpeaking();
       },

@@ -1240,6 +1240,7 @@ export class VoiceSessions {
       instructions: realtimeInstructions(realtime.instructions, { agent: !!submit, group: held.row.provider !== "browser" }),
       tools: [...submit ? [ASK_AGENT] : [], STAY_SILENT],
       ...(options().language ? { language: options().language } : {}), ...(options().prompt ? { prompt: options().prompt } : {}),
+      ...(options().bargeIn === false ? { interruptible: false } : {}),
     };
     const unnamed = new Map<string, string>();
     let asks = 0;

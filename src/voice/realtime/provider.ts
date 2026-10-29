@@ -28,6 +28,8 @@ export type RealtimeConfig = {
   language?: string;
   /** Words to expect, for the transcription's prompt. */
   prompt?: string;
+  /** False when the session's barge-in is off: a provider that detects barge-in itself (ElevenLabs) must not stop the bot. */
+  interruptible?: boolean;
 };
 
 /** Tokens one response used, as the provider counts them. */

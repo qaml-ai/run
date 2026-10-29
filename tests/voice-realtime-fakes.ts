@@ -131,7 +131,7 @@ export function testBrain(options: Partial<BrainOptions> & { addressing?: Partia
   const budget: string[] = [];
   const names: Record<string, string> = { "1": "Ana", "2": "Ben", "3": "Cy" };
   const state = { humans: options.humans ?? 1 };
-  const config: RealtimeConfig = { model: options.reference?.split("/").slice(1).join("/") ?? "gpt-realtime-2.1", voice: "marin", instructions: "Be nice.", tools: [], transcribe: options.transcribed ?? true };
+  const config: RealtimeConfig = { model: options.reference?.split("/").slice(1).join("/") ?? "gpt-realtime-2.1", voice: "marin", instructions: "Be nice.", tools: [], transcribe: options.transcribed ?? true, ...(options.bargeIn ? {} : { interruptible: false }) };
   const brain = new RealtimeBrain({
     session: "vs_000000000000000000000001", tenant: "alice", reference: options.reference ?? "openai/gpt-realtime-2.1", floor: new Floor(options.addressing ?? {}),
     speculative: options.speculative ?? false, transcribed: options.transcribed ?? true, ...(options.bargeIn ? { bargeIn: options.bargeIn } : {}),
