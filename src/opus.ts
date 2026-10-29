@@ -14,7 +14,7 @@ import { createRequire } from "node:module";
  * A codec never throws out of `delete`, and after a trap it is broken (its calls throw `OpusError`) and the module it is
  * in is not used for new codecs: a trap can leave the module's own state (its stack, its allocator) inconsistent.
  */
-type Handler = { _encode(pcm: number, bytes: number, packet: number, frameSize: number): number; _decode(packet: number, bytes: number, pcm: number): number };
+type Handler = { _encode(pcm: number, bytes: number, packet: number, frameSize: number): number; _decode(packet: number, bytes: number, pcm: number): number; _encoder_ctl(ctl: number, arg: number): number };
 type Native = {
   HEAPU8: Uint8Array; HEAPU16: Uint16Array;
   _malloc(bytes: number): number; _free(pointer: number): void;
@@ -71,6 +71,15 @@ export class Opus {
       const length = handler._encode(this.pcm, pcm.length, this.packet, frameSize);
       if (length < 0) throw new OpusError(`Opus encode error ${length}`);
       return Buffer.from(this.module.HEAPU8.subarray(this.packet, this.packet + length));
+    } catch (error) { throw this.failed(error); }
+  }
+
+  /** The encoder's bitrate, in bits a second (OPUS_SET_BITRATE); by default libopus picks one from the rate and channels. */
+  bitrate(bps: number) {
+    const handler = this.ready();
+    try {
+      const result = handler._encoder_ctl(4002, bps);
+      if (result < 0) throw new OpusError(`Opus bitrate error ${result}`);
     } catch (error) { throw this.failed(error); }
   }
 

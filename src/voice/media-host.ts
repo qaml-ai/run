@@ -309,6 +309,16 @@ class WorkerMedia implements Media {
       case "played": this.playing.get(message.id)?.settle(message.result, message.stats); return;
       case "closed": this.closing?.(); return;
       case "turn": events.turn?.(message.event); return;
+      case "recorded": {
+        const bytes = new Uint8Array(message.packets);
+        let at = 0;
+        events.recorded?.(message.lengths.map((length, index) => {
+          const packet = bytes.subarray(at, at + length);
+          at += length;
+          return { speaker: message.speakers[index], at: message.at[index], packet };
+        }));
+        return;
+      }
     }
   }
 

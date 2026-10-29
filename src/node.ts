@@ -948,7 +948,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     return [id, openaiRealtime(config.voice.realtimeUrl ? { baseUrl: config.voice.realtimeUrl } : {})];
   })) : undefined;
   const voice = voiceTransports && new VoiceSessions({
-    db, accounts, node, ownership, transports: voiceTransports, ...(deps.voiceEndpoints ? { endpoints: deps.voiceEndpoints } : {}),
+    // Recordings are kept in the node's object storage, under recordings/.
+    db, storage, accounts, node, ownership, transports: voiceTransports, ...(deps.voiceEndpoints ? { endpoints: deps.voiceEndpoints } : {}),
     admit: async tenant => {
       const refused = await accounts.runLimit(tenant);
       if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;

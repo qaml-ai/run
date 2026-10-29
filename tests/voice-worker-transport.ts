@@ -81,9 +81,10 @@ export function workerFakeTransport(options: { playEveryMs?: number } = {}): Voi
           let stopped = false, count = 0;
           const done = (async () => {
             try {
-              for await (const _packet of packets) {
+              for await (const packet of packets) {
                 if (stopped || connection.closed) break;
                 if (!count++) started();
+                connection.handlers.played?.(packet);
                 await new Promise(resolve => setTimeout(resolve, options.playEveryMs ?? 2));
               }
               return stopped ? "stopped" as const : "done" as const;

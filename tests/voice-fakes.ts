@@ -11,6 +11,8 @@ import type { AudioHeader } from "../src/audio-header.ts";
 import { Transcriber, type Transcript } from "../src/transcription.ts";
 import { VoiceSessions, type VoiceConnection, type VoiceCredentials, type VoiceHandlers, type VoiceSessionsOptions, type VoiceTransport } from "../src/voice-sessions.ts";
 import { testDatabase } from "./database.ts";
+import { memoryStorage } from "../shared/storage.ts";
+import { postgresTail } from "../src/log-tail.ts";
 import { fakeRealtimeProvider, type FakeConnection as ModelConnection } from "./voice-realtime-fakes.ts";
 
 type T = { after(fn: () => Promise<void> | void): void };
@@ -145,12 +147,14 @@ export async function voiceCluster(t: T, options: Partial<VoiceSessionsOptions> 
   const usage: { tenant: string; usage: UsageRecord }[] = [];
   const asks: { agent: string; tenant: string; request: { id: string; method: string; params: Record<string, unknown> } }[] = [];
   const nodes: { name: string; ownership: Ownership; voice: VoiceSessions }[] = [];
+  // Recordings' object storage, shared by the nodes.
+  const storage = memoryStorage(postgresTail(db, { unfenced: true }));
   t.after(async () => { for (const node of nodes) { await node.voice.stop().catch(() => {}); await node.ownership.close().catch(() => {}); } });
   const node = async (name: string) => {
     const ownership = new Ownership(db, { node: name, ttlMs: options.ttlMs ?? 90_000 });
     await ownership.start();
     const voice = new VoiceSessions({
-      db, accounts, node: name, ownership, transports: { discord: fake.transport },
+      db, storage, accounts, node: name, ownership, transports: { discord: fake.transport },
       admit: async () => {}, agentOwned: async agent => agent === AGENT,
       record: (tenant, record) => { usage.push({ tenant, usage: record }); },
       submitStreaming: async function* (agent, tenant, request) { asks.push({ agent, tenant, request }); yield options.agentReply ?? "The agent's answer."; },
@@ -166,7 +170,7 @@ export async function voiceCluster(t: T, options: Partial<VoiceSessionsOptions> 
     [["voice.session.started", "voice.session.ended", "voice.session.error", "voice.utterance", "voice.speech.started", "voice.speech.ended"]]);
   const events = async (type?: string) => (await db.query("select body from webhook_deliveries where tenant = 'alice' order by created_at, id")).rows
     .map(row => row.body).filter(body => type === undefined || body.type === type);
-  return { db, accounts, fake, realtime, transcription, usage, asks, node, events };
+  return { db, accounts, fake, realtime, transcription, usage, asks, node, events, storage };
 }
 
 let counter = 0;

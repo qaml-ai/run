@@ -442,6 +442,8 @@ export class DiscordVoice implements VoiceConnection {
         if (first) { first = false; firstAt = Date.now(); started(); }
         stats.packets++;
         lastAt = Date.now();
+        // As it goes out, one packet ahead of the player: a recording keeps it in time.
+        self.handlers.played?.(next.value);
         yield Buffer.from(next.value);
         waited = Date.now();
       }

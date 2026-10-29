@@ -110,6 +110,13 @@ function handle(transport: VoiceTransport, message: ToMedia) {
       drop: speaker => post({ t: "drop", session, speaker }),
       cut: cut => { const wire = wireCut(cut); post({ t: "cut", session, cut: wire.cut }, wire.transfer); },
       turn: event => post({ t: "turn", session, event }),
+      recorded: packets => {
+        const lengths = packets.map(entry => entry.packet.byteLength);
+        const bytes = new Uint8Array(lengths.reduce((sum, length) => sum + length, 0));
+        let at = 0;
+        for (const entry of packets) { bytes.set(entry.packet, at); at += entry.packet.byteLength; }
+        post({ t: "recorded", session, packets: bytes.buffer, lengths, speakers: packets.map(entry => entry.speaker), at: packets.map(entry => entry.at) }, [bytes.buffer]);
+      },
     }, models);
     sessions.set(session, { media, playing: new Map() });
     return;

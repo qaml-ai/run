@@ -386,7 +386,8 @@ what it cost, and running out ends the session (`limit: "end_user"`).
 - People in the call must know they are being transcribed. camelRun cannot post in Discord, so your app posts
   `notice.text` in the voice channel's chat when it joins, from code your bot's authors cannot turn off. Telling them
   is your app's job: camelRun cannot check it.
-- Audio is never stored: it streams to the realtime provider as it is spoken, and is dropped. Transcripts are not kept
+- Audio is not stored unless you [record](#recording) the call: it streams to the realtime provider as it is spoken,
+  and is dropped. A recording keeps the call's audio until its files expire (`retentionHours`). Transcripts are not kept
   beyond delivery (an undelivered webhook event is retried for up to 3 days; an agent keeps what `ask_agent` asked in
   its history). Logs carry ids, lengths and counts, never audio or text.
 - Webhook events are delivered at least once: dedupe them by `id`.
@@ -400,6 +401,46 @@ what it cost, and running out ends the session (`limit: "end_user"`).
   one of the call's members), and speech goes out only while every member of the group is named and the group is
   ready (never unencrypted while it re-forms).
 - Discord does not document receiving audio for bots, though every recording bot does it; it may change without notice.
+
+## Recording
+
+A session records its call only when you ask: everything said in it, and the bot's own speech, as Ogg Opus.
+
+```ts
+const recording = await agents.voice.record(session.id, { tracks: "mixed", maxMinutes: 60 }); // POST …/recording
+await postMessage(recording.notice.channelId, recording.notice.text);      // people must know they are recorded
+// …
+const done = await agents.voice.stopRecording(session.id);                 // DELETE …/recording
+for (const file of done.files) save(await agents.voice.recordingFile(done.id, file.name)); // GET /v1/voice/recordings/{id}/files/{name}
+```
+
+```bash
+curl -X POST "$RUNTIME/v1/voice/sessions/$SESSION/recording" -H "Authorization: Bearer $CAMELAI_API_KEY" -H "Content-Type: application/json" -d '{"tracks": "speakers"}'
+curl -X DELETE "$RUNTIME/v1/voice/sessions/$SESSION/recording" -H "Authorization: Bearer $CAMELAI_API_KEY"
+curl -o recording.ogg "$RUNTIME/v1/voice/recordings/$RECORDING/files/recording.ogg" -H "Authorization: Bearer $CAMELAI_API_KEY"
+```
+
+| Field | |
+| --- | --- |
+| `tracks` | `mixed` (the default): one file, `recording.ogg`, everyone and the bot mixed (mono, 24 kHz, 16 kbps: about 7 MB an hour). `speakers`: a file per speaker, `<user id>.ogg`, as Discord sent their audio (stereo), the bot's own speech in `<bot user id>.ogg`; every file starts at the recording's start, with silence where its speaker said nothing, so they line up. Up to 25 speakers; later ones are left out |
+| `maxMinutes` | it ends after this long: 1 to 240, default 60 |
+| `maxBytes` | it ends once it holds this much audio: 1 MiB to 100 MiB, default 25 MiB (the files add Ogg's framing and the silence frames between speech, about 1 MB an hour a track) |
+| `retentionHours` | its files are kept this long after it ends: 1 to 720 (30 days), default 24. `DELETE /v1/voice/recordings/{id}` deletes them sooner |
+| `metadata` | anything, at most 4 KB of JSON, given back with it |
+
+The answer is the recording (`id`, `state: "recording"`) and `notice`, a line for the voice channel's chat: post it,
+and tell people who join while it records. One recording at a time a session (a second is a 409
+`VOICE_RECORDING_EXISTS`); a session that is not recording answers a stop with a 409 `VOICE_NOT_RECORDING`.
+
+A recording ends when you stop it (`endReason: "stopped"`), at `maxMinutes` or `maxBytes` (`max_duration`,
+`max_size`), or when its session ends (`session_ended`): its files are made then, and `voice.recording.ended` says so,
+with the recording (`state: "ready"` and its `files`, or `failed` with an `error`). The stop answers the recording once
+its files are made (within a second or two), or as `stopping` after 20 seconds; the event comes either way. A session
+handed to another node (a deploy) goes on recording there, into the same recording, after a gap of about a second.
+
+Recording costs nothing beyond the session; its audio is kept in camelRun's object storage, and is not counted in
+the account's storage. Recording people may need their consent where you and they are: telling them is your app's job,
+and camelRun cannot check it.
 
 ## Limits
 

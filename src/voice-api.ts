@@ -60,6 +60,25 @@ export function voiceRoutes(route: Route, voice: () => VoiceSessions | undefined
     responses: { 200: reply("What the bot was saying, and was going to, stopped", schema.VoiceSpeechStopped) },
   }), async c => json(c, 200, await service().stopSpeaking(c.var.principal.tenant, c.req.param("id")!)));
   route(createRoute({
+    method: "post", path: "/v1/voice/sessions/{id}/recording", request: { params: sessionId, body: body(schema.VoiceRecordingInput) },
+    responses: { 201: reply("The recording, started: the call's audio is kept until it stops, then made into Ogg Opus files. and the notice your app must post in the channel", schema.VoiceRecordingStarted) },
+  }), async c => json(c, 201, await service().startRecording(c.var.principal.tenant, c.req.param("id")!, await parse(schema.VoiceRecordingInput, c))));
+  route(createRoute({
+    method: "delete", path: "/v1/voice/sessions/{id}/recording", request: { params: sessionId },
+    responses: { 200: reply("The recording, stopped: ready with its files, or stopping if they take longer than 20 seconds to make (voice.recording.ended says when they are)", schema.VoiceRecording) },
+  }), async c => json(c, 200, await service().stopRecording(c.var.principal.tenant, c.req.param("id")!)));
+  route(createRoute({ method: "get", path: "/v1/voice/recordings/{id}", request: { params: sessionId }, responses: { 200: reply("The recording", schema.VoiceRecording) } }),
+    async c => json(c, 200, await service().getRecording(c.var.principal.tenant, c.req.param("id")!)));
+  route(createRoute({
+    method: "get", path: "/v1/voice/recordings/{id}/files/{name}", request: { params: z.object({ id: z.string(), name: z.string() }) },
+    responses: { 200: { description: "The file: Ogg Opus", content: { "audio/ogg": { schema: z.string().openapi({ format: "binary" }) } } } },
+  }), async c => {
+    const file = await service().recordingFile(c.var.principal.tenant, c.req.param("id")!, c.req.param("name")!);
+    return new Response(file.data as Uint8Array<ArrayBuffer>, { headers: { "Content-Type": file.contentType, "Content-Length": String(file.data.byteLength), "Content-Disposition": `attachment; filename="${file.name}"`, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
+  });
+  route(createRoute({ method: "delete", path: "/v1/voice/recordings/{id}", request: { params: sessionId }, responses: { 200: reply("The recording and its files, deleted", schema.VoiceRecordingDeleted) } }),
+    async c => json(c, 200, await service().deleteRecording(c.var.principal.tenant, c.req.param("id")!)));
+  route(createRoute({
     method: "delete", path: "/v1/voice/sessions/{id}", request: { params: sessionId },
     responses: { 200: reply("The session, ended; and the OP 4 your app sends to leave the channel", schema.VoiceSessionEnded) },
   }), async c => json(c, 200, await service().end(c.var.principal.tenant, c.req.param("id")!)));

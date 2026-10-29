@@ -17,6 +17,8 @@ import { bucketInput, DEFAULT_BUCKET } from "./end-user-credits.ts";
 import { DEFAULT_ADDRESSING, Floor, type AddressingPolicy } from "./voice/turns/floor.ts";
 import { BARGE_IN_LIMITS, DEFAULT_BARGE_IN, type BargeInPolicy } from "./voice/echo-guard.ts";
 import type { TurnModels } from "./voice/turns/inference.ts";
+import { assemble, Recorder, RECORDING_LIMITS, type RecordedPacket, type RecordingFile, type RecordingTracks } from "./voice/recorder.ts";
+import type { Storage } from "../shared/storage.ts";
 import { RealtimeBrain, ASK_AGENT, STAY_SILENT, REALTIME_LIMITS, realtimeInstructions, type BrainHooks } from "./voice/realtime/brain.ts";
 import { realtimePrice, REALTIME_PROVIDERS, REALTIME_TRANSCRIPTION, realtimeVoice, type RealtimeCredentials, type RealtimeProvider, type RealtimeProviderId } from "./voice/realtime/provider.ts";
 
@@ -31,14 +33,19 @@ import { realtimePrice, REALTIME_PROVIDERS, REALTIME_TRANSCRIPTION, realtimeVoic
  * node holds (its node died, fenced or retired). A change made on another node (new credentials, the end) bumps the
  * row's revision and notifies the owner, whose scan also compares revisions. Effects of a session (its events, its
  * usage) are written under the owner's claim. The credentials are sealed and dropped when the session ends; audio is
- * never stored.
+ * stored only while the tenant records the call (a recording, below), and only until the recording's files expire.
  *
  * The owner's media cuts each speaker's audio into turns (src/voice/turns). A session's `brain` decides what comes of
  * them: `realtime` (the default), a speech-to-speech model (src/voice/realtime) that hears the call and answers aloud on
  * the tenant's key for its provider, asking deliver.agent (ask_agent) for anything beyond talk; or `listen`, muted, where
  * each utterance is transcribed after it is cut, as `POST /v1/transcriptions` would (the same provider, model and price),
  * and nothing answers. What people say goes out as `voice.utterance` events for the tenant's webhooks, what the bot says
- * as `voice.speech.*`; their usage is recorded as the session's subject's. Audio is never stored.
+ * as `voice.speech.*`; their usage is recorded as the session's subject's.
+ *
+ * A recording (POST …/recording) is the one way audio is kept: the owner's Recorder (src/voice/recorder.ts) takes every
+ * packet its media hears and plays, writes it to object storage in chunks under its claim, and when the recording ends
+ * (DELETE …/recording, its limits, the session's end) makes its files, kept `retentionHours`, and sends
+ * `voice.recording.ended`. A session handed to another node goes on recording there into the same recording.
  */
 
 /** What a voice connection needs: the bot's voice session (its user, guild and channel) and the voice server's grant. */
@@ -60,6 +67,8 @@ export interface VoiceHandlers {
   packet(speaker: string, packet: Uint8Array, lost?: number): void;
   /** `speaker`'s audio stream broke (a packet that would not decrypt): what came of it so far ends there. */
   broken(speaker: string): void;
+  /** A packet of the bot's own speech went out (as the listener gets it, in time): a recording keeps it. */
+  played?(packet: Uint8Array): void;
   /**
    * The connection cannot go on with these credentials: the bot was disconnected from the channel (`kicked`: removed,
    * moved, the channel deleted) or Discord no longer takes the session (`credentials`). New ones may come (`update`).
@@ -205,6 +214,39 @@ type Row = {
   created_at: string | number; started_at: string | number | null; last_speech_at: string | number | null; ended_at: string | number | null; updated_at: string | number;
 };
 const num = (value: string | number | null) => value === null ? null : Number(value);
+
+const RECORDING_ID = /^vr_[a-f0-9]{24}$/;
+const RECORDING_NOTICE = "<@{bot}> is recording this voice channel: what is said here is saved as audio until the recording stops.";
+/** Why a recording ended: asked (`stopped`), its limits, its session's end, or a failure to make its files. */
+export type RecordingEnd = "stopped" | "max_duration" | "max_size" | "session_ended" | "error";
+/** How long DELETE …/recording waits for the files before it answers the recording as it is (stopping). */
+const RECORDING_STOP_WAIT_MS = 20_000;
+/**
+ * A recording still open when its session ended this long ago (its owner died before finishing it), or one left
+ * finishing this long (its finisher died), is finished by any node's scan, from the chunks stored.
+ */
+const RECORDING_ORPHAN_MS = 60_000;
+const RECORDING_STUCK_MS = 10 * 60_000;
+const recordingPrefix = (tenant: string, id: string) => `recordings/${tenant}/${id}/`;
+
+/** A row of voice_recordings. */
+type RecordingRow = {
+  id: string; tenant: string; session: string; state: "recording" | "stopping" | "finishing" | "ready" | "failed"; tracks: RecordingTracks;
+  options: { maxMinutes: number; maxBytes: number; retentionHours: number; metadata?: Record<string, unknown> };
+  chunks: string[]; bytes: string | number; started_at: string | number; ended_at: string | number | null; end_reason: string | null;
+  seconds: string | number | null; files: RecordingFile[] | null; error: string | null; expires_at: string | number | null; updated_at: string | number;
+};
+
+/** A recording as the API shows it: `recording`, `stopping` (making its files), `ready` (its files) or `failed`. */
+export function recordingView(row: RecordingRow) {
+  return {
+    id: row.id, session: row.session, state: row.state === "finishing" ? "stopping" as const : row.state, tracks: row.tracks,
+    maxMinutes: row.options.maxMinutes, maxBytes: row.options.maxBytes, retentionHours: row.options.retentionHours, metadata: row.options.metadata ?? {},
+    bytes: Number(row.bytes), startedAt: num(row.started_at)!, endedAt: num(row.ended_at), endReason: row.end_reason as RecordingEnd | null,
+    seconds: row.seconds === null ? null : Number(row.seconds), files: row.files ?? [], ...(row.error ? { error: row.error } : {}), expiresAt: num(row.expires_at),
+  };
+}
+export type RecordingView = ReturnType<typeof recordingView>;
 
 /** A session as the API shows it: never its token or voice session id. */
 export function sessionView(row: Row) {
@@ -370,6 +412,8 @@ export interface VoiceCredit {
 
 export interface VoiceSessionsOptions {
   db: Db;
+  /** Where recordings are kept (the node's object storage); without it, recording is refused. */
+  storage?: Storage;
   accounts: Pick<Accounts, "seal" | "unseal" | "canStoreKeys">;
   /** This node's address, in logs. */
   node: string;
@@ -461,6 +505,10 @@ type Held = {
   turnStats?: { likelyEnds: number; resumes: number; turns: number };
   /** The realtime brain that hears the call and answers; none for a listening session. */
   brain?: RealtimeBrain;
+  /** The recording this node is making of the call, if any: its id and recorder. */
+  recording?: { id: string; recorder: Recorder };
+  /** Work on its recording (start, chunks, end), one at a time. */
+  recordingWork?: Promise<void>;
 };
 export class VoiceSessions {
   readonly db: Db;
@@ -753,6 +801,244 @@ export class VoiceSessions {
     return { ...sessionView(ended), leave: { op: 4, d: { guild_id: ended.guild, channel_id: null, self_mute: false, self_deaf: false } } };
   }
 
+  // Recordings --------------------------------------------------------------------
+
+  /**
+   * Start recording a session's call: one recording at a time a session, until it is stopped, reaches `maxMinutes` or
+   * `maxBytes`, or the session ends. Its owner starts recording as it learns of it (at once, or on its notification).
+   */
+  async startRecording(tenant: string, id: string, input: Record<string, unknown>) {
+    only(input, "body", ["tracks", "maxMinutes", "maxBytes", "retentionHours", "metadata"]);
+    if (!this.options.storage) throw new HttpError(404, "Voice recordings are not enabled on this runtime");
+    if (input.tracks !== undefined && input.tracks !== "mixed" && input.tracks !== "speakers") throw new HttpError(400, "tracks must be mixed (one file, the default) or speakers (a file each)");
+    const options = {
+      maxMinutes: integer(input.maxMinutes, "maxMinutes", RECORDING_LIMITS.maxMinutes),
+      maxBytes: integer(input.maxBytes, "maxBytes", RECORDING_LIMITS.maxBytes),
+      retentionHours: integer(input.retentionHours, "retentionHours", RECORDING_LIMITS.retentionHours),
+      ...(input.metadata !== undefined ? { metadata: metadataInput(input.metadata) } : {}),
+    };
+    const session = await this.row(tenant, id);
+    if (session.state === "ended") throw new HttpError(409, `This voice session ended (${session.end_reason})`, "VOICE_SESSION_ENDED");
+    const now = Date.now();
+    let row: RecordingRow;
+    try {
+      row = (await this.db.query(`
+        insert into voice_recordings (id, tenant, session, state, tracks, options, started_at, updated_at) values ($1, $2, $3, 'recording', $4, $5, $6, $6) returning *`,
+      [`vr_${randomBytes(12).toString("hex")}`, tenant, id, input.tracks ?? "mixed", JSON.stringify(options), now])).rows[0];
+    } catch (error) {
+      if ((error as { code?: string }).code !== "23505") throw error;
+      const active = (await this.db.query("select id from voice_recordings where session = $1 and state in ('recording', 'stopping', 'finishing')", [id])).rows[0];
+      throw new HttpError(409, `This voice session is recording already (${active?.id ?? "a recording"}): stop it first`, "VOICE_RECORDING_EXISTS", active ? { recording: active.id } : undefined);
+    }
+    console.log(JSON.stringify({ type: "voice_recording_created", session: id, recording: row.id, tenant, tracks: row.tracks, node: this.options.node }));
+    await this.changed(id);
+    // People must know they are recorded: the app posts this in the voice channel's chat.
+    return { ...recordingView(row), notice: { required: true as const, channelId: session.channel, text: RECORDING_NOTICE.replaceAll("{bot}", session.bot_user) } };
+  }
+
+  /**
+   * Stop a session's recording: its owner writes what it holds and makes the files (or, with no owner, this node from
+   * what is stored). Answers the recording once its files are made, or as it is after RECORDING_STOP_WAIT_MS
+   * (`stopping`; `voice.recording.ended` says when they are).
+   */
+  async stopRecording(tenant: string, id: string) {
+    const session = await this.row(tenant, id);
+    const { rows } = await this.db.query("update voice_recordings set state = 'stopping', updated_at = $2 where session = $1 and state = 'recording' returning id", [id, Date.now()]);
+    const recording = (rows[0] ?? (await this.db.query("select id from voice_recordings where session = $1 and state in ('stopping', 'finishing')", [id])).rows[0]) as { id: string } | undefined;
+    if (!recording) throw new HttpError(409, "This voice session is not recording", "VOICE_NOT_RECORDING");
+    // A session that ended a while ago has no owner left to finish it (one that just ended, its owner finishes).
+    if (session.state === "ended" && Date.now() - num(session.ended_at)! >= RECORDING_ORPHAN_MS) await this.finishRecording(recording.id, "stopped");
+    else if (session.state !== "ended") await this.changed(id);
+    const deadline = Date.now() + RECORDING_STOP_WAIT_MS;
+    for (;;) {
+      const row = (await this.db.query("select * from voice_recordings where id = $1", [recording.id])).rows[0] as RecordingRow;
+      if (row.state === "ready" || row.state === "failed" || Date.now() >= deadline) return recordingView(row);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  private async recordingRow(tenant: string, id: string): Promise<RecordingRow> {
+    const row = RECORDING_ID.test(id) ? (await this.db.query("select * from voice_recordings where id = $1 and tenant = $2", [id, tenant])).rows[0] as RecordingRow | undefined : undefined;
+    if (!row) throw new HttpError(404, "Unknown voice recording");
+    return row;
+  }
+
+  async getRecording(tenant: string, id: string) { return recordingView(await this.recordingRow(tenant, id)); }
+
+  /** One of a ready recording's files, by name. */
+  async recordingFile(tenant: string, id: string, name: string): Promise<{ data: Uint8Array; contentType: string; name: string }> {
+    const row = await this.recordingRow(tenant, id);
+    const file = row.state === "ready" ? row.files?.find(entry => entry.name === name) : undefined;
+    if (!file) throw new HttpError(404, row.state === "ready" ? `This recording has no file ${name}` : "This recording has no files yet");
+    const data = await this.options.storage?.readBlob(`${recordingPrefix(row.tenant, row.id)}${file.name}`);
+    if (!data) throw new HttpError(410, "This recording's files are no longer kept");
+    return { data, contentType: file.contentType, name: file.name };
+  }
+
+  /** Delete a recording and its files now; one still recording is stopped first. */
+  async deleteRecording(tenant: string, id: string) {
+    const row = await this.recordingRow(tenant, id);
+    if (row.state === "recording" || row.state === "stopping" || row.state === "finishing") throw new HttpError(409, "This recording is still going: stop it first", "VOICE_RECORDING_ACTIVE");
+    await this.options.storage?.removeBlobs(recordingPrefix(row.tenant, row.id));
+    await this.db.query("delete from voice_recordings where id = $1", [row.id]);
+    return { id: row.id, deleted: true };
+  }
+
+  /** Run work on a held session's recording after what was asked before it. */
+  private recordingWork(held: Held, work: () => Promise<void>): Promise<void> {
+    const next = (held.recordingWork ?? Promise.resolve()).then(work).catch(error =>
+      console.error(JSON.stringify({ type: "voice_recording_failed", session: held.id, recording: held.recording?.id ?? null, error: safeError(error) })));
+    held.recordingWork = next;
+    return next;
+  }
+
+  /**
+   * The owner's side of a session's recording, as its row says: start (or, taken from another node, go on with) one
+   * that records, end one asked to stop, and forget one gone (finished by another node, deleted).
+   */
+  private syncRecording(held: Held): Promise<void> {
+    return this.recordingWork(held, async () => {
+      if (this.held.get(held.id) !== held) return;
+      // Read now, after the work before it (which may have ended the recording).
+      const row = (await this.db.query("select * from voice_recordings where session = $1 and state in ('recording', 'stopping')", [held.id])).rows[0] as RecordingRow | undefined;
+      if (row && !held.recording) {
+        held.recording = {
+          id: row.id,
+          recorder: new Recorder({ startedAt: num(row.started_at)!, tracks: row.tracks, maxBytes: row.options.maxBytes, maxMinutes: row.options.maxMinutes, bytes: Number(row.bytes) }),
+        };
+        held.media?.configure({ record: true });
+        console.log(JSON.stringify({ type: "voice_recording_started", session: held.id, recording: row.id, resumed: row.chunks.length > 0, node: this.options.node }));
+      }
+      if (row?.state === "stopping" && held.recording?.id === row.id) await this.endRecording(held, "stopped");
+      else if (!row && held.recording) {
+        held.recording.recorder.close();
+        held.recording = undefined;
+        held.media?.configure({ record: false });
+      }
+    });
+  }
+
+  /** Packets the media heard and played, into the recording: ended at its limits, written out as chunks fall due. */
+  private recorded(held: Held, packets: RecordedPacket[]) {
+    const recording = held.recording;
+    if (!recording) return;
+    recording.recorder.add(packets);
+    const full = recording.recorder.full();
+    if (full) void this.recordingWork(held, () => held.recording === recording ? this.endRecording(held, full) : Promise.resolve());
+    else if (recording.recorder.due()) void this.recordingWork(held, () => held.recording === recording ? this.writeChunk(held, false) : Promise.resolve());
+  }
+
+  /**
+   * What the recorder holds, written as a chunk and listed on its row under the claim (`final`: all of it, as it ends
+   * or leaves this node). A chunk its row no longer takes (finished elsewhere) is deleted.
+   */
+  private async writeChunk(held: Held, final: boolean) {
+    const recording = held.recording!;
+    const chunk = recording.recorder.chunk(final);
+    if (!chunk) return;
+    const key = `${recordingPrefix(held.tenant, recording.id)}chunks/${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
+    await this.options.storage!.writeBlob(key, chunk);
+    const listed = await underClaim(this.db, held.claim, sql => sql.query(`
+      update voice_recordings set chunks = chunks || $2::jsonb, bytes = $3, updated_at = $4 where id = $1 and state in ('recording', 'stopping')`,
+    [recording.id, JSON.stringify([key]), recording.recorder.bytes, Date.now()]));
+    if (!listed.rowCount) await this.options.storage!.removeBlob(key).catch(() => {});
+  }
+
+  /** The owner ends its recording: the rest written, then its files made. */
+  private async endRecording(held: Held, reason: RecordingEnd) {
+    const recording = held.recording;
+    if (!recording) return;
+    // What could not be written is lost; the files are made from what was.
+    try { await this.writeChunk(held, true); }
+    catch (error) { console.error(JSON.stringify({ type: "voice_recording_write_failed", session: held.id, recording: recording.id, error: safeError(error) })); }
+    finally {
+      recording.recorder.close();
+      held.recording = undefined;
+      held.media?.configure({ record: false });
+    }
+    if (recording.recorder.dropped) console.log(JSON.stringify({ type: "voice_recording_dropped", session: held.id, recording: recording.id, packets: recording.recorder.dropped }));
+    await this.finishRecording(recording.id, reason);
+  }
+
+  /** A held session's recording leaves this node (handoff): what it holds is written, for the next owner to go on. */
+  private async leaveRecording(held: Held, write: boolean) {
+    const recording = held.recording;
+    if (!recording) return;
+    try { if (write) await this.writeChunk(held, true); }
+    finally {
+      recording.recorder.close();
+      held.recording = undefined;
+    }
+  }
+
+  /**
+   * Make a recording's files from its chunks, once (whoever moves it to `finishing` first): written to storage, the row
+   * ready with them, `voice.recording.ended` in the outbox, the chunks deleted. A failure leaves it `failed`, saying so.
+   */
+  private async finishRecording(id: string, reason: RecordingEnd) {
+    const now = Date.now();
+    const claimed = (await this.db.query(`
+      update voice_recordings set state = 'finishing', end_reason = coalesce(end_reason, $2), ended_at = coalesce(ended_at, $3), updated_at = $3
+      where id = $1 and (state in ('recording', 'stopping') or (state = 'finishing' and updated_at < $4)) returning *`, [id, reason, now, now - RECORDING_STUCK_MS])).rows[0] as RecordingRow | undefined;
+    if (!claimed) return;
+    const storage = this.options.storage!;
+    const prefix = recordingPrefix(claimed.tenant, claimed.id);
+    const expiresAt = now + claimed.options.retentionHours * 3_600_000;
+    let ready: { files: RecordingFile[]; seconds: number } | undefined, error: string | undefined;
+    try {
+      const chunks: Uint8Array[] = [];
+      for (const key of claimed.chunks) {
+        const chunk = await storage.readBlob(key);
+        if (chunk) chunks.push(chunk);
+      }
+      const made = assemble(chunks, claimed.tracks);
+      for (const file of made.files) await storage.writeBlob(`${prefix}${file.name}`, file.data);
+      ready = { files: made.files.map(({ data: _data, ...file }) => file), seconds: made.seconds };
+    } catch (failure) {
+      error = safeError(failure).slice(0, 200);
+      console.error(JSON.stringify({ type: "voice_recording_finish_failed", recording: id, error }));
+    }
+    const row = await transaction(this.db, async sql => {
+      const done = (await sql.query(`
+        update voice_recordings set state = $2, files = $3, seconds = $4, error = $5, end_reason = $6, expires_at = $7, updated_at = $8 where id = $1 and state = 'finishing' returning *`,
+      [id, ready ? "ready" : "failed", ready ? JSON.stringify(ready.files) : null, ready?.seconds ?? null, error ?? null, ready ? claimed.end_reason : "error", expiresAt, Date.now()])).rows[0] as RecordingRow | undefined;
+      const session = (await sql.query("select * from voice_sessions where id = $1", [claimed.session])).rows[0] as Row | undefined;
+      if (done && session?.options.deliver.webhooks) await enqueueEvents(sql, [this.event(session, "voice.recording.ended", { recording: recordingView(done) }, `voice:${claimed.session}:recording:${id}`)]);
+      return done;
+    });
+    for (const key of claimed.chunks) await storage.removeBlob(key).catch(() => {});
+    this.options.kickWebhooks?.();
+    console.log(JSON.stringify({ type: "voice_recording_ended", session: claimed.session, recording: id, reason: row?.end_reason ?? reason, state: row?.state ?? null, seconds: ready?.seconds ?? null, files: ready?.files.length ?? 0, bytes: Number(claimed.bytes), node: this.options.node }));
+  }
+
+  /**
+   * Recordings in this node's scan: the held sessions' as their rows say (a lost notification), those past their limits
+   * or with a chunk due; any left open by a session that ended without its owner finishing them, or stuck finishing.
+   */
+  private async scanRecordings(now: number) {
+    if (!this.options.storage) return;
+    const held = [...this.held.values()];
+    if (held.length) {
+      const { rows } = await this.db.query("select * from voice_recordings where session = any($1) and state in ('recording', 'stopping')", [held.map(entry => entry.id)]);
+      const bySession = new Map((rows as RecordingRow[]).map(row => [row.session, row]));
+      for (const entry of held) {
+        const row = bySession.get(entry.id) ?? null;
+        if (row?.id !== entry.recording?.id || row?.state === "stopping") void this.syncRecording(entry);
+        else if (entry.recording) {
+          const recording = entry.recording;
+          const full = recording.recorder.full(now);
+          if (full) void this.recordingWork(entry, () => entry.recording === recording ? this.endRecording(entry, full) : Promise.resolve());
+          else if (recording.recorder.due(now)) void this.recordingWork(entry, () => entry.recording === recording ? this.writeChunk(entry, false) : Promise.resolve());
+        }
+      }
+    }
+    const { rows: orphans } = await this.db.query(`
+      select r.id from voice_recordings r join voice_sessions s on s.id = r.session
+      where (r.state in ('recording', 'stopping') and s.state = 'ended' and s.ended_at < $1) or (r.state = 'finishing' and r.updated_at < $2)`,
+    [now - RECORDING_ORPHAN_MS, now - RECORDING_STUCK_MS]);
+    for (const { id } of orphans) await this.finishRecording(id, "session_ended");
+  }
+
   // Holding sessions --------------------------------------------------------------
 
   /**
@@ -787,6 +1073,7 @@ export class VoiceSessions {
           await this.take(row).catch(error => console.error(JSON.stringify({ type: "voice_take_failed", session: row.id, error: safeError(error) })));
         }
       }
+      await this.scanRecordings(now).catch(error => console.error(JSON.stringify({ type: "voice_recording_scan_failed", error: safeError(error) })));
       await this.prune(now);
     } finally { this.scanning = false; }
     if (this.rescan) {
@@ -801,7 +1088,10 @@ export class VoiceSessions {
     if (held) {
       const row = (await this.db.query("select * from voice_sessions where id = $1", [id])).rows[0] as Row | undefined;
       if (!row || row.state === "ended") void this.drop(held, true, "end");
-      else if (row.revision !== held.revision) this.apply(held, row);
+      else {
+        if (row.revision !== held.revision) this.apply(held, row);
+        await this.syncRecording(held);
+      }
       return;
     }
     if (notify) await this.notify([id]);
@@ -864,6 +1154,8 @@ export class VoiceSessions {
     console.log(JSON.stringify({ type: "voice_session_acquired", session: held.id, node: this.options.node, epoch: taken.claim.epoch }));
     if (current.state === "live") await this.setState(held, "reconnecting").catch(() => {});
     this.connect(held, transport);
+    // A recording it was making goes on here.
+    if (this.options.storage) void this.syncRecording(held);
   }
 
   private credentials(row: Row): VoiceCredentials {
@@ -881,6 +1173,7 @@ export class VoiceSessions {
       // A brain hears each speaker's audio as it comes; a listening session transcribes each cut whole.
       live: !!held.brain,
       ...(options.endOfTurn ? { endOfTurn: options.endOfTurn } : {}),
+      ...(held.recording ? { record: true } : {}),
     };
   }
 
@@ -933,6 +1226,8 @@ export class VoiceSessions {
       // A brain's turns are its own. A listening session transcribes each cut, even one of a media replaced or a
       // session let go (handoff, end): what was said is still sent.
       cut: cut => { if (held.brain) { if (current()) held.brain.cut(cut); } else this.listened(held, cut); },
+      // A replaced media's last packets are the recording's too, and a closing one's (the recorder ends after it).
+      recorded: packets => this.recorded(held, packets),
             crashed: reason => { if (current()) this.crashed(held, transport, reason); },
     });
     held.media = media;
@@ -1016,6 +1311,10 @@ export class VoiceSessions {
     const media = held.media;
     held.media = undefined;
     await media?.close(cut).catch(error => console.error(JSON.stringify({ type: "voice_media_close_failed", session: held.id, error: safeError(error) })));
+    // Its recording ends with the session, or is written out for the next owner (unless the claim is gone: fenced).
+    if (held.recording || held.recordingWork) {
+      await this.recordingWork(held, () => release && cut === "end" ? this.endRecording(held, "session_ended") : this.leaveRecording(held, release));
+    }
     console.log(JSON.stringify({ type: "voice_session_released", session: held.id, node: this.options.node, epoch: held.claim.epoch, release }));
     if (release) await this.options.ownership?.release(held.claim).catch(() => {});
   }
@@ -1364,7 +1663,7 @@ export class VoiceSessions {
   }
 
   /** An event about a session, for the tenant's webhook endpoints. */
-  protected event(row: Row, type: "voice.session.started" | "voice.session.ended" | "voice.session.error" | "voice.utterance" | "voice.speech.started" | "voice.speech.ended", data: Record<string, unknown>, key: string): WebhookEvent {
+  protected event(row: Row, type: "voice.session.started" | "voice.session.ended" | "voice.session.error" | "voice.utterance" | "voice.speech.started" | "voice.speech.ended" | "voice.recording.ended", data: Record<string, unknown>, key: string): WebhookEvent {
     const { options } = row;
     return webhookEvent(type, row.tenant, {
       session: row.id, provider: row.provider, guildId: row.guild, channelId: row.channel, botUserId: row.bot_user,
@@ -1372,10 +1671,16 @@ export class VoiceSessions {
     }, key);
   }
 
-  /** Ended sessions past their retention, deleted at most once an hour. */
+  /** Ended sessions and expired recordings past their retention, deleted at most once an hour. */
   private async prune(now: number) {
     if (now - this.prunedAt < PRUNE_EVERY_MS) return;
     this.prunedAt = now;
     await this.db.query("delete from voice_sessions where state = 'ended' and ended_at < $1", [now - VOICE_LIMITS.retentionDays * 86_400_000]);
+    // Recordings past their retention: their files, then their rows.
+    const { rows: expired } = await this.db.query("select id, tenant from voice_recordings where expires_at < $1 order by expires_at limit 1000", [now]);
+    for (const { id, tenant } of expired as { id: string; tenant: string }[]) {
+      await this.options.storage?.removeBlobs(recordingPrefix(tenant, id));
+      await this.db.query("delete from voice_recordings where id = $1", [id]);
+    }
   }
 }
