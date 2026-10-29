@@ -238,6 +238,15 @@ export type Session = {
   sharing?: Promise<void>;
   /** The send_message calls of each running run, by request id: at most MULTI_AGENT_LIMITS.messagesPerRun. */
   messagesSent?: Map<string, Set<string>>;
+  /** The report_progress calls of each running run, by request id: at most MULTI_AGENT_LIMITS.progressPerRun. */
+  progressSent?: Map<string, number>;
+  /** Whether this agent may have background children reporting progress: it has the agents builtin, or started one. */
+  spawns?: boolean;
+  /**
+   * The latest progress report of each child's row this agent was shown (`progress_seq`, by row id), on this node: one
+   * is shown once, or again after the agent moved to another node.
+   */
+  progressShown?: Map<string, number>;
 };
 /** What a run handed off at a step boundary had gathered for its outcome, which its next owner takes over (`takeOver`). */
 export type Carried = { usage?: RunUsage; childSpend?: number; imageSpend?: number; decisionSpend?: number; spendLimit?: number; runLimits?: RunLimits; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };

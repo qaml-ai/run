@@ -208,6 +208,12 @@ async function answerToolCall(ctx: ToolsContext, session: Session, call: ToolCal
   const content = contentResult(result, server.returnsFiles);
   // The model learns who answered, and how long ago: it should check what may have changed meanwhile.
   if (plan) content.content.push({ type: "text", text: plan.note });
+  // Its background children's progress since it last saw it rides on the model's next result (never a script's).
+  const updates = call.innerCallId ? undefined : await childSessions.pendingUpdates(ctx.childrenContext, session).catch(error => {
+    console.error(JSON.stringify({ type: "agent_updates_failed", agent: session.header.id, error: safeError(error) }));
+    return undefined;
+  });
+  if (updates) (content.content as object[]).push(updates);
   return content;
 }
 

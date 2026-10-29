@@ -8,7 +8,7 @@ import { type Sources } from "../tool-sources.ts";
 import { type McpResult } from "../mcp-results.ts";
 import { jsonResult, type ToolCall, type ToolServer, type ToolSourceView } from "../tool-servers.ts";
 import { safeError } from "../metrics.ts";
-import { agentMessage, agentsTools, childNotice, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, SEND_MESSAGE, startsChildren, type ChildNotice, type DelegateSettings } from "../multi-agent.ts";
+import { agentMessage, agentsTools, agentUpdates, childNotice, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, REPORT_PROGRESS, SEND_MESSAGE, startsChildren, type ChildNotice, type DelegateSettings } from "../multi-agent.ts";
 import { reachable, sometimes } from "../assert.ts";
 
 import * as spend from "./spend.ts";
@@ -46,16 +46,19 @@ const childClaimMs = (sweepMs: number | undefined) => Math.max(5_000, 2 * (sweep
 
 /**
  * The delegate and agents tools of an agent whose sources enable them (multi-agent.ts), answered here rather than by a
- * tool source: a child is an agent of its own. A child spawn_agent made has send_message, to message its parent.
+ * tool source: a child is an agent of its own. A child spawn_agent made has send_message, to message its parent, and
+ * any child the runtime made (spawn_agent's or delegate's) has report_progress.
  */
 export function multiAgentServer(ctx: ChildrenContext, session: Session, sources: Sources | undefined): ToolServer | undefined {
   const settings = startsChildren(sources?.builtins) ? sources!.delegate : undefined;
   const spawned = !!session.header.key?.startsWith("spawn-");
-  if (!settings && !spawned) return undefined;
+  const reporting = spawned || !!session.header.key?.startsWith("delegate-");
+  if (!settings && !reporting) return undefined;
   const delegating = !!settings && sources!.builtins!.includes("delegate"), spawning = !!settings && sources!.builtins!.includes("agents");
+  if (spawning) session.spawns = true;
   const tools = async () => {
     const describe = await delegation.targetDescriptions(ctx, session.header.tenant, settings?.agents ?? []);
-    return [...delegating ? [delegateTool(settings!, describe)] : [], ...spawning ? agentsTools(settings!, describe) : spawned ? [SEND_MESSAGE] : []];
+    return [...delegating ? [delegateTool(settings!, describe)] : [], ...spawning ? agentsTools(settings!, describe) : spawned ? [SEND_MESSAGE] : [], ...reporting ? [REPORT_PROGRESS] : []];
   };
   return {
     tools,
@@ -64,7 +67,8 @@ export function multiAgentServer(ctx: ChildrenContext, session: Session, sources
       if (call.name === "delegate" && delegating) return delegation.delegate(ctx, session, settings!, call);
       if (call.name === "spawn_agent" && spawning) return spawnAgent(ctx, session, settings!, call);
       if (call.name === "wait_agent" && spawning) return waitAgents(ctx, session, call);
-      if (call.name === "list_agents" && spawning) return jsonResult({ agents: await childrenOf(ctx, session.header.id) });
+      if (call.name === "list_agents" && spawning) return jsonResult({ agents: shown(session, await childrenOf(ctx, session.header.id)) });
+      if (call.name === "report_progress" && reporting) return reportProgress(ctx, session, call);
       if (call.name === "send_message" && (spawning || spawned)) return sendMessage(ctx, session, settings, call);
       if (call.name === "interrupt_agent" && spawning) return interruptAgent(ctx, session, call);
       throw new Error(`Unknown tool ${call.name}`);
@@ -112,6 +116,7 @@ async function startChild(ctx: ChildrenContext, session: Session, run: RequestRe
   // A stateless run ends with its turn: nothing would hear its children.
   if (header.run) throw new Error("A stateless run cannot start sub-agents in the background: use delegate");
   const toolCallId = call.toolCallId!;
+  session.spawns = true;
   const { depth, maxDepth, chain } = delegation.childPlace(ctx, session, run, settings ?? {}, "Sub-agents have");
   const requestId = `spawn_${call.idempotencyKey}`;
   let { agent } = child;
@@ -219,11 +224,89 @@ async function childrenOf(ctx: ChildrenContext, parent: string) {
   const { rows } = await ctx.db.query(`select * from (select distinct on (child) child, name, status, kind, ended_at, landed_by, created_at,
     min(created_at) over (partition by child) as started from agent_children where parent = $1 and kind <> 'delegate' and landed_by is distinct from 'steer' and landed_by is distinct from 'superseded'
     order by child, created_at desc, id desc) latest order by started, child limit 200`, [parent]);
-  return rows.map(row => ({
-    agentId: row.child as string, name: row.name as string,
-    status: row.ended_at === null ? row.kind === "resume" ? "input_required" : "running" : row.status as string,
-    startedAt: Number(row.started), ...row.ended_at !== null ? { endedAt: Number(row.ended_at) } : {},
-  }));
+  const progress = await progressOf(ctx, parent);
+  return rows.map(row => {
+    const report = row.ended_at === null ? progress.get(row.child) : undefined;
+    return {
+      agentId: row.child as string, name: row.name as string,
+      status: row.ended_at === null ? row.kind === "resume" ? "input_required" : "running" : row.status as string,
+      startedAt: Number(row.started), ...row.ended_at !== null ? { endedAt: Number(row.ended_at) } : {},
+      ...report ? { progress: report.progress as string, progressAt: Number(report.progress_at) } : {},
+      // Not answered: what the model is shown is marked seen (`shown`), so its next tool result does not repeat it.
+      ...report ? { report } : {},
+    };
+  });
+}
+
+/**
+ * The latest progress report of each of the agent's running background children, by child: of the row whose run it is
+ * working on (its spawn's, or a message's that started a turn; a message its running turn took has no run of its own).
+ */
+async function progressOf(ctx: ChildrenContext, parent: string): Promise<Map<string, any>> {
+  const { rows } = await ctx.db.query(`select distinct on (child) id, child, name, progress, progress_seq, progress_at from agent_children
+    where parent = $1 and kind in ('spawn', 'message') and ended_at is null and progress_seq > 0 order by child, progress_at desc limit 50`, [parent]);
+  return new Map(rows.map(row => [row.child as string, row]));
+}
+
+/** Mark a child's report as shown to the model, so its next tool result's <agent_updates> does not repeat it. */
+const markShown = (session: Session, report: { id: string; progress_seq: unknown }) =>
+  (session.progressShown ??= new Map()).set(report.id, Math.max(Number(report.progress_seq), session.progressShown.get(report.id) ?? 0));
+
+/** Children listed for the model: their progress marked shown, the bookkeeping left out. */
+function shown<T extends { report?: { id: string; progress_seq: unknown } }>(session: Session, children: T[]) {
+  for (const child of children) if (child.report) markShown(session, child.report);
+  return children.map(({ report: _report, ...child }) => child);
+}
+
+/**
+ * The <agent_updates> part for a tool result of this agent's: its running background children's latest progress
+ * reports it was not shown yet, or undefined. A child that ended is left out: its notification supersedes its reports.
+ * Asked only of an agent that may have children (`spawns`), once per direct tool call.
+ */
+export async function pendingUpdates(ctx: ChildrenContext, session: Session) {
+  if (!session.spawns) return undefined;
+  const seen = session.progressShown ??= new Map();
+  const fresh = [...(await progressOf(ctx, session.header.id)).values()].filter(row => Number(row.progress_seq) > (seen.get(row.id) ?? 0));
+  if (!fresh.length) return undefined;
+  for (const row of fresh) seen.set(row.id, Number(row.progress_seq));
+  return agentUpdates(fresh.map(row => ({ name: row.name as string, text: row.progress as string, at: Number(row.progress_at) })));
+}
+
+/**
+ * A report_progress call of a child the runtime made: its latest status on its run's row in `agent_children` (its
+ * parent's spawn or delegate row, or a message's), latest wins. It never starts a turn: a background child's parent is
+ * shown it with its next tool result (`pendingUpdates`) and in list_agents; watchers of the parent's stream get
+ * `subagent_progress` at once, and a delegate call's progress (`tool_execution_update`), while the parent runs on this
+ * node. A row whose child ended takes nothing: its ending supersedes it.
+ */
+async function reportProgress(ctx: ChildrenContext, session: Session, call: ToolCall): Promise<McpResult> {
+  const run = runningRun(session);
+  if (!run || !call.toolCallId || call.innerCallId) throw new Error("report_progress is called directly, not from js_exec");
+  const { text } = call.args as { text?: unknown };
+  if (typeof text !== "string" || !text.trim() || text.length > MULTI_AGENT_LIMITS.progressChars) throw new Error(`A progress report is 1 to ${MULTI_AGENT_LIMITS.progressChars} characters`);
+  const sent = session.progressSent ??= new Map();
+  const count = sent.get(run.id) ?? 0;
+  if (count >= MULTI_AGENT_LIMITS.progressPerRun) throw new Error(`This turn has reported progress ${count} times, the most one turn may: report less often`);
+  sent.set(run.id, count + 1);
+  const lineage = delegation.lineage(ctx, session, run);
+  if (!lineage) throw new Error("You have no parent agent to report to: only a sub-agent has one");
+  const now = Date.now();
+  const { rows } = await ctx.db.query(`update agent_children set progress = $4, progress_seq = progress_seq + 1, progress_at = $5, updated_at = $5
+    where child = $1 and request_id = $2 and parent = $3 and ended_at is null returning name, kind, tool_call_id, parent_run`, [session.header.id, run.id, lineage.parent, text.trim(), now]);
+  const row = rows[0];
+  if (!row) throw new Error("Your parent is no longer waiting on this task: there is no one to report to");
+  const parent = ctx.sessions.get(lineage.parent);
+  if (parent) {
+    const requestId = runningRun(parent)?.id ?? row.parent_run;
+    const at = { agentId: session.header.id, name: row.name as string, toolCallId: row.tool_call_id as string };
+    ctx.publish(parent, { type: "event", requestId, event: { type: "subagent_progress", ...at, text: text.trim(), ...row.kind === "delegate" ? {} : { background: true } } });
+    // A delegate call waits on this child: its progress is the call's, as a tool server's would be.
+    if (row.kind === "delegate") ctx.publish(parent, { type: "event", requestId, event: {
+      type: "tool_execution_update", toolCallId: at.toolCallId, toolName: "delegate",
+      partialResult: { content: [{ type: "text", text: text.trim() }], details: { type: "progress", tool: "delegate", message: text.trim() } },
+    } });
+  }
+  return jsonResult({ reported: true });
 }
 
 /**
@@ -279,14 +362,17 @@ async function waitAgents(ctx: ChildrenContext, session: Session, call: ToolCall
     if (!chosen.length) return jsonResult({ agents: [], message: "No sub-agents are running" });
   }
   const answers = [];
+  const progress = await progressOf(ctx, parent);
   for (const row of chosen) {
     const taken = row.landed_at === null && row.ended_at !== null ? await takeEnding(ctx, session, run, row) : undefined;
     const notice = (taken ?? row).notice as ChildNotice | null;
     answers.push({
       agentId: row.child, name: row.name, status: row.ended_at === null && !taken ? row.kind === "resume" ? "input_required" : "running" : row.status ?? taken?.status,
       ...(taken ? { text: notice!.text, ...(notice!.notice.metadata.output !== undefined ? { output: notice!.notice.metadata.output } : {}), ...(notice!.notice.metadata.error ? { error: notice!.notice.metadata.error } : {}) }
-        : row.ended_at !== null ? { note: "Its answer comes (or came) as a notification" } : {}),
+        : row.ended_at !== null ? { note: "Its answer comes (or came) as a notification" } : progress.has(row.child) ? { progress: progress.get(row.child).progress, progressAt: Number(progress.get(row.child).progress_at) } : {}),
     });
+    // Shown here, so its next tool result's <agent_updates> does not repeat it.
+    if (!taken && row.ended_at === null && progress.has(row.child)) markShown(session, progress.get(row.child));
   }
   return jsonResult({ agents: answers, ...(answers.every(answer => answer.status === "running") ? { timedOut: true } : {}) });
 }

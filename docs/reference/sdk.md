@@ -93,7 +93,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `delegate` | `delegate=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`); brings its builtin. See [Multi-agent](../guides/multi-agent.md) |
 | `workflow` | `workflow=` | who its workflow scripts may coordinate (`{ agents, instructions?, maxAgents?, maxParallel?, maxDepth? }`); brings its builtin. See [Workflows](../guides/workflows.md) |
 | `mcpServers` | `mcp_servers=` | remote MCP servers of its own, without a definition: `[{ name, url, auth?: { type: "runtime" }, allowTools?, … }]`, no credentials. See [An agent's own MCP servers](../guides/tools.md#an-agents-own-mcp-servers) |
-| `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_event`, `subagent_end` events, and stream parts |
+| `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_event`, `subagent_end`, `subagent_message` and `subagent_progress` events, and stream parts |
 | `attach` | `attach=` | `false`: declare `tools` without serving them (another process does) |
 | `takeover` | `takeover=` | replace the process serving the tools now |
 | `onEvent(event, runId)` | `on_event=` | every event, for display; runs in order, apart from the connection; plain or async |
@@ -252,6 +252,7 @@ input](../guides/human-input.md#answering).
 | `tool_result` | `id`, `name`, `output` (the result's text), `isError` (`is_error`) |
 | `input_required` | `input`, with `answer()` |
 | `subagent_start`, `subagent_end` | with `subagents: true`: `toolCallId` (Python `id`), `agentId` (`agent_id`), `name` at the start, `status` at the end |
+| `subagent_message`, `subagent_progress` | with `subagents: true`: `agentId`, `name` and `text`: a background sub-agent's message to its parent, or a sub-agent's latest progress report (with `toolCallId`). TypeScript |
 | `done` | `run`: always last |
 
 `run.toolCalls` names a call's tool `tool` and its id `toolCallId`; stream parts

@@ -5816,6 +5816,13 @@ you get none of these events.
 | `subagent_start` | `{ toolCallId, agentId, requestId, name, depth }`: the call started its sub-agent |
 | `subagent_event` | `{ toolCallId, agentId, event }`: one of the sub-agent's events (its streamed text left out). A grandchild's events arrive nested in its parent's |
 | `subagent_end` | `{ toolCallId, agentId, requestId, status, error? }` |
+| `subagent_progress` | `{ toolCallId, agentId, name, text }`: the sub-agent's latest [progress report](https://run.camelai.com/docs/guides/multi-agent.md#progress) |
+
+A delegate sub-agent's progress report is also its call's progress, as a tool
+server's is: a `tool_execution_update` of the `delegate` call, with `details:
+{ type: "progress", tool: "delegate", message }`, which every watcher gets and
+`<AgentChat>` shows under the call. The model waiting on the call sees none of
+it: its answer is the call's result.
 
 ```ts
 const lead = await agents.upsert("research-lead", { delegate: { agents: ["researcher"] }, subagents: true });
@@ -5852,7 +5859,7 @@ const lead = await agents.upsert("research-lead", {
 | --- | --- |
 | `spawn_agent({ agent \| instructions, task, output?, name? })` | Starts a sub-agent, as `delegate` would, and returns `{ agentId, name }` at once. `name` is the model's handle for it, unique among its running sub-agents (default: the agent's name and a number, `researcher-1`) |
 | `wait_agent({ agents?, timeoutMs? })` | Waits until one of the given sub-agents (names or ids; default: any running one) ends, or `timeoutMs` passes (default 5 minutes, at most 10). Returns each one's `status`, with the answer (`text`, `output?`, `error?`) of those that ended |
-| `list_agents()` | The agent's sub-agents: `{ agentId, name, status, startedAt, endedAt? }`, `status` being `running`, `completed`, `failed`, `aborted` or `input_required` |
+| `list_agents()` | The agent's sub-agents: `{ agentId, name, status, startedAt, endedAt?, progress?, progressAt? }`, `status` being `running`, `completed`, `failed`, `aborted` or `input_required`, and `progress` a running one's latest [report](https://run.camelai.com/docs/guides/multi-agent.md#progress) |
 | `send_message({ to, text })` | Messages one of its sub-agents (name or id) or, from a sub-agent, its parent (`"parent"`). See [Messages](https://run.camelai.com/docs/guides/multi-agent.md#messages) |
 | `interrupt_agent({ agent })` | Aborts one of its running sub-agents; its notification follows with status `aborted` |
 
@@ -5898,6 +5905,43 @@ A sub-agent that waits on a person notifies with status `input_required`, and
 `metadata.inputs` lists what it asked. Answer its inputs as any agent's
 (`POST /v1/agents/{child}/inputs/{id}`, or a browser token with the `children`
 scope reads them); it resumes, and its next ending notifies again.
+
+### Progress
+
+A sub-agent the runtime made (a `spawn_agent` or `delegate` child) has
+`report_progress({ text })`: a line or two on how its task is going. A report
+is status, not a message. The parent is never interrupted for it, and it never
+starts a turn or counts against the wake cap:
+
+- **Latest wins.** Each running sub-agent has one current report; a new one
+  replaces it. It is at most 500 characters, and a turn reports at most 100
+  times.
+- **It rides on the parent's next tool result.** When the parent's model gets
+  the result of any tool it called, the runtime adds the reports it has not
+  seen yet, latest only:
+
+  ```text
+  <agent_updates>
+  Progress your running sub-agents reported (latest each; no answer needed):
+  - researcher-1 (12s ago): Read 3 of 5 sources; now comparing margins
+  </agent_updates>
+  ```
+
+  Only the runtime writes this block: the tags are neutralized in a report's
+  text and anywhere else. In history it is a part of that tool result of its
+  own, `{ type: "text", text: "<agent_updates>…", agentUpdates: true }`, so a
+  UI can show it apart from the tool's output. A parent that moves to another
+  node may be shown a report once more.
+- **`list_agents` and `wait_agent` show it** as `progress` and `progressAt` of
+  each running sub-agent; what they showed is not repeated with the next
+  result.
+- **An ending supersedes it.** Once a sub-agent's run ends, its reports are
+  shown no more: its notification (or `wait_agent`) carries its answer.
+- **Watchers see it at once**, as `subagent_progress` (see [Events](https://run.camelai.com/docs/guides/multi-agent.md#events)),
+  while the parent runs on the sub-agent's node.
+
+Use `send_message` to `"parent"` instead for something the parent must act on:
+that interrupts it.
 
 ### Messages
 
@@ -5964,8 +6008,9 @@ With `?subagents=1` (`subagents: true` in the SDKs), the parent's stream has
 `subagent_start` (with `background: true`) when a sub-agent starts,
 `subagent_event` with its events while it runs on the parent's node, and
 `subagent_end` (with `background: true`, `name` and `status`) when its
-notification lands or a `wait_agent` answers it, and `subagent_message` when it
-messages its parent. Its own stream and history always have everything.
+notification lands or a `wait_agent` answers it, `subagent_message` when it
+messages its parent, and `subagent_progress` (with `background: true`) when it
+reports progress. Its own stream and history always have everything.
 
 A browser token minted with the `children` scope (with the others it needs:
 `{ "scopes": ["events", "history", "children"] }`) reads the agent's sub-agents
@@ -6028,8 +6073,13 @@ parent's task.
 - `agentNotice(message)` (Python `agent_notice`) tells a history message the
   runtime wrote apart: `{ kind: "notification" | "message", agentId, name, status?, error?, output?, usage?, inputs? }`
   (a notification's structured `output`, its `usage`, and the `inputs` it waits on), or undefined for anyone else's.
-- `stream()` parts and watcher events include `subagent_message`;
-  `abort({ children: "keep" })` keeps background sub-agents running.
+- `stream()` parts and watcher events include `subagent_message` and
+  `subagent_progress`; the watcher's `SubagentView.progress` is a delegate
+  sub-agent's latest report. `abort({ children: "keep" })` keeps background
+  sub-agents running.
+- A tool result's `<agent_updates>` part is not the tool's output: the
+  `tool_result` stream part's `output` and the chat's `ToolPart.result` (`text`,
+  `content`, `data`) leave it out, and `ToolPart.result.agentUpdates` has it.
 - `<AgentChat>` shows notifications and agent messages as collapsible notices
   (`AgentNotice`), never as the user's bubbles; the chat model's
   `UserChatMessage.agent` says which (`labels.agentNotification` and
@@ -7156,7 +7206,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `delegate` | `delegate=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`); brings its builtin. See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md) |
 | `workflow` | `workflow=` | who its workflow scripts may coordinate (`{ agents, instructions?, maxAgents?, maxParallel?, maxDepth? }`); brings its builtin. See [Workflows](https://run.camelai.com/docs/guides/workflows.md) |
 | `mcpServers` | `mcp_servers=` | remote MCP servers of its own, without a definition: `[{ name, url, auth?: { type: "runtime" }, allowTools?, … }]`, no credentials. See [An agent's own MCP servers](https://run.camelai.com/docs/guides/tools.md#an-agents-own-mcp-servers) |
-| `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_event`, `subagent_end` events, and stream parts |
+| `subagents` | `subagents=` | also deliver its sub-agents' progress: `subagent_start`, `subagent_event`, `subagent_end`, `subagent_message` and `subagent_progress` events, and stream parts |
 | `attach` | `attach=` | `false`: declare `tools` without serving them (another process does) |
 | `takeover` | `takeover=` | replace the process serving the tools now |
 | `onEvent(event, runId)` | `on_event=` | every event, for display; runs in order, apart from the connection; plain or async |
@@ -7315,6 +7365,7 @@ input](https://run.camelai.com/docs/guides/human-input.md#answering).
 | `tool_result` | `id`, `name`, `output` (the result's text), `isError` (`is_error`) |
 | `input_required` | `input`, with `answer()` |
 | `subagent_start`, `subagent_end` | with `subagents: true`: `toolCallId` (Python `id`), `agentId` (`agent_id`), `name` at the start, `status` at the end |
+| `subagent_message`, `subagent_progress` | with `subagents: true`: `agentId`, `name` and `text`: a background sub-agent's message to its parent, or a sub-agent's latest progress report (with `toolCallId`). TypeScript |
 | `done` | `run`: always last |
 
 `run.toolCalls` names a call's tool `tool` and its id `toolCallId`; stream parts
@@ -8323,7 +8374,7 @@ Query parameters and headers:
 | `?snapshot=1` | where the stream cannot replay what you missed (a first connect, or a cursor behind the buffer), send a [`snapshot`](https://run.camelai.com/docs/reference/events.md#snapshot) of the running turn first instead of a 409. Watchers and polls (`?watch=1`, `?poll=1`, `/v1/agents/:id/events`) get one by default (`?snapshot=0` opts out); the application's connection only when it asks, as the SDKs do. |
 | `?poll=1&wait=N` | answer once, as JSON, instead of streaming: `{cursor, events: [{id, data}]}`, where `data` is a frame. With `wait` (seconds, at most 25) and nothing buffered, it answers when the next event arrives or the wait ends. Poll again with `Last-Event-ID: <cursor>`. For clients that cannot hold a stream open. |
 | `?request=<id>` | only that request's events, and its `response` frame: one run's progress, for a caller that sent it with `POST …/prompt` and wants nothing else. `ready`, `snapshot` and other frames that are not a request's still come. |
-| `?subagents=1` | also send the agent's sub-agents' progress, from its `delegate` calls: [`subagent_start`, `subagent_event` and `subagent_end`](https://run.camelai.com/docs/reference/events.md#sub-agents). Without it, none of them. The SDKs: `subagents: true` |
+| `?subagents=1` | also send the agent's sub-agents' progress, from its `delegate` and `spawn_agent` calls: [`subagent_start`, `subagent_event`, `subagent_end`, `subagent_message` and `subagent_progress`](https://run.camelai.com/docs/reference/events.md#sub-agents). Without it, none of them. The SDKs: `subagents: true` |
 | `?takeover=true` | (application connection only) replace the process serving the agent's tools now. See [One application at a time](https://run.camelai.com/docs/reference/events.md#one-application-at-a-time). |
 | `X-Agent-Connection: <connection>` | (application connection only) reconnecting: the `connection` the last `ready` named, so the runtime knows it is the same application coming back. |
 
@@ -8557,6 +8608,8 @@ See [Multi-agent](https://run.camelai.com/docs/guides/multi-agent.md). The `suba
 | `subagent_start` | `toolCallId`, `agentId`, `requestId`, `name`, `depth` | a `delegate` call started (or, on a resumed turn, found) its sub-agent `agentId`, running request `requestId` |
 | `subagent_event` | `toolCallId`, `agentId`, `event` | one of the sub-agent's events, as its own stream has it, its streamed text (`message_update`) left out. A sub-agent's own `subagent_*` events arrive nested in its `subagent_event`s. Relayed while the sub-agent runs on its parent's node; its own stream has them all |
 | `subagent_end` | `toolCallId`, `agentId`, `requestId`, `status` (`completed`, `input_required`, `failed`), `error?` | the sub-agent's run ended, or its parent stopped waiting for it |
+| `subagent_message` | `agentId`, `name`, `text` | a background sub-agent messaged its parent (`send_message` to `"parent"`) |
+| `subagent_progress` | `toolCallId`, `agentId`, `name`, `text`, `background?` | the sub-agent's latest progress report (`report_progress`): status only, which starts no turn. `background: true` for a `spawn_agent` child; a `delegate` child's is also its call's `tool_execution_update`. Sent while the parent runs on the sub-agent's node |
 
 ### The runtime
 

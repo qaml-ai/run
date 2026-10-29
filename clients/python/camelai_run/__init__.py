@@ -951,7 +951,8 @@ class AgentRuntime(_RuntimeCalls):
         answer ({"action", "content"?, "from"?, "actor"?}) to give it at once, or None to answer later with answer().
         `attach=False` follows the agent and runs it without answering its tool calls, as any number of processes may; one
         process at a time answers them, and another fails with APPLICATION_CONNECTED unless `takeover=True` replaces it.
-        `subagents=True` also delivers the agent's sub-agents' progress: subagent_start, subagent_event and subagent_end.
+        `subagents=True` also delivers the agent's sub-agents' progress: subagent_start, subagent_event, subagent_end,
+        subagent_message and subagent_progress (a sub-agent's latest report_progress).
         `connection` says when the client holds the agent's event stream: "eager" (the default here), from connect until
         close; "lazy", only while something listens (Agent.stream), so an idle client holds no connection, and requests
         settle by asking for their outcome (a long poll of up to 25 s at a time). A client that serves tools (attach), or
@@ -1704,7 +1705,7 @@ class AgentClient(_AgentCalls):
         self.takeover = takeover
         # Declare this client's tools as it connects when they differ from the agent's (a process restarted with changed tools).
         self.sync_tools = sync_tools
-        # Also receive the agent's sub-agents' events (subagent_start, subagent_event, subagent_end).
+        # Also receive the agent's sub-agents' events (subagent_start, subagent_event, subagent_end, subagent_message, subagent_progress).
         self.subagents = subagents
         self.http = httpx.AsyncClient(timeout=10, follow_redirects=False)
         self.path = f"/clients/{session['id']}"

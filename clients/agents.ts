@@ -82,7 +82,7 @@ export interface AgentConfig {
    * tokens naming the agent and its subject) or none. A server that needs a token or headers goes in a definition.
    */
   mcpServers?: InlineMcpServer[];
-  /** Also receive its sub-agents' progress as events (subagent_start, subagent_event, subagent_end, subagent_message), in `onEvent` and `stream()`. */
+  /** Also receive its sub-agents' progress as events (subagent_start, subagent_event, subagent_end, subagent_message, subagent_progress), in `onEvent` and `stream()`. */
   subagents?: boolean;
   thinkingLevel?: ThinkingLevel;
   /** The most the model writes in one response, within its own maximum (maxTokens in GET /v1/models). Not compaction summaries. */
@@ -265,6 +265,8 @@ export type StreamPart =
   | { type: "subagent_start"; toolCallId: string; agentId: string; name: string; raw: AgentEvent }
   | { type: "subagent_end"; toolCallId: string; agentId: string; status: "completed" | "input_required" | "failed" | "aborted"; raw: AgentEvent }
   | { type: "subagent_message"; agentId: string; name: string; text: string; raw: AgentEvent }
+  /** With `subagents: true`: a sub-agent's latest progress report (report_progress). */
+  | { type: "subagent_progress"; toolCallId: string; agentId: string; name: string; text: string; raw: AgentEvent }
   /** Always last: the run as it ended. */
   | { type: "done"; run: Run };
 
@@ -286,7 +288,8 @@ const senderOf = (user: string | Sender) => typeof user === "string" ? { id: use
 const textOf = (value: unknown): string => {
   const content = (value as { content?: unknown } | undefined)?.content;
   if (!Array.isArray(content)) return typeof value === "string" ? value : JSON.stringify(value ?? null);
-  return content.flatMap(part => part && typeof part === "object" && typeof part.text === "string" ? [part.text] : []).join("\n");
+  // The runtime's <agent_updates> part (sub-agents' progress riding on the result) is not the tool's output.
+  return content.flatMap(part => part && typeof part === "object" && typeof part.text === "string" && part.agentUpdates !== true ? [part.text] : []).join("\n");
 };
 
 export class Agents {
@@ -599,6 +602,7 @@ export class Agent {
         case "subagent_start": push({ type: "subagent_start", toolCallId: event.toolCallId, agentId: event.agentId, name: event.name, raw: event }); break;
         case "subagent_end": push({ type: "subagent_end", toolCallId: event.toolCallId, agentId: event.agentId, status: event.status, raw: event }); break;
         case "subagent_message": push({ type: "subagent_message", agentId: event.agentId, name: event.name, text: event.text, raw: event }); break;
+        case "subagent_progress": push({ type: "subagent_progress", toolCallId: event.toolCallId, agentId: event.agentId, name: event.name, text: event.text, raw: event }); break;
       }
     });
     const result = this.settle<OutputOf<S>>(id, this.client.prompt(text, promptOptions(id, options)), false, options.output).then(run => {

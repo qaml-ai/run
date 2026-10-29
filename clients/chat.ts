@@ -36,8 +36,11 @@ export interface ToolPart {
   type: "tool"; id: string; name: string;
   args: Record<string, unknown>;
   state: ToolState;
-  /** The result's text, its content blocks, `details`, and `data`: the text parsed, when it is JSON. */
-  result?: { text: string; content: (TextContent | ImageContent)[]; details?: unknown; data?: unknown };
+  /**
+   * The result's text, its content blocks, `details`, and `data`: the text parsed, when it is JSON. `agentUpdates`: the
+   * runtime's <agent_updates> block that rode on it (its sub-agents' progress), kept out of the rest.
+   */
+  result?: { text: string; content: (TextContent | ImageContent)[]; details?: unknown; data?: unknown; agentUpdates?: string };
   progress?: ToolProgress;
   /** What the call waits on from a person, while `input_required`. */
   input?: ChatInput;
@@ -430,10 +433,12 @@ function agentNotice(source: { agentId: string; name: string }, metadata: Record
 function toolAt(id: string, name: string, args: Record<string, unknown>, result: ToolResultMessage | undefined, pending: ChatInput | undefined, progress: unknown, writing: boolean): ToolPart {
   const part: ToolPart = { type: "tool", id, name, args, state: "running" };
   if (result && !isInputPlaceholder(result)) {
-    const text = textOfContent(result.content);
+    const updates = Array.isArray(result.content) ? result.content.filter(block => (block as { agentUpdates?: unknown }).agentUpdates === true) : [];
+    const content = updates.length ? result.content.filter(block => !updates.includes(block)) : result.content;
+    const text = textOfContent(content);
     const data = parseJson(text);
     part.state = result.isError ? "error" : "done";
-    part.result = { text, content: result.content, ...(result.details !== undefined ? { details: result.details } : {}), ...(data !== undefined ? { data } : {}) };
+    part.result = { text, content, ...(result.details !== undefined ? { details: result.details } : {}), ...(data !== undefined ? { data } : {}), ...(updates.length ? { agentUpdates: textOfContent(updates) } : {}) };
     return part;
   }
   if (pending) { part.state = "input_required"; part.input = pending; }

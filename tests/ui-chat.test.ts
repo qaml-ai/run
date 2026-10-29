@@ -36,6 +36,19 @@ test("a turn is one assistant message; tool results fold into their calls; a use
   assert.equal(project([user("x", 1)])[0].id, "m:0");
 });
 
+test("sub-agents' progress riding on a tool result is kept apart from the tool's own text and data", () => {
+  const updates = { type: "text", text: "<agent_updates>\n- w (1s ago): halfway\n</agent_updates>", agentUpdates: true };
+  const messages = [
+    user("go", 1),
+    assistant([{ type: "toolCall", id: "c1", name: "send_message", arguments: { to: "w", text: "more" } }], 2, { stopReason: "toolUse" }),
+    toolResult("c1", '{"sent":true}', 3, { content: [{ type: "text", text: '{"sent":true}' }, updates] }),
+    assistant([{ type: "text", text: "ok" }], 4),
+  ];
+  const call = (project(messages)[1] as AssistantChatMessage).parts[0] as ToolPart;
+  assert.deepEqual([call.result?.text, call.result?.data, call.result?.content.length], ['{"sent":true}', { sent: true }, 1]);
+  assert.equal(call.result?.agentUpdates, updates.text);
+});
+
 test("a call waiting on a person carries its input; errors, stops and presented files show as such", () => {
   const input = { id: "inp_1", toolCallId: "c1", kind: "question", message: "Which?", detail: { questions: [{ question: "Which?", options: [], multiSelect: false, allowOther: true }] }, answering: false } as unknown as ChatInput;
   const waiting = project([

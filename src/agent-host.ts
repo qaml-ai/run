@@ -12,7 +12,7 @@ import { scriptValue } from "./mcp-results.ts";
 import { errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, legacyFormatRefused, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, LANGUAGE, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { languageInstructions } from "./language.ts";
-import { renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
+import { AGENT_UPDATES, renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, step, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } from "./compaction.ts";
@@ -373,6 +373,9 @@ export function createAgentHost(hostIO: HostIO) {
    * output is, and the whole text saved to the agent's workspace (tool-results/<call>.txt), which the model is told to read in parts.
    */
   async function capped(toolCallId: string, content: any[]): Promise<any[]> {
+    // The runtime's <agent_updates> part (sender.ts AGENT_UPDATES) is not the tool's: it is never cut, and stays its own part.
+    const updates = content.filter(part => part.type === "text" && part[AGENT_UPDATES] === true);
+    if (updates.length) return [...await capped(toolCallId, content.filter(part => !updates.includes(part))), ...updates];
     const text = content.filter(part => part.type === "text").map(part => part.text as string).join("\n");
     const limit = SANDBOX_LIMITS.outputCharacters;
     if (text.length <= limit) return content;

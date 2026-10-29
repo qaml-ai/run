@@ -2217,6 +2217,7 @@ export class ClientSessions {
       session.imageSpend?.delete(record.id);
       session.decisionSpend?.delete(record.id);
       session.messagesSent?.delete(record.id);
+      session.progressSent?.delete(record.id);
       session.aborted?.delete(record.id);
       try { await this.commit(session, true); }
       catch { return; /* The fault is reported to every later request. */ }
