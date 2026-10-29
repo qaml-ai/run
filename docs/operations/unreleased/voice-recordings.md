@@ -1,6 +1,6 @@
 ### Voice: record a call
 
-`POST /v1/voice/sessions/{id}/recording` records a voice session's call as Ogg Opus: one mixed file (mono, 24 kHz) or a
+`POST /v1/voice/sessions/{id}/recording` records a voice session's call as Ogg Opus: one mixed file (mono, 24 kHz, 16 kbps) or a
 file per speaker (`tracks: "speakers"`, the bot's own speech among them, all lined up from the recording's start), until
 `DELETE …/recording`, `maxMinutes` (default 60, at most 240), `maxBytes` (default 25 MiB, at most 100 MiB) or the
 session's end. The answer has a `notice` for the voice channel's chat. Its files are kept `retentionHours` (default 24,

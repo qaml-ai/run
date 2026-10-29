@@ -42,6 +42,8 @@ const SILENCE = Uint8Array.from([0xf8, 0xff, 0xfe]);
 /** The mix's rate (Opus decodes any packet to it) and a slot's samples at it. */
 const MIX_RATE = 24_000;
 const MIX_SAMPLES = MIX_RATE * SLOT_MS / 1000;
+/** The mix's bitrate: speech stays clear, and an hour of it is about 7 MB (under Discord's 10 MB upload on most servers). */
+const MIX_BITRATE = 16_000;
 const MIXED = "mixed";
 
 const slots = (packet: Uint8Array) => Math.max(1, Math.round(packetSamples(packet) / (48 * SLOT_MS)));
@@ -128,7 +130,10 @@ export class Recorder {
       this.mix.delete(slot);
       const pcm = Buffer.alloc(MIX_SAMPLES * 2);
       for (let i = 0; i < MIX_SAMPLES; i++) pcm.writeInt16LE(Math.max(-32_768, Math.min(32_767, frame[i])), i * 2);
-      if (!this.encoder || this.encoder.broken) this.encoder = new Opus(MIX_RATE, 1, "voip");
+      if (!this.encoder || this.encoder.broken) {
+        this.encoder = new Opus(MIX_RATE, 1, "voip");
+        this.encoder.bitrate(MIX_BITRATE);
+      }
       let packet: Buffer;
       try { packet = this.encoder.encode(pcm, MIX_SAMPLES); } catch { this.dropped++; continue; }
       this.pending.push([MIXED, slot, packet]);

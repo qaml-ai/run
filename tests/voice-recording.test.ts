@@ -92,6 +92,8 @@ test("a mix is everyone decoded, summed and encoded again: one mono file as long
   for (let i = 0; i < pcm.length; i += 2) peak = Math.max(peak, Math.abs(pcm.readInt16LE(i)));
   assert.ok(peak > 3_000, `the mix is loud (peak ${peak})`);
   assert.equal(ogg.audio.reduce((sum, packet) => sum + packetSamples(packet), 0), 48_000);
+  // At 16 kbps: a second is about 2 KB.
+  assert.ok(ogg.audio.reduce((sum, packet) => sum + packet.length, 0) < 2_600, "encoded at the mix's bitrate");
 });
 
 test("a recorder says when it is past its limits, and keeps no more than maxBytes", () => {

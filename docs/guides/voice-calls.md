@@ -422,7 +422,7 @@ curl -o recording.ogg "$RUNTIME/v1/voice/recordings/$RECORDING/files/recording.o
 
 | Field | |
 | --- | --- |
-| `tracks` | `mixed` (the default): one file, `recording.ogg`, everyone and the bot mixed (mono, 24 kHz, about 12 MB an hour of speech). `speakers`: a file per speaker, `<user id>.ogg`, as Discord sent their audio (stereo), the bot's own speech in `<bot user id>.ogg`; every file starts at the recording's start, with silence where its speaker said nothing, so they line up. Up to 25 speakers; later ones are left out |
+| `tracks` | `mixed` (the default): one file, `recording.ogg`, everyone and the bot mixed (mono, 24 kHz, 16 kbps: about 7 MB an hour). `speakers`: a file per speaker, `<user id>.ogg`, as Discord sent their audio (stereo), the bot's own speech in `<bot user id>.ogg`; every file starts at the recording's start, with silence where its speaker said nothing, so they line up. Up to 25 speakers; later ones are left out |
 | `maxMinutes` | it ends after this long: 1 to 240, default 60 |
 | `maxBytes` | it ends once it holds this much audio: 1 MiB to 100 MiB, default 25 MiB (the files add Ogg's framing and the silence frames between speech, about 1 MB an hour a track) |
 | `retentionHours` | its files are kept this long after it ends: 1 to 720 (30 days), default 24. `DELETE /v1/voice/recordings/{id}` deletes them sooner |
