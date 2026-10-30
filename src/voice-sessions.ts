@@ -175,9 +175,14 @@ export const VOICE_LIMITS = Object.freeze({
   idleMinutes: { default: 30, min: 1, max: 720 },
   emptySeconds: { default: 60, min: 5, max: 3_600 },
   /** Live sessions per tenant, unless the runtime sets another (AGENT_VOICE_SESSIONS_PER_TENANT). */
-  perTenant: 10,
-  /** Sessions one node holds at most (AGENT_VOICE_SESSIONS_PER_NODE): past it, peers take new ones. */
-  perNode: 200,
+  perTenant: 50,
+  /**
+   * Sessions one node takes before leaving them to its peers (AGENT_VOICE_SESSIONS_PER_NODE), so a deploy's handoff
+   * spreads them rather than the first new node taking every one. A session no peer took in `perNodeWaitMs` is taken
+   * anyway: better a busy node than a call that never connects. Measured in production on 1 vCPU and 4 GiB: 60-150 MB
+   * and 3-6% of a vCPU each. Each then has its own media worker (`MEDIA_HOST_DEFAULTS.maxWorkers`).
+   */
+  perNode: 15, perNodeWaitMs: 30_000,
   /** How long a connection that lost its credentials waits for new ones (PATCH) before the session ends. */
   reconnectGraceMs: 15_000,
   /** Utterances one node transcribes at once (listening sessions); one waiting longer than `queueMs` is dropped. */
@@ -461,6 +466,9 @@ export interface VoiceSessionsOptions {
   /** Live sessions per tenant (VOICE_LIMITS.perTenant). */
   perTenant?: (tenant: string) => number;
   perNode?: number;
+  perNodeWaitMs?: number;
+  /** Whether this node is short of memory (AGENT_MEMORY_HIGH_BYTES): it takes no sessions until it is not. */
+  memoryHigh?: () => boolean;
   reconnectGraceMs?: number;
   /** What a voice server's host must match: Discord's (*.discord.media) unless a test serves its own. */
   endpoints?: RegExp;
@@ -715,7 +723,10 @@ export class VoiceSessions {
       [id, tenant, provider, credentials.guildId, credentials.userId, credentials.channelId, JSON.stringify(this.options.accounts.seal(aad(id), JSON.stringify(secret))), JSON.stringify(options), now])).rows[0] as Row;
     });
     console.log(JSON.stringify({ type: "voice_session_created", session: id, tenant, provider, node: this.options.node }));
-    if (!this.stopped) void this.take(row).catch(error => console.error(JSON.stringify({ type: "voice_take_failed", session: id, error: safeError(error) })));
+    if (!this.stopped) {
+      const taken = this.hasRoom(row, now) ? this.take(row) : this.notify([id]);
+      void taken.catch(error => console.error(JSON.stringify({ type: "voice_take_failed", session: id, error: safeError(error) })));
+    }
     return {
       ...sessionView(row), notice: { required: true, channelId: credentials.channelId, text: options.notice.replaceAll("{bot}", credentials.userId) },
       // How the app should have joined: un-muted when the bot speaks.
@@ -1181,6 +1192,13 @@ export class VoiceSessions {
 
   // Holding sessions --------------------------------------------------------------
 
+  /** Whether this node should take `row` now, or leave it to its peers (`VOICE_LIMITS.perNode`). */
+  private hasRoom(row: Row, now: number) {
+    if (this.options.memoryHigh?.()) return false;
+    const { perNode = VOICE_LIMITS.perNode, perNodeWaitMs = VOICE_LIMITS.perNodeWaitMs } = this.options;
+    return this.held.size + this.taking.size < perNode || now - Number(row.updated_at) >= perNodeWaitMs;
+  }
+
   /**
    * Every open session's row: hold those this node should, let go of what it no longer may, and end sessions past their
    * limits. Any node may run it; one at a time here.
@@ -1209,7 +1227,7 @@ export class VoiceSessions {
       if (!this.stopped && !this.options.ownership?.draining) {
         for (const row of open.values()) {
           if (this.held.has(row.id) || (row as Row & { owned: boolean }).owned) continue;
-          if (this.held.size >= (this.options.perNode ?? VOICE_LIMITS.perNode)) break;
+          if (!this.hasRoom(row, now)) continue;
           await this.take(row).catch(error => console.error(JSON.stringify({ type: "voice_take_failed", session: row.id, error: safeError(error) })));
         }
       }

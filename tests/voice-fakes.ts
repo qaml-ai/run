@@ -150,7 +150,7 @@ export async function voiceCluster(t: T, options: Partial<VoiceSessionsOptions> 
   // Recordings' object storage, shared by the nodes.
   const storage = memoryStorage(postgresTail(db, { unfenced: true }));
   t.after(async () => { for (const node of nodes) { await node.voice.stop().catch(() => {}); await node.ownership.close().catch(() => {}); } });
-  const node = async (name: string) => {
+  const node = async (name: string, own: Partial<VoiceSessionsOptions> = {}) => {
     const ownership = new Ownership(db, { node: name, ttlMs: options.ttlMs ?? 90_000 });
     await ownership.start();
     const voice = new VoiceSessions({
@@ -160,7 +160,7 @@ export async function voiceCluster(t: T, options: Partial<VoiceSessionsOptions> 
       submitStreaming: async function* (agent, tenant, request) { asks.push({ agent, tenant, request }); yield options.agentReply ?? "The agent's answer."; },
       realtime: { providers: { openai: realtime.provider }, key: async () => ({ apiKey: "fixture-key", platform: true }) },
       transcriber: transcription.transcriber,
-      ...options,
+      ...options, ...own,
     });
     nodes.push({ name, ownership, voice });
     return { name, ownership, voice };

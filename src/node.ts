@@ -962,7 +962,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     submitStreaming: (agent, tenant, request, signal) => submitStreamingAnywhere(agent, tenant, request, signal),
     // A session's subject pays from its bucket, where the tenant meters its end users (end-user-credits.ts).
     credit: endUsers,
-    perTenant: tenant => tenants.maxVoiceSessions(tenant) ?? config.voice.perTenant, perNode: config.voice.perNode,
+    perTenant: tenant => tenants.maxVoiceSessions(tenant) ?? config.voice.perTenant, perNode: config.voice.perNode, memoryHigh: () => supervisor.memoryHigh,
     // A voice.utterance goes out at once (the outbox's scan is every 5 s).
     kickWebhooks: () => webhooks.kick(),
     // What the bot's code has it say is made as POST /v1/speech makes it; audio it plays from URLs is read through the

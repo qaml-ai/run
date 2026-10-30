@@ -504,7 +504,7 @@ and camelRun cannot check it.
 
 | | |
 | --- | --- |
-| Live sessions per account | 10 (`AGENT_VOICE_SESSIONS_PER_TENANT`; an operator can set an account's own, `maxVoiceSessions`) |
+| Live sessions per account | 50 (`AGENT_VOICE_SESSIONS_PER_TENANT`; an operator can set an account's own, `maxVoiceSessions`) |
 | Sessions per bot and server | 1 |
 | Words waiting to be said (`say`, `prompt`) | 10 |
 | Audio waiting to play; an upload, and uploads queued | 20 tracks; 10 MB, 40 MB |
