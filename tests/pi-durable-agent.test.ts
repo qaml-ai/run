@@ -92,10 +92,28 @@ for (const mode of ["parallel", "sequential"] as const) test(`Pi adapter honors 
   });
   t.after(() => fake.agent.close());
   await fake.agent.prompt("Work");
-  assert.deepEqual(finished, [["first", "second"]]);
+  // Asked for the first call whose result is final (its end holds for the round's other calls), then for the round.
+  assert.equal(finished.length, 2);
+  assert.deepEqual(finished.at(-1), ["first", "second"]);
   assert.equal(fake.requests.length, 1);
   assert.equal(fake.agent.state.pendingToolCalls.size, 0);
   assert.equal(fake.events.filter(event => event.type === "message_end").length, 4);
+});
+
+for (const order of ["ender first", "ender last"] as const) test(`Pi adapter ends the round when only one call ends it (${order}), without another provider request`, async t => {
+  // One call settles before the call that ends the run: its result asked for nothing, so Pi alone would go on.
+  const slow = (ms: number) => async () => { await new Promise(resolve => setTimeout(resolve, ms)); return { content: [{ type: "text" as const, text: "ok" }], details: null }; };
+  const tools = [tool("ender", slow(order === "ender first" ? 1 : 30)), tool("other", slow(order === "ender first" ? 30 : 1))];
+  const fake = await fixture([call("ender", "other"), answer("extra"), answer("again")], {
+    initialState: { model, messages: [], tools },
+    finishTurn: turn => turn.toolResults.some(result => result.toolName === "ender") ? { action: "end" } : undefined,
+  });
+  t.after(() => fake.agent.close());
+  await fake.agent.prompt("Work");
+  assert.equal(fake.requests.length, 1);
+  // The next run is not limited.
+  await fake.agent.prompt("More");
+  assert.equal(fake.requests.length, 2);
 });
 
 test("Pi adapter finishTurn includes invalid and unavailable tool results", async t => {
@@ -338,6 +356,45 @@ test("Pi input writes keep the whole message, as earlier readers take data.messa
   const entry = (await fake.storage.scanEntries({ conversationId: fake.agent.conversationId, order: "ascending" }, 100, undefined, BACKGROUND_CONTEXT)).items.find(entry => entry.kind === "camel.user")!;
   assert.deepEqual((entry.data as any).message, input);
   assert.deepEqual((await fake.agent.recoverMessages())[0].message, input);
+});
+
+test("a round whose run ends still ends it after its node is lost mid-round, with no model request on the next owner", { timeout: 30_000 }, async () => {
+  const { db } = await testDatabase(), sessionId = randomUUID();
+  const open = () => openPiStorage({ sessionId, directory: "unused", db });
+  let requests = 0;
+  // The node is lost while "other" runs: it never answers there.
+  const tools = (hang: boolean) => [tool("ender"), tool("other", async () => { if (hang) await new Promise(() => {}); return { content: [], details: null }; })];
+  const first = await DurableAgent.create({
+    initialState: { model, messages: [], tools: tools(true) },
+    streamFn: (_model, _context) => {
+      requests++;
+      const response = call("ender", "other");
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => { stream.push({ type: "start", partial: { ...response, content: [] } }); stream.push({ type: "done", reason: "toolUse", message: response }); stream.end(response); });
+      return stream;
+    },
+    finishTurn: turn => turn.toolResults.some(result => result.toolName === "ender") ? { action: "end" } : undefined,
+    durable: { storage: await open() },
+  });
+  void first.prompt(user("Go")).catch(() => {});
+  const storage = await open();
+  // Wait until the ending call's result and the round's end are committed.
+  for (;;) {
+    const entries = (await storage.scanEntries({ conversationId: first.conversationId as never }, 100, undefined, BACKGROUND_CONTEXT)).items;
+    if (entries.some(entry => entry.kind === "pi.tool-result")) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  // The next owner knows nothing of the host's decision: only what Pi and the adapter committed.
+  const next = await fixture([answer("extra")], { initialState: { model, messages: [], tools: tools(false) }, finishTurn: () => undefined }, await open(),
+    { retry: () => ({ retry: true, delayMs: 0 }) });
+  try {
+    await next.agent.continue();
+    assert.equal(requests, 1);
+    assert.equal(next.requests.length, 0, "the round still ends the run");
+  } finally {
+    await next.agent.close(100).catch(() => {});
+    await first.close(100).catch(() => {});
+  }
 });
 
 test("Pi adapter asks again in a resumed run whose model request a lost node left in flight, as its retry decision says", { timeout: 20_000 }, async () => {

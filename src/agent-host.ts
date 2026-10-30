@@ -785,7 +785,9 @@ export function createAgentHost(hostIO: HostIO) {
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
         onPayload: payload => documents ? documentPayload(payload) : undefined,
         // A turn with calls waiting on a person suspends; one past a spend cap or its run's limits (responses, time) stops before the next model request, after this response's tool results.
+        // Asked for each call of a round as its result is final, then for the round: a decision holds for the rest of the run.
         finishTurn: async turn => {
+          if (stopped || output) return { action: "end" };
           await journal.refresh();
           if (journal.awaiting.length) {
             stopped = { stopped: "input_required" };
