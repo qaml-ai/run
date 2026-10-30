@@ -16,6 +16,7 @@ import { seedJournal, SESSION_CONVERSATION_ID as conversationId } from "../src/p
 import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { rowMessages } from "../src/history-pages.ts";
 import { testDatabase } from "./database.ts";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const user = (content: string, requestId?: string) => ({ role: "user", content, timestamp: 1, ...(requestId ? { requestId } : {}) }) as AgentMessage;
 const system = { role: "system", content: "Rules.", timestamp: 0 } as AgentMessage;
@@ -119,8 +120,8 @@ test("an entry committed after one with a later ID takes its place in ID order, 
   const { storage, journal } = await busySession("late", 1);
   const [early, later] = [await storage.mintId<EntryId>(), await storage.mintId<EntryId>()];
   const entry = (id: EntryId, message: AgentMessage, kind = "pi.assistant"): StorageWrite => ({ type: "entry", value: { id, conversationId, kind, model: [message] as never } });
-  await storage.commit([entry(later, reply("second"))], () => {}, context);
-  await storage.commit([entry(early, user("first"), "pi.user")], () => {}, context);
+  await commitWrites(storage, [entry(later, reply("second"))], context);
+  await commitWrites(storage, [entry(early, user("first"), "pi.user")], context);
   await journal.refresh();
   await assertSame("late", storage, "late");
   assert.deepEqual((await byOrdinal("late")).messages.slice(-2).map(message => (message as { role: string }).role), ["user", "assistant"]);
@@ -132,7 +133,7 @@ test("a skip of a discarded run's messages leaves the session unplaced, and the 
   await journal.setActive(true);
   await journal.append([user("go"), call("lost")]);
   const after = journal.history.latest!;
-  await storage.commit([{ type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "pi.tool-result", model: [result("lost", "discarded")] as never } }], () => {}, context);
+  await commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "pi.tool-result", model: [result("lost", "discarded")] as never } }], context);
   await journal.refresh();
   await journal.skip(journal.history.latest!, after);
   await journal.setActive(false);
@@ -185,7 +186,7 @@ test("the fill places a retired host transcript's session from its base's cursor
     { type: "entry", value: { id: ids[4], conversationId, kind: "pi.tool-result", model: [result("k")] as never } },
     { type: "entry", value: { id: ids[5], conversationId, kind: MARKER_KIND, data: { t: "retract", index: 13 } as never } },
   ];
-  await storage.commit(writes, () => {}, context);
+  await commitWrites(storage, writes, context);
   await db.query("update pi_durable_metadata set history_next = null, history_last_id = null where session_id = 'retired'");
   assert.equal((await fillOrdinals(db, "retired", { dryRun: false })).code, "placed");
   const ordinals = await byOrdinal("retired");
@@ -202,10 +203,10 @@ test("a big session (pages of the fill), with compactions and context checkpoint
     await journal.setActive(true);
     await journal.append([user(`ask ${turn}`), call(`b${turn}`)]);
     await journal.push(result(`b${turn}`, "x".repeat(2_000)));
-    if (turn % 10 === 0) await storage.commit([
+    if (turn % 10 === 0) await commitWrites(storage, [
       { type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "pi.compaction", data: { summary: `summary ${turn}` } as never } },
       { type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "camel.context.message", model: [user("checkpoint")] as never } },
-    ], () => {}, context);
+    ], context);
     await journal.append([reply(`answer ${turn}`)]);
     await journal.setActive(false);
   }

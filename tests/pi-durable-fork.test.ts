@@ -10,6 +10,7 @@ import { HOST_BOOTSTRAP_KIND, seedJournal, SESSION_CONVERSATION_ID as conversati
 import { COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../src/pi-harness/messages.ts";
 import { DurableAgent } from "../src/pi-durable/agent.ts";
 import { journalForkHistory } from "./fixtures/journal-messages.ts";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const user = (text: string, requestId?: string) => ({ role: "user", content: text, timestamp: 1, ...(requestId ? { requestId } : {}) }) as AgentMessage;
 const reply = (text: string) => fauxAssistantMessage(text) as AgentMessage;
@@ -45,7 +46,7 @@ async function journal(drafts: { kind: string; model?: unknown[]; data?: unknown
       ...(draft.self ? { head: id } : draft.headOf !== undefined ? { head: ids[draft.headOf + 1] as EntryId } : {}),
       ...(draft.omit !== undefined ? { edits: [{ target: ids[draft.omit + 1] as EntryId, action: "omit" as const }] } : {}) } });
   });
-  await storage.commit(writes, () => {}, BACKGROUND_CONTEXT);
+  await commitWrites(storage, writes, BACKGROUND_CONTEXT);
   return { storage, at: (n: number) => ({ entryId: ids[n + 1], index: 0 }) };
 }
 const system = { role: "system", content: "Be brief.", timestamp: 0 };

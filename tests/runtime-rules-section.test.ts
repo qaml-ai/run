@@ -13,6 +13,7 @@ import { SESSION_CONVERSATION_ID as root, seedJournal } from "../src/pi-durable/
 import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { SENDER_INSTRUCTIONS } from "../src/sender.ts";
 import { RUNTIME, runtimeRules } from "../src/system-prompt.ts";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 /**
  * The runtime's rules (tools, files, results, who sent a message) are the system message's first section, untagged. As
@@ -129,7 +130,7 @@ test("an agent whose rules a compaction dropped, with Pi's baseline written sinc
   const { host, requests } = await setup(t, {}, async storage => {
     await seedJournal({ storage, sessionId: "agent", model: convertToLlm([summary as never]), messages: history });
     const id = await storage.mintId() as EntryId;
-    await storage.commit([{ type: "entry", value: { id, conversationId: root, kind: "pi.system", model: [baseline] } }], () => {}, context);
+    await commitWrites(storage, [{ type: "entry", value: { id, conversationId: root, kind: "pi.system", model: [baseline] } }], context);
   });
   await host.handle("prompt", { text: "hello" });
   await host.handle("prompt", { text: "again" });

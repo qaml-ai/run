@@ -13,8 +13,8 @@ npm release, so a fix or change on Pi's main reaches us without waiting for a re
 | `pi-telemetry.tgz` | `@earendil-works/pi-telemetry` | a dependency of pi-durable, pi-ai and chord |
 | `pi-agent-core.tgz` | `@earendil-works/pi-agent-core` | devDependency: we import only its types (`AgentMessage`, `AgentTool`, `StreamFn`) |
 
-Each package's version is Pi's with the commit appended (`1.4.0-main.f09d01b85e03`, and `-camel.<n>` with our patches, below;
-the vendored packages say `1.4.0-main.f09d01b85e03`, with no patches), which tells the lockfile, pi-ai's `User-Agent` and
+Each package's version is Pi's with the commit appended (`1.4.0-main.a14cdf90f0a7`, and `-camel.<n>` with our patches, below;
+the vendored packages say `1.4.0-main.a14cdf90f0a7`, with no patches), which tells the lockfile, pi-ai's `User-Agent` and
 telemetry a vendored build from the npm release. `vendor/pi/PI_COMMIT` names the commit, its date, and the upstream changes since the commit vendored before it.
 `vendor/pi/LICENSE` is Pi's MIT notice. `package.json` `overrides` pin every `@earendil-works/*` package, also the ones
 only Pi's packages depend on, to these tarballs, so nothing of Pi comes from npm (`package-lock.json` resolves each to

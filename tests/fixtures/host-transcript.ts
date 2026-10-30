@@ -18,6 +18,7 @@ import { durableEntryMessages } from "../../src/pi-durable/agent.ts";
 import { retireHostTranscript } from "./retired-host.ts";
 import { JournalHistory, MARKER_KIND, HOST_MESSAGE_KIND, HOST_USER_KIND, type HistoryBase } from "../../src/pi-durable/history.ts";
 import { contextWrites, loadSeedMarker, SeedConflict, SEED_MARKER_KIND, SESSION_CONVERSATION_ID, HOST_ARCHIVE_KIND, HOST_BOOTSTRAP_KIND, type SeedMetadata } from "../../src/pi-durable/seed.ts";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 const conversationId = SESSION_CONVERSATION_ID, ARCHIVE = HOST_ARCHIVE_KIND, BOOTSTRAP = HOST_BOOTSTRAP_KIND;
 const VERSION = 1;
 const ARCHIVE_BLOCK_RECORDS = 128;
@@ -459,7 +460,7 @@ export async function seedStorage(options: {
       value: { id: ids[nextId++] as never, conversationId: SESSION_CONVERSATION_ID, requestId, type: "input", status: "unanswered", reason: "legacy_import", detail: "Request already recorded in the history this session started with." },
     });
     writes.push(...await options.host({ generationId, contextEntryId }));
-    await storage.commit(writes, () => {}, context);
+    await commitWrites(storage, writes, context);
     // The commit is atomic: reading back its marker confirms it landed.
     const landed = await loadSeedMarker(storage, context);
     if (!landed || !same(landed, metadata)) throw new SeedConflict("the persisted seed marker differs from the source");
@@ -709,7 +710,7 @@ export class NativeTranscript extends Transcript {
         this.prune();
         const change = this.change();
         if (change.content) writes.push({ type: "document.change", id: this.documentId, content: change.content });
-        await this.storage.commit(writes, () => {}, context);
+        await commitWrites(this.storage, writes, context);
         this.stored = change.stored;
       } catch (error) { this.restore(before); this.failed = error; throw error; }
     });
@@ -736,7 +737,7 @@ export class NativeTranscript extends Transcript {
     return this.enqueue(async () => {
       if (await JournalHistory.findBase(this.storage)) return false;
       const base: HistoryBase = { t: "base", total: this.total, ...(this.piCursor ? { through: this.piCursor } : {}), active: this.active, turnStart: this.turnStart, awaiting: [...this.awaiting], calls: [...this.calls] };
-      try { await this.storage.commit([{ type: "entry", value: { id: await this.storage.mintId<EntryId>(), conversationId, kind: MARKER_KIND, data: json(base) } }], () => {}, context); }
+      try { await commitWrites(this.storage, [{ type: "entry", value: { id: await this.storage.mintId<EntryId>(), conversationId, kind: MARKER_KIND, data: json(base) } }], context); }
       catch (error) { this.failed = error; throw error; }
       return true;
     });

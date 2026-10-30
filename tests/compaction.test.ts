@@ -23,6 +23,7 @@ import { openPiJournalReader } from "../src/pi-durable/storage.ts";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { SESSION_CONVERSATION_ID as LEGACY_CONVERSATION_ID } from "../src/pi-durable/seed.ts";
 import { supervisorMessages } from "./fixtures/journal-messages.ts";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 type Body = { messages: { role: string; content: unknown }[] };
 const text = (body: Body) => JSON.stringify(body.messages);
@@ -585,12 +586,12 @@ test("an agent whose journal keeps more messages after its compaction than the h
   const page = await storage.scanEntries({ conversationId: LEGACY_CONVERSATION_ID as never, order: "descending" }, 1, undefined, BACKGROUND_CONTEXT);
   const next = page.items[0]!.id + 1000;
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-  await storage.commit([
+  await commitWrites(storage, [
     { type: "entry", value: { id: next, conversationId: LEGACY_CONVERSATION_ID, kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "ask-1", name: "ask", arguments: {} }],
       api: "openai-completions", provider: "openai", model: "fixture", usage, stopReason: "toolUse", timestamp: 5 }] } },
     { type: "entry", value: { id: next + 1, conversationId: LEGACY_CONVERSATION_ID, kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "ask-1", toolName: "ask",
       content: [{ type: "text", text: "Waiting for the user's input." }], details: { inputRequired: true }, isError: false, timestamp: 6 }] } },
-  ] as never, () => {}, BACKGROUND_CONTEXT);
+  ] as never, BACKGROUND_CONTEXT);
   await storage.close(BACKGROUND_CONTEXT);
   const restarted = await supervisor.start("drifted", { model, apiKey: "fixture" }, bridge);
   assert.ok(restarted.messages >= 10, "the agent started");

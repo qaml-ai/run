@@ -865,6 +865,7 @@ export function createAgentHost(hostIO: HostIO) {
           emitCompaction({ type: "compaction_end", contextTokens: agent!.contextTokens, reason, tokensBefore: contextTokens(before), keptMessages, summarizedMessages: Math.max(0, held - keptMessages) });
         },
       } });
+      journal.session = () => agent!.journalSession();
       // A run that does not go on here: what Pi settles for it is not history, as the host closed that turn itself, above.
       await requireContextSize();
       if (!resume || !("continue" in resume)) {

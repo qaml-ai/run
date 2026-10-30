@@ -13,6 +13,7 @@ import { hasPiStorage, openPiStorage } from "../src/pi-durable/storage.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
 import type { TranscriptRecord } from "./fixtures/host-transcript.ts";
 import { testDatabase } from "./database.ts";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 test("cold history of an import before #322 (no journal history) is refused, without starting or writing the session", async t => {
   const { db } = await testDatabase();
@@ -35,10 +36,10 @@ test("cold history of an import before #322 (no journal history) is refused, wit
   records.push({ t: "turn", active: true });
   await writeLog();
   const fresh = [user("committed question"), fauxAssistantMessage("committed answer")];
-  for (const message of fresh) await journal.commit([{ type: "entry", value: {
+  for (const message of fresh) await commitWrites(journal, [{ type: "entry", value: {
     id: await journal.mintId<EntryId>(), conversationId: 1 as ConversationId,
     kind: message.role === "user" ? "pi.user" : "pi.assistant", model: [message] as any,
-  } }], () => {}, context);
+  } }], context);
   await journal.close(context);
   // A session an earlier release made has no history ordinals (it opened its storage before them).
   await db.query("update pi_durable_metadata set history_next = null, history_last_id = null where session_id = $1", [id]);

@@ -8,7 +8,7 @@ import { fauxAssistantMessage, fauxToolCall, type AssistantMessage, type FauxRes
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAgentHost, type HostIO } from "../src/agent-host.ts";
-import { openPiStorage } from "../src/pi-durable/storage.ts";
+import { openPiJournalReader, openPiStorage } from "../src/pi-durable/storage.ts";
 import type { StorageWrite } from "@earendil-works/pi-durable";
 import { recoverDurableMessages } from "../src/pi-durable/agent.ts";
 import type { ToolDefinition } from "../src/protocol.ts";
@@ -46,14 +46,14 @@ async function fixture(t: TestContext) {
     stores.push(storage);
     if (options.fault) {
       const inner = { commit: storage.commit.bind(storage) };
-      (storage as any).commit = async (writes: readonly StorageWrite[], adopt: (seq: number) => void, context: any) => {
+      (storage as any).commit = async (batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: number) => void, context: any) => {
         // The host's write of the turn's end, after Pi committed its final answer.
-        const target = writes.some(write => write.type === "entry" && write.value.kind === "camel.history.marker" && (write.value.data as any)?.t === "turn" && (write.value.data as any)?.active === false);
+        const target = batches.flat().some(write => write.type === "entry" && write.value.kind === "camel.history.marker" && (write.value.data as any)?.t === "turn" && (write.value.data as any)?.active === false);
         if (target) {
-          if (options.fault === "torn") await inner.commit(writes, () => {}, context); // committed, acknowledgement lost: never adopted
+          if (options.fault === "torn") await inner.commit(batches, () => {}, context); // committed, acknowledgement lost: no receipts
           throw new Error("projection disk unavailable");
         }
-        return inner.commit(writes, adopt, context);
+        return inner.commit(batches, receive as never, context);
       };
     }
     const events: any[] = [];
@@ -92,7 +92,10 @@ async function fixture(t: TestContext) {
       await assert.rejects(first.host.handle("prompt", { text: "look it up", requestId: "request-once" }), /Session persistence failed:.*projection disk unavailable/);
       assert.deepEqual(f.calls, ["lookup"]);
       assert.equal(f.asked(), 2);
-      const native = await recoverDurableMessages(first.storage, 1);
+      // The failed write failed Pi's Session, which closed its storage.
+      const reader = (await openPiJournalReader({ sessionId: "public-session", directory: f.directory }))!;
+      const native = await recoverDurableMessages(reader, 1);
+      await reader.close(context);
       assert.equal(native.filter(item => text(item.message) === "durable final answer").length, 1, "the answer already exists in the authoritative native WAL");
       await first.host.dispose().catch(() => {});
 

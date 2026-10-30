@@ -196,7 +196,7 @@ test("a write that fails leaves memory as the journal has it, and the agent refu
   let failing = false;
   const { host } = await fake.start({ storage: storage => {
     const commit = storage.commit.bind(storage);
-    storage.commit = async (writes, adopt, context) => { if (failing) throw new Error("disk full"); return commit(writes, adopt, context); };
+    storage.commit = async (batches, receive, context) => { if (failing) throw new Error("disk full"); return commit(batches, receive, context); };
     return storage;
   } });
   fake.respond(answer("One."));
@@ -243,10 +243,12 @@ test("the leading system message is the agent's first context, and a change foll
   const written: string[][] = [];
   const { host } = await fake.start({ storage: storage => {
     const commit = storage.commit.bind(storage);
-    storage.commit = async (writes, adopt, context) => {
-      const kinds = writes.flatMap(write => write.type === "entry" && ["camel.system", "camel.legacy.context"].includes(write.value.kind) ? [write.value.kind] : []);
-      if (kinds.length) written.push(kinds);
-      return commit(writes, adopt, context);
+    storage.commit = async (batches, receive, context) => {
+      for (const writes of batches) {
+        const kinds = writes.flatMap(write => write.type === "entry" && ["camel.system", "camel.legacy.context"].includes(write.value.kind) ? [write.value.kind] : []);
+        if (kinds.length) written.push(kinds);
+      }
+      return commit(batches, receive, context);
     };
     return storage;
   } });
