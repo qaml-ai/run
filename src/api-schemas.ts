@@ -397,7 +397,6 @@ const AgentTarget = z.union([
 export const DelegateSettings = z.strictObject({
   agents: z.array(AgentTarget).max(32).optional().openapi({ description: "Who the model may delegate to: definitions (a new child agent for each call) and existing agents by key" }),
   instructions: z.boolean().optional().openapi({ description: "Let the model start a child with instructions of its own instead, on its own model" }),
-  files: z.enum(["read", "write", "none"]).optional().openapi({ description: "What a child of the model's own instructions sees of this agent's files: write (default), its mounts as they are (it shares them, and has no workspace of its own); read, its mounts at the same paths, read-only, with a writable /scratch of its own; none, only a /workspace of its own. A definition's child has the definition's mounts" }),
   maxDepth: z.number().int().min(1).max(5).optional().openapi({ description: "How deep delegation may go: a child is depth 1, its child depth 2. Default 2" }),
   maxParallel: z.number().int().min(1).max(16).optional().openapi({ description: "delegate calls of one run in flight at once (more wait their turn), and the agent's background sub-agents running at once (spawn_agent past it is refused). Default 4" }),
 }).openapi("DelegateSettings", { description: "With the delegate or agents builtin: who the model may hand tasks to, and how deep and wide. See the multi-agent guide" });

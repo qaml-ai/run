@@ -5734,8 +5734,7 @@ An entry in `agents` is one of these:
 | --- | --- |
 | `"researcher"` or `{ definition: "researcher", name?, description? }` | A new agent made from the definition, for each call |
 | `{ agent: "billing-specialist", name?, description? }` | Your existing agent with that key. It keeps its own history across calls. Runs queue, one at a time, like any of its runs |
-| `instructions: true` (a setting, not an entry) | A new agent on the parent's model, with the parent's `web_search` and `web_fetch` if it has them. Its system prompt is the runtime's: the model's instructions come first in its first message (`Your role:`, then `Your task:`), with its parent's authority, so the parent's later messages can amend them. A system prompt would outrank them: models held to it and ignored the parent's corrections |
-| `files` (a setting, with `instructions: true`) | What such a sub-agent sees of the parent's files, so a path the parent names works for it as is. `"write"` (default): the parent's mounts as they are, shared, and no workspace of its own. `"read"`: the parent's mounts at the same paths, read-only, and a writable `/scratch` of its own (deleted with it). `"none"`: only a `/workspace` of its own. A definition's sub-agent has the definition's mounts |
+| `instructions: true` (a setting, not an entry) | A new agent on the parent's model, with the parent's `web_search` and `web_fetch` if it has them. Its system prompt is the runtime's: the model's instructions come first in its first message (`Your role:`, then `Your task:`), with its parent's authority, so the parent's later messages can amend them. A system prompt would outrank them: models held to it and ignored the parent's corrections. It shares the parent's files: the parent's mounts as they are, at the same paths, so a path the parent names works for it as is (a definition's sub-agent has the definition's mounts) |
 
 A sub-agent the runtime makes is a real agent:
 

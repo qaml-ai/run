@@ -106,7 +106,7 @@ async function spawnAgent(ctx: ChildrenContext, session: Session, settings: Dele
   if (!agent) throw new Error(`The agent ${target!.name} does not exist`);
   return startChild(ctx, session, run, call, settings, {
     agent, made, ...(asked !== undefined ? { name: asked as string } : {}), base: target?.name ?? "subagent", task, ...(output ? { output } : {}),
-    ...(made ? { make: (depth: number) => delegation.makeChild(ctx, session, run, settings, target, key, call.toolCallId!, depth) } : {}),
+    ...(made ? { make: (depth: number) => delegation.makeChild(ctx, session, run, target, key, call.toolCallId!, depth) } : {}),
   });
 }
 

@@ -9,7 +9,7 @@ import { type McpResult } from "../mcp-results.ts";
 import { jsonResult, type ToolCall } from "../tool-servers.ts";
 import { safeError } from "../metrics.ts";
 import type { Mount } from "../volumes.ts";
-import { definitionId, MULTI_AGENT_LIMITS, PARENT_KEYS, roleAndTask, SUBAGENT_PROMPT, type AgentTarget, type DelegateFiles, type DelegateSettings } from "../multi-agent.ts";
+import { definitionId, MULTI_AGENT_LIMITS, PARENT_KEYS, roleAndTask, SUBAGENT_PROMPT, type AgentTarget, type DelegateSettings } from "../multi-agent.ts";
 import * as events from "./events.ts";
 import * as spend from "./spend.ts";
 import { type Child, type Session, type ClientSessionOptions, runningRun } from "./state.ts";
@@ -81,7 +81,7 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     if (session.aborted?.has(run.id)) throw new Error("The run was aborted");
     // Made again (a resumed turn): the same child and request, with the answer it has or will have.
     let record = await requestOf(ctx, agent, tenant, requestId, 0, call.signal).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
-    if (!record && made) agent = await makeChild(ctx, session, run, settings, target, key, toolCallId, depth);
+    if (!record && made) agent = await makeChild(ctx, session, run, target, key, toolCallId, depth);
     child = { agent, requestId, made };
     (session.children ??= new Map()).set(toolCallId, child);
     const at = { toolCallId, agentId: agent, requestId };
@@ -184,7 +184,7 @@ export function childPlace(ctx: DelegationContext, session: Session, run: Reques
  * Make the child agent a call starts, keyed by `key` (made again, the same agent): from its definition target, or with
  * SUBAGENT_PROMPT on the parent's model (the model's instructions come with its task). It acts for whom its parent acts, with the same keys.
  */
-export async function makeChild(ctx: DelegationContext, session: Session, run: RequestRecord, settings: DelegateSettings, target: AgentTarget | undefined, key: string, toolCallId: string, depth: number) {
+export async function makeChild(ctx: DelegationContext, session: Session, run: RequestRecord, target: AgentTarget | undefined, key: string, toolCallId: string, depth: number) {
   const { header } = session, tenant = header.tenant;
   const web = (header.sources?.builtins ?? []).filter(builtin => builtin === "web_search" || builtin === "web_fetch");
   // An inline child has its parent's model: as it is (its endpoint too), or by name on the tenant's own providers, which take only names.
@@ -193,7 +193,7 @@ export async function makeChild(ctx: DelegationContext, session: Session, run: R
   return (await ctx.options.createAgent!(tenant, {
     ...target?.definition !== undefined ? { definition: definitionId(tenant, target.definition) } : {
       model: named ? `${provider}/${modelId}` : header.config.model, systemPrompt: SUBAGENT_PROMPT, ...web.length ? { builtins: web } : {},
-      ...childMounts(header.mounts, settings.files),
+      ...childMounts(header.mounts),
     },
     name: target?.name ?? "subagent", type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds,
     ...header.identity?.subject !== undefined ? { subject: header.identity.subject } : {}, ...header.identity?.context ? { context: header.identity.context } : {},
@@ -204,19 +204,13 @@ export async function makeChild(ctx: DelegationContext, session: Session, run: R
 }
 
 /**
- * What a child of the model's own design mounts of its parent's files (`delegate.files`), so a path its parent names
- * works there as is: "write" (default), the parent's mounts as they are, shared, and no workspace of its own; "read",
- * the parent's mounts at the same paths, read-only, and its own workspace at /scratch (or another free path) for what
- * it writes; "none", nothing of the parent's (its own /workspace). Nothing either way for a parent without
- * mounts. Watches (notify) stay the parent's.
+ * What a child of the model's own design mounts of its parent's files: the parent's mounts as they are, shared, so a
+ * path its parent names works there as is, and no workspace of its own. Nothing for a parent without mounts. Watches
+ * (notify) stay the parent's.
  */
-export function childMounts(mounts: Mount[] | undefined, files: DelegateFiles = "write") {
-  if (files === "none" || !mounts?.length) return {};
-  const shared = mounts.map(({ volumeId, path, mode, subpath }) => ({ volumeId, path, mode: files === "write" ? mode : "ro" as const, ...subpath ? { subpath } : {} }));
-  if (files === "write") return { mounts: [...shared, { workspace: false }] };
-  const free = (path: string) => !mounts.some(mount => mount.path === path || mount.path.startsWith(`${path}/`) || path.startsWith(`${mount.path}/`));
-  const scratch = ["/scratch", "/sub-agent"].find(free);
-  return { mounts: [...shared, scratch ? { workspace: true, path: scratch } : { workspace: false }] };
+export function childMounts(mounts: Mount[] | undefined) {
+  if (!mounts?.length) return {};
+  return { mounts: [...mounts.map(({ volumeId, path, mode, subpath }) => ({ volumeId, path, mode, ...subpath ? { subpath } : {} })), { workspace: false }] };
 }
 
 /** A child's prompt: its task, and its place in the chain, signed for its agent and request so only the runtime places a run in one. */
