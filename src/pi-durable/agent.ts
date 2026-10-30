@@ -516,7 +516,12 @@ export class DurableAgent {
         this.retryPlan = undefined;
         const inner = this.attempt(rawOptions, nativeMessages);
         let terminal: import("@earendil-works/pi-ai").AssistantMessageEvent | undefined;
-        for await (const event of inner) if (event.type === "done" || event.type === "error") terminal = event; else outer.push(event);
+        // Pi keeps the latest partial for a request the host stops during (a lost node, a close), and makes the request
+        // again: marked, the aborted entry it makes of that partial is left out of the history, as a retried response is.
+        for await (const event of inner) {
+          if (event.type === "done" || event.type === "error") terminal = event;
+          else outer.push({ ...event, partial: { ...event.partial, retried: true } as AssistantMessage } as typeof event);
+        }
         const final = await inner.result();
         const failed = final.stopReason === "error" && !isContextOverflow(final);
         const decision = failed ? this.options.durable.retry?.({ reason: "model_error", message: final }) : undefined;
