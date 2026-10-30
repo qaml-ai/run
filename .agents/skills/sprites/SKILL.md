@@ -57,14 +57,21 @@ rustup. No Docker, no Postgres. Services don't restart after a pause: run `sudo 
 
 ## Long jobs
 
-A command run directly in `sprite exec` ends when that connection does: a network blip or a sleeping laptop kills it. For
-anything long, detach it with `nohup … &` inside an exec, which keeps running after the exec returns, or hold the sprite
-awake with a Sprites Task for a job with no process to watch. Log to a file, write the exit status to another, and poll:
+A command run directly in `sprite exec` ends when that connection does: a network blip or a sleeping laptop kills it,
+along with everything it started, `nohup` and `setsid` included. A sprite also pauses about 30 seconds after activity
+stops. So a job that must outlive the connection runs as a service, which the runtime owns, and holds a Task while it
+runs (5 minutes, refreshed every minute, at most 1 hour per refresh):
 
 ```sh
-sprite exec -s <name> --no-stdin -- sh -c 'nohup sh -c "make > ~/job.log 2>&1; echo EXIT \$? >> ~/job.log" >/dev/null 2>&1 & echo started'
-sprite exec -s <name> --no-stdin -- sh -c 'tail -5 ~/job.log'
+sprite-env services create job --cmd bash --args $HOME/job.sh --dir $HOME/x --no-stream
+sprite-env curl -X PUT /v1/tasks/job -d '{ "expire": "5m" }'   # creates or refreshes the hold
+sprite-env curl -X DELETE /v1/tasks/job                        # releases it
+sprite-env services delete job                                 # when done
 ```
+
+The runtime restarts a service that crashes and on reboot, so the script should guard against running twice, write its
+exit status to a file, and delete its own service at the end. A service's `PATH` isn't your exec's: set it in the
+script. Log to a file and poll.
 
 Checkpoint a sprite once it is set up, so a broken state can be undone.
 

@@ -21,8 +21,8 @@ It leases a free sprite, ships the committed tree only (never `.env` or ignored 
 dependencies or rebuilds v8-exec only when they changed, runs the command and releases the lease. Exit status 75 means
 every sprite is busy. Logs stay in `~/runs/` on the sprite.
 
-The command runs detached on the sprite (`nohup`), so a dropped connection or a sleeping laptop doesn't end it. The
-script polls and streams its output; the job writes `~/runs/<id>.log` and `~/runs/<id>.exit` and releases the lease
+The command runs as a service on the sprite and holds a Task, so a dropped connection or a sleeping laptop doesn't end it
+or let the sprite pause. The script polls and streams its output; the job writes `~/runs/<id>.log` and `~/runs/<id>.exit` and releases the lease
 itself. Exit status 69 means the script lost contact: the job carries on, so read those two files instead of rerunning.
 Postgres runs as CI's does (`fsync=off`, `synchronous_commit=off`, `full_page_writes=off`, 1000 connections).
 
