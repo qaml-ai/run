@@ -1,4 +1,4 @@
-From 1d5aa8dce14b50e3d6ee85a7034c36aab8390952 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Miguel Salinas <mikeys@me.com>
 Date: Wed, 28 Oct 2026 14:13:18 -0500
 Subject: [PATCH 2/2] feat(durable): readStoredContext derives a conversation's
@@ -158,6 +158,3 @@ index f3a9ada0e..7b13dbbf1 100644
  	it("extends a task's context read with only newer entries", async () => {
  		const { harness, registry, root, first, scanned } = await countingSetup();
  		const Reads = defineTask<Record<string, never>, { phase: "run" }, null>({
--- 
-2.53.0
-

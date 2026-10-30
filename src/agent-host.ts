@@ -290,7 +290,7 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
-   * Whether Pi makes a failed model request again (its `beforeRetry`; a retried attempt leaves no entry). Asked again at
+   * Whether a failed model request is made again (the adapter's `retry`; a retried attempt is left out of the history). Asked again at
    * once: a request a crash or a close cut, one this node's stale lease cut (not counted), one with final_output forced
    * that the provider refused (then without forcing for the rest of the run), and one refused for an image it cannot read
    * (then without images for the rest of the run). Otherwise what the API reports as `retryable` (model-errors.ts: a

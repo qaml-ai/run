@@ -340,7 +340,7 @@ test("Pi input writes keep the whole message, as earlier readers take data.messa
   assert.deepEqual((await fake.agent.recoverMessages())[0].message, input);
 });
 
-test("Pi adapter asks again in a resumed run whose model request a lost node left in flight, as its beforeRetry says", { timeout: 20_000 }, async () => {
+test("Pi adapter asks again in a resumed run whose model request a lost node left in flight, as its retry decision says", { timeout: 20_000 }, async () => {
   const { db } = await testDatabase(), sessionId = randomUUID();
   const open = () => openPiStorage({ sessionId, directory: "unused", db });
   let requests = 0;
@@ -359,7 +359,7 @@ test("Pi adapter asks again in a resumed run whose model request a lost node lef
     agents.push(first);
     void first.prompt(user("Go")).catch(() => {});
     while (requests < 1) await new Promise(resolve => setTimeout(resolve, 5));
-    // The interrupted request is a failed attempt: the host's beforeRetry has it made again.
+    // The interrupted request is a failed attempt: the host's retry decision has it made again.
     const next = await fixture([answer("back")], {}, await open(), { retry: failed => failed.reason === "interrupted" ? { retry: true, delayMs: 0 } : undefined });
     agents.push(next.agent);
     await next.agent.continue();

@@ -1,4 +1,4 @@
-From a49d21a0fe57fb83c2a2dc1a6fed9911ccc2e781 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Miguel Salinas <mikeys@me.com>
 Date: Wed, 28 Oct 2026 14:12:27 -0500
 Subject: [PATCH 1/2] feat(durable): afterTools can end the run after the round
@@ -184,6 +184,3 @@ index 6849861b8..77449dba4 100644
  	// #10858
  	it("does not terminate on terminate: false", async () => {
  		const setup = chatSetup();
--- 
-2.53.0
-

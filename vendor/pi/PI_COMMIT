@@ -3,5 +3,5 @@ date 2026-10-29T22:11:08+01:00
 source https://github.com/earendil-works/pi/commit/f09d01b85e0384647fcab6779d35ab9dabe04be3
 packages @earendil-works/pi-telemetry @earendil-works/chord @earendil-works/pi-codemode @earendil-works/pi-ai @earendil-works/pi-agent-core @earendil-works/pi-durable
 version main.f09d01b85e03-camel.2
-patch 0001-feat-durable-afterTools-can-end-the-run-after-the-ro.patch 8dd7c02a78407919f461c6c5f33e948f48aaf041
-patch 0002-feat-durable-readStoredContext-derives-a-conversatio.patch 0a7ad56695f048bdd01cd8843aaf97789c3cb86f
+patch 0001-feat-durable-afterTools-can-end-the-run-after-the-ro.patch b69cc00e5774a6b027784dca4ac7b45a64425aeb
+patch 0002-feat-durable-readStoredContext-derives-a-conversatio.patch 0b72721318e652ce698265f9b3d679c189b8e31c
