@@ -844,15 +844,36 @@ For a shell computer, a useful instruction is:
 > Use computer_start, then computer_exec to install the packages you need and
 > run the task. Inspect exitCode. Keep files in the computer between turns.
 > Stop the computer with computer_stop when done. Copy any results you need to
-> retain into the final answer before stopping.
+> retain into workspace files with computer_download before stopping.
 
 Browser Use Cloud uses its direct browser API; the model loop stays in camelRun.
 Sessions disable recording and the optional proxy by default.
 
-Shell computers offer `computer_exec`, `computer_read_file` and
-`computer_write_file`. Browserbase and Browser Use Cloud offer `browser_navigate`, `browser_read`,
+Shell computers offer `computer_exec`, `computer_read_file`, `computer_write_file`,
+`computer_upload` and `computer_download`. Browserbase and Browser Use Cloud offer
+`browser_navigate`, `browser_read`,
 `browser_click`, `browser_fill` and `browser_evaluate`. Both offer
 `computer_start`, `computer_status` and `computer_stop`.
+
+### Transfer workspace files
+
+Use `computer_upload {"from":"/workspace/input.bin","to":"/tmp/input.bin"}` to copy
+a workspace file to the computer. Use
+`computer_download {"from":"/tmp/result.zip","to":"/workspace/result.zip"}` to
+save a computer file in the workspace. The result has `path`, `size` in bytes and
+`sha256`. File contents do not enter the model's context.
+
+Transfers support binary files up to 256 MiB (268,435,456 bytes). Workspace paths
+use the same mounts and permissions as `read` and `write`: relative paths start
+at the first mount, and read-only mounts refuse downloads. Downloads create a
+new file version, record the agent as its author and count against storage quotas.
+Remote paths are interpreted by the computer.
+
+The computer needs `curl`, CA certificates and outbound access to the runtime's
+public API origin. The runtime supplies a single-use URL that expires within
+five minutes; it is not returned to the model. Each transfer has at most 120
+seconds, limited by the session's remaining time. Sprites allows outbound access
+by default; if you set an egress policy, allow the runtime's public host.
 
 Sessions last 60–900 seconds. Commands have a timeout of at most 120 seconds,
 further limited by the session's remaining time. Output is bounded. Background

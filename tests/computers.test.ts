@@ -49,10 +49,13 @@ test('Browser Use exposes browser actions without host shell tools', async () =>
   const names=(await f.service.tools('alice','a')).map(t=>t.name);
   assert.ok(names.includes('browser_evaluate'));
   assert.ok(!names.includes('computer_exec'));
+  assert.ok(!names.includes('computer_upload'));
+  assert.ok(!names.includes('computer_download'));
   await f.service.call('alice','a','computer_start',{},'start');
   await f.service.call('alice','a','browser_evaluate',{expression:'1+1'},'evaluate');
   assert.equal(f.counts().executions,1);
   await assert.rejects(f.service.call('alice','a','computer_exec',{command:'true'},'shell'),/not supported/);
+  await assert.rejects(f.service.call('alice','a','computer_upload',{from:'source',to:'dest'},'upload'),/not supported/);
   await f.service.call('alice','a','computer_stop',{},'stop');
 });
 

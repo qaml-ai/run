@@ -5,6 +5,8 @@ import { HttpError } from "../http.ts";
 import type { Outbound } from "../outbound.ts";
 import type { ToolDefinition } from "../protocol.ts";
 import { Workspaces } from "../workspaces.ts";
+import type { ToolContext } from "../volume-tools.ts";
+import type { ComputerTransfers } from "./transfers.ts";
 import { driver, isBrowserProvider, PROVIDERS, type Credentials, type DriverFactory, type ComputerDriver, type Provider, type Reference } from "./providers.ts";
 
 const id = () => `cmp_${randomUUID().replaceAll("-", "")}`;
@@ -13,13 +15,14 @@ const text = { type: "string", minLength: 1, maxLength: 32000 };
 const tool = (name: string, description: string, props = {}, required: string[] = []): ToolDefinition => ({ name, description, timeoutMs: 180000, exposure: "both", parameters: parameters(props, required) });
 const COMMON = [tool("computer_start", "Start your attached computer or return its current session. Files and processes survive across turns until its fixed expiry. A new session after expiry starts empty."), tool("computer_status", "Read your computer's session and fixed expiry; does not start one."), tool("computer_stop", "Stop your attached computer and discard its session files.")];
 const SHELL = [tool("computer_exec", "Run a shell command in your attached remote Linux computer, never on the camelRun host. Inspect exitCode. Redirect output for background processes. Files survive between calls until expiry.", { command: text, timeoutSeconds: { type: "integer", minimum: 1, maximum: 120 } }, ["command"]), tool("computer_write_file", "Write a UTF-8 file in your remote computer. This is separate from camelRun workspace files.", { path: text, content: { type: "string", maxLength: 16000 } }, ["path", "content"]), tool("computer_read_file", "Read up to 24000 characters from a UTF-8 file in your remote computer.", { path: text }, ["path"])];
+SHELL.push(tool("computer_upload", "Copy a workspace file to your remote computer without reading its contents into context. Returns path, size in bytes and sha256.", { from: text, to: text }, ["from", "to"]), tool("computer_download", "Copy a remote computer file to your workspace without reading its contents into context. Returns path, size in bytes and sha256.", { from: text, to: text }, ["from", "to"]));
 const BROWSER = [tool("browser_navigate", "Navigate your attached remote browser to an HTTP(S) URL.", { url: text }, ["url"]), tool("browser_read", "Read the current remote page's title, URL and visible text."), tool("browser_click", "Click a CSS selector in the remote page.", { selector: text }, ["selector"]), tool("browser_fill", "Fill a CSS-selected input in the remote page.", { selector: text, text: { type: "string", maxLength: 16000 } }, ["selector", "text"]), tool("browser_evaluate", "Run JavaScript in the remote web page and return a JSON result. No host shell or filesystem access.", { expression: text }, ["expression"])];
 export const COMPUTER_TOOLS = new Set([...COMMON, ...SHELL, ...BROWSER].map(t => t.name));
 const publicConnection = (r: any) => ({ id: r.id, agent: r.agent, provider: r.provider, leaseSeconds: r.lease_seconds, dailySeconds: r.daily_seconds, createdAt: r.created_at, billing: "provider_account", session: publicLease(r.lease) });
 const publicLease = (r: any) => r ? ({ id: r.id, provider: r.provider, workspaceId: r.workspace, state: r.state, recoveryRequired: r.state === "uncertain" || r.state === "closing" && !!r.error, createdAt: r.created_at, expiresAt: r.expires_at, closedAt: r.closed_at, ...(r.error ? { error: r.error } : {}) }) : null;
 
 export class Computers {
-  readonly options: { db: Db; accounts: Pick<Accounts, "seal" | "unseal">; outbound: Outbound; driver?: DriverFactory; now?: () => number };
+  readonly options: { db: Db; accounts: Pick<Accounts, "seal" | "unseal">; outbound: Outbound; transfers?: ComputerTransfers; driver?: DriverFactory; now?: () => number };
   constructor(options: Computers["options"]) { this.options = options; }
   private now() { return this.options.now?.() ?? Date.now(); }
   private async lock<T>(tenant: string, agent: string, fn: (sql: DbClient) => Promise<T>) {
@@ -102,7 +105,7 @@ export class Computers {
       return { confirmed: true };
     });
   }
-  async call(tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string) {
+  async call(tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, files?: Pick<ToolContext, "mounts" | "onWrite">) {
     if (!COMPUTER_TOOLS.has(name)) throw new HttpError(400, "Unknown computer tool");
     return this.lock(tenant, agent, async sql => {
       const c = await this.connection(tenant, agent, sql);
@@ -137,24 +140,32 @@ export class Computers {
       if (input.length > 40000) throw new HttpError(400, "Computer tool input too large");
       const previous = (await sql.query("select * from computer_commands where lease=$1 and key=$2", [lease.id, requestKey])).rows[0];
       if (previous) { if (previous.input_hash !== hash) throw new HttpError(409, "Retried computer call changed"); if (previous.state !== "completed") throw new HttpError(409, "Previous command outcome unknown; inspect the computer before retrying"); return previous.result; }
-      let command = args.command;
+      const transfer = name === "computer_upload" || name === "computer_download";
+      let command = transfer ? "true" : args.command;
       if (name === "computer_read_file" || name === "computer_write_file") {
         if (typeof args.path !== "string" || !args.path || args.path.length > 1024 || (name === "computer_write_file" && (typeof args.content !== "string" || args.content.length > 16000))) throw new HttpError(400, "Invalid file input");
         const data = Buffer.from(JSON.stringify(args)).toString("base64");
         command = `python3 -c 'import json,base64,pathlib; d=json.loads(base64.b64decode("${data}")); p=pathlib.Path(d["path"]); ${name === "computer_write_file" ? 'p.parent.mkdir(parents=True,exist_ok=True); p.write_text(d["content"]); print("written")' : 'print(p.open().read(24000))'}'`;
       }
       if (!isBrowserProvider(c.provider) && (typeof command !== "string" || !command || command.length > 32000)) throw new HttpError(400, "Invalid command");
-      const timeout = args.timeoutSeconds ?? 60;
+      const timeout = transfer ? 120 : args.timeoutSeconds ?? 60;
       if (!Number.isInteger(timeout) || timeout < 1 || timeout > 120) throw new HttpError(400, "Command timeout must be 1–120 seconds");
       await sql.query("insert into computer_commands(lease,key,input_hash,state,created_at,tenant) values($1,$2,$3,'pending',$4,$5)", [lease.id, requestKey, hash, this.now(), tenant]);
       try {
         const ref = JSON.parse(this.options.accounts.unseal(`computer-lease:${lease.id}`, lease.reference));
-        const value = await this.useProvider(c, p => p.call(ref, name, { ...args, command, timeoutSeconds: Math.max(1, Math.min(timeout, Math.floor((lease.expires_at-this.now())/1000))), requestKey, remainingSeconds: Math.max(1, Math.floor((lease.expires_at-this.now())/1000)) }));
+        const seconds = Math.max(1, Math.min(timeout, Math.floor((lease.expires_at-this.now())/1000)));
+        const value = await this.useProvider(c, p => {
+          if (transfer) {
+            if (!this.options.transfers) throw new HttpError(400, "Computer transfers are not enabled");
+            return this.options.transfers.run({ tenant, agent, mounts: files?.mounts ?? [], onWrite: files?.onWrite }, name === "computer_upload", args, p, ref, seconds, requestKey);
+          }
+          return p.call(ref, name, { ...args, command, timeoutSeconds: seconds, requestKey, remainingSeconds: Math.max(1, Math.floor((lease.expires_at-this.now())/1000)) });
+        });
         const encoded = JSON.stringify(value ?? null, (_key, item) => typeof item === "string" ? item.replaceAll("\u0000", "\ufffd").toWellFormed() : item);
         const result = encoded.length > 64000 ? { truncated: true, text: encoded.slice(0,64000) } : JSON.parse(encoded);
         await sql.query("update computer_commands set state='completed',result=$3 where lease=$1 and key=$2", [lease.id, requestKey, JSON.stringify(result)]);
         return result;
-      } catch { await sql.query("update computer_commands set state='uncertain' where lease=$1 and key=$2", [lease.id, requestKey]); throw new HttpError(502, "Computer command failed; outcome may be uncertain"); }
+      } catch (error) { await sql.query("update computer_commands set state='uncertain' where lease=$1 and key=$2", [lease.id, requestKey]); if (transfer && error instanceof HttpError) throw error; throw new HttpError(502, "Computer command failed; outcome may be uncertain"); }
       };
       try {
         const result = await execute();
@@ -170,6 +181,7 @@ export class Computers {
     return (await this.options.db.query("select workspace,provider,count(*)::integer as sessions,sum(greatest(0,least(coalesce(closed_at,$2),expires_at)-created_at))/1000.0 as seconds from computer_leases where tenant=$1 group by workspace,provider", [tenant, this.now()])).rows;
   }
   async sweep() {
+    await this.options.transfers?.sweep();
     const rows = (await this.options.db.query("select l.*, c.credentials, c.id as connection_id from computer_leases l join computer_connections c on c.id=l.connection left join agents a on a.id=l.agent and a.tenant=l.tenant where (l.state='closing' or (l.state='uncertain' and l.reference is not null) or (l.state='starting' and l.created_at<=$1::bigint-180000) or (l.state='active' and (l.expires_at<=$1 or a.id is null or a.revoked or a.purged_at is not null or a.expires_at<=$1))) order by l.cleanup_at, l.expires_at limit 100", [this.now()])).rows;
     for (const row of rows) {
       try { await this.lock(row.tenant, row.agent, async sql => { const current = (await sql.query("select * from computer_leases where id=$1", [row.id])).rows[0]; if (current.state === "closed" || (current.state === "active" && current.expires_at > this.now() && row.state !== "active")) return; await this.stop({ ...row, id: row.connection_id }, current, sql); }); } catch { /* Durable closing state retries next sweep. No credentials in logs. */ }

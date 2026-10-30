@@ -1,3 +1,4 @@
+import { ComputerTransfers } from "./computers/transfers.ts";
 import { Computers } from "./computers/service.ts";
 import { Workspaces } from "./workspaces.ts";
 import { anthropicFederationFromEnvironment } from "./anthropic-federation.ts";
@@ -484,7 +485,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   // Files sent to tools as URLs bound to their call, signed with the identity tokens' key (file-arguments.ts).
   const fileUrls = new FileUrls({ signer, get volumes() { return volumes; }, publicUrl: () => links.publicUrl });
-  const computers = new Computers({ db, accounts, outbound: outbound.withoutOrigins() });
+  const computers = new Computers({ db, accounts, outbound: outbound.withoutOrigins(), get transfers() { return transfers; } });
   let sweepingComputers = false;
   const computerTimer = setInterval(() => {
     if (sweepingComputers) return;
@@ -794,6 +795,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
 
   // Signed file links, under a key derived from the session secret, so every node verifies any node's links.
   const links = new FileLinks(sessionSecret, publicUrl);
+  const transfers = new ComputerTransfers({ db, volumes, publicUrl: () => links.publicUrl });
   // Where browsers reach the runtime, as browser tokens say: AGENT_PUBLIC_URL unless set; empty for none (a private runtime
   // whose browsers read through the application's proxy).
   const { browserUrl } = config;
@@ -1314,7 +1316,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     await rateLimits.run(tenant);
   };
-  app.route("/", api({ computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
+  app.route("/", api({ computers, transfers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),
@@ -1429,7 +1431,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   let closing = false;
   const answering = new Set<ServerResponse>();
   const endSocket = (res: ServerResponse) => { if (!res.headersSent) res.setHeader("Connection", "close"); res.shouldKeepAlive = false; };
-  const UPLOAD = /^\/(?:v1\/volumes\/vol_[a-f0-9]{24}\/files\/|v1\/links\/|v1\/agents\/client_[a-f0-9]{40}\/uploads\/|clients\/client_[a-f0-9]{40}\/(?:files|uploads)\/)/;
+  const UPLOAD = /^\/(?:v1\/computer-transfers(?:\?|$)|v1\/volumes\/vol_[a-f0-9]{24}\/files\/|v1\/links\/|v1\/agents\/client_[a-f0-9]{40}\/uploads\/|clients\/client_[a-f0-9]{40}\/(?:files|uploads)\/)/;
   server.on("request", (req: IncomingMessage, res: ServerResponse) => {
     if (closing) endSocket(res);
     else { answering.add(res); res.once("close", () => answering.delete(res)); }

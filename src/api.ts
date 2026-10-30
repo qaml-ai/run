@@ -1,3 +1,4 @@
+import { TRANSFER_PATH, type ComputerTransfers } from "./computers/transfers.ts";
 import { computerRoutes } from "./computers/api.ts";
 import type { Computers } from "./computers/service.ts";
 import { workspaceRoutes } from "./workspaces-api.ts";
@@ -96,6 +97,7 @@ export interface ApiContext {
   scheduler?: Scheduler;
   channels?: Channels;
   volumes?: VolumeService;
+  transfers?: ComputerTransfers;
   definitions?: Definitions;
   /** Tenants whose operator tokens may adjust any tenant's credit (AGENT_BILLING_ADMINS). */
   billingAdmins?: string[];
@@ -236,6 +238,16 @@ export function api(context: ApiContext) {
     if (!context.links) throw new HttpError(404, "Links are not enabled on this runtime");
     return context.links;
   };
+
+  for (const method of ["get", "put"] as const) route(createRoute({
+    method, path: TRANSFER_PATH, security: [],
+    description: "Single-use computer transfer capability. Issued internally; valid only for its bound file and direction.",
+    request: { query: z.object({ token: z.string() }), ...(method === "put" ? { body: binary("The file's bytes, within the transfer's size limit") } : {}) },
+    responses: method === "get" ? { 200: binary("The workspace file") } : { 204: { description: "File stored" } },
+  }), c => {
+    if (!context.transfers) throw new HttpError(404, "Computer transfers are not enabled");
+    return context.transfers.serve(c.req.raw);
+  });
 
   // A signed link is its own credential, so its routes come before the check below. The grant
   // still names a tenant, which must still own the volume.
