@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Miguel Salinas <mikeys@me.com>
 Date: Wed, 28 Oct 2026 14:13:18 -0500
-Subject: [PATCH 2/2] feat(durable): readStoredContext derives a conversation's
+Subject: [PATCH] feat(durable): readStoredContext derives a conversation's
  context from Storage alone
 
 Conversation.context({ at }) needs an open Harness. A process that only reads
@@ -22,19 +22,19 @@ scanEntries) and returns the view Conversation.context() returns.
  5 files changed, 51 insertions(+), 3 deletions(-)
 
 diff --git a/packages/durable/CHANGELOG.md b/packages/durable/CHANGELOG.md
-index 010933adb..64e0cd628 100644
+index 92430f3e4..d351242a8 100644
 --- a/packages/durable/CHANGELOG.md
 +++ b/packages/durable/CHANGELOG.md
-@@ -119,6 +119,7 @@
+@@ -118,6 +118,7 @@
+ - Run-end tasks: a `GenerationHooks.afterRun(run, api)` hook returns `{ tasks }`, built with the typed `runEndTask(task, input)`, after a run answered (a final answer or a `terminate` round; not when an `onYield` continuation is taken, not after a failure or an abort). The answer is committed and the run's inputs settle `done` first, so `Submission.wait()` resolves at the answer; the generation then creates the tasks as its children and waits for them, keeping `pi.live.run` (with `run.afterRun`) and the conversation busy, so idle waits include them, Stop aborts them, and a crash resumes them. Input queued meanwhile, steers included, is placed when they are terminal and starts the next run; a task admits a model-visible write or a fix-run follow-up in its own commit with `submit(tx, draft)`. A crash before the tasks exist asks the hooks again; a broken request (an uninstalled or built-in task, a non-JSON input, a throwing `initial()`) is reported and skipped. `run` names the run's entries: `first` (`pi.live.run.first`, carried into `runFailure.first` so a continue covers a failed run's history), `answer`, and `last` ([#11141](https://github.com/earendil-works/pi/issues/11141))
  
  - `registryReader(value, context)`: a `RegistryReader` over a Chord v2 registry value whose composition is a registry snapshot (`RegistryValue<RegistrySnapshot>`): `snapshot()` reads the current composition, `subscribe` observes its compositions synchronously inside Chord's batch, so a Harness opened in a Chord object takes its extensions from a Chord registry.
- - `GenerationHooks.afterTools` can end the run after the round: `{ end: true }` from any hook ends it as a round whose every call asked to `terminate` does (no further request; inputs settled `done` with the tool-calling answer, the final boundary, `afterRun` with reason `terminate`). A host that decides from the round's results, such as a call waiting for input or a budget, no longer needs every tool to return `control.terminate`
 +- `readStoredContext(storage, conversationId, context, { at })` reads a conversation's committed context from Storage alone (`ContextStorage`: `entry`, `findLatestHeadMarker`, `scanEntries`), the view `Conversation.context()` returns, so a reader without a Harness (a process that forks or shows a session another one drives) derives it as Pi does instead of copying the derivation
  
  ### Changed
  
 diff --git a/packages/durable/README.md b/packages/durable/README.md
-index cee2f9622..5ef8fc92f 100644
+index d87c54d34..b9e05a9bb 100644
 --- a/packages/durable/README.md
 +++ b/packages/durable/README.md
 @@ -666,6 +666,8 @@ To limit a hook to some conversations, select its extension only there, for exam
