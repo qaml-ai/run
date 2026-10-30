@@ -334,12 +334,15 @@ async function waitAgents(ctx: ChildrenContext, session: Session, call: ToolCall
   const rows = async () => (await ctx.db.query("select * from agent_children where parent = $1 and kind <> 'delegate' order by created_at, id", [parent])).rows;
   // Rows of runs folded into another (a message a running turn took) are no one's to wait for; a resume waits on a person, and only when named.
   const open = (row: any) => row.landed_at === null;
+  // Each sub-agent's latest turn: a message the parent sent after an answer starts a turn whose answer is the one it waits
+  // for (the earlier answer still comes as its notification).
+  const latest = (rows: any[]) => [...new Map(rows.map(row => [row.child, row])).values()];
   const pick = (all: any[]) => {
-    if (names === undefined) return all.filter(row => open(row) && row.kind !== "resume");
+    if (names === undefined) return latest(all.filter(row => open(row) && row.kind !== "resume"));
     return (names as string[]).map(name => {
       const named = all.filter(row => (row.name === name || row.child === name) && !["steer", "superseded"].includes(row.landed_by));
       if (!named.length) throw new Error(`You have no sub-agent ${name}`);
-      return named.find(open) ?? named.at(-1);
+      return named.filter(open).at(-1) ?? named.at(-1);
     });
   };
   let chosen = pick(await rows());

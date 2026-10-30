@@ -44,3 +44,10 @@ and running after the whole turn.
 With `delegate: { instructions: true }` and no `agents`, `delegate` and `spawn_agent` now list `instructions` as
 required, as the runtime already demanded: models sent only a `task`, were refused, and wrote every call again. A call
 without it says which field is missing (`Give instructions too: the sub-agent's system prompt …`).
+
+### wait_agent waits for a sub-agent's latest turn
+
+A message to a sub-agent that had already answered starts a turn of its own; `wait_agent` now waits for that turn's
+answer, instead of returning the earlier one at once. The earlier answer still comes as its notification. The
+`instructions` and `task` descriptions now tell the model to put the work (data, rules, steps) in `task`: a message can
+amend a task, but models hold to a system prompt over later messages.

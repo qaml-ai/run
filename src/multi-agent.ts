@@ -140,8 +140,8 @@ const targetProperties = (settings: DelegateSettings, what: string) => {
   const agents = settings.agents ?? [];
   return {
     ...(agents.length ? { agent: { type: "string", enum: agents.map(target => target.name), description: `Which agent to ${what}` } } : {}),
-    ...(settings.instructions ? { instructions: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.instructionsChars, description: `A system prompt for a new sub-agent${agents.length ? ", instead of naming an agent" : ""}: who it is and how it should work` } } : {}),
-    task: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.taskChars, description: "The task, with everything the sub-agent needs to know: it sees none of this conversation" },
+    ...(settings.instructions ? { instructions: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.instructionsChars, description: `A system prompt for a new sub-agent${agents.length ? ", instead of naming an agent" : ""}: who it is and how it should work. Put the work itself (its data, rules and steps) in task: your later messages can amend a task, but a sub-agent holds to its system prompt over them` } } : {}),
+    task: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.taskChars, description: "The task, with everything the sub-agent needs to know (its data, rules and steps): it sees none of this conversation, nor your files" },
     output: { type: "object", description: "A JSON Schema for an object, if you want the answer in that shape (type: \"object\")" },
   };
 };

@@ -188,6 +188,28 @@ test("a response that starts a sub-agent and, beside it, messages and waits for 
   assert.equal(waited.agents[0].text, "worker done; heard: true", "the message joined its first turn, not one after it");
 });
 
+test("a message to a sub-agent that already answered starts a turn, and wait_agent waits for that turn's answer, not the earlier one", async t => {
+  const answered = deferred();
+  const r = await runtime(t, body => {
+    if (systemText(body).includes("WORKER")) return { role: "assistant", content: body.messages.filter((message: any) => message.role === "user").length > 1 ? "second answer" : "first answer" };
+    const results = toolResults(body);
+    if (!results.length) return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "work", name: "w" }, "spawn");
+    // The worker has answered (its ending not taken yet) when the parent messages it.
+    if (results.length === 1) return { wait: answered.promise, ...toolCall("send_message", { to: "w", text: "redo it" }, "say") };
+    if (results.length === 2) return toolCall("wait_agent", { agents: ["w"] }, "wait");
+    return { role: "assistant", content: results.at(-1) };
+  });
+  const parent = await r.call("/v1/agents", { body: { systemPrompt: "You are LEAD.", builtins: ["agents"], delegate: { instructions: true } } }).then(made => made.json.id as string);
+  const run = r.prompt(parent, "go");
+  const child = await until(async () => ((await r.call("/v1/agents")).json as any[]).find(agent => agent.parentAgentId === parent)?.id as string, "the worker");
+  await until(async () => (await requests(r, child)).some(request => request.state === "completed"), "the worker's first answer");
+  answered.resolve();
+  const waited = JSON.parse((await run).outcome.result.reply as string);
+  assert.equal(waited.agents.length, 1);
+  assert.equal(waited.agents[0].status, "completed");
+  assert.equal(waited.agents[0].text, "second answer");
+});
+
 test("wait_agent with untilProgress returns on a report it has not seen, after its floor, so the parent can correct a sub-agent mid-run", async t => {
   const release = deferred();
   const bodies: any[] = [];
