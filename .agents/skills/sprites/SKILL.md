@@ -57,8 +57,9 @@ rustup. No Docker, no Postgres. Services don't restart after a pause: run `sudo 
 
 ## Long jobs
 
-`nohup … &` inside an exec keeps running after the exec returns, and a running job keeps the sprite awake. Log to a
-file and poll:
+A command run directly in `sprite exec` ends when that connection does: a network blip or a sleeping laptop kills it. For
+anything long, detach it with `nohup … &` inside an exec, which keeps running after the exec returns, or hold the sprite
+awake with a Sprites Task for a job with no process to watch. Log to a file, write the exit status to another, and poll:
 
 ```sh
 sprite exec -s <name> --no-stdin -- sh -c 'nohup sh -c "make > ~/job.log 2>&1; echo EXIT \$? >> ~/job.log" >/dev/null 2>&1 & echo started'

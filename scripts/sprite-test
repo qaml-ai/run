@@ -43,7 +43,9 @@ for candidate in ${SPRITE_NAME:-$(for i in $(seq "$pool"); do echo "rt-pool-$i";
   take "$candidate" && { name=$candidate; break; }
 done
 [[ -n $name ]] || { echo "every sprite in the pool (rt-pool-1..$pool in $org) is leased; wait, or raise SPRITE_POOL" >&2; exit 75; }
-trap 'on "$name" "rm -rf ~/lease" >/dev/null 2>&1 || true' EXIT
+# Until the job starts the lease is ours to release; after that the job's.
+started=0
+trap '[[ $started = 1 ]] || on "$name" "rm -rf ~/lease" >/dev/null 2>&1 || true' EXIT
 setup "$name"
 echo "== sprite-test $(git log --oneline -1 "$sha") on $name ($id)"
 
@@ -51,6 +53,9 @@ echo "== sprite-test $(git log --oneline -1 "$sha") on $name ($id)"
 on "$name" "cd ~/rt && find . -mindepth 1 -maxdepth 1 ! -name node_modules ! -name sandbox -exec rm -rf {} + && find sandbox -mindepth 1 -maxdepth 2 ! -path sandbox/v8-exec ! -path sandbox/v8-exec/target -exec rm -rf {} + 2>/dev/null; true"
 git archive --format=tar.gz "$sha" | sprite exec -o "$org" -s "$name" --stdin -- sh -c 'cd ~/rt && tar xzf -'
 on "$name" "sudo service postgresql start >/dev/null
+  # As CI runs it (.github/actions/test-postgres): durability off, or per-file databases are slow enough to time tests out.
+  sudo -u postgres psql -qc 'ALTER SYSTEM SET fsync=off' -c 'ALTER SYSTEM SET synchronous_commit=off' -c 'ALTER SYSTEM SET full_page_writes=off' -c 'ALTER SYSTEM SET max_connections=1000' >/dev/null
+  if [ \"\$(sudo -u postgres psql -Atqc 'SHOW max_connections')\" = 1000 ]; then sudo -u postgres psql -qc 'SELECT pg_reload_conf()' >/dev/null; else sudo service postgresql restart >/dev/null; fi
   for db in \$(sudo -u postgres psql -Atqc \"SELECT datname FROM pg_database WHERE datname NOT IN ('postgres','template0','template1')\"); do sudo -u postgres dropdb --force \"\$db\"; done
   cd ~/rt
   [ \"\$(cat ~/.lock 2>/dev/null)\" = $lock ] || { echo '== npm ci (package-lock.json changed)'; npm ci --silent --no-audit --no-fund && echo $lock > ~/.lock; }
@@ -58,9 +63,23 @@ on "$name" "sudo service postgresql start >/dev/null
 
 echo "== $*"
 start=$(date +%s)
-set +e
-on "$name" "cd ~/rt && AGENT_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres $(printf '%q ' "$@") 2>&1 | tee ~/runs/$id.log"
-status=$?
-set -e
+# Detached on the sprite, so a dropped connection or a sleeping laptop doesn't end the run: the job writes its log and exit
+# status and releases the lease itself, and a run past SPRITE_RUN_HOURS (default 2) is killed rather than holding a sprite.
+job="timeout ${SPRITE_RUN_HOURS:-2}h $(printf '%q ' "$@") > ~/runs/$id.log 2>&1; echo \$? > ~/runs/$id.exit; rm -rf ~/lease"
+on "$name" "cd ~/rt && AGENT_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres nohup setsid bash -o pipefail -c $(printf '%q' "$job") >/dev/null 2>&1 < /dev/null &"
+started=1
+# Poll: a failed poll is only a blip, the job carries on. After SPRITE_POLL_FAILURES (default 40, about 10 minutes) in a row, leave it running.
+chunk=$(mktemp); offset=0; misses=0; status=
+while [[ -z $status ]]; do
+  if on "$name" "tail -c +$((offset + 1)) ~/runs/$id.log 2>/dev/null; true" > "$chunk" 2>/dev/null; then
+    misses=0; cat "$chunk"; offset=$(( offset + $(wc -c < "$chunk") ))
+    status=$(on "$name" "cat ~/runs/$id.exit 2>/dev/null; true" 2>/dev/null || true)
+    if [[ -n $status ]]; then on "$name" "tail -c +$((offset + 1)) ~/runs/$id.log 2>/dev/null; true" 2>/dev/null || true; fi
+  elif (( ++misses >= ${SPRITE_POLL_FAILURES:-40} )); then
+    echo "== lost contact with $name; the job carries on. Log ~/runs/$id.log, status ~/runs/$id.exit there" >&2; rm -f "$chunk"; exit 69
+  fi
+  [[ -n $status ]] || sleep 15
+done
+rm -f "$chunk"
 echo "== exit $status in $(( $(date +%s) - start ))s on $name; log ~/runs/$id.log there"
-exit $status
+exit "$status"
