@@ -16,7 +16,7 @@ ref=${1:-HEAD}; shift || true
 cd "$(git rev-parse --show-toplevel)"
 sha=$(git rev-parse --verify "$ref^{commit}")
 lock=$(git rev-parse "$sha:package-lock.json"); v8=$(git rev-parse "$sha:sandbox/v8-exec")
-org=${SPRITE_ORG:-camelai}; pool=${SPRITE_POOL:-6}; stale_s=${SPRITE_LEASE_STALE:-300}; wait_s=$(( ${SPRITE_WAIT_MINUTES:-30} * 60 ))
+org=${SPRITE_ORG:-camelai}; pool=${SPRITE_POOL:-10}; stale_s=${SPRITE_LEASE_STALE:-300}; wait_s=$(( ${SPRITE_WAIT_MINUTES:-30} * 60 ))
 id=$(date +%Y%m%d-%H%M%S)-$$; owner="$(whoami)@$(hostname -s) $id"
 on() { local name=$1; shift; sprite exec -o "$org" -s "$name" --no-stdin -- bash -o pipefail -c "$*"; }
 
