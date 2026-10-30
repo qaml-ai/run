@@ -1,8 +1,9 @@
 import { estimateContextTokens, estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, isRetryableAssistantError, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
+import { contentText, createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, isRetryableAssistantError, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
+import { RUNTIME } from "../system-prompt.ts";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
   GenerationTask, Harness, LiveDoc, ToolTask, createRegistry, createSession, defineDoc, hook, section,
@@ -248,11 +249,29 @@ export class DurableAgent {
    * The host's system sections as its working set holds them (hosts write their own system messages), or as its
    * configuration makes them where the working set shows none. Pi renders the section `instructions` itself, from a
    * conversation's instructions, so a host's own section of that name (an older one, which the host declares again under
-   * a key of its own) is not rendered here.
+   * a key of its own) is not rendered here. A context written before the runtime's rules were a section (`RUNTIME`)
+   * holds them as its content, or, past a compaction, nowhere: here they are its first section all the same, from its
+   * content or else the configuration's.
    */
   private sections(): Record<string, string> {
-    return Object.fromEntries(Object.entries(getCurrentSystemMessage(this._messages)?.sections ?? this.leading()?.sections ?? {})
+    const current = getCurrentSystemMessage(this._messages);
+    let sections = current?.sections ?? this.leading()?.sections ?? {};
+    if (current && !(RUNTIME in sections)) {
+      const rules = contentText(current.content) || this.leading()?.sections?.[RUNTIME];
+      if (rules) sections = { [RUNTIME]: rules, ...sections };
+    }
+    return Object.fromEntries(Object.entries(sections)
       .filter((entry): entry is [string, string] => entry[1] !== null && entry[0] !== "instructions"));
+  }
+
+  /**
+   * The runtime's rules where a context shows no section for them: none while its content still holds them (a context
+   * from before they were a section), else the configuration's, so a context that lost them to a compaction gets them
+   * back, first, on its next request.
+   */
+  private missingRules(): string | undefined {
+    const current = getCurrentSystemMessage(this._messages);
+    return current && contentText(current.content) ? undefined : this.sections()[RUNTIME];
   }
 
   private constructor(options: DurableAgentOptions) {
@@ -723,13 +742,13 @@ export class DurableAgent {
    * The `camel` extension: the host's tools, and its system sections as native sections. Pi plans the system entries
    * of each request from the sections its extensions render, and sets a shown section none renders to null. Each
    * renders what the context shows for it, or, where the context shows none (the baseline after a compaction), the
-   * working set's: the host, not Pi, decides what they say.
+   * working set's: the host, not Pi, decides what they say. The runtime's rules are the one exception (`missingRules`).
    */
   private installTools() {
     const keys = Object.keys(this.sections());
     this.sectionKeys = JSON.stringify(keys);
     this.registry.install({ name: "camel", sections: keys.map(key => section(key, input =>
-      Object.keys(input.shown).length ? input.shown[key] : this.sections()[key], { tag: false })), tools: this.tools.map(tool => ({ ...tool, replay: tool.replay === "safe" ? "safe" : "unsafe",
+      !Object.keys(input.shown).length ? this.sections()[key] : input.shown[key] ?? (key === RUNTIME ? this.missingRules() : undefined), { tag: false })), tools: this.tools.map(tool => ({ ...tool, replay: tool.replay === "safe" ? "safe" : "unsafe",
       structuredOutputSchema: tool.outputSchema,
       // Camel already bounds tool output; a second truncation changes persisted replies.
       outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
