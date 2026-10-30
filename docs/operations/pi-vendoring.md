@@ -76,7 +76,8 @@ it records the new tarballs' integrity instead of reusing the cached ones.
 pi-ai's build generates its model catalog from upstream sources (models.dev, OpenRouter, Vercel AI Gateway) when the
 script runs, so two runs at the same commit can differ in catalog data: the tarball keeps the snapshot it was built
 with, and the lockfile's integrity keeps everyone on it. Models we price ourselves keep their overrides
-(`src/pi-catalog.ts`).
+(`src/pi-catalog.ts`). A rebuild that must not change models or prices (adding or dropping a patch at the same commit) runs
+the script with `PI_KEEP_CATALOG=1`: pi-ai is built with the catalog of the tarball vendored now.
 
 ## Versions that cannot be rolled back
 

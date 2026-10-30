@@ -100,8 +100,15 @@ for entry in "${packages[@]}"; do
   read -r dir name file <<< "$entry"
   echo "Building $name"
   # pi-ai's build generates its model catalog from upstream sources (models.dev, OpenRouter, Vercel AI Gateway) at
-  # this moment, so it needs the network; the tarball keeps that snapshot.
-  (cd "$src/packages/$dir" && npm run build > "$work/build.log" 2>&1) || { cat "$work/build.log" >&2; exit 1; }
+  # this moment, so it needs the network; the tarball keeps that snapshot. PI_KEEP_CATALOG=1 builds it with the
+  # catalog of the pi-ai tarball vendored now instead (a rebuild that must not change models or prices).
+  build=build
+  if [ "$dir" = ai ] && [ "${PI_KEEP_CATALOG:-}" = 1 ]; then
+    tar -xzf "$out/pi-ai.tgz" -C "$work" package/dist/providers/data
+    rm -rf "$src/packages/ai/src/providers/data" && mv "$work/package/dist/providers/data" "$src/packages/ai/src/providers/data"
+    build=build:offline
+  fi
+  (cd "$src/packages/$dir" && npm run "$build" > "$work/build.log" 2>&1) || { cat "$work/build.log" >&2; exit 1; }
   json="$(cd "$src/packages/$dir" && npm pack --ignore-scripts --json --pack-destination "$work/packed")"
   packed="$(node -e 'const r = JSON.parse(process.argv[1]); console.log((Array.isArray(r) ? r[0] : r).filename)' "$json")"
   mv "$work/packed/$packed" "$work/packed/$file.tgz"
