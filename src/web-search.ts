@@ -2,6 +2,7 @@ import type { Outbound } from "./outbound.ts";
 import type { UsageRecord } from "./client-sessions/state.ts";
 import { MICROS } from "./pricing.ts";
 import { readableText } from "./html-text.ts";
+import { Attempt, httpAttempt, route } from "./capabilities/router.ts";
 
 /**
  * The `web_search` built-in: a query to a web search API, answered with a few results
@@ -240,12 +241,6 @@ export interface WebSearchOptions {
   timeoutMs?: number;
 }
 
-/** Why a provider did not answer, and whether the next one should be tried. */
-class Attempt extends Error {
-  readonly next: boolean;
-  constructor(message: string, next: boolean) { super(message); this.next = next; }
-}
-
 export class WebSearch {
   readonly options: WebSearchOptions;
   constructor(options: WebSearchOptions) { this.options = options; }
@@ -261,26 +256,18 @@ export class WebSearch {
     const count = Math.min(SEARCH.maxCount, Math.max(1, Math.trunc(Number(args.count ?? SEARCH.count)) || SEARCH.count));
     const freshness = FRESHNESS.find(value => value === args.freshness);
     const order = context.providers ? searchOrder(context.providers, "webSearch.providers") : this.options.order;
-    const failures: string[] = [];
-    const unkeyed: string[] = [];
-    for (const id of order) {
-      const key = await this.options.key(context.tenant, id);
-      if (!key) { unkeyed.push(id); continue; }
-      try {
+    const { value: results, provider } = await route({
+      kind: "web_search", tenant: context.tenant, agent: context.agent, order, signal,
+      key: id => this.options.key(context.tenant, id),
+      attempt: async (id, key) => {
         const results = await this.attempt(this.options.providers[id], { query: query.slice(0, SEARCH.query), count, ...(freshness ? { freshness } : {}) }, key.key, signal);
         // Only a search the API answered is charged, at its provider's price; its links are the web's, fetched (if at all) through web_fetch's guard.
         this.options.onSearch?.(context.tenant, context.agent, { provider: id, model: "web_search", usage: { cost: { total: this.options.price(id) / MICROS } }, platform: key.platform, searches: 1 });
-        if (failures.length) console.error(JSON.stringify({ type: "web_search_fallback", tenant: context.tenant, agent: context.agent, answered: id, failed: failures }));
-        return { query, provider: id, results: withinBudget(results.slice(0, count)) };
-      } catch (error) {
-        if (signal.aborted) throw error;
-        if (!(error instanceof Attempt)) throw error;
-        failures.push(error.message);
-        if (!error.next) break;
-      }
-    }
-    if (failures.length) throw new Error(`Web search failed: ${failures.join("; ")}`);
-    throw new Error(webSearchUnavailable(unkeyed));
+        return results;
+      },
+      exhausted: (failures, unkeyed) => new Error(failures.length ? `Web search failed: ${failures.join("; ")}` : webSearchUnavailable(unkeyed)),
+    });
+    return { query, provider, results: withinBudget(results.slice(0, count)) };
   }
 
   private async attempt(provider: SearchProvider, query: SearchQuery, key: string, signal: AbortSignal): Promise<SearchResult[]> {
@@ -296,12 +283,7 @@ export class WebSearch {
     }
     if (!response.ok) {
       await response.body?.cancel();
-      const status = response.status;
-      if (status === 401 || status === 403) throw new Attempt(`${provider.id} rejected the search API key (HTTP ${status})`, true);
-      if (status === 402) throw new Attempt(`${provider.id} refused the search for payment (HTTP 402)`, true);
-      if (status === 429) throw new Attempt(`${provider.id} is rate limiting searches (HTTP 429)`, true);
-      if (status === 408 || status >= 500) throw new Attempt(`${provider.id} search failed (HTTP ${status})`, true);
-      throw new Attempt(`${provider.id} refused the search request (HTTP ${status})`, false);
+      throw httpAttempt(provider.id, response.status, { one: "search", many: "searches" });
     }
     let body: unknown;
     try { body = await response.json(); } catch (error) {

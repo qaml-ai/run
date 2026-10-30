@@ -19,7 +19,7 @@ import { DOCS_SITE, loadDocs, loadRegistry, ROBOTS_TXT, SKILL_PATHS } from "./do
 import { StorageGc } from "./storage-gc.ts";
 import { modelHeadersInput, resolveModel, sessionConfig } from "./session-config.ts";
 import { ClientSessions, ORPHANS_CHANNEL } from "./client-sessions.ts";
-import { runSessionOf, type RunSettings, type SessionHooks } from "./client-sessions/state.ts";
+import { runSessionOf, type RunSettings, type SessionHooks, type UsageRecord } from "./client-sessions/state.ts";
 import { ADMIN_RUN_LIMITS, spendInput } from "./client-sessions/spend.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 import type { LogTail, Storage, StorageMeter } from "../shared/storage.ts";
@@ -85,6 +85,7 @@ import { openrouterDecisions } from "./decision-providers.ts";
 import { openaiSpeech, Synthesizer } from "./speech.ts";
 import { Imager, openaiImages } from "./images.ts";
 import { azureChatCredentials, azureCredentials, azureRealtimeCredentials, azureRealtimeDeployment } from "./azure-openai.ts";
+import { meter, resolveKey } from "./capabilities/router.ts";
 import { searchProvidersFromEnvironment, WebSearch } from "./web-search.ts";
 import { WebRender } from "./web-render.ts";
 import { XSearch } from "./x-search.ts";
@@ -396,29 +397,21 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const oauth = new OAuth({ db, accounts, consoleAuth, secret: sessionSecret, origins, github: !!github, google: !!google });
   // web_search and web_fetch's renderer: the tenant's key for each provider, else an admin's, else the platform's (for a
   // prepaid tenant, or an admin tenant without platformKeys: false), whose calls a prepaid tenant pays for at that
-  // provider's price. js_exec can make many calls between two model requests, so spent or rate-limited credit refuses
-  // the platform's key at each call, not only at the next request.
-  const webKey = async (tenant: string, provider: string) => {
-    const resolved = await accounts.providerKey(tenant, provider);
-    if (!resolved) return undefined;
-    // Only the platform's own key is the platform's: an admin's key for the tenant (its apiKeys) is the tenant's to account for.
-    const platform = resolved.source === "platform";
-    if (platform) { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
-    return { key: resolved.key, platform };
-  };
+  // provider's price, and so does its end user, where the tenant meters them.
+  const webKey = (tenant: string, provider: string) => resolveKey(accounts, tenant, provider);
+  const meterCall = (tenant: string, agent: string, usage: UsageRecord) => meter(accounts, clients, tenant, agent, usage);
   const search = new WebSearch({
     outbound: outbound.withoutOrigins(), ...searchProvidersFromEnvironment(env), key: webKey, timeoutMs: config.searchTimeoutMs,
     price: provider => accounts.billing.pricing.webSearch[provider],
-    // Its end user pays for it too, where the tenant meters them (end-user-credits.ts).
-    onSearch: (tenant, agent, usage) => { accounts.recordUsage(tenant, agent, usage); clients.endUserCharge(agent, usage); },
+    onSearch: meterCall,
   });
   const render = new WebRender({
     outbound: outbound.withoutOrigins(), key: webKey, price: accounts.billing.pricing.webRender, endpoint: config.firecrawlUrl,
-    onRender: (tenant, agent, usage) => { accounts.recordUsage(tenant, agent, usage); clients.endUserCharge(agent, usage); },
+    onRender: meterCall,
   });
   const xSearch = new XSearch({
     outbound: outbound.withoutOrigins(), key: webKey, endpoint: env.AGENT_XAI_RESPONSES_URL,
-    onSearch: (tenant, agent, usage) => { accounts.recordUsage(tenant, agent, usage); clients.endUserCharge(agent, usage); },
+    onSearch: meterCall,
   });
   // A provider's key for speech to text and images, as a model call resolves it: its key scope's, its own, else the
   // platform's, which a prepaid tenant pays for (per second of audio, per token of an image).
