@@ -22,6 +22,10 @@ export interface Pricing {
   speech: number;
   /** Per million tokens of an image made on the platform's key (OpenAI's gpt-image-2.5-flare): text and image tokens in, image tokens out. */
   image: { textInput: number; imageInput: number; output: number };
+  /** Per hour of a computer lease on the platform's key, billed per second. */
+  computerHour: number;
+  /** Per hour of a browser lease on the platform's key, billed per second. */
+  browserHour: number;
   /** Fee on a credit purchase, in basis points (550 = 5.5%). */
   purchaseFeeBps: number;
   minPurchase: number;
@@ -69,6 +73,8 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
   speech: micros(0.015),
   // OpenAI's list prices for gpt-image-2.5-flare, per million tokens.
   image: Object.freeze({ textInput: micros(5), imageInput: micros(8), output: micros(30) }),
+  computerHour: micros(0.12),
+  browserHour: micros(0.10),
   purchaseFeeBps: 550,
   minPurchase: micros(5),
   maxPurchase: micros(1000),
@@ -89,7 +95,7 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
 /**
  * Rates from the environment, in USD (AGENT_PRICE_AGENT_HOUR_USD, AGENT_PRICE_STORAGE_GB_MONTH_USD,
  * AGENT_PRICE_WEB_SEARCH_<EXA|BRAVE|PARALLEL>_USD (or AGENT_PRICE_WEB_SEARCH_USD for all three), AGENT_PRICE_WEB_RENDER_USD, AGENT_PRICE_TRANSCRIPTION_USD (per minute of audio), AGENT_PRICE_SPEECH_USD (per minute of speech made),
- * AGENT_PRICE_IMAGE_TEXT_INPUT_USD, AGENT_PRICE_IMAGE_INPUT_USD and AGENT_PRICE_IMAGE_OUTPUT_USD (per million tokens), AGENT_CREDIT_FEE_PERCENT, AGENT_CREDIT_MIN_PURCHASE_USD, AGENT_CREDIT_MAX_PURCHASE_USD,
+ * AGENT_PRICE_IMAGE_TEXT_INPUT_USD, AGENT_PRICE_IMAGE_INPUT_USD and AGENT_PRICE_IMAGE_OUTPUT_USD (per million tokens), AGENT_PRICE_COMPUTER_HOUR_USD, AGENT_PRICE_BROWSER_HOUR_USD, AGENT_CREDIT_FEE_PERCENT, AGENT_CREDIT_MIN_PURCHASE_USD, AGENT_CREDIT_MAX_PURCHASE_USD,
  * AGENT_CREDIT_GRANT_USD, AGENT_CARD_CREDIT_USD, AGENT_FREE_HOURLY_SPEND_USD, AGENT_USAGE_TIERS) and storage limits in GB (AGENT_MAX_STORAGE_GB,
  * AGENT_FREE_MAX_STORAGE_GB); unset ones keep the defaults.
  * AGENT_OPENROUTER_CREDIT_MULTIPLIER is the actual dollars paid per dollar of provider credit.
@@ -130,6 +136,8 @@ export function pricingFromEnvironment(env = process.env): Pricing {
       imageInput: usd("AGENT_PRICE_IMAGE_INPUT_USD", DEFAULT_PRICING.image.imageInput),
       output: usd("AGENT_PRICE_IMAGE_OUTPUT_USD", DEFAULT_PRICING.image.output),
     },
+    computerHour: usd("AGENT_PRICE_COMPUTER_HOUR_USD", DEFAULT_PRICING.computerHour),
+    browserHour: usd("AGENT_PRICE_BROWSER_HOUR_USD", DEFAULT_PRICING.browserHour),
     purchaseFeeBps: fee,
     minPurchase: usd("AGENT_CREDIT_MIN_PURCHASE_USD", DEFAULT_PRICING.minPurchase),
     maxPurchase: usd("AGENT_CREDIT_MAX_PURCHASE_USD", DEFAULT_PRICING.maxPurchase),
@@ -178,6 +186,9 @@ export function usageTier(tiers: UsageTier[], paid: number): { tier: UsageTier; 
 
 /** The charge for `ms` of active agent time. */
 export const activeCharge = (pricing: Pricing, ms: number) => Math.round(ms * pricing.agentHour / 3_600_000);
+
+/** What `seconds` of a lease cost in all at `priceHour`. Rounded on the total, so charging it piece by piece adds up to the same. */
+export const leaseCost = (seconds: number, priceHour: number) => Math.round(seconds * priceHour / 3_600);
 
 /** One day's charge for `bytes` stored, in a month of `days` days. */
 export const storageCharge = (pricing: Pricing, bytes: number, days: number) => Math.round(bytes * pricing.storageGbMonth / 1e9 / days);
