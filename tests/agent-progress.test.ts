@@ -248,7 +248,7 @@ test("a sub-agent of the model's own design shares its parent's files at the sam
       const done = toolResults(body);
       const steps = [["read", { path: "/workspace/rows.txt" }], ["write", { path: "/workspace/from-child.txt", content: "child" }]] as const;
       if (done.length < steps.length) return toolCall(steps[done.length][0], steps[done.length][1], `w${done.length}`);
-      return { role: "assistant", content: done.map(result => result.slice(0, 300)).join(" | ") };
+      return { role: "assistant", content: done.map((result: string) => result.slice(0, 300)).join(" | ") };
     }
     if (tools(body)) return { role: "assistant", content: JSON.parse(toolResults(body).at(-1)!).text };
     return toolCall("delegate", { instructions: "You are a WORKER.", task: "read the rows" }, "d");
@@ -269,7 +269,7 @@ test("wait_agent with untilProgress returns on a report it has not seen, after i
   const r = await runtime(t, body => {
     if (roleText(body).includes("WORKER")) {
       if (tools(body) === 0) return toolCall("report_progress", { text: "fetching the 2019 report" }, "p1");
-      if (tools(body) === 1) return { role: "assistant", content: "x", wait: release.promise, ...toolCall("report_progress", { text: "still on 2019" }, "p2") };
+      if (tools(body) === 1) return { content: "x", wait: release.promise, ...toolCall("report_progress", { text: "still on 2019" }, "p2") };
       const corrected = body.messages.some((message: any) => message.role === "user" && JSON.stringify(message.content).includes("use 2025"));
       return { role: "assistant", content: corrected ? "used 2025" : "used 2019" };
     }
