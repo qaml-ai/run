@@ -10,7 +10,17 @@ export interface ComputerDriver {
   call(ref: Reference, operation: string, args: Record<string, any>): Promise<unknown>;
   close(ref: Reference): Promise<void>;
   dispose?(): void | Promise<void>;
+  /** Whether a create failed because the provider refused the credentials (401 or 403), so it made nothing. */
+  refused?(error: unknown): boolean;
 }
+/** A provider's HTTP answer other than success. */
+class ProviderHttpError extends Error {
+  readonly status: number;
+  constructor(status: number) { super(`Computer provider HTTP ${status}`); this.status = status; }
+}
+const httpRefused = (error: unknown) => error instanceof ProviderHttpError && (error.status === 401 || error.status === 403);
+// Modal's SDK lets nice-grpc's ClientError through; its codes are gRPC's: UNAUTHENTICATED and PERMISSION_DENIED.
+const grpcRefused = (error: any) => error?.name === "ClientError" && (error.code === 16 || error.code === 7);
 // Capture on the remote disk, then return bounded streams. SDK helpers otherwise
 // buffer an arbitrarily large command response in the shared runtime process.
 const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
@@ -43,6 +53,7 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
     const client = new ModalClient({ tokenId: credentials.tokenId, tokenSecret: credentials.tokenSecret, maxRetries: 0, timeoutMs: 120000 });
     return {
       dispose() { client.close(); },
+      refused: grpcRefused,
       async create(id, seconds, allocated) {
         const app = await client.apps.fromName("camelrun-computers", { createIfMissing: true });
         const image = client.images.fromRegistry("python:3.11-slim").dockerfileCommands(["RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*"]);
@@ -66,18 +77,20 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
     };
   }
   if (provider === "daytona") {
-    const { Daytona, DaytonaNotFoundError } = await import("@daytona/sdk");
+    const { Daytona, DaytonaAuthenticationError, DaytonaForbiddenError, DaytonaNotFoundError } = await import("@daytona/sdk");
     const client = new Daytona({ apiKey: credentials.apiKey, apiUrl: "https://app.daytona.io/api", requestTimeoutMs: 30000 });
     return {
       dispose: () => client[Symbol.asyncDispose](),
+      refused: error => error instanceof DaytonaAuthenticationError || error instanceof DaytonaForbiddenError,
       async create(id, seconds, allocated) { const sb = await client.create({ name: id, language: "python", ephemeral: true, autoStopInterval: Math.ceil(seconds / 60) }); const ref = { id: sb.id }; await allocated?.(ref); return ref; },
       async call(ref, _op, args) { const [command, seconds] = shell(args); const result = await (await client.get(ref.id)).process.executeCommand(command, undefined, undefined, seconds); return output(result.exitCode, result.result); },
       async close(ref) { try { await client.delete(await client.get(ref.id), 60, true); } catch (error) { if (!(error instanceof DaytonaNotFoundError)) throw error; } },
     };
   }
   if (provider === "e2b") {
-    const { Sandbox, CommandExitError, NotFoundError: E2BNotFoundError } = await import("e2b");
+    const { Sandbox, AuthenticationError, SandboxError, CommandExitError, NotFoundError: E2BNotFoundError } = await import("e2b");
     return {
+      refused: error => error instanceof AuthenticationError || (error instanceof SandboxError && (error as { statusCode?: number }).statusCode === 403),
       async create(id, seconds, allocated) { const sb = await Sandbox.create({ apiKey: credentials.apiKey, timeoutMs: seconds * 1000, secure: true, metadata: { camelrun: id } }); const ref = { id: sb.sandboxId }; await allocated?.(ref); return ref; },
       async call(ref, _op, args) {
         const sb = await Sandbox.connect(ref.id, { apiKey: credentials.apiKey, timeoutMs: Math.max(1, Number(args.remainingSeconds ?? args.timeoutSeconds)) * 1000 }), [command, seconds] = shell(args);
@@ -93,10 +106,11 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
         method, secrets: { Authorization: `Bearer ${credentials.apiKey}` }, headers: { "Content-Type": exec ? "application/octet-stream" : "application/json" },
         body, timeoutMs: exec ? 135000 : 30000, maxBytes: 2 * 1024 * 1024, maxRedirects: 0,
       });
-      if (!response.ok) { await response.body?.cancel(); if (method === "DELETE" && response.status === 404) return response; throw new Error(`Computer provider HTTP ${response.status}`); }
+      if (!response.ok) { await response.body?.cancel(); if (method === "DELETE" && response.status === 404) return response; throw new ProviderHttpError(response.status); }
       return response;
     };
     return {
+      refused: httpRefused,
       async create(id, _seconds, allocated) {
         const name = id.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 63).replace(/^-+|-+$/g, "") || "camelrun";
         const value = await (await request("", "POST", JSON.stringify({ name }))).json();
@@ -129,6 +143,7 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
         secrets: { "X-BB-API-Key": credentials.apiKey }, timeoutMs: 30000, maxBytes: 1024 * 1024, maxRedirects: 0 });
     } });
     return {
+      refused: error => error instanceof Browserbase.AuthenticationError || error instanceof Browserbase.PermissionDeniedError,
       async create(id, seconds, allocated) { const s = await client.sessions.create({ ...(credentials.projectId ? { projectId: credentials.projectId } : {}), api_timeout: seconds, keepAlive: true, userMetadata: { camelrun: id } }); const ref = { id: s.id, connectUrl: s.connectUrl }; await allocated?.(ref); return ref; },
       call: browserCall,
       async close(ref) {
@@ -148,10 +163,11 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
         ...(body === undefined ? {} : { body: JSON.stringify(body) }), timeoutMs: 30000, maxBytes: 1024 * 1024, maxRedirects: 0,
       });
       if (response.status === 404) { await response.body?.cancel(); return null; }
-      if (!response.ok) { await response.body?.cancel(); throw new Error(`Computer provider HTTP ${response.status}`); }
+      if (!response.ok) { await response.body?.cancel(); throw new ProviderHttpError(response.status); }
       return await response.json() as any;
     };
     return {
+      refused: httpRefused,
       async create(id, seconds, allocated) {
         const value = await request("/browsers", "POST", { timeout: Math.ceil(seconds / 60), metadata: { camelrun: id }, proxyCountryCode: null, enableRecording: false });
         if (!value || typeof value.id !== "string") throw new Error("Browser creation did not return an ID");
@@ -179,14 +195,16 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
   const request = async (path: string, body?: unknown, method = "POST", allowMissing = false) => {
     const base = provider === "boat" ? "https://boat.dev/api/v1" : credentials.url;
     const response = await outbound.fetch(base.replace(/\/$/, "") + path, { method, secrets: { Authorization: `Bearer ${credentials.apiKey}` }, headers: { "Content-Type": "application/json", ...(method === "DELETE" ? { "X-ASCII-Confirm-Delete": path.split("/").at(-1)! } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), timeoutMs: path.endsWith("/commands") || path === "/exec" ? 135000 : 30000, maxBytes: 2 * 1024 * 1024, maxRedirects: 0 });
-    if (!response.ok) { await response.body?.cancel(); if ((method === "DELETE" || allowMissing) && response.status === 404) return null; throw new Error(`Computer provider HTTP ${response.status}`); }
+    if (!response.ok) { await response.body?.cancel(); if ((method === "DELETE" || allowMissing) && response.status === 404) return null; throw new ProviderHttpError(response.status); }
     return response.status === 204 ? {} : await response.json() as any;
   };
   return provider === "tunnel" ? {
+    refused: httpRefused,
     async create(id, _seconds, allocated) { const value = await request("/claim", { claim: id }); const ref = { id: value.id, claim: id }; await allocated?.(ref); return ref; },
     async call(ref, _op, args) { const [command, timeout] = shell(args); const r = await request("/exec", { claim: ref.claim, key: args.requestKey, command, timeout }); if (r.error) throw new Error("Remote command outcome uncertain"); return output(r.exit_code, r.stdout, r.stderr); },
     async close(ref) { await request("/close", { claim: ref.claim }); },
   } : {
+    refused: httpRefused,
     async create(_id, seconds, allocated) {
       const r = await request("/sandboxes", { type: "small", ttlSeconds: seconds, noEnv: true, snapshots: false, monitoring: false });
       const ref = { id: r.sandbox.id };
