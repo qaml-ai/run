@@ -192,7 +192,7 @@ token does not receive unless it lists them in `events`.
 | `message_start` | `message` | a message begins: the user's, an assistant response (empty so far), a tool result |
 | `message_update` | `assistantMessageEvent` | the assistant message streaming grew. The delta **alone**, without the message it updates: fold it into the message from its `message_start` (see below) |
 | `message_end` | `message` | a message finished: this is the message as history keeps it |
-| `message_retracted` | `index` | a response taken back (before a retry, or a compaction on overflow): the message at `index` is gone, and the next takes its place |
+| `message_retracted` | `index` | a response taken back (a structured run's answer without its output, before the model is asked again): the message at `index` is gone, and the next takes its place |
 | `event_omitted` | `reason`, `was?` | an event was too large for the stream (over the transport limit, 1.1 MB). `was` is its type; for a `message_end`, the message still takes its place: read it from history |
 
 `assistantMessageEvent` is one of:

@@ -32,7 +32,7 @@ const isSummarization = (body: Body) => text(body).includes("context summarizati
  * An OpenAI-compatible provider that reports no usage, like some proxies, unless `usage` is set. With `gated`,
  * summaries wait until `release()`; `inflight` counts summaries asked for and not yet answered.
  */
-async function provider(t: { after(fn: () => Promise<void>): void }, options: { overflowFirst?: number; failSummaryAfterChats?: number; overflowAboveChars?: number; usage?: boolean; gated?: boolean; turnInput?: (body: Body) => number } = {}) {
+async function provider(t: { after(fn: () => Promise<void>): void }, options: { overflowFirst?: number; overflowAboveChars?: number; usage?: boolean; gated?: boolean; turnInput?: (body: Body) => number } = {}) {
   const requests: Body[] = [];
   let summaries = 0;
   let gate = Promise.withResolvers<void>();
@@ -46,10 +46,6 @@ async function provider(t: { after(fn: () => Promise<void>): void }, options: { 
       state.maxInflight = Math.max(state.maxInflight, ++state.inflight);
       if (options.gated) await gate.promise;
       res.once("finish", () => state.inflight--);
-    }
-    if (isSummarization(body) && options.failSummaryAfterChats === requests.filter(request => !isSummarization(request)).length) {
-      res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: "summary unavailable", type: "invalid_request_error" } }));
-      return;
     }
     if (!isSummarization(body) && (requests.filter(request => !isSummarization(request)).length <= (options.overflowFirst ?? 0) || options.overflowAboveChars && text(body).length > options.overflowAboveChars)) {
       res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: { message: `This endpoint's maximum context length is 8000 tokens. However, you requested about ${Math.round(text(body).length / 4)} tokens`, type: "invalid_request_error" } }));
@@ -602,9 +598,8 @@ test("an agent whose journal keeps more messages after its compaction than the h
   assert.equal(result.error, null);
 });
 
-for (const outcome of ["fits", "irreducible", "summary-fails"]) test(outcome === "fits" ? "a second overflow compacts against its newly learned limit and completes the turn" : outcome === "summary-fails" ? "failed host overflow compaction preserves the original refusal" : "an irreducible overflow stops after one host recovery", { timeout: 20_000 }, async t => {
-  const fits = outcome === "fits";
-  const fake = await provider(t, { overflowAboveChars: outcome === "irreducible" ? 1 : 100_000, overflowFirst: 2, ...(outcome === "summary-fails" ? { failSummaryAfterChats: 2 } : {}) });
+test("a second overflow fails cleanly; the next turn uses the learned window after restart", { timeout: 20_000 }, async t => {
+  const fake = await provider(t, { overflowAboveChars: 100_000, overflowFirst: 2 });
   const root = await mkdtemp(join(tmpdir(), "compaction-overflow-"));
   const directory = join(root, "agents", "overflow-twice");
   await mkdir(directory, { recursive: true });
@@ -620,24 +615,22 @@ for (const outcome of ["fits", "irreducible", "summary-fails"]) test(outcome ===
   await supervisor.start("overflow-twice", { model: fake.model(65_536), apiKey: "fixture", retry: { maxAttempts: 0, baseDelayMs: 1 } }, bridge);
   const events: any[] = [];
   const result = await supervisor.request("overflow-twice", "prompt", { text: "continue" }, event => events.push(event));
-  if (!fits) {
-    assert.match(String(result.error), /maximum context length/);
-    assert.ok(fake.chat().length <= 4, "native recovery and one host continuation are bounded");
-    const history = await journalMessages({ sessionId: "overflow-twice", directory }) as any[];
-    assert.equal(history.filter(message => message.stopReason === "error").length, 1, "only the final refusal remains in history");
-    const failures = events.filter(event => event.type === "message_end" && event.message.stopReason === "error");
-    assert.equal(failures.length, 1, "only the final unrecovered refusal is visible");
-    assert.equal(events.at(-1), failures[0], "the refusal is published after recovery ends");
-    return;
-  }
-  assert.equal(result.error, null);
-  assert.equal(events.filter(event => event.type === "message_end" && event.message.stopReason === "error").length, 0);
-  assert.equal(fake.chat().length, 3, "two refusals and one successful host continuation");
-  assert.ok(text(fake.chat()[0]).length > 100_000);
-  assert.ok(text(fake.chat().at(-1)!).length <= 100_000);
-  assert.ok(fake.summarizations().length >= 2, "both recoveries summarize, with large prefixes split into chunks");
+  assert.match(String(result.error), /maximum context length/);
+  assert.equal(fake.chat().length, 2, "Pi retries after one compaction; the host does not rescue another overflow");
+  assert.equal(events.filter(event => event.type === "compaction_end").length, 1);
   const history = await journalMessages({ sessionId: "overflow-twice", directory }) as any[];
-  assert.equal(history.filter(message => message.stopReason === "error").length, 0, "rejected attempts are not history");
+  assert.equal(history.filter(message => message.stopReason === "error").length, 1, "only the final refusal remains in history");
+  const failures = events.filter(event => event.type === "message_end" && event.message.stopReason === "error");
+  assert.equal(failures.length, 1, "the final refusal is visible once");
+  assert.equal(events.filter(event => event.type === "message_retracted").length, 0, "no error is taken back");
+  assert.equal(history.at(-1).errorMessage, failures[0].message.errorMessage);
+
+  await supervisor.stop("overflow-twice");
+  await supervisor.start("overflow-twice", { model: fake.model(65_536), apiKey: "fixture", retry: { maxAttempts: 0, baseDelayMs: 1 } }, bridge);
+  const next = await supervisor.request("overflow-twice", "prompt", { text: "try the next turn" });
+  assert.equal(next.error, null);
+  assert.equal(fake.chat().length, 3);
+  assert.ok(text(fake.chat().at(-1)!).length <= 100_000, "the learned window fits the next turn");
 });
 
 test("a 60-image history is capped on the wire, including summary requests", async t => {

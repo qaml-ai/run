@@ -14,7 +14,7 @@ npm release, so a fix or change on Pi's main reaches us without waiting for a re
 | `pi-agent-core.tgz` | `@earendil-works/pi-agent-core` | devDependency: we import only its types (`AgentMessage`, `AgentTool`, `StreamFn`) |
 
 Each package's version is Pi's with the commit appended (`1.4.0-main.f09d01b85e03`, and `-camel.<n>` with our patches, below;
-the vendored packages say `1.4.0-main.f09d01b85e03-camel.4`), which tells the lockfile, pi-ai's `User-Agent` and
+the vendored packages say `1.4.0-main.f09d01b85e03-camel.1`), which tells the lockfile, pi-ai's `User-Agent` and
 telemetry a vendored build from the npm release. `vendor/pi/PI_COMMIT` names the commit, its date, and the upstream changes since the commit vendored before it.
 `vendor/pi/LICENSE` is Pi's MIT notice. `package.json` `overrides` pin every `@earendil-works/*` package, also the ones
 only Pi's packages depend on, to these tarballs, so nothing of Pi comes from npm (`package-lock.json` resolves each to
@@ -61,12 +61,15 @@ run Pi's checks and the package's tests there (`npm run check`; from `packages/d
 `codemode` and `ai`), then `git format-patch --no-signature --zero-commit -o vendor/pi/patches <commit>..HEAD` and run
 the script again.
 
+Retries need no patch: `settings.retry` is read at every use, so its getters return the host's decision for the
+response that just failed (`src/pi-durable/agent.ts`), and the attempts made again are marked `retried` in Pi's journal
+and left out of the history. Nor does ending a run after a tool round: every call of a round whose run ends returns
+`control.terminate` (an `afterTool` hook), and when a call of it settled before that was decided, the conversation's
+turn limit ends the round instead.
+
 | Patch | Adds | Unblocks |
 |---|---|---|
-| `0001` | `GenerationHooks.beforeRetry`: the host decides whether and when a failed request is retried | Pi's retry instead of `recoverFailedResponses` |
-| `0002` | `settings.retry.keepRetried: false`: retried attempts stay out of the transcript (usage still counted) | no retract of failed attempts |
-| `0003` | `afterTools` returning `{ end: true }` ends the run after the round | deleting the `tools`-phase override |
-| `0004` | `readStoredContext(storage, conversationId, context, { at })` | deleting `contextAt`'s derivation and `piOrdered` |
+| `0001` | `readStoredContext(storage, conversationId, context, { at })` | deleting `contextAt`'s derivation and `piOrdered` |
 
 The script also drops the six packages' entries from `package-lock.json` and `node_modules`, so the `npm install` after
 it records the new tarballs' integrity instead of reusing the cached ones.
@@ -74,7 +77,8 @@ it records the new tarballs' integrity instead of reusing the cached ones.
 pi-ai's build generates its model catalog from upstream sources (models.dev, OpenRouter, Vercel AI Gateway) when the
 script runs, so two runs at the same commit can differ in catalog data: the tarball keeps the snapshot it was built
 with, and the lockfile's integrity keeps everyone on it. Models we price ourselves keep their overrides
-(`src/pi-catalog.ts`).
+(`src/pi-catalog.ts`). A rebuild that must not change models or prices (adding or dropping a patch at the same commit) runs
+the script with `PI_KEEP_CATALOG=1`: pi-ai is built with the catalog of the tarball vendored now.
 
 ## Versions that cannot be rolled back
 

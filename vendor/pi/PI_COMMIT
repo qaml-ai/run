@@ -1,10 +1,6 @@
 commit f09d01b85e0384647fcab6779d35ab9dabe04be3
 date 2026-10-29T22:11:08+01:00
 source https://github.com/earendil-works/pi/commit/f09d01b85e0384647fcab6779d35ab9dabe04be3
-changes https://github.com/earendil-works/pi/compare/02a2b2532d8f6ea7b26da578a6844a1fcfd50e03...f09d01b85e0384647fcab6779d35ab9dabe04be3
 packages @earendil-works/pi-telemetry @earendil-works/chord @earendil-works/pi-codemode @earendil-works/pi-ai @earendil-works/pi-agent-core @earendil-works/pi-durable
-version main.f09d01b85e03-camel.4
-patch 0001-feat-durable-beforeRetry-hook-decides-whether-a-fail.patch 48283c432bf67080027d976bfffb22453d3eeaaf
-patch 0002-feat-durable-settings.retry.keepRetried-leaves-retri.patch f588eab41593650d666697036d58ef8a669fed9e
-patch 0003-feat-durable-afterTools-can-end-the-run-after-the-ro.patch 3c32f70e113eb9aeca8a5a89e95beb05fb562fc3
-patch 0004-feat-durable-readStoredContext-derives-a-conversatio.patch f4d118ade3b7572d9078a3df245a0909d12725a2
+version main.f09d01b85e03-camel.1
+patch 0001-feat-durable-readStoredContext-derives-a-conversatio.patch 66aa15828427d2fc608dd092b7220d17c0f8c589

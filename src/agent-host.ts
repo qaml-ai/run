@@ -27,8 +27,8 @@ import { describeFile, documentPayload, FILE_LIMITS, IMAGE_PAST_BUDGET, nativeBl
 import { observeContextMetrics, observeTurns, recordCodeExecution, recordContextRange, recordToolResultSize, safeError } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
-import type { FailedAttempt, RetryDecision, Storage as PiStorage } from "@earendil-works/pi-durable";
-import { DurableAgent, piRunning, type DurableAgentOptions } from "./pi-durable/agent.ts";
+import type { Storage as PiStorage } from "@earendil-works/pi-durable";
+import { DurableAgent, piRunning, type DurableAgentOptions, type FailedAttempt, type RetryDecision } from "./pi-durable/agent.ts";
 import { contextRangeSize } from "./pi-durable/storage.ts";
 import { HostJournal } from "./pi-durable/host-journal.ts";
 import { JournalHistory } from "./pi-durable/history.ts";
@@ -126,7 +126,6 @@ export function createAgentHost(hostIO: HostIO) {
   let contextError: () => Promise<string | undefined>;
   // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
   const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
-  let refused: Parameters<HostIO["emit"]>[0] | undefined;
   const io: HostIO = { ...hostIO, emit: value => {
     // Both Pi's native results and results settled/resumed by the host reach message_end after commit.
     const committed = value as { type: string; message?: ToolResultMessage };
@@ -135,10 +134,6 @@ export function createAgentHost(hostIO: HostIO) {
     const overflow = event.type === "message_end" && event.message?.role === "assistant" && event.message.stopReason === "error" && isContextOverflow(event.message);
     if (overflow) event = { ...event, contextTokens: agent?.contextTokens };
     turns.event(event);
-    // A refused response stays private until recovery ends. Its retraction has no client-visible slot to remove.
-    if (overflow) { refused = event; return; }
-    if (event.type === "message_retracted" && refused) { refused = undefined; return; }
-    if (refused && event.type === "message_end") { hostIO.emit(refused); refused = undefined; }
     hostIO.emit(event);
   } };
   /** The agent's history and turn, in its Pi journal. */
@@ -295,12 +290,12 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /**
-   * Whether Pi makes a failed model request again (its `beforeRetry`; a retried attempt leaves no entry). Asked again at
+   * Whether a failed model request is made again (the adapter's `retry`; a retried attempt is left out of the history). Asked again at
    * once: a request a crash or a close cut, one this node's stale lease cut (not counted), one with final_output forced
    * that the provider refused (then without forcing for the rest of the run), and one refused for an image it cannot read
    * (then without images for the rest of the run). Otherwise what the API reports as `retryable` (model-errors.ts: a
    * tenant's own endpoint has retried already) is asked again with backoff, up to the agent's retry policy. Never one that
-   * credit or the context bound refused, nor an overflow (`recoverOverflow`).
+   * credit or the context bound refused, nor an overflow (Pi compacts once).
    */
   function retryDecision(failed: FailedAttempt): RetryDecision {
     if (active?.signal.aborted || stopped?.code === END_USER_CREDIT || stopped?.code === CONTEXT_TOO_LARGE) return { retry: false };
@@ -650,26 +645,6 @@ export function createAgentHost(hostIO: HostIO) {
     io.emit({ type: "message_retracted", index: journal.total });
     forcing.reminding = true;
     await agent!.continue();
-    await recoverOverflow(signal);
-  }
-
-  /**
-   * Pi compacts once for a context overflow. One refused again learned a smaller window: the refusal is taken back, the
-   * context compacted once more against that window, and the model asked again.
-   */
-  async function recoverOverflow(signal: AbortSignal) {
-    const last = agent!.state.messages.at(-1) as AssistantMessage | undefined;
-    if (signal.aborted || stopped || last?.role !== "assistant" || last.stopReason !== "error" || !isContextOverflow(last, config.model.contextWindow)) return;
-    await journal.retract();
-    io.emit({ type: "message_retracted", index: journal.total });
-    try { await agent!.compact(signal); }
-    catch {
-      // Keep the provider's original error as the turn's outcome when recovery fails.
-      await journal.push(last);
-      io.emit({ type: "message_end", message: last });
-      return;
-    }
-    if (!signal.aborted) await agent!.continue();
   }
 
   /**
@@ -810,12 +785,15 @@ export function createAgentHost(hostIO: HostIO) {
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
         onPayload: payload => documents ? documentPayload(payload) : undefined,
         // A turn with calls waiting on a person suspends; one past a spend cap or its run's limits (responses, time) stops before the next model request, after this response's tool results.
+        // Asked for each call of a round as its result is final, then for the round: a decision holds for the rest of the run.
         finishTurn: async turn => {
+          // A call waiting on a person decides the stop, also over a limit an earlier call of the round reached.
           await journal.refresh();
           if (journal.awaiting.length) {
             stopped = { stopped: "input_required" };
             return { action: "end" };
           }
+          if (stopped || output) return { action: "end" };
           // An answer in the run's schema ends it.
           const answered = turn.toolResults.findLast(result => result.toolName === OUTPUT_TOOL && !result.isError);
           if (answered) {
@@ -842,7 +820,7 @@ export function createAgentHost(hostIO: HostIO) {
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own
         // writes fails. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
         onStorageFailure: error => { journal.failed ??= error; },
-        beforeRetry: retryDecision,
+        retry: retryDecision,
         // Summaries share credential/network gates but not the run's output
         // schema, temperature or max-output settings.
         summaryStream,
@@ -851,13 +829,6 @@ export function createAgentHost(hostIO: HostIO) {
         onSummary: message => emitCompaction({ type: "compaction_usage", provider: message.provider,
           model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
         onCompaction: async ({ keptMessages, reason }) => {
-          // Pi compacts after a context overflow with the refused response in its journal: as the legacy loop did, that
-          // response is taken back from history, and the stream told so.
-          const refused = await journal.last() as AssistantMessage | undefined;
-          if (reason === "overflow" && refused?.role === "assistant" && refused.stopReason === "error" && isContextOverflow(refused) && journal.total > journal.turnStart) {
-            await journal.retract();
-            io.emit({ type: "message_retracted", index: journal.total });
-          }
           // The context as the agent held it when Pi compacted it: its history messages less those the summary keeps.
           const before = agent!.state.messages;
           const held = before.filter(message => message.role !== "system" && !isSummary(message)).length;
@@ -964,7 +935,6 @@ export function createAgentHost(hostIO: HostIO) {
     contextMetrics.reset();
     reportContextRange = true;
     stopped = undefined;
-    refused = undefined;
     omitImages = false;
     retries = { failed: 0, pending: 0 };
     output = undefined;
@@ -1026,7 +996,6 @@ export function createAgentHost(hostIO: HostIO) {
         const messages = await fittedImages(promptMessages!);
         await agent.prompt(messages);
       }
-      await recoverOverflow(active.signal);
       await remindOfOutput(active.signal);
       if (journal.failed !== undefined) throw journal.failed;
       await journal.setActive(false);
@@ -1047,7 +1016,6 @@ export function createAgentHost(hostIO: HostIO) {
         ...(missing ? { error: `The model ended its turn without calling ${OUTPUT_TOOL}, so the run has no output in its schema`, code: "output_missing" } : {}),
       };
     } finally {
-      if (refused) { hostIO.emit(refused); refused = undefined; }
       // Steers sent for this turn that it did not take are taken back: each runs as a turn of its own.
       steerable = false;
       agent.dropRunSteers();

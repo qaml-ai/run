@@ -1,13 +1,13 @@
 import { estimateContextTokens, estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import { contentText, createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
+import { contentText, createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, isRetryableAssistantError, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { RUNTIME } from "../system-prompt.ts";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, LiveDoc, createRegistry, createSession, defineDoc, hook, section,
-  type Conversation, type ConversationId, type EntryRecord, type FailedAttempt, type HarnessOptions, type RetryDecision, type RegistryReader, type RegistrySnapshot, type Report, type Storage,
+  GenerationTask, Harness, LiveDoc, ToolTask, createRegistry, createSession, defineDoc, hook, section,
+  type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Report, type Storage,
 } from "@earendil-works/pi-durable";
 
 /** Small latest-value document: loading an agent never scans its journal for a limit. */
@@ -24,7 +24,23 @@ const InferredOverflowDoc = defineDoc({
   checkpointWhen: () => true,
 });
 
+/**
+ * The calls of a round whose run ends after it (`afterTool`), committed with the decision: a call a lost node left open
+ * ends the round on the next owner too, whatever the host still knows. Cleared once the round is over.
+ */
+const RoundEndDoc = defineDoc({
+  kind: "camel.round-end", version: 1, scope: "conversation", history: "latest", fork: "initial",
+  initial: (): { calls: string[] } => ({ calls: [] }),
+  checkpointWhen: () => true,
+});
+
 interface DurableCursor { entryId: number; index: number }
+/** A failed model request: one whose response failed (`model_error`), or one a lost node or a close left in flight (`interrupted`). */
+export type FailedAttempt = { reason: "model_error" | "interrupted"; message?: AssistantMessage };
+/** Whether a failed request is made again, and after how long. */
+export type RetryDecision = { retry: false } | { retry: true; delayMs?: number };
+/** A failed response a later attempt superseded: kept in Pi's journal, never in the host's history. */
+export const isRetried = (message: { role: string }) => message.role === "assistant" && (message as { retried?: unknown }).retried === true;
 interface DurableMessage { message: AgentMessage; cursor: DurableCursor }
 export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
   durable: {
@@ -51,8 +67,12 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
      * must be given up and reopened from what was committed.
      */
     onStorageFailure?: (error: unknown) => void;
-    /** Whether Pi makes a failed model request again (`beforeRetry`); without, it does not. Failed attempts it retries leave no entry. */
-    beforeRetry?: (failed: FailedAttempt) => RetryDecision | undefined;
+    /**
+     * Whether a failed model request is made again; without, it is not. Pi makes it again (`settings.retry`, read as this
+     * decides) when its classifier deems the failure transient; otherwise the adapter does, within the same request.
+     * Failed attempts made again are marked `retried` in the journal and left out of the history.
+     */
+    retry?: (failed: FailedAttempt) => RetryDecision | undefined;
   };
 };
 type Listener = (event: AgentEvent & { durable?: DurableCursor }, signal: AbortSignal) => void | Promise<void>;
@@ -72,11 +92,11 @@ export function durableEntryMessages(entry: EntryRecord): DurableMessage[] {
   const diagnostics = (entry.data as { diagnostics?: { code?: string }[] } | undefined)?.diagnostics ?? [];
   // A call the node cut off (`restart_limit`: cut off too often to run again) may or may not have run.
   const uncertain = diagnostics.some(item => ["aborted", "interrupted", "abandoned", "restart_limit"].includes(item.code!));
-  return (original ? [original] : entry.model ?? []).map((message, index) => ({
+  return (original ? [original] : entry.model ?? []).flatMap((message, index) => isRetried(message) ? [] : [{
     message: structuredClone(message.role === "toolResult" && uncertain ? { ...message,
       content: [{ type: "text", text: `Tool ${message.toolName} was interrupted; its outcome is unknown and it may or may not have run.` }],
       isError: true } : message) as AgentMessage, cursor: { entryId: entry.id, index },
-  })).filter(item => !(item.message.role === "toolResult" && (item.message.details as { inputRequired?: boolean } | undefined)?.inputRequired));
+  }]).filter(item => !(item.message.role === "toolResult" && (item.message.details as { inputRequired?: boolean } | undefined)?.inputRequired));
 }
 
 /** Whether Pi's journal holds a run that has not ended (`pi.live`'s run): one a close or a crash cut off, which Pi resumes. */
@@ -208,6 +228,14 @@ export class DurableAgent {
   private lastTurn?: AssistantMessage;
   private lastTurnResults: ToolResultMessage[] = [];
   private stoppedByFinishTurn = false;
+  /** The host's decision on the latest failed response (`stream`), which Pi's retry policy reads; unset while a request runs. */
+  private retryPlan?: RetryDecision;
+  /** A failed summary's decision, for the read Pi makes as it resumes from it. */
+  private summaryPlan?: RetryDecision;
+  /** The run's generation had an overflow Pi compacts for: the next one ends the run. */
+  private overflowed = false;
+  /** Calls of the running round that asked Pi to end the run after it. */
+  private terminating = new Set<string>();
   private closed = false;
   private closing?: Promise<void>;
 
@@ -321,13 +349,20 @@ export class DurableAgent {
         // Pi asks for one summary of the whole prefix. One larger than the window (an imported history, a model whose
         // window is small) is summarized in parts that fit, each carrying the summary so far, as the legacy compactor did.
         const chunks = summaryChunks(view.messages, window(), (streamOptions as { maxTokens?: number } | undefined)?.maxTokens ?? 0);
-        if (!chunks) return summarize(view.messages);
         let summary: AssistantMessage | undefined;
-        for (const chunk of chunks) {
+        if (!chunks) summary = await summarize(view.messages);
+        else for (const chunk of chunks) {
           const before = summary && summaryOf(summary);
-          if (summary && before === undefined) return summary;
+          if (summary && before === undefined) break;
           summary = await summarize(chunk(before));
-          if (summary.stopReason !== "stop") return summary;
+          if (summary.stopReason !== "stop") break;
+        }
+        // A failed summary is not asked again. Pi reads the retry policy for it as it resumes from this call, before any
+        // I/O, so the decision holds until the current macrotask's microtasks are done; a generation's own decision,
+        // pending at the same time, wins (`retryPolicy`).
+        if (summary!.stopReason === "error") {
+          agent.summaryPlan = { retry: false };
+          setImmediate(() => { agent.summaryPlan = undefined; });
         }
         return summary!;
       },
@@ -372,7 +407,14 @@ export class DurableAgent {
         // they only bound what a lost node's run keeps, so each costs a journal write once a second, not every 100 ms.
         // Pi defers storing them by up to `persistWithinMs` (default 1 s); 0 stores each right after its commit, as before.
         progress: { partialIntervalMs: 1_000, outputIntervalMs: 1_000, persistWithinMs: 0 },
-        retry: { enabled: false, keepRetried: false }, toolExecution: options.toolExecution ?? "parallel",
+        // Read as each failed request is classified: the decision the adapter took for its response (`stream`), or for a
+        // request a lost node or a close left in flight, the host's (`interrupted`). The host bounds attempts and backoff.
+        retry: {
+          get enabled() { return agent.retryPolicy().retry; },
+          maxRetries: Number.MAX_SAFE_INTEGER,
+          get baseDelayMs() { return agent.retryDelayMs(); },
+          get maxAgentDelayMs() { return agent.retryDelayMs(); },
+        }, toolExecution: options.toolExecution ?? "parallel",
         steeringMode: options.steeringMode ?? "one-at-a-time", contextRetentionMs: 0 },
     }, context);
     agent.conversation = options.durable.conversationId === undefined ? await agent.harness.root(context) :
@@ -411,6 +453,8 @@ export class DurableAgent {
           if (original) agent.originalInputs.set(entry.id, { native: entry.model[0], message: original });
         }
         if (nativeKinds.has(entry.kind) && entry.model?.length) agent.advanceCursor({ entryId: entry.id, index: entry.model.length - 1 });
+        // Pi commits a failed response with what it decided for it: the decision has been read.
+        if (entry.kind === "pi.assistant" && entry.model?.[0]?.role === "assistant" && entry.model[0].stopReason === "error") agent.retryPlan = undefined;
         if (entry.kind === "pi.compaction") agent.queueEvent(() => agent.adoptCompaction(entry));
         const items = durableEntryMessages(entry);
         // A waiting tool's placeholder is streamed but never enters Camel's
@@ -502,7 +546,74 @@ export class DurableAgent {
     this.streamingMessage = undefined;
   }
 
+  /**
+   * One model request as Pi makes it, its failures decided by the host (`retry`): one Pi's classifier deems transient
+   * goes back to Pi, which makes it again after the decided delay (`settings.retry`) and keeps the attempt in its journal,
+   * marked `retried`; one it would not make again (a refused forced tool choice or image, a cut lease) is made again here.
+   */
   private stream(rawOptions: unknown, nativeMessages?: Message[]) {
+    const outer = createAssistantMessageEventStream();
+    void (async () => {
+      for (;;) {
+        this.retryPlan = undefined;
+        const inner = this.attempt(rawOptions, nativeMessages);
+        let terminal: import("@earendil-works/pi-ai").AssistantMessageEvent | undefined;
+        // Pi keeps the latest partial for a request the host stops during (a lost node, a close), and makes the request
+        // again: marked, the aborted entry it makes of that partial is left out of the history, as a retried response is.
+        for await (const event of inner) {
+          if (event.type === "done" || event.type === "error") terminal = event;
+          else outer.push({ ...event, partial: { ...event.partial, retried: true } as AssistantMessage } as typeof event);
+        }
+        const final = await inner.result();
+        // Pi compacts once for an overflow and asks again: that response is superseded, as a retried one is. A second
+        // overflow (or one Pi finds nothing to compact for) ends the run.
+        if (final.stopReason === "error" && isContextOverflow(final)) {
+          if (!this.overflowed) (final as { retried?: boolean }).retried = true;
+          this.overflowed = true;
+        } else if (final.stopReason !== "error") this.overflowed = false;
+        const failed = final.stopReason === "error" && !isContextOverflow(final);
+        const decision = failed ? this.options.durable.retry?.({ reason: "model_error", message: final }) : undefined;
+        if (decision?.retry && !isRetryableAssistantError(final)) {
+          const signal = (rawOptions as { signal?: AbortSignal } | undefined)?.signal;
+          await new Promise<void>((resolve, reject) => {
+            const own = this.signal;
+            const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); own?.removeEventListener("abort", abort); };
+            const abort = () => { done(); reject(new Error("Agent run aborted")); };
+            const timer = setTimeout(() => { done(); resolve(); }, decision.delayMs ?? 0);
+            signal?.addEventListener("abort", abort, { once: true }); own?.addEventListener("abort", abort, { once: true });
+            if (signal?.aborted || own?.aborted) abort();
+          });
+          continue;
+        }
+        if (failed) this.retryPlan = decision ?? { retry: false };
+        if (decision?.retry) {
+          (final as { retried?: boolean }).retried = true;
+          if (terminal?.type === "error") (terminal.error as { retried?: boolean }).retried = true;
+        }
+        if (terminal) outer.push(terminal);
+        outer.end(final);
+        return;
+      }
+    })().catch(error => {
+      const message = { role: "assistant", content: [], api: this.state.model.api, provider: this.state.model.provider,
+        model: this.state.model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: this.signal?.aborted ? "aborted" : "error",
+        errorMessage: error instanceof Error ? error.message : String(error), timestamp: Date.now() } as AssistantMessage;
+      outer.push({ type: "error", reason: message.stopReason as "error" | "aborted", error: message }); outer.end(message);
+    });
+    return outer;
+  }
+
+  /**
+   * What Pi's retry policy says as it is read: the adapter's decision for the generation's failed response until Pi has
+   * committed that response, then a failed summary's (`completeSimple`), else the host's for an interrupted request.
+   */
+  private retryPolicy(): RetryDecision {
+    return this.retryPlan ?? this.summaryPlan ?? this.options.durable.retry?.({ reason: "interrupted" }) ?? { retry: false };
+  }
+  private retryDelayMs() { const plan = this.retryPolicy(); return plan.retry ? plan.delayMs ?? 0 : 0; }
+
+  private attempt(rawOptions: unknown, nativeMessages?: Message[]) {
     const stream = createAssistantMessageEventStream();
     void (async () => {
       await this.flushEvents();
@@ -656,23 +767,72 @@ export class DurableAgent {
           ...(result.structuredContent === undefined || !tool.outputSchema ? {} : { structuredOutput: result.structuredContent }),
           ...(result.usage === undefined ? {} : { usage: result.usage }), ...(result.terminate ? { control: { terminate: true } } : {}) };
       },
-    })), hooks: [hook(GenerationTask, {
-      beforeRetry: failed => this.options.durable.beforeRetry?.(failed),
-      // The end of a tool round: the host decides whether the run ends there (`finishTurn`: a call waiting for input,
-      // final_output, a run or spend limit); otherwise the next steer goes in at this boundary.
-      // A decision that fails ends the run with its error (Pi would only report a throwing hook).
+    })), hooks: [hook(ToolTask, {
+      // Each call of the model's round, as its result is final: whether the host ends the run after this round
+      // (`finishTurn`: a call waiting for input, final_output, a run or spend limit). Pi ends it when every call of the
+      // round asks to terminate; a condition holds for the calls after it, so only a call that settled before it, or one
+      // whose control Pi does not apply (interrupted, cut off), would let the round go on: the turn limit ends it then.
+      afterTool: async (call, result) => {
+        if (call.parent) return undefined;
+        const recorded = (await this.harness.snapshot(RoundEndDoc, this.conversation.id, context))?.calls.includes(call.id);
+        // One call at a time: the host decides on a call knowing what it decided on the calls before it.
+        const ends = recorded || await this.decide(async () => {
+          if (!this.terminating.size && !await this.callEnds(call.id, call.name, result).catch(error => {
+            this.errorMessage = error instanceof Error ? error.message : String(error);
+            return true;
+          })) return false;
+          this.terminating.add(call.id);
+          return true;
+        });
+        if (!ends) return undefined;
+        this.terminating.add(call.id);
+        const uncertain = (result.diagnostics ?? []).some(item => ["interrupted", "abandoned", "restart_limit"].includes(item.code ?? ""));
+        const live = await this.harness.snapshot(LiveDoc, this.conversation.id, context);
+        if (!recorded) await this.conversation.commit(async tx => {
+          (await tx.doc(RoundEndDoc, this.conversation.id)).calls = (live?.tools ?? []).map(slot => slot.callId);
+        }, context);
+        const settled = (live?.tools ?? []).some(slot => slot.callId !== call.id && slot.entry !== undefined && !this.terminating.has(slot.callId));
+        if ((uncertain || settled) && live?.run?.turns) {
+          await this.conversation.configure({ maxTurns: live.run.turns }, context);
+          console.log(JSON.stringify({ type: "turn_end_capped", reason: uncertain ? "uncertain" : "settled" }));
+        }
+        return { ...result, control: { ...result.control, terminate: true } };
+      },
+    }), hook(GenerationTask, {
+      // The end of a tool round: told as `turn_end`; when the run goes on, the next steer goes in at this boundary.
       afterTools: async () => {
+        this.terminating.clear();
         try {
+          await this.clearRoundEnd();
           await this.flushEvents();
-          if (await this.endTurn()) return { end: true };
-          await this.submitSteer();
-          return undefined;
+          if (!await this.endTurn()) await this.submitSteer();
         } catch (error) {
           this.errorMessage = error instanceof Error ? error.message : String(error);
-          return { end: true };
         }
       },
     })] });
+  }
+
+  private async clearRoundEnd() {
+    if (!(await this.harness.snapshot(RoundEndDoc, this.conversation.id, context))?.calls.length) return;
+    await this.conversation.commit(async tx => { (await tx.doc(RoundEndDoc, this.conversation.id)).calls = []; }, context);
+  }
+
+  private deciding: Promise<unknown> = Promise.resolve();
+  private decide<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.deciding.then(work, work);
+    this.deciding = next.catch(() => {});
+    return next;
+  }
+
+  /** Whether the run ends after the round that `callId` is part of, as the host decides on its result (`finishTurn`). */
+  private async callEnds(callId: string, toolName: string, result: { output?: unknown; details?: unknown; isError?: boolean }) {
+    const message = this.lastTurn;
+    if (!message || !this.options.finishTurn) return false;
+    const toolResult = { role: "toolResult", toolCallId: callId, toolName, content: result.output ?? [], details: result.details,
+      isError: result.isError === true, timestamp: Date.now() } as ToolResultMessage;
+    const decision = await this.options.finishTurn({ message, toolResults: [toolResult], context: { messages: this.messages, tools: this.tools }, newMessages: this.messages }, this.signal);
+    return decision?.action === "end";
   }
 
   /**
@@ -705,8 +865,12 @@ export class DurableAgent {
   }
 
   async syncContext() {
+    // The turn limit a round's end set (`afterTool`) and that round's calls go once the round is over; a round a lost
+    // node left open keeps them, so it still ends here.
+    const round = !!(await this.harness.snapshot(LiveDoc, this.conversation.id, context))?.tools;
     await this.conversation.configure({ model: { provider: this.state.model.provider, modelId: this.state.model.id },
-      thinkingLevel: this.state.thinkingLevel, instructions: null }, context);
+      thinkingLevel: this.state.thinkingLevel, instructions: null, ...round ? {} : { maxTurns: null } }, context);
+    if (!round) await this.clearRoundEnd();
     await this.reload();
   }
 
@@ -788,20 +952,6 @@ export class DurableAgent {
     const messages = typeof message === "string" ? [{ role: "user", content: images.length ? [{ type: "text", text: message }, ...images] : message, timestamp: Date.now() } as AgentMessage] : Array.isArray(message) ? message : [message];
     return this.run(messages);
   }
-  async compact(signal?: AbortSignal): Promise<void> {
-    signal?.throwIfAborted();
-    const task = await this.conversation.compact(undefined, context);
-    const abort = () => { void this.conversation.abort(context).catch(() => {}); };
-    signal?.addEventListener("abort", abort, { once: true });
-    if (signal?.aborted) abort();
-    let result;
-    try { result = await this.harness.waitForTask(task, context); }
-    finally { signal?.removeEventListener("abort", abort); }
-    signal?.throwIfAborted();
-    if (result.state.outcome.status !== "completed") throw new Error("Context compaction failed");
-    await this.flushEvents();
-    await this.reload();
-  }
   /**
    * Pi checks its threshold only as it prepares a request: messages that land without a turn (`landed`) get the same
    * check here, and past it Pi's own compaction, unless one is listed (then restarted, if a closed host left it). The
@@ -840,7 +990,7 @@ export class DurableAgent {
   private run(messages: AgentMessage[]) {
     if (this.closed) return Promise.reject(new Error("Agent is closed"));
     if (this.running) return Promise.reject(new Error("Agent is already processing"));
-    this.controller = new AbortController(); this.errorMessage = undefined; this.eventError = undefined; this.stoppedByFinishTurn = false; this.compactedShort = false;
+    this.controller = new AbortController(); this.errorMessage = undefined; this.eventError = undefined; this.stoppedByFinishTurn = false; this.compactedShort = false; this.overflowed = false;
     this.running = this.runInner(messages).finally(() => { this.controller = undefined; this.running = undefined; });
     return this.running;
   }
