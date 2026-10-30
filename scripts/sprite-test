@@ -63,10 +63,23 @@ on "$name" "sudo service postgresql start >/dev/null
 
 echo "== $*"
 start=$(date +%s)
-# Detached on the sprite, so a dropped connection or a sleeping laptop doesn't end the run: the job writes its log and exit
-# status and releases the lease itself, and a run past SPRITE_RUN_HOURS (default 2) is killed rather than holding a sprite.
-job="timeout ${SPRITE_RUN_HOURS:-2}h $(printf '%q ' "$@") > ~/runs/$id.log 2>&1; echo \$? > ~/runs/$id.exit; rm -rf ~/lease"
-on "$name" "cd ~/rt && AGENT_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres nohup setsid bash -o pipefail -c $(printf '%q' "$job") >/dev/null 2>&1 < /dev/null &"
+# A service, not a background process: killing an exec's connection kills everything it started, nohup and setsid included.
+# The runtime owns a service, so a dropped connection or a sleeping laptop doesn't end the run. The job holds a Task too
+# (5 minutes, refreshed every minute), since a sprite pauses when nothing counts as activity. It writes its log and exit
+# status, releases the lease and deletes its service; a run past SPRITE_RUN_HOURS (default 2) is killed. The runtime restarts
+# a service that crashes or a sprite that reboots: a started run isn't run twice, it ends as 137.
+api=/.sprite/bin/sprite-env; service=sprite-test-$id
+script="cd ~/rt
+export AGENT_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres
+finish() { echo \$1 > ~/runs/$id.exit; rm -rf ~/lease; $api curl -X DELETE /v1/tasks/sprite-test >/dev/null 2>&1; $api services delete $service >/dev/null 2>&1; sleep 60; exit 0; }
+[ ! -e ~/runs/$id.begun ] || finish 137
+touch ~/runs/$id.begun
+(while :; do $api curl -X PUT /v1/tasks/sprite-test -d '{\"expire\":\"5m\"}' >/dev/null 2>&1; sleep 60; done) & hold=\$!
+timeout ${SPRITE_RUN_HOURS:-2}h $(printf '%q ' "$@") > ~/runs/$id.log 2>&1
+code=\$?; kill \$hold
+finish \$code"
+encoded=$(printf '%s' "$script" | base64 | tr -d '\n')
+on "$name" "{ echo \"export PATH=\$PATH HOME=\$HOME\"; echo $encoded | base64 -d; } > ~/runs/$id.sh && $api services create $service --cmd bash --args \$HOME/runs/$id.sh --dir \$HOME/rt --no-stream >/dev/null"
 started=1
 # Poll: a failed poll is only a blip, the job carries on. After SPRITE_POLL_FAILURES (default 40, about 10 minutes) in a row, leave it running.
 chunk=$(mktemp); offset=0; misses=0; status=
