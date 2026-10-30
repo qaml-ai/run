@@ -204,3 +204,18 @@ test("Gemini's close reason (its error: a bad key, a model not found) is in the 
   assert.deepEqual(got.find(event => event.type === "closed"),
     { type: "closed", reason: "error", detail: "The realtime connection closed (1007: API key not valid. Please pass a valid API key. [redacted])" });
 });
+
+test("Gemini Live: a thought part or a written-out tool call in text parts is neither played nor said; only audio and its transcript are", async t => {
+  const fake = await fakeGemini(t);
+  const { got, events } = recorder();
+  const connection = geminiLive({ baseUrl: fake.base }).connect({ model: "gemini-3.8-live", voice: "Kore", instructions: "Be Mochi.", transcribe: true, tools: [] }, { apiKey: "key" }, events);
+  t.after(() => connection.close());
+  await until(() => got.some(e => e.type === "ready"), "ready");
+  connection.respond();
+  fake.send({ serverContent: { modelTurn: { parts: [{ text: "The user said hello. I should greet them.", thought: true }, { text: "print(default_api.ask_agent())" }] } } });
+  fake.send({ serverContent: { outputTranscription: { text: "Hello!" }, modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: tone(20).toString("base64") } }] } } });
+  fake.send({ serverContent: { turnComplete: true } });
+  await until(() => got.some(e => e.type === "done"), "done");
+  assert.deepEqual(got.filter(e => e.type === "said").map(e => e.text), ["Hello!"]);
+  assert.equal(got.filter(e => e.type === "audio").length, 1);
+});
