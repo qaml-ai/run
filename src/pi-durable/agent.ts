@@ -5,7 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, LiveDoc, createRegistry, createSession, defineDoc, hook, section,
+  GenerationTask, Harness, LiveDoc, ToolTask, createRegistry, createSession, defineDoc, hook, section,
   type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Report, type Storage,
 } from "@earendil-works/pi-durable";
 
@@ -20,6 +20,16 @@ export const ContextLimitDoc = defineDoc({
 const InferredOverflowDoc = defineDoc({
   kind: "camel.context.inferred-overflow", version: 1, scope: "conversation", history: "latest", fork: "initial",
   initial: () => ({ provider: "", model: "", at: 0 }),
+  checkpointWhen: () => true,
+});
+
+/**
+ * The calls of a round whose run ends after it (\`afterTool\`), committed with the decision: a call a lost node left open
+ * ends the round on the next owner too, whatever the host still knows. Cleared once the round is over.
+ */
+const RoundEndDoc = defineDoc({
+  kind: "camel.round-end", version: 1, scope: "conversation", history: "latest", fork: "initial",
+  initial: (): { calls: string[] } => ({ calls: [] }),
   checkpointWhen: () => true,
 });
 
@@ -223,6 +233,8 @@ export class DurableAgent {
   private summaryPlan?: RetryDecision;
   /** The run's generation had an overflow Pi compacts for: the next one ends the run. */
   private overflowed = false;
+  /** Calls of the running round that asked Pi to end the run after it. */
+  private terminating = new Set<string>();
   private closed = false;
   private closing?: Promise<void>;
 
@@ -734,22 +746,60 @@ export class DurableAgent {
           ...(result.structuredContent === undefined || !tool.outputSchema ? {} : { structuredOutput: result.structuredContent }),
           ...(result.usage === undefined ? {} : { usage: result.usage }), ...(result.terminate ? { control: { terminate: true } } : {}) };
       },
-    })), hooks: [hook(GenerationTask, {
-      // The end of a tool round: the host decides whether the run ends there (`finishTurn`: a call waiting for input,
-      // final_output, a run or spend limit); otherwise the next steer goes in at this boundary.
-      // A decision that fails ends the run with its error (Pi would only report a throwing hook).
+    })), hooks: [hook(ToolTask, {
+      // Each call of the model's round, as its result is final: whether the host ends the run after this round
+      // (`finishTurn`: a call waiting for input, final_output, a run or spend limit). Pi ends it when every call of the
+      // round asks to terminate; a condition holds for the calls after it, so only a call that settled before it, or one
+      // whose control Pi does not apply (interrupted, cut off), would let the round go on: the turn limit ends it then.
+      afterTool: async (call, result) => {
+        if (call.parent) return undefined;
+        const recorded = (await this.harness.snapshot(RoundEndDoc, this.conversation.id, context))?.calls.includes(call.id);
+        const ends = recorded || this.terminating.size > 0 || await this.callEnds(call.id, call.name, result).catch(error => {
+          this.errorMessage = error instanceof Error ? error.message : String(error);
+          return true;
+        });
+        if (!ends) return undefined;
+        this.terminating.add(call.id);
+        const uncertain = (result.diagnostics ?? []).some(item => ["interrupted", "abandoned", "restart_limit"].includes(item.code ?? ""));
+        const live = await this.harness.snapshot(LiveDoc, this.conversation.id, context);
+        if (!recorded) await this.conversation.commit(async tx => {
+          (await tx.doc(RoundEndDoc, this.conversation.id)).calls = (live?.tools ?? []).map(slot => slot.callId);
+        }, context);
+        const settled = (live?.tools ?? []).some(slot => slot.callId !== call.id && slot.entry !== undefined && !this.terminating.has(slot.callId));
+        if ((uncertain || settled) && live?.run?.turns) {
+          await this.conversation.configure({ maxTurns: live.run.turns }, context);
+          console.log(JSON.stringify({ type: "turn_end_capped", reason: uncertain ? "uncertain" : "settled" }));
+        }
+        return { ...result, control: { ...result.control, terminate: true } };
+      },
+    }), hook(GenerationTask, {
+      // The end of a tool round: told as `turn_end`; when the run goes on, the next steer goes in at this boundary.
       afterTools: async () => {
+        this.terminating.clear();
         try {
+          await this.clearRoundEnd();
           await this.flushEvents();
-          if (await this.endTurn()) return { end: true };
-          await this.submitSteer();
-          return undefined;
+          if (!await this.endTurn()) await this.submitSteer();
         } catch (error) {
           this.errorMessage = error instanceof Error ? error.message : String(error);
-          return { end: true };
         }
       },
     })] });
+  }
+
+  private async clearRoundEnd() {
+    if (!(await this.harness.snapshot(RoundEndDoc, this.conversation.id, context))?.calls.length) return;
+    await this.conversation.commit(async tx => { (await tx.doc(RoundEndDoc, this.conversation.id)).calls = []; }, context);
+  }
+
+  /** Whether the run ends after the round that `callId` is part of, as the host decides on its result (`finishTurn`). */
+  private async callEnds(callId: string, toolName: string, result: { output?: unknown; details?: unknown; isError?: boolean }) {
+    const message = this.lastTurn;
+    if (!message || !this.options.finishTurn) return false;
+    const toolResult = { role: "toolResult", toolCallId: callId, toolName, content: result.output ?? [], details: result.details,
+      isError: result.isError === true, timestamp: Date.now() } as ToolResultMessage;
+    const decision = await this.options.finishTurn({ message, toolResults: [toolResult], context: { messages: this.messages, tools: this.tools }, newMessages: this.messages }, this.signal);
+    return decision?.action === "end";
   }
 
   /**
@@ -782,8 +832,12 @@ export class DurableAgent {
   }
 
   async syncContext() {
+    // The turn limit a round's end set (\`afterTool\`) and that round's calls go once the round is over; a round a lost
+    // node left open keeps them, so it still ends here.
+    const round = !!(await this.harness.snapshot(LiveDoc, this.conversation.id, context))?.tools;
     await this.conversation.configure({ model: { provider: this.state.model.provider, modelId: this.state.model.id },
-      thinkingLevel: this.state.thinkingLevel, instructions: null }, context);
+      thinkingLevel: this.state.thinkingLevel, instructions: null, ...round ? {} : { maxTurns: null } }, context);
+    if (!round) await this.clearRoundEnd();
     await this.reload();
   }
 
