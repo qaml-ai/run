@@ -60,6 +60,8 @@ export const REALTIME_LIMITS = Object.freeze({
   historyLines: 20,
   /** The longest an answer waits for the floor (someone else mid-turn, the answer before it still playing). */
   waitMs: 8_000,
+  /** How long after a response the provider failed, with nothing of it heard, it is asked for once more. */
+  retryMs: 3_000,
   /** What the bot's code asks it to say or speak up about, waiting at most; and the longest such text. */
   announcements: 10, sayChars: 4_000, promptChars: 2_000,
   /** The model's audio is about this long, for the playback buffer's start (it comes faster than real time). */
@@ -173,6 +175,8 @@ export type BrainOptions = {
   /** Server VAD owns turns; local cuts only count activity. */
   ownsTurns?: boolean;
   clock?: Clock;
+  /** How long before a failed response is asked for again (REALTIME_LIMITS.retryMs): tests shorten it. */
+  retryMs?: number;
   /** ask_agent's waits (tests). */
   limits?: { askAgentMs?: number; askAgentLateMs?: number };
 };
@@ -215,6 +219,8 @@ type Response = {
   tool?: boolean; silent?: boolean; costUsd: number;
   hold?: Promise<Hold | undefined>;
   askedAt: number;
+  /** What it was asked with: instructions for this response alone, and whether this is already the second try. */
+  instructions?: string; retried: boolean;
   /** Words the bot's code had it say, made by text to speech (not the model's): its id, and how to stop making it. */
   clip?: { id: string; abort: AbortController };
 };
@@ -231,6 +237,8 @@ export class RealtimeBrain {
   private meteredTextInputs = 0;
   private meterTimer?: ReturnType<Clock["setInterval"]>;
   private reconnects: number[] = [];
+  /** A failed response waiting to be asked for again. */
+  private pendingRetry?: { timer: ReturnType<Clock["setTimeout"]>; turn?: TurnClock };
   private generation = 0;
   private segment?: Segment;
   private segments = new Map<string, Segment>();
@@ -258,7 +266,7 @@ export class RealtimeBrain {
   private announced = 0;
   readonly stats = {
     says: 0, prompts: 0,
-    turns: 0, responses: 0, spoken: 0, speculative: 0, speculativeDiscarded: 0, superseded: 0, askAgent: 0, askAgentFailed: 0, askAgentLate: 0,
+    turns: 0, responses: 0, retried: 0, spoken: 0, speculative: 0, speculativeDiscarded: 0, superseded: 0, askAgent: 0, askAgentFailed: 0, askAgentLate: 0,
     staySilent: 0, unaddressed: 0, bargeIns: 0, echoRejected: 0, reconnects: 0, azureFallbacks: 0, costUsd: 0, inputSeconds: 0, outputSeconds: 0,
   };
   /** Where the model runs (the live connection's host: azure or openai for OpenAI's models), for the metrics. */
@@ -500,6 +508,7 @@ export class RealtimeBrain {
     this.guard?.close();
     for (const call of this.agentCalls) call.abort();
     this.announcements.splice(0);
+    this.dropRetry("interrupted");
     for (const response of [this.current, this.playing]) {
       if (!response) continue;
       response.clip?.abort.abort();
@@ -855,7 +864,7 @@ export class RealtimeBrain {
   }
 
   /** Answer: now, or once the floor is free and the response before has finished. */
-  private respond(request: { speaker?: string; turn?: TurnClock; instructions?: string }) {
+  private respond(request: { speaker?: string; turn?: TurnClock; instructions?: string; retried?: boolean }) {
     if (this.closed) return;
     if (this.options.ownsTurns) { this.connection?.respond(request.instructions ? { instructions: request.instructions } : {}); return; }
     const busy = (this.current && !this.current.done) || [...this.speaking].length > 0;
@@ -870,9 +879,11 @@ export class RealtimeBrain {
     this.ask({ ...request, held: false, speculative: false });
   }
 
-  private ask(request: { speaker?: string; turn?: TurnClock; instructions?: string; held: boolean; speculative: boolean }) {
+  private ask(request: { speaker?: string; turn?: TurnClock; instructions?: string; held: boolean; speculative: boolean; retried?: boolean }) {
     const connection = this.connection;
     if (!connection) { request.turn?.end("error"); return; }
+    // Any new answer hears everything so far, what the failed one was to answer too.
+    this.dropRetry("no_reply");
     const response = this.response(request);
     this.current = response;
     this.fresh = false;
@@ -899,10 +910,11 @@ export class RealtimeBrain {
     });
   }
 
-  private response(request: { speaker?: string; turn?: TurnClock; held?: boolean; speculative?: boolean }): Response {
+  private response(request: { speaker?: string; turn?: TurnClock; instructions?: string; held?: boolean; speculative?: boolean; retried?: boolean }): Response {
     return {
       key: ++this.keys, ...(request.turn ? { turn: request.turn } : {}), ...(request.speaker ? { speaker: request.speaker } : {}),
       held: !!request.held, speculative: !!request.speculative, audio: new PcmQueue(), said: "", done: false, played: false, costUsd: 0, askedAt: this.clock.now(),
+      ...(request.instructions ? { instructions: request.instructions } : {}), retried: !!request.retried,
     };
   }
 
@@ -998,10 +1010,39 @@ export class RealtimeBrain {
     response.costUsd = costUsd;
     response.audio.end();
     this.settle(response, costUsd);
-    if (!response.audio.bytes) response.turn?.end(response.silent ? "silent" : response.cancelled ? "interrupted" : outcome.status === "failed" ? "error" : "no_reply");
+    if (!response.audio.bytes && outcome.status === "failed" && this.retries(response)) this.retry(response);
+    else if (!response.audio.bytes) response.turn?.end(response.silent ? "silent" : response.cancelled ? "interrupted" : outcome.status === "failed" ? "error" : "no_reply");
     // Done making: one with audio left to play stays current until it has played (or is held, until it may).
     if (this.current === response && (response.cancelled || !response.audio.bytes)) this.current = undefined;
     this.release();
+  }
+
+  /**
+   * A failed response no one heard is asked for once more, or the person hears nothing and has to ask again: Azure
+   * refuses some for a moment ("too many tokens", docs/operations/voice-pipeline.md). A speculative one needs no second
+   * try, as its turn's end asks anyway, and an answer that has waited too long would answer what has moved on.
+   */
+  private retries(response: Response) {
+    return !response.retried && !response.cancelled && !response.silent && !response.tool && !response.speculative && !response.clip && !this.options.ownsTurns
+      && this.clock.now() - response.askedAt <= REALTIME_LIMITS.waitMs;
+  }
+
+  private retry(response: Response) {
+    this.stats.retried++;
+    const { speaker, turn, instructions } = response;
+    const timer = this.clock.setTimeout(() => {
+      this.pendingRetry = undefined;
+      this.respond({ ...(speaker ? { speaker } : {}), ...(turn ? { turn } : {}), ...(instructions ? { instructions } : {}), retried: true });
+    }, this.options.retryMs ?? REALTIME_LIMITS.retryMs);
+    this.pendingRetry = { timer, ...(turn ? { turn } : {}) };
+  }
+
+  /** A retry not yet asked for is not needed after all. */
+  private dropRetry(outcome: "no_reply" | "interrupted") {
+    if (!this.pendingRetry) return;
+    this.clock.clearTimeout(this.pendingRetry.timer);
+    this.pendingRetry.turn?.end(outcome);
+    this.pendingRetry = undefined;
   }
 
   private settle(response: Response, usd: number) {

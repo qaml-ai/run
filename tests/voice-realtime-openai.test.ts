@@ -155,6 +155,17 @@ test("a response: audio, its transcript, a tool call, and its usage; a cancel be
   assert.deepEqual(got.at(-1), { type: "closed", reason: "requested" });
 });
 
+test("a failed response reports the provider's code with its message", async t => {
+  const fake = await fakeOpenAI(t);
+  const { got, events } = recorder();
+  const connection = openaiRealtime({ baseUrl: fake.base }).connect({ model: "gpt-realtime-2.1", voice: "alloy", instructions: "x", transcribe: false, tools: [] }, { apiKey: "k" }, events);
+  await fake.connected;
+  fake.send({ type: "response.done", response: { id: "resp_1", status: "failed", status_details: { error: { type: "invalid_request_error", code: "rate_limit_exceeded", message: "too many tokens" } } } });
+  await until(() => got.some(event => event.type === "done"), "done");
+  assert.equal((got.find(event => event.type === "done") as any).error, "rate_limit_exceeded: too many tokens");
+  connection.close();
+});
+
 test("the provider closing the connection is reported (the brain reconnects); usage reads what is there", async t => {
   const fake = await fakeOpenAI(t);
   const { got, events } = recorder();

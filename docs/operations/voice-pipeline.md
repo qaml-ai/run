@@ -152,6 +152,17 @@ the main thread's `Date.now()`, to within a millisecond.
   truncates the model's item at what was heard. `RealtimeProvider` (`provider.ts`) is the seam: OpenAI Realtime
   (`openai.ts`) and Gemini Live (`gemini.ts`).
 
+## Azure's "too many tokens"
+
+The platform's Azure deployment of `gpt-realtime-2.1` (`migue-ma8lkatg-eastus2`, GlobalStandard, capacity 15: 150,000
+tokens and 300 requests a minute, the subscription's whole quota for this model there) sometimes fails a response with
+`too many tokens` (`voice_realtime_response_failed`). From 24 to 29 Oct: 1,259 failures in 97 of about 2,700 Azure
+sessions, none in 73 on OpenAI. It is not a call's context filling up: a session's failures mix with good answers, and
+sessions seconds old have them. The share of answers that fail rises with tokens across the deployment that minute and
+with the session's own size (1% in small sessions on a quiet minute, 25% past 200 answers), which reads as a rate limit
+applied over less than a minute, with long calls asking for the most. The call goes on. The brain asks for a failed
+response once more after `retryMs` (`voice_realtime_stats.retried`), unless a newer turn's answer has replaced it.
+
 ## Streaming
 
 - **Per-speaker streams to the model.** Each speaker has one ordered stream from the jitter buffer through decoding, the
