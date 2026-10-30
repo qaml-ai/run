@@ -127,6 +127,39 @@ test('an unknown allocation blocks replacement until the account confirms provid
   await assert.rejects(service.confirmCleanup('alice','a'),/Only a failed/);
 });
 
+test('a provider refusing the credentials creates nothing: no recovery is needed, and a fixed key starts', async () => {
+  const f = await fixture();
+  for (const status of [401, 403]) {
+    let key = 'bad', creates = 0;
+    const service = new Computers({ ...f.service.options, driver: () => ({
+      refused: (error: any) => error.status === 401 || error.status === 403,
+      async create(id) { creates++; if (key === 'bad') throw Object.assign(new Error('refused'), { status }); return { id }; }, async call() { return { exitCode: 0 }; }, async close() {},
+    }) });
+    await assert.rejects(service.call('alice','a','computer_start',{},`refused-${status}`), /refused its credentials/);
+    const refused = (await service.status('alice','a')).session!;
+    assert.equal(refused.state,'closed');
+    assert.equal(refused.recoveryRequired,false);
+    key = 'good';
+    assert.equal((await service.call('alice','a','computer_start',{},`fixed-${status}`) as any).state,'active');
+    assert.equal(creates,2);
+    await service.call('alice','a','computer_stop',{},`stop-${status}`);
+  }
+});
+
+test('other failures stay uncertain, as does a refusal after a machine was allocated', async () => {
+  for (const [name, create] of Object.entries<any>({
+    'a lost response': async () => { throw Object.assign(new Error('lost'), { status: 503 }); },
+    'a refusal after allocation': async (id: string, _seconds: number, allocated: any) => { await allocated({ id }); throw Object.assign(new Error('refused'), { status: 401 }); },
+  })) {
+    const f = await fixture();
+    const service = new Computers({ ...f.service.options, driver: () => ({
+      refused: (error: any) => error.status === 401, create, async call() {}, async close() {},
+    }) });
+    await assert.rejects(service.call('alice','a','computer_start',{},'failed'), /may have made a machine/, name);
+    assert.equal((await service.status('alice','a')).session!.state,'uncertain', name);
+  }
+});
+
 test('concurrent starts create a single machine and closed history stays detached', async () => {
   const f = await fixture();
   await Promise.all([f.service.call('alice','a','computer_start',{},'one'),f.restart().call('alice','a','computer_start',{},'two')]);

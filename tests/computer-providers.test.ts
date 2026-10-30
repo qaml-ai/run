@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { boundedCommand, driver } from '../src/computers/providers.ts';
 import { Outbound } from '../src/outbound.ts';
+import { ClientError, Status } from 'nice-grpc';
+import { DaytonaAuthenticationError, DaytonaForbiddenError, DaytonaNotFoundError } from '@daytona/sdk';
+import { AuthenticationError, SandboxError } from 'e2b';
+import Browserbase from '@browserbasehq/sdk';
 import { listen } from './runtime-server.ts';
 
 test('shell capture bounds both streams and preserves quoted commands and exit status', () => {
@@ -147,4 +151,39 @@ test('Browserbase uses guarded requests without SDK length headers and confirms 
   await provider.close(ref);
   assert.equal(stopped,true);
   assert.equal(calls.at(-1).method,'GET');
+});
+
+test('each driver knows a credentials refusal from other failures', async () => {
+  for (const provider of ['sprites', 'boat', 'tunnel', 'browser-use'] as const) {
+    let status = 401;
+    const outbound = { async fetch() { return new Response('', { status }); } } as unknown as Outbound;
+    const value = await driver(provider, { apiKey: 'fake', url: 'https://runner.example' }, outbound);
+    for (const [code, refused] of [[401, true], [403, true], [404, false], [429, false], [500, false], [503, false]] as const) {
+      status = code;
+      const error = await value.create('cmp_x', 60).then(() => undefined, failure => failure);
+      assert.ok(error, `${provider} ${code}`);
+      assert.equal(error.message, code === 404 && provider === 'browser-use' ? 'Browser creation did not return an ID' : `Computer provider HTTP ${code}`);
+      assert.equal(value.refused!(error), refused, `${provider} ${code}`);
+    }
+    assert.equal(value.refused!(new Error('Computer provider HTTP 401')), false, 'a message alone is not a status');
+  }
+  const none = {} as Outbound;
+  const daytona = await driver('daytona', { apiKey: 'fake' }, none);
+  assert.equal(daytona.refused!(new DaytonaAuthenticationError('no')), true);
+  assert.equal(daytona.refused!(new DaytonaForbiddenError('no')), true);
+  assert.equal(daytona.refused!(new DaytonaNotFoundError('no')), false);
+  assert.equal(daytona.refused!(new Error('401')), false);
+  const e2b = await driver('e2b', { apiKey: 'fake' }, none);
+  assert.equal(e2b.refused!(new AuthenticationError('no')), true);
+  assert.equal(e2b.refused!(Object.assign(new SandboxError('403: no'), { statusCode: 403 })), true);
+  assert.equal(e2b.refused!(Object.assign(new SandboxError('500: no'), { statusCode: 500 })), false);
+  const modal = await driver('modal', { tokenId: 'fake', tokenSecret: 'fake' }, none);
+  assert.equal(modal.refused!(new ClientError('/x', Status.UNAUTHENTICATED, 'no')), true);
+  assert.equal(modal.refused!(new ClientError('/x', Status.PERMISSION_DENIED, 'no')), true);
+  assert.equal(modal.refused!(new ClientError('/x', Status.UNAVAILABLE, 'no')), false);
+  await modal.dispose?.();
+  const browserbase = await driver('browserbase', { apiKey: 'fake' }, none);
+  assert.equal(browserbase.refused!(new Browserbase.AuthenticationError(401, undefined, 'no', new Headers() as any)), true);
+  assert.equal(browserbase.refused!(new Browserbase.PermissionDeniedError(403, undefined, 'no', new Headers() as any)), true);
+  assert.equal(browserbase.refused!(new Browserbase.InternalServerError(500, undefined, 'no', new Headers() as any)), false);
 });

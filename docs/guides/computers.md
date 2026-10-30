@@ -151,6 +151,10 @@ agent tool. Normal sessions with a recorded ID are cleaned up by camelRun. You c
 confirm manual cleanup when automatic cleanup fails, for example after revoking
 a provider key. Remove the machine at the provider before acknowledging it.
 
+A provider that refuses the credentials (401 or 403) on create has made nothing, so
+the session closes and needs no acknowledgment. Disconnect and reconnect with a
+working key.
+
 `GET /v1/computers` lists connection and session state;
 `GET /v1/computers/usage` returns the workspace breakdown;
 `POST /v1/agents/{id}/computer/stop` stops a session; and

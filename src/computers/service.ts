@@ -129,10 +129,18 @@ export class Computers {
         if (Number(used) + c.lease_seconds*1000 > c.daily_seconds*1000) throw new HttpError(429, "Computer daily time budget reached");
         const session = id(), now = this.now(), workspace = await new Workspaces(this.options.db).current(tenant, "agent", agent, sql);
         lease = (await sql.query("insert into computer_leases(id,tenant,agent,connection,workspace,provider,state,created_at,expires_at) values($1,$2,$3,$4,$5,$6,'starting',$7,$8) returning *", [session, tenant, agent, c.id, workspace?.workspace ?? null, c.provider, now, now+c.lease_seconds*1000])).rows[0];
+        let creator: ComputerDriver | undefined, allocated = false;
         try {
-          const ref = await this.useProvider(c, p => p.create(session, c.lease_seconds, async ref => { await sql.query("update computer_leases set reference=$2 where id=$1", [session, this.options.accounts.seal(`computer-lease:${session}`, JSON.stringify(ref))]); }));
+          const ref = await this.useProvider(c, p => { creator = p; return p.create(session, c.lease_seconds, async ref => { allocated = true; await sql.query("update computer_leases set reference=$2 where id=$1", [session, this.options.accounts.seal(`computer-lease:${session}`, JSON.stringify(ref))]); }); });
           await sql.query("update computer_leases set state='active',reference=$2 where id=$1", [session, this.options.accounts.seal(`computer-lease:${session}`, JSON.stringify(ref))]);
-        } catch { await sql.query("update computer_leases set state='uncertain',error='Creation outcome unknown' where id=$1", [session]); throw new HttpError(502, "Computer could not be created, and the provider may have made a machine. Do not retry in this turn. Tell the user the computer is unavailable and that its owner may need to check the provider account and confirm cleanup in the Computers console."); }
+        } catch (error) {
+          // A provider that refused the credentials made nothing: no machine to reconcile, and a fixed key can start again.
+          if (!allocated && creator?.refused?.(error)) {
+            await sql.query("update computer_leases set state='closed',closed_at=$2,error='Provider refused the credentials' where id=$1", [session, this.now()]);
+            throw new HttpError(502, "The computer provider refused its credentials, and nothing was created. Do not retry in this turn. Tell the user that its owner needs to reconnect the computer with a working key in the Computers console.");
+          }
+          await sql.query("update computer_leases set state='uncertain',error='Creation outcome unknown' where id=$1", [session]); throw new HttpError(502, "Computer could not be created, and the provider may have made a machine. Do not retry in this turn. Tell the user the computer is unavailable and that its owner may need to check the provider account and confirm cleanup in the Computers console.");
+        }
         return publicLease({ ...lease, state: "active" });
       }
       if (!lease || lease.state !== "active") throw new HttpError(409, "Call computer_start before using the computer");
