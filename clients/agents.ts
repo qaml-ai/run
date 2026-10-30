@@ -399,7 +399,7 @@ export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick
    */
   files?: (Uint8Array | Blob | { name?: string; data: Uint8Array | Blob; contentType?: string; transcribe?: boolean } | { url: string; name?: string; contentType?: string; transcribe?: boolean })[];
   /** Tools the runtime answers itself: web_fetch, web_search, x_search, delegate. */
-  builtins?: ("web_fetch" | "web_search" | "x_search" | "delegate" | "workflow")[];
+  builtins?: ("file_link" | "file_import" | "web_fetch" | "web_search" | "x_search" | "delegate" | "workflow")[];
   output?: S;
   user?: string | Sender;
   metadata?: Record<string, string>;

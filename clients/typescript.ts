@@ -457,7 +457,7 @@ export interface CreateAgentOptions extends AgentOptions {
  * delegate (sub-agents: needs `delegate` settings), or agents (sub-agents in the background: spawn_agent, wait_agent and
  * list_agents, with the same settings).
  */
-export type Builtin = "web_fetch" | "web_search" | "x_search" | "schedule" | "ask_user" | "delegate" | "generate_image" | "agents" | "decide" | "workflow";
+export type Builtin = "file_link" | "file_import" | "web_fetch" | "web_search" | "x_search" | "schedule" | "ask_user" | "delegate" | "generate_image" | "agents" | "decide" | "workflow";
 /**
  * A delegate target: a definition's key or id, as a string or `{ definition }`, or an existing agent's key
  * (`{ agent }`, which keeps its own history across calls). `name` is what the model calls it (default: the key); `description`
@@ -1829,7 +1829,7 @@ export interface RunRequest {
   dataCollection?: "deny";
   /** Its primary language, a BCP 47 tag ("en", "es-ES", "pt-BR", "zh-Hant"): it replies in it by default, and in the person's language when they clearly write in another. Default: none. */
   language?: string;
-  builtins?: ("web_fetch" | "web_search" | "x_search" | "delegate" | "workflow")[]; delegate?: DelegateSettings; workflow?: WorkflowSettings;
+  builtins?: ("file_link" | "file_import" | "web_fetch" | "web_search" | "x_search" | "delegate" | "workflow")[]; delegate?: DelegateSettings; workflow?: WorkflowSettings;
   /** false: no decide tool; a run with no tools at all has none unless true. */
   decide?: boolean;
   /** Remote MCP servers the run may call, without credentials (auth `{ type: "runtime" }` or none). */

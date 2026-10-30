@@ -8,11 +8,12 @@ import { isShell, type WebRender } from "./web-render.ts";
 import { readableText } from "./html-text.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { jsonResult } from "./tool-servers.ts";
-import { readCapped, type ToolFiles } from "./tool-files.ts";
+import { download, need, readCapped, type ToolFiles } from "./tool-files.ts";
 import { HttpError } from "./http.ts";
-import { textual } from "./files.ts";
+import { textual, type FileLinks } from "./files.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
 import { questionsInput } from "./inputs.ts";
+import { VOLUME_LIMITS } from "./volumes.ts";
 import { X_SEARCH, xSearchUnavailable, type XSearch } from "./x-search.ts";
 
 export { readableText };
@@ -29,6 +30,8 @@ export { readableText };
  */
 export const BUILTINS = {
   web_fetch: ["web_fetch"],
+  file_link: ["file_link"],
+  file_import: ["file_import"],
   web_search: ["web_search"],
   x_search: ["x_search"],
   schedule: ["schedule", "list_schedules", "cancel_schedule"],
@@ -77,9 +80,23 @@ export function builtinsInput(value: unknown): Builtin[] {
 }
 export const builtinNames = (builtins: string[] = []) => builtins.flatMap(builtin => (BUILTINS as Record<string, readonly string[]>)[builtin] ?? []);
 
-const FETCH = { timeoutMs: 20_000, maxBytes: 5 * 1024 * 1024, maxRedirects: 5, characters: 20_000, maxCharacters: 100_000, htmlBytes: 2 * 1024 * 1024 };
+const FETCH = { maxBytes: 5 * 1024 * 1024, characters: 20_000, maxCharacters: 100_000, htmlBytes: 2 * 1024 * 1024 };
 
 const DEFINITIONS: Record<string, ToolDefinition> = {
+  file_link: {
+    name: "file_link", exposure: "both",
+    description: "Create a signed GET or PUT URL for one workspace file (5 minutes by default, at most 15). Hand the URL to another tool: curl -o <file> '<url>' to download, curl -T <file> '<url>' to upload, or any tool taking a URL. Never paste file contents. PUT needs maxBytes and a writable path.",
+    parameters: { type: "object", additionalProperties: false, required: ["path", "method"], properties: {
+      path: { type: "string" }, method: { type: "string", enum: ["GET", "PUT"] },
+      expiresIn: { type: "integer", minimum: 1, maximum: 900 },
+      maxBytes: { type: "integer", minimum: 0, maximum: VOLUME_LIMITS.fileBytes }, contentType: { type: "string" },
+    } },
+  },
+  file_import: {
+    name: "file_import", exposure: "both",
+    description: "Download a public HTTP(S) URL directly into a workspace file, without reading its bytes into context. Returns path, size, sha256 and contentType. Private and internal addresses are refused.",
+    parameters: { type: "object", additionalProperties: false, required: ["url", "to"], properties: { url: { type: "string" }, to: { type: "string" } } },
+  },
   x_search: {
     name: "x_search", exposure: "both",
     description: "Search X posts with Grok and return a summary, source citations, and usage. Use for recent discussion, specialist commentary, and reported claims; corroborate important claims with primary sources. Optional handle filters and dates narrow the search. toDate is exclusive, in UTC. Your main model stays the same. A search can take two minutes; call directly or give js_exec a timeoutMs of 150000.",
@@ -152,7 +169,7 @@ export const builtinDefinitions = (builtins: string[] = []) => builtinNames(buil
 
 /** `searchProviders`: the order the agent's definition gives web_search, instead of the runtime's; `files`, where web_fetch saves files. */
 export type BuiltinContext = { tenant: string; agent: string; claim?: Claim; searchProviders?: string[]; files?: ToolFiles };
-export type BuiltinServices = { outbound: Outbound; scheduler?: Scheduler; search?: WebSearch; render?: WebRender; xSearch?: XSearch };
+export type BuiltinServices = { outbound: Outbound; scheduler?: Scheduler; search?: WebSearch; render?: WebRender; xSearch?: XSearch; links?: FileLinks };
 
 export async function runBuiltin(services: BuiltinServices, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<McpResult> {
   if (name === "web_fetch") return webFetch(services, context, String(args.url), (args.maxCharacters as number | undefined) ?? FETCH.characters, signal);
@@ -162,6 +179,16 @@ export async function runBuiltin(services: BuiltinServices, context: BuiltinCont
 }
 
 async function builtinValue(services: BuiltinServices, context: BuiltinContext, name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+  if (name === "file_link") {
+    if (!services.links) throw new Error("Links are not enabled on this runtime");
+    return need(context.files).link(services.links, args);
+  }
+  if (name === "file_import") {
+    if (typeof args.url !== "string" || typeof args.to !== "string") throw new Error("url and to must be strings");
+    const files = need(context.files);
+    files.destination(args.to);
+    return files.import(await download(services.outbound, args.url, signal, VOLUME_LIMITS.fileBytes), args.to);
+  }
   if (name === "x_search") {
     if (!services.xSearch) throw new Error("X search is not enabled on this runtime");
     return services.xSearch.search(context, args, signal);
@@ -190,13 +217,7 @@ const view = (schedule: { id: string; text?: string; code?: string; dueAt: numbe
 });
 
 async function webFetch({ outbound, render }: BuiltinServices, context: BuiltinContext, url: string, maxCharacters: number, signal: AbortSignal): Promise<McpResult> {
-  // An http:// link is tried over https unless the operator allows plain http.
-  if (/^http:\/\//i.test(url) && !outbound.allowHttp) url = `https://${url.slice(7)}`;
-  const response = await outbound.fetch(url, {
-    // Text is capped lower as it is read.
-    signal, timeoutMs: FETCH.timeoutMs, maxBytes: TOOL_FILE_LIMITS.responseBytes, maxRedirects: FETCH.maxRedirects,
-    headers: { Accept: "text/html, text/plain, application/json;q=0.9, */*;q=0.5", "User-Agent": "agent-runtime web_fetch" },
-  });
+  const response = await download(outbound, url, signal);
   const type = response.headers.get("content-type") ?? "";
   if (type && !textual(type)) {
     const finalUrl = response.url || url;

@@ -229,7 +229,7 @@ export function documentPayload(payload: unknown): unknown {
 }
 
 /** What a signed link lets its holder do: read one file, or write one path (within a size and content type). */
-export type LinkGrant = { tenant: string; volume: string; path: string; method: "GET" | "PUT"; expiresAt: number; maxBytes?: number; contentType?: string };
+export type LinkGrant = { tenant: string; agent?: string; volume: string; path: string; method: "GET" | "PUT"; expiresAt: number; maxBytes?: number; contentType?: string };
 
 /**
  * Short-lived signed URLs for one volume file, so an app, browser, tool server or channel can fetch

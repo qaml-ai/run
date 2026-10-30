@@ -1,12 +1,13 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { errorText, scratchMount } from "./protocol.ts";
-import { safeName, type FileRef } from "./files.ts";
+import { declaredType, safeName, type FileLinks, type FileRef } from "./files.ts";
 import { digestOf, type FileUrls, type FileValue } from "./file-arguments.ts";
 import { fileRef } from "./inspect.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
+import type { Outbound } from "./outbound.ts";
 import type { McpResult } from "./mcp-results.ts";
-import { resolve, type ToolContext } from "./volume-tools.ts";
-import { TEMPORARY_SNAPSHOT, VolumeService, type FileEntry, type Mount } from "./volumes.ts";
+import { resolve, writable, type ToolContext } from "./volume-tools.ts";
+import { TEMPORARY_SNAPSHOT, VOLUME_LIMITS, VolumeService, type FileEntry, type Mount } from "./volumes.ts";
 
 /**
  * Files through the calls of tool sources (MCP servers, OpenAPI operations, web_fetch), without
@@ -22,10 +23,9 @@ import { TEMPORARY_SNAPSHOT, VolumeService, type FileEntry, type Mount } from ".
  * instead (openapi.ts). The marker is explicit, so nothing is guessed from a plain string, and it reads
  * the same from a direct call and from js_exec. Only sources whose `fileArguments` is on are sent files.
  *
- * Out: images, audio, blobs and long text an MCP tool returns, and binary responses, are saved to
- * the agent's workspace under tool-outputs/<tool>/<call>/<name>; the model gets a file reference
- * (path, type, size, and the file natively when it can view it). A call and a run may save only so
- * much (TOOL_FILE_LIMITS), and what they save counts toward the volume like any file.
+ * Out: MCP blobs and large media go under mcp/<server>/<sha256> as metadata only. Long text
+ * resources and binary HTTP responses keep their file references under tool-outputs/<tool>/<call>.
+ * A call and a run may save only so much (TOOL_FILE_LIMITS); every file counts toward the volume.
  */
 export type FileArgument = { $file: string };
 export const isFileArgument = (value: unknown): value is FileArgument =>
@@ -133,6 +133,17 @@ export async function readCapped(response: Response, maxBytes: number): Promise<
   return Buffer.concat(parts);
 }
 
+/** Public downloads share web_fetch's guard, redirects, deadline and streaming byte cap. */
+export function download(outbound: Outbound, url: string, signal: AbortSignal, maxBytes = TOOL_FILE_LIMITS.responseBytes) {
+  if (/^http:\/\//i.test(url) && !outbound.allowHttp) url = `https://${url.slice(7)}`;
+  return outbound.withoutOrigins().fetch(url, {
+    signal, timeoutMs: 20_000, maxBytes, maxRedirects: 5,
+    headers: { Accept: "text/html, text/plain, application/json;q=0.9, */*;q=0.5", "User-Agent": "agent-runtime web_fetch" },
+  });
+}
+
+export const MCP_INLINE_BYTES = 32 * 1024;
+
 /**
  * One tool call's access to the agent's files: reading the files its arguments name (within the
  * agent's mounts, read-only ones included), and saving its outputs to the agent's workspace (`scratchMount`) within
@@ -231,6 +242,74 @@ export class ToolFiles {
     }
   }
 
+  /** A model-created link uses the same mount boundaries as read and write. */
+  async link(links: FileLinks, args: Record<string, unknown>) {
+    if (typeof args.path !== "string" || !args.path) throw new Error("path must be a nonempty string");
+    const target = this.target(args.path);
+    const method = args.method;
+    if (method !== "GET" && method !== "PUT") throw new Error("method must be GET or PUT");
+    const expiresIn = args.expiresIn ?? 300;
+    if (!Number.isInteger(expiresIn) || Number(expiresIn) < 1 || Number(expiresIn) > 900) throw new Error("expiresIn must be 1–900 seconds");
+    if (method === "PUT") {
+      writable(target);
+      if (!Number.isSafeInteger(args.maxBytes) || Number(args.maxBytes) < 0 || Number(args.maxBytes) > VOLUME_LIMITS.fileBytes) throw new Error(`PUT needs maxBytes from 0 to ${VOLUME_LIMITS.fileBytes}`);
+    } else await this.open(args.path);
+    const contentType = declaredType(args.contentType);
+    if (args.contentType !== undefined && !contentType) throw new Error("Invalid contentType");
+    const { url, expiresAt } = links.sign({ tenant: this.options.tenant, volume: target.mount.volumeId, path: target.path, method, expiresIn,
+      ...(method === "PUT" ? { maxBytes: Number(args.maxBytes) } : {}), ...(contentType ? { contentType } : {}) });
+    return { url, method, path: target.show(target.path), expiresAt };
+  }
+
+  /** Check the destination before making an outbound request. */
+  destination(path: string) {
+    if (typeof path !== "string" || !path) throw new Error("path must be a nonempty string");
+    const target = this.target(path); writable(target); return target;
+  }
+
+  async import(response: Response, path: string) {
+    const target = this.destination(path);
+    if (!response.ok) { await response.body?.cancel(); throw new Error(`Download answered HTTP ${response.status}`); }
+    const hash = createHash("sha256");
+    const source = async function* () {
+      for await (const chunk of (response.body ?? []) as AsyncIterable<Uint8Array>) { hash.update(chunk); yield chunk; }
+    };
+    const { volumes, tenant, agent } = this.options;
+    let saved;
+    try { saved = await volumes.put(tenant, target.mount.volumeId, target.path, source(), { contentType: response.headers.get("content-type") ?? undefined, by: agent, limit: VOLUME_LIMITS.fileBytes }); }
+    finally { await response.body?.cancel().catch(() => {}); }
+    const shown = target.show(saved.path);
+    this.options.onWrite?.({ path: shown, version: saved.version, size: saved.size, contentType: saved.contentType! });
+    return { path: shown, size: saved.size, sha256: hash.digest("hex"), contentType: saved.contentType };
+  }
+
+  private workspace() {
+    return VolumeService.markWorkspace(this.options.agent, this.options.mounts).find(mount => mount.workspace || mount.path === "/workspace");
+  }
+  get hasWorkspace() { return !!this.workspace(); }
+
+  /** Stable names deduplicate repeated MCP outputs without returning their bytes to the model. */
+  async saveMcp(server: string, bytes: Buffer, contentType?: string) {
+    const mount = this.workspace()!;
+    const target = resolve(this.options.mounts, `${mount.path}/mcp/${safeName(server, "server")}/${createHash("sha256").update(bytes).digest("hex")}`)!;
+    writable(target);
+    const { volumes, tenant, agent, run } = this.options;
+    const budget = Math.min(this.left, run.left);
+    if (bytes.length > budget) throw new Error(`MCP output exceeds the remaining ${budget} byte budget`);
+    const existing = await volumes.call(mount.volumeId, tenant, "stat", { path: target.path }).catch(error => {
+      if (error.status !== 404) throw error;
+    });
+    if (existing?.type === "file" && existing.size === bytes.length && (await volumes.readRange(tenant, existing, 0, existing.size)).equals(bytes)) {
+      this.left -= bytes.length; run.left -= bytes.length;
+      return { path: target.show(target.path), size: existing.size, contentType: existing.contentType };
+    }
+    const saved = await volumes.put(tenant, mount.volumeId, target.path, bytes, { contentType, by: agent, limit: budget });
+    this.left -= saved.size; run.left -= saved.size;
+    const shown = target.show(saved.path);
+    this.options.onWrite?.({ path: shown, version: saved.version, size: saved.size, contentType: saved.contentType! });
+    return { path: shown, size: saved.size, contentType: saved.contentType };
+  }
+
   /** Save one of the call's outputs as `name` (sanitized), and refer to it as the transcript does. */
   async save(name: string, source: Uint8Array | AsyncIterable<Uint8Array>, contentType?: string): Promise<FileRef> {
     const { volumes, tenant, agent, mounts, run } = this.options;
@@ -256,66 +335,33 @@ export class ToolFiles {
   }
 }
 
-/** A name for unnamed content: its kind and number, with an extension from its type. */
-const named = (kind: string, index: number, mimeType: unknown) => `${kind}-${index}${typeof mimeType === "string" && /^[a-z]+\/[a-z0-9]+/i.test(mimeType) ? `.${/^[a-z]+\/([a-z0-9]+)/i.exec(mimeType)![1].toLowerCase()}` : ""}`;
-/** A resource's name from its URI's last segment. */
-function resourceName(uri: unknown, index: number, mimeType: unknown) {
-  try { return decodeURIComponent(new URL(String(uri)).pathname.split("/").pop() ?? "") || named("resource", index, mimeType); }
-  catch { return named("resource", index, mimeType); }
-}
-
-/** A `data:` URI's bytes and type, or undefined if it is not one. */
-function dataUri(uri: string): { bytes: Buffer; type?: string } | undefined {
-  const match = /^data:([^,;]*)((?:;[^,;]*)*),(.*)$/is.exec(uri);
-  if (!match) return undefined;
-  const base64 = match[2].split(";").includes("base64");
-  return { bytes: base64 ? Buffer.from(match[3], "base64") : Buffer.from(decodeURIComponent(match[3])), ...(match[1] ? { type: match[1].toLowerCase() } : {}) };
-}
-
-/**
- * A `resource_link` saved as a file: a `data:` URI's bytes, or what an http(s) URI answers (`fetch` goes through the
- * outbound guard and caps the body at TOOL_FILE_LIMITS.responseBytes).
- */
-async function savedLink(part: { uri: string; name?: unknown; mimeType?: unknown }, index: number, files: ToolFiles, fetch: (url: string) => Promise<Response>): Promise<FileRef> {
-  const given = typeof part.mimeType === "string" ? part.mimeType : undefined;
-  const inline = dataUri(part.uri);
-  if (inline) {
-    if (inline.bytes.length > TOOL_FILE_LIMITS.responseBytes) throw new Error(`it is larger than ${TOOL_FILE_LIMITS.responseBytes} bytes`);
-    return files.save(typeof part.name === "string" ? part.name : named("resource", index, given ?? inline.type), inline.bytes, given ?? inline.type);
-  }
-  const response = await fetch(part.uri);
-  if (!response.ok || !response.body) { await response.body?.cancel().catch(() => {}); throw new Error(`fetching it answered HTTP ${response.status}`); }
-  const type = given ?? response.headers.get("content-type") ?? undefined;
-  return files.save(typeof part.name === "string" ? part.name : resourceName(part.uri, index, type), response.body as unknown as AsyncIterable<Uint8Array>, type);
-}
-
-/**
- * An MCP result with its files saved: images, audio, embedded blobs and long text resources become
- * file references. What cannot be saved stays as it was (an image) or is described in text. With
- * `fetch` (a source whose fileArguments is on), `resource_link`s to http(s) and `data:` URIs are saved
- * too, and the transcript keeps their paths, never their URLs.
- */
-export async function savedContent(result: McpResult, files: ToolFiles | undefined, fetch?: (url: string) => Promise<Response>): Promise<McpResult> {
+/** Blobs and large media become metadata. Remote text resources keep their existing file references. */
+export async function savedContent(result: McpResult, files: ToolFiles | undefined, server = "server", saveText = true): Promise<McpResult> {
   if (!Array.isArray(result.content)) return result;
   const content: unknown[] = [];
-  let index = 0;
   for (const part of result.content) {
-    // Only the runtime makes file references: a server's own would name other files' contents.
     if (part?.type === "file") { content.push({ type: "text", text: "[file content omitted]" }); continue; }
-    if (fetch && part?.type === "resource_link" && typeof part.uri === "string" && /^(https?|data):/i.test(part.uri)) {
-      const label = typeof part.name === "string" ? part.name : "linked file";
-      try { content.push(await savedLink(part, ++index, need(files), fetch)); }
-      catch (error) { content.push({ type: "text", text: `[${label} not saved: ${errorText(error)}]` }); }
+    if (!files?.hasWorkspace) { content.push(part); continue; }
+    if (part?.type === "resource_link") {
+      content.push(part, { type: "text", text: "Use file_import with this URL to save it to your workspace." });
       continue;
     }
     const resource = part?.type === "resource" ? part.resource : undefined;
-    let output: { name: string; bytes: Buffer; type?: string } | undefined;
-    if ((part?.type === "image" || part?.type === "audio") && typeof part.data === "string") output = { name: named(part.type, ++index, part.mimeType), bytes: Buffer.from(part.data, "base64"), type: part.mimeType };
-    else if (typeof resource?.blob === "string") output = { name: resourceName(resource.uri, ++index, resource.mimeType), bytes: Buffer.from(resource.blob, "base64"), type: resource.mimeType };
-    else if (typeof resource?.text === "string" && Buffer.byteLength(resource.text) > TOOL_FILE_LIMITS.textBytes) output = { name: resourceName(resource.uri, ++index, resource.mimeType), bytes: Buffer.from(resource.text), type: resource.mimeType ?? "text/plain" };
-    if (!output || !files) { content.push(part); continue; }
-    try { content.push(await files.save(output.name, output.bytes, typeof output.type === "string" ? output.type : undefined)); }
-    catch (error) { content.push(part.type === "image" || typeof resource?.text === "string" ? part : { type: "text", text: `[${part.type} content not saved: ${errorText(error)}]` }); }
+    if (saveText && typeof resource?.text === "string" && Buffer.byteLength(resource.text) > TOOL_FILE_LIMITS.textBytes) {
+      let name = "resource.txt";
+      try { name = decodeURIComponent(new URL(String(resource.uri)).pathname.split("/").pop() || name); } catch { /* use the default name */ }
+      try { content.push(await files.save(name, Buffer.from(resource.text), resource.mimeType ?? "text/plain")); }
+      catch { content.push(part); }
+      continue;
+    }
+    const data = typeof resource?.blob === "string" ? resource.blob
+      : (part?.type === "image" || part?.type === "audio") && typeof part.data === "string" ? part.data : undefined;
+    if (data === undefined || (!resource && Buffer.byteLength(data, "base64") <= MCP_INLINE_BYTES)) { content.push(part); continue; }
+    try {
+      if (Buffer.byteLength(data, "base64") > TOOL_FILE_LIMITS.responseBytes) throw new Error(`MCP output exceeds ${TOOL_FILE_LIMITS.responseBytes} bytes`);
+      const saved = await files.saveMcp(server, Buffer.from(data, "base64"), resource?.mimeType ?? part.mimeType);
+      content.push({ type: "text", text: `File: ${saved.path} (${saved.size} bytes, ${saved.contentType})` });
+    } catch (error) { content.push({ type: "text", text: `[${part.type} content not saved: ${errorText(error)}]` }); }
   }
   return { ...result, content };
 }

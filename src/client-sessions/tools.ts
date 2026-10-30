@@ -2,6 +2,8 @@ import type { ToolDefinition } from "../protocol.ts";
 import { errorText, scratchMount } from "../protocol.ts";
 import type { ClientEvent } from "../../shared/client-protocol.ts";
 import { HttpError } from "../http.ts";
+import { savedContent, ToolFiles } from "../tool-files.ts";
+import { TOOL_FILE_LIMITS } from "../limits.ts";
 import { VolumeService } from "../volumes.ts";
 import type { Sources } from "../tool-sources.ts";
 import { contentResult, type McpResult } from "../mcp-results.ts";
@@ -21,6 +23,8 @@ import * as childSessions from "./children.ts";
 import * as workflows from "./workflows.ts";
 import * as humanInput from "./inputs.ts";
 import { type Session, type ClientSessionOptions, type AgentRef, type UsageRecord, RUN_METHODS, validId } from "./state.ts";
+
+const mcpBudgets = new WeakMap<Session, { id?: string; left: number }>();
 
 export type ToolsContext = {
   options: ClientSessionOptions;
@@ -205,6 +209,13 @@ async function answerToolCall(ctx: ToolsContext, session: Session, call: ToolCal
   // A trusted tool prepared a sub-agent: its directive replaces the result (`toolSpawn`).
   const directive = (result as { _meta?: Record<string, unknown> })._meta?.["camelrun/spawn"];
   if (directive !== undefined) return childSessions.toolSpawn(ctx.childrenContext, session, { ...call, ...(call.toolCallId ? { idempotencyKey: toolCallKey(session.header.id, call.messageIndex, call.toolCallId, call.innerCallId) } : {}) }, directive);
+  if (!server.returnsFiles && ctx.options.volumes) {
+    let budget = mcpBudgets.get(session);
+    if (!budget || budget.id !== request?.id) { budget = { id: request?.id, left: TOOL_FILE_LIMITS.runBytes }; mcpBudgets.set(session, budget); }
+    const context = toolContext(ctx, session);
+    const files = new ToolFiles({ volumes: ctx.options.volumes, ...context, tool: call.name, run: budget });
+    result = await savedContent(result, files, "attached", false);
+  }
   const content = contentResult(result, server.returnsFiles);
   // The model learns who answered, and how long ago: it should check what may have changed meanwhile.
   if (plan) content.content.push({ type: "text", text: plan.note });

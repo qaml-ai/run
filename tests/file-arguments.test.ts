@@ -157,12 +157,12 @@ test("files reach a tool as URLs bound to the call: a file at its version, a dir
   assert.deepEqual((await r.call(`/v1/volumes/${state.workspace}/snapshots`)).json, [], "the call's snapshot is not the tenant's to list");
   assert.equal((await r.db.query("select count(*)::int as count from volume_snapshots where name like 'file-arg:%'")).rows[0].count, 1, "it is kept until its URLs expire");
 
-  // Files a tool links to are saved, and the transcript keeps their paths.
+  // Resource links stay links, even when file arguments are enabled.
   const saved = toolResults(r.model.bodies[9]).at(-1);
-  assert.match(saved, /\[File \/workspace\/tool-outputs\/app__links\/[a-f0-9]{8}\/doc\.pdf \(application\/pdf/);
-  assert.match(saved, /\[File \/workspace\/tool-outputs\/app__links\/[a-f0-9]{8}\/hello\.txt \(text\/plain/);
-  assert.match(saved, /\[missing\.txt not saved: fetching it answered HTTP 404\]/);
-  assert.doesNotMatch(JSON.stringify(r.model.bodies.at(-1).messages), /127\.0\.0\.1|data:text/, "never their URLs");
+  assert.match(saved, /Resource: doc\.pdf/);
+  assert.match(saved, /data:text\/plain;base64,aGVsbG8=/);
+  assert.match(saved, /Resource: missing\.txt/);
+  assert.match(saved, /file_import/);
   assert.ok(links);
 
   // The URL: a Range, then checked as a tool would check it.

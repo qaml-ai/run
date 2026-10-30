@@ -199,3 +199,32 @@ path the agent sees (`/workspace/report.pdf`), without the agent's token; `POST
 /v1/volumes/:id/links` does the same by a volume's own path. Both answer `{url,
 method, path, expiresAt}`, and a retry with the same `Idempotency-Key` never
 returns the link again.
+
+Enable `file_link` and `file_import` in `builtins` to move files through tools or
+machines the runtime has no driver for, such as a VM behind your own MCP server.
+The model passes URLs and paths; file bytes travel directly between the runtime
+and the other machine.
+
+- `file_link({path, method: "GET" | "PUT", expiresIn?, maxBytes?, contentType?})`
+  returns `{url, method, path, expiresAt}`. Paths use the agent's mounts, including
+  subpaths. GET needs an existing file. PUT needs a writable path and `maxBytes`
+  from 0 to 268,435,456 (256 MiB). These model-created links last 300 seconds by
+  default, at most 900. The API and SDK defaults above stay the same.
+- Give a GET link to a tool that accepts URLs, or to a remote shell as
+  `curl --fail -o report.pdf '<url>'`. Give a PUT link to the remote shell as
+  `curl --fail -T result.pdf '<url>'`. Never paste file contents into the model.
+  Treat links as credentials: anyone holding one can use it until it expires.
+- `file_import({url, to})` saves a public URL at a writable workspace path and
+  returns `{path, size, sha256, contentType}`. It streams up to 256 MiB through
+  the same outbound guard as `web_fetch`, with a 20-second deadline and at most
+  five redirects. Every hop is checked; private and internal addresses are
+  refused, including origins allowed for configured tools. HTTP URLs are tried
+  over HTTPS unless the operator enables HTTP. Imports count against storage
+  quotas. A failed import leaves the previous file version intact.
+
+MCP embedded blobs and images or audio larger than 32 KiB are saved under
+`/workspace/mcp/<server>/<sha256>` (under the workspace's actual mount path if
+renamed). Repeated bytes from the same server reuse the file. The model gets a
+line with its path, byte size and content type. Small images stay inline; text keeps its existing handling, including file
+references for long text resources. Resource links stay links, with a hint to use `file_import`.
+Without a workspace mount, MCP results keep their existing behavior.
