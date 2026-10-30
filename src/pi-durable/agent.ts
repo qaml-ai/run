@@ -1,12 +1,12 @@
 import { estimateContextTokens, estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import type { AgentEvent, AgentMessage, AgentOptions, AgentState, AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemMessage, getSystemMessageText, isRetryableAssistantError, type AssistantMessage, type ImageContent, type Message, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
   GenerationTask, Harness, LiveDoc, createRegistry, createSession, defineDoc, hook, section,
-  type Conversation, type ConversationId, type EntryRecord, type FailedAttempt, type HarnessOptions, type RetryDecision, type RegistryReader, type RegistrySnapshot, type Report, type Storage,
+  type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Report, type Storage,
 } from "@earendil-works/pi-durable";
 
 /** Small latest-value document: loading an agent never scans its journal for a limit. */
@@ -24,6 +24,12 @@ const InferredOverflowDoc = defineDoc({
 });
 
 interface DurableCursor { entryId: number; index: number }
+/** A failed model request: one whose response failed (`model_error`), or one a lost node or a close left in flight (`interrupted`). */
+export type FailedAttempt = { reason: "model_error" | "interrupted"; message?: AssistantMessage };
+/** Whether a failed request is made again, and after how long. */
+export type RetryDecision = { retry: false } | { retry: true; delayMs?: number };
+/** A failed response a later attempt superseded: kept in Pi's journal, never in the host's history. */
+export const isRetried = (message: { role: string }) => message.role === "assistant" && (message as { retried?: unknown }).retried === true;
 interface DurableMessage { message: AgentMessage; cursor: DurableCursor }
 export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
   durable: {
@@ -50,8 +56,12 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
      * must be given up and reopened from what was committed.
      */
     onStorageFailure?: (error: unknown) => void;
-    /** Whether Pi makes a failed model request again (`beforeRetry`); without, it does not. Failed attempts it retries leave no entry. */
-    beforeRetry?: (failed: FailedAttempt) => RetryDecision | undefined;
+    /**
+     * Whether a failed model request is made again; without, it is not. Pi makes it again (`settings.retry`, read as this
+     * decides) when its classifier deems the failure transient; otherwise the adapter does, within the same request.
+     * Failed attempts made again are marked `retried` in the journal and left out of the history.
+     */
+    retry?: (failed: FailedAttempt) => RetryDecision | undefined;
   };
 };
 type Listener = (event: AgentEvent & { durable?: DurableCursor }, signal: AbortSignal) => void | Promise<void>;
@@ -71,11 +81,11 @@ export function durableEntryMessages(entry: EntryRecord): DurableMessage[] {
   const diagnostics = (entry.data as { diagnostics?: { code?: string }[] } | undefined)?.diagnostics ?? [];
   // A call the node cut off (`restart_limit`: cut off too often to run again) may or may not have run.
   const uncertain = diagnostics.some(item => ["aborted", "interrupted", "abandoned", "restart_limit"].includes(item.code!));
-  return (original ? [original] : entry.model ?? []).map((message, index) => ({
+  return (original ? [original] : entry.model ?? []).flatMap((message, index) => isRetried(message) ? [] : [{
     message: structuredClone(message.role === "toolResult" && uncertain ? { ...message,
       content: [{ type: "text", text: `Tool ${message.toolName} was interrupted; its outcome is unknown and it may or may not have run.` }],
       isError: true } : message) as AgentMessage, cursor: { entryId: entry.id, index },
-  })).filter(item => !(item.message.role === "toolResult" && (item.message.details as { inputRequired?: boolean } | undefined)?.inputRequired));
+  }]).filter(item => !(item.message.role === "toolResult" && (item.message.details as { inputRequired?: boolean } | undefined)?.inputRequired));
 }
 
 /** Whether Pi's journal holds a run that has not ended (`pi.live`'s run): one a close or a crash cut off, which Pi resumes. */
@@ -207,6 +217,8 @@ export class DurableAgent {
   private lastTurn?: AssistantMessage;
   private lastTurnResults: ToolResultMessage[] = [];
   private stoppedByFinishTurn = false;
+  /** The host's decision on the latest failed response (`stream`), which Pi's retry policy reads; unset while a request runs. */
+  private retryPlan?: RetryDecision;
   private closed = false;
   private closing?: Promise<void>;
 
@@ -284,6 +296,8 @@ export class DurableAgent {
       getAuth: () => { throw new Error("camelRun resolves model credentials itself"); },
       streamSimple: (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => agent.stream(streamOptions, view.messages),
       completeSimple: async (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => {
+        // A failed summary is not asked again (Pi reads the same retry policy for it).
+        agent.retryPlan = { retry: false };
         await agent.flushEvents();
         const apiKey = await options.getApiKey?.(agent.state.model.provider);
         const summarize = async (messages: Message[]) => {
@@ -353,7 +367,14 @@ export class DurableAgent {
         // they only bound what a lost node's run keeps, so each costs a journal write once a second, not every 100 ms.
         // Pi defers storing them by up to `persistWithinMs` (default 1 s); 0 stores each right after its commit, as before.
         progress: { partialIntervalMs: 1_000, outputIntervalMs: 1_000, persistWithinMs: 0 },
-        retry: { enabled: false, keepRetried: false }, toolExecution: options.toolExecution ?? "parallel",
+        // Read as each failed request is classified: the decision the adapter took for its response (`stream`), or for a
+        // request a lost node or a close left in flight, the host's (`interrupted`). The host bounds attempts and backoff.
+        retry: {
+          get enabled() { return (agent.retryPlan ?? options.durable.retry?.({ reason: "interrupted" }) ?? { retry: false }).retry; },
+          maxRetries: Number.MAX_SAFE_INTEGER,
+          get baseDelayMs() { return agent.retryDelayMs(); },
+          get maxAgentDelayMs() { return agent.retryDelayMs(); },
+        }, toolExecution: options.toolExecution ?? "parallel",
         steeringMode: options.steeringMode ?? "one-at-a-time", contextRetentionMs: 0 },
     }, context);
     agent.conversation = options.durable.conversationId === undefined ? await agent.harness.root(context) :
@@ -483,7 +504,55 @@ export class DurableAgent {
     this.streamingMessage = undefined;
   }
 
+  /**
+   * One model request as Pi makes it, its failures decided by the host (`retry`): one Pi's classifier deems transient
+   * goes back to Pi, which makes it again after the decided delay (`settings.retry`) and keeps the attempt in its journal,
+   * marked `retried`; one it would not make again (a refused forced tool choice or image, a cut lease) is made again here.
+   */
   private stream(rawOptions: unknown, nativeMessages?: Message[]) {
+    const outer = createAssistantMessageEventStream();
+    void (async () => {
+      for (;;) {
+        this.retryPlan = undefined;
+        const inner = this.attempt(rawOptions, nativeMessages);
+        let terminal: import("@earendil-works/pi-ai").AssistantMessageEvent | undefined;
+        for await (const event of inner) if (event.type === "done" || event.type === "error") terminal = event; else outer.push(event);
+        const final = await inner.result();
+        const failed = final.stopReason === "error" && !isContextOverflow(final);
+        const decision = failed ? this.options.durable.retry?.({ reason: "model_error", message: final }) : undefined;
+        if (decision?.retry && !isRetryableAssistantError(final)) {
+          const signal = (rawOptions as { signal?: AbortSignal } | undefined)?.signal;
+          await new Promise<void>((resolve, reject) => {
+            const abort = () => { clearTimeout(timer); reject(new Error("Agent run aborted")); };
+            const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); this.signal?.removeEventListener("abort", abort); resolve(); }, decision.delayMs ?? 0);
+            signal?.addEventListener("abort", abort, { once: true }); this.signal?.addEventListener("abort", abort, { once: true });
+            if (signal?.aborted || this.signal?.aborted) abort();
+          });
+          continue;
+        }
+        if (failed) this.retryPlan = decision ?? { retry: false };
+        if (decision?.retry) {
+          (final as { retried?: boolean }).retried = true;
+          if (terminal?.type === "error") (terminal.error as { retried?: boolean }).retried = true;
+        }
+        if (terminal) outer.push(terminal);
+        outer.end(final);
+        return;
+      }
+    })().catch(error => {
+      const message = { role: "assistant", content: [], api: this.state.model.api, provider: this.state.model.provider,
+        model: this.state.model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: this.signal?.aborted ? "aborted" : "error",
+        errorMessage: error instanceof Error ? error.message : String(error), timestamp: Date.now() } as AssistantMessage;
+      outer.push({ type: "error", reason: message.stopReason as "error" | "aborted", error: message }); outer.end(message);
+    });
+    return outer;
+  }
+
+  /** The delay of the retry the adapter decided for the failed response (`stream`): none for an interrupted request. */
+  private retryDelayMs() { return this.retryPlan?.retry ? this.retryPlan.delayMs ?? 0 : 0; }
+
+  private attempt(rawOptions: unknown, nativeMessages?: Message[]) {
     const stream = createAssistantMessageEventStream();
     void (async () => {
       await this.flushEvents();
@@ -638,7 +707,6 @@ export class DurableAgent {
           ...(result.usage === undefined ? {} : { usage: result.usage }), ...(result.terminate ? { control: { terminate: true } } : {}) };
       },
     })), hooks: [hook(GenerationTask, {
-      beforeRetry: failed => this.options.durable.beforeRetry?.(failed),
       // The end of a tool round: the host decides whether the run ends there (`finishTurn`: a call waiting for input,
       // final_output, a run or spend limit); otherwise the next steer goes in at this boundary.
       // A decision that fails ends the run with its error (Pi would only report a throwing hook).

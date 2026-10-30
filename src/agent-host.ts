@@ -27,8 +27,8 @@ import { describeFile, documentPayload, FILE_LIMITS, IMAGE_PAST_BUDGET, nativeBl
 import { observeContextMetrics, observeTurns, recordCodeExecution, recordContextRange, recordToolResultSize, safeError } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
-import type { FailedAttempt, RetryDecision, Storage as PiStorage } from "@earendil-works/pi-durable";
-import { DurableAgent, piRunning, type DurableAgentOptions } from "./pi-durable/agent.ts";
+import type { Storage as PiStorage } from "@earendil-works/pi-durable";
+import { DurableAgent, piRunning, type DurableAgentOptions, type FailedAttempt, type RetryDecision } from "./pi-durable/agent.ts";
 import { contextRangeSize } from "./pi-durable/storage.ts";
 import { HostJournal } from "./pi-durable/host-journal.ts";
 import { JournalHistory } from "./pi-durable/history.ts";
@@ -817,7 +817,7 @@ export function createAgentHost(hostIO: HostIO) {
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own
         // writes fails. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
         onStorageFailure: error => { journal.failed ??= error; },
-        beforeRetry: retryDecision,
+        retry: retryDecision,
         // Summaries share credential/network gates but not the run's output
         // schema, temperature or max-output settings.
         summaryStream,

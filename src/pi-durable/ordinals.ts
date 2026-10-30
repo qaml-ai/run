@@ -33,7 +33,8 @@ export function historyPositions(entry: Pick<EntryRecord, "kind" | "model" | "da
   // A user message the host keeps whole in its data is one message, whatever its model form.
   if (entry.kind === "camel.user" && (entry.data as { message?: unknown } | undefined)?.message) return [0];
   return entry.model.flatMap((message, index) =>
-    message.role === "toolResult" && (message.details as { inputRequired?: boolean } | undefined)?.inputRequired ? [] : [index]);
+    message.role === "toolResult" && (message.details as { inputRequired?: boolean } | undefined)?.inputRequired ||
+    message.role === "assistant" && (message as { retried?: unknown }).retried === true ? [] : [index]);
 }
 
 /** An entry's place: see the module. */
@@ -223,7 +224,8 @@ const SHAPE = `e.id, r->>'kind' AS kind,
   CASE WHEN r->>'kind' = ANY($3::text[]) AND jsonb_typeof(r->'model') = 'array' AND jsonb_array_length(r->'model') > 0 THEN
     CASE WHEN r->>'kind' = 'camel.user' AND jsonb_typeof(r->'data'->'message') = 'object' THEN ARRAY[0]
     ELSE (SELECT coalesce(array_agg(m.o - 1 ORDER BY m.o), '{}') FROM jsonb_array_elements(r->'model') WITH ORDINALITY m(v, o)
-          WHERE NOT (m.v->>'role' = 'toolResult' AND coalesce(m.v->'details'->>'inputRequired', '') = 'true')) END
+          WHERE NOT (m.v->>'role' = 'toolResult' AND coalesce(m.v->'details'->>'inputRequired', '') = 'true')
+            AND NOT (m.v->>'role' = 'assistant' AND coalesce(m.v->>'retried', '') = 'true')) END
   ELSE '{}' END AS positions`;
 type ShapeRow = { id: string | number; kind: string; marker: EntryShape["marker"] | null; kept: number; positions: number[] };
 const shapeOf = (row: ShapeRow): EntryShape => ({ id: Number(row.id), kind: row.kind, positions: row.positions, ...(row.marker ? { marker: row.marker } : {}), kept: row.kept });

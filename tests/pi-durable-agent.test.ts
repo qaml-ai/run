@@ -360,7 +360,7 @@ test("Pi adapter asks again in a resumed run whose model request a lost node lef
     void first.prompt(user("Go")).catch(() => {});
     while (requests < 1) await new Promise(resolve => setTimeout(resolve, 5));
     // The interrupted request is a failed attempt: the host's beforeRetry has it made again.
-    const next = await fixture([answer("back")], {}, await open(), { beforeRetry: failed => failed.reason === "interrupted" ? { retry: true, delayMs: 0 } : undefined });
+    const next = await fixture([answer("back")], {}, await open(), { retry: failed => failed.reason === "interrupted" ? { retry: true, delayMs: 0 } : undefined });
     agents.push(next.agent);
     await next.agent.continue();
     assert.equal(requests, 1, "the lost node's request was not resent by Pi itself");

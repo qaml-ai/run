@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From a49d21a0fe57fb83c2a2dc1a6fed9911ccc2e781 Mon Sep 17 00:00:00 2001
 From: Miguel Salinas <mikeys@me.com>
 Date: Wed, 28 Oct 2026 14:12:27 -0500
-Subject: [PATCH 3/4] feat(durable): afterTools can end the run after the round
+Subject: [PATCH 1/2] feat(durable): afterTools can end the run after the round
 
 A run ends after a tool round only when every result asks to terminate. A host
 that decides from the round as a whole (a call waiting for human input, a run
@@ -22,35 +22,35 @@ with reason terminate. Hooks are still all asked; any end ends the run.
  6 files changed, 49 insertions(+), 12 deletions(-)
 
 diff --git a/packages/durable/CHANGELOG.md b/packages/durable/CHANGELOG.md
-index 73887711..a1a4dbd7 100644
+index 92430f3e4..010933adb 100644
 --- a/packages/durable/CHANGELOG.md
 +++ b/packages/durable/CHANGELOG.md
-@@ -120,6 +120,7 @@
+@@ -118,6 +118,7 @@
+ - Run-end tasks: a `GenerationHooks.afterRun(run, api)` hook returns `{ tasks }`, built with the typed `runEndTask(task, input)`, after a run answered (a final answer or a `terminate` round; not when an `onYield` continuation is taken, not after a failure or an abort). The answer is committed and the run's inputs settle `done` first, so `Submission.wait()` resolves at the answer; the generation then creates the tasks as its children and waits for them, keeping `pi.live.run` (with `run.afterRun`) and the conversation busy, so idle waits include them, Stop aborts them, and a crash resumes them. Input queued meanwhile, steers included, is placed when they are terminal and starts the next run; a task admits a model-visible write or a fix-run follow-up in its own commit with `submit(tx, draft)`. A crash before the tasks exist asks the hooks again; a broken request (an uninstalled or built-in task, a non-JSON input, a throwing `initial()`) is reported and skipped. `run` names the run's entries: `first` (`pi.live.run.first`, carried into `runFailure.first` so a continue covers a failed run's history), `answer`, and `last` ([#11141](https://github.com/earendil-works/pi/issues/11141))
+ 
  - `registryReader(value, context)`: a `RegistryReader` over a Chord v2 registry value whose composition is a registry snapshot (`RegistryValue<RegistrySnapshot>`): `snapshot()` reads the current composition, `subscribe` observes its compositions synchronously inside Chord's batch, so a Harness opened in a Chord object takes its extensions from a Chord registry.
- - `GenerationHooks.beforeRetry(failed, api)`: a host decides whether and when a failed request attempt is tried again, instead of `settings.retry`. It is asked for a failed message (`reason: "model_error"`, with the message) and for a request or poll the host stopped during (`interrupted`), with the attempt, the error text, and the policy's own decision (`delayMs`, absent when the policy would end the run). The first decision wins: `{ retry: true, delayMs? }` retries after `delayMs` (default the policy's backoff), also past `maxRetries` or with the policy disabled; `{ retry: false }` ends the run with the failure; no decision leaves it to the policy. Not asked for an overflow that starts a compaction. New types `FailedAttempt` and `RetryDecision`
- - `settings.retry.keepRetried` (default `true`): with `false`, a failed attempt that is asked again (a retry, an overflow that starts a compaction, an interrupted request) appends no `pi.assistant` entry and records only its usage in `pi.usage`, so the transcript holds the attempt that answered, or the last one that failed, and readers of the history need not skip superseded failures. `pi.live.generation.retry` still shows the error during the backoff
 +- `GenerationHooks.afterTools` can end the run after the round: `{ end: true }` from any hook ends it as a round whose every call asked to `terminate` does (no further request; inputs settled `done` with the tool-calling answer, the final boundary, `afterRun` with reason `terminate`). A host that decides from the round's results, such as a call waiting for input or a budget, no longer needs every tool to return `control.terminate`
  
  ### Changed
  
 diff --git a/packages/durable/README.md b/packages/durable/README.md
-index 674e0406..f9aa36f6 100644
+index d87c54d34..cee2f9622 100644
 --- a/packages/durable/README.md
 +++ b/packages/durable/README.md
 @@ -659,7 +659,7 @@ const Guard = defineExtension({
  });
  ```
  
--- **Generation:** `beforeRequest` (replace the messages of one request), `afterResponse`, `beforeRetry` (decide whether and when a failed request is tried again, instead of `settings.retry`), `onYield` (continue the run with another user message), `afterTools` (runs once a round's tools are done), and `afterRun` (tasks to run before the run ends, below).
-+- **Generation:** `beforeRequest` (replace the messages of one request), `afterResponse`, `beforeRetry` (decide whether and when a failed request is tried again, instead of `settings.retry`), `onYield` (continue the run with another user message), `afterTools` (runs once a round's tools are done; `{ end: true }` ends the run there, as `terminate` from every call would), and `afterRun` (tasks to run before the run ends, below).
+-- **Generation:** `beforeRequest` (replace the messages of one request), `afterResponse`, `onYield` (continue the run with another user message), `afterTools` (runs once a round's tools are done), and `afterRun` (tasks to run before the run ends, below).
++- **Generation:** `beforeRequest` (replace the messages of one request), `afterResponse`, `onYield` (continue the run with another user message), `afterTools` (runs once a round's tools are done; `{ end: true }` ends the run there, as `terminate` from every call would), and `afterRun` (tasks to run before the run ends, below).
  - **Tools:** `beforeTool` (block or rewrite arguments) and `afterTool` (replace the result). `afterTool` sees every result a tool task writes, also the error results the Harness writes itself (unavailable, invalid, blocked, interrupted, restart limit, aborted), told apart by their diagnostic code; past `settings.restartLimit` it no longer runs. On an abort it runs inside the abort handler, so a slow hook delays `abort()`.
  
  To limit a hook to some conversations, select its extension only there, for example with `configure({ extensions: { add: [Guard] } })`.
 diff --git a/packages/durable/docs/spec.md b/packages/durable/docs/spec.md
-index 30448cb8..0b281def 100644
+index 385f8e948..e284107ad 100644
 --- a/packages/durable/docs/spec.md
 +++ b/packages/durable/docs/spec.md
-@@ -3295,7 +3295,7 @@ consuming commit may rerun them. Abort errors always propagate.
+@@ -3292,7 +3292,7 @@ consuming commit may rerun them. Abort errors always propagate.
  | `onYield` | first continuation wins | report, continue |
  | `beforeTool` | argument replacement chain; first block wins | block tool with error text |
  | `afterTool` | result replacement chain | report, continue |
@@ -59,7 +59,7 @@ index 30448cb8..0b281def 100644
  | `afterRun` | all observers; requested tasks concatenated in extension order | report, continue |
  | `beforeCompact` | first decision wins | report, continue |
  
-@@ -3339,7 +3339,12 @@ interface GenerationHooks {
+@@ -3334,14 +3334,19 @@ interface GenerationHooks {
    /** A final answer; `continue` appends a user message and continues the run. */
    onYield(answer: AssistantMessage, api: HookApi, context: Context): HookResult<{ readonly continue: UserInput }>;
    /** After every tool of the round is terminal; `results` are the round's result entries in call order. */
@@ -73,7 +73,6 @@ index 30448cb8..0b281def 100644
    /** After a run answered: the tasks to run before it ends (section 8.3). */
    afterRun(run: RunSummary, api: HookApi, context: Context): HookResult<{ readonly tasks: readonly RunEndTask[] }>;
  }
-@@ -3361,7 +3366,7 @@ type RetryDecision = { readonly retry: false } | { readonly retry: true; readonl
  
  /** How a run ended, for `afterRun`. */
  type RunSummary = {
@@ -82,7 +81,7 @@ index 30448cb8..0b281def 100644
    readonly reason: "answer" | "terminate";
    /** The run's first entry (`pi.live.run.first`, section 8.2), or the answer for a run without one. */
    readonly first: EntryId;
-@@ -5101,7 +5106,8 @@ and then commits once:
+@@ -5067,7 +5072,8 @@ and then commits once:
    the last one in call order and advances the boundary's active range start to
    it, so the boundary below places its writes and user items after the handoff
    text, and a queued head write targeting an entry before it is stale.
@@ -93,10 +92,10 @@ index 30448cb8..0b281def 100644
    applies the final boundary. When the phase's agent selects an `afterRun`
    hook, it keeps `run` instead and moves to `finish` (section 8.3) with
 diff --git a/packages/durable/src/harness/generation.ts b/packages/durable/src/harness/generation.ts
-index b336765e..3c995b85 100644
+index b86af2ed0..a15a51ca8 100644
 --- a/packages/durable/src/harness/generation.ts
 +++ b/packages/durable/src/harness/generation.ts
-@@ -1092,7 +1092,7 @@ async function startToolRound(
+@@ -1035,7 +1035,7 @@ async function startToolRound(
  
  /**
   * The round's tools are terminal: apply their controls, append a `handoff`'s reset, and then end the run at the final
@@ -105,7 +104,7 @@ index b336765e..3c995b85 100644
   * reset, or hand it to the next generation at the `postTools` boundary, in the handoff's new context when there is one
   * (spec §8.5).
   */
-@@ -1115,11 +1115,14 @@ async function finishToolRound(
+@@ -1058,11 +1058,14 @@ async function finishToolRound(
  	});
  	const slots = (await runtime.snapshot(LiveDoc, conversationId, context))?.tools ?? [];
  	const results = slots.flatMap((slot) => (slot.entry === undefined ? [] : [slot.entry]));
@@ -124,11 +123,11 @@ index b336765e..3c995b85 100644
  	// The last handoff in call order wins.
  	const handoff = ordered.findLast((control) => control?.handoff !== undefined)?.handoff;
 diff --git a/packages/durable/src/harness/types.ts b/packages/durable/src/harness/types.ts
-index 2ebf4970..ecb5df48 100644
+index d7f4a05ec..bd465179c 100644
 --- a/packages/durable/src/harness/types.ts
 +++ b/packages/durable/src/harness/types.ts
-@@ -989,8 +989,16 @@ export interface GenerationHooks {
- 	beforeRetry(failed: FailedAttempt, api: HookApi, context: Context): HookResult<RetryDecision>;
+@@ -974,8 +974,16 @@ export interface GenerationHooks {
+ 	afterResponse(message: AssistantMessage, api: HookApi, context: Context): void | Promise<void>;
  	/** A final answer; the first `continue` appends a user message and continues the run. */
  	onYield(answer: AssistantMessage, api: HookApi, context: Context): HookResult<{ readonly continue: UserInput }>;
 -	/** After every tool of the round is terminal; `results` are the round's result entries in call order. */
@@ -146,7 +145,7 @@ index 2ebf4970..ecb5df48 100644
  	/**
  	 * After a run answered, its answer committed and its inputs settled `done`: a final answer, or a `terminate` round;
  	 * not when an `onYield` continuation is taken, and never after a failure or an abort. The requested tasks of every
-@@ -1023,7 +1031,7 @@ export type RetryDecision = { readonly retry: false } | { readonly retry: true;
+@@ -988,7 +996,7 @@ export interface GenerationHooks {
  
  /** How a run ended, for `afterRun` hooks. Read the run's history with `api.entries({ minEntryId: first, maxEntryId: last })`. */
  export type RunSummary = {
@@ -156,7 +155,7 @@ index 2ebf4970..ecb5df48 100644
  	/**
  	 * The run's first entry (`LiveRun.first`): the first one the boundary that started it placed, for a continue the failed
 diff --git a/packages/durable/test/harness-tools.test.ts b/packages/durable/test/harness-tools.test.ts
-index 6849861b..77449dba 100644
+index 6849861b8..77449dba4 100644
 --- a/packages/durable/test/harness-tools.test.ts
 +++ b/packages/durable/test/harness-tools.test.ts
 @@ -703,6 +703,25 @@ describe("tool results", () => {
@@ -185,3 +184,6 @@ index 6849861b..77449dba 100644
  	// #10858
  	it("does not terminate on terminate: false", async () => {
  		const setup = chatSetup();
+-- 
+2.53.0
+
