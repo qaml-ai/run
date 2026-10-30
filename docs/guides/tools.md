@@ -945,12 +945,9 @@ A source's `fileArguments` says whether it is sent files: `"on"` or `"off"`.
 
 ### Files a tool returns
 
-- MCP embedded blobs and images or audio above 32 KiB are saved under
-  `/workspace/mcp/<server>/<sha256>`, with repeated bytes deduplicated per server.
-  The model gets a short path, size and MIME type line; small images stay inline
-  and text keeps its existing handling (long text resources are still saved).
-  Without a workspace mount, results keep their existing
-  behavior. Application-attached tools use the server name `attached`.
+- MCP images, audio, embedded blobs and long text resources are saved under
+  `/workspace/tool-outputs/<tool>/<call>/`, and the model gets a reference to each. Tools an application attaches
+  are treated the same way. Without a workspace mount, results keep their existing behavior.
 - `resource_link` items stay links, with a hint that `file_import` can fetch them.
 - Binary OpenAPI responses and `web_fetch` downloads still go to
   `/workspace/tool-outputs/<tool>/<call>/<name>` and return file references.

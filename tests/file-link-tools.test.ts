@@ -78,7 +78,7 @@ test("file_import streams to an explicit writable path and returns metadata only
   assert.equal(f.seen[0].url, "https://public.example/file");
   assert.equal(f.seen[0].init.maxBytes, VOLUME_LIMITS.fileBytes);
   assert.equal(f.seen[0].init.maxRedirects, 5);
-  assert.equal(f.seen[0].init.timeoutMs, 20000);
+  assert.equal(f.seen[0].init.timeoutMs, 120000);
   f.mounts[0].mode = "ro";
   await assert.rejects(f.call("file_import", { url: "https://public.example/file", to: "blocked" }), /read-only/);
   assert.equal(f.seen.length, 1, "permissions checked before fetch");

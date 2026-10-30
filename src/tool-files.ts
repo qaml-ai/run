@@ -23,8 +23,8 @@ import { TEMPORARY_SNAPSHOT, VOLUME_LIMITS, VolumeService, type FileEntry, type 
  * instead (openapi.ts). The marker is explicit, so nothing is guessed from a plain string, and it reads
  * the same from a direct call and from js_exec. Only sources whose `fileArguments` is on are sent files.
  *
- * Out: MCP blobs and large media go under mcp/<server>/<sha256> as metadata only. Long text
- * resources and binary HTTP responses keep their file references under tool-outputs/<tool>/<call>.
+ * Out: MCP images, audio, blobs and long text resources, and binary HTTP responses, are saved under
+ * tool-outputs/<tool>/<call>, and the model gets a file reference.
  * A call and a run may save only so much (TOOL_FILE_LIMITS); every file counts toward the volume.
  */
 export type FileArgument = { $file: string };

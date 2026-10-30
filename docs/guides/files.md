@@ -222,9 +222,8 @@ and the other machine.
   over HTTPS unless the operator enables HTTP. Imports count against storage
   quotas. A failed import leaves the previous file version intact.
 
-MCP embedded blobs and images or audio larger than 32 KiB are saved under
-`/workspace/mcp/<server>/<sha256>` (under the workspace's actual mount path if
-renamed). Repeated bytes from the same server reuse the file. The model gets a
-line with its path, byte size and content type. Small images stay inline; text keeps its existing handling, including file
-references for long text resources. Resource links stay links, with a hint to use `file_import`.
+Files an MCP tool returns (images, audio, embedded blobs, long text resources) are saved under
+`/workspace/tool-outputs/<tool>/<call>/`, and the model gets a reference to each. A `resource_link` from a server
+with `fileArguments` on is downloaded the same way; from any other server it stays a link, with a hint to use
+`file_import`.
 Without a workspace mount, MCP results keep their existing behavior.
