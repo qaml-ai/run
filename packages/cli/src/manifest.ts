@@ -101,7 +101,7 @@ export function template(key: string, model?: string) {
 # Fields: https://run.camelai.com/docs/guides/definitions.md
 key: ${key}
 name: ${key}
-${model ? `model: ${model}` : "# model: anthropic/claude-sonnet-5-5   # camelrun models --available lists yours"}
+${model ? `model: ${model}` : "# model: openrouter/deepseek/deepseek-v4.1-flash-1017   # camelrun models --available lists yours"}
 systemPrompt: |
   You are a helpful assistant. Be concise.
 # systemPromptFile: prompts/${key}.md   # or keep the prompt in its own file

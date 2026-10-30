@@ -500,10 +500,16 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   definitions.builtinWarnings = (tenant, spec) => warningsFor(tenant, sources(spec));
   const keyScopes = new KeyScopes({ db, accounts, outbound });
   const defaults = defaultModels(model, env.AGENT_MODEL_FALLBACKS);
-  /** The model an agent of `tenant` that names none gets: the first default its key scope or tenant has a key for, else the first. */
+  /**
+   * The model an agent of `tenant` that names none gets: the first default its key scope or tenant holds a key for, so a
+   * tenant that brought its own key is never moved onto the platform's and its credit; else the first the platform's
+   * keys serve; else the first.
+   */
   async function defaultModelFor(tenant: string, keyScope?: string) {
+    const own = await accounts.ownProviders(tenant);
+    for (const candidate of defaults) if (own(candidate.provider) || (keyScope && await keyScopes.entry(tenant, keyScope, candidate.provider))) return candidate;
     const keyed = await accounts.keyedProviders(tenant);
-    for (const candidate of defaults) if (keyed(candidate.provider, candidate.id) || (keyScope && await keyScopes.entry(tenant, keyScope, candidate.provider))) return candidate;
+    for (const candidate of defaults) if (keyed(candidate.provider, candidate.id)) return candidate;
     return defaults[0];
   }
   modelProviders.onDelete = (tenant, name) => keyScopes.forgetProvider(tenant, name);
@@ -607,7 +613,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     const lifetime = run ? run.ttlMs : ttl === undefined ? (key !== undefined ? null : undefined) : ttl === null ? null : ttl * 1000;
     const { reconfigure, ...made_ } = await clients.create(params.tools ?? [], config, key, { name: params.name, type: params.type }, tenant, lifetime, params.mounts,
       made && { definition: made.ref, provision: made.provision, overrides: made.overrides, sources: made.sources }, identity,
-      { keyScope, spendLimit, ...(bucket ? { bucket } : {}), builtins, delegate, ...(workflow ? { workflow } : {}), mcpServers, ...(decide !== undefined ? { decide } : {}), ...(remount ? { remount } : {}), ...(idle && !run ? { idleTtlMs: idle * 1000 } : {}), ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
+      { keyScope, spendLimit, ...(params.model === undefined && !inherited ? { defaultModel: true } : {}), ...(bucket ? { bucket } : {}), builtins, delegate, ...(workflow ? { workflow } : {}), mcpServers, ...(decide !== undefined ? { decide } : {}), ...(remount ? { remount } : {}), ...(idle && !run ? { idleTtlMs: idle * 1000 } : {}), ...(parent ? { parent } : {}), ...(run ? { run: { retentionMs: run.retentionMs, fingerprint: run.fingerprint } } : {}), ...(mcpTools !== undefined ? { toolsHash: createHash("sha256").update(JSON.stringify(mcpTools)).digest("hex") } : {}), ...(admit ? { admit } : {}) }, steps);
     outcome.agent = made_.id;
     outcome.upsert = !!reconfigure;
     const warnings = await warningsFor(tenant, made ? made.sources : builtins && { builtins });
@@ -913,7 +919,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     definitionFor: async (tenant, id) => {
       const { revision, spec } = await definitions.read(tenant, id);
       const config = sessionConfig({ model: spec.model, systemPrompt: spec.systemPrompt, thinkingLevel: spec.thinkingLevel }, spec.model === undefined ? await defaultModelFor(tenant) : model, systemPrompt, tenants.modelEndpoints(tenant), await modelProviders.resolvable(tenant));
-      return { id, revision, ...(spec.description ? { description: spec.description } : {}), config: { model: config.model, systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false, codeMode: spec.codeMode !== false, runLimits: spec.runLimits ?? null, maxOutputTokens: spec.maxOutputTokens ?? null, temperature: spec.temperature ?? null, dataCollection: spec.dataCollection ?? null, language: spec.language ?? null }, sources: sources(spec) };
+      // A definition that names no model leaves its agents' as they are: the runtime's default is for agents being made.
+      return { id, revision, ...(spec.description ? { description: spec.description } : {}), config: { ...(spec.model !== undefined ? { model: config.model } : {}), systemPrompt: config.systemPrompt, thinkingLevel: config.thinkingLevel ?? "off", fileTools: spec.fileTools !== false, codeMode: spec.codeMode !== false, runLimits: spec.runLimits ?? null, maxOutputTokens: spec.maxOutputTokens ?? null, temperature: spec.temperature ?? null, dataCollection: spec.dataCollection ?? null, language: spec.language ?? null }, sources: sources(spec) };
     },
     sources: toolSources,
     inputs,

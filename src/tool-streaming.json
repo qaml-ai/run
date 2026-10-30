@@ -1,5 +1,5 @@
 {
-  "measuredAt": "2026-10-06",
+  "measuredAt": "2026-10-30",
   "method": "scripts/probe-tool-streaming.ts",
   "models": {
     "anthropic/claude-haiku-4-5": true,
@@ -104,6 +104,7 @@
     "openrouter/deepseek/deepseek-v4-pro": false,
     "openrouter/deepseek/deepseek-v4-pro-0813": true,
     "openrouter/deepseek/deepseek-v4.1-flash": false,
+    "openrouter/deepseek/deepseek-v4.1-flash-1017": false,
     "openrouter/dots-studio/dots-3-note-preview:free": true,
     "openrouter/google/gemini-2.5-flash": false,
     "openrouter/google/gemini-2.5-flash-lite": false,

@@ -305,11 +305,17 @@ export class Accounts {
    * model id, an azure model also needs its deployment on the platform's resource.
    */
   async keyedProviders(tenant: string): Promise<(provider: string, model?: string) => boolean> {
-    const own = this.canStoreKeys && validTenant(tenant) ? new Set((await this.storedKeys(tenant)).map(key => key.provider)) : new Set<string>();
+    const own = await this.ownProviders(tenant);
     const platform = await this.usesPlatformKeys(tenant);
-    const endpoints = this.tenants.modelEndpoints(tenant) ?? {};
     return (provider, model) => provider === AZURE ? platform && !!this.platformKey(AZURE) && (model === undefined || !!this.azureDeployment(model))
-      : own.has(provider) || !!this.tenants.apiKey(tenant, provider) || (platform && (!!this.tenants.platformKey(provider) || (provider === "anthropic" && !!this.anthropicFederation))) || Object.hasOwn(endpoints, provider);
+      : own(provider) || (platform && (!!this.tenants.platformKey(provider) || (provider === "anthropic" && !!this.anthropicFederation)));
+  }
+
+  /** Which providers the tenant itself holds a key or endpoint for, the platform's aside (an account cannot set an Azure key). */
+  async ownProviders(tenant: string): Promise<(provider: string) => boolean> {
+    const own = this.canStoreKeys && validTenant(tenant) ? new Set((await this.storedKeys(tenant)).map(key => key.provider)) : new Set<string>();
+    const endpoints = this.tenants.modelEndpoints(tenant) ?? {};
+    return provider => provider !== AZURE && (own.has(provider) || !!this.tenants.apiKey(tenant, provider) || Object.hasOwn(endpoints, provider));
   }
 
   /** The platform's key for `provider`: the tenants file's, and azure's when the platform's Azure OpenAI resource deploys chat models (azure-openai.ts). */

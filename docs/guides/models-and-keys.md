@@ -34,13 +34,21 @@ you add its server as a provider, your account's or a key scope's: see
 [Custom models](custom-models.md).
 
 An agent that names no model (and whose definition names none) gets the
-runtime's default: Claude Sonnet 5.5 on run.camelai.com, on the first of
-Anthropic (`anthropic/claude-sonnet-5-5`), OpenRouter
+runtime's default: DeepSeek V4.1 Flash 1017 on OpenRouter
+(`openrouter/deepseek/deepseek-v4.1-flash-1017`) on run.camelai.com. Your own keys
+come first, the agent's key scope's too: with no OpenRouter key of your own, the
+first of DeepSeek V4.1 Flash on the platform's Azure
+(`azure/deepseek-v4.1-flash`), Anthropic (`anthropic/claude-sonnet-5-5`), OpenRouter
 (`openrouter/anthropic/claude-sonnet-5.5`) and Bedrock
-(`amazon-bedrock/global.anthropic.claude-sonnet-5-5`) you have a key for (its
-key scope's keys count too), else `openrouter/openai/gpt-6-luna`. It is chosen
-when the agent is made and stays its model. `GET /v1/me` says which
-(`defaultModel`; `runtime.me()` in the SDKs).
+(`amazon-bedrock/global.anthropic.claude-sonnet-5-5`) you hold a key for, so an
+account with only an Anthropic key runs Claude Sonnet 5.5 on it. An account with
+none of its own uses the platform's keys, in the same order. `GET /v1/me` says
+which (`defaultModel`; `runtime.me()` in the SDKs).
+
+The default is chosen when the agent is made and stays its model: an upsert or an
+applied definition that names no model leaves it, and a later change of the default
+moves nobody. These alternatives choose by who holds a key, not by who is up: an
+agent stays on its model when a provider fails.
 
 A model call uses, in order: the key of the agent's [key scope](#key-scopes) for
 the model's provider, else your account's own key for the provider
@@ -179,8 +187,9 @@ a compaction keep the agent's language.
 ### Prompt caching
 
 The runtime marks the system prompt and tools (and the latest message) as a
-cached prefix on Anthropic's API and on Bedrock's Claude models; OpenAI and
-others cache on their own (Azure OpenAI too, keyed by the agent). The prefix is the same bytes from run to run (no
+cached prefix on Anthropic's API and on Bedrock's Claude models; OpenAI, DeepSeek and
+others cache on their own (Azure OpenAI too, keyed by the agent; OpenRouter's calls
+carry the agent's session, so they stay on a host that holds its cache). The prefix is the same bytes from run to run (no
 dates or ids in it; files and the sender of a message go in the messages), so
 from an agent's second run on, `usage.cacheRead` counts what came from the cache.
 A provider caches only a prefix past its minimum: on Anthropic 1,024 tokens for
