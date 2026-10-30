@@ -340,7 +340,7 @@ test("Pi input writes keep the whole message, as earlier readers take data.messa
   assert.deepEqual((await fake.agent.recoverMessages())[0].message, input);
 });
 
-test("Pi adapter asks again in a resumed run whose model request a lost node left in flight, as its beforeRetry says", { timeout: 20_000 }, async () => {
+test("Pi adapter asks again in a resumed run whose model request a lost node left in flight, as its retry decision says", { timeout: 20_000 }, async () => {
   const { db } = await testDatabase(), sessionId = randomUUID();
   const open = () => openPiStorage({ sessionId, directory: "unused", db });
   let requests = 0;
@@ -359,8 +359,8 @@ test("Pi adapter asks again in a resumed run whose model request a lost node lef
     agents.push(first);
     void first.prompt(user("Go")).catch(() => {});
     while (requests < 1) await new Promise(resolve => setTimeout(resolve, 5));
-    // The interrupted request is a failed attempt: the host's beforeRetry has it made again.
-    const next = await fixture([answer("back")], {}, await open(), { beforeRetry: failed => failed.reason === "interrupted" ? { retry: true, delayMs: 0 } : undefined });
+    // The interrupted request is a failed attempt: the host's retry decision has it made again.
+    const next = await fixture([answer("back")], {}, await open(), { retry: failed => failed.reason === "interrupted" ? { retry: true, delayMs: 0 } : undefined });
     agents.push(next.agent);
     await next.agent.continue();
     assert.equal(requests, 1, "the lost node's request was not resent by Pi itself");
@@ -370,6 +370,94 @@ test("Pi adapter asks again in a resumed run whose model request a lost node lef
   } finally {
     console.error = report;
     for (const agent of agents.reverse()) await agent.close(100).catch(() => {});
+  }
+});
+
+for (const [kind, errorMessage] of [["transient (Pi makes it again)", "503 Service Unavailable"], ["refused (the adapter makes it again)", "400 image_rejected"]] as const) test(`a failed response the host has made again, ${kind}, is kept in Pi's journal but not in the history`, async t => {
+  const failed = { ...answer(""), content: [], stopReason: "error" as const, errorMessage };
+  const decisions: string[] = [];
+  const fake = await fixture([failed, answer("Recovered")], {}, new MemoryStorage(), {
+    // Asked for an interrupted request whenever Pi reads its retry policy: only model errors are counted.
+    retry: attempt => { if (attempt.reason !== "model_error") return { retry: true, delayMs: 0 }; decisions.push(attempt.reason); return decisions.length === 1 ? { retry: true, delayMs: 5 } : { retry: false }; },
+  });
+  t.after(() => fake.agent.close());
+  await fake.agent.prompt("Go");
+  assert.equal(fake.requests.length, 2);
+  assert.deepEqual(decisions, ["model_error"]);
+  assert.equal((fake.agent as any).retryPlan, undefined, "the decision ends once Pi commits the response it was for");
+  assert.equal(fake.agent.state.errorMessage, undefined);
+  assert.deepEqual((await fake.agent.recoverMessages()).map(item => item.message.role), ["user", "assistant"]);
+  assert.deepEqual(fake.agent.state.messages.filter(message => message.role !== "system").map(message => message.role), ["user", "assistant"]);
+  const entries = (await fake.storage.scanEntries({ conversationId: fake.agent.conversationId as never }, 100, undefined, BACKGROUND_CONTEXT)).items;
+  const assistants = entries.filter(entry => entry.kind === "pi.assistant").map(entry => (entry.model![0] as any));
+  console.log(JSON.stringify({ kind, journal: assistants.map(message => ({ stopReason: message.stopReason, retried: message.retried })) }));
+});
+
+test("a failed summary's decision never overrides a generation's pending one, which ends once Pi commits the response", async t => {
+  const fake = await fixture([answer("ok")], {}, new MemoryStorage(), { retry: () => ({ retry: true, delayMs: 0 }) });
+  t.after(() => fake.agent.close());
+  const agent = fake.agent as any;
+  agent.retryPlan = { retry: true, delayMs: 2_000 };
+  agent.summaryPlan = { retry: false };
+  assert.deepEqual(agent.retryPolicy(), { retry: true, delayMs: 2_000 });
+  assert.equal(agent.retryDelayMs(), 2_000);
+  agent.retryPlan = undefined;
+  assert.deepEqual(agent.retryPolicy(), { retry: false });
+  // A summary's decision lasts only for Pi's read as it resumes from the summary.
+  await new Promise(resolve => setImmediate(resolve));
+  agent.summaryPlan = undefined;
+  assert.deepEqual(agent.retryPolicy(), { retry: true, delayMs: 0 }, "an interrupted request: the host's decision");
+});
+
+test("a failed response the host does not make again ends the run and stays in the history", async t => {
+  const failed = { ...answer(""), content: [], stopReason: "error" as const, errorMessage: "503 Service Unavailable" };
+  const fake = await fixture([failed, answer("never")], {}, new MemoryStorage(), { retry: () => ({ retry: false }) });
+  t.after(() => fake.agent.close());
+  await fake.agent.prompt("Go");
+  assert.equal(fake.requests.length, 1);
+  assert.equal(fake.agent.state.errorMessage, "503 Service Unavailable");
+  assert.deepEqual((await fake.agent.recoverMessages()).map(item => item.message.role), ["user", "assistant"]);
+});
+
+test("a partial answer a lost node left in flight is not in the history once the request is made again", { timeout: 20_000 }, async () => {
+  const { db } = await testDatabase(), sessionId = randomUUID();
+  const open = () => openPiStorage({ sessionId, directory: "unused", db });
+  let requests = 0;
+  const first = await DurableAgent.create({
+    initialState: { model, messages: [], tools: [] },
+    // The request streams part of an answer, then "kills the node": it never ends.
+    streamFn: () => {
+      requests++;
+      const stream = createAssistantMessageEventStream();
+      const partial = { ...answer("half an answer"), stopReason: "stop" as const };
+      queueMicrotask(() => {
+        stream.push({ type: "start", partial: { ...partial, content: [] } });
+        stream.push({ type: "text_start", contentIndex: 0, partial: { ...partial, content: [{ type: "text", text: "" }] } } as any);
+        stream.push({ type: "text_delta", contentIndex: 0, delta: "half an answer", partial } as any);
+      });
+      return stream;
+    },
+    durable: { storage: await open() },
+  });
+  void first.prompt(user("Go")).catch(() => {});
+  while (requests < 1) await new Promise(resolve => setTimeout(resolve, 5));
+  // Pi commits a partial answer about once a second.
+  await new Promise(resolve => setTimeout(resolve, 1_500));
+  const next = await fixture([answer("whole answer")], {}, await open(), { retry: failed => failed.reason === "interrupted" ? { retry: true, delayMs: 0 } : undefined });
+  try {
+    await next.agent.continue();
+    const history = (await next.agent.recoverMessages()).map(item => item.message as any);
+    console.log(JSON.stringify({ history: history.map(message => ({ role: message.role, stopReason: message.stopReason, text: message.content?.[0]?.text ?? message.content })) }));
+    const storage = await open();
+    const entries = (await storage.scanEntries({ conversationId: next.agent.conversationId as never }, 100, undefined, BACKGROUND_CONTEXT)).items;
+    const journal = entries.filter(entry => entry.kind === "pi.assistant").map(entry => entry.model![0] as any);
+    // The lost node's partial is in Pi's journal, as an aborted response marked retried.
+    assert.ok(journal.some(message => message.stopReason === "aborted" && message.retried === true), JSON.stringify(journal));
+    assert.deepEqual(history.map(message => message.role), ["user", "assistant"]);
+    assert.equal(history[1].content[0].text, "whole answer");
+  } finally {
+    await next.agent.close(100).catch(() => {});
+    await first.close(100).catch(() => {});
   }
 });
 
