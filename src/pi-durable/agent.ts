@@ -557,10 +557,12 @@ export class DurableAgent {
         if (decision?.retry && !isRetryableAssistantError(final)) {
           const signal = (rawOptions as { signal?: AbortSignal } | undefined)?.signal;
           await new Promise<void>((resolve, reject) => {
-            const abort = () => { clearTimeout(timer); reject(new Error("Agent run aborted")); };
-            const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); this.signal?.removeEventListener("abort", abort); resolve(); }, decision.delayMs ?? 0);
-            signal?.addEventListener("abort", abort, { once: true }); this.signal?.addEventListener("abort", abort, { once: true });
-            if (signal?.aborted || this.signal?.aborted) abort();
+            const own = this.signal;
+            const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); own?.removeEventListener("abort", abort); };
+            const abort = () => { done(); reject(new Error("Agent run aborted")); };
+            const timer = setTimeout(() => { done(); resolve(); }, decision.delayMs ?? 0);
+            signal?.addEventListener("abort", abort, { once: true }); own?.addEventListener("abort", abort, { once: true });
+            if (signal?.aborted || own?.aborted) abort();
           });
           continue;
         }
