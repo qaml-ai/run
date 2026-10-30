@@ -124,6 +124,8 @@ export type AgentEvent =
   | { type: "subagent_end"; toolCallId: string; agentId: string; requestId: string; status: "completed" | "input_required" | "failed" | "aborted"; error?: string; name?: string; background?: true }
   /** With `subagents: true`: a background sub-agent messaged its parent (send_message). */
   | { type: "subagent_message"; agentId: string; name: string; text: string }
+  /** With `subagents: true`: a sub-agent's latest progress report (report_progress), status only; `background` for a spawn_agent child, else the delegate call's. */
+  | { type: "subagent_progress"; toolCallId: string; agentId: string; name: string; text: string; background?: true }
   /** The stream could not replay what was missed: recover from state (the SDK does). */
   | { type: "replay_gap"; cursor: number }
   /** Where the stream could not replay: the running turn as of now, to fold from. */

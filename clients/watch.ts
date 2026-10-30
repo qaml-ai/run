@@ -44,7 +44,7 @@ export interface WatchOptions {
   subagents?: boolean;
 }
 /** A sub-agent a delegate call started, as its relayed events tell it: its finished messages, and how it ended. */
-export interface SubagentView { agentId: string; name: string; messages: Message[]; status?: "completed" | "input_required" | "failed" | "aborted"; error?: string }
+export interface SubagentView { agentId: string; name: string; messages: Message[]; status?: "completed" | "input_required" | "failed" | "aborted"; error?: string; progress?: string }
 /** What a watcher knows of its agent. */
 export interface AgentView {
   /**
@@ -336,6 +336,12 @@ export function watchAgent(options: WatchOptions): Watcher {
       case "subagent_end": {
         const child = state.subagents.get(event.toolCallId);
         if (child) state.subagents = new Map(state.subagents).set(event.toolCallId, { ...child, status: event.status, ...(event.error ? { error: event.error } : {}) });
+        break;
+      }
+      // Its latest report, while it runs: an ending above keeps the last one.
+      case "subagent_progress": {
+        const child = state.subagents.get(event.toolCallId);
+        if (child) state.subagents = new Map(state.subagents).set(event.toolCallId, { ...child, progress: event.text });
         break;
       }
     }

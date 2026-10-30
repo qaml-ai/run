@@ -60,7 +60,7 @@ The model gets a `delegate` tool that lists the agents with what each is for
 | Argument | |
 | --- | --- |
 | `agent` | Which agent, by its name in the list |
-| `instructions` | Instead of `agent`, with `instructions: true` in the settings: a system prompt for a sub-agent the model designs itself, on its own model |
+| `instructions` | Instead of `agent`, with `instructions: true` in the settings: who a sub-agent the model designs itself is and how it works, on its own model. It gets them with its task, as its first message |
 | `task` | What to do. The sub-agent sees only this, not the conversation |
 | `output` | A JSON Schema for an object: the answer comes back in that shape (see [Structured output](structured-output.md)) |
 
@@ -77,7 +77,7 @@ An entry in `agents` is one of these:
 | --- | --- |
 | `"researcher"` or `{ definition: "researcher", name?, description? }` | A new agent made from the definition, for each call |
 | `{ agent: "billing-specialist", name?, description? }` | Your existing agent with that key. It keeps its own history across calls. Runs queue, one at a time, like any of its runs |
-| `instructions: true` (a setting, not an entry) | A new agent with the model's instructions, the parent's model, and the parent's `web_search` and `web_fetch` if it has them |
+| `instructions: true` (a setting, not an entry) | A new agent on the parent's model, with the parent's `web_search` and `web_fetch` if it has them. Its system prompt is the runtime's: the model's instructions come first in its first message (`Your role:`, then `Your task:`), with its parent's authority, so the parent's later messages can amend them. A system prompt would outrank them: models held to it and ignored the parent's corrections. It shares the parent's files: the parent's mounts as they are, at the same paths, so a path the parent names works for it as is (a definition's sub-agent has the definition's mounts) |
 
 A sub-agent the runtime makes is a real agent:
 
@@ -159,6 +159,13 @@ you get none of these events.
 | `subagent_start` | `{ toolCallId, agentId, requestId, name, depth }`: the call started its sub-agent |
 | `subagent_event` | `{ toolCallId, agentId, event }`: one of the sub-agent's events (its streamed text left out). A grandchild's events arrive nested in its parent's |
 | `subagent_end` | `{ toolCallId, agentId, requestId, status, error? }` |
+| `subagent_progress` | `{ toolCallId, agentId, name, text }`: the sub-agent's latest [progress report](#progress) |
+
+A delegate sub-agent's progress report is also its call's progress, as a tool
+server's is: a `tool_execution_update` of the `delegate` call, with `details:
+{ type: "progress", tool: "delegate", message }`, which every watcher gets and
+`<AgentChat>` shows under the call. The model waiting on the call sees none of
+it: its answer is the call's result.
 
 ```ts
 const lead = await agents.upsert("research-lead", { delegate: { agents: ["researcher"] }, subagents: true });
@@ -194,8 +201,8 @@ const lead = await agents.upsert("research-lead", {
 | Tool | |
 | --- | --- |
 | `spawn_agent({ agent \| instructions, task, output?, name? })` | Starts a sub-agent, as `delegate` would, and returns `{ agentId, name }` at once. `name` is the model's handle for it, unique among its running sub-agents (default: the agent's name and a number, `researcher-1`) |
-| `wait_agent({ agents?, timeoutMs? })` | Waits until one of the given sub-agents (names or ids; default: any running one) ends, or `timeoutMs` passes (default 5 minutes, at most 10). Returns each one's `status`, with the answer (`text`, `output?`, `error?`) of those that ended |
-| `list_agents()` | The agent's sub-agents: `{ agentId, name, status, startedAt, endedAt? }`, `status` being `running`, `completed`, `failed`, `aborted` or `input_required` |
+| `wait_agent({ agents?, timeoutMs?, untilProgress? })` | Waits until one of the given sub-agents (names or ids; default: any running one) ends, one of them sends a message, with `untilProgress: true` one of them [reports progress](#progress), or `timeoutMs` passes (default 5 minutes, at most 10). Returns each one's `status`, with the answer (`text`, `output?`, `error?`) of those that ended and the `progress` of those running; `messaged` names who sent a message, which the model reads next |
+| `list_agents()` | The agent's sub-agents: `{ agentId, name, status, startedAt, endedAt?, progress?, progressAt? }`, `status` being `running`, `completed`, `failed`, `aborted` or `input_required`, and `progress` a running one's latest [report](#progress) |
 | `send_message({ to, text })` | Messages one of its sub-agents (name or id) or, from a sub-agent, its parent (`"parent"`). See [Messages](#messages) |
 | `interrupt_agent({ agent })` | Aborts one of its running sub-agents; its notification follows with status `aborted` |
 
@@ -242,6 +249,51 @@ A sub-agent that waits on a person notifies with status `input_required`, and
 (`POST /v1/agents/{child}/inputs/{id}`, or a browser token with the `children`
 scope reads them); it resumes, and its next ending notifies again.
 
+### Progress
+
+A sub-agent the runtime made (a `spawn_agent` or `delegate` child) has
+`report_progress({ text })`: a line or two on how its task is going. A report
+is status, not a message. The parent is never interrupted for it, and it never
+starts a turn or counts against the wake cap:
+
+- **Latest wins.** Each running sub-agent has one current report; a new one
+  replaces it. It is at most 500 characters, and a turn reports at most 100
+  times.
+- **It rides on the parent's next tool result.** When the parent's model gets
+  the result of any tool it called, the runtime adds the reports it has not
+  seen yet, latest only:
+
+  ```text
+  <agent_updates>
+  Progress your running sub-agents reported (latest each; no answer needed):
+  - researcher-1 (12s ago): Read 3 of 5 sources; now comparing margins
+  </agent_updates>
+  ```
+
+  Only the runtime writes this block: the tags are neutralized in a report's
+  text and anywhere else. In history it is a part of that tool result of its
+  own, `{ type: "text", text: "<agent_updates>…", agentUpdates: true }`, so a
+  UI can show it apart from the tool's output. A parent that moves to another
+  node may be shown a report once more.
+- **`list_agents` and `wait_agent` show it** as `progress` and `progressAt` of
+  each running sub-agent; what they showed is not repeated with the next
+  result.
+- **A waiting parent can watch it.** `wait_agent` does not end for a report,
+  unless the model asks: with `untilProgress: true`, a report it has not seen
+  ends the wait too, with `updated: ["researcher-1"]` and each one's latest
+  `progress`. It answers no sooner than 15 seconds into the wait
+  (`AGENT_PROGRESS_WAIT_MS`), so a sub-agent reporting each step costs its
+  parent one model call per 15 seconds at most, with its latest report. The
+  model reads how the work goes, and corrects a sub-agent that went off track
+  with `send_message`, which reaches it while it works.
+- **An ending supersedes it.** Once a sub-agent's run ends, its reports are
+  shown no more: its notification (or `wait_agent`) carries its answer.
+- **Watchers see it at once**, as `subagent_progress` (see [Events](#events)),
+  while the parent runs on the sub-agent's node.
+
+Use `send_message` to `"parent"` instead for something the parent must act on:
+that interrupts it (see [Messages](#messages)).
+
 ### Messages
 
 `send_message` goes between an agent and its own sub-agents and parent, no one
@@ -252,11 +304,17 @@ else:
   again, and its answer comes back as a new notification. The sub-agent reads
   `<agent_message name="parent">…</agent_message>`.
 - **Sub-agent to parent:** `to: "parent"`, which the runtime resolves through
-  the run's signed chain. It reaches the parent as a notification does, without
-  the sub-agent's turn ending, as `<agent_message name="researcher-1">…`, with
-  `source` and `metadata.kind: "message"`. The parent's stream has
-  `subagent_message` (`{ agentId, name, text }`). A sub-agent the runtime made has
-  `send_message` even without the builtin.
+  the run's signed chain, without the sub-agent's turn ending. A parent that is
+  running takes it into that turn at its next step, after the tool calls it
+  is making, as a person's `whileRunning: "steer"` prompt is taken. It starts
+  no turn, and its request ends `steeredInto` that turn. A `wait_agent` in
+  progress returns at once, with `messaged: ["researcher-1"]`, so the model
+  reads the message next. An idle parent gets it as a turn of its own, as a
+  notification. Either way the model reads `<agent_message
+  name="researcher-1">…`, with `source` and `metadata.kind: "message"`, and the
+  parent's stream has `subagent_message` (`{ agentId, name, text }`). The call
+  answers `into: "its running turn"` or `"a new turn of its own"`. A sub-agent
+  the runtime made has `send_message` even without the builtin.
 
 A turn sends at most 20 messages, and the turns messages start count against
 the wake cap below, so two agents messaging each other stop.
@@ -307,8 +365,9 @@ With `?subagents=1` (`subagents: true` in the SDKs), the parent's stream has
 `subagent_start` (with `background: true`) when a sub-agent starts,
 `subagent_event` with its events while it runs on the parent's node, and
 `subagent_end` (with `background: true`, `name` and `status`) when its
-notification lands or a `wait_agent` answers it, and `subagent_message` when it
-messages its parent. Its own stream and history always have everything.
+notification lands or a `wait_agent` answers it, `subagent_message` when it
+messages its parent, and `subagent_progress` (with `background: true`) when it
+reports progress. Its own stream and history always have everything.
 
 A browser token minted with the `children` scope (with the others it needs:
 `{ "scopes": ["events", "history", "children"] }`) reads the agent's sub-agents
@@ -371,8 +430,13 @@ parent's task.
 - `agentNotice(message)` (Python `agent_notice`) tells a history message the
   runtime wrote apart: `{ kind: "notification" | "message", agentId, name, status?, error?, output?, usage?, inputs? }`
   (a notification's structured `output`, its `usage`, and the `inputs` it waits on), or undefined for anyone else's.
-- `stream()` parts and watcher events include `subagent_message`;
-  `abort({ children: "keep" })` keeps background sub-agents running.
+- `stream()` parts and watcher events include `subagent_message` and
+  `subagent_progress`; the watcher's `SubagentView.progress` is a delegate
+  sub-agent's latest report. `abort({ children: "keep" })` keeps background
+  sub-agents running.
+- A tool result's `<agent_updates>` part is not the tool's output: the
+  `tool_result` stream part's `output` and the chat's `ToolPart.result` (`text`,
+  `content`, `data`) leave it out, and `ToolPart.result.agentUpdates` has it.
 - `<AgentChat>` shows notifications and agent messages as collapsible notices
   (`AgentNotice`), never as the user's bubbles; the chat model's
   `UserChatMessage.agent` says which (`labels.agentNotification` and

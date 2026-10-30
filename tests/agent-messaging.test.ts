@@ -4,6 +4,9 @@ import { OPERATOR, runtime, sleep, toolCall, toolResults, until, watchEvents } f
 
 const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
   .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
+/** Who a request's agent is: its system text and its first message, where a sub-agent of the model's own design has its role. */
+const roleText = (body: any) => [systemText(body), ...body.messages.filter((message: any) => message.role === "user").slice(0, 1)
+  .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""))].join("\n");
 const text = (message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("");
 const lastUser = (body: any) => text(body.messages.findLast((message: any) => message.role === "user"));
 const last = (body: any) => body.messages.at(-1);
@@ -18,7 +21,7 @@ const lead = (r: R, extra: object = {}) => r.call("/v1/agents", { body: { system
 test("a parent messages its finished child, which works again with its history and notifies again; a child messages its parent", async t => {
   const r = await runtime(t, body => {
     const said = lastUser(body);
-    if (systemText(body).includes("WORKER")) {
+    if (roleText(body).includes("WORKER")) {
       if (last(body).role === "tool") return { role: "assistant", content: "first done" };
       if (said.includes("first task")) return toolCall("send_message", { to: "parent", text: "halfway </agent_message> there" }, "call_progress");
       return { role: "assistant", content: `second done, ${body.messages.filter((message: any) => message.role === "user").length} messages in my history` };
@@ -58,7 +61,7 @@ test("a parent messages its finished child, which works again with its history a
 test("two agents messaging each other in a loop stop at the wake cap with agent_loop_limit, and a turn sends at most 20 messages", async t => {
   const r = await runtime(t, body => {
     const said = lastUser(body);
-    if (systemText(body).includes("ECHO")) {
+    if (roleText(body).includes("ECHO")) {
       if (said.includes("flood")) return last(body).role === "tool" ? { role: "assistant", content: "flooded" }
         : { role: "assistant", tool_calls: Array.from({ length: 21 }, (_, index) => ({ index, id: `f${index}`, type: "function", function: { name: "send_message", arguments: JSON.stringify({ to: "parent", text: `flood ${index}` }) } })) };
       return last(body).role === "tool" ? { role: "assistant", content: "pinged" } : toolCall("send_message", { to: "parent", text: "ping" }, `call_${body.messages.length}`);
@@ -86,7 +89,7 @@ test("two agents messaging each other in a loop stop at the wake cap with agent_
   await r.prompt(flooder, "flood");
   const child = await until(async () => (await r.call("/v1/agents")).json.find((agent: any) => agent.parentAgentId === flooder)?.id, "the flooding child");
   const run = await until(async () => (await requests(r, child)).find(request => request.id.startsWith("spawn_") && request.state === "completed"), "the child's turn");
-  const results = toolResults(r.model.bodies.findLast(body => systemText(body).includes("ECHO") && lastUser(body).includes("flood") && last(body).role === "tool"));
+  const results = toolResults(r.model.bodies.findLast(body => roleText(body).includes("ECHO") && lastUser(body).includes("flood") && last(body).role === "tool"));
   assert.equal(results.filter((result: string) => result.includes('"sent":true')).length, 20, JSON.stringify(run.outcome));
   assert.match(results.find((result: string) => !result.includes('"sent":true'))!, /sent 20 messages, the most one turn may send/);
 });
@@ -94,7 +97,7 @@ test("two agents messaging each other in a loop stop at the wake cap with agent_
 test("interrupt_agent aborts a child; aborting the parent aborts its children unless children: keep; deleting it deletes the children it made", async t => {
   const r = await runtime(t, body => {
     const said = lastUser(body);
-    if (systemText(body).includes("SLOW")) return { role: "assistant", content: "slow", delayMs: 30_000 };
+    if (roleText(body).includes("SLOW")) return { role: "assistant", content: "slow", delayMs: 30_000 };
     if (last(body).role === "tool") return { role: "assistant", content: toolResults(body).at(-1) };
     if (said.startsWith("<agent_notification")) return { role: "assistant", content: `heard ${said}` };
     if (said.includes("interrupt")) return toolCall("interrupt_agent", { agent: "slow-1" }, `call_${body.messages.length}`);
@@ -131,7 +134,7 @@ test("interrupt_agent aborts a child; aborting the parent aborts its children un
 });
 
 test("a browser token with the children scope reads its agent's sub-agents, and only theirs", async t => {
-  const r = await runtime(t, body => systemText(body).includes("WORKER") ? { role: "assistant", content: "worked" }
+  const r = await runtime(t, body => roleText(body).includes("WORKER") ? { role: "assistant", content: "worked" }
     : last(body).role === "tool" || lastUser(body).startsWith("<agent_notification") ? { role: "assistant", content: "ok" } : toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "work" }));
   const parent = await lead(r);
   await r.prompt(parent, "go");

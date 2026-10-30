@@ -291,3 +291,33 @@ test("a fork is cut from the source's journal: its history, and Pi's context as 
   assert.ok(sent.includes("first question") && sent.includes("answer to first question"));
   assert.ok(!sent.includes("second question"), "nothing after the cut");
 });
+
+test("a fork after a context reset starts from the context the reset left, where the source stood and at a cut after the reset", async t => {
+  const r = await runtime(t, answering(), { ...roomy, AGENT_IDLE_MS: "1000" });
+  const source = (await r.call("/v1/agents", { body: { name: "Reset" } })).json.id as string;
+  for (const text of ["Q1", "Q2", "Q3"]) await r.prompt(source, text);
+  const reset = await r.call(`/v1/agents/${source}/context/reset`, { body: { keepMessages: 2, summary: "RESET-SUMMARY" } });
+  assert.equal(reset.status, 200, reset.text);
+  await r.prompt(source, "Q4");
+  await r.prompt(source, "Q5");
+  // What the source sends next: its context as the reset left it, then the new prompt.
+  const context = (body: any) => body.messages.filter((message: any) => message.role !== "system").slice(0, -1);
+  await r.prompt(source, "S-NEXT");
+  const sourceContext = context(r.model.bodies.at(-1));
+  const text = JSON.stringify(sourceContext);
+  assert.ok(text.includes("RESET-SUMMARY") && text.includes("Q3") && !text.includes("Q1"), text);
+
+  const history = (await r.call(`/v1/agents/${source}/history`)).json.messages as any[];
+  const answerTo = (text: string) => history.findIndex(message => said([message])[0] === `assistant:answer to ${text}`);
+  // At Q5's answer, where the source stood before S-NEXT: the same context.
+  const atQ5 = (await r.call(`/v1/agents/${source}/fork`, { body: { atMessage: answerTo("Q5") } })).json.id as string;
+  await r.prompt(atQ5, "F-Q5");
+  assert.deepEqual(context(r.model.bodies.at(-1)), sourceContext);
+
+  // At Q4's answer (after the reset): the reset's context through Q4, without Q5.
+  const cut = (await r.call(`/v1/agents/${source}/fork`, { body: { atMessage: answerTo("Q4") } })).json.id as string;
+  await r.prompt(cut, "F-CUT");
+  const cutContext = context(r.model.bodies.at(-1));
+  assert.deepEqual(cutContext, sourceContext.slice(0, sourceContext.length - 2), JSON.stringify(cutContext));
+  assert.ok(JSON.stringify(cutContext).includes("RESET-SUMMARY"));
+});

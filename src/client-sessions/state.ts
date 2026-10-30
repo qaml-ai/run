@@ -239,6 +239,23 @@ export type Session = {
   sharing?: Promise<void>;
   /** The send_message calls of each running run, by request id: at most MULTI_AGENT_LIMITS.messagesPerRun. */
   messagesSent?: Map<string, Set<string>>;
+  /** The report_progress calls of each running run, by request id: at most MULTI_AGENT_LIMITS.progressPerRun. */
+  progressSent?: Map<string, number>;
+  /** Whether this agent may have background children reporting progress: it has the agents builtin, or started one. */
+  spawns?: boolean;
+  /**
+   * The latest progress report of each child's row this agent was shown (`progress_seq`, by row id), on this node: one
+   * is shown once, or again after the agent moved to another node.
+   */
+  progressShown?: Map<string, number>;
+  /**
+   * Its children's messages its running turn accepted and the model has not had yet (by request id: the sender's name),
+   * and the wait_agent calls to tell when one comes: a wait answers at once, so the model reads the message.
+   */
+  agentMessages?: Map<string, string>;
+  messageWaiters?: Set<(name: string) => void>;
+  /** spawn_agent calls in progress: the agents tools a response calls beside them wait for them (`afterSpawns`). */
+  spawnsStarting?: Set<Promise<unknown>>;
 };
 /** What a run handed off at a step boundary had gathered for its outcome, which its next owner takes over (`takeOver`). */
 export type Carried = { usage?: RunUsage; childSpend?: number; imageSpend?: number; decisionSpend?: number; spendLimit?: number; runLimits?: RunLimits; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };
@@ -374,6 +391,8 @@ export interface ClientSessionOptions {
   childSweepMs?: number;
   /** Turns sub-agent notifications may start per chain root and hour; MULTI_AGENT_LIMITS.wakesPerHour by default. */
   wakesPerHour?: number;
+  /** How long a wait_agent with untilProgress waits at least before a progress report answers it; MULTI_AGENT_LIMITS.progressWaitMs by default. */
+  progressWaitMs?: number;
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
 export type DefinitionConfig = { id: string; revision: number; config: Pick<AgentConfig, "model" | "systemPrompt" | "thinkingLevel" | "fileTools" | "codeMode" | "runLimits" | "maxOutputTokens" | "temperature" | "dataCollection" | "language">; sources?: Sources; description?: string };

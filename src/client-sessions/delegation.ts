@@ -8,7 +8,8 @@ import { underClaim } from "../ownership.ts";
 import { type McpResult } from "../mcp-results.ts";
 import { jsonResult, type ToolCall } from "../tool-servers.ts";
 import { safeError } from "../metrics.ts";
-import { definitionId, MULTI_AGENT_LIMITS, PARENT_KEYS, type AgentTarget, type DelegateSettings } from "../multi-agent.ts";
+import type { Mount } from "../volumes.ts";
+import { definitionId, MULTI_AGENT_LIMITS, PARENT_KEYS, roleAndTask, SUBAGENT_PROMPT, type AgentTarget, type DelegateSettings } from "../multi-agent.ts";
 import * as events from "./events.ts";
 import * as spend from "./spend.ts";
 import { type Child, type Session, type ClientSessionOptions, runningRun } from "./state.ts";
@@ -58,7 +59,7 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
   if (!createAgent || !submit) throw new Error("Delegation is not enabled on this runtime");
   if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("delegate is called directly, not from js_exec");
   const toolCallId = call.toolCallId;
-  const { target, instructions, task, output } = childTarget(settings, call.args, "delegate to");
+  const { target, task, output } = childTarget(settings, call.args, "delegate to");
   const { depth, maxDepth, chain } = childPlace(ctx, session, run, settings, "Delegation");
   await delegationSlot(session, settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel, call.signal);
   let untap: (() => void) | undefined;
@@ -80,7 +81,7 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     if (session.aborted?.has(run.id)) throw new Error("The run was aborted");
     // Made again (a resumed turn): the same child and request, with the answer it has or will have.
     let record = await requestOf(ctx, agent, tenant, requestId, 0, call.signal).catch(error => { if ((error as HttpError).status === 404) return undefined; throw error; });
-    if (!record && made) agent = await makeChild(ctx, session, run, target, instructions, key, toolCallId, depth);
+    if (!record && made) agent = await makeChild(ctx, session, run, target, key, toolCallId, depth);
     child = { agent, requestId, made };
     (session.children ??= new Map()).set(toolCallId, child);
     const at = { toolCallId, agentId: agent, requestId };
@@ -163,9 +164,10 @@ export function childTarget(settings: DelegateSettings, args: Record<string, unk
   const target = name === undefined ? undefined : settings.agents?.find(entry => entry.name === name);
   if (name !== undefined && !target) throw new Error(`There is no agent ${name} to ${verb}`);
   if (instructions !== undefined && !settings.instructions) throw new Error(`Name an agent to ${verb}: instructions of your own are not allowed here`);
-  if ((target === undefined) === (instructions === undefined)) throw new Error(settings.instructions && settings.agents?.length ? `Name an agent to ${verb}, or give instructions: one of them` : settings.instructions ? "Give the sub-agent's instructions" : `Name an agent to ${verb}`);
+  if ((target === undefined) === (instructions === undefined)) throw new Error(settings.instructions && settings.agents?.length ? `Name an agent to ${verb} (agent), or give instructions of your own (instructions): one of them, not both` : settings.instructions ? "Give instructions too: who the sub-agent is and how it should work, besides its task" : `Name an agent to ${verb} (agent)`);
   if (typeof task !== "string" || !task.trim()) throw new Error("Give the sub-agent its task");
-  return { target, instructions, task, output: schema === undefined ? undefined : outputInput({ schema }) };
+  // The model's own instructions go to the sub-agent with its task, as its first message (SUBAGENT_PROMPT).
+  return { target, task: instructions === undefined ? task : roleAndTask(instructions, task), output: schema === undefined ? undefined : outputInput({ schema }) };
 }
 
 /** Where a child of this run goes in its chain: one deeper, within the chain's limit and the settings' (`what` names the refusal). */
@@ -180,9 +182,9 @@ export function childPlace(ctx: DelegationContext, session: Session, run: Reques
 
 /**
  * Make the child agent a call starts, keyed by `key` (made again, the same agent): from its definition target, or with
- * the model's instructions on the parent's model. It acts for whom its parent acts, with the same keys.
+ * SUBAGENT_PROMPT on the parent's model (the model's instructions come with its task). It acts for whom its parent acts, with the same keys.
  */
-export async function makeChild(ctx: DelegationContext, session: Session, run: RequestRecord, target: AgentTarget | undefined, instructions: string | undefined, key: string, toolCallId: string, depth: number) {
+export async function makeChild(ctx: DelegationContext, session: Session, run: RequestRecord, target: AgentTarget | undefined, key: string, toolCallId: string, depth: number) {
   const { header } = session, tenant = header.tenant;
   const web = (header.sources?.builtins ?? []).filter(builtin => builtin === "web_search" || builtin === "web_fetch");
   // An inline child has its parent's model: as it is (its endpoint too), or by name on the tenant's own providers, which take only names.
@@ -190,7 +192,8 @@ export async function makeChild(ctx: DelegationContext, session: Session, run: R
   const named = Object.hasOwn(ctx.options.modelEndpoints?.(tenant) ?? {}, provider) || Object.hasOwn(await ctx.options.customProviders?.(tenant, header.keyScope) ?? {}, provider);
   return (await ctx.options.createAgent!(tenant, {
     ...target?.definition !== undefined ? { definition: definitionId(tenant, target.definition) } : {
-      model: named ? `${provider}/${modelId}` : header.config.model, systemPrompt: instructions, ...web.length ? { builtins: web } : {},
+      model: named ? `${provider}/${modelId}` : header.config.model, systemPrompt: SUBAGENT_PROMPT, ...web.length ? { builtins: web } : {},
+      ...childMounts(header.mounts),
     },
     name: target?.name ?? "subagent", type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds,
     ...header.identity?.subject !== undefined ? { subject: header.identity.subject } : {}, ...header.identity?.context ? { context: header.identity.context } : {},
@@ -198,6 +201,16 @@ export async function makeChild(ctx: DelegationContext, session: Session, run: R
     // Its parent's end user pays for it, from the bucket the parent's run spends.
     bucket: spend.bucketOf(ctx.spendContext, session, run),
   }, key, { agentId: header.id, runId: run.id, toolCallId, depth })).id;
+}
+
+/**
+ * What a child of the model's own design mounts of its parent's files: the parent's mounts as they are, shared, so a
+ * path its parent names works there as is, and no workspace of its own. Nothing for a parent without mounts. Watches
+ * (notify) stay the parent's.
+ */
+export function childMounts(mounts: Mount[] | undefined) {
+  if (!mounts?.length) return {};
+  return { mounts: [...mounts.map(({ volumeId, path, mode, subpath }) => ({ volumeId, path, mode, ...subpath ? { subpath } : {} })), { workspace: false }] };
 }
 
 /** A child's prompt: its task, and its place in the chain, signed for its agent and request so only the runtime places a run in one. */

@@ -62,6 +62,8 @@ const RUN_OVERRUN_MS = 60_000;
 const QUEUED_METHODS = [...RUN_METHODS, "configure"];
 /** Queued runs a stop cancels (`stop`): what callers asked for. A `resume` closes a suspended turn, and is the runtime's. */
 const CANCELLABLE = ["prompt", "continue", "execute"];
+/** How long a steer waits for a turn that has begun to open, before it queues as a turn of its own. */
+const STEER_OPEN_WAIT_MS = 5_000;
 const CANCELLED = "Cancelled: the agent was stopped before this run began";
 /** A sub-agent's notification an abort reached before its turn: it lands without one (`stop`). */
 const STOPPED_NOTICE = { stopped: "aborted", message: "The agent was stopped: this notification is in its history, but no turn ran" };
@@ -1735,8 +1737,8 @@ export class ClientSessions {
     // A child's notification (`notice`) is the runtime's alone. Its child's run was counted and checked already, and it is
     // never refused at a limit: it lands without a turn instead (`landNotice`).
     const notice = params.notice !== undefined;
-    // A parent's message to its child may join the child's running turn; anything else of the runtime's is a turn of its own.
-    const steerable = params.notice?.metadata?.kind === "message" && params.notice.metadata.to === "child";
+    // A message between an agent and its child or parent may join the recipient's running turn; anything else of the runtime's is a turn of its own.
+    const steerable = params.notice?.metadata?.kind === "message" && ["child", "parent"].includes(params.notice.metadata.to);
     if (notice && (!trusted || body.method !== "prompt" || (params.whileRunning !== undefined && !steerable) || !childSessions.validNotice(params.notice))) throw new HttpError(400, "Invalid request");
     const rate = isRun && body.method !== "resume" && !notice ? await this.options.runRate?.(session.header.tenant) ?? undefined : undefined;
     const limited = body.method === "resume" || notice ? undefined : await spend.runLimit(this.spendContext, session, body.method, bucket);
@@ -1819,6 +1821,7 @@ export class ClientSessions {
       // A steer is answered at once: the running turn has it (accepted), or it runs as a turn of its own (queued).
       if (params.whileRunning === "steer") {
         const steer = await this.steerTurn(session, params) ? "accepted" : "queued";
+        if (steer === "accepted") childSessions.messageAccepted(session, record.id, params);
         const current = session.requests.get(record.id);
         if (current?.state === "running") return { status: 202, record: visible(this.upsertRequest(session, { ...current, steer })), ...(rate ? { rate } : {}) };
         // Taken already, before the answer came back.
@@ -1836,9 +1839,16 @@ export class ClientSessions {
    * (`steerTaken`); if not (the turn ended first, or stopped), the agent drops it and it runs as a turn of its own.
    */
   private async steerTurn(session: Session, params: Record<string, unknown>): Promise<boolean> {
-    if (!session.turn) return false;
-    try { return !!(await this.supervisor.request(session.header.id, "steer", params))?.steered; }
-    catch { return false; /* Not running after all: the queued prompt runs. */ }
+    // A turn that has begun but not opened yet (its host still preparing it) takes steers in a moment: wait for it, so a
+    // message sent just after its prompt joins it rather than queuing behind all of it.
+    for (const turn = session.turn, deadline = Date.now() + STEER_OPEN_WAIT_MS; turn;) {
+      let steered = false;
+      try { steered = !!(await this.supervisor.request(session.header.id, "steer", params))?.steered; }
+      catch { return false; /* Not running after all: the queued prompt runs. */ }
+      if (steered || turn.start !== undefined || session.turn !== turn || Date.now() > deadline) return steered;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    return false;
   }
 
   /** Save an attachment for request `requestId` ahead of it (the SDKs upload files this way, then reference them by path). */
@@ -2235,6 +2245,7 @@ export class ClientSessions {
       session.imageSpend?.delete(record.id);
       session.decisionSpend?.delete(record.id);
       session.messagesSent?.delete(record.id);
+      session.progressSent?.delete(record.id);
       session.aborted?.delete(record.id);
       try { await this.commit(session, true); }
       catch { return; /* The fault is reported to every later request. */ }
@@ -2291,6 +2302,8 @@ export class ClientSessions {
       if (done.announce) void this.announce(session, [done]);
       // A parent's message its running turn took: the turn's own row answers for it.
       if (id.startsWith("msg_") && done.metadata?.[PARENT_KEYS.agent]) await childSessions.childEnded(this.childrenContext, session.header.id, visible(done));
+      // A child's message: the model has it now.
+      childSessions.messageTaken(this.childrenContext, session, id, queued.params, turn);
     })().catch(() => { /* The fault is reported to every later request. */ });
   }
 

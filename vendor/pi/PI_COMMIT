@@ -2,5 +2,4 @@ commit f09d01b85e0384647fcab6779d35ab9dabe04be3
 date 2026-10-29T22:11:08+01:00
 source https://github.com/earendil-works/pi/commit/f09d01b85e0384647fcab6779d35ab9dabe04be3
 packages @earendil-works/pi-telemetry @earendil-works/chord @earendil-works/pi-codemode @earendil-works/pi-ai @earendil-works/pi-agent-core @earendil-works/pi-durable
-version main.f09d01b85e03-camel.1
-patch 0001-feat-durable-readStoredContext-derives-a-conversatio.patch 66aa15828427d2fc608dd092b7220d17c0f8c589
+version main.f09d01b85e03

@@ -28,7 +28,7 @@ Query parameters and headers:
 | `?snapshot=1` | where the stream cannot replay what you missed (a first connect, or a cursor behind the buffer), send a [`snapshot`](#snapshot) of the running turn first instead of a 409. Watchers and polls (`?watch=1`, `?poll=1`, `/v1/agents/:id/events`) get one by default (`?snapshot=0` opts out); the application's connection only when it asks, as the SDKs do. |
 | `?poll=1&wait=N` | answer once, as JSON, instead of streaming: `{cursor, events: [{id, data}]}`, where `data` is a frame. With `wait` (seconds, at most 25) and nothing buffered, it answers when the next event arrives or the wait ends. Poll again with `Last-Event-ID: <cursor>`. For clients that cannot hold a stream open. |
 | `?request=<id>` | only that request's events, and its `response` frame: one run's progress, for a caller that sent it with `POST …/prompt` and wants nothing else. `ready`, `snapshot` and other frames that are not a request's still come. |
-| `?subagents=1` | also send the agent's sub-agents' progress, from its `delegate` calls: [`subagent_start`, `subagent_event` and `subagent_end`](#sub-agents). Without it, none of them. The SDKs: `subagents: true` |
+| `?subagents=1` | also send the agent's sub-agents' progress, from its `delegate` and `spawn_agent` calls: [`subagent_start`, `subagent_event`, `subagent_end`, `subagent_message` and `subagent_progress`](#sub-agents). Without it, none of them. The SDKs: `subagents: true` |
 | `?takeover=true` | (application connection only) replace the process serving the agent's tools now. See [One application at a time](#one-application-at-a-time). |
 | `X-Agent-Connection: <connection>` | (application connection only) reconnecting: the `connection` the last `ready` named, so the runtime knows it is the same application coming back. |
 
@@ -262,6 +262,8 @@ See [Multi-agent](../guides/multi-agent.md). The `subagent_*` events reach only 
 | `subagent_start` | `toolCallId`, `agentId`, `requestId`, `name`, `depth` | a `delegate` call started (or, on a resumed turn, found) its sub-agent `agentId`, running request `requestId` |
 | `subagent_event` | `toolCallId`, `agentId`, `event` | one of the sub-agent's events, as its own stream has it, its streamed text (`message_update`) left out. A sub-agent's own `subagent_*` events arrive nested in its `subagent_event`s. Relayed while the sub-agent runs on its parent's node; its own stream has them all |
 | `subagent_end` | `toolCallId`, `agentId`, `requestId`, `status` (`completed`, `input_required`, `failed`), `error?` | the sub-agent's run ended, or its parent stopped waiting for it |
+| `subagent_message` | `agentId`, `name`, `text` | a background sub-agent messaged its parent (`send_message` to `"parent"`) |
+| `subagent_progress` | `toolCallId`, `agentId`, `name`, `text`, `background?` | the sub-agent's latest progress report (`report_progress`): status only, which starts no turn. `background: true` for a `spawn_agent` child; a `delegate` child's is also its call's `tool_execution_update`. Sent while the parent runs on the sub-agent's node |
 
 ### The runtime
 

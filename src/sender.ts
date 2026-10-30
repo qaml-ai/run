@@ -16,8 +16,13 @@ export type Sender = { id: string; name?: string; username?: string };
 export const CONTEXT_OPEN = "<<<RUNTIME_CONTEXT>>>";
 export const CONTEXT_CLOSE = "<<<END_RUNTIME_CONTEXT>>>";
 const MARKER = /<<<\s*(?:END_)?RUNTIME_CONTEXT\s*>>>/gi;
-/** The tags of a sub-agent's notification (and, later, message) block, which only the runtime writes either. */
-const AGENT_TAG = /<\s*\/?\s*agent_(?:notification|message)\b/gi;
+/** The tags of a sub-agent's notification, message and progress blocks, which only the runtime writes either. */
+const AGENT_TAG = /<\s*\/?\s*agent_(?:notification|message|updates)\b/gi;
+/**
+ * The marker of a tool result's content part that carries <agent_updates> (multi-agent.ts `agentUpdates`): only the
+ * runtime makes it, as a tool's own parts are rebuilt as `{ type, text }` (mcp-results.ts `contentResult`).
+ */
+export const AGENT_UPDATES = "agentUpdates";
 /** Who sent a message the runtime made: a sub-agent's notification (multi-agent.ts `childNotice`). */
 export type MessageSource = { kind: "agent"; agentId: string; name: string };
 
@@ -64,6 +69,8 @@ function contextBlock(from: Sender): string {
 
 type Part = { type: string; text?: string };
 const escapeParts = (parts: Part[]) => parts.map(part => part.type === "text" && typeof part.text === "string" ? { ...part, text: escapeMarkers(part.text) } : part);
+/** A tool result's parts as the model reads them: its own escaped, the runtime's <agent_updates> part as plain text (its reports were escaped when it was made). */
+const escapeResult = (parts: Part[]) => parts.map(part => part.type === "text" && (part as Record<string, unknown>)[AGENT_UPDATES] === true ? { type: "text", text: part.text } : escapeParts([part])[0]);
 
 const attribute = (value: unknown) => String(value ?? "").replace(/[^A-Za-z0-9_-]/g, "");
 
@@ -81,7 +88,7 @@ function noticeBlock(source: MessageSource, metadata: Record<string, unknown> | 
  * provider's cached prefix.
  */
 export function renderMessage(message: AgentMessage): AgentMessage {
-  if (message.role === "toolResult") return { ...message, content: escapeParts(message.content) as typeof message.content };
+  if (message.role === "toolResult") return { ...message, content: escapeResult(message.content) as typeof message.content };
   if (message.role !== "user") return message;
   const { from, source, metadata } = message as typeof message & Stamp;
   const parts = typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;

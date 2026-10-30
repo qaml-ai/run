@@ -5,6 +5,9 @@ import { OPERATOR, runtime, sleep, toolCall, toolResults, until, watchEvents } f
 /** The model request's system text: its system messages, wherever they are, in order. */
 const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
   .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
+/** Who a request's agent is: its system text and its first message, where a sub-agent of the model's own design has its role. */
+const roleText = (body: any) => [systemText(body), ...body.messages.filter((message: any) => message.role === "user").slice(0, 1)
+  .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""))].join("\n");
 const declared = (body: any) => (body.tools ?? []).map((tool: any) => tool.function.name);
 /** Several tool calls in one response. */
 const toolCalls = (...calls: [string, unknown, string][]) => ({ role: "assistant", tool_calls: calls.map(([name, args, id], index) => ({ index, id, type: "function", function: { name, arguments: JSON.stringify(args) } })) });
@@ -57,7 +60,7 @@ test("delegate calls in one response run at once, at most maxParallel together, 
   let inFlight = 0, most = 0, three!: () => void;
   const allThree = new Promise<void>(resolve => { three = resolve; });
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) {
+    if (roleText(body).includes("WORKER")) {
       inFlight++; most = Math.max(most, inFlight);
       if (inFlight >= 3) three();
       const wait = Promise.race([allThree, sleep(10_000)]).then(() => sleep(400)).then(() => { inFlight--; });
@@ -118,7 +121,7 @@ test("parallel children share what their parent's run has left, rather than each
   let n = 0;
   const r = await runtime(t, body => {
     const usage = { prompt_tokens: 5000, completion_tokens: 0 };
-    if (systemText(body).includes("WORKER")) return { ...toolCall("missing_tool", {}, `call_w${++n}`), usage };
+    if (roleText(body).includes("WORKER")) return { ...toolCall("missing_tool", {}, `call_w${++n}`), usage };
     if (!toolResults(body).length) return { ...toolCalls(["delegate", { instructions: "You are a WORKER.", task: "work 1" }, "p1"], ["delegate", { instructions: "You are a WORKER.", task: "work 2" }, "p2"]), usage };
     return { role: "assistant", content: "done", usage };
   }, { AGENT_MODEL: "openai/gpt-5.5-pro" });
@@ -155,7 +158,7 @@ test("a caller cannot move a run's place in the delegation chain with prompt met
 
 test("aborting a parent aborts the children it waits on; the stream shows them to subscribers that ask", async t => {
   const r = await runtime(t, body => {
-    if (systemText(body).includes("SLOW")) return { role: "assistant", content: "too late", delayMs: 30_000 };
+    if (roleText(body).includes("SLOW")) return { role: "assistant", content: "too late", delayMs: 30_000 };
     return toolResults(body).length ? { role: "assistant", content: "after" } : toolCall("delegate", { instructions: "You are SLOW.", task: "wait" }, "call_slow");
   });
   const { id: parent, token } = (await r.call("/v1/agents", { body: { builtins: ["delegate"], delegate: { instructions: true } } })).json;
@@ -181,13 +184,13 @@ test("aborting a parent answers once its delegate child has ended, charges what 
   // Each response costs $0.15 (5000 input tokens of openai/gpt-5.5-pro). The WORKER makes one call, then answers slowly.
   const r = await runtime(t, body => {
     const usage = { prompt_tokens: 5000, completion_tokens: 0 };
-    if (systemText(body).includes("WORKER")) return body.messages.at(-1).role === "tool" ? { role: "assistant", content: "too late", delayMs: 30_000 } : { ...toolCall("missing_tool", {}, "call_w"), usage };
+    if (roleText(body).includes("WORKER")) return body.messages.at(-1).role === "tool" ? { role: "assistant", content: "too late", delayMs: 30_000 } : { ...toolCall("missing_tool", {}, "call_w"), usage };
     return toolResults(body).length ? { role: "assistant", content: "after" } : { ...toolCall("delegate", { instructions: "You are a WORKER.", task: "work" }, "call_d"), usage };
   }, { AGENT_MODEL: "openai/gpt-5.5-pro" });
   const parent = (await r.call("/v1/agents", { body: { builtins: ["delegate"], delegate: { instructions: true }, spendLimit: { usd: 10 } } })).json.id;
   const accepted = await r.call(`/v1/agents/${parent}/prompt`, { body: { text: "go" } });
   assert.equal(accepted.status, 202, accepted.text);
-  await until(() => r.model.bodies.some((body: any) => systemText(body).includes("WORKER") && body.messages.at(-1).role === "tool"), "the worker's slow response began");
+  await until(() => r.model.bodies.some((body: any) => roleText(body).includes("WORKER") && body.messages.at(-1).role === "tool"), "the worker's slow response began");
   const child = (await r.call("/v1/agents")).json.find((agent: any) => agent.parentAgentId === parent).id;
 
   assert.equal((await r.call(`/v1/agents/${parent}/abort`, { method: "POST" })).status, 200);
@@ -210,7 +213,7 @@ test("a delegate child whose ending no call took, its parent's run over, is land
   // Each response costs $0.15 (5000 input tokens of openai/gpt-5.5-pro).
   const r = await runtime(t, body => {
     const usage = { prompt_tokens: 5000, completion_tokens: 0 };
-    if (systemText(body).includes("WORKER")) return { role: "assistant", content: "done", usage };
+    if (roleText(body).includes("WORKER")) return { role: "assistant", content: "done", usage };
     return { ...toolResults(body).length ? { role: "assistant", content: "after" } : toolCall("delegate", { instructions: "You are a WORKER.", task: "work" }, "call_d"), usage };
   }, { AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_CHILD_SWEEP_MS: "300" });
   const parent = (await r.call("/v1/agents", { body: { builtins: ["delegate"], delegate: { instructions: true }, spendLimit: { usd: 10 } } })).json.id;
@@ -225,4 +228,17 @@ test("a delegate child whose ending no call took, its parent's run over, is land
   await r.db.query("update agent_children set ended_at = null, landed_at = null, landed_by = null, state = 'running', checked_at = 0 where parent = $1", [parent]);
   await until(async () => (await r.db.query("select landed_by from agent_children where parent = $1", [parent])).rows[0].landed_by === "late", "the sweep landed it");
   assert.equal((await spent()).toFixed(2), "0.60", "what the child spent is charged to the parent's spend limit");
+});
+
+test("delegate and spawn_agent require what a call must name: instructions when only its own are allowed, the agent when only named ones are", async () => {
+  const { agentsTools, delegateTool } = await import("../src/multi-agent.ts");
+  const { childTarget } = await import("../src/client-sessions/delegation.ts");
+  const required = (settings: any) => [delegateTool(settings, () => undefined), agentsTools(settings, () => undefined)[0]].map(tool => (tool.parameters as any).required);
+  const worker = { name: "worker", definition: "worker" } as any;
+  assert.deepEqual(required({ instructions: true }), [["task", "instructions"], ["task", "instructions"]]);
+  assert.deepEqual(required({ agents: [worker] }), [["task", "agent"], ["task", "agent"]]);
+  assert.deepEqual(required({ agents: [worker], instructions: true }), [["task"], ["task"]]);
+  // A call without them says which field is missing.
+  assert.throws(() => childTarget({ instructions: true }, { task: "t" }, "start"), /Give instructions too: who the sub-agent is/);
+  assert.throws(() => childTarget({ agents: [worker], instructions: true }, { task: "t" }, "start"), /\(agent\), or give instructions of your own \(instructions\)/);
 });
