@@ -41,9 +41,13 @@ type Output = { exitCode: number; stdout: string; stderr: string };
 type Files = Map<string, Buffer>;
 /** A command of the case's world: a pattern on one command of a line, and what it does. */
 type Rule = { match: RegExp; run(files: Files, command: string): Output | Promise<Output> };
+/** A command's result as the shell providers return it (providers.ts `output`). A generic MCP VM gets the same bound. */
+const capped = ({ exitCode, stdout, stderr }: Output) => ({ exitCode, stdout: stdout.slice(0, 24_000), stderr: stderr.slice(0, 24_000), truncated: stdout.length > 24_000 || stderr.length > 24_000 });
 const ok = (stdout = ""): Output => ({ exitCode: 0, stdout, stderr: "" });
 const fail = (exitCode: number, stderr: string): Output => ({ exitCode, stdout: "", stderr });
-const norm = (path: string) => path.startsWith("/") ? path : `/root/${path.replace(/^\.\//, "")}`;
+/** A path from `cwd`, without `.` or a trailing slash. */
+const absolute = (path: string, cwd = "/root") => (path.startsWith("/") ? path : `${cwd.replace(/\/$/, "")}/${path.replace(/^\.(\/|$)/, "")}`).replace(/(.)\/$/, "$1");
+const norm = (path: string) => absolute(path);
 const words = (line: string) => [...line.matchAll(/'((?:[^']|'"'"')*)'|"([^"]*)"|(\S+)/g)].map(match => (match[1] ?? match[2] ?? match[3]).replaceAll(`'"'"'`, "'"));
 
 /** The hosts fixtures answer for; a fake curl reaches these and the node's signed URLs, never the real network. */
@@ -52,9 +56,10 @@ const publicUrl = "https://run.northwind-cloud.com";
 let base = "";
 /** A signed URL as the node answers it: machines "reach" the public URL, which is this process. */
 const local = (url: string) => url.startsWith(publicUrl) ? base + url.slice(publicUrl.length) : url;
-// A minimal Linux: coreutils, curl, no Python, no /workspace (that is the runtime's, not the machine's).
-const DIRS = ["/", "/root", "/tmp", "/home", "/opt", "/srv", "/var", "/var/tmp", "/usr", "/usr/bin", "/etc", "/dev"];
-const ON_PATH = new Set(["cat", "curl", "wget", "ls", "cp", "mv", "rm", "mkdir", "touch", "sha256sum", "base64", "bash", "sh", "wc", "file", "stat", "head", "tail", "find", "grep", "env", "uname", "hostname", "df", "date", "id", "make"]);
+// A minimal Linux: coreutils, curl and python3 (Sprites' exec and computer_read_file need it), no /workspace (that is the
+// runtime's, not the machine's). The fake cannot run Python code, so it says so, and a run that tried is noted as such.
+const DIRS = ["/", "/bin", "/root", "/tmp", "/home", "/opt", "/srv", "/var", "/var/tmp", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin", "/etc", "/dev", "/proc"];
+const ON_PATH = new Set(["python3", "cat", "curl", "wget", "ls", "cp", "mv", "rm", "mkdir", "touch", "sha256sum", "base64", "bash", "sh", "wc", "file", "stat", "head", "tail", "find", "grep", "env", "uname", "hostname", "df", "date", "id", "make", "md5sum", "type"]);
 const parent = (path: string) => path.slice(0, path.lastIndexOf("/")) || "/";
 /** Writes `data` where the machine has a directory for it, as a real shell would, or says why not. */
 function put(files: Files, path: string, data: Buffer): Output | undefined {
@@ -63,91 +68,120 @@ function put(files: Files, path: string, data: Buffer): Output | undefined {
   files.set(norm(path), data);
 }
 const isDir = (files: Files, path: string) => DIRS.includes(norm(path)) || files.has(`${norm(path)}/`);
-const listing = (files: Files, dir: string) => [...files.entries()].filter(([path]) => !path.endsWith("/") && parent(path) === norm(dir).replace(/(.)\/$/, "$1")).map(([path, data]) => `-rw-r--r-- 1 root root ${data.length} Oct 30 12:00 ${path.slice(path.lastIndexOf("/") + 1)}\n`).join("");
-async function curl(files: Files, args: string[]): Promise<Output> {
+const listing = (files: Files, dir: string) => (dir === "/" ? "drwxr-xr-x bin\ndrwxr-xr-x etc\ndrwxr-xr-x home\ndrwxr-xr-x root\ndrwxrwxrwt tmp\ndrwxr-xr-x usr\ndrwxr-xr-x var\n" : "") + [...files.entries()].filter(([path]) => !path.endsWith("/") && parent(path) === norm(dir).replace(/(.)\/$/, "$1")).map(([path, data]) => `-rw-r--r-- 1 root root ${data.length} Oct 30 12:00 ${path.slice(path.lastIndexOf("/") + 1)}\n`).join("");
+/** curl's options as separate words: `-sSLo out` is `-s -S -L -o out`, and `--output=out` is `--output out`. */
+function curlWords(args: string[]) {
+  const words: string[] = [];
+  for (const item of args) {
+    const long = /^(--[\w-]+)=(.*)$/s.exec(item);
+    if (long) { words.push(long[1], long[2]); continue; }
+    if (!/^-[a-zA-Z]/.test(item)) { words.push(item); continue; }
+    for (let at = 1; at < item.length; at++) {
+      words.push(`-${item[at]}`);
+      if (/[oTXdHwm]/.test(item[at])) { if (at + 1 < item.length) words.push(item.slice(at + 1)); break; }
+    }
+  }
+  return words;
+}
+async function curl(files: Files, given: string[], cwd: string): Promise<Output> {
+  const args = curlWords(given);
+  const norm = (path: string) => absolute(path, cwd);
   const flag = (...names: string[]) => { const at = args.findIndex(item => names.includes(item)); return at >= 0 ? args[at + 1] : undefined; };
-  const data = flag("--data-binary", "-d", "--data")?.replace(/^@/, "");
-  const upload = flag("-T", "--upload-file") ?? data, output = flag("-o", "--output"), url = args.find(item => /^https?:/.test(item));
-  const code = flag("-w", "--write-out")?.includes("http_code");
+  const data = flag("--data-binary", "-d", "--data"), upload = flag("-T", "--upload-file"), output = flag("-o", "--output");
+  const headers = args.flatMap((item, at) => item === "-H" || item === "--header" ? [args[at + 1]] : []).map(item => item.split(/:\s*/, 2) as [string, string]);
+  const valueOf = new Set(["--data-binary", "-d", "--data", "-T", "--upload-file", "-o", "--output", "-X", "--request", "-H", "--header", "-w", "--write-out", "-m", "--max-time", "--connect-timeout"]);
+  const url = args.find((item, at) => /^https?:/.test(item) && !valueOf.has(args[at - 1]));
+  const report = (status: number) => flag("-w", "--write-out")?.replaceAll("%{http_code}", String(status)).replaceAll("\\n", "\n") ?? "";
   if (!url) return fail(2, "curl: no URL specified");
   if (!url.startsWith(publicUrl) && !hosted.has(url)) return fail(6, `curl: (6) Could not resolve host: ${new URL(url).hostname}`);
-  if (upload && !files.has(norm(upload))) return fail(26, `curl: Failed to open ${upload}`);
-  const response = hosted.get(url)?.() ?? await fetch(local(url), upload ? { method: "PUT", body: new Uint8Array(files.get(norm(upload))!) } : {});
-  const body = Buffer.from(await response.arrayBuffer());
-  const status = code ? String(response.status) : "";
-  if (!response.ok && (args.some(item => /^-\w*f\w*$/.test(item)) || args.includes("--fail"))) return { exitCode: 22, stdout: status, stderr: `curl: (22) The requested URL returned error: ${response.status}` };
-  if (!response.ok && !code) return ok(body.toString("utf8"));
-  if (upload) return ok(status);
-  if (output && output !== "/dev/null") return put(files, output, body) ?? ok(status);
-  if (args.some(item => /^-\w*O\w*$/.test(item) || item === "--remote-name")) return put(files, new URL(url).pathname.split("/").pop()!, body) ?? ok(status);
-  return ok(body.toString("utf8") + status);
+  const sent = upload ?? (data?.startsWith("@") ? data.slice(1) : undefined);
+  if (sent && !files.has(norm(sent))) return fail(26, `curl: Failed to open ${sent}`);
+  const body = sent ? new Uint8Array(files.get(norm(sent))!) : data;
+  // As curl chooses: -X if given, PUT for -T, POST for --data.
+  const method = flag("-X", "--request") ?? (upload ? "PUT" : data !== undefined ? "POST" : "GET");
+  const response = hosted.get(url)?.() ?? await fetch(local(url), { method, ...body !== undefined ? { body } : {}, headers: new Headers(headers) });
+  const answer = Buffer.from(await response.arrayBuffer());
+  const status = response.status;
+  if (status >= 400 && (args.includes("-f") || args.includes("--fail"))) return { exitCode: 22, stdout: report(status), stderr: `curl: (22) The requested URL returned error: ${status}` };
+  if (output && output !== "-") {
+    if (output !== "/dev/null") { const refused = put(files, norm(output), answer); if (refused) return { exitCode: 23, stdout: report(status), stderr: `curl: (23) Failure writing output to destination: ${refused.stderr}` }; }
+    return ok(report(status));
+  }
+  if (args.includes("-O") || args.includes("--remote-name")) return put(files, norm(new URL(url).pathname.split("/").pop()!), answer) ?? ok(report(status));
+  return ok(answer.toString("utf8") + report(status));
 }
-async function one(files: Files, rules: Rule[], line: string): Promise<Output> {
-  const rule = rules.find(entry => entry.match.test(line));
+async function one(files: Files, rules: Rule[], line: string, cwd: string): Promise<Output> {
+  const norm = (path: string) => absolute(path, cwd);
+  // Asking about a command is not running it.
+  const rule = /^(which|command|type|file|stat|ls|cat|head|test|\[)\b/.test(line) ? undefined : rules.find(entry => entry.match.test(line));
   if (rule) return rule.run(files, line);
-  const [name, ...args] = words(line.replace(/^(sudo\s+|\w+=\S*\s+)+/, "").replace(/\s*2>(&1|\/dev\/null)/g, "").replaceAll("~", "/root"));
+  const [called, ...args] = words(line.replace(/^(sudo\s+|timeout\s+\S+\s+|\w+=\S*\s+)+/, "").replace(/\s*2>(&1|\/dev\/null)/g, "").replaceAll("~", "/root"));
+  const name = called?.replace(/^\/(usr\/)?(local\/)?s?bin\//, "");
+  if ((name === "sh" || name === "bash") && /^-l?c$/.test(args[0] ?? "")) return shell(files, rules, args[1] ?? "");
   const given = args.filter((item, index) => !item.startsWith("-") && !(["head", "tail"].includes(name) && /^-[cn]$/.test(args[index - 1] ?? "")));
   const noSuch = (path: string) => fail(1, `${name}: ${path}: No such file or directory`);
   const missing = given.find(path => !files.has(norm(path)));
   const bytes = (path: string) => files.get(norm(path))!;
   switch (name) {
     case undefined: case "cd": case "true": case "set": case "export": case "sleep": case "sync": return ok();
-    case "pwd": return ok("/root\n");
+    case "pwd": return ok(`${cwd}\n`);
     case "whoami": return ok("root\n");
     case "id": return ok("uid=0(root) gid=0(root) groups=0(root)\n");
     case "hostname": return ok("eval-machine\n");
     case "date": return ok("Fri Oct 30 12:00:00 UTC 2026\n");
     case "env": return ok("PATH=/usr/local/bin:/usr/bin:/bin\nHOME=/root\nSHELL=/bin/bash\n");
     case "df": return ok("Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/vda 20480000 2048000 18432000 10% /\n");
+    case "python": case "python3": return args[0] === "--version" || args[0] === "-V" ? ok("Python 3.12.3\n") : fail(1, `${name}: running code is disabled on this machine`);
     case "uname": return ok(args.includes("-r") ? "6.1.99-eval\n" : "Linux eval-machine 6.1.99-eval x86_64 GNU/Linux\n");
     case "echo": case "printf": return ok(args.filter(item => !/^-[neE]+$/.test(item)).join(" ") + "\n");
     case "mkdir": for (const path of given) files.set(`${norm(path)}/`, Buffer.alloc(0)); return ok();
-    case "touch": for (const path of given) { if (!files.has(norm(path))) { const refused = put(files, path, Buffer.alloc(0)); if (refused) return refused; } } return ok();
+    case "touch": for (const path of given) { if (!files.has(norm(path))) { const refused = put(files, norm(path), Buffer.alloc(0)); if (refused) return refused; } } return ok();
     case "rm": for (const path of given) files.delete(norm(path)); return ok();
     case "cp": case "mv": {
       const [from, to] = given;
       if (!files.has(norm(from ?? ""))) return noSuch(from ?? "");
-      const target = isDir(files, to) ? `${to.replace(/\/$/, "")}/${from.slice(from.lastIndexOf("/") + 1)}` : to;
+      const target = isDir(files, norm(to)) ? `${norm(to)}/${from.slice(from.lastIndexOf("/") + 1)}` : norm(to);
       const refused = put(files, target, bytes(from));
       if (refused) return refused;
       if (name === "mv") files.delete(norm(from));
       return ok();
     }
-    case "cat": case "head": case "tail": case "file": case "stat": case "base64": case "sha256sum": case "wc": {
+    case "cat": case "head": case "tail": case "file": case "stat": case "base64": case "sha256sum": case "md5sum": case "wc": {
       if (missing) return noSuch(missing);
       if (!given.length) return ok();
       const first = bytes(given[0]);
       if (name === "file" || name === "stat") return ok(`${given[0]}: ${first.length} bytes\n`);
       if (name === "base64") return ok(first.toString("base64") + "\n");
+      if (name === "md5sum") return ok(given.map(path => `${createHash("md5").update(bytes(path)).digest("hex")}  ${path}\n`).join(""));
       if (name === "sha256sum") return ok(given.map(path => `${sha256(bytes(path))}  ${path}\n`).join(""));
       if (name === "wc") return ok(`${args.includes("-c") ? first.length : first.toString("utf8").split("\n").length - 1} ${given[0]}\n`);
       const count = args.indexOf("-c") >= 0 ? Number(args[args.indexOf("-c") + 1]) : undefined;
       return ok((count === undefined ? given.map(path => bytes(path).toString("utf8")).join("") : first.subarray(0, count).toString("latin1")));
     }
     case "ls": {
-      const paths = given.length ? given : ["/root"];
-      const absent = paths.find(path => !isDir(files, path) && !files.has(norm(path)));
+      const paths = given.length ? given : [cwd];
+      const absent = paths.find(path => !isDir(files, norm(path)) && !files.has(norm(path)));
       if (absent) return { exitCode: 2, stdout: "", stderr: `ls: cannot access '${absent}': No such file or directory` };
-      return ok(paths.map(path => isDir(files, path) ? listing(files, path) : `-rw-r--r-- 1 root root ${bytes(path).length} Oct 30 12:00 ${path}\n`).join(""));
+      return ok(paths.map(path => isDir(files, norm(path)) ? listing(files, norm(path)) : `-rw-r--r-- 1 root root ${bytes(path).length} Oct 30 12:00 ${path}\n`).join(""));
     }
     case "find": return ok([...files.keys()].filter(path => !path.endsWith("/") && path.startsWith(norm(given[0] ?? "/root"))).join("\n") + "\n");
     case "test": case "[": {
       const path = given.find(item => item !== "]");
-      return path && (files.has(norm(path)) || isDir(files, path)) ? ok() : { exitCode: 1, stdout: "", stderr: "" };
+      return path && (files.has(norm(path)) || isDir(files, norm(path))) ? ok() : { exitCode: 1, stdout: "", stderr: "" };
     }
-    case "which": case "command": {
+    case "which": case "command": case "type": {
       const found = given.filter(item => ON_PATH.has(item) || rules.some(entry => entry.match.test(item)));
       return found.length ? ok(found.map(item => `/usr/bin/${item}\n`).join("")) : { exitCode: 1, stdout: "", stderr: "" };
     }
-    case "curl": case "wget": return curl(files, name === "wget" ? args.map(item => item === "-O" ? "-o" : item) : args);
+    case "curl": case "wget": return curl(files, name === "wget" ? args.map(item => item.replace(/^-\w*O/, "-o")) : args, cwd);
     default: return fail(127, `bash: ${name}: command not found`);
   }
 }
 /** A shell line: heredocs, `&&`/`||`/`;` lists, variables, `$?`, pipes into wc and head, and `> file`. */
 async function shell(files: Files, rules: Rule[], command: string): Promise<Output> {
   const heredoc = /^cat\s*>\s*(\S+)\s*<<\s*'?(\w+)'?\n([\s\S]*?)\n\2\s*$/.exec(command.trim());
-  if (heredoc) return put(files, words(heredoc[1])[0], Buffer.from(heredoc[3] + "\n")) ?? ok();
-  let stdout = "", stderr = "", exitCode = 0, skip = false;
+  if (heredoc) return put(files, norm(words(heredoc[1])[0]), Buffer.from(heredoc[3] + "\n")) ?? ok();
+  let stdout = "", stderr = "", exitCode = 0, skip = false, cwd = "/root";
   const variables: Record<string, string> = {};
   for (const part of command.split(/\s*(&&|\|\||;|\n)\s*/)) {
     if (part === "&&") { skip = exitCode !== 0; continue; }
@@ -156,18 +190,31 @@ async function shell(files: Files, rules: Rule[], command: string): Promise<Outp
     if (skip || !part.trim() || part.trim().startsWith("#")) continue;
     const assign = /^(\w+)=(?:'([^']*)'|"([^"]*)"|(\S*))$/.exec(part.trim());
     if (assign) { variables[assign[1]] = assign[2] ?? assign[3] ?? assign[4]; exitCode = 0; continue; }
-    const expanded = part.replace(/\$\?/g, String(exitCode)).replace(/\$\{?(\w+)\}?/g, (whole, name) => variables[name] ?? (name === "HOME" ? "/root" : name === "PATH" ? "/usr/local/bin:/usr/bin:/bin" : ""));
+    let substituted = part;
+    for (const inner of part.matchAll(/\$\(([^()]*)\)/g)) substituted = substituted.replace(inner[0], (await shell(files, rules, inner[1])).stdout.trim());
+    const expanded = substituted.replace(/\$\?/g, String(exitCode)).replace(/\$\{?(\w+)\}?/g, (whole, name) => variables[name] ?? (name === "HOME" ? "/root" : name === "PATH" ? "/usr/local/bin:/usr/bin:/bin" : ""));
     const [pipeline, redirect] = expanded.split(/\s+>\s+(?=\S+$)/);
     const [left, ...pipes] = pipeline.split(/\s*\|\s*/);
-    const result = await one(files, rules, left);
+    const cd = /^cd\s+(\S+)$/.exec(left.trim());
+    if (cd) {
+      const target = absolute(words(cd[1])[0].replace("~", "/root"), cwd);
+      exitCode = isDir(files, target) ? 0 : 1;
+      if (exitCode) stderr += `bash: cd: ${cd[1]}: No such file or directory\n`; else cwd = target;
+      continue;
+    }
+    const result = await one(files, rules, left, cwd);
     let out = result.stdout;
     if (pipes.some(pipe => /^wc -l/.test(pipe))) out = `${out.split("\n").length - 1}\n`;
     if (pipes.some(pipe => /^wc -c/.test(pipe))) out = `${out.length}\n`;
-    const head = pipes.map(pipe => /^head -c ?(\d+)/.exec(pipe)?.[1]).find(Boolean);
-    if (head) out = out.slice(0, Number(head));
+    for (const pipe of pipes) {
+      const head = /^head -c ?(\d+)/.exec(pipe), tail = /^tail -c ?\+(\d+)/.exec(pipe), cut = /^cut -c ?(\d+)-(\d*)/.exec(pipe);
+      if (head) out = out.slice(0, Number(head[1]));
+      if (tail) out = out.slice(Number(tail[1]) - 1);
+      if (cut) out = out.slice(Number(cut[1]) - 1, cut[2] ? Number(cut[2]) : undefined);
+    }
     exitCode = result.exitCode;
     if (redirect && redirect !== "/dev/null") {
-      const refused = put(files, words(redirect)[0], Buffer.from(out));
+      const refused = put(files, absolute(words(redirect)[0], cwd), Buffer.from(out));
       if (refused) { stderr += refused.stderr; exitCode = 1; }
       out = "";
     }
@@ -224,21 +271,27 @@ const expire = (run: Run) => pool.query("update computer_leases set expires_at=$
     async call(_ref: unknown, operation: string, args: any) {
       const log = (command: string) => run.commands.push({ session: run.sessions, command });
       if (operation.startsWith("browser_")) { log(operation); return { title: "Example", url: args.url ?? "about:blank", text: "A web page." }; }
-      if (operation === "computer_write_file") { log(`write ${args.path}`); run.files.set(norm(args.path), Buffer.from(args.content)); return { exitCode: 0, stdout: "written\n", stderr: "" }; }
+      if (operation === "computer_write_file") { log(`write ${args.path}`); run.files.set(norm(args.path), Buffer.from(args.content)); return capped(ok("written\n")); }
       if (operation === "computer_read_file") {
         log(`read ${args.path}`);
-        const data = run.files.get(norm(args.path));
-        return data ? ok(data.toString("utf8").slice(0, 24_000)) : fail(1, `FileNotFoundError: [Errno 2] No such file or directory: '${args.path}'`);
+        return readFile(run.files.get(norm(args.path)), args.path);
       }
       const command = String(args.command);
       if (command.includes("CAMEL_TRANSFER")) return transfer(run, command);
       log(command);
       const result = await shell(run.files, run.rules, command);
       await run.afterExec?.();
-      return result;
+      return capped(result);
     },
   };
 };
+/** computer_read_file's Python: `print(p.open().read(24000))`, which a binary file makes raise. */
+function readFile(data: Buffer | undefined, path: string): Output & { truncated: boolean } {
+  const traceback = (error: string) => capped(fail(1, `Traceback (most recent call last):\n  File "<string>", line 1, in <module>\n${error}\n`));
+  if (!data) return traceback(`FileNotFoundError: [Errno 2] No such file or directory: '${path}'`);
+  try { return capped(ok(new TextDecoder("utf-8", { fatal: true }).decode(data).slice(0, 24_000) + "\n")); }
+  catch { return traceback(`UnicodeDecodeError: 'utf-8' codec can't decode bytes in file '${path}': invalid start byte`); }
+}
 /** What the transfers' shell line does on a computer, the missing-file answer included (its `||` reports 413). */
 async function transfer(run: Run, command: string): Promise<Output> {
   const quoted = `'((?:[^']|'"'"')*)'`, unquote = (value: string) => value.replaceAll(`'"'"'`, "'");
@@ -295,7 +348,7 @@ async function mcp(request: Request) {
 const vmExec = (rules: Rule[] = []): McpTool => ({
   name: "exec", description: "Run a shell command on the VM. Returns exitCode, stdout and stderr.",
   inputSchema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
-  async call(run, { command }) { return { content: [{ type: "text", text: JSON.stringify(await shell(run.vm, rules, String(command))) }] }; },
+  async call(run, { command }) { return { content: [{ type: "text", text: JSON.stringify(capped(await shell(run.vm, rules, String(command)))) }] }; },
 });
 
 // The network seam: fixtures for their hosts, the real network only for the model's API, nothing for other URLs a model picks.
@@ -341,6 +394,8 @@ const noPaste = (run: Run, path: string) => [
   ...check(!run.tried("read").some(call => String(call.args?.path).endsWith(path)), `read ${path} into context`),
   ...check(!run.tried("computer_exec").some(call => /base64 -d|xxd -r/.test(String(call.args?.command))), "sent the bytes through a command"),
 ];
+// Asking whether base64 is installed moves nothing.
+const MOVES_BASE64 = /atob\(|encoding: *"base64"|base64 -d|"base64"\)/;
 const fileLinks = (run: Run) => check(!run.tried("file_link").length, "used file_link though a direct tool exists");
 const noLinkInReply = (run: Run) => check(!run.pastedLink(), "pasted a signed link to the user");
 
@@ -560,7 +615,7 @@ const CASES: Record<string, Case> = {
     turns: ["My VM is connected through your vm tools. Copy /workspace/data.bin from my workspace to the VM at /tmp/data.bin, and tell me its sha256 as computed on the VM."],
     score: run => {
       const bytes = run.bytes["/workspace/data.bin"], onVm = run.vm.get("/tmp/data.bin");
-      return [...check(run.worked("file_link").length, "used file_link"), ...check(onVm && sha256(onVm) === sha256(bytes), "the VM has the right file"), ...check(run.reply.includes(sha256(bytes)), "gave the VM's hash"), ...check(!run.tried("read").some(call => /data\.bin/.test(String(call.args?.path))), "read the file into context"), ...check(!/base64/.test(run.code()) && !run.tried(/exec$/).some(call => /base64 -d/.test(String(call.args?.command))), "moved the bytes as base64"), ...noLinkInReply(run), ...noComputer(run)];
+      return [...check(run.worked("file_link").length, "used file_link"), ...check(onVm && sha256(onVm) === sha256(bytes), "the VM has the right file"), ...check(run.reply.includes(sha256(bytes)), "gave the VM's hash"), ...check(!run.tried("read").some(call => /data\.bin/.test(String(call.args?.path))), "read the file into context"), ...check(!MOVES_BASE64.test(run.code()) && !run.tried(/exec$/).some(call => /base64 -d/.test(String(call.args?.command))), "moved the bytes as base64"), ...noLinkInReply(run), ...noComputer(run)];
     },
   },
   "mcp-import-from-vm-url": {
@@ -569,7 +624,7 @@ const CASES: Record<string, Case> = {
     turns: ["Run `publish-report` on my VM, through your vm tools. It prints a public URL for the report. Save the report in my workspace as /workspace/report.pdf."],
     score: async run => {
       const saved = await run.file("/workspace/report.pdf");
-      return [...check(saved && sha256(saved) === sha256(pdfBytes), "the workspace has the right file"), ...check(run.worked("file_import").length, "used file_import"), ...check(!/base64/.test(run.code()), "moved the bytes as base64"), ...check(!run.tried("write").some(call => /report/.test(String(call.args?.path))), "wrote the file by hand")];
+      return [...check(saved && sha256(saved) === sha256(pdfBytes), "the workspace has the right file"), ...check(run.worked("file_import").length, "used file_import"), ...check(!MOVES_BASE64.test(run.code()), "moved the bytes as base64"), ...check(!run.tried("write").some(call => /report/.test(String(call.args?.path))), "wrote the file by hand")];
     },
   },
   "mcp-link-from-vm": {
@@ -578,7 +633,7 @@ const CASES: Record<string, Case> = {
     turns: ["The file /tmp/out.bin is on my VM, which you reach through your vm tools. Bring it to my workspace as /workspace/out.bin."],
     score: async run => {
       const saved = await run.file("/workspace/out.bin");
-      return [...check(saved && sha256(saved) === sha256(binaryBytes), "the workspace has the right file"), ...check(run.worked("file_link").some(call => call.args?.method === "PUT"), "used a PUT file_link"), ...check(!run.tried("write").some(call => /out\.bin/.test(String(call.args?.path))) && !/base64/.test(run.code()), "moved the bytes through its context"), ...noLinkInReply(run)];
+      return [...check(saved && sha256(saved) === sha256(binaryBytes), "the workspace has the right file"), ...check(run.worked("file_link").some(call => call.args?.method === "PUT"), "used a PUT file_link"), ...check(!run.tried("write").some(call => /out\.bin/.test(String(call.args?.path))) && !MOVES_BASE64.test(run.code()), "moved the bytes through its context"), ...noLinkInReply(run)];
     },
     observe: run => ({ triedBase64: run.tried(/exec$/).some(call => /base64/.test(String(call.args?.command))) }),
   },
@@ -702,7 +757,7 @@ async function evaluate(label: string, model: string, name: string, index: numbe
     // A provider's error is no verdict on the model's behaviour: counted as a run that failed, and named so.
     if (responses >= MAX_RESPONSES) throw new Error(`thrashed: ${MAX_RESPONSES} model responses`);
     failures = run.modelErrors.length && !run.replies.at(-1) ? [`error: the model API failed: ${run.modelErrors[0]}`] : await scenario.score(run);
-    run.notes = scenario.observe?.(run) ?? {};
+    run.notes = { ...scenario.observe?.(run), ...run.tried(/exec$/).some(call => /python3? +(?!--version|-V)\S/.test(String(call.args?.command))) ? { triedPythonCode: true } : {} };
   } catch (error) { failures = [`error: ${(error as Error).message.slice(0, 300)}`]; }
   finally {
     await run.agent?.destroy().catch(() => {});
