@@ -18,12 +18,16 @@ export const essence = (contentType: string) => contentType.split(";")[0].trim()
 /** A content type as files record it: an essence of at most 100 characters. */
 export const validContentType = (value: unknown): value is string => typeof value === "string" && value.length <= 100 && /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(value);
 
+const GENERIC_TYPES = ["application/octet-stream", "application/x-www-form-urlencoded", "multipart/form-data"];
+/** A well-formed Content-Type that says nothing about the file (octet-stream, form defaults). */
+export const genericType = (value: unknown) => typeof value === "string" && value.length <= 200 && GENERIC_TYPES.includes(essence(value));
+
 /** A declared Content-Type worth recording; generic ones (octet-stream, form defaults) are left to sniffing. */
 export function declaredType(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length > 200) return undefined;
   const type = essence(value);
   if (!validContentType(type)) return undefined;
-  return ["application/octet-stream", "application/x-www-form-urlencoded", "multipart/form-data"].includes(type) ? undefined : type;
+  return GENERIC_TYPES.includes(type) ? undefined : type;
 }
 
 const EXTENSIONS: Record<string, string> = {

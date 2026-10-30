@@ -145,6 +145,23 @@ test("read-only mounts, unmounted paths, directories and invalid paths are refus
   assert.equal(f.calls(), 1);
 });
 
+// The remote side of a download, in a real shell: nothing else in this file reaches the checks before curl.
+test("downloading a remote file that does not exist says not found, not the size limit", async t => {
+  const f = await fixture(t);
+  const driver = { create: async () => ({ id: "x" }), close: async () => {},
+    call: async (_ref: unknown, _operation: string, args: Record<string, any>) => exec("bash", ["-c", args.command], { cwd: f.directory }).then(
+      result => ({ exitCode: 0, stdout: result.stdout, stderr: result.stderr }),
+      error => ({ exitCode: error.code, stdout: error.stdout, stderr: error.stderr })) };
+  const context = { tenant: "alice", agent: "a", mounts: f.mounts };
+  await assert.rejects(f.transfers.run(context, false, { from: "/tmp/no-such-file-here.zip", to: "dest.zip" }, driver, { id: "x" }, 60, "missing"), (error: any) => {
+    assert.equal(error.status, 404);
+    assert.match(error.message, /\/tmp\/no-such-file-here\.zip not found on the computer/);
+    assert.doesNotMatch(error.message, /size limit/);
+    return true;
+  });
+  await assert.rejects(f.volumes.call(f.id, "alice", "stat", { path: "/dest.zip" }));
+});
+
 test("download enforces streaming size cap without content-length and preserves existing file", async t => {
   const f = await fixture(t);
   await writeFile(join(f.directory, "source"), "replacement");

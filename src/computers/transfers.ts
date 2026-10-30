@@ -34,13 +34,14 @@ export class ComputerTransfers {
     const curl = `curl -q --globoff --fail --silent --show-error --connect-timeout ${Math.min(15, seconds)} --max-time ${seconds} --max-filesize ${VOLUME_LIMITS.fileBytes} --write-out '%{http_code}'`;
     const transfer = upload
       ? `mkdir -p -- "$(dirname -- ${path})" && status=$(${curl} --output ${path} -- ${quote(url)})`
-      : `n=$(wc -c < ${path}) && [ "$n" -le ${VOLUME_LIMITS.fileBytes} ] || { printf 'CAMEL_TRANSFER 413\\n'; exit 1; }; status=$(${curl} --upload-file ${path} --output /dev/null -- ${quote(url)})`;
+      : `[ -e ${path} ] || { printf 'CAMEL_MISSING\\n'; exit 1; }; n=$(wc -c < ${path}) || exit 1; [ "$n" -le ${VOLUME_LIMITS.fileBytes} ] || { printf 'CAMEL_TRANSFER 413\\n'; exit 1; }; status=$(${curl} --upload-file ${path} --output /dev/null -- ${quote(url)})`;
     const command = `${transfer}; code=$?; printf 'CAMEL_TRANSFER %s\\n' "$status"; [ "$code" -eq 0 ] || exit "$code"; n=$(wc -c < ${path}) && h=$(sha256sum < ${path}) && printf 'CAMEL_FILE %s %s\\n' "$n" "\${h%% *}"`;
     // Only the fixed receipt is read; provider errors can repeat the URL or command.
     let value: any;
     try { value = await driver.call(ref, "computer_exec", { command, timeoutSeconds: seconds, remainingSeconds: seconds, requestKey }); }
     catch { throw failure(502); }
     const output = typeof value?.stdout === "string" ? value.stdout : "";
+    if (!upload && /^CAMEL_MISSING$/m.test(output)) throw new HttpError(404, `${remote} not found on the computer`);
     const status = /^CAMEL_TRANSFER (\d{3})$/m.exec(output);
     if (status && [413, 507].includes(Number(status[1]))) throw failure(Number(status[1]));
     const receipt = /^CAMEL_FILE\s+(\d+) ([a-f0-9]{64})$/m.exec(output);
