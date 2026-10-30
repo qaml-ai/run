@@ -99,8 +99,14 @@ necessary. `npm run test:affected` uses the same selector against `git merge-bas
 files locally in process mode by default; `AGENT_HOSTING=inline npm run test:affected` selects inline hosting.
 It includes tracked working-tree edits, with the same Postgres and sandbox prerequisites as other runtime tests.
 
-Every main push runs the full suite, both image architectures and `publish`; no PR results are reused. On failure,
-`CI success` writes the commit SHA, associated PR and last earlier green main SHA to the job summary. It does not
+On main, `reuse` looks for the exact checkout tree recorded by a successful same-repository PR run within 14 days.
+It requires the whole `ci.yml` run and its `CI success`, checks, docs, Python, simulator and process jobs to pass.
+A match skips `checks`, `docs`, `python` and `sim`; it skips process shards only if the PR ran the full process
+suite. A selected PR suite never replaces the full process suite. Inline shards, both image architectures and
+`publish` still run. Missing proof or an API error runs the normal checks. `CI success` accepts these skips only
+with verified reuse on a main push; Deploy still requires that main CI run to succeed.
+
+On failure, `CI success` writes the commit SHA, associated PR and last earlier green main SHA to the job summary. It does not
 bisect automatically. Superseded PR and branch runs are cancelled; each main SHA runs independently so Deploy
 receives its completed CI event. Four hundred fresh simulator seeds run every night (`sim-seeds.yml`; run it by
 hand for more): a seed that finds something new turns that run red.

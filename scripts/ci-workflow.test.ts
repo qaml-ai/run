@@ -4,13 +4,14 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { parse } from "yaml";
 
 const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const gate = workflow.split("      - name: Require successful checks or intentional skips\n")[1]
   .split("        run: |\n")[1].split("      - name:")[0];
 
-function passes({ tests = true, image = true, event = "push", ref = "refs/heads/main", results = {} as Record<string, string> } = {}) {
-  const states = { changes: "success", checks: "success", quick: "skipped", python: "success", test: "success", sim: "success", image: "success", docs: "success", publish: "success", ...results };
+function passes({ tests = true, image = true, reused = false, event = "push", ref = "refs/heads/main", results = {} as Record<string, string> } = {}) {
+  const states = { reuse: event === "push" ? "success" : "skipped", changes: "success", checks: "success", quick: "skipped", python: "success", test: "success", sim: "success", image: "success", docs: "success", publish: "success", ...results };
   const needs = workflow.split("  ci:\n")[1].match(/needs: \[(.+)\]/)![1].split(", ");
   assert.deepEqual(Object.keys(states).sort(), needs.sort(), "every required job has a fake state");
   const script = gate.replaceAll("${{ needs.changes.outputs.tests }}", String(tests))
@@ -18,7 +19,7 @@ function passes({ tests = true, image = true, event = "push", ref = "refs/heads/
     .replaceAll("${{ github.event_name }}", event).replaceAll("${{ github.ref }}", ref);
   assert.ok(!script.includes("${{"));
   return spawnSync("bash", ["-e", "-c", script], {
-    env: { ...process.env, RESULTS: JSON.stringify(Object.fromEntries(Object.entries(states).map(([key, result]) => [key, { result }]))) },
+    env: { ...process.env, RESULTS: JSON.stringify(Object.fromEntries(Object.entries(states).map(([key, result]) => [key, { result, outputs: key === "reuse" ? { passed: String(reused) } : {} }]))) },
     encoding: "utf8",
   }).status === 0;
 }
@@ -70,11 +71,58 @@ test("ready PR gate reports failed and cancelled dependencies rather than skippi
   for (const job of ["changes", "checks", "python", "test", "sim", "image", "docs"]) {
     for (const result of ["failure", "cancelled", "skipped"]) assert.equal(passes({ ...options, results: { ...options.results, [job]: result } }), false, `${job}: ${result}`);
   }
-  assert.doesNotMatch(workflow, /outputs\.reuse|tested-tree/);
   const matrix = workflow.split("  test:\n")[1].split("  sim:\n")[0];
-  assert.ok(matrix.includes("hosting: ${{ fromJSON(github.event_name == 'pull_request' && '[\"process\"]' || '[\"process\",\"inline\"]') }}"));
+  assert.match(matrix, /needs\.reuse\.outputs\.process == 'true'/);
   assert.match(matrix, /TEST_FILES: \$\{\{ needs\.changes\.outputs\.selected \}\}/);
   assert.match(matrix, /TEST_INCLUDE_SIM: \$\{\{ github\.event_name == 'pull_request' \}\}/);
+});
+
+test("reuse only permits intentional skips on main and still requires inline, images and publication", () => {
+  const skipped = { checks: "skipped", docs: "skipped", python: "skipped", sim: "skipped" };
+  assert.ok(passes({ reused: true, results: skipped }));
+  assert.equal(passes({ results: skipped }), false);
+  for (const job of ["test", "image", "publish", "changes", "reuse"]) {
+    for (const result of ["failure", "cancelled", "skipped"]) {
+      assert.equal(passes({ reused: true, results: { ...skipped, [job]: result } }), false, `${job}: ${result}`);
+    }
+  }
+  for (const job of Object.keys(skipped)) {
+    for (const result of ["failure", "cancelled"]) {
+      assert.equal(passes({ reused: true, results: { ...skipped, [job]: result } }), false);
+    }
+  }
+  assert.equal(passes({ reused: true, event: "pull_request", results: { ...skipped, publish: "skipped" } }), false);
+  assert.equal(passes({ reused: true, event: "workflow_dispatch", results: { ...skipped, publish: "skipped" } }), false);
+  assert.equal(passes({ reused: true, ref: "refs/heads/feature", results: skipped }), false);
+});
+
+test("only a full process proof removes process shards; PRs and failed lookups run normally", () => {
+  const jobs = parse(workflow).jobs;
+  const expression = jobs.test.strategy.matrix.hosting.slice(3, -2);
+  const hosting = (event: string, passed: boolean, full: boolean) => Function("github", "needs", "fromJSON", `return ${expression}`)(
+    { event_name: event }, { reuse: { outputs: { passed: String(passed), process: String(full) } } }, JSON.parse);
+  for (const event of ["push", "workflow_dispatch", "pull_request"]) {
+    for (const passed of [false, true]) {
+      for (const full of [false, true]) {
+        assert.deepEqual(hosting(event, passed, full), event === "pull_request" ? ["process"] : passed && full ? ["inline"] : ["process", "inline"]);
+      }
+    }
+  }
+  assert.equal(jobs.reuse.if, "github.event_name == 'push' && github.ref == 'refs/heads/main'");
+  for (const name of ["checks", "docs", "python", "sim"]) {
+    const condition = jobs[name].if.slice(3, -2);
+    const runs = (passed: string, result = "skipped", cancelled = false) => Function("needs", "cancelled", `return ${condition}`)(
+      { changes: { result: "success", outputs: { tests: "true" } }, reuse: { result, outputs: { passed } } }, () => cancelled);
+    assert.equal(runs("", "skipped"), true, `${name} runs on PRs despite the skipped lookup`);
+    assert.equal(runs("false", "success"), true);
+    assert.equal(runs("true", "success"), false);
+    assert.equal(runs("false", "success", true), false);
+  }
+  assert.deepEqual(jobs.image.needs, "changes");
+  assert.ok(!jobs.publish.needs);
+  const deploy = parse(readFileSync(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8"));
+  assert.deepEqual(deploy.on.workflow_run, { workflows: ["CI"], types: ["completed"], branches: ["main"] });
+  assert.match(deploy.jobs.deploy.if, /github\.event\.workflow_run\.conclusion == 'success' && github\.event\.workflow_run\.event == 'push'/);
 });
 
 test("main failure summary names the commit, PR and last earlier green run", () => {
