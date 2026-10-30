@@ -1,6 +1,4 @@
 import { test } from "node:test";
-import { AgentRuntime } from "../clients/node.ts";
-import { fromMcpServer } from "../clients/mcp.ts";
 import assert from "node:assert/strict";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -13,6 +11,8 @@ import { VolumeService } from "../src/volumes.ts";
 import { testDatabase } from "./database.ts";
 import { PNG, pdfBytes } from "./file-fixtures.ts";
 import { listen, OPERATOR, runtime, toolCall, toolResults, type T } from "./runtime-server.ts";
+import { AgentRuntime } from "../clients/node.ts";
+import { fromMcpServer } from "../clients/mcp.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const PDF = pdfBytes(["Quarterly report"]);
@@ -110,50 +110,34 @@ test("MCP tools take files by {$file}: base64 or a call-bound URL, only from the
   assert.equal(mcp.seen.length, 2, "refused files never reach the server");
 });
 
-test("MCP blobs are saved by digest while text, small images and resource links stay inline", async t => {
+test("MCP images, audio, blobs and long text are saved to the workspace, under sanitized names", async t => {
   const mcp = await fileServer(t, () => "");
   const r = await runtime(t, (_body, index) => [
     toolCall("files__outputs", {}),
-    toolCall("js_exec", { code: "const out = await tools.files__outputs({}); return out.filter(part => part.type === 'text' && part.text.startsWith('File:')).map(part => part.text);" }),
+    toolCall("js_exec", { code: "const out = await tools.files__outputs({}); return out.filter(part => part.type === 'file').map(part => part.path.split('/').pop() + ':' + part.contentType);" }),
   ][index] ?? { role: "assistant", content: "done" }, LOCAL);
   const definition = (await r.call("/v1/definitions", { body: { name: "Files", mcpServers: [{ name: "files", url: mcp.url, exposure: "both" }] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json;
   const outcome = await r.prompt(agent.id, "make files");
-  assert.equal(outcome.outcome.result.files.filter((file: any) => file.path.startsWith("/workspace/mcp/")).length, 1, "blob saved once across calls");
+  assert.ok(outcome.outcome.result.files.some((file: any) => /^\/workspace\/tool-outputs\/files__outputs\/[a-f0-9]{8}\/image-1\.png$/.test(file.path) && file.contentType === "image/png"), "saved outputs are listed in the run's files");
   const workspace = (await r.call(`/v1/agents/${agent.id}/mounts`)).json[0].volumeId;
-  const saved = await files(r.base, workspace, "/mcp/files");
-  assert.equal(saved.length, 1);
-  assert.match(saved[0].path, /^\/mcp\/files\/[a-f0-9]{64}$/);
-  assert.equal(saved[0].contentType, "application/pdf");
-  assert.deepEqual(await read(r.base, workspace, saved[0].path), PDF);
+  const saved = await files(r.base, workspace, "/tool-outputs/files__outputs");
+  const names = saved.map(file => `${file.path.split("/").pop()}:${file.contentType}`).sort();
+  assert.deepEqual(names, ["audio-2.wav:audio/wav", "audio-2.wav:audio/wav", "hidden.pdf:application/pdf", "hidden.pdf:application/pdf", "image-1.png:image/png", "image-1.png:image/png", "long.txt:text/plain", "long.txt:text/plain"], "each call saves to its own directory");
+  assert.ok(saved.every(file => /^\/tool-outputs\/files__outputs\/[a-f0-9]{8}\/[^/]+$/.test(file.path)), "names from the server cannot leave the call's directory");
+  const pdf = saved.find(file => file.path.endsWith(".pdf"))!;
+  assert.deepEqual(await read(r.base, workspace, pdf.path), PDF);
+
   const result = toolResults(r.model.bodies[1]).at(-1);
   assert.match(result, /made/);
-  assert.match(result, /short note/);
-  assert.match(result, /Resource: doc https:\/\/example\.test\/doc/);
-  assert.match(result, /file_import/);
-  assert.match(result, /File: \/workspace\/mcp\/files\/[a-f0-9]{64}/);
+  assert.match(result, /short note/, "a short text resource stays text");
+  assert.match(result, /Resource: doc https:\/\/example\.test\/doc/, "a resource link stays a link");
+  assert.match(result, /\[File \/workspace\/tool-outputs\/files__outputs\/[a-f0-9]{8}\/long\.txt \(text\/plain, 65 KB\), beginning:\nx{199}…\]/, "with its first line, cut short");
   const messages = JSON.stringify(r.model.bodies[1].messages);
-  assert.ok(messages.includes(PNG.toString("base64")), "small images stay inline");
-  assert.equal(messages.includes(PDF.toString("base64")), false, "blob bytes stay out of the model");
-  assert.equal(messages.includes("x".repeat(1000)), false, "long text keeps its existing file reference behavior");
-  assert.match(toolResults(r.model.bodies[2]).at(-1), /File:.*application\/pdf/);
-});
-
-test("application-attached MCP blobs are saved without entering model content", async t => {
-  const server = new Server({ name: "local", version: "1" }, { capabilities: { tools: {} } });
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "output", inputSchema: { type: "object", properties: {} } }] }));
-  server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "resource", resource: { uri: "file:///report.pdf", blob: PDF.toString("base64"), mimeType: "application/pdf" } }] }));
-  const mcp = await fromMcpServer(server);
-  t.after(() => mcp.close());
-  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("output", {}) : { role: "assistant", content: "done" });
-  const client = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
-  const agent = await client.createAgent({ mcp });
-  t.after(() => agent.close());
-  const result = await agent.prompt("make files");
-  assert.equal(result.files.length, 1);
-  assert.match(result.files[0].path, /^\/workspace\/mcp\/attached\/[a-f0-9]{64}$/);
-  assert.equal(JSON.stringify(r.model.bodies[1].messages).includes(PDF.toString("base64")), false);
-  assert.match(toolResults(r.model.bodies[1]).at(-1), /File:.*application\/pdf/);
+  assert.ok(messages.includes(PNG.toString("base64")), "the model sees the image");
+  assert.ok(messages.includes(PDF.toString("base64")), "and the PDF");
+  assert.equal(messages.includes("x".repeat(1000)), false, "but not the long text");
+  assert.deepEqual(toolResults(r.model.bodies[2]).at(-1), JSON.stringify(["image-1.png:image/png", "audio-2.wav:audio/wav", "hidden.pdf:application/pdf", "long.txt:text/plain"]), "code gets each file's path and type");
 });
 
 /** An API that takes uploads (multipart, raw bytes, base64 in JSON) and answers with a file. */
@@ -277,4 +261,18 @@ test("tool outputs go to the agent's own workspace wherever it is mounted, not a
   const mounts = await volumes.mountsFor("acme", "agent", [{ volumeId: project.id, path: "/workspace", mode: "rw" }, { workspace: true, path: "/scratch" }]);
   const saved = await new ToolFiles({ volumes, tenant: "acme", agent: "agent", mounts, tool: "t", run: { left: 100 } }).save("out.txt", Buffer.from("x"));
   assert.match(saved.path, /^\/scratch\/tool-outputs\/t\/[a-f0-9]{8}\/out\.txt$/);
+});
+
+test("application-attached MCP files are saved to the workspace like a server's", async t => {
+  const server = new Server({ name: "local", version: "1" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "output", inputSchema: { type: "object", properties: {} } }] }));
+  server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "resource", resource: { uri: "file:///report.pdf", blob: PDF.toString("base64"), mimeType: "application/pdf" } }] }));
+  const mcp = await fromMcpServer(server);
+  t.after(() => mcp.close());
+  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("output", {}) : { role: "assistant", content: "done" });
+  const client = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
+  const agent = await client.createAgent({ mcp });
+  t.after(() => agent.close());
+  const result = await agent.prompt("make files");
+  assert.ok(result.files.some((file: any) => /^\/workspace\/tool-outputs\/output\/[a-f0-9]{8}\/report\.pdf$/.test(file.path) && file.contentType === "application/pdf"));
 });

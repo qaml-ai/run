@@ -134,15 +134,15 @@ export async function readCapped(response: Response, maxBytes: number): Promise<
 }
 
 /** Public downloads share web_fetch's guard, redirects, deadline and streaming byte cap. */
-export function download(outbound: Outbound, url: string, signal: AbortSignal, maxBytes = TOOL_FILE_LIMITS.responseBytes) {
+/** A URL the model chose, through the public outbound guard: a page for web_fetch, or a whole file for file_import (`file`: any type, more time). */
+export function download(outbound: Outbound, url: string, signal: AbortSignal, maxBytes = TOOL_FILE_LIMITS.responseBytes, file = false) {
   if (/^http:\/\//i.test(url) && !outbound.allowHttp) url = `https://${url.slice(7)}`;
   return outbound.withoutOrigins().fetch(url, {
-    signal, timeoutMs: 20_000, maxBytes, maxRedirects: 5,
-    headers: { Accept: "text/html, text/plain, application/json;q=0.9, */*;q=0.5", "User-Agent": "agent-runtime web_fetch" },
+    signal, timeoutMs: file ? 120_000 : 20_000, maxBytes, maxRedirects: 5,
+    headers: { Accept: file ? "*/*" : "text/html, text/plain, application/json;q=0.9, */*;q=0.5", "User-Agent": "agent-runtime web_fetch" },
   });
 }
 
-export const MCP_INLINE_BYTES = 32 * 1024;
 
 /**
  * One tool call's access to the agent's files: reading the files its arguments name (within the
@@ -288,27 +288,6 @@ export class ToolFiles {
   }
   get hasWorkspace() { return !!this.workspace(); }
 
-  /** Stable names deduplicate repeated MCP outputs without returning their bytes to the model. */
-  async saveMcp(server: string, bytes: Buffer, contentType?: string) {
-    const mount = this.workspace()!;
-    const target = resolve(this.options.mounts, `${mount.path}/mcp/${safeName(server, "server")}/${createHash("sha256").update(bytes).digest("hex")}`)!;
-    writable(target);
-    const { volumes, tenant, agent, run } = this.options;
-    const budget = Math.min(this.left, run.left);
-    if (bytes.length > budget) throw new Error(`MCP output exceeds the remaining ${budget} byte budget`);
-    const existing = await volumes.call(mount.volumeId, tenant, "stat", { path: target.path }).catch(error => {
-      if (error.status !== 404) throw error;
-    });
-    if (existing?.type === "file" && existing.size === bytes.length && (await volumes.readRange(tenant, existing, 0, existing.size)).equals(bytes)) {
-      this.left -= bytes.length; run.left -= bytes.length;
-      return { path: target.show(target.path), size: existing.size, contentType: existing.contentType };
-    }
-    const saved = await volumes.put(tenant, mount.volumeId, target.path, bytes, { contentType, by: agent, limit: budget });
-    this.left -= saved.size; run.left -= saved.size;
-    const shown = target.show(saved.path);
-    this.options.onWrite?.({ path: shown, version: saved.version, size: saved.size, contentType: saved.contentType! });
-    return { path: shown, size: saved.size, contentType: saved.contentType };
-  }
 
   /** Save one of the call's outputs as `name` (sanitized), and refer to it as the transcript does. */
   async save(name: string, source: Uint8Array | AsyncIterable<Uint8Array>, contentType?: string): Promise<FileRef> {
@@ -335,33 +314,59 @@ export class ToolFiles {
   }
 }
 
-/** Blobs and large media become metadata. Remote text resources keep their existing file references. */
-export async function savedContent(result: McpResult, files: ToolFiles | undefined, server = "server", saveText = true): Promise<McpResult> {
+function dataUri(uri: string): { bytes: Buffer; type?: string } | undefined {
+  const match = /^data:([^,;]*)((?:;[^,;]*)*),(.*)$/is.exec(uri);
+  if (!match) return undefined;
+  const base64 = match[2].split(";").includes("base64");
+  return { bytes: base64 ? Buffer.from(match[3], "base64") : Buffer.from(decodeURIComponent(match[3])), ...(match[1] ? { type: match[1].toLowerCase() } : {}) };
+}
+function resourceName(uri: unknown, index: number, mimeType: unknown) {
+  try { return decodeURIComponent(new URL(String(uri)).pathname.split("/").pop() ?? "") || named("resource", index, mimeType); }
+  catch { return named("resource", index, mimeType); }
+}
+const named = (kind: string, index: number, mimeType: unknown) => `${kind}-${index}${typeof mimeType === "string" && /^[a-z]+\/[a-z0-9]+/i.test(mimeType) ? `.${/^[a-z]+\/([a-z0-9]+)/i.exec(mimeType)![1].toLowerCase()}` : ""}`;
+async function savedLink(part: { uri: string; name?: unknown; mimeType?: unknown }, index: number, files: ToolFiles, fetch: (url: string) => Promise<Response>): Promise<FileRef> {
+  const given = typeof part.mimeType === "string" ? part.mimeType : undefined;
+  const inline = dataUri(part.uri);
+  if (inline) {
+    if (inline.bytes.length > TOOL_FILE_LIMITS.responseBytes) throw new Error(`it is larger than ${TOOL_FILE_LIMITS.responseBytes} bytes`);
+    return files.save(typeof part.name === "string" ? part.name : named("resource", index, given ?? inline.type), inline.bytes, given ?? inline.type);
+  }
+  const response = await fetch(part.uri);
+  if (!response.ok || !response.body) { await response.body?.cancel().catch(() => {}); throw new Error(`fetching it answered HTTP ${response.status}`); }
+  const type = given ?? response.headers.get("content-type") ?? undefined;
+  return files.save(typeof part.name === "string" ? part.name : resourceName(part.uri, index, type), response.body as unknown as AsyncIterable<Uint8Array>, type);
+}
+
+/**
+ * An MCP result with its files saved: images, audio, embedded blobs and long text resources become
+ * file references. What cannot be saved stays as it was (an image) or is described in text. With
+ * `fetch` (a source whose fileArguments is on), `resource_link`s to http(s) and `data:` URIs are saved
+ * too, and the transcript keeps their paths, never their URLs.
+ */
+export async function savedContent(result: McpResult, files: ToolFiles | undefined, fetch?: (url: string) => Promise<Response>): Promise<McpResult> {
   if (!Array.isArray(result.content)) return result;
   const content: unknown[] = [];
+  let index = 0;
   for (const part of result.content) {
+    // Only the runtime makes file references: a server's own would name other files' contents.
     if (part?.type === "file") { content.push({ type: "text", text: "[file content omitted]" }); continue; }
-    if (!files?.hasWorkspace) { content.push(part); continue; }
-    if (part?.type === "resource_link") {
-      content.push(part, { type: "text", text: "Use file_import with this URL to save it to your workspace." });
+    if (fetch && part?.type === "resource_link" && typeof part.uri === "string" && /^(https?|data):/i.test(part.uri)) {
+      const label = typeof part.name === "string" ? part.name : "linked file";
+      try { content.push(await savedLink(part, ++index, need(files), fetch)); }
+      catch (error) { content.push({ type: "text", text: `[${label} not saved: ${errorText(error)}]` }); }
       continue;
     }
+    // Other servers' links stay links: the model can save one with file_import.
+    if (part?.type === "resource_link" && files?.hasWorkspace) { content.push(part, { type: "text", text: "Use file_import with this URL to save it to your workspace." }); continue; }
     const resource = part?.type === "resource" ? part.resource : undefined;
-    if (saveText && typeof resource?.text === "string" && Buffer.byteLength(resource.text) > TOOL_FILE_LIMITS.textBytes) {
-      let name = "resource.txt";
-      try { name = decodeURIComponent(new URL(String(resource.uri)).pathname.split("/").pop() || name); } catch { /* use the default name */ }
-      try { content.push(await files.save(name, Buffer.from(resource.text), resource.mimeType ?? "text/plain")); }
-      catch { content.push(part); }
-      continue;
-    }
-    const data = typeof resource?.blob === "string" ? resource.blob
-      : (part?.type === "image" || part?.type === "audio") && typeof part.data === "string" ? part.data : undefined;
-    if (data === undefined || (!resource && Buffer.byteLength(data, "base64") <= MCP_INLINE_BYTES)) { content.push(part); continue; }
-    try {
-      if (Buffer.byteLength(data, "base64") > TOOL_FILE_LIMITS.responseBytes) throw new Error(`MCP output exceeds ${TOOL_FILE_LIMITS.responseBytes} bytes`);
-      const saved = await files.saveMcp(server, Buffer.from(data, "base64"), resource?.mimeType ?? part.mimeType);
-      content.push({ type: "text", text: `File: ${saved.path} (${saved.size} bytes, ${saved.contentType})` });
-    } catch (error) { content.push({ type: "text", text: `[${part.type} content not saved: ${errorText(error)}]` }); }
+    let output: { name: string; bytes: Buffer; type?: string } | undefined;
+    if ((part?.type === "image" || part?.type === "audio") && typeof part.data === "string") output = { name: named(part.type, ++index, part.mimeType), bytes: Buffer.from(part.data, "base64"), type: part.mimeType };
+    else if (typeof resource?.blob === "string") output = { name: resourceName(resource.uri, ++index, resource.mimeType), bytes: Buffer.from(resource.blob, "base64"), type: resource.mimeType };
+    else if (typeof resource?.text === "string" && Buffer.byteLength(resource.text) > TOOL_FILE_LIMITS.textBytes) output = { name: resourceName(resource.uri, ++index, resource.mimeType), bytes: Buffer.from(resource.text), type: resource.mimeType ?? "text/plain" };
+    if (!output || !files) { content.push(part); continue; }
+    try { content.push(await files.save(output.name, output.bytes, typeof output.type === "string" ? output.type : undefined)); }
+    catch (error) { content.push(part.type === "image" || typeof resource?.text === "string" ? part : { type: "text", text: `[${part.type} content not saved: ${errorText(error)}]` }); }
   }
   return { ...result, content };
 }

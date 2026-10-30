@@ -187,7 +187,7 @@ async function builtinValue(services: BuiltinServices, context: BuiltinContext, 
     if (typeof args.url !== "string" || typeof args.to !== "string") throw new Error("url and to must be strings");
     const files = need(context.files);
     files.destination(args.to);
-    return files.import(await download(services.outbound, args.url, signal, VOLUME_LIMITS.fileBytes), args.to);
+    return files.import(await download(services.outbound, args.url, signal, VOLUME_LIMITS.fileBytes, true), args.to);
   }
   if (name === "x_search") {
     if (!services.xSearch) throw new Error("X search is not enabled on this runtime");

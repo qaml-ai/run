@@ -214,7 +214,7 @@ async function answerToolCall(ctx: ToolsContext, session: Session, call: ToolCal
     if (!budget || budget.id !== request?.id) { budget = { id: request?.id, left: TOOL_FILE_LIMITS.runBytes }; mcpBudgets.set(session, budget); }
     const context = toolContext(ctx, session);
     const files = new ToolFiles({ volumes: ctx.options.volumes, ...context, tool: call.name, run: budget });
-    result = await savedContent(result, files, "attached", false);
+    result = await savedContent(result, files);
   }
   const content = contentResult(result, server.returnsFiles);
   // The model learns who answered, and how long ago: it should check what may have changed meanwhile.

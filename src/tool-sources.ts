@@ -597,7 +597,9 @@ export class ToolSources {
           const meta = { ...callMeta({ toolCallId, innerCallId, idempotencyKey, origin, actor }), ...(approval ? { "agent-runtime/approval": approval } : {}), ...(Object.keys(sent).length ? { "camelrun/files": sent } : {}) };
           const result = await callScope.run(turn, () => this.mcp.call(context.tenant, server, tool.name, resolved, signal, { timeoutMs, maxTotalMs: MAX_TIMEOUT_MS }, meta, onProgress, { inputResponses, requestState, elicit }))
             .catch(error => { throw !signal.aborted && error instanceof McpError && error.code === ErrorCode.RequestTimeout ? timedOut(timeoutMs) : this.rejected(spec, error); }) as McpResult;
-          return await savedContent(result, callFiles, spec.name);
+          // Files it links to are fetched as a URL the model chose would be: never from the operator's own services.
+          const links = takesFiles(spec) ? (url: string) => this.outbound.withoutOrigins().fetch(url, { signal, timeoutMs: API_TIMEOUT_MS, maxBytes: TOOL_FILE_LIMITS.responseBytes }) : undefined;
+          return await savedContent(result, callFiles, links);
         } finally { callFiles?.release(); }
       },
     };

@@ -1,1 +1,1 @@
-drop table computer_transfers;
+drop table if exists computer_transfers;

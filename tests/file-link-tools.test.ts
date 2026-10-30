@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { runBuiltin, builtinDefinitions, builtinsInput, type BuiltinServices } from "../src/builtins.ts";
 import { FileLinks } from "../src/files.ts";
 import { Outbound } from "../src/outbound.ts";
-import { MCP_INLINE_BYTES, savedContent, ToolFiles } from "../src/tool-files.ts";
+import { savedContent, ToolFiles } from "../src/tool-files.ts";
 import { VolumeService, VOLUME_LIMITS, type Mount } from "../src/volumes.ts";
 import { TOOL_FILE_LIMITS } from "../src/limits.ts";
 import { memoryStorage } from "../shared/storage.ts";
@@ -113,42 +113,16 @@ test("file_import uses the public outbound guard, including for configured priva
   }
 });
 
-test("MCP saves blobs and large media once by sha, keeps text and small images, and leaves links", async t => {
+test("MCP links from servers without file arguments stay links, with a file_import hint", async t => {
   const f = await fixture(t);
-  const blob = Buffer.from("pdf bytes"), large = Buffer.alloc(MCP_INLINE_BYTES + 1, 42);
-  const text = { type: "text", text: "unchanged" };
-  const resource = { type: "resource", resource: { uri: "file:///long.txt", text: "x".repeat(TOOL_FILE_LIMITS.textBytes + 1) } };
-  const image = { type: "image", data: Buffer.from("small").toString("base64"), mimeType: "image/png" };
   const link = { type: "resource_link", uri: "https://public.example/file", name: "file" };
-  const parts = [text, resource, image, { type: "resource", resource: { uri: "file:///../../bad.pdf", blob: blob.toString("base64"), mimeType: "application/pdf" } },
-    { type: "image", data: large.toString("base64"), mimeType: "image/png" }, { type: "audio", data: large.toString("base64"), mimeType: "audio/wav" }, link];
-  assert.deepEqual((await savedContent({ content: [resource] }, f.files, "attached", false)).content, [resource], "attached text is unchanged");
-  const result = await savedContent({ content: parts }, f.files, "../../server");
-  assert.deepEqual([result.content![0], result.content![2]], [parts[0], parts[2]]);
-  assert.equal(result.content![1].type, "file", "long text keeps its existing file reference behavior");
-  assert.ok(result.content!.includes(link));
-  assert.match(result.content!.at(-1).text, /file_import/);
-  assert.match(result.content![3].text, /File: \/workspace\/mcp\/server\/[a-f0-9]{64} \(9 bytes, application\/pdf\)/);
-  assert.doesNotMatch(JSON.stringify(result), new RegExp(large.toString("base64")));
-  assert.equal(f.writes.length, 3, "same bytes are saved once, even across content kinds");
-  await savedContent({ content: [parts[3]] }, f.makeFiles(), "../../server");
-  assert.equal(f.writes.length, 3, "repeated calls reuse the file");
-  assert.deepEqual(await f.read(`mcp/server/${sha(blob)}`), blob);
-  const without = await savedContent({ content: parts }, undefined, "server");
-  assert.deepEqual(without.content, parts);
-  f.mounts[0].path = "/data";
-  assert.deepEqual((await savedContent({ content: parts }, f.makeFiles(), "server")).content, parts, "no workspace keeps the existing content");
+  const result = await savedContent({ content: [link] }, f.files);
+  assert.deepEqual(result.content![0], link);
+  assert.match(result.content![1].text, /file_import/);
+  assert.deepEqual((await savedContent({ content: [link] }, undefined)).content, [link], "no workspace keeps the link alone");
 });
 
-test("MCP failed writes do not send large media back to the model", async t => {
-  const f = await fixture(t);
-  const part = { type: "image", data: Buffer.alloc(MCP_INLINE_BYTES + 1).toString("base64"), mimeType: "image/png" };
-  const result = await savedContent({ content: [part] }, f.makeFiles({ left: 1 }), "server");
-  assert.match(result.content![0].text, /not saved/);
-  assert.equal(JSON.stringify(result).includes(part.data), false);
-});
-
-test("ToolSources wires file links and MCP metadata through the normal tool path", async t => {
+test("ToolSources wires file links, and MCP files still save through the normal tool path", async t => {
   const f = await fixture(t);
   const sources = new ToolSources({ volumes: f.volumes, links: f.links, outbound: f.outbound, mcp: {
     async tools() { return [{ name: "blob", inputSchema: { type: "object" } }]; },
@@ -161,5 +135,5 @@ test("ToolSources wires file links and MCP metadata through the normal tool path
   const link = await server.call({ name: "file_link", args: { path: "source", method: "GET" }, signal });
   assert.equal((link as any).structuredContent.path, "/workspace/source");
   const result = await server.call({ name: "vm__blob", args: {}, signal });
-  assert.match((result as any).content[0].text, /\/workspace\/mcp\/vm\//);
+  assert.match(JSON.stringify((result as any).content), /\/workspace\/tool-outputs\/vm__blob\/[a-f0-9]{8}\//);
 });
