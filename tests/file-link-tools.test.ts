@@ -60,6 +60,11 @@ test("file_link offers minimal builtins and binds a visible file with shorter li
   f.mounts[0].mode = "rw";
   for (const maxBytes of [undefined, -1, 0.5, VOLUME_LIMITS.fileBytes + 1]) await assert.rejects(f.call("file_link", { path: "new", method: "PUT", maxBytes }), /maxBytes/);
   await assert.rejects(f.call("file_link", { path: "new", method: "PUT", maxBytes: 1, contentType: "not-a-type" }), /contentType/);
+  // A generic type says nothing about the file: accepted, and the link stays open to any type.
+  for (const contentType of ["application/octet-stream", "application/octet-stream; charset=binary", "multipart/form-data"]) {
+    const generic = await f.call("file_link", { path: "generic", method: "PUT", maxBytes: 4, contentType });
+    assert.equal((await api({ links: f.links, volumes: f.volumes } as any).fetch(new Request(generic.url, { method: "PUT", body: "ok", headers: { "Content-Type": "image/png" } }))).status, 201);
+  }
   const upload = await f.call("file_link", { path: "new", method: "PUT", maxBytes: 4, contentType: "text/plain", expiresIn: 900 });
   const app = api({ links: f.links, volumes: f.volumes } as any);
   assert.equal((await app.fetch(new Request(upload.url, { method: "PUT", body: "large" }))).status, 413);

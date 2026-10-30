@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { errorText, scratchMount } from "./protocol.ts";
-import { declaredType, safeName, type FileLinks, type FileRef } from "./files.ts";
+import { declaredType, genericType, safeName, type FileLinks, type FileRef } from "./files.ts";
 import { digestOf, type FileUrls, type FileValue } from "./file-arguments.ts";
 import { fileRef } from "./inspect.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
@@ -255,7 +255,7 @@ export class ToolFiles {
       if (!Number.isSafeInteger(args.maxBytes) || Number(args.maxBytes) < 0 || Number(args.maxBytes) > VOLUME_LIMITS.fileBytes) throw new Error(`PUT needs maxBytes from 0 to ${VOLUME_LIMITS.fileBytes}`);
     } else await this.open(args.path);
     const contentType = declaredType(args.contentType);
-    if (args.contentType !== undefined && !contentType) throw new Error("Invalid contentType");
+    if (args.contentType !== undefined && !contentType && !genericType(args.contentType)) throw new Error("Invalid contentType");
     const { url, expiresAt } = links.sign({ tenant: this.options.tenant, volume: target.mount.volumeId, path: target.path, method, expiresIn,
       ...(method === "PUT" ? { maxBytes: Number(args.maxBytes) } : {}), ...(contentType ? { contentType } : {}) });
     return { url, method, path: target.show(target.path), expiresAt };
