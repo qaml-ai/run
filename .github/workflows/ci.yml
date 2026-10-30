@@ -13,6 +13,24 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
+  reuse:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: { contents: read, actions: read }
+    outputs:
+      passed: ${{ steps.reuse.outputs.passed }}
+      process: ${{ steps.reuse.outputs.process }}
+    steps:
+      - uses: actions/checkout@v4
+        continue-on-error: true
+      - id: reuse
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            const reuse = require('./scripts/ci-reuse.cjs');
+            await reuse({ github, context, core });
   changes:
     # Classify on a hosted runner so Blacksmith pickup never adds a second queue to the critical path.
     timeout-minutes: 30
@@ -41,7 +59,8 @@ jobs:
         run: bash scripts/ci-changes.sh
         env: { GH_TOKEN: "${{ github.token }}" }
   checks:
-    needs: changes
+    needs: [changes, reuse]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.reuse.outputs.passed != 'true' }}
     # Fail fast: each job here takes 1-4 minutes, so anything near this limit is hung.
     timeout-minutes: 15
     # Under a minute on four vCPUs, beside test shards that take two to three.
@@ -79,8 +98,8 @@ jobs:
   python:
     timeout-minutes: 15
     # Python starts a runtime and needs the sandbox executable; restore it without waiting for another builder.
-    needs: changes
-    if: needs.changes.outputs.tests == 'true'
+    needs: [changes, reuse]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.tests == 'true' && needs.reuse.outputs.passed != 'true' }}
     # Eight vCPUs: on four the suite took 180 s instead of 134 s, past the test shards.
     runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     steps:
@@ -117,13 +136,14 @@ jobs:
     # Duration-balanced files, five shards per mode; 8-vCPU Blacksmith runners run eight files at once, forks two.
     # The shards are CPU-bound: on four vCPUs they took 170-450 s against 115-165 s on eight, at no lower cost.
     name: test (${{ matrix.hosting }} ${{ matrix.shard }}/5)
-    needs: changes
-    if: needs.changes.outputs.tests == 'true'
+    needs: [changes, reuse]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.tests == 'true' }}
     strategy:
       # One failed PR shard makes the PR red; main and manual full runs retain every result.
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        hosting: ${{ fromJSON(github.event_name == 'pull_request' && '["process"]' || '["process","inline"]') }}
+        # A selected PR suite cannot replace main's full process suite. Inline always runs on main.
+        hosting: ${{ fromJSON(github.event_name == 'pull_request' && '["process"]' || (needs.reuse.outputs.passed == 'true' && needs.reuse.outputs.process == 'true' && '["inline"]' || '["process","inline"]')) }}
         shard: [1, 2, 3, 4, 5]
     runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     env:
@@ -149,9 +169,25 @@ jobs:
       - name: Stop test Postgres
         if: always() && steps.postgres.outputs.container != ''
         run: docker rm -f '${{ steps.postgres.outputs.container }}'
+      # Record the checkout, not the API's PR head SHA. The lookup verifies the whole run and CI success.
+      - id: tree
+        if: github.event_name == 'pull_request' && matrix.shard == 1
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          echo "sha=$tree" >> "$GITHUB_OUTPUT"
+          mkdir -p /tmp/ci-tree
+          printf '%s\n' "$tree" > /tmp/ci-tree/tree
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request' && matrix.shard == 1
+        with:
+          name: ci-tested-${{ needs.changes.outputs.selected == '' && 'full-tree' || 'tree' }}-${{ steps.tree.outputs.sha }}
+          path: /tmp/ci-tree/tree
+          overwrite: true
+          retention-days: 14
+          if-no-files-found: error
   sim:
-    needs: changes
-    if: needs.changes.outputs.tests == 'true'
+    needs: [changes, reuse]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.tests == 'true' && needs.reuse.outputs.passed != 'true' }}
     # The deterministic simulator (tests/sim, npm run sim): ten fixed seeds, each run twice and required to replay to the
     # same trace. Fresh seeds explore beyond them every night (sim-seeds.yml), so finding a new one never holds a
     # deploy back. Seeds are CPU-bound, one process per vCPU. A failing seed prints the commands that reproduce it, and
@@ -291,7 +327,8 @@ jobs:
       - if: steps.image.outputs.pushed != 'true'
         run: aws ecr describe-images --repository-name camelai-agent-runtime --image-ids imageTag="${GITHUB_SHA::12}" >/dev/null
   docs:
-    needs: changes
+    needs: [changes, reuse]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.reuse.outputs.passed != 'true' }}
     timeout-minutes: 15
     runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     steps:
@@ -303,7 +340,7 @@ jobs:
         with:
           image: postgres:16-alpine
       - uses: ./.github/actions/node-dependencies
-      - run: node --experimental-strip-types --test scripts/ci-changes.test.ts scripts/ci-workflow.test.ts scripts/test-select.test.ts scripts/test-shard.test.ts scripts/test-files.test.ts tests/docs.test.ts tests/openapi.test.ts tests/openapi-sources.test.ts
+      - run: node --experimental-strip-types --test scripts/ci-reuse.test.cjs scripts/ci-changes.test.ts scripts/ci-workflow.test.ts scripts/test-select.test.ts scripts/test-shard.test.ts scripts/test-files.test.ts tests/docs.test.ts tests/openapi.test.ts tests/openapi-sources.test.ts
         env:
           AGENT_TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:${{ steps.postgres.outputs.port }}/postgres
       - name: Stop test Postgres
@@ -314,7 +351,7 @@ jobs:
     timeout-minutes: 5
     # Always report a result on ready PRs, including when a dependency failed or was cancelled.
     if: always() && needs.changes.outputs.draft != 'true'
-    needs: [changes, checks, quick, python, test, sim, image, publish, docs]
+    needs: [reuse, changes, checks, quick, python, test, sim, image, publish, docs]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -327,7 +364,15 @@ jobs:
           echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")'
           echo "$RESULTS" | jq -e '.changes.result == "success"'
           echo "$RESULTS" | jq -e '.quick.result == "skipped"'
-          echo "$RESULTS" | jq -e '[.checks, .docs] | all(.result == "success")'
+          reused=false
+          if [ '${{ github.event_name }}' = push ] && [ '${{ github.ref }}' = refs/heads/main ]; then
+            reused=$(echo "$RESULTS" | jq -r '.reuse.result == "success" and .reuse.outputs.passed == "true"')
+          fi
+          if [ "$reused" = true ]; then
+            echo "$RESULTS" | jq -e '[.checks, .docs, .python, .sim] | all(.result == "skipped")'
+          else
+            echo "$RESULTS" | jq -e '[.checks, .docs] | all(.result == "success")'
+          fi
           if [ '${{ github.event_name }}' = pull_request ] && [ '${{ needs.changes.outputs.image }}' = false ]; then
             echo "$RESULTS" | jq -e '.image.result == "skipped"'
           else
@@ -337,7 +382,11 @@ jobs:
             echo "$RESULTS" | jq -e '.publish.result == "success"'
           fi
           if [ '${{ needs.changes.outputs.tests }}' = true ] || [ '${{ github.event_name }}' != pull_request ]; then
-            echo "$RESULTS" | jq -e '[.python, .test, .sim] | all(.result == "success")'
+            # Even full reuse leaves inline shards in test; their success is required.
+            echo "$RESULTS" | jq -e '.test.result == "success"'
+            if [ "$reused" != true ]; then
+              echo "$RESULTS" | jq -e '[.python, .sim] | all(.result == "success")'
+            fi
           fi
       - name: Identify failed main commit
         if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
