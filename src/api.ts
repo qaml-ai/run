@@ -23,6 +23,7 @@ import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readBytes, readJson, readText, signInHint } from "./http.ts";
+import { limitRefused } from "./limit-hits.ts";
 import { AGENT_PAGE_MAX } from "./client-sessions/configuration.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
@@ -1544,6 +1545,7 @@ export function api(context: ApiContext) {
   // A conflicting answer says what the input settled as.
   app.onError((error, c) => {
     const status = errorStatus(error, 400);
+    limitRefused(error, status, c.var.principal?.tenant, c.req.routePath);
     for (const [name, value] of Object.entries(errorHeaders(error))) c.header(name, value);
     return json(c, status, { error: errorText(error), code: errorCode(error, status), ...errorFields(error) });
   });

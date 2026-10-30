@@ -69,6 +69,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readText, shedBodies, signInHint } from "./http.ts";
+import { limitRefused } from "./limit-hits.ts";
 import { outcomeEnding, type RequestRecord } from "../shared/client-protocol.ts";
 import { VersionConflict, VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
@@ -1175,21 +1176,23 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     return next();
   });
   /**
-   * Whether a request is authenticated as an admin tenant (by its token, a browser token it minted, or a console session):
-   * its /v1 traffic is not limited per address. A credential that does not check out is no one's: the API refuses it later.
+   * Who a request is authenticated as (by its token, a browser token it minted, or a console session): an admin tenant's
+   * /v1 traffic is not limited per address. A credential that does not check out is no one's: the API refuses it later.
    */
-  async function adminCaller(c: Context) {
+  async function callerTenant(c: Context) {
     const authorization = c.req.header("authorization");
-    let tenant: string | undefined;
     try {
-      if (BrowserTokens.carries(authorization)) tenant = browserTokens.verify(authorization!).tenant;
-      else tenant = authorization ? (await accounts.authenticate(authorization))?.tenant : (await consoleAuth.principal(c.req.raw))?.tenant;
-    } catch { return false; }
-    return tenant !== undefined && tenants.has(tenant);
+      if (BrowserTokens.carries(authorization)) return browserTokens.verify(authorization!).tenant;
+      return authorization ? (await accounts.authenticate(authorization))?.tenant : (await consoleAuth.principal(c.req.raw))?.tenant;
+    } catch { return undefined; }
   }
   // Per-address rate limits, on the node a request reaches first (a request a peer forwarded was counted there).
   app.use(async (c, next) => {
-    if (!forwardedByPeer(c)) await rateLimits.request(c.req.path, requestClient(c).key, () => adminCaller(c));
+    if (forwardedByPeer(c)) return next();
+    // Asked for every /v1 request already, so a refusal can say whose it was at no further cost.
+    let tenant: string | undefined;
+    await rateLimits.request(c.req.path, requestClient(c).key, async () => { tenant = await callerTenant(c); return tenant !== undefined && tenants.has(tenant); })
+      .catch(error => { limitRefused(error, errorStatus(error, 400), tenant); throw error; });
     return next();
   });
   // One node serves each agent and volume; anything addressed to one another node holds goes there.
@@ -1362,6 +1365,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // anything else is a request the runtime could not accept (invalid configuration or tools): 400.
   app.onError((error, c) => {
     const status = errorStatus(error, 400);
+    // A node's internal calls are said by the caller, which knows the tenant.
+    if (!c.req.path.startsWith("/internal/")) limitRefused(error, status, c.var.tenant, c.req.routePath);
     return c.body(JSON.stringify({ type: "error", error: errorText(error), code: errorCode(error, status), ...errorFields(error) }) + "\n", status as ContentfulStatusCode, { "Content-Type": "application/json", ...errorHeaders(error) });
   });
 

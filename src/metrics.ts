@@ -344,6 +344,8 @@ export function observeTurns(model: () => { provider: string; id: string } | und
     const slow = firstRequestMs !== undefined && firstRequestMs >= SLOW_FIRST_REQUEST_MS
       ? (current.storageMs ?? 0) >= firstRequestMs / 2 ? "storage" : current.first ? "first_turn" : "other"
       : undefined;
+    // Whose limit stopped it, and which, so hits on each limit can be counted per tenant.
+    const stoppedBy = limited ? { tenant: tenant(), ...(result.limit ? { limit: String(result.limit) } : {}), ...(result.reason ? { limitReason: String(result.reason) } : {}) } : {};
     emit("turn_metrics", {
       dimensions: { Outcome: outcome, ErrorClass: error, Provider: provider, Model: id },
       rollups: [[], ["Outcome"], ["ErrorClass"], ["Provider", "Model"]],
@@ -358,7 +360,7 @@ export function observeTurns(model: () => { provider: string; id: string } | und
         ModelResponses: current.responses, ModelRetries: current.retries,
         ToolCalls: current.tools, ToolErrors: current.toolErrors,
       },
-      properties: { method, modelErrors: current.errors, firstTurn: current.first, ...(slow ? { slowFirstRequest: slow } : {}) },
+      properties: { method, modelErrors: current.errors, firstTurn: current.first, ...(slow ? { slowFirstRequest: slow } : {}), ...stoppedBy },
     });
   }
 

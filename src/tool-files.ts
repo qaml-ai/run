@@ -3,6 +3,7 @@ import { errorText, scratchMount } from "./protocol.ts";
 import { declaredType, genericType, safeName, type FileLinks, type FileRef } from "./files.ts";
 import { digestOf, type FileUrls, type FileValue } from "./file-arguments.ts";
 import { fileRef } from "./inspect.ts";
+import { limitHit } from "./limit-hits.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
 import type { Outbound } from "./outbound.ts";
 import type { McpResult } from "./mcp-results.ts";
@@ -160,6 +161,9 @@ export class ToolFiles {
   /** `run` is the budget the run's calls share; each call may also save at most TOOL_FILE_LIMITS.callBytes. */
   constructor(options: ToolFiles["options"]) { this.options = options; }
 
+  /** One of TOOL_FILE_LIMITS refused this call. */
+  limited(limit: string) { limitHit({ tenant: this.options.tenant, limit: `tool_file_${limit}`, status: 413 }); }
+
   /** A path in the agent's mounts, if its arguments may name files. */
   private target(path: string) {
     if (this.options.refuse) throw new Error(this.options.refuse);
@@ -185,7 +189,10 @@ export class ToolFiles {
   /** A named file's bytes, for sending inline (at most `maxBytes`). */
   async read(path: string, maxBytes: number = TOOL_FILE_LIMITS.inlineBytes): Promise<Buffer> {
     const file = await this.open(path);
-    if (file.size > maxBytes) throw new Error(`${file.path} is ${file.size} bytes; at most ${maxBytes} can be sent${maxBytes === TOOL_FILE_LIMITS.inlineBytes ? " inline" : ""}`);
+    if (file.size > maxBytes) {
+      this.limited("inline");
+      throw new Error(`${file.path} is ${file.size} bytes; at most ${maxBytes} can be sent${maxBytes === TOOL_FILE_LIMITS.inlineBytes ? " inline" : ""}`);
+    }
     return this.bytes(file);
   }
 
@@ -216,7 +223,11 @@ export class ToolFiles {
       const snapshot = await volumes.call(target.mount.volumeId, tenant, "snapshot", {
         name: `${TEMPORARY_SNAPSHOT}${this.options.call ?? ""}`.slice(0, 120), directory: target.path,
         limit: { files: TOOL_FILE_LIMITS.directoryFiles, bytes: TOOL_FILE_LIMITS.directoryBytes },
-      }).catch(error => { throw (error as { status?: number }).status === 413 ? new Error(`${errorText(error).replace(target.path, shown)}: a directory sent to a tool has at most ${TOOL_FILE_LIMITS.directoryFiles} files and ${TOOL_FILE_LIMITS.directoryBytes} bytes`) : error; });
+      }).catch(error => {
+        if ((error as { status?: number }).status !== 413) throw error;
+        this.limited("directory");
+        throw new Error(`${errorText(error).replace(target.path, shown)}: a directory sent to a tool has at most ${TOOL_FILE_LIMITS.directoryFiles} files and ${TOOL_FILE_LIMITS.directoryBytes} bytes`);
+      });
       this.snapshots.push({ volume: target.mount.volumeId, id: snapshot.id });
       return { uri: await this.signed({ volume: target.mount.volumeId, path: target.path, agentPath: shown, kind: "manifest", snapshot: snapshot.id }, `${shown.slice(shown.lastIndexOf("/") + 1)}.json`) };
     }
@@ -227,7 +238,10 @@ export class ToolFiles {
     let uri: string;
     if (inline && file.size <= TOOL_FILE_LIMITS.inlineBytes) uri = `data:${file.contentType};base64,${(await this.bytes(file)).toString("base64")}`;
     else if (url) uri = await this.signed({ volume: file.volume, path: file.volumePath, agentPath: file.path, kind: "file", version: file.entry.version }, file.name);
-    else throw new Error(`${file.path} is ${file.size} bytes; this argument takes files inline only, at most ${TOOL_FILE_LIMITS.inlineBytes}`);
+    else {
+      this.limited("inline");
+      throw new Error(`${file.path} is ${file.size} bytes; this argument takes files inline only, at most ${TOOL_FILE_LIMITS.inlineBytes}`);
+    }
     if (!describe) return { uri };
     const digest = await digestOf(volumes, tenant, file.entry);
     return { uri, value: { uri, name: file.name, mimeType: file.contentType, size: file.size, ...(digest ? { digest: { algorithm: "sha-256", value: digest } } : {}) } };
@@ -295,7 +309,10 @@ export class ToolFiles {
     const mount = scratchMount(VolumeService.markWorkspace(agent, mounts));
     if (!mount) throw new Error("this agent has no writable mount to save it to");
     const budget = Math.min(this.left, run.left);
-    if (budget <= 0) throw new Error(`the tool has saved as much as it may (${TOOL_FILE_LIMITS.callBytes} bytes a call, ${TOOL_FILE_LIMITS.runBytes} a run)`);
+    if (budget <= 0) {
+      this.limited("saved");
+      throw new Error(`the tool has saved as much as it may (${TOOL_FILE_LIMITS.callBytes} bytes a call, ${TOOL_FILE_LIMITS.runBytes} a run)`);
+    }
     this.directory ??= `${mount.path}/tool-outputs/${safeName(this.options.tool, "tool")}/${randomBytes(4).toString("hex")}`;
     const base = safeName(name, "output");
     let unique = base;
@@ -303,8 +320,9 @@ export class ToolFiles {
     this.names.add(unique);
     const target = resolve(mounts, `${this.directory}/${unique}`)!;
     const saved = await volumes.put(tenant, mount.volumeId, target.path, source, { contentType, by: agent, limit: budget }).catch(error => {
-      if ((error as { status?: number }).status === 413) throw new Error(`it is larger than the ${budget} bytes the tool may still save (${TOOL_FILE_LIMITS.callBytes} a call, ${TOOL_FILE_LIMITS.runBytes} a run)`);
-      throw error;
+      if ((error as { status?: number }).status !== 413) throw error;
+      this.limited("saved");
+      throw new Error(`it is larger than the ${budget} bytes the tool may still save (${TOOL_FILE_LIMITS.callBytes} a call, ${TOOL_FILE_LIMITS.runBytes} a run)`);
     });
     this.left -= saved.size;
     run.left -= saved.size;
@@ -329,7 +347,10 @@ async function savedLink(part: { uri: string; name?: unknown; mimeType?: unknown
   const given = typeof part.mimeType === "string" ? part.mimeType : undefined;
   const inline = dataUri(part.uri);
   if (inline) {
-    if (inline.bytes.length > TOOL_FILE_LIMITS.responseBytes) throw new Error(`it is larger than ${TOOL_FILE_LIMITS.responseBytes} bytes`);
+    if (inline.bytes.length > TOOL_FILE_LIMITS.responseBytes) {
+      files.limited("response");
+      throw new Error(`it is larger than ${TOOL_FILE_LIMITS.responseBytes} bytes`);
+    }
     return files.save(typeof part.name === "string" ? part.name : named("resource", index, given ?? inline.type), inline.bytes, given ?? inline.type);
   }
   const response = await fetch(part.uri);

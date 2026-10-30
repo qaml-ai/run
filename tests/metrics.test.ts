@@ -341,6 +341,20 @@ test("the spend, provider-credit and turn-failure alarms read metrics as the run
   assert.equal(failures.match(/period\s+= 900\n/g)?.length, 2);
 });
 
+test("a turn a limit stopped says whose and which limit; any other turn does not name its tenant", async () => {
+  const lines = await captured(async () => {
+    const turns = observeTurns(() => ({ provider: "openrouter", id: "m" }), Date.now, () => "camel-bots");
+    await turns.wrap(async () => ({ error: "This end user is out of credit: spent", code: "end_user_credit", stopped: "spend_limit", limit: "end_user", reason: "balance", endUser: "person", bucket: "b" }))("prompt", {});
+    await turns.wrap(async () => ({ error: "This run stopped at its limit of 3 model responses", code: "turn_limit", stopped: "turn_limit" }))("prompt", {});
+    await turns.wrap(async () => ({ error: null }))("prompt", {});
+  });
+  const [spend, turn, plain] = lines.filter(line => line.type === "turn_metrics");
+  assert.deepEqual([spend.Outcome, spend.tenant, spend.limit, spend.limitReason], ["spend_limit", "camel-bots", "end_user", "balance"]);
+  assert.deepEqual([turn.Outcome, turn.tenant, turn.limit], ["turn_limit", "camel-bots", undefined]);
+  assert.deepEqual([plain.Outcome, plain.tenant], ["completed", undefined]);
+  assert.ok(!JSON.stringify(spend).includes("out of credit") && !JSON.stringify(spend).includes("person"), "never the message, nor whose credit");
+});
+
 test("each model response logs its time, first token and the host that served it, never its text", async () => {
   let now = 1_000;
   const lines = await captured(() => {

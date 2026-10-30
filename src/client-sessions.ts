@@ -23,6 +23,7 @@ import { FRAME_BYTES, outcomeEnding, type ClientEvent, type Outcome, type Reques
 import { agentMetadata, type AgentMetadata } from "../shared/agent-metadata.ts";
 import { scheduleInput } from "./scheduler.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson } from "./http.ts";
+import { limitRefused } from "./limit-hits.ts";
 import { rateLimitHeaders, type RateLimitState } from "./rate-limits.ts";
 import { VolumeService } from "./volumes.ts";
 import { databaseRetryable, databaseUnavailable, type Db, type Sql } from "./db.ts";
@@ -1613,6 +1614,7 @@ export class ClientSessions {
     app.all("/clients/*", () => { throw new HttpError(401, "Unauthorized"); });
     app.onError((error, c) => {
       const status = errorStatus(error, 500);
+      limitRefused(error, status, c.var.session?.header.tenant, c.req.routePath);
       for (const [name, value] of Object.entries(errorHeaders(error))) c.header(name, value);
       return json(c, status, { error: errorText(error), code: errorCode(error, status), ...errorFields(error) });
     });

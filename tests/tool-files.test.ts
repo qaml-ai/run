@@ -234,6 +234,7 @@ test("web_fetch saves PDFs and images to the workspace and shows them to the mod
 });
 
 test("a call and a run save only so much, never outside the workspace", async t => {
+  const logs = t.mock.method(console, "log", () => {});
   const { db } = await testDatabase();
   const volumes = new VolumeService({ db, storage: memoryStorage(postgresTail(db, { unfenced: true })) });
   t.after(() => volumes.close());
@@ -251,6 +252,9 @@ test("a call and a run save only so much, never outside the workspace", async t 
   await assert.rejects(next.save("two", Buffer.from("1")), /has saved as much as it may/, "the run's budget is shared by its calls");
   const readOnly = new ToolFiles({ volumes, tenant: "acme", agent: "agent", mounts: mounts.slice(0, 1), tool: "t", run: { left: 100 } });
   await assert.rejects(readOnly.save("x", Buffer.from("1")), /no writable mount/);
+  const hits = logs.mock.calls.map(call => String(call.arguments[0])).filter(line => line.includes('"limit_hit"')).map(line => JSON.parse(line));
+  assert.ok(hits.some(hit => hit.tenant === "acme" && hit.limit === "tool_file_saved" && hit.status === 413), "the refusal is logged with its tenant");
+  assert.ok(!hits.some(hit => JSON.stringify(hit).includes("env")), "never what was refused");
 });
 
 test("tool outputs go to the agent's own workspace wherever it is mounted, not a project at /workspace", async t => {

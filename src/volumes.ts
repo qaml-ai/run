@@ -4,6 +4,7 @@ import type { Storage } from "../shared/storage.ts";
 import type { Db, Sql } from "./db.ts";
 import { NotOwner, LostClaim, underClaim, type Claim, type Ownership } from "./ownership.ts";
 import { HttpError } from "./http.ts";
+import { limitRefused } from "./limit-hits.ts";
 import { deleteTail } from "./log-tail.ts";
 import { errorText, type ToolDefinition } from "./protocol.ts";
 import { safeError } from "./metrics.ts";
@@ -329,6 +330,7 @@ export class VolumeService {
         return await this.options.peer(owner, `/internal/volumes/${id}/ops`, { tenant, op, args });
       } catch (error) {
         const status = (error as HttpError).status;
+        limitRefused(error, status, tenant, `volume:${op}`);
         // The owner moved, is draining, or is unreachable: look it up afresh.
         if (owner && (status === undefined || status === 503)) this.options.ownership?.forget(id);
         if (status !== 503 || attempt >= 4) throw error;
@@ -744,7 +746,11 @@ export class VolumeService {
     // Checked once, then against what this write adds: content already stored (the same chunks) still counts, so
     // a write near the limit may be refused that would have stored nothing new.
     const quota = await this.options.quota?.(tenant);
-    if (quota && quota.used >= quota.limit) throw storageFull(quota);
+    if (quota && quota.used >= quota.limit) {
+      const full = storageFull(quota);
+      limitRefused(full, 507, tenant, "volume:store");
+      throw full;
+    }
     const chunks: string[] = [];
     let size = 0;
     let parts: Buffer[] = [];
@@ -759,8 +765,16 @@ export class VolumeService {
     };
     for await (const data of source instanceof Uint8Array ? [source] : source) {
       size += data.byteLength;
-      if (size > limit) throw new HttpError(413, `Files are limited to ${limit} bytes`);
-      if (quota && quota.used + size > quota.limit) throw storageFull(quota);
+      if (size > limit) {
+        const tooLarge = new HttpError(413, `Files are limited to ${limit} bytes`);
+        limitRefused(tooLarge, 413, tenant, "volume:store");
+        throw tooLarge;
+      }
+      if (quota && quota.used + size > quota.limit) {
+        const full = storageFull(quota);
+        limitRefused(full, 507, tenant, "volume:store");
+        throw full;
+      }
       parts.push(Buffer.from(data.buffer, data.byteOffset, data.byteLength));
       buffered += data.byteLength;
       while (buffered >= CHUNK_BYTES) {
