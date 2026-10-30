@@ -320,6 +320,11 @@ test("the server answers 429 RATE_LIMITED with Retry-After and the limit: per ad
     limit: { name: "api_requests", scope: "ip", max: 4, windowSeconds: 60 },
   });
   assert.equal((await r.call("/v1/me", { token: null, headers: from("203.0.113.5") })).status, 429, "unauthenticated requests count too");
+  // The refusal says whose it was, once a minute, and not who else asked from that address.
+  const hits = () => r.logs.filter(line => line.includes('"type":"limit_hit"')).map(line => JSON.parse(line));
+  await until(() => hits().some(hit => hit.limit === "api_requests" && hit.tenant === "carol"), "the per-address refusal logged with its tenant");
+  assert.deepEqual(hits().filter(hit => hit.tenant === "carol").map(hit => [hit.limit, hit.status]), [["api_requests", 429]]);
+  assert.ok(hits().some(hit => hit.limit === "api_requests" && hit.tenant === null), "a request with no credential is no one's");
   assert.equal((await r.call("/v1/me", { token: carol, headers: from("203.0.113.6") })).status, 200, "another address has its own budget");
   assert.equal((await r.call("/v1/me", { token: carol, headers: from("2001:db8:1:2::9") })).status, 200);
   // The runtime's own loopback calls (hosted MCP tools) carry no address and are not counted.
@@ -328,6 +333,8 @@ test("the server answers 429 RATE_LIMITED with Retry-After and the limit: per ad
   const created = [];
   for (let i = 0; i < 2; i++) created.push((await r.call("/v1/agents", { body: {}, token: carol })).json.id);
   const refused = await r.call("/v1/agents", { body: {}, token: carol });
+  await until(() => hits().some(hit => hit.limit === "agent_creates"), "the per-tenant refusal logged");
+  assert.deepEqual(hits().filter(hit => hit.limit === "agent_creates").map(hit => [hit.tenant, hit.status, hit.route]), [["carol", 429, "/v1/agents"]]);
   assert.equal(refused.status, 429);
   assert.equal(refused.json.code, "RATE_LIMITED");
   assert.deepEqual(refused.json.limit, { name: "agent_creates", scope: "tenant", max: 2, windowSeconds: 60 });
