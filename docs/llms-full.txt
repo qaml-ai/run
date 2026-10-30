@@ -806,6 +806,7 @@ removes the tools and stops the session before deleting credentials.
 | Daytona | Sandbox API key | Linux shell and files |
 | Boat | API token | Linux shell and files |
 | E2B | API key | Linux shell and files |
+| Sprites | API token | Linux shell and files |
 | Browserbase | API key and optional project ID | Browser navigation, reading, clicking, filling and JavaScript |
 | Browser Use Cloud | API key | Browser navigation, reading, clicking, filling and JavaScript |
 | Cloudflare Tunnel | Runner HTTPS origin and connection token | Linux shell and files in your runner's Docker container |
@@ -817,6 +818,10 @@ that your account can create a machine; the first `computer_start` does that.
 Credentials are encrypted in storage and are never placed in the model's
 context. A managed machine gets no camelRun host credentials. Boat machines are
 created with `noEnv`, snapshots off and monitoring off.
+
+For Fly.io Sprites, create an API token on your Sprites account page and enter
+the full `org-slug/org-id/token-id/token-value` token as `apiKey`. Use provider
+`sprites`. Each session creates a sprite; stopping or expiring the session deletes it.
 
 The API equivalent is `POST /v1/computers`:
 
@@ -892,6 +897,7 @@ the unused time. The budget resets at midnight UTC.
 
 camelRun stops expired sessions and retries failed cleanup. Provider timeout
 settings add a fallback where supported; Daytona's fallback is an idle timeout.
+Sprites pause when idle but have no provider-side lease; camelRun deletes them at expiry.
 The runtime must remain available for timely cleanup. Check the provider console
 if cleanup is failing. Account deletion waits for computer cleanup before
 removing credentials.

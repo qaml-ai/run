@@ -7,7 +7,7 @@ import { Outbound } from "../src/outbound.ts";
 import { testDatabase } from "./database.ts";
 import { Workspaces } from "../src/workspaces.ts";
 
-async function fixture() {
+async function fixture(provider: 'e2b' | 'sprites' = 'e2b') {
   const { db } = await testDatabase();
   await db.query("insert into agents(id,tenant,header,revision,name,type,model) values ('a','alice','{}',1,'A','test','x'),('b','bob','{}',1,'B','test','x')");
   const accounts = new Accounts({ db, tenants: new Tenants({ read: async () => '{"tenants":{}}' }), secretsKey: 'ab'.repeat(32) });
@@ -18,7 +18,7 @@ async function fixture() {
     async close() { closes++; if (closeFails) throw new Error('provider unavailable'); },
   }) };
   const service = new Computers(options);
-  const connection = await service.create('alice', { agent: 'a', provider: 'e2b', credentials: { apiKey: 'private-secret' }, leaseSeconds: 60, dailySeconds: 120 });
+  const connection = await service.create('alice', { agent: 'a', provider, credentials: { apiKey: 'private-secret' }, leaseSeconds: 60, dailySeconds: 120 });
   return { db, service, connection, restart: () => new Computers(options), advance: (ms: number) => now += ms,
     counts: () => ({ creates, closes, executions }), fail: () => failing = true, closeFail: (value: boolean) => closeFails = value };
 }
@@ -65,8 +65,8 @@ test('ambiguous commands do not replay after restarting the service', async () =
   assert.equal(f.counts().executions, 1);
 });
 
-test('expiry cleanup retries, time budgets and original workspace attribution', async () => {
-  const f = await fixture(), groups = new Workspaces(f.db);
+for (const provider of ['e2b', 'sprites'] as const) test(`${provider} expiry cleanup retries, time budgets and original workspace attribution`, async () => {
+  const f = await fixture(provider), groups = new Workspaces(f.db);
   const workspace = await groups.create('alice','First'), later = await groups.create('alice','Later');
   await groups.assign('alice','agent','a',workspace.id);
   await f.service.call('alice','a','computer_start',{},'first');
