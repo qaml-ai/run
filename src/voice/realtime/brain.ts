@@ -114,7 +114,8 @@ type Hold = { settle(usd: number): Promise<void>; release(): Promise<void> };
 /** What the brain needs of its session. */
 export interface BrainHooks {
   /** Opens the provider connection (with the session's model, voice, instructions and tools). */
-  connect(events: RealtimeEvents): RealtimeConnection;
+  /** `direct`: on the provider itself, not the platform's Azure deployment of it. */
+  connect(events: RealtimeEvents, options?: { direct?: boolean }): RealtimeConnection;
   /** Where audio plays now (the session's media), if anywhere. */
   player(): Player | undefined;
   /** A barge-in pause is over: what plays goes on. */
@@ -221,6 +222,8 @@ type Response = {
   askedAt: number;
   /** What it was asked with: instructions for this response alone, and whether this is already the second try. */
   instructions?: string; retried: boolean;
+  /** What it answers that only its connection knows (the agent's reply): a move tells the next one. */
+  carry?: string;
   /** Words the bot's code had it say, made by text to speech (not the model's): its id, and how to stop making it. */
   clip?: { id: string; abort: AbortController };
 };
@@ -239,6 +242,10 @@ export class RealtimeBrain {
   private reconnects: number[] = [];
   /** A failed response waiting to be asked for again. */
   private pendingRetry?: { timer: ReturnType<Clock["setTimeout"]>; turn?: TurnClock };
+  /** Azure's rate limit moved this session to OpenAI: every connection until it ends goes there. */
+  private offAzure = false;
+  /** The move under way: the connection left, whose transcripts still come, and those it still owes. */
+  private leaving?: { connection: RealtimeConnection; generation: number; tags: Set<string>; timer: ReturnType<Clock["setTimeout"]> };
   private generation = 0;
   private segment?: Segment;
   private segments = new Map<string, Segment>();
@@ -447,7 +454,7 @@ export class RealtimeBrain {
 
   /** The first of what the bot's code asked for, if the floor is free: said, or the model asked. */
   private next() {
-    if (this.closed || !this.announcements.length) return;
+    if (this.closed || !this.announcements.length || this.leaving) return;
     // A response being made, held or played goes first, and an answer waiting for the floor.
     if (this.current || (this.playing && !this.playing.cancelled) || this.waitingRespond) return;
     if (!this.announcements[0].urgent && this.speaking.size) return;
@@ -509,6 +516,7 @@ export class RealtimeBrain {
     for (const call of this.agentCalls) call.abort();
     this.announcements.splice(0);
     this.dropRetry("interrupted");
+    this.left();
     for (const response of [this.current, this.playing]) {
       if (!response) continue;
       response.clip?.abort.abort();
@@ -541,7 +549,7 @@ export class RealtimeBrain {
   private open() {
     const connect = () => {
       if (this.closed) return;
-      this.connection = this.hooks.connect(this.events());
+      this.connection = this.hooks.connect(this.events(), this.offAzure ? { direct: true } : undefined);
       // A new connection after a reconnect: what was said before, as context.
       if (this.history.length) this.connection.note(`[Earlier in this call]\n${this.history.map(line => `${line.who}: ${line.text}`).join("\n")}`);
       this.segment = undefined;
@@ -605,12 +613,14 @@ export class RealtimeBrain {
     // A connection replaced (reconnected) says nothing more to this brain.
     const generation = ++this.generation;
     const live = () => !this.closed && generation === this.generation;
+    const leaving = () => !this.closed && this.leaving?.generation === generation;
     return {
       ready: () => {
         if (!live()) return;
         this.host = this.connection?.host ?? this.ttsInfo().ttsProvider;
         this.hooks.log("voice_realtime_ready", { host: this.host });
       },
+      rateLimits: limits => { if (live()) this.hooks.log("voice_realtime_rate_limits", { host: this.connection?.host, limits }); },
       // Azure refused or failed before the connection was live: it goes on on OpenAI (voice/realtime/openai.ts).
       fallback: detail => {
         if (!live()) return;
@@ -662,7 +672,7 @@ export class RealtimeBrain {
       toolCall: call => { if (live()) this.tool(call); },
       responseDone: (id, outcome) => { if (live()) this.responseDone(id, outcome); },
       heard: (tag, text, seconds) => {
-        if (!live()) return;
+        if (!live() && !leaving()) return;
         if (this.options.ownsTurns) {
           const segment = this.segment;
           this.segment = undefined;
@@ -763,6 +773,10 @@ export class RealtimeBrain {
     const segment = this.segments.get(tag);
     if (!segment) return;
     this.segments.delete(tag);
+    if (this.leaving?.tags.delete(tag)) {
+      if (text) this.connection?.note(`[Earlier in this call]\n${this.hooks.name(segment.first)}: ${text}`);
+      if (!this.leaving.tags.size) queueMicrotask(() => this.left());
+    }
     const costUsd = seconds > 0 && !this.metered ? realtimeTranscriptionCost(seconds) : 0;
     this.stats.costUsd += costUsd;
     const turn = segment.turn;
@@ -788,7 +802,7 @@ export class RealtimeBrain {
 
   /** Likely done: with speculation on, the response begins now, held until the turn ends. */
   private likelyEnd(speaker: string, speechEnd: number) {
-    if (!this.options.speculative || this.current || this.playing || this.waitingRespond) return;
+    if (!this.options.speculative || this.current || this.playing || this.waitingRespond || this.leaving) return;
     if ([...this.speaking].some(other => other !== speaker)) return;
     if (!this.options.floor.standing(speaker, this.hooks.humans())) return;
     this.mixer.flush();
@@ -864,10 +878,10 @@ export class RealtimeBrain {
   }
 
   /** Answer: now, or once the floor is free and the response before has finished. */
-  private respond(request: { speaker?: string; turn?: TurnClock; instructions?: string; retried?: boolean }) {
+  private respond(request: { speaker?: string; turn?: TurnClock; instructions?: string; retried?: boolean; carry?: string }) {
     if (this.closed) return;
     if (this.options.ownsTurns) { this.connection?.respond(request.instructions ? { instructions: request.instructions } : {}); return; }
-    const busy = (this.current && !this.current.done) || [...this.speaking].length > 0;
+    const busy = (this.current && !this.current.done) || [...this.speaking].length > 0 || !!this.leaving;
     if (busy) {
       // One waits at most: a newer turn's replaces it (the model hears both).
       this.waitingRespond?.turn?.end("no_reply");
@@ -879,7 +893,7 @@ export class RealtimeBrain {
     this.ask({ ...request, held: false, speculative: false });
   }
 
-  private ask(request: { speaker?: string; turn?: TurnClock; instructions?: string; held: boolean; speculative: boolean; retried?: boolean }) {
+  private ask(request: { speaker?: string; turn?: TurnClock; instructions?: string; held: boolean; speculative: boolean; retried?: boolean; carry?: string }) {
     const connection = this.connection;
     if (!connection) { request.turn?.end("error"); return; }
     // Any new answer hears everything so far, what the failed one was to answer too.
@@ -910,11 +924,11 @@ export class RealtimeBrain {
     });
   }
 
-  private response(request: { speaker?: string; turn?: TurnClock; instructions?: string; held?: boolean; speculative?: boolean; retried?: boolean }): Response {
+  private response(request: { speaker?: string; turn?: TurnClock; instructions?: string; held?: boolean; speculative?: boolean; retried?: boolean; carry?: string }): Response {
     return {
       key: ++this.keys, ...(request.turn ? { turn: request.turn } : {}), ...(request.speaker ? { speaker: request.speaker } : {}),
       held: !!request.held, speculative: !!request.speculative, audio: new PcmQueue(), said: "", done: false, played: false, costUsd: 0, askedAt: this.clock.now(),
-      ...(request.instructions ? { instructions: request.instructions } : {}), retried: !!request.retried,
+      ...(request.instructions ? { instructions: request.instructions } : {}), retried: !!request.retried, ...(request.carry ? { carry: request.carry } : {}),
     };
   }
 
@@ -926,7 +940,7 @@ export class RealtimeBrain {
       current.held = false;
       if (current.audio.bytes) this.play(current);
     }
-    if (this.waitingRespond && !(this.current && !this.current.done)) {
+    if (this.waitingRespond && !(this.current && !this.current.done) && !this.leaving) {
       const { at, ...request } = this.waitingRespond;
       this.waitingRespond = undefined;
       // An answer that waited too long would answer what is no longer being talked about: the next turn will be.
@@ -997,7 +1011,7 @@ export class RealtimeBrain {
     });
   }
 
-  private responseDone(id: string, outcome: { status: string; usage: RealtimeUsage; error?: string }) {
+  private responseDone(id: string, outcome: { status: string; usage: RealtimeUsage; error?: string; rateLimited?: boolean }) {
     const response = this.byId(id) ?? (this.current && !this.current.id && !this.current.clip ? this.current : undefined);
     const costUsd = this.metered ? this.flushMeter(outcome.usage, (response?.audio.bytes ?? 0) / 48_000) : realtimeCost(this.options.reference, outcome.usage);
     if (!this.metered) {
@@ -1005,12 +1019,14 @@ export class RealtimeBrain {
       this.hooks.usage({ usage: outcome.usage, costUsd, audioSeconds: outcome.usage.outputAudio / 20 });
     }
     if (outcome.status === "failed") this.hooks.log("voice_realtime_response_failed", { ...(outcome.error ? { error: outcome.error } : {}) });
+    const moved = !!outcome.rateLimited && this.connection?.host === "azure";
+    if (moved) this.leaveAzure(response);
     if (!response) return;
     response.done = true;
     response.costUsd = costUsd;
     response.audio.end();
     this.settle(response, costUsd);
-    if (!response.audio.bytes && outcome.status === "failed" && this.retries(response)) this.retry(response);
+    if (!response.audio.bytes && outcome.status === "failed" && this.retries(response)) this.retry(response, moved ? 0 : this.options.retryMs ?? REALTIME_LIMITS.retryMs);
     else if (!response.audio.bytes) response.turn?.end(response.silent ? "silent" : response.cancelled ? "interrupted" : outcome.status === "failed" ? "error" : "no_reply");
     // Done making: one with audio left to play stays current until it has played (or is held, until it may).
     if (this.current === response && (response.cancelled || !response.audio.bytes)) this.current = undefined;
@@ -1027,14 +1043,45 @@ export class RealtimeBrain {
       && this.clock.now() - response.askedAt <= REALTIME_LIMITS.waitMs;
   }
 
-  private retry(response: Response) {
+  private retry(response: Response, delayMs: number) {
     this.stats.retried++;
     const { speaker, turn, instructions } = response;
     const timer = this.clock.setTimeout(() => {
       this.pendingRetry = undefined;
       this.respond({ ...(speaker ? { speaker } : {}), ...(turn ? { turn } : {}), ...(instructions ? { instructions } : {}), retried: true });
-    }, this.options.retryMs ?? REALTIME_LIMITS.retryMs);
+    }, delayMs);
     this.pendingRetry = { timer, ...(turn ? { turn } : {}) };
+  }
+
+  /**
+   * Azure's rate limit refused a response: the session goes on on OpenAI until it ends (the platform's key, the same
+   * price), with what was said as context, as after a reconnect (docs/operations/voice-pipeline.md). OpenAI is connected
+   * at once, and new audio goes there. The old connection stays until it has transcribed what it holds, since those
+   * words are all the next answer can know of them; nothing is answered until then.
+   */
+  private leaveAzure(response: Response | undefined) {
+    this.offAzure = true;
+    this.stats.azureFallbacks++;
+    this.hooks.log("voice_realtime_azure_fallback", { reason: "rate_limit" });
+    this.mixer.flush();
+    this.commitSegment();
+    const connection = this.connection!, generation = this.generation;
+    const tags = new Set(this.options.transcribed ? this.segments.keys() : []);
+    const timer = this.clock.setTimeout(() => this.left(), REALTIME_LIMITS.addressWaitMs);
+    this.leaving = { connection, generation, tags, timer };
+    this.open();
+    if (response?.carry) this.connection?.note(response.carry);
+    if (!tags.size) queueMicrotask(() => this.left());
+  }
+
+  /** The old connection has no more to give, or has had its time: answers may be asked for again. */
+  private left() {
+    const leaving = this.leaving;
+    if (!leaving) return;
+    this.leaving = undefined;
+    this.clock.clearTimeout(leaving.timer);
+    leaving.connection.close();
+    this.release();
   }
 
   /** A retry not yet asked for is not needed after all. */
@@ -1114,16 +1161,17 @@ export class RealtimeBrain {
         dimensions: { Provider: this.ttsInfo().ttsProvider, Outcome: outcome }, rollups: [[], ["Provider"], ["Outcome"]], metrics: { VoiceAskAgentMs: [ms, "Milliseconds"] },
         properties: { session: this.options.session, tenant: this.options.tenant },
       }));
-      if (this.closed || this.connection !== connection) return;
+      if (this.closed) return;
       const said = reply || "(The agent did this, and wrote nothing back.)";
-      if (!late) {
+      // On the connection that called it, the reply is the tool's output; on a later one, that call is not known.
+      if (!late && this.connection === connection) {
         connection.toolResult(call.id, JSON.stringify(reply !== undefined ? { reply: said } : { error: outcome === "empty" ? "ask_agent needs a request: call it again with what to ask the agent." : "The agent could not do it just now." }));
-        this.respond({ ...(speaker ? { speaker } : {}) });
+        this.respond({ ...(speaker ? { speaker } : {}), ...(reply !== undefined ? { carry: `[The agent's reply to "${request.slice(0, 300)}"]\n${said}` } : {}) });
         return;
       }
-      // The call was answered already ("still working"): the reply comes as a note, and is said now.
+      // The call was answered already ("still working"), or its connection has gone: the reply comes as a note, and is said now.
       if (outcome === "timeout") return;
-      connection.note(reply !== undefined
+      this.connection?.note(reply !== undefined
         ? `[The agent's late reply to "${request.slice(0, 300)}"]\n${said}`
         : `[The agent could not finish "${request.slice(0, 300)}"]`);
       this.respond({ ...(speaker ? { speaker } : {}), instructions: reply !== undefined ? "The agent's reply to an earlier request just came in (the last note): tell them now, briefly, in your own words." : "The agent could not finish an earlier request (the last note): say so briefly." });

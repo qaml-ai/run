@@ -1730,7 +1730,7 @@ export class VoiceSessions {
       }).then(row => { if (row?.options.deliver.webhooks && event?.type === "voice.utterance") this.options.kickWebhooks?.(); },
         error => console.error(JSON.stringify({ type: "voice_realtime_write_failed", session: held.id, ...(event ? { event: event.type } : {}), error: safeError(error) })));
     const hooks: BrainHooks = {
-      connect: events => provider.connect(config, credentials, events),
+      connect: (events, connection) => provider.connect(config, connection?.direct ? { apiKey: credentials.apiKey } : credentials, events),
       player: () => held.media?.speaks ? held.media : undefined,
       resumeMedia: () => held.media?.resume(),
       humans: () => this.humans(held.id),

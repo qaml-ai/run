@@ -139,7 +139,7 @@ export function testBrain(options: Partial<BrainOptions> & { addressing?: Partia
     ...(options.ownsTurns ? { ownsTurns: true } : {}),
     ...(options.wordsAfterAnswer ? { wordsAfterAnswer: true } : {}), ...(options.limits ? { limits: options.limits } : {}),
   }, {
-    connect: events => (options.provider ?? realtime.provider).connect(config, options.credentials ?? { apiKey: "fixture" }, events),
+    connect: (events, connection) => (options.provider ?? realtime.provider).connect(config, connection?.direct ? { apiKey: options.credentials?.apiKey ?? "fixture" } : options.credentials ?? { apiKey: "fixture" }, events),
     player: () => playback.player, resumeMedia: () => playback.resume(), humans: () => state.humans, name: speaker => names[speaker] ?? speaker,
     ...(options.askAgent ? { askAgent: options.askAgent } : {}),
     ...(options.synthesize ? { synthesize: options.synthesize } : {}), ...(options.speaking ? { speaking: options.speaking } : {}),
