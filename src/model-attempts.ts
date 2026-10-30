@@ -7,7 +7,7 @@ import { isSubscriptionProvider, platformUsage, usageMissing } from "./platform-
 import { enqueueEvents } from "./webhooks.ts";
 import { clock, network } from "./node-context.ts";
 import type { AttemptAck, ModelAttemptEvent, Superseded } from "./model-attempt.ts";
-import { lastCallMin, lockEndUser, settleUsage, unmarked, utcDay, type EndUserCredits } from "./end-user-credits.ts";
+import { lockEndUser, settleUsage, unmarked, utcDay, type EndUserCredits } from "./end-user-credits.ts";
 import { catalogCost, costAt, UNPRICED_COST, unpricedCost } from "./platform-pricing.ts";
 import { usageCost } from "./webhooks.ts";
 
@@ -16,8 +16,8 @@ const hash = (key: string) => createHash("sha256").update(key).digest("hex");
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /**
  * A metered call's hold (end-user-credits.ts) is its input and up to this much output, and grows by as much again each
- * time its stream reaches the end of what it holds. To start it needs its input and MIN_OUTPUT_TOKENS of output, less
- * the shortfall a last call may have (`lastCallMin`).
+ * time its stream reaches the end of what it holds. Any credit left starts it: it holds what is left, gets at least
+ * MIN_OUTPUT_TOKENS of output, and what it costs past its hold is written off (`settleUsage`).
  */
 export const HOLD_OUTPUT_TOKENS = 8_192;
 /** Past the runtime turn limit and its two overrun grace periods, a lost host cannot still be streaming. */
@@ -137,7 +137,7 @@ export class ModelAttempts {
     const perToken = Math.max(0, Number(rates.output) || 0) * funding, input = Math.ceil(((inputTokens - cached) * inputRate + cached * cachedRate) * funding);
     const maxOutput = Math.max(1, estimate?.maxOutputTokens ?? HOLD_OUTPUT_TOKENS);
     const want = input + Math.ceil(Math.min(maxOutput, INITIAL_OUTPUT_TOKENS) * perToken);
-    const reserved = await this.endUsers!.reserve(tenant, endUser!.id, endUser!.bucket, { id: event.id, want, min: lastCallMin(input + Math.ceil(Math.min(maxOutput, MIN_OUTPUT_TOKENS) * perToken)) });
+    const reserved = await this.endUsers!.reserve(tenant, endUser!.id, endUser!.bucket, { id: event.id, want, min: 1 });
     if (!reserved) return undefined;
     if (reserved.refused) return { refused: reserved.refused };
     return { tenant, endUser: endUser!.id, bucket: endUser!.bucket, input, perToken, maxOutput, held: reserved.hold.raw };

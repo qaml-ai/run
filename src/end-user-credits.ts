@@ -602,13 +602,13 @@ export class EndUserCredits {
 }
 
 /**
- * How far (raw micro-USD) a call's estimate may be past what its end user has left, and it still starts: people spend
- * what they have, rather than being refused with a few cents left. It holds what is left; what it costs past that is
- * written off (`settleUsage`), so no balance or limit is passed, and with nothing left the next call is refused.
+ * How far (raw micro-USD) fixed-price work (`hold`: images, transcription, a realtime answer) may be past what its end
+ * user has left, and it still starts: it holds what is left, and what it costs past that is written off (`settleUsage`).
+ * Bounded because four images at a high size cost dollars; a model call starts on any credit, and its stream is cut.
  */
 export const LAST_CALL_SHORTFALL = 250_000;
-/** The least a call estimated at `need` (raw) must hold to start. */
-export const lastCallMin = (need: number) => Math.max(1, need - LAST_CALL_SHORTFALL);
+/** The least fixed-price work estimated at `need` (raw) must hold to start. */
+const lastCallMin = (need: number) => Math.max(1, need - LAST_CALL_SHORTFALL);
 
 /** How long a call's hold lasts without a word from it: a call that streams extends it as it goes (`extend`). */
 export const HOLD_MS = 10 * 60_000;
@@ -682,11 +682,14 @@ function split(want: number, room: Room): Omit<Hold, "id"> {
   return { raw: allowance + Math.min(rest, unmarked(paid, room.markupBps)), allowance, paid };
 }
 
+/** Less than this (raw micro-USD) reads as $0.00, so a refusal does not call it credit left. */
+const HALF_A_CENT = 5_000;
+
 function refusal(endUser: string, bucket: string, room: Room): CreditRefusal {
   const free = room.allowance <= 0 ? `"${bucket}" has no free allowance`
-    : room.allowanceLeft > 0 ? `${dollars(room.allowanceLeft)} is left of the free ${dollars(room.allowance)} for "${bucket}" today`
+    : room.allowanceLeft >= HALF_A_CENT ? `${dollars(room.allowanceLeft)} is left of the free ${dollars(room.allowance)} for "${bucket}" today`
     : `the free ${dollars(room.allowance)} for "${bucket}" today is used up`;
-  const out = room.allowanceLeft > 0 || room.paidRoom > 0 ? "has too little credit left for this call" : "is out of credit";
+  const out = room.allowanceLeft + room.paidRoom >= HALF_A_CENT ? "has too little credit left for this call" : "is out of credit";
   return room.bound === "daily_limit"
     ? { endUser, bucket, reason: "daily_limit", message: `This end user reached their daily credit limit of ${dollars(room.dailyLimit ?? 0)}, and ${free}` }
     : room.bound === "bucket_limit"

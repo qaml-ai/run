@@ -4565,9 +4565,11 @@ the reply streams, it asks for more ahead of the end of what it holds. Holds are
 taken one at a time per person, on any node, so calls in parallel (sub-agents, several
 of their agents at once) never each see the whole balance.
 
-A call with too little left for all of that still starts, holding what is left, as long as its estimate is within
-$0.25 of it. It stops at the end of what it holds, with at least a short reply, and what it costs past that is written
-off: you bear it, as `writtenOff` in the ledger, and the person's balance and limits are never passed.
+A call with too little left for all of that still starts, on any credit left, holding what is left. It stops at the end
+of what it holds, with at least a short reply, and what it costs past that is written off: you bear it, as `writtenOff`
+in the ledger, and the person's balance and limits are never passed. Fixed-price work (images, transcription) starts the
+same way when its estimate is within $0.25 of what is left. So the write-off is about one call each time a person runs
+out, in each bucket: the next call finds nothing left, and is refused.
 
 When nothing more can be held:
 

@@ -329,12 +329,6 @@ test("a call whose input alone is past what is left still starts: a short reply 
   const begin = (id: string, inputTokens: number) => attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: MODEL, kind: "response", at: Date.now(), keyHash,
     estimate: { inputTokens, maxOutputTokens: 8_192, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "builder" } }).then(attemptAck);
   const inputTokens = Math.ceil(120_000 / rates.input);
-  // Past the shortfall a last call may have: refused, with what is left untouched.
-  const far = await begin(randomUUID(), Math.ceil(2 * USD / rates.input));
-  assert.equal(far.refused?.reason, "balance");
-  assert.match(far.refused!.message, /too little credit/);
-  assert.equal((await holds(db)).length, 0);
-
   const id = randomUUID();
   const ack = await begin(id, inputTokens);
   assert.equal(ack.refused, undefined);
@@ -355,6 +349,27 @@ test("a call whose input alone is past what is left still starts: a short reply 
   assert.ok(Number(row.end_user_written_off) > 0, "what it cost past that is the tenant's, recorded");
   assert.ok(errors.mock.calls.some(call => String(call.arguments[0]).includes('"end_user_written_off"')));
   assert.ok(await service.refusal("payg", "person", "builder"), "the next run is refused before it starts");
+});
+
+test("any credit left starts a model call, however large its input; with nothing left it is out of credit", async () => {
+  const { db, service, attempts } = await attemptsFixture();
+  await service.post("payg", "person", { kind: "grant", amount: 1_000, key: "pay" });
+  const begin = (id: string) => attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: MODEL, kind: "response", at: Date.now(), keyHash,
+    estimate: { inputTokens: 400_000, maxOutputTokens: 8_192, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "builder" } }).then(attemptAck);
+  const first = await begin(randomUUID());
+  assert.equal(first.refused, undefined, "a tenth of a cent, on dollars of input");
+  assert.equal(first.stopAtChars, MIN_OUTPUT_TOKENS * 2);
+  assert.deepEqual((await holds(db)).map(row => Number(row.paid)), [1_000]);
+  const next = await begin(randomUUID());
+  assert.equal(next.refused?.reason, "balance");
+  assert.match(next.refused!.message, /out of credit/);
+  assert.doesNotMatch(next.refused!.message, /too little|\$0\.00 is left/);
+});
+
+test("a refusal does not call less than a cent credit left", async () => {
+  const { service } = await credits({ allowances: { b: 3_000 } });
+  await assert.rejects(service.hold("t", "u", "b", 1, "images"), (error: any) => error.status === 402
+    && error.message === 'This end user is out of credit: the free $0.00 for "b" today is used up, and their balance is $0.00');
 });
 
 test("a failed call with no output releases its hold; one without an end user is the tenant's alone", async () => {
@@ -504,17 +519,22 @@ test("what a call costs its end user is what it costs the tenant: usage.recorded
   assert.equal(reported.entry.amount, -Math.ceil(reported.charged * 1.2), "the markup is over that");
 });
 
-test("a call's hold prices the input its provider likely reads from cache at the cache's rate: a cheap cached reply is not refused", async () => {
-  const { service, attempts } = await attemptsFixture();
-  await service.post("payg", "person", { kind: "grant", amount: 500_000, key: "pay" });
+test("a call's hold prices the input its provider likely reads from cache at the cache's rate: a cheap cached reply holds little", async () => {
+  const { db, service, attempts } = await attemptsFixture();
+  await service.post("payg", "person", { kind: "grant", amount: USD, key: "pay" });
   const begin = (cachedTokens?: number) => ({ type: "begin" as const, id: randomUUID(), provider: "openrouter", model: MODEL, kind: "response" as const, at: Date.now(), keyHash,
     estimate: { inputTokens: 100_000, ...(cachedTokens ? { cachedTokens } : {}), maxOutputTokens: 4_000, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "b" } });
-  // 100,000 tokens in at $15 a million: $1.50 to start, more than the $0.50 there is.
-  assert.equal(attemptAck(await attempts.event("payg", "agent", true, true, begin())).refused?.reason, "balance");
-  // 90,000 of them read from cache at $1.50 a million: about $0.30 to start.
-  const cached = attemptAck(await attempts.event("payg", "agent", true, true, begin(90_000)));
-  assert.equal(cached.refused, undefined);
-  assert.ok(cached.tracked);
+  // 90,000 of 100,000 tokens read from cache at $1.50 a million: about $0.30 in, and its output, of the $1 there is.
+  const cached = begin(90_000);
+  const ack = attemptAck(await attempts.event("payg", "agent", true, true, cached));
+  assert.equal(ack.refused, undefined);
+  assert.ok(ack.tracked);
+  const held = Number((await holds(db))[0].paid);
+  assert.ok(held > 0 && held < USD, `some of it (${held})`);
+  await service.release(cached.id);
+  // All at $15 a million: $1.50 to start, so it holds all there is.
+  assert.equal(attemptAck(await attempts.event("payg", "agent", true, true, begin())).refused, undefined);
+  assert.equal(Number((await holds(db))[0].paid), USD);
 });
 
 test("a slow call that needs no more of its hold yet keeps it from lapsing as it reports", async () => {

@@ -131,8 +131,8 @@ test("with the runtime's end-user credits: a call's responses are held, posted t
   const last = await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000068" }), subject: "ada", bucket: "bot:7" });
   await a.voice.end("alice", last.id);
   await turn();
-  await until(async () => Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count) === 0, "no hold left");
-  assert.equal((await credits.get("alice", "ada")).balance, 0, "spent to nothing, never past it");
+  await until(async () => (await credits!.get("alice", "ada")).balance === 0, "spent to nothing, never past it");
+  assert.equal(Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count), 0, "no hold left");
   assert.equal((await cluster.db.query("select sum(written_off)::int as lost from end_user_days where bucket = 'bot:7'")).rows[0].lost, 20_000, "what it cost past that is written off");
   speak(cluster.fake.open()[0], "400000000000000004", 0.6);
   await until(async () => (await a.voice.get("alice", created.id)).state === "ended", "the end");
