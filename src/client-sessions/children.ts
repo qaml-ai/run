@@ -97,7 +97,7 @@ async function spawnAgent(ctx: ChildrenContext, session: Session, settings: Dele
   const run = runningRun(session);
   if (!ctx.options.createAgent || !ctx.options.submit) throw new Error("Sub-agents are not enabled on this runtime");
   if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("spawn_agent is called directly, not from js_exec");
-  const { target, instructions, task, output } = delegation.childTarget(settings, call.args, "start");
+  const { target, task, output } = delegation.childTarget(settings, call.args, "start");
   const asked = call.args.name;
   if (asked !== undefined && (typeof asked !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(asked))) throw new Error("A name is 1 to 64 letters, digits, _ and -");
   const key = `spawn-${call.idempotencyKey}`;
@@ -106,7 +106,7 @@ async function spawnAgent(ctx: ChildrenContext, session: Session, settings: Dele
   if (!agent) throw new Error(`The agent ${target!.name} does not exist`);
   return startChild(ctx, session, run, call, settings, {
     agent, made, ...(asked !== undefined ? { name: asked as string } : {}), base: target?.name ?? "subagent", task, ...(output ? { output } : {}),
-    ...(made ? { make: (depth: number) => delegation.makeChild(ctx, session, run, target, instructions, key, call.toolCallId!, depth) } : {}),
+    ...(made ? { make: (depth: number) => delegation.makeChild(ctx, session, run, target, key, call.toolCallId!, depth) } : {}),
   });
 }
 

@@ -267,7 +267,8 @@ test("a notification an abort reaches before its turn lands without one, not los
 const abortWorld = (seed: number) => Sim.create({
   seed, env: { AGENT_CHILD_SWEEP_MS: "2000", AGENT_IDLE_MS: "600000" },
   respond: body => {
-    const system = JSON.stringify(body.messages.filter((message: any) => message.role === "system"));
+    // Its system text and first message: a sub-agent of the model's own design has its role in the latter.
+    const system = JSON.stringify([...body.messages.filter((message: any) => message.role === "system"), ...body.messages.filter((message: any) => message.role === "user").slice(0, 1)]);
     const last = body.messages.at(-1), said = JSON.stringify(last.content);
     if (system.includes("WORKER")) return { content: "worked", delayMs: 1_000 };
     if (last.role === "tool") return { content: "spawned" };

@@ -6,6 +6,9 @@ import { cluster, fakeModel, token, until } from "./cluster-helpers.ts";
 /** The model request's system text, and its last message's role. */
 const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
   .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
+/** Who a request's agent is: its system text and its first message, where a sub-agent of the model's own design has its role. */
+const roleText = (body: any) => [systemText(body), ...body.messages.filter((message: any) => message.role === "user").slice(0, 1)
+  .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""))].join("\n");
 const toolCalls = (...calls: [string, unknown, string][]) => ({ role: "assistant", tool_calls: calls.map(([name, args, id], index) => ({ index, id, type: "function", function: { name, arguments: JSON.stringify(args) } })) });
 const toolText = (body: any) => body.messages.filter((message: any) => message.role === "tool").map((message: any) => typeof message.content === "string" ? message.content : JSON.stringify(message.content)).join("\n");
 
@@ -27,7 +30,7 @@ test("a parent whose node dies while it waits on a child resumes on another node
   const childAsked = Promise.withResolvers<void>();
   let childRequests = 0;
   const model = await fakeModel(t, async body => {
-    if (systemText(body).includes("CHILD")) {
+    if (roleText(body).includes("CHILD")) {
       // The child's first model request hangs, as if its node died mid-request; when resumed, it answers.
       if (childRequests++ === 0) { childAsked.resolve(); return undefined; }
       return { role: "assistant", content: "the child's answer" };
@@ -65,7 +68,7 @@ test("a parent whose node dies while it waits on a child, then is aborted, stops
   const childAsked = Promise.withResolvers<void>();
   const model = await fakeModel(t, async body => {
     // The child's model never answers: only an abort ends its run.
-    if (systemText(body).includes("CHILD")) { childAsked.resolve(); return undefined; }
+    if (roleText(body).includes("CHILD")) { childAsked.resolve(); return undefined; }
     return body.messages.at(-1).role === "tool" ? { role: "assistant", content: `Parent got: ${toolText(body)}` } : toolCalls(["delegate", { instructions: "You are CHILD.", task: "work" }, "call_child"]);
   });
   const a = await c.start("a", model.env);

@@ -6,6 +6,9 @@ import { OPERATOR, runtime, toolCall, toolResults, until, watchEvents } from "./
 /** The model request's system text: its system messages, wherever they are, in order. */
 const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
   .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
+/** Who a request's agent is: its system text and its first message, where a sub-agent of the model's own design has its role. */
+const roleText = (body: any) => [systemText(body), ...body.messages.filter((message: any) => message.role === "user").slice(0, 1)
+  .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""))].join("\n");
 const userText = (body: any) => body.messages.filter((message: any) => message.role === "user").map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
 
 /** A workflow that lists work with one agent call, does it with a pipeline, and returns both. */
@@ -19,7 +22,7 @@ return { items: list.items, out }`;
 
 test("the SDK runs a stateless workflow with its builtin added automatically", async t => {
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) return { role: "assistant", content: "worked" };
+    if (roleText(body).includes("WORKER")) return { role: "assistant", content: "worked" };
     return toolResults(body).length
       ? { role: "assistant", content: JSON.parse(toolResults(body).at(-1)).value }
       : toolCall("run_workflow", { script: `return await agent("work", { instructions: "You are WORKER." })` });
@@ -33,7 +36,7 @@ test("the SDK runs a stateless workflow with its builtin added automatically", a
 
 test("run_workflow coordinates child agents from a script and returns only the script's value", async t => {
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) {
+    if (roleText(body).includes("WORKER")) {
       if (userText(body).includes("list items")) return toolCall("final_output", { items: ["alpha", "beta"] }, "call_list");
       return { role: "assistant", content: `done ${userText(body).trim().split(/\s+/).pop()}` };
     }
@@ -86,7 +89,7 @@ test("run_workflow coordinates child agents from a script and returns only the s
 
 test("an agent call the settings do not allow answers null instead of failing the script", async t => {
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) return { role: "assistant", content: "fine" };
+    if (roleText(body).includes("WORKER")) return { role: "assistant", content: "fine" };
     if (toolResults(body).length) return { role: "assistant", content: "done" };
     return toolCall("run_workflow", { script: `const answer = await agent("hi", { agent: "nobody" }); return { answer }` }, "call_bad");
   });

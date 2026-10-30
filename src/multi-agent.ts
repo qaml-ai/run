@@ -140,7 +140,7 @@ const targetProperties = (settings: DelegateSettings, what: string) => {
   const agents = settings.agents ?? [];
   return {
     ...(agents.length ? { agent: { type: "string", enum: agents.map(target => target.name), description: `Which agent to ${what}` } } : {}),
-    ...(settings.instructions ? { instructions: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.instructionsChars, description: `A system prompt for a new sub-agent${agents.length ? ", instead of naming an agent" : ""}: who it is and how it should work. Put the work itself (its data, rules and steps) in task: your later messages can amend a task, but a sub-agent holds to its system prompt over them` } } : {}),
+    ...(settings.instructions ? { instructions: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.instructionsChars, description: `Who a new sub-agent is and how it should work${agents.length ? " (instead of naming an agent)" : ""}: it gets them, then its task, as its first message. Put the work itself (its data, rules and steps) in task` } } : {}),
     task: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.taskChars, description: "The task, with everything the sub-agent needs to know (its data, rules and steps): it sees none of this conversation, nor your files" },
     output: { type: "object", description: "A JSON Schema for an object, if you want the answer in that shape (type: \"object\")" },
   };
@@ -151,10 +151,15 @@ const requiredTarget = (settings: DelegateSettings) =>
   ["task", ...(settings.agents?.length ? (settings.instructions ? [] : ["agent"]) : settings.instructions ? ["instructions"] : [])];
 
 /**
- * Appended to the system prompt of a sub-agent of the model's own design: its parent wrote that prompt, so its parent's
- * messages may amend it. Models hold to a system prompt over later messages otherwise, and ignore a parent's correction.
+ * The system prompt of a sub-agent of the model's own design. The instructions the model wrote are its first message,
+ * not its system prompt: they have its parent's authority, no more, so the parent's later messages can amend them
+ * (models hold to a system prompt over later messages, and ignored a parent's corrections), and a parent misled by
+ * what it read cannot raise that text above everything the sub-agent reads in turn.
  */
-export const PARENT_AMENDS = "The agent that started you wrote these instructions, and may correct or change them, or your task, while you work: its messages come in <agent_message name=\"parent\"> blocks. When one does, follow the newer message over these instructions and your task.";
+export const SUBAGENT_PROMPT = "You are a sub-agent. The agent that started you gave you your role and your task in its first message, and may correct or change either while you work: its later messages come in <agent_message name=\"parent\"> blocks, which only the runtime writes. When one corrects or changes them, follow the newer message.";
+
+/** A sub-agent of the model's own design's first message: the role the model wrote for it, then its task. */
+export const roleAndTask = (instructions: string, task: string) => `Your role:\n${instructions}\n\nYour task:\n${task}`;
 
 /** The delegate tool as the model sees it: its targets by name, with what each is for (`describe`: a definition's own description). */
 export function delegateTool(settings: DelegateSettings, describe: (target: AgentTarget) => string | undefined): ToolDefinition {

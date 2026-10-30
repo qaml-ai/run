@@ -43,7 +43,7 @@ and running after the whole turn.
 
 With `delegate: { instructions: true }` and no `agents`, `delegate` and `spawn_agent` now list `instructions` as
 required, as the runtime already demanded: models sent only a `task`, were refused, and wrote every call again. A call
-without it says which field is missing (`Give instructions too: the sub-agent's system prompt …`).
+without it says which field is missing (`Give instructions too: who the sub-agent is …`).
 
 ### wait_agent waits for a sub-agent's latest turn
 
@@ -52,9 +52,13 @@ answer, instead of returning the earlier one at once. The earlier answer still c
 `instructions` and `task` descriptions now tell the model to put the work (data, rules, steps) in `task`: a message can
 amend a task, but models hold to a system prompt over later messages.
 
-### A parent may amend the instructions it wrote
+### A sub-agent of the model's own design gets its instructions as its first message
 
-A sub-agent started with the model's own `instructions` gets a line after them: its parent wrote them, and its
-`<agent_message name="parent">` messages may correct them or its task, the newer message winning. Without it models
-held to the system prompt and ignored the parent's correction (GPT-6 Astra and GPT-6.1 Sol answered the old total again).
-A sub-agent from a definition keeps its definition's prompt as written.
+With `delegate: { instructions: true }`, the model's `instructions` are no longer the sub-agent's system prompt: they
+come first in its first message (`Your role:` then `Your task:`), and the system prompt is the runtime's, saying its
+parent's later `<agent_message name="parent">` messages may correct its role or task. As a system prompt they
+outranked the parent's corrections: GPT-6 Astra and GPT-6.1 Sol put a task's rules in them, and their sub-agents
+answered the old total again however often they were corrected (a bare Sol agent followed a correction against its
+system prompt 0 times in 8, even when told it could; 4 in 4 with the rules in its first message). Text the parent
+model wrote now has its authority, no more: a parent misled by what it read cannot raise that text above what its
+sub-agent reads in turn. A sub-agent from a definition keeps the definition's system prompt.

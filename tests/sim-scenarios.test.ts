@@ -150,7 +150,8 @@ test("a run that ends at a load past its resumes settles the turn it left open, 
 
 test("parallel children on a cluster: an abort of the parent sent to another node aborts every child it waits on (cluster-multi-agent)", async t => {
   // The parent fans out to three children whose model never answers; the abort goes to b, a's peer.
-  const system = (body: any) => JSON.stringify(body.messages.filter((message: any) => message.role === "system"));
+  // Its system text and first message: a sub-agent of the model's own design has its role in the latter.
+  const system = (body: any) => JSON.stringify([...body.messages.filter((message: any) => message.role === "system"), ...body.messages.filter((message: any) => message.role === "user").slice(0, 1)]);
   const call = (id: string, task: string) => ({ index: Number(id.slice(1)) - 1, id, type: "function", function: { name: "delegate", arguments: JSON.stringify({ instructions: "You are SLOW.", task }) } });
   const sim = await Sim.create({ seed: 33, respond: body => {
     if (system(body).includes("SLOW")) return { stall: true };

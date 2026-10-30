@@ -86,9 +86,9 @@ test("every runtime block a multi-agent tool's description names is the block th
   for (const tag of named) assert.ok(made.has(tag), `${tag} is described but never rendered`);
 });
 
-test("the line a sub-agent of the model's design gets names the block its parent's messages render in", async () => {
-  const { PARENT_AMENDS } = await import("../src/multi-agent.ts");
+test("the system prompt a sub-agent of the model's design gets names the block its parent's messages render in", async () => {
+  const { SUBAGENT_PROMPT } = await import("../src/multi-agent.ts");
   const fromParent = { role: "user", content: "use 2025", timestamp: 1, source: { kind: "agent", agentId: "client_1", name: "parent" }, metadata: { kind: "message", to: "child" } } as any;
   const opening = (renderMessage(fromParent) as any).content[0].text.split("\n")[0];
-  assert.ok(PARENT_AMENDS.includes(opening), `${opening} is what the sub-agent sees`);
+  assert.ok(SUBAGENT_PROMPT.includes(opening), `${opening} is what the sub-agent sees`);
 });

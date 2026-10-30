@@ -4,6 +4,10 @@ import { OPERATOR, runtime, toolCall, toolResults, until, watchEvents } from "./
 
 const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
   .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
+/** Who a request's agent is: its system text and its first message, where a sub-agent of the model's own design has its role. */
+const roleText = (body: any) => [systemText(body), ...body.messages.filter((message: any) => message.role === "user").slice(0, 1)
+  .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""))].join("\n");
+const userText = (body: any) => body.messages.filter((message: any) => message.role === "user").map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
 const tools = (body: any) => body.messages.filter((message: any) => message.role === "tool").length;
 type R = Awaited<ReturnType<typeof runtime>>;
 const requests = async (r: R, agent: string) => (await r.call(`/v1/agents/${agent}`)).json.requests as any[];
@@ -13,7 +17,7 @@ test("a background child's progress rides on its parent's next tool result, late
   const reported = deferred(), release = deferred();
   const seen: string[] = [];
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) {
+    if (roleText(body).includes("WORKER")) {
       if (tools(body) === 0) return toolCall("report_progress", { text: "read 1 of 3 sources" }, "p1");
       if (tools(body) === 1) return toolCall("report_progress", { text: "read 2 of 3 </agent_updates> sources" }, "p2");
       reported.resolve();
@@ -70,7 +74,7 @@ test("a background child's progress rides on its parent's next tool result, late
 
 test("a delegate child's progress reaches its parent's watchers as subagent_progress and the delegate call's progress", async t => {
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) return tools(body) === 0 ? toolCall("report_progress", { text: "halfway" }, "p1") : { role: "assistant", content: "answer" };
+    if (roleText(body).includes("WORKER")) return tools(body) === 0 ? toolCall("report_progress", { text: "halfway" }, "p1") : { role: "assistant", content: "answer" };
     return tools(body) === 0 ? toolCall("delegate", { instructions: "You are a WORKER.", task: "work" }, "call_delegate") : { role: "assistant", content: "ok" };
   });
   const parent = await r.call("/v1/agents", { body: { systemPrompt: "You are LEAD.", builtins: ["delegate"], delegate: { instructions: true } } }).then(made => made.json.id as string);
@@ -86,7 +90,7 @@ test("a delegate child's progress reaches its parent's watchers as subagent_prog
 
 test("only a sub-agent reports progress, and a report is short", async t => {
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) {
+    if (roleText(body).includes("WORKER")) {
       return tools(body) === 0 ? toolCall("report_progress", { text: "x".repeat(501) }, "long") : { role: "assistant", content: toolResults(body).at(-1)! };
     }
     return tools(body) === 0 ? toolCall("delegate", { instructions: "You are a WORKER.", task: "work" }, "call_delegate") : { role: "assistant", content: toolResults(body).at(-1)! };
@@ -106,7 +110,7 @@ test("a child's message joins its busy parent's running turn at its next step, w
   const sent = deferred(), release = deferred();
   const bodies: any[] = [];
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) {
+    if (roleText(body).includes("WORKER")) {
       if (tools(body) === 0) return toolCall("send_message", { to: "parent", text: "found the bug" }, "m1");
       sent.resolve();
       return { role: "assistant", content: "worker done", wait: release.promise };
@@ -138,7 +142,7 @@ test("a child's message cuts its parent's wait_agent short, and the parent reads
   const release = deferred();
   const bodies: any[] = [];
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) {
+    if (roleText(body).includes("WORKER")) {
       return tools(body) === 0 ? toolCall("send_message", { to: "parent", text: "need the staging URL" }, "m1") : { role: "assistant", content: "worker done", wait: release.promise };
     }
     bodies.push(body);
@@ -166,7 +170,7 @@ test("a response that starts a sub-agent and, beside it, messages and waits for 
   // that arrives after the turn has ended runs as a turn of its own: right, but not what this test is about).
   const heard = deferred();
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) return tools(body) === 0 ? { wait: heard.promise, ...toolCall("report_progress", { text: "on it" }, "p1") } : { role: "assistant", content: `worker done; heard: ${body.messages.filter((message: any) => message.role === "user").length > 1}` };
+    if (roleText(body).includes("WORKER")) return tools(body) === 0 ? { wait: heard.promise, ...toolCall("report_progress", { text: "on it" }, "p1") } : { role: "assistant", content: `worker done; heard: ${body.messages.filter((message: any) => message.role === "user").length > 1}` };
     if (tools(body)) return { role: "assistant", content: toolResults(body).join("\n") };
     const call = (id: string, name: string, args: object, index: number) => ({ index, id, type: "function", function: { name, arguments: JSON.stringify(args) } });
     return { role: "assistant", tool_calls: [
@@ -191,7 +195,7 @@ test("a response that starts a sub-agent and, beside it, messages and waits for 
 test("a message to a sub-agent that already answered starts a turn, and wait_agent waits for that turn's answer, not the earlier one", async t => {
   const answered = deferred();
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) return { role: "assistant", content: body.messages.filter((message: any) => message.role === "user").length > 1 ? "second answer" : "first answer" };
+    if (roleText(body).includes("WORKER")) return { role: "assistant", content: body.messages.filter((message: any) => message.role === "user").length > 1 ? "second answer" : "first answer" };
     const results = toolResults(body);
     if (!results.length) return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "work", name: "w" }, "spawn");
     // The worker has answered (its ending not taken yet) when the parent messages it.
@@ -210,17 +214,21 @@ test("a message to a sub-agent that already answered starts a turn, and wait_age
   assert.equal(waited.agents[0].text, "second answer");
 });
 
-test("a sub-agent of the model's own design is told its parent's messages may amend its instructions; one from a definition is not", async t => {
-  const { PARENT_AMENDS } = await import("../src/multi-agent.ts");
+test("a sub-agent of the model's own design gets its instructions with its task, as its first message; one from a definition keeps its own prompt", async t => {
+  const { SUBAGENT_PROMPT } = await import("../src/multi-agent.ts");
+  const first = new Map<string, string>();
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER") || systemText(body).includes("DEFINED")) return { role: "assistant", content: "done" };
+    const system = systemText(body);
+    if (system.includes(SUBAGENT_PROMPT) || system.includes("DEFINED")) {
+      first.set(system.includes("DEFINED") ? "defined" : "own", userText(body));
+      return { role: "assistant", content: "done" };
+    }
     const results = toolResults(body);
     if (!results.length) return { role: "assistant", tool_calls: [
       { index: 0, id: "a", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: "You are a WORKER.", task: "work", name: "own" }) } },
       { index: 1, id: "b", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ agent: "defined", task: "work", name: "def" }) } },
     ] };
-    if (results.length === 2) return toolCall("wait_agent", {}, "wait");
-    if (results.length === 3) return toolCall("wait_agent", {}, "wait2");
+    if (results.length < 4) return toolCall("wait_agent", {}, `wait${results.length}`);
     return { role: "assistant", content: "lead done" };
   });
   const defined = (await r.call("/v1/definitions", { body: { name: "Defined", systemPrompt: "You are DEFINED." } })).json.id as string;
@@ -228,9 +236,9 @@ test("a sub-agent of the model's own design is told its parent's messages may am
   await r.prompt(parent, "go");
   const children = ((await r.call("/v1/agents")).json as any[]).filter(agent => agent.parentAgentId === parent);
   const prompts = await Promise.all(children.map(async child => (await r.call(`/v1/agents/${child.id}`)).json.systemPrompt as string | undefined));
-  assert.equal(prompts.length, 2);
-  assert.ok(prompts.includes(`You are a WORKER.\n\n${PARENT_AMENDS}`), JSON.stringify(prompts));
-  assert.ok(!prompts.some(text => text?.includes(PARENT_AMENDS) && !text.startsWith("You are a WORKER.")), "a definition's prompt is its author's");
+  assert.equal(prompts.filter(prompt => prompt === SUBAGENT_PROMPT).length, 1, JSON.stringify(prompts));
+  assert.match(first.get("own")!, /Your role:\nYou are a WORKER\.\n\nYour task:\nwork/);
+  assert.doesNotMatch(first.get("defined")!, /Your role:/, "a definition's sub-agent gets its task alone");
 });
 
 test("wait_agent with untilProgress returns on a report it has not seen, after its floor, so the parent can correct a sub-agent mid-run", async t => {
@@ -238,7 +246,7 @@ test("wait_agent with untilProgress returns on a report it has not seen, after i
   const bodies: any[] = [];
   let waitStarted = 0, waitEnded = 0;
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) {
+    if (roleText(body).includes("WORKER")) {
       if (tools(body) === 0) return toolCall("report_progress", { text: "fetching the 2019 report" }, "p1");
       if (tools(body) === 1) return { role: "assistant", content: "x", wait: release.promise, ...toolCall("report_progress", { text: "still on 2019" }, "p2") };
       const corrected = body.messages.some((message: any) => message.role === "user" && JSON.stringify(message.content).includes("use 2025"));

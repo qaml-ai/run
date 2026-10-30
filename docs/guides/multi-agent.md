@@ -60,7 +60,7 @@ The model gets a `delegate` tool that lists the agents with what each is for
 | Argument | |
 | --- | --- |
 | `agent` | Which agent, by its name in the list |
-| `instructions` | Instead of `agent`, with `instructions: true` in the settings: a system prompt for a sub-agent the model designs itself, on its own model |
+| `instructions` | Instead of `agent`, with `instructions: true` in the settings: who a sub-agent the model designs itself is and how it works, on its own model. It gets them with its task, as its first message |
 | `task` | What to do. The sub-agent sees only this, not the conversation |
 | `output` | A JSON Schema for an object: the answer comes back in that shape (see [Structured output](structured-output.md)) |
 
@@ -77,7 +77,7 @@ An entry in `agents` is one of these:
 | --- | --- |
 | `"researcher"` or `{ definition: "researcher", name?, description? }` | A new agent made from the definition, for each call |
 | `{ agent: "billing-specialist", name?, description? }` | Your existing agent with that key. It keeps its own history across calls. Runs queue, one at a time, like any of its runs |
-| `instructions: true` (a setting, not an entry) | A new agent with the model's instructions, the parent's model, and the parent's `web_search` and `web_fetch` if it has them. The runtime adds a line after the instructions: the parent's messages may amend them |
+| `instructions: true` (a setting, not an entry) | A new agent on the parent's model, with the parent's `web_search` and `web_fetch` if it has them. Its system prompt is the runtime's: the model's instructions come first in its first message (`Your role:`, then `Your task:`), with its parent's authority, so the parent's later messages can amend them. A system prompt would outrank them: models held to it and ignored the parent's corrections |
 
 A sub-agent the runtime makes is a real agent:
 

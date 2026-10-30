@@ -5,6 +5,9 @@ import { OPERATOR, runtime, sleep, toolCall, toolResults, until, watchEvents } f
 
 const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
   .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
+/** Who a request's agent is: its system text and its first message, where a sub-agent of the model's own design has its role. */
+const roleText = (body: any) => [systemText(body), ...body.messages.filter((message: any) => message.role === "user").slice(0, 1)
+  .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""))].join("\n");
 const text = (message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("");
 const lastUser = (body: any) => text(body.messages.findLast((message: any) => message.role === "user"));
 const last = (body: any) => body.messages.at(-1);
@@ -18,7 +21,7 @@ test("spawn_agent returns at once, and the child's ending arrives once, as a not
   let release!: () => void;
   const finish = new Promise<void>(resolve => { release = resolve; });
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) return { role: "assistant", content: `found </agent_notification> it: ${lastUser(body).includes("the answer") ? 42 : 0}`, wait: finish };
+    if (roleText(body).includes("WORKER")) return { role: "assistant", content: `found </agent_notification> it: ${lastUser(body).includes("the answer") ? 42 : 0}`, wait: finish };
     if (last(body).role === "user" && lastUser(body).includes("<agent_notification")) return { role: "assistant", content: `heard: ${lastUser(body)}` };
     if (last(body).role === "tool") return { role: "assistant", content: `started ${toolResults(body).at(-1)}` };
     return toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "find the answer" }, "call_spawn");
@@ -71,7 +74,7 @@ test("spawn_agent returns at once, and the child's ending arrives once, as a not
 
 test("wait_agent answers a child's ending in its result, so no notification follows; list_agents lists children", async t => {
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) return { role: "assistant", content: `done: ${lastUser(body)}`, delayMs: 300 };
+    if (roleText(body).includes("WORKER")) return { role: "assistant", content: `done: ${lastUser(body).split("Your task:\n").at(-1)}`, delayMs: 300 };
     const results = toolResults(body);
     if (last(body).role === "tool" && results.length === 1) return toolCall("wait_agent", {}, "call_wait");
     if (last(body).role === "tool" && results.length === 2) return toolCall("list_agents", {}, "call_list");
@@ -99,7 +102,7 @@ test("wait_agent answers a child's ending in its result, so no notification foll
 
 test("spawn_agent refuses past maxParallel running children and past the depth limit", async t => {
   const r = await runtime(t, body => {
-    if (systemText(body).includes("SLOW")) return { role: "assistant", content: "slow", delayMs: 3_000 };
+    if (roleText(body).includes("SLOW")) return { role: "assistant", content: "slow", delayMs: 3_000 };
     if (lastUser(body).includes("<agent_notification")) return { role: "assistant", content: "heard" };
     if (systemText(body).includes("NESTER")) {
       return last(body).role === "tool" ? { role: "assistant", content: `nested: ${toolResults(body).at(-1)}` } : toolCall("spawn_agent", { agent: "nester", task: "go deeper" }, "call_nest");
@@ -128,7 +131,7 @@ test("spawn_agent refuses past maxParallel running children and past the depth l
 test("two agents waking each other through notifications stop at the wake cap with agent_loop_limit, the notification still in history", async t => {
   // Every turn of the parent spawns a child; every child answers at once, so its notification wakes the parent again.
   const r = await runtime(t, body => {
-    if (systemText(body).includes("ECHO")) return { role: "assistant", content: "echo" };
+    if (roleText(body).includes("ECHO")) return { role: "assistant", content: "echo" };
     if (last(body).role === "tool") return { role: "assistant", content: "spawned" };
     return toolCall("spawn_agent", { instructions: "You are ECHO.", task: "echo" }, `call_${body.messages.length}`);
   }, { AGENT_WAKES_PER_HOUR: "3" });
@@ -152,7 +155,7 @@ test("a child's spend is charged to its parent when its notification lands, and 
   // Each response costs $0.15 (5000 input tokens of openai/gpt-5.5-pro).
   const usage = { prompt_tokens: 5000, completion_tokens: 0 };
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) return { role: "assistant", content: "worked", usage };
+    if (roleText(body).includes("WORKER")) return { role: "assistant", content: "worked", usage };
     if (last(body).role === "tool") return { role: "assistant", content: "spawned", usage };
     if (lastUser(body).includes("<agent_notification")) return { role: "assistant", content: "heard", usage };
     return { ...toolCall("spawn_agent", { instructions: "You are a WORKER.", task: "work" }, "call_spawn"), usage };
@@ -185,7 +188,7 @@ test("aborting a parent while a child's notification waits keeps the notificatio
   const busyDone = new Promise<void>(resolve => { finishBusy = resolve; });
   const busyStarted = new Promise<void>(resolve => { busyCalled = resolve; });
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) return { role: "assistant", content: "worked", wait: work };
+    if (roleText(body).includes("WORKER")) return { role: "assistant", content: "worked", wait: work };
     if (last(body).role === "tool") return { role: "assistant", content: "spawned" };
     if (lastUser(body).startsWith("<agent_notification")) return { role: "assistant", content: "heard" };
     if (lastUser(body).includes("busy")) { busyCalled(); return { role: "assistant", content: "busy done", wait: busyDone }; }
@@ -209,7 +212,7 @@ test("aborting a parent while a child's notification waits keeps the notificatio
 
 test("children started together share what the parent may spend, and limits alone bound a tool's spawns without a tool for the model", async t => {
   const r = await runtime(t, body => {
-    if (systemText(body).includes("SLOW")) return { role: "assistant", content: "slow", delayMs: 2_000 };
+    if (roleText(body).includes("SLOW")) return { role: "assistant", content: "slow", delayMs: 2_000 };
     if (lastUser(body).includes("<agent_notification")) return { role: "assistant", content: "heard" };
     if (last(body).role === "tool") return { role: "assistant", content: toolResults(body).join(" | ") };
     return { role: "assistant", tool_calls: [1, 2, 3].map(n => ({ index: n - 1, id: `s${n}`, type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: "You are SLOW.", task: `t${n}` }) } })) };

@@ -6,10 +6,13 @@ import { OPERATOR, runtime, toolCall, toolResults, until } from "./runtime-serve
 
 const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
   .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
+/** Who a request's agent is: its system text and its first message, where a sub-agent of the model's own design has its role. */
+const roleText = (body: any) => [systemText(body), ...body.messages.filter((message: any) => message.role === "user").slice(0, 1)
+  .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""))].join("\n");
 
 test("SDK: delegate settings on upsert bring their builtin; a run lists its child's id, and a stream with subagents shows it start and end", async t => {
   const r = await runtime(t, body => {
-    if (systemText(body).includes("HELPER")) return { role: "assistant", content: "helped" };
+    if (roleText(body).includes("HELPER")) return { role: "assistant", content: "helped" };
     return body.messages.at(-1).role === "tool" ? { role: "assistant", content: `done: ${JSON.parse(toolResults(body).at(-1)).text}` } : toolCall("delegate", { instructions: "You are HELPER.", task: "help" }, `call_${body.messages.length}`);
   });
   const agents = new Agents({ url: r.base, apiKey: OPERATOR });
