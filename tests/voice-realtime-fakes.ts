@@ -60,7 +60,7 @@ export class FakeConnection implements RealtimeConnection {
   of<T extends Sent["type"]>(type: T) { return this.sent.filter((entry): entry is Extract<Sent, { type: T }> => entry.type === type); }
 
   /** The provider's response `id`: begun, `ms` of audio (in 20 ms chunks, `everyMs` apart), what it says, done with `usage`. */
-  async answer(id: string, options: { ms?: number; everyMs?: number; said?: string; usage?: Partial<RealtimeUsage>; status?: "completed" | "cancelled"; tool?: { id: string; name: string; args?: Record<string, unknown> } } = {}) {
+  async answer(id: string, options: { ms?: number; everyMs?: number; said?: string; usage?: Partial<RealtimeUsage>; status?: "completed" | "cancelled" | "failed"; error?: string; tool?: { id: string; name: string; args?: Record<string, unknown> } } = {}) {
     this.events.responseStarted(id);
     if (options.said) this.events.said(id, options.said);
     for (let at = 0; at < (options.ms ?? 0); at += 20) {
@@ -68,7 +68,7 @@ export class FakeConnection implements RealtimeConnection {
       if (options.everyMs) await sleep(options.everyMs);
     }
     if (options.tool) this.events.toolCall({ response: id, id: options.tool.id, name: options.tool.name, args: options.tool.args ?? {} });
-    this.events.responseDone(id, { status: options.status ?? "completed", usage: { ...NO_USAGE, ...options.usage } });
+    this.events.responseDone(id, { status: options.status ?? "completed", usage: { ...NO_USAGE, ...options.usage }, ...(options.error ? { error: options.error } : {}) });
   }
 }
 
@@ -135,7 +135,7 @@ export function testBrain(options: Partial<BrainOptions> & { addressing?: Partia
   const brain = new RealtimeBrain({
     session: "vs_000000000000000000000001", tenant: "alice", reference: options.reference ?? "openai/gpt-realtime-2.1", floor: new Floor(options.addressing ?? {}),
     speculative: options.speculative ?? false, transcribed: options.transcribed ?? true, ...(options.bargeIn ? { bargeIn: options.bargeIn } : {}),
-    ...(options.clock ? { clock: options.clock } : {}),
+    ...(options.clock ? { clock: options.clock } : {}), ...(options.retryMs !== undefined ? { retryMs: options.retryMs } : {}),
     ...(options.ownsTurns ? { ownsTurns: true } : {}),
     ...(options.wordsAfterAnswer ? { wordsAfterAnswer: true } : {}), ...(options.limits ? { limits: options.limits } : {}),
   }, {

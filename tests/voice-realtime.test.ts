@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { setMetricSink } from "../src/metrics.ts";
 import { REAL_CLOCK } from "../src/node-context.ts";
 import { Mixer } from "../src/voice/realtime/mixer.ts";
 import { NO_USAGE, realtimeCost, realtimeTranscriptionCost, realtimeVoice } from "../src/voice/realtime/provider.ts";
@@ -98,6 +99,73 @@ test("a turn ends: committed and answered; the answer plays, and its usage is pr
   assert.equal(stats.responses, 1);
   assert.equal(stats.spoken, 1);
   assert.ok(!JSON.stringify(logs).includes("Hello there"), "no words in logs");
+});
+
+/** Each turn's outcome, as the metric lines say it. */
+function outcomes(t: { after(fn: () => void): void }) {
+  const lines: { type: string; outcome?: string }[] = [];
+  setMetricSink(line => lines.push(JSON.parse(line)));
+  t.after(() => setMetricSink());
+  return () => lines.filter(line => line.type === "voice_turn_latency").map(line => line.outcome);
+}
+
+test("a response the provider refuses is asked for once more, and its answer plays for the same turn", async t => {
+  const turns = outcomes(t);
+  const { brain, connection, playback, logs } = testBrain({ retryMs: 5 });
+  await utter(brain, "1", 300);
+  const c = connection();
+  await c.answer("r1", { status: "failed", error: "too many tokens" });
+  assert.deepEqual(logs.find(line => line.type === "voice_realtime_response_failed")?.fields, { error: "too many tokens" });
+  assert.deepEqual(turns(), [], "the turn waits for the second try");
+  await until(() => c.responses === 2, "the second try");
+  await c.answer("r2", { ms: 100, said: "Hello." });
+  await until(() => playback.plays.length === 1, "the answer to play");
+  await until(() => turns().length === 1, "the turn to end");
+  assert.deepEqual(turns(), ["spoken"]);
+  brain.close();
+  assert.equal(logs.find(line => line.type === "voice_realtime_stats")!.fields!.retried, 1);
+});
+
+test("a second refusal ends the turn: one retry, and the next turn is asked for as usual", async t => {
+  const turns = outcomes(t);
+  const { brain, connection } = testBrain({ retryMs: 5 });
+  await utter(brain, "1", 300);
+  const c = connection();
+  await c.answer("r1", { status: "failed", error: "too many tokens" });
+  await until(() => c.responses === 2, "the second try");
+  await c.answer("r2", { status: "failed", error: "too many tokens" });
+  await sleep(30);
+  assert.equal(c.responses, 2);
+  assert.deepEqual(turns(), ["error"]);
+  await utter(brain, "1", 300);
+  await until(() => c.responses === 3, "the next turn's answer");
+  brain.close();
+});
+
+test("a newer turn replaces a retry: one answer, which hears both", async t => {
+  const turns = outcomes(t);
+  const { brain, connection } = testBrain({ retryMs: 50 });
+  await utter(brain, "1", 300);
+  const c = connection();
+  await c.answer("r1", { status: "failed", error: "too many tokens" });
+  await utter(brain, "1", 300);
+  await until(() => c.responses === 2, "the newer turn's answer");
+  assert.deepEqual(turns(), ["no_reply"]);
+  await sleep(80);
+  assert.equal(c.responses, 2, "the retry was dropped");
+  brain.close();
+});
+
+test("a call that ends drops a waiting retry", async t => {
+  const turns = outcomes(t);
+  const { brain, connection } = testBrain({ retryMs: 20 });
+  await utter(brain, "1", 300);
+  const c = connection();
+  await c.answer("r1", { status: "failed", error: "too many tokens" });
+  brain.close();
+  await sleep(40);
+  assert.equal(c.responses, 1);
+  assert.deepEqual(turns(), ["interrupted"]);
 });
 
 test("barge-in: someone talks over the answer, the echo guard confirms, and the model's item is cut at what was heard", async () => {

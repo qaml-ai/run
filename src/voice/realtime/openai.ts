@@ -323,7 +323,8 @@ class OpenAIRealtime implements RealtimeConnection {
         const response = event.response ?? {};
         if (this.active === response.id) this.active = undefined;
         const status = ["completed", "cancelled", "failed", "incomplete"].includes(response.status) ? response.status : "failed";
-        const error = response.status_details?.error?.message ?? response.status_details?.reason;
+        const detail = response.status_details?.error;
+        const error = detail?.message ? [detail.code ?? detail.type, detail.message].filter(Boolean).join(": ") : response.status_details?.reason;
         this.events.responseDone(response.id, { status, usage: usageOf(response.usage), ...(status === "failed" && error ? { error: this.redact(String(error)).slice(0, 200) } : {}) });
         return;
       }
