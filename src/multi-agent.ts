@@ -39,6 +39,10 @@ export const MULTI_AGENT_LIMITS = Object.freeze({
   progressWaitMs: 15_000,
 });
 
+/** What a sub-agent of the model's own design sees of its parent's files (see `childMounts`). */
+export const DELEGATE_FILES = ["read", "write", "none"] as const;
+export type DelegateFiles = typeof DELEGATE_FILES[number];
+
 /** A delegate target: a definition (by id or key) or an existing agent (by key), named for the model. */
 export type AgentTarget = { name: string; definition?: string; agent?: string; description?: string };
 export interface DelegateSettings {
@@ -46,6 +50,8 @@ export interface DelegateSettings {
   agents?: AgentTarget[];
   /** Whether the model may start a child with instructions of its own instead (its model is the parent's). */
   instructions?: boolean;
+  /** What such a child sees of its parent's files: its mounts read-only (default), as they are, or none. */
+  files?: DelegateFiles;
   maxDepth?: number;
   maxParallel?: number;
 }
@@ -92,12 +98,14 @@ export function targetsInput(value: unknown, field: string): AgentTarget[] {
 
 /** `delegate` as an agent or a definition gives it. */
 export function delegateInput(value: unknown): DelegateSettings {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "delegate is { agents?, instructions?, maxDepth?, maxParallel? }");
-  const { agents, instructions, maxDepth, maxParallel, ...rest } = value as Record<string, unknown>;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "delegate is { agents?, instructions?, files?, maxDepth?, maxParallel? }");
+  const { agents, instructions, files, maxDepth, maxParallel, ...rest } = value as Record<string, unknown>;
   if (Object.keys(rest).length) throw new HttpError(400, `Unknown delegate field: ${Object.keys(rest)[0]}`);
   if (instructions !== undefined && typeof instructions !== "boolean") throw new HttpError(400, "delegate.instructions is true or false");
+  if (files !== undefined && !DELEGATE_FILES.includes(files as DelegateFiles)) throw new HttpError(400, `delegate.files is ${DELEGATE_FILES.join(", ")}`);
   const settings: DelegateSettings = {
     ...(agents !== undefined ? { agents: targetsInput(agents, "delegate.agents") } : {}), ...(instructions !== undefined ? { instructions } : {}),
+    ...(files !== undefined ? { files: files as DelegateFiles } : {}),
     ...(maxDepth !== undefined ? { maxDepth: integer(maxDepth, "delegate.maxDepth", 1, MULTI_AGENT_LIMITS.depthCeiling) } : {}),
     ...(maxParallel !== undefined ? { maxParallel: integer(maxParallel, "delegate.maxParallel", 1, MULTI_AGENT_LIMITS.parallelCeiling) } : {}),
   };
@@ -136,12 +144,20 @@ export function definitionId(tenant: string, ref: string) {
 const listed = (targets: AgentTarget[], describe: (target: AgentTarget) => string | undefined) =>
   targets.map(target => `- ${target.name}${(target.description ?? describe(target)) ? `: ${target.description ?? describe(target)}` : ""}`).join("\n");
 
+/** What the task's description says a sub-agent sees of the parent's files (`childMounts`). */
+const filesSeen = (settings: DelegateSettings, named: boolean) => {
+  if (!settings.instructions) return "";
+  const own = named ? " One you give instructions" : " It";
+  return settings.files === "none" ? `, nor your files` : settings.files === "write"
+    ? `.${own} shares your files, at the same paths: it may change them` : `.${own} can read your files at the same paths (read-only), and writes its own under /scratch`;
+};
+
 const targetProperties = (settings: DelegateSettings, what: string) => {
   const agents = settings.agents ?? [];
   return {
     ...(agents.length ? { agent: { type: "string", enum: agents.map(target => target.name), description: `Which agent to ${what}` } } : {}),
     ...(settings.instructions ? { instructions: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.instructionsChars, description: `Who a new sub-agent is and how it should work${agents.length ? " (instead of naming an agent)" : ""}: it gets them, then its task, as its first message. Put the work itself (its data, rules and steps) in task` } } : {}),
-    task: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.taskChars, description: "The task, with everything the sub-agent needs to know (its data, rules and steps): it sees none of this conversation, nor your files" },
+    task: { type: "string", minLength: 1, maxLength: MULTI_AGENT_LIMITS.taskChars, description: `The task, with everything the sub-agent needs to know (its data, rules and steps): it sees none of this conversation${filesSeen(settings, agents.length > 0)}` },
     output: { type: "object", description: "A JSON Schema for an object, if you want the answer in that shape (type: \"object\")" },
   };
 };

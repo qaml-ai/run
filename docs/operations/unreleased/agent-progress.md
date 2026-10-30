@@ -62,3 +62,12 @@ answered the old total again however often they were corrected (a bare Sol agent
 system prompt 0 times in 8, even when told it could; 4 in 4 with the rules in its first message). Text the parent
 model wrote now has its authority, no more: a parent misled by what it read cannot raise that text above what its
 sub-agent reads in turn. A sub-agent from a definition keeps the definition's system prompt.
+
+### A sub-agent reads its parent's files
+
+A sub-agent of the model's own design (`delegate: { instructions: true }`) now mounts its parent's mounts at the same
+paths, read-only, with a writable `/scratch` of its own, so a file the parent names (`/workspace/rows.json`) is there.
+It had only an empty `/workspace` of its own: models wrote data to a file and handed sub-agents its path, which they
+could not open (DeepSeek v4.1 flash failed 4 of 5 runs of a benchmark this way). `delegate.files` chooses: `"read"`
+(default), `"write"` (the parent's mounts as they are, shared: Claude Managed Agents and Claude Code share a
+filesystem this way) or `"none"` (the old behavior). A definition's sub-agent keeps the definition's mounts.

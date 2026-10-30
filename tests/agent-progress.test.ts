@@ -241,6 +241,39 @@ test("a sub-agent of the model's own design gets its instructions with its task,
   assert.doesNotMatch(first.get("defined")!, /Your role:/, "a definition's sub-agent gets its task alone");
 });
 
+test("a sub-agent of the model's own design reads its parent's files at the same paths; files: write shares them, none keeps them apart", async t => {
+  const { VolumeService } = await import("../src/volumes.ts");
+  const r = await runtime(t, body => {
+    if (roleText(body).includes("WORKER")) {
+      const done = toolResults(body);
+      const steps = [["read", { path: "/workspace/rows.txt" }], ["write", { path: "/workspace/from-child.txt", content: "child" }], ["write", { path: "/scratch/own.txt", content: "own" }]] as const;
+      if (done.length < steps.length) return toolCall(steps[done.length][0], steps[done.length][1], `w${done.length}`);
+      return { role: "assistant", content: done.map(result => result.slice(0, 300)).join(" | ") };
+    }
+    if (tools(body)) return { role: "assistant", content: JSON.parse(toolResults(body).at(-1)!).text };
+    return toolCall("delegate", { instructions: "You are a WORKER.", task: "read the rows" }, "d");
+  });
+  const run = async (files?: string) => {
+    const parent = (await r.call("/v1/agents", { body: { builtins: ["delegate"], delegate: { instructions: true, ...files ? { files } : {} } } })).json.id as string;
+    const workspace = VolumeService.workspaceOf(parent);
+    assert.ok((await fetch(`${r.base}/v1/volumes/${workspace}/files/rows.txt`, { method: "PUT", headers: { Authorization: `Bearer ${OPERATOR}` }, body: "east,1350" })).ok);
+    const reply = (await r.prompt(parent, "go")).outcome.result.reply as string;
+    const wrote = (await r.call(`/v1/volumes/${workspace}/files/from-child.txt`)).status === 200;
+    return { reply: reply.split(" | "), wrote };
+  };
+  const read = await run();
+  assert.match(read.reply[0], /east,1350/, "it reads the parent's file at the parent's path");
+  assert.match(read.reply[1], /read-only/);
+  assert.doesNotMatch(read.reply[2], /error|not inside|read-only/i, "it writes its own files under /scratch");
+  assert.equal(read.wrote, false);
+  const shared = await run("write");
+  assert.match(shared.reply[0], /east,1350/);
+  assert.equal(shared.wrote, true, "with files: write it writes the parent's files");
+  const apart = await run("none");
+  assert.doesNotMatch(apart.reply[0], /east,1350/, "with files: none the parent's files are not there");
+  assert.equal(apart.wrote, false);
+});
+
 test("wait_agent with untilProgress returns on a report it has not seen, after its floor, so the parent can correct a sub-agent mid-run", async t => {
   const release = deferred();
   const bodies: any[] = [];

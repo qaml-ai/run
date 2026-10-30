@@ -238,6 +238,9 @@ test("delegate and spawn_agent require what a call must name: instructions when 
   assert.deepEqual(required({ instructions: true }), [["task", "instructions"], ["task", "instructions"]]);
   assert.deepEqual(required({ agents: [worker] }), [["task", "agent"], ["task", "agent"]]);
   assert.deepEqual(required({ agents: [worker], instructions: true }), [["task"], ["task"]]);
+  const { delegateInput } = await import("../src/multi-agent.ts");
+  assert.deepEqual(delegateInput({ instructions: true, files: "write" }), { instructions: true, files: "write" });
+  assert.throws(() => delegateInput({ instructions: true, files: "all" }), /delegate.files is read, write, none/);
   // A call without them says which field is missing.
   assert.throws(() => childTarget({ instructions: true }, { task: "t" }, "start"), /Give instructions too: who the sub-agent is/);
   assert.throws(() => childTarget({ agents: [worker], instructions: true }, { task: "t" }, "start"), /\(agent\), or give instructions of your own \(instructions\)/);

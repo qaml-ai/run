@@ -470,7 +470,12 @@ export type AgentTarget = string | { name?: string; definition: string; descript
  * instructions itself, and how many agent calls one workflow may make (default 256) and run at once (default 16).
  */
 export interface WorkflowSettings { agents?: AgentTarget[]; instructions?: boolean; maxAgents?: number; maxDepth?: number; maxParallel?: number }
-export interface DelegateSettings { agents?: AgentTarget[]; instructions?: boolean; maxDepth?: number; maxParallel?: number }
+export interface DelegateSettings {
+  agents?: AgentTarget[]; instructions?: boolean;
+  /** What a child of the model's own instructions sees of the agent's files: its mounts read-only (default), as they are, or none. */
+  files?: "read" | "write" | "none";
+  maxDepth?: number; maxParallel?: number;
+}
 /** A volume the agent's file tools see at `path`; `notify` prompts the agent when others change files there. */
 /**
  * How a tool source is authenticated: a stored bearer token, identity tokens the runtime signs for each request, or
