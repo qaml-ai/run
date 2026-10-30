@@ -91,3 +91,14 @@ export function modelFailure(message: Failed, context: FailureContext): ModelFai
 export function isImageRejection(message: string | null | undefined): boolean {
   return ["image_rejected", "image_limit"].includes(errorClass(message));
 }
+
+/**
+ * A provider's content filter blocked the request or its response, as Azure's says it (the response's
+ * `finish_reason: content_filter`, or an error with `code: content_filter`, which pi-ai passes on as the provider's
+ * text), as opposed to the model declining in its own words. Its filter, not the model, said no: the host asks the same
+ * model on another provider once instead (content-filter-fallback.ts, `contentFilterFallback`).
+ */
+export function isContentFilterBlock(message: Pick<Failed, "errorMessage" | "rawStopReason">): boolean {
+  if (message.rawStopReason && /^content_filter(ed)?$|\.content_filter$/i.test(message.rawStopReason)) return true;
+  return /\bfinish_reason\b["': ]+content_filter\b|"code"\s*:\s*"content_filter"|\bResponsibleAIPolicyViolation\b/i.test(message.errorMessage ?? "");
+}

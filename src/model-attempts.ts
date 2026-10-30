@@ -6,7 +6,7 @@ import { databaseUnavailable, databaseRetryable, transaction, type Db } from "./
 import { isSubscriptionProvider, platformUsage, usageMissing } from "./platform-pricing.ts";
 import { enqueueEvents } from "./webhooks.ts";
 import { clock, network } from "./node-context.ts";
-import type { AttemptAck, ModelAttemptEvent } from "./model-attempt.ts";
+import type { AttemptAck, ModelAttemptEvent, Superseded } from "./model-attempt.ts";
 import { lockEndUser, settleUsage, unmarked, utcDay, type EndUserCredits } from "./end-user-credits.ts";
 import { catalogCost, costAt, UNPRICED_COST, unpricedCost } from "./platform-pricing.ts";
 import { usageCost } from "./webhooks.ts";
@@ -104,7 +104,7 @@ export class ModelAttempts {
       if (!result.rowCount) throw new Error("Model attempt generation mismatch");
       return true;
     }
-    try { await this.settle(event.id, tenant, agent, event.usage, event.chars, event.completed, false); }
+    try { await this.settle(event.id, tenant, agent, event.usage, event.chars, event.completed, false, false, event.superseded); }
     finally { this.metered.delete(event.id); }
     return true;
   }
@@ -159,7 +159,12 @@ export class ModelAttempts {
     return { tracked: true, ...lines(metered) };
   }
 
-  async settle(id: string, tenant: string, agent: string, usage: Record<string, any>, chars: number, completed: boolean, reconciled: boolean, staleOnly = false) {
+  /**
+   * `superseded`: the call's response was replaced by another call's (model-attempt.ts `finish`). Its usage is kept on
+   * the attempt and said in its usage.recorded event (`superseded`), for the books, but it is not the tenant's to pay:
+   * no charge, no end-user charge, nothing in the tenant's usage totals.
+   */
+  async settle(id: string, tenant: string, agent: string, usage: Record<string, any>, chars: number, completed: boolean, reconciled: boolean, staleOnly = false, superseded?: Superseded) {
     await transaction(this.db, async sql => {
       const row = (await sql.query("select * from model_attempts where id=$1 and tenant=$2 and agent=$3 for update", [id, tenant, agent])).rows[0];
       if (!row) throw new Error("Unknown model attempt");
@@ -174,6 +179,11 @@ export class ModelAttempts {
       }
       // A provider-reconciled or completed record is final. Delayed host deliveries cannot overwrite it.
       if (row.state === "settled" || (!reconciled && !completed && row.totals)) return;
+      if (superseded && row.context?.superseded !== superseded) {
+        await sql.query("update model_attempts set context = coalesce(context, '{}'::jsonb) || $2::jsonb where id=$1", [id, JSON.stringify({ superseded })]);
+        row.context = { ...row.context, superseded };
+      }
+      const replaced: Superseded | undefined = row.context?.superseded;
       const disabled = row.context?.reconciliationDisabled || (row.key_hash === hash("") ? "Empty provider credential has no reconciliation; reported usage is final" : undefined);
       const evidence = chars > 0 || [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.providerCost].some(value => typeof value === "number" && value > 0);
       if (!reconciled && !evidence) {
@@ -196,11 +206,11 @@ export class ModelAttempts {
       const quote = this.accounts.quoteModelUsage(tenant, agent, { provider: row.provider, model: row.model, kind: row.kind === "compaction" ? "compaction" : undefined, platform: row.platform, timestamp: Number(row.started_at), ...row.context, usage: pricing.usage });
       const previous = row.totals ?? zero;
       const delta = Object.fromEntries(Object.keys(zero).map(key => [key, quote.totals[key as keyof Totals] - (previous[key] ?? 0)])) as Totals;
-      const amount = row.prepaid ? quote.amount : 0;
+      const amount = row.prepaid && !replaced ? quote.amount : 0;
       const adjustment = amount - Number(row.charge);
       // What the call cost its end user: raw cost as the tenant pays for it; an estimated call on a key priced as
       // reported (the tenant's own, an unbilled tenant's) at the estimate of what it streamed, as a platform call would be.
-      const billableEndUser = row.end_user && !isSubscriptionProvider(row.provider);
+      const billableEndUser = row.end_user && !isSubscriptionProvider(row.provider) && !replaced;
       const endUserUsage = !billableEndUser || !estimate || (row.platform && row.catalog_priced) ? pricing.usage
         : platformUsage(usage, row.provider, row.model, estimate).usage;
       // On the platform's key it is what the tenant is charged for the call (the provider's price and the cost of funding
@@ -237,8 +247,10 @@ export class ModelAttempts {
         });
         await sql.query("update model_attempts set end_user_raw=$2, end_user_allowance=$3, end_user_paid=$4, end_user_written_off=$5 where id=$1", [id, posted.raw, posted.allowance, posted.paid, posted.writtenOff]);
       }
-      await applyUsageRows(sql, [{ tenant, day: quote.day, model: quote.model, ...delta }]);
-      await applyWorkspaceUsage(sql, [{ tenant, agent, timestamp: Number(row.started_at), day: quote.day, model: quote.model, ...delta }]);
+      if (!replaced) {
+        await applyUsageRows(sql, [{ tenant, day: quote.day, model: quote.model, ...delta }]);
+        await applyWorkspaceUsage(sql, [{ tenant, agent, timestamp: Number(row.started_at), day: quote.day, model: quote.model, ...delta }]);
+      }
       if (adjustment) {
         await postLedger(sql, [{ tenant, kind: "usage", amount: -adjustment, key: `model-attempt:${id}:${revision}`, metadata: { attempt: id, revision, reconciled, estimated: !final || !!estimate, tokens: Math.round((quote.totals.cost-previous.cost)*1e6), funding: adjustment-Math.round((quote.totals.cost-previous.cost)*1e6) } }]);
         // Correct the original minute, not the recovery worker's current hour. Old minutes cannot affect a current cap.
@@ -248,7 +260,7 @@ export class ModelAttempts {
       }
       // A correction has a new event id and the same attempt id; the initial response is never emitted twice.
       for (const event of quote.events) {
-        const facts = { attemptId: id, revision, reconciled, correction: !!row.totals,
+        const facts = { attemptId: id, revision, reconciled, correction: !!row.totals, ...(replaced ? { superseded: replaced } : {}),
           input: delta.input, output: delta.output, cacheRead: delta.cacheRead, cacheWrite: delta.cacheWrite,
           cost: { ...(event.data.cost as object), usd: delta.cost } };
         Object.assign(event.data, facts);

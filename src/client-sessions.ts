@@ -8,7 +8,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type { AgentConfig, ToolDefinition } from "./protocol.ts";
-import { errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, NOT_MIGRATED, PERSISTENCE_FAILED } from "./protocol.ts";
+import { errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY } from "./protocol.ts";
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { withCatalogPrices } from "./pi-catalog.ts";
@@ -785,6 +785,20 @@ export class ClientSessions {
     }
   }
 
+  /**
+   * The agent's content-filter fallback (AgentConfig.contentFilterFallback): the same model on another provider, where
+   * its model has one (`contentFilterFallbacks`) and it has a key for that provider. Only for an agent whose key is
+   * resolved per call (`SCOPE_KEY`), so that every call, the fallback's and the next one's, says whose key it used
+   * (`session.platformKey`), and each response is billed as its own.
+   */
+  private async contentFilterFallback(session: Session, apiKey: string | undefined): Promise<AgentConfig["contentFilterFallback"]> {
+    const { provider, id } = session.header.config.model, from = `${provider}/${id}`;
+    const model = this.options.contentFilterFallbacks?.get(from);
+    if (!model || apiKey !== SCOPE_KEY || spend.endpoint(this.spendContext, session)) return undefined;
+    const { key } = await configuration.resolveApiKey(this.configurationContext, session, model.provider, session.header.keyScope);
+    return key && key !== IDENTITY_KEY ? { from, model: withCatalogPrices(model) } : undefined;
+  }
+
   /** Start the agent's host, unless it runs. */
   private ensureStarted(session: Session): Promise<any> {
     if (this.closed || session.header.revoked) return Promise.reject(new HttpError(410, "Session closed"));
@@ -800,6 +814,7 @@ export class ClientSessions {
       const [{ key: apiKey, platform }, priced] = await steps.time("key", Promise.all([configuration.resolveApiKey(this.configurationContext, session, session.header.config.model.provider, session.header.keyScope), this.options.catalogPriced?.(session.header.tenant)]));
       session.platformKey = platform;
       session.catalogPriced = !!priced;
+      const fallback = await this.contentFilterFallback(session, apiKey);
       // Its tool servers are listed (remote MCP servers connected to) before its host starts.
       session.hosted = session.header.mounts ?? [];
       session.computerRevision = await this.options.sources?.computerRevision(session.header.tenant, session.header.id);
@@ -808,7 +823,7 @@ export class ClientSessions {
       // Lost or given up while it got ready (its node fenced, or is leaving): it starts nothing. A host started now would
       // serve an owner that is gone, and whoever loads the agent next would find it and take it for theirs, still starting.
       if (session.fault || session.leaving) throw session.fault ?? new Error("Agent stopped");
-      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, model: withCatalogPrices(session.header.config.model), apiKey, mounts: VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), contextRangeMaxBytes: this.options.contextRangeMaxBytes, ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
+      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, model: withCatalogPrices(session.header.config.model), apiKey, mounts: VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(fallback ? { contentFilterFallback: fallback } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), contextRangeMaxBytes: this.options.contextRangeMaxBytes, ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
         definitions,
         codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await spend.codeLimits(this.spendContext, session.header.tenant)).concurrent, signal),
         runLimit: async () => {
@@ -828,7 +843,10 @@ export class ClientSessions {
         },
         call: (name, args, signal, context) => tools.callTool(this.toolsContext, session, { name, args, signal, ...context }),
         file: ref => tools.fileData(this.toolsContext, session, ref),
-        modelAuth: () => configuration.modelAuth(this.configurationContext, session),
+        // Another provider's key only for the agent's content-filter fallback.
+        modelAuth: provider => provider !== undefined && provider !== fallback?.model.provider
+          ? Promise.reject(new Error(`This agent has no ${provider} model`))
+          : configuration.modelAuth(this.configurationContext, session, provider),
         modelAttempt: async event => {
           if (event.type === "begin" && session.header.revoked) return Promise.reject(new Error("Session revoked"));
           const run = runningRun(session);

@@ -281,7 +281,7 @@ export class AgentSupervisor {
       if (method === "run-limit") return (await handle.bridge.runLimit?.()) ?? null;
       if (method === "search") return this.search(handle, params);
       if (method === "file") return this.file(handle, params);
-      if (method === "model-auth") return this.modelAuth(handle);
+      if (method === "model-auth") return this.modelAuth(handle, typeof params?.provider === "string" ? params.provider : undefined);
       if (method === "model-attempt") return handle.bridge.modelAttempt?.(params) ?? false;
       if (method === "fs") return this.dispatchFs(handle, params);
       if (method === "code-slot") return this.codeSlot(handle, params?.id);
@@ -360,9 +360,9 @@ export class AgentSupervisor {
     finally { handle.calls.delete(controller); }
   }
 
-  private modelAuth(handle: Handle) {
+  private modelAuth(handle: Handle, provider?: string) {
     if (!handle.bridge.modelAuth) throw new Error("This agent's model takes no per-call credentials");
-    return handle.bridge.modelAuth();
+    return handle.bridge.modelAuth(provider);
   }
 
   private file(handle: Handle, ref: unknown) {
@@ -404,7 +404,7 @@ export class AgentSupervisor {
       runLimit: async () => handle.bridge.runLimit?.(),
       search: async query => structuredClone(await this.search(handle, structuredClone(query))),
       file: ref => this.file(handle, structuredClone(ref)),
-      modelAuth: () => this.modelAuth(handle),
+      modelAuth: provider => this.modelAuth(handle, provider),
       modelAttempt: event => handle.bridge.modelAttempt?.(structuredClone(event)) ?? Promise.resolve(false),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
       codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),

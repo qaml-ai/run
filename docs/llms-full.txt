@@ -4866,7 +4866,7 @@ Every event is an envelope:
 | `run.failed` | It ended with an error, the runtime's or the model's | as above, and `usage`, `error`, `code` where the error has a name (`cancelled`: a stop cancelled it before it began; `aborted`; `model_stream_stalled`; `turn_limit`…), and `uncertain` when a restart cut it short |
 | `input.requested` | The agent asks a person for input (the run waits) | `agentId`, `requestId`, `inputId`, `toolCallId`, `kind`, `expiresAt` |
 | `input.resolved` | An input settled | `agentId`, `requestId`, `inputId`, `state` |
-| `usage.recorded` | A model response's usage was counted, a transcription's, or images' | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image` or `speech`), tokens, `audioSeconds` (a transcription's, with no tokens), `images` (how many images were made), `cost: {usd, source}`, `at`. A [transcription](https://run.camelai.com/docs/guides/voice.md) made with `POST /v1/transcriptions`, or [images](https://run.camelai.com/docs/guides/images.md) made with `POST /v1/images`, has `agentId: null`, and the `subject`, `context` and `actor` it was sent with. Treat a `kind` you do not know as other usage: kinds may be added |
+| `usage.recorded` | A model response's usage was counted, a transcription's, or images' | `agentId`, `requestId`, `subject`, `actor`, `context`, `keyScope`, `provider`, `model`, `kind` (`response`, `compaction`, `transcription`, `image` or `speech`), tokens, `audioSeconds` (a transcription's, with no tokens), `images` (how many images were made), `cost: {usd, source}`, `at`. A [transcription](https://run.camelai.com/docs/guides/voice.md) made with `POST /v1/transcriptions`, or [images](https://run.camelai.com/docs/guides/images.md) made with `POST /v1/images`, has `agentId: null`, and the `subject`, `context` and `actor` it was sent with. Treat a `kind` you do not know as other usage: kinds may be added. `superseded: "content_filter"` marks a response that is not the answer: its provider's content filter blocked it and the same request went to the same model elsewhere ([models and keys](https://run.camelai.com/docs/guides/models-and-keys.md#azure-openai)), whose own event follows. Its tokens and cost are what the blocked call took; it is not charged to your account, so do not charge your users for it |
 | `voice.session.started` | A [voice session](https://run.camelai.com/docs/guides/voice-calls.md) connected and is listening (once) | `session`, `provider`, `guildId`, `channelId`, `botUserId`, `subject`, `metadata` |
 | `voice.session.ended` | A voice session ended; your app leaves the channel | as above, and `reason`, `limit` and `endUserReason` with `budget`, `detail?` (failure classification, e.g. `realtime_failed`), `error?` (privacy-safe provider error classification and message length; no raw message), `startedAt`, `endedAt`, `utterances`, `speechSeconds`, `costUsd` |
 | `voice.session.error` | A voice session's audio failed: it reconnects at once (`restarting`), or after 3 failures in 5 minutes ends; or it needs new Discord credentials (`credentials_needed`) | the voice facts, `code` (`media_crashed`, `credentials_needed`), `detail`, `restarting`, `attempt?`, `waitMs?` |
@@ -5076,6 +5076,14 @@ Responses API. Naming one the operator has not deployed fails clearly: `PATCH
 /v1/agents/:id/configuration` refuses it, and a run on it fails with
 `model_key_missing`, before any call to Azure. Azure's own content filter may
 refuse a prompt OpenAI would answer; the run then fails with Azure's words.
+Where the operator names the same model on another provider for it
+(`AGENT_CONTENT_FILTER_FALLBACKS`: by default `azure/deepseek-v4.1-flash` on
+`openrouter/deepseek/deepseek-v4.1-flash-1017:nitro`) and the agent has a key for
+that provider (its key scope's, or the account's), a request the filter blocks is
+made there instead, once, within the same request: history keeps only that
+answer, and you pay for that answer alone. The blocked call is the platform's
+cost: its `usage.recorded` event says `superseded: "content_filter"`, and it is not
+charged. The next request goes to Azure again.
 
 ### Output length and temperature
 

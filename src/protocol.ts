@@ -40,8 +40,11 @@ export interface ToolBridge {
   search?(query: SearchQuery): Promise<SearchHit[]>;
   /** A file reference's bytes (base64), for a model request that shows the file. */
   file?(ref: unknown): Promise<string>;
-  /** Credentials for one model call, for an agent whose key is `IDENTITY_KEY` or `SCOPE_KEY`. */
-  modelAuth?(): Promise<Credentials>;
+  /**
+   * Credentials for one model call, for an agent whose key is `IDENTITY_KEY` or `SCOPE_KEY`; for `provider`'s model
+   * instead of the agent's when given (its `contentFilterFallback`).
+   */
+  modelAuth?(provider?: string): Promise<Credentials>;
   /** Durable provider-call identity and usage, acknowledged before dispatch/completion. */
   modelAttempt?: ModelAttemptHook;
   /** js_exec's `fs` (`op` is readFile, writeFile, stat, list or remove), answered by the runtime's file tools over the agent's mounts. */
@@ -119,6 +122,12 @@ export interface AgentConfig {
   modelHeaders?: Record<string, string> | null;
   /** Host policy for retrying transient provider errors. */
   retry?: { maxAttempts: number; baseDelayMs: number };
+  /**
+   * The same model on another provider, set by the runtime (model.ts `contentFilterFallbacks`): a request on `from` (the
+   * agent's model, as `provider/model-id`) that its provider's content filter blocks is made once more on `model`, with
+   * per-call credentials for its provider (`ToolBridge.modelAuth`). Absent where the agent has no key for it.
+   */
+  contentFilterFallback?: { from: string; model: Model<Api> };
   /** The runtime's timeouts for a model stream that goes quiet (model-stream.ts), set by the runtime; an agent's `runLimits` may set its own. */
   streamTimeouts?: { firstTokenMs?: number; idleMs?: number };
   /** Runtime bound on the serialized Pi context range, including entries hidden from model messages. */

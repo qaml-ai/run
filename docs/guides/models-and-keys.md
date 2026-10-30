@@ -99,6 +99,14 @@ Responses API. Naming one the operator has not deployed fails clearly: `PATCH
 /v1/agents/:id/configuration` refuses it, and a run on it fails with
 `model_key_missing`, before any call to Azure. Azure's own content filter may
 refuse a prompt OpenAI would answer; the run then fails with Azure's words.
+Where the operator names the same model on another provider for it
+(`AGENT_CONTENT_FILTER_FALLBACKS`: by default `azure/deepseek-v4.1-flash` on
+`openrouter/deepseek/deepseek-v4.1-flash-1017:nitro`) and the agent has a key for
+that provider (its key scope's, or the account's), a request the filter blocks is
+made there instead, once, within the same request: history keeps only that
+answer, and you pay for that answer alone. The blocked call is the platform's
+cost: its `usage.recorded` event says `superseded: "content_filter"`, and it is not
+charged. The next request goes to Azure again.
 
 ### Output length and temperature
 

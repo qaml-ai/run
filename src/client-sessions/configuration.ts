@@ -422,18 +422,19 @@ export async function providerKeyChanged(ctx: ConfigurationContext, tenant: stri
 
 /**
  * Credentials for one model call: for the agent's tenant's own endpoint, a token with the claims its tool
- * servers' tokens have, for the turn's actor; else its key scope's current key for the model's provider.
+ * servers' tokens have, for the turn's actor; else its key scope's current key for the model's provider, or for
+ * `provider` when given (the agent's content-filter fallback, on another provider: never its endpoint).
  */
-export async function modelAuth(ctx: ConfigurationContext, session: Session): Promise<Credentials> {
+export async function modelAuth(ctx: ConfigurationContext, session: Session, other?: string): Promise<Credentials> {
   const { header } = session;
-  const endpoint = spend.endpoint(ctx.spendContext, session);
+  const endpoint = other === undefined && spend.endpoint(ctx.spendContext, session);
   if (endpoint && ctx.options.modelToken) {
     const run = runningRun(session), actor = run?.actor, lineage = delegation.lineage(ctx.delegationContext, session, run);
     return { identity: true, apiKey: await ctx.options.modelToken(endpoint.baseUrl, {
       tenant: header.tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}), ...lineage,
     }) };
   }
-  const provider = header.config.model.provider;
+  const provider = other ?? header.config.model.provider;
   if (!ctx.options.scopedKey) throw new Error("This agent's model takes no per-call credentials");
   const resolved = await ctx.options.scopedKey(header.tenant, header.keyScope, provider);
   if (!resolved && !header.keyScope) throw new Error(`The ${provider} provider is gone: set it again with PUT /v1/providers/${provider}, or move this agent to another model`);
