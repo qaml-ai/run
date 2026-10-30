@@ -219,6 +219,10 @@ export class DurableAgent {
   private stoppedByFinishTurn = false;
   /** The host's decision on the latest failed response (`stream`), which Pi's retry policy reads; unset while a request runs. */
   private retryPlan?: RetryDecision;
+  /** A failed summary's decision, for the read Pi makes as it resumes from it. */
+  private summaryPlan?: RetryDecision;
+  /** The run's generation had an overflow Pi compacts for: the next one ends the run. */
+  private overflowed = false;
   private closed = false;
   private closing?: Promise<void>;
 
@@ -296,8 +300,6 @@ export class DurableAgent {
       getAuth: () => { throw new Error("camelRun resolves model credentials itself"); },
       streamSimple: (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => agent.stream(streamOptions, view.messages),
       completeSimple: async (_model: unknown, view: { messages: Message[] }, streamOptions: unknown) => {
-        // A failed summary is not asked again (Pi reads the same retry policy for it).
-        agent.retryPlan = { retry: false };
         await agent.flushEvents();
         const apiKey = await options.getApiKey?.(agent.state.model.provider);
         const summarize = async (messages: Message[]) => {
@@ -316,13 +318,20 @@ export class DurableAgent {
         // Pi asks for one summary of the whole prefix. One larger than the window (an imported history, a model whose
         // window is small) is summarized in parts that fit, each carrying the summary so far, as the legacy compactor did.
         const chunks = summaryChunks(view.messages, window(), (streamOptions as { maxTokens?: number } | undefined)?.maxTokens ?? 0);
-        if (!chunks) return summarize(view.messages);
         let summary: AssistantMessage | undefined;
-        for (const chunk of chunks) {
+        if (!chunks) summary = await summarize(view.messages);
+        else for (const chunk of chunks) {
           const before = summary && summaryOf(summary);
-          if (summary && before === undefined) return summary;
+          if (summary && before === undefined) break;
           summary = await summarize(chunk(before));
-          if (summary.stopReason !== "stop") return summary;
+          if (summary.stopReason !== "stop") break;
+        }
+        // A failed summary is not asked again. Pi reads the retry policy for it as it resumes from this call, before any
+        // I/O, so the decision holds until the current macrotask's microtasks are done; a generation's own decision,
+        // pending at the same time, wins (\`retryPolicy\`).
+        if (summary!.stopReason === "error") {
+          agent.summaryPlan = { retry: false };
+          setImmediate(() => { agent.summaryPlan = undefined; });
         }
         return summary!;
       },
@@ -370,7 +379,7 @@ export class DurableAgent {
         // Read as each failed request is classified: the decision the adapter took for its response (`stream`), or for a
         // request a lost node or a close left in flight, the host's (`interrupted`). The host bounds attempts and backoff.
         retry: {
-          get enabled() { return (agent.retryPlan ?? options.durable.retry?.({ reason: "interrupted" }) ?? { retry: false }).retry; },
+          get enabled() { return agent.retryPolicy().retry; },
           maxRetries: Number.MAX_SAFE_INTEGER,
           get baseDelayMs() { return agent.retryDelayMs(); },
           get maxAgentDelayMs() { return agent.retryDelayMs(); },
@@ -413,6 +422,8 @@ export class DurableAgent {
           if (original) agent.originalInputs.set(entry.id, { native: entry.model[0], message: original });
         }
         if (nativeKinds.has(entry.kind) && entry.model?.length) agent.advanceCursor({ entryId: entry.id, index: entry.model.length - 1 });
+        // Pi commits a failed response with what it decided for it: the decision has been read.
+        if (entry.kind === "pi.assistant" && entry.model?.[0]?.role === "assistant" && entry.model[0].stopReason === "error") agent.retryPlan = undefined;
         if (entry.kind === "pi.compaction") agent.queueEvent(() => agent.adoptCompaction(entry));
         const items = durableEntryMessages(entry);
         // A waiting tool's placeholder is streamed but never enters Camel's
@@ -523,6 +534,12 @@ export class DurableAgent {
           else outer.push({ ...event, partial: { ...event.partial, retried: true } as AssistantMessage } as typeof event);
         }
         const final = await inner.result();
+        // Pi compacts once for an overflow and asks again: that response is superseded, as a retried one is. A second
+        // overflow (or one Pi finds nothing to compact for) ends the run.
+        if (final.stopReason === "error" && isContextOverflow(final)) {
+          if (!this.overflowed) (final as { retried?: boolean }).retried = true;
+          this.overflowed = true;
+        } else if (final.stopReason !== "error") this.overflowed = false;
         const failed = final.stopReason === "error" && !isContextOverflow(final);
         const decision = failed ? this.options.durable.retry?.({ reason: "model_error", message: final }) : undefined;
         if (decision?.retry && !isRetryableAssistantError(final)) {
@@ -554,8 +571,14 @@ export class DurableAgent {
     return outer;
   }
 
-  /** The delay of the retry the adapter decided for the failed response (`stream`): none for an interrupted request. */
-  private retryDelayMs() { return this.retryPlan?.retry ? this.retryPlan.delayMs ?? 0 : 0; }
+  /**
+   * What Pi's retry policy says as it is read: the adapter's decision for the generation's failed response until Pi has
+   * committed that response, then a failed summary's (\`completeSimple\`), else the host's for an interrupted request.
+   */
+  private retryPolicy(): RetryDecision {
+    return this.retryPlan ?? this.summaryPlan ?? this.options.durable.retry?.({ reason: "interrupted" }) ?? { retry: false };
+  }
+  private retryDelayMs() { const plan = this.retryPolicy(); return plan.retry ? plan.delayMs ?? 0 : 0; }
 
   private attempt(rawOptions: unknown, nativeMessages?: Message[]) {
     const stream = createAssistantMessageEventStream();
@@ -880,7 +903,7 @@ export class DurableAgent {
   private run(messages: AgentMessage[]) {
     if (this.closed) return Promise.reject(new Error("Agent is closed"));
     if (this.running) return Promise.reject(new Error("Agent is already processing"));
-    this.controller = new AbortController(); this.errorMessage = undefined; this.eventError = undefined; this.stoppedByFinishTurn = false; this.compactedShort = false;
+    this.controller = new AbortController(); this.errorMessage = undefined; this.eventError = undefined; this.stoppedByFinishTurn = false; this.compactedShort = false; this.overflowed = false;
     this.running = this.runInner(messages).finally(() => { this.controller = undefined; this.running = undefined; });
     return this.running;
   }

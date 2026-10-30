@@ -384,12 +384,29 @@ for (const [kind, errorMessage] of [["transient (Pi makes it again)", "503 Servi
   await fake.agent.prompt("Go");
   assert.equal(fake.requests.length, 2);
   assert.deepEqual(decisions, ["model_error"]);
+  assert.equal((fake.agent as any).retryPlan, undefined, "the decision ends once Pi commits the response it was for");
   assert.equal(fake.agent.state.errorMessage, undefined);
   assert.deepEqual((await fake.agent.recoverMessages()).map(item => item.message.role), ["user", "assistant"]);
   assert.deepEqual(fake.agent.state.messages.filter(message => message.role !== "system").map(message => message.role), ["user", "assistant"]);
   const entries = (await fake.storage.scanEntries({ conversationId: fake.agent.conversationId as never }, 100, undefined, BACKGROUND_CONTEXT)).items;
   const assistants = entries.filter(entry => entry.kind === "pi.assistant").map(entry => (entry.model![0] as any));
   console.log(JSON.stringify({ kind, journal: assistants.map(message => ({ stopReason: message.stopReason, retried: message.retried })) }));
+});
+
+test("a failed summary's decision never overrides a generation's pending one, which ends once Pi commits the response", async t => {
+  const fake = await fixture([answer("ok")], {}, new MemoryStorage(), { retry: () => ({ retry: true, delayMs: 0 }) });
+  t.after(() => fake.agent.close());
+  const agent = fake.agent as any;
+  agent.retryPlan = { retry: true, delayMs: 2_000 };
+  agent.summaryPlan = { retry: false };
+  assert.deepEqual(agent.retryPolicy(), { retry: true, delayMs: 2_000 });
+  assert.equal(agent.retryDelayMs(), 2_000);
+  agent.retryPlan = undefined;
+  assert.deepEqual(agent.retryPolicy(), { retry: false });
+  // A summary's decision lasts only for Pi's read as it resumes from the summary.
+  await new Promise(resolve => setImmediate(resolve));
+  agent.summaryPlan = undefined;
+  assert.deepEqual(agent.retryPolicy(), { retry: true, delayMs: 0 }, "an interrupted request: the host's decision");
 });
 
 test("a failed response the host does not make again ends the run and stays in the history", async t => {
