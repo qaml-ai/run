@@ -77,7 +77,7 @@ An entry in `agents` is one of these:
 | --- | --- |
 | `"researcher"` or `{ definition: "researcher", name?, description? }` | A new agent made from the definition, for each call |
 | `{ agent: "billing-specialist", name?, description? }` | Your existing agent with that key. It keeps its own history across calls. Runs queue, one at a time, like any of its runs |
-| `instructions: true` (a setting, not an entry) | A new agent with the model's instructions, the parent's model, and the parent's `web_search` and `web_fetch` if it has them |
+| `instructions: true` (a setting, not an entry) | A new agent with the model's instructions, the parent's model, and the parent's `web_search` and `web_fetch` if it has them. The runtime adds a line after the instructions: the parent's messages may amend them |
 
 A sub-agent the runtime makes is a real agent:
 

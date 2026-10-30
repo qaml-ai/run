@@ -51,3 +51,10 @@ A message to a sub-agent that had already answered starts a turn of its own; `wa
 answer, instead of returning the earlier one at once. The earlier answer still comes as its notification. The
 `instructions` and `task` descriptions now tell the model to put the work (data, rules, steps) in `task`: a message can
 amend a task, but models hold to a system prompt over later messages.
+
+### A parent may amend the instructions it wrote
+
+A sub-agent started with the model's own `instructions` gets a line after them: its parent wrote them, and its
+`<agent_message name="parent">` messages may correct them or its task, the newer message winning. Without it models
+held to the system prompt and ignored the parent's correction (GPT-6 Astra and GPT-6.1 Sol answered the old total again).
+A sub-agent from a definition keeps its definition's prompt as written.

@@ -8,7 +8,7 @@ import { underClaim } from "../ownership.ts";
 import { type McpResult } from "../mcp-results.ts";
 import { jsonResult, type ToolCall } from "../tool-servers.ts";
 import { safeError } from "../metrics.ts";
-import { definitionId, MULTI_AGENT_LIMITS, PARENT_KEYS, type AgentTarget, type DelegateSettings } from "../multi-agent.ts";
+import { definitionId, MULTI_AGENT_LIMITS, PARENT_AMENDS, PARENT_KEYS, type AgentTarget, type DelegateSettings } from "../multi-agent.ts";
 import * as events from "./events.ts";
 import * as spend from "./spend.ts";
 import { type Child, type Session, type ClientSessionOptions, runningRun } from "./state.ts";
@@ -190,7 +190,7 @@ export async function makeChild(ctx: DelegationContext, session: Session, run: R
   const named = Object.hasOwn(ctx.options.modelEndpoints?.(tenant) ?? {}, provider) || Object.hasOwn(await ctx.options.customProviders?.(tenant, header.keyScope) ?? {}, provider);
   return (await ctx.options.createAgent!(tenant, {
     ...target?.definition !== undefined ? { definition: definitionId(tenant, target.definition) } : {
-      model: named ? `${provider}/${modelId}` : header.config.model, systemPrompt: instructions, ...web.length ? { builtins: web } : {},
+      model: named ? `${provider}/${modelId}` : header.config.model, systemPrompt: instructions === undefined ? undefined : `${instructions}\n\n${PARENT_AMENDS}`, ...web.length ? { builtins: web } : {},
     },
     name: target?.name ?? "subagent", type: "subagent", ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds,
     ...header.identity?.subject !== undefined ? { subject: header.identity.subject } : {}, ...header.identity?.context ? { context: header.identity.context } : {},

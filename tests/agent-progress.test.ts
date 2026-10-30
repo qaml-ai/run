@@ -210,6 +210,29 @@ test("a message to a sub-agent that already answered starts a turn, and wait_age
   assert.equal(waited.agents[0].text, "second answer");
 });
 
+test("a sub-agent of the model's own design is told its parent's messages may amend its instructions; one from a definition is not", async t => {
+  const { PARENT_AMENDS } = await import("../src/multi-agent.ts");
+  const r = await runtime(t, body => {
+    if (systemText(body).includes("WORKER") || systemText(body).includes("DEFINED")) return { role: "assistant", content: "done" };
+    const results = toolResults(body);
+    if (!results.length) return { role: "assistant", tool_calls: [
+      { index: 0, id: "a", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ instructions: "You are a WORKER.", task: "work", name: "own" }) } },
+      { index: 1, id: "b", type: "function", function: { name: "spawn_agent", arguments: JSON.stringify({ agent: "defined", task: "work", name: "def" }) } },
+    ] };
+    if (results.length === 2) return toolCall("wait_agent", {}, "wait");
+    if (results.length === 3) return toolCall("wait_agent", {}, "wait2");
+    return { role: "assistant", content: "lead done" };
+  });
+  const defined = (await r.call("/v1/definitions", { body: { name: "Defined", systemPrompt: "You are DEFINED." } })).json.id as string;
+  const parent = await r.call("/v1/agents", { body: { systemPrompt: "You are LEAD.", builtins: ["agents"], delegate: { agents: [{ name: "defined", definition: defined }], instructions: true } } }).then(made => made.json.id as string);
+  await r.prompt(parent, "go");
+  const children = ((await r.call("/v1/agents")).json as any[]).filter(agent => agent.parentAgentId === parent);
+  const prompts = await Promise.all(children.map(async child => (await r.call(`/v1/agents/${child.id}`)).json.systemPrompt as string | undefined));
+  assert.equal(prompts.length, 2);
+  assert.ok(prompts.includes(`You are a WORKER.\n\n${PARENT_AMENDS}`), JSON.stringify(prompts));
+  assert.ok(!prompts.some(text => text?.includes(PARENT_AMENDS) && !text.startsWith("You are a WORKER.")), "a definition's prompt is its author's");
+});
+
 test("wait_agent with untilProgress returns on a report it has not seen, after its floor, so the parent can correct a sub-agent mid-run", async t => {
   const release = deferred();
   const bodies: any[] = [];

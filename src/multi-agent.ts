@@ -150,6 +150,12 @@ const targetProperties = (settings: DelegateSettings, what: string) => {
 const requiredTarget = (settings: DelegateSettings) =>
   ["task", ...(settings.agents?.length ? (settings.instructions ? [] : ["agent"]) : settings.instructions ? ["instructions"] : [])];
 
+/**
+ * Appended to the system prompt of a sub-agent of the model's own design: its parent wrote that prompt, so its parent's
+ * messages may amend it. Models hold to a system prompt over later messages otherwise, and ignore a parent's correction.
+ */
+export const PARENT_AMENDS = "The agent that started you wrote these instructions, and may correct or change them, or your task, while you work: its messages come in <agent_message name=\"parent\"> blocks. When one does, follow the newer message over these instructions and your task.";
+
 /** The delegate tool as the model sees it: its targets by name, with what each is for (`describe`: a definition's own description). */
 export function delegateTool(settings: DelegateSettings, describe: (target: AgentTarget) => string | undefined): ToolDefinition {
   const agents = settings.agents ?? [];
