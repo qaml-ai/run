@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runtime, toolCall, OTHER_OPERATOR } from './runtime-server.ts';
 
-test('native computer API is tenant scoped and tools refresh on an existing agent', async t => {
+for (const provider of ['daytona', 'sprites']) test(`native ${provider} computer API is tenant scoped and tools refresh on an existing agent`, async t => {
   const seen: string[][] = [];
   const r = await runtime(t, (body, index) => {
     seen.push((body.tools ?? []).map((tool: any) => tool.function.name));
@@ -13,7 +13,9 @@ test('native computer API is tenant scoped and tools refresh on an existing agen
   const agent = made.json.id;
   await r.prompt(agent, 'Before connecting');
   assert.ok(!seen[0].includes('computer_status'));
-  const input = { agent, provider: 'daytona', credentials: { apiKey: 'test-secret-do-not-return' }, leaseSeconds: 60, dailySeconds: 120 };
+  const input = { agent, provider, credentials: { apiKey: 'test-secret-do-not-return' }, leaseSeconds: 60, dailySeconds: 120 };
+  assert.equal((await r.call('/v1/computers', {body:{...input, credentials:{}}})).status, 400);
+  assert.equal((await r.call('/v1/computers', {body:{...input, credentials:{...input.credentials, tokenId:'extra'}}})).status, 400);
   assert.equal((await r.call('/v1/computers', { body: input, token: OTHER_OPERATOR })).status, 404);
   const connected = await r.call('/v1/computers', { body: input });
   assert.equal(connected.status, 201, connected.text);

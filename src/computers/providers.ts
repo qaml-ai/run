@@ -1,6 +1,6 @@
 import type { Outbound } from "../outbound.ts";
 
-export const PROVIDERS = ["modal", "daytona", "boat", "e2b", "browserbase", "browser-use", "tunnel"] as const;
+export const PROVIDERS = ["modal", "daytona", "boat", "e2b", "sprites", "browserbase", "browser-use", "tunnel"] as const;
 export type Provider = typeof PROVIDERS[number];
 export const isBrowserProvider = (provider: string) => provider === "browserbase" || provider === "browser-use";
 export type Credentials = Record<string, string>;
@@ -85,6 +85,37 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
         catch (error) { if (error instanceof CommandExitError) return output(error.exitCode, error.stdout, error.stderr); throw error; }
       },
       async close(ref) { try { await Sandbox.kill(ref.id, { apiKey: credentials.apiKey }); } catch (error) { if (!(error instanceof E2BNotFoundError)) throw error; } },
+    };
+  }
+  if (provider === "sprites") {
+    const request = async (path: string, method: string, body?: string, exec = false) => {
+      const response = await outbound.fetch(`https://api.sprites.dev/v1/sprites${path}`, {
+        method, secrets: { Authorization: `Bearer ${credentials.apiKey}` }, headers: { "Content-Type": exec ? "application/octet-stream" : "application/json" },
+        body, timeoutMs: exec ? 135000 : 30000, maxBytes: 2 * 1024 * 1024, maxRedirects: 0,
+      });
+      if (!response.ok) { await response.body?.cancel(); if (method === "DELETE" && response.status === 404) return response; throw new Error(`Computer provider HTTP ${response.status}`); }
+      return response;
+    };
+    return {
+      async create(id, _seconds, allocated) {
+        const name = id.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 63).replace(/^-+|-+$/g, "") || "camelrun";
+        const value = await (await request("", "POST", JSON.stringify({ name }))).json();
+        if (typeof value.name !== "string" || value.name !== name) throw new Error("Computer creation did not return its name");
+        const ref = { id: name }; await allocated?.(ref); return ref;
+      },
+      async call(ref, _op, args) {
+        const [command, seconds] = shell(args);
+        // HTTP frames lack lengths. One ASCII JSON stdout payload survives merged or split frames.
+        const script = `import json,subprocess,sys; r=subprocess.run(["timeout","-k","1","${seconds}s","bash","-lc",sys.stdin.read()],capture_output=True); print(json.dumps({"code":r.returncode,"stdout":r.stdout.decode("utf-8","replace"),"stderr":r.stderr.decode("utf-8","replace")}))`;
+        const query = new URLSearchParams([["cmd", "python3"], ["cmd", "-c"], ["cmd", script], ["stdin", "true"]]);
+        const response = await request(`/${encodeURIComponent(ref.id)}/exec?${query}`, "POST", command, true);
+        const bytes = Buffer.from(await response.arrayBuffer());
+        if (bytes[0] !== 1 || bytes.at(-2) !== 3 || bytes.at(-1) !== 0) throw new Error("Computer exec response incomplete");
+        const result = JSON.parse(bytes.subarray(1, -2).toString("utf8").replaceAll("\x01", ""));
+        if (!Number.isInteger(result.code) || typeof result.stdout !== "string" || typeof result.stderr !== "string") throw new Error("Invalid computer exec response");
+        return output(result.code, result.stdout, result.stderr);
+      },
+      async close(ref) { const response = await request(`/${encodeURIComponent(ref.id)}`, "DELETE"); await response.body?.cancel(); },
     };
   }
   if (provider === "browserbase") {

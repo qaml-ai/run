@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { boundedCommand, driver } from '../src/computers/providers.ts';
-import type { Outbound } from '../src/outbound.ts';
+import { Outbound } from '../src/outbound.ts';
+import { listen } from './runtime-server.ts';
 
 test('shell capture bounds both streams and preserves quoted commands and exit status', () => {
   const command = boundedCommand(`printf '%s' "quote's value"; printf '%030000d' 1 >&2; exit 7`);
@@ -35,6 +36,62 @@ test('Boat uses isolated provisioning options, camelCase API fields and confirme
   assert.ok(calls[2].body.command.includes('exit 7'));
   await provider.close(ref);
   assert.equal(calls.at(-1)!.method,'GET');
+});
+
+test('Sprites uses HTTP create, bounded exec and idempotent deletion', async t => {
+  const calls: {path:string; method:string; body:string}[] = [];
+  let deleted = false, status = 200, incomplete = false;
+  const url = await listen(t, async (req, res) => {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const path = new URL(req.url!, 'http://localhost');
+    calls.push({path:path.pathname, method:req.method!, body});
+    assert.equal(req.headers.authorization, 'Bearer test-org/test-id/test-token/fake');
+    if (status !== 200) { res.writeHead(status).end('private provider error'); return; }
+    if (req.method === 'DELETE') { res.writeHead(deleted ? 404 : 204).end(); deleted = true; return; }
+    if (path.pathname.endsWith('/exec')) {
+      assert.equal(path.searchParams.get('stdin'), 'true');
+      assert.equal(req.headers['content-type'], 'application/octet-stream');
+      const [file, ...args] = path.searchParams.getAll('cmd');
+      assert.equal(file, 'python3');
+      const stdout = execFileSync(file, args, {input:body});
+      // Coalesced frames, including an extra stdout frame within the JSON payload.
+      res.end(Buffer.concat([Buffer.from([1]), stdout.subarray(0, 7), Buffer.from([1]), stdout.subarray(7), incomplete ? Buffer.alloc(0) : Buffer.from([3, 0])]));
+      return;
+    }
+    res.writeHead(201, {'Content-Type':'application/json'}).end(JSON.stringify({id:'opaque-provider-id',name:JSON.parse(body).name}));
+  });
+  const transport = new Outbound({allowHttp:true, allow:['127.0.0.1/32']});
+  t.after(() => transport.dispatcher.close());
+  const outbound = {fetch: (input: string, options: any) => {
+    const target = new URL(input);
+    assert.equal(target.origin, 'https://api.sprites.dev');
+    assert.equal(options.maxRedirects, 0);
+    assert.equal(options.maxBytes, 2 * 1024 * 1024);
+    assert.equal(options.timeoutMs, target.pathname.endsWith('/exec') ? 135000 : 30000);
+    return transport.fetch(url + target.pathname + target.search, options);
+  }} as Outbound;
+  const provider = await driver('sprites', {apiKey:'test-org/test-id/test-token/fake'}, outbound);
+  let allocated: unknown;
+  const ref = await provider.create('_CMP_Test/Name_', 60, async value => { allocated = value; });
+  assert.deepEqual(ref, {id:'cmp-test-name'});
+  assert.deepEqual(allocated, ref);
+  assert.deepEqual(calls[0], {path:'/v1/sprites', method:'POST', body:'{"name":"cmp-test-name"}'});
+  const command = `printf '%s' "quote's value ☃"; printf '\\001error\\003' >&2; exit 7`;
+  assert.deepEqual(await provider.call(ref, 'computer_exec', {command, timeoutSeconds:12}), {exitCode:7, stdout:"quote's value ☃", stderr:'\x01error\x03', truncated:false});
+  assert.equal(calls[1].body, boundedCommand(command));
+  const long: any = await provider.call(ref, 'computer_exec', {command:"printf '%030000d' 1; printf '%030000d' 1 >&2"});
+  assert.deepEqual(long, {exitCode:0, stdout:'0'.repeat(24000), stderr:'0'.repeat(24000), truncated:true});
+  const timed: any = await provider.call(ref, 'computer_exec', {command:'sleep 5', timeoutSeconds:1});
+  assert.equal(timed.exitCode, 124);
+  incomplete = true;
+  await assert.rejects(provider.call(ref, 'computer_exec', {command:'true'}), /response incomplete/);
+  await provider.close(ref);
+  await provider.close(ref);
+  assert.deepEqual(calls.slice(-2).map(c => [c.method, c.path]), [['DELETE','/v1/sprites/cmp-test-name'], ['DELETE','/v1/sprites/cmp-test-name']]);
+  status = 503;
+  await assert.rejects(provider.create('error', 60), {message:'Computer provider HTTP 503'});
+  await assert.rejects(provider.close(ref), {message:'Computer provider HTTP 503'});
 });
 
 test('Browser Use records allocation, limits the session and confirms stop through its browser API', async () => {
