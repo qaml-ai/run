@@ -32,3 +32,15 @@ a wait.
 once the sub-agent has started: `send_message` found no agent, and `wait_agent` recorded the sub-agent as failed while
 it went on to run. A message to a sub-agent whose turn has not begun yet waits up to 10 seconds for it and joins it,
 instead of queuing behind the whole task.
+
+### A steer sent just after a prompt joins its turn
+
+A `whileRunning: "steer"` prompt (a person's, or a sub-agent's message) that arrives while a turn has begun but its
+host has not yet opened it now waits up to 5 seconds for it to open and joins it, instead of answering `steer: "queued"`
+and running after the whole turn.
+
+### Sub-agents of the model's own design require their instructions
+
+With `delegate: { instructions: true }` and no `agents`, `delegate` and `spawn_agent` now list `instructions` as
+required, as the runtime already demanded: models sent only a `task`, were refused, and wrote every call again. A call
+without it says which field is missing (`Give instructions too: the sub-agent's system prompt …`).

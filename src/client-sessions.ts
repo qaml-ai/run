@@ -62,6 +62,8 @@ const RUN_OVERRUN_MS = 60_000;
 const QUEUED_METHODS = [...RUN_METHODS, "configure"];
 /** Queued runs a stop cancels (`stop`): what callers asked for. A `resume` closes a suspended turn, and is the runtime's. */
 const CANCELLABLE = ["prompt", "continue", "execute"];
+/** How long a steer waits for a turn that has begun to open, before it queues as a turn of its own. */
+const STEER_OPEN_WAIT_MS = 5_000;
 const CANCELLED = "Cancelled: the agent was stopped before this run began";
 /** A sub-agent's notification an abort reached before its turn: it lands without one (`stop`). */
 const STOPPED_NOTICE = { stopped: "aborted", message: "The agent was stopped: this notification is in its history, but no turn ran" };
@@ -1819,9 +1821,16 @@ export class ClientSessions {
    * (`steerTaken`); if not (the turn ended first, or stopped), the agent drops it and it runs as a turn of its own.
    */
   private async steerTurn(session: Session, params: Record<string, unknown>): Promise<boolean> {
-    if (!session.turn) return false;
-    try { return !!(await this.supervisor.request(session.header.id, "steer", params))?.steered; }
-    catch { return false; /* Not running after all: the queued prompt runs. */ }
+    // A turn that has begun but not opened yet (its host still preparing it) takes steers in a moment: wait for it, so a
+    // message sent just after its prompt joins it rather than queuing behind all of it.
+    for (const turn = session.turn, deadline = Date.now() + STEER_OPEN_WAIT_MS; turn;) {
+      let steered = false;
+      try { steered = !!(await this.supervisor.request(session.header.id, "steer", params))?.steered; }
+      catch { return false; /* Not running after all: the queued prompt runs. */ }
+      if (steered || turn.start !== undefined || session.turn !== turn || Date.now() > deadline) return steered;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    return false;
   }
 
   /** Save an attachment for request `requestId` ahead of it (the SDKs upload files this way, then reference them by path). */

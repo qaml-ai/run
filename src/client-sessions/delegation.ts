@@ -163,7 +163,7 @@ export function childTarget(settings: DelegateSettings, args: Record<string, unk
   const target = name === undefined ? undefined : settings.agents?.find(entry => entry.name === name);
   if (name !== undefined && !target) throw new Error(`There is no agent ${name} to ${verb}`);
   if (instructions !== undefined && !settings.instructions) throw new Error(`Name an agent to ${verb}: instructions of your own are not allowed here`);
-  if ((target === undefined) === (instructions === undefined)) throw new Error(settings.instructions && settings.agents?.length ? `Name an agent to ${verb}, or give instructions: one of them` : settings.instructions ? "Give the sub-agent's instructions" : `Name an agent to ${verb}`);
+  if ((target === undefined) === (instructions === undefined)) throw new Error(settings.instructions && settings.agents?.length ? `Name an agent to ${verb} (agent), or give a system prompt of your own (instructions): one of them, not both` : settings.instructions ? "Give instructions too: the sub-agent's system prompt (who it is and how it should work), besides its task" : `Name an agent to ${verb} (agent)`);
   if (typeof task !== "string" || !task.trim()) throw new Error("Give the sub-agent its task");
   return { target, instructions, task, output: schema === undefined ? undefined : outputInput({ schema }) };
 }

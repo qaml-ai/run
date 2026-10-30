@@ -162,8 +162,11 @@ test("a child's message cuts its parent's wait_agent short, and the parent reads
 });
 
 test("a response that starts a sub-agent and, beside it, messages and waits for it: those calls run once it has started", async t => {
+  // The worker's first answer waits until its turn has the message, so the turn cannot end before it arrives (a message
+  // that arrives after the turn has ended runs as a turn of its own: right, but not what this test is about).
+  const heard = deferred();
   const r = await runtime(t, body => {
-    if (systemText(body).includes("WORKER")) return tools(body) === 0 ? toolCall("report_progress", { text: "on it" }, "p1") : { role: "assistant", content: `worker done; heard: ${body.messages.filter((message: any) => message.role === "user").length > 1}` };
+    if (systemText(body).includes("WORKER")) return tools(body) === 0 ? { wait: heard.promise, ...toolCall("report_progress", { text: "on it" }, "p1") } : { role: "assistant", content: `worker done; heard: ${body.messages.filter((message: any) => message.role === "user").length > 1}` };
     if (tools(body)) return { role: "assistant", content: toolResults(body).join("\n") };
     const call = (id: string, name: string, args: object, index: number) => ({ index, id, type: "function", function: { name, arguments: JSON.stringify(args) } });
     return { role: "assistant", tool_calls: [
@@ -173,7 +176,11 @@ test("a response that starts a sub-agent and, beside it, messages and waits for 
     ] };
   });
   const parent = await r.call("/v1/agents", { body: { systemPrompt: "You are LEAD.", builtins: ["agents"], delegate: { instructions: true } } }).then(made => made.json.id as string);
-  const reply = (await r.prompt(parent, "go")).outcome.result.reply as string;
+  const run = r.prompt(parent, "go");
+  const child = await until(async () => ((await r.call("/v1/agents")).json as any[]).find(agent => agent.parentAgentId === parent)?.id as string, "the worker");
+  await until(async () => (await requests(r, child)).some(request => request.steer === "accepted" || request.steeredInto), "the message accepted into its turn");
+  heard.resolve();
+  const reply = (await run).outcome.result.reply as string;
   const [spawned, said, waited] = reply.split("\n").map(line => JSON.parse(line));
   assert.equal(spawned.name, "w");
   assert.equal(said.sent, true);

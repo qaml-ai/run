@@ -226,3 +226,16 @@ test("a delegate child whose ending no call took, its parent's run over, is land
   await until(async () => (await r.db.query("select landed_by from agent_children where parent = $1", [parent])).rows[0].landed_by === "late", "the sweep landed it");
   assert.equal((await spent()).toFixed(2), "0.60", "what the child spent is charged to the parent's spend limit");
 });
+
+test("delegate and spawn_agent require what a call must name: instructions when only its own are allowed, the agent when only named ones are", async () => {
+  const { agentsTools, delegateTool } = await import("../src/multi-agent.ts");
+  const { childTarget } = await import("../src/client-sessions/delegation.ts");
+  const required = (settings: any) => [delegateTool(settings, () => undefined), agentsTools(settings, () => undefined)[0]].map(tool => (tool.parameters as any).required);
+  const worker = { name: "worker", definition: "worker" } as any;
+  assert.deepEqual(required({ instructions: true }), [["task", "instructions"], ["task", "instructions"]]);
+  assert.deepEqual(required({ agents: [worker] }), [["task", "agent"], ["task", "agent"]]);
+  assert.deepEqual(required({ agents: [worker], instructions: true }), [["task"], ["task"]]);
+  // A call without them says which field is missing.
+  assert.throws(() => childTarget({ instructions: true }, { task: "t" }, "start"), /Give instructions too: the sub-agent's system prompt/);
+  assert.throws(() => childTarget({ agents: [worker], instructions: true }, { task: "t" }, "start"), /\(agent\), or give a system prompt of your own \(instructions\)/);
+});

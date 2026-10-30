@@ -146,6 +146,10 @@ const targetProperties = (settings: DelegateSettings, what: string) => {
   };
 };
 
+// What a call must name: the agent when only named agents are allowed, the instructions when only its own are (either, with both).
+const requiredTarget = (settings: DelegateSettings) =>
+  ["task", ...(settings.agents?.length ? (settings.instructions ? [] : ["agent"]) : settings.instructions ? ["instructions"] : [])];
+
 /** The delegate tool as the model sees it: its targets by name, with what each is for (`describe`: a definition's own description). */
 export function delegateTool(settings: DelegateSettings, describe: (target: AgentTarget) => string | undefined): ToolDefinition {
   const agents = settings.agents ?? [];
@@ -157,7 +161,7 @@ export function delegateTool(settings: DelegateSettings, describe: (target: Agen
       agents.length ? `Agents you can delegate to:\n${listed(agents, describe)}` : "",
       settings.instructions ? `${agents.length ? "Or give" : "Give"} instructions to start a sub-agent of your own design, with your model.` : "",
     ].filter(Boolean).join("\n\n"),
-    parameters: { type: "object", additionalProperties: false, required: ["task", ...(agents.length && !settings.instructions ? ["agent"] : [])], properties },
+    parameters: { type: "object", additionalProperties: false, required: requiredTarget(settings), properties },
   };
 }
 
@@ -173,7 +177,7 @@ export function agentsTools(settings: DelegateSettings, describe: (target: Agent
       agents.length ? `Agents you can start:\n${listed(agents, describe)}` : "",
       settings.instructions ? `${agents.length ? "Or give" : "Give"} instructions to start a sub-agent of your own design, with your model.` : "",
     ].filter(Boolean).join("\n\n"),
-    parameters: { type: "object", additionalProperties: false, required: ["task", ...(agents.length && !settings.instructions ? ["agent"] : [])], properties: {
+    parameters: { type: "object", additionalProperties: false, required: requiredTarget(settings), properties: {
       ...targetProperties(settings, "start"),
       name: { type: "string", pattern: NAME.source, description: "Your handle for it, unique among your running sub-agents (default: the agent's name and a number)" },
     } },
