@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { AUDIO_RATE, decodeAudio, Resampler, sniff } from "../src/voice/audio-decode.ts";
+import { AUDIO_RATE, decodeAudio, MP3_SNIFF_BYTES, mp3Frame, Resampler, sniff } from "../src/voice/audio-decode.ts";
 
 /** Audio files decoded for a call (src/voice/audio-decode.ts): MP3, Ogg Opus and WAV, to 24 kHz mono 16-bit. */
 
@@ -93,6 +93,59 @@ test("what isn't MP3, Ogg Opus or WAV is refused, saying what is played", async 
   // An MP3 with no frames after its tag.
   const empty = Buffer.concat([Buffer.from("ID3"), Buffer.from([4, 0, 0, 0, 0, 0, 0]), Buffer.alloc(20)]);
   assert.equal((await refused(new Uint8Array(empty))).status, 422);
+});
+
+/** Where the first frame after an MP3's ID3 tag starts. */
+function firstFrame(mp3: Uint8Array) {
+  const size = ((mp3[6] & 0x7f) << 21) | ((mp3[7] & 0x7f) << 14) | ((mp3[8] & 0x7f) << 7) | (mp3[9] & 0x7f);
+  return 10 + size;
+}
+
+test("an MP3 stream joined mid-frame is told by two frames in a row, and decodes", async () => {
+  // As a live stream can answer: from the middle of a frame, the first whole one further in.
+  const mp3 = fixture("tone-44k.mp3");
+  const first = firstFrame(mp3);
+  const length = mp3Frame(mp3, first)!;
+  assert.ok(length > 1 && mp3Frame(mp3, first + length), "the fixture's frames follow each other");
+  const joined = mp3.subarray(first + length + Math.floor(length / 2));
+  assert.ok(!(joined[0] === 0xff && mp3Frame(joined, 0)), "no frame at its first byte");
+  assert.equal(sniff(joined), "mp3");
+  const tone = await decoded(joined, 333);
+  assert.ok(tone.seconds > 0.5 && tone.seconds < 1.1, `most of a second (${tone.seconds})`);
+  // Counted over its length, and the frames first decoded are silent (the bytes they lean on were before the join).
+  assert.ok(Math.abs(tone.hz - 440) < 30, `a 440 Hz tone (${tone.hz})`);
+  assert.ok(tone.peak > 1_000);
+  // The longest frames (320 kbps at 32 kHz: 1,440 bytes), joined one byte in: still inside what is looked at.
+  const header = [0xff, 0xfb, 0xe8, 0x00];
+  const frame = new Uint8Array(1440);
+  frame.set(header);
+  assert.equal(mp3Frame(frame, 0), 1440);
+  const longest = new Uint8Array(Buffer.concat([Buffer.alloc(1439), frame, frame, frame]));
+  assert.equal(sniff(longest.subarray(0, MP3_SNIFF_BYTES)), "mp3");
+});
+
+test("what only looks like an MP3 frame here and there is still refused", async () => {
+  const header = [0xff, 0xfb, 0x90, 0x00];
+  // A lone frame header, with nothing where its next frame would be.
+  const lone = new Uint8Array(4096);
+  lone.set(header, 100);
+  assert.equal(sniff(lone), undefined);
+  // Two frames in a row, but past what is looked at.
+  const late = new Uint8Array(MP3_SNIFF_BYTES + 2048);
+  const length = mp3Frame(new Uint8Array([...header]), 0)!;
+  late.set(header, MP3_SNIFF_BYTES);
+  late.set(header, MP3_SNIFF_BYTES + length);
+  assert.equal(sniff(late), undefined);
+  // A long page is no audio, however much of it is read.
+  const page = new TextEncoder().encode(`<!doctype html><html><body>${"<p>not audio</p>".repeat(1_000)}</body></html>`);
+  assert.ok(page.length > MP3_SNIFF_BYTES);
+  assert.equal(sniff(page), undefined);
+  const refused = await (async () => {
+    try { for await (const _ of decodeAudio(pieces(page))) { /* none */ } }
+    catch (error) { return error as { status: number; code: string }; }
+    throw new Error("not refused");
+  })();
+  assert.deepEqual([refused.status, refused.code], [415, "AUDIO_UNSUPPORTED"]);
 });
 
 test("the resampler keeps a tone's pitch and level across blocks, filtering what is above the new rate", () => {

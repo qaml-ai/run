@@ -19,6 +19,12 @@ import { Opus } from "../opus.ts";
 
 export const AUDIO_RATE = 24_000;
 
+/**
+ * How much of a source is looked at to tell its format. A live MP3 stream can be joined mid-frame, so its first whole
+ * frame comes up to one frame (1,441 bytes at most) in, and the frame after it must be seen too.
+ */
+export const MP3_SNIFF_BYTES = 4096;
+
 export const AUDIO_FORMATS = ["mp3", "opus", "wav"] as const;
 export type AudioFormat = typeof AUDIO_FORMATS[number];
 
@@ -27,7 +33,7 @@ export class AudioRefused extends HttpError {
   constructor(status: 415 | 422, message: string) { super(status, message, status === 415 ? "AUDIO_UNSUPPORTED" : "AUDIO_INVALID"); }
 }
 
-/** The format of a file from its first bytes (at least 12), or undefined when it is none of AUDIO_FORMATS. */
+/** The format of a file from its first bytes (at least 12; MP3_SNIFF_BYTES to find an MP3 joined mid-frame), or undefined when it is none of AUDIO_FORMATS. */
 export function sniff(head: Uint8Array): AudioFormat | "vorbis" | undefined {
   const ascii = (at: number, length: number) => String.fromCharCode(...head.subarray(at, at + length));
   if (ascii(0, 4) === "RIFF" && ascii(8, 4) === "WAVE") return "wav";
@@ -41,6 +47,11 @@ export function sniff(head: Uint8Array): AudioFormat | "vorbis" | undefined {
   }
   if (ascii(0, 3) === "ID3") return "mp3";
   if (head[0] === 0xff && mp3Frame(head, 0)) return "mp3";
+  // Joined mid-frame: two frames in a row, as a stray 0xFF in other bytes almost never makes.
+  for (let at = 0; at < Math.min(head.length, MP3_SNIFF_BYTES); at++) {
+    const length = head[at] === 0xff ? mp3Frame(head, at) : undefined;
+    if (length && mp3Frame(head, at + length)) return "mp3";
+  }
   return undefined;
 }
 
@@ -50,8 +61,8 @@ export function sniff(head: Uint8Array): AudioFormat | "vorbis" | undefined {
  */
 export async function* decodeAudio(source: AsyncIterable<Uint8Array>, options: { gain?: () => number } = {}): AsyncGenerator<Uint8Array> {
   const reader = new ByteReader(source);
-  const head = await reader.peek(64);
-  const format = sniff(head);
+  // Most formats show in the first bytes, so what they play isn't held up; only the rest wait for more.
+  const format = sniff(await reader.peek(64)) ?? sniff(await reader.peek(MP3_SNIFF_BYTES));
   if (format === "vorbis") throw new AudioRefused(415, "Ogg Vorbis isn't supported: use MP3, Ogg Opus or WAV");
   if (!format) throw new AudioRefused(415, "That isn't an audio file camelRun plays: MP3, Ogg Opus or WAV");
   const decoded = format === "mp3" ? mp3(reader) : format === "opus" ? oggOpus(reader) : wav(reader);
