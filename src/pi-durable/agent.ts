@@ -756,8 +756,13 @@ export class DurableAgent {
       afterTool: async (call, result) => {
         if (call.parent) return undefined;
         const recorded = (await this.harness.snapshot(RoundEndDoc, this.conversation.id, context))?.calls.includes(call.id);
-        const ends = recorded || this.terminating.size > 0 || await this.callEnds(call.id, call.name, result).catch(error => {
-          this.errorMessage = error instanceof Error ? error.message : String(error);
+        // One call at a time: the host decides on a call knowing what it decided on the calls before it.
+        const ends = recorded || await this.decide(async () => {
+          if (!this.terminating.size && !await this.callEnds(call.id, call.name, result).catch(error => {
+            this.errorMessage = error instanceof Error ? error.message : String(error);
+            return true;
+          })) return false;
+          this.terminating.add(call.id);
           return true;
         });
         if (!ends) return undefined;
@@ -792,6 +797,13 @@ export class DurableAgent {
   private async clearRoundEnd() {
     if (!(await this.harness.snapshot(RoundEndDoc, this.conversation.id, context))?.calls.length) return;
     await this.conversation.commit(async tx => { (await tx.doc(RoundEndDoc, this.conversation.id)).calls = []; }, context);
+  }
+
+  private deciding: Promise<unknown> = Promise.resolve();
+  private decide<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.deciding.then(work, work);
+    this.deciding = next.catch(() => {});
+    return next;
   }
 
   /** Whether the run ends after the round that `callId` is part of, as the host decides on its result (`finishTurn`). */
