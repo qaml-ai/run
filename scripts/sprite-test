@@ -52,7 +52,15 @@ echo "== sprite-test $(git log --oneline -1 "$sha") on $name ($id)"
 # The tree at <ref>, over what the sprite keeps: node_modules and the v8-exec target survive, everything else is replaced.
 on "$name" "cd ~/rt && find . -mindepth 1 -maxdepth 1 ! -name node_modules ! -name sandbox -exec rm -rf {} + && find sandbox -mindepth 1 -maxdepth 2 ! -path sandbox/v8-exec ! -path sandbox/v8-exec/target -exec rm -rf {} + 2>/dev/null; true"
 git archive --format=tar.gz "$sha" | sprite exec -o "$org" -s "$name" --stdin -- sh -c 'cd ~/rt && tar xzf -'
-on "$name" "sudo service postgresql start >/dev/null
+on "$name" "sudo service postgresql start >/dev/null 2>&1 || true
+  # With fsync off a crash or restart can leave a cluster that won't start. Its data is disposable, so make a new one; no database, no run.
+  if ! sudo -u postgres psql -Atqc 'SELECT 1' >/dev/null 2>&1; then
+    echo '== rebuilding Postgres (it would not start)'
+    v=\$(pg_lsclusters -h | awk 'NR==1 {print \$1}'); sudo pg_dropcluster \$v main --stop >/dev/null 2>&1; sudo pg_createcluster \$v main >/dev/null 2>&1
+    sudo service postgresql start >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do sudo -u postgres psql -Atqc 'SELECT 1' >/dev/null 2>&1 && break; sleep 1; done
+    sudo -u postgres psql -qc \"ALTER USER postgres PASSWORD 'test'\" || { echo '== Postgres would not start' >&2; exit 1; }
+  fi
   # As CI runs it (.github/actions/test-postgres): durability off, or per-file databases are slow enough to time tests out.
   sudo -u postgres psql -qc 'ALTER SYSTEM SET fsync=off' -c 'ALTER SYSTEM SET synchronous_commit=off' -c 'ALTER SYSTEM SET full_page_writes=off' -c 'ALTER SYSTEM SET max_connections=1000' >/dev/null
   if [ \"\$(sudo -u postgres psql -Atqc 'SHOW max_connections')\" = 1000 ]; then sudo -u postgres psql -qc 'SELECT pg_reload_conf()' >/dev/null; else sudo service postgresql restart >/dev/null; fi
