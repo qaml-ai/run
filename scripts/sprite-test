@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# sprite-test [ref] [command...]: run camelRun tests at <ref> on a sprite (sprites.dev) leased from a shared pool.
+#   scripts/sprite-test                                   # the full suite at HEAD, as one CI shard at concurrency 6
+#   scripts/sprite-test origin/fix/x                      # the full suite at a ref
+#   scripts/sprite-test HEAD node --experimental-strip-types --test tests/clients.test.ts   # any command, in the checkout
+# The pool is rt-pool-1..SPRITE_POOL (default 3) in the Fly org SPRITE_ORG (default camelai: `sprite login -o camelai`). A run leases the first free
+# sprite (a lock directory on it; a lease older than SPRITE_LEASE_HOURS, default 3, is taken over), creating and setting
+# one up when every sprite is busy and the pool has room. Postgres, node_modules and the v8-exec build stay on the
+# sprite between runs: npm ci runs again only when package-lock.json changed, and v8-exec builds again only when
+# sandbox/v8-exec changed. Each run gets the committed tree at <ref> (git archive: never the working directory, so
+# .env and ignored files stay here) and a Postgres with no databases left from earlier runs. The lease is released at
+# the end. Output goes to the terminal and ~/runs/<id>.log on the sprite.
+set -euo pipefail
+ref=${1:-HEAD}; shift || true
+[[ $# -gt 0 ]] || set -- env TEST_DATABASE_PER_FILE=true TEST_CONCURRENCY=6 npm run -s test:shard -- 1/1
+cd "$(git rev-parse --show-toplevel)"
+sha=$(git rev-parse --verify "$ref^{commit}")
+lock=$(git rev-parse "$sha:package-lock.json"); v8=$(git rev-parse "$sha:sandbox/v8-exec")
+org=${SPRITE_ORG:-camelai}; pool=${SPRITE_POOL:-3}; lease_s=$(( ${SPRITE_LEASE_HOURS:-3} * 3600 ))
+id=$(date +%Y%m%d-%H%M%S)-$$; owner="$(whoami)@$(hostname -s) $id"
+on() { local name=$1; shift; sprite exec -o "$org" -s "$name" --no-stdin -- bash -o pipefail -c "$*"; }
+
+# Take the lease when it is free or stale: mkdir is atomic, so two runs never hold one sprite.
+take() {
+  on "$1" "if ! mkdir ~/lease 2>/dev/null; then [ \$(( \$(date +%s) - \$(stat -c %Y ~/lease) )) -gt $lease_s ] || exit 1; rm -rf ~/lease; mkdir ~/lease || exit 1; fi; echo '$owner' > ~/lease/owner" >/dev/null 2>&1
+}
+# A new sprite: a create that times out may still have made it, so it counts once the pool lists it.
+create() {
+  echo "== creating $1"
+  sprite create -o "$org" --skip-console "$1" >/dev/null 2>&1 || sprite list -o "$org" 2>/dev/null | grep -qx "$1"
+}
+# Once per sprite, under its lease (~/.setup marks it done): Postgres; npm ci and v8-exec follow on the run.
+setup() {
+  on "$1" "[ -f ~/.setup ] || { echo '== setting up $1: Postgres (then npm ci and the v8-exec build)'; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql >/dev/null 2>&1 && sudo service postgresql start >/dev/null \
+    && sudo -u postgres psql -qc \"ALTER USER postgres PASSWORD 'test'\" && sudo -u postgres psql -qc 'ALTER SYSTEM SET max_connections = 400' \
+    && sudo service postgresql restart >/dev/null && mkdir -p ~/rt ~/runs && touch ~/.setup; }"
+}
+
+existing=$(sprite list -o "$org" 2>/dev/null || true); name=
+# SPRITE_NAME pins one sprite, to prepare it or to reuse what a failed run left there.
+for candidate in ${SPRITE_NAME:-$(for i in $(seq "$pool"); do echo "rt-pool-$i"; done)}; do
+  if ! grep -qx "$candidate" <<<"$existing"; then create "$candidate" || continue; fi
+  take "$candidate" && { name=$candidate; break; }
+done
+[[ -n $name ]] || { echo "every sprite in the pool (rt-pool-1..$pool in $org) is leased; wait, or raise SPRITE_POOL" >&2; exit 75; }
+trap 'on "$name" "rm -rf ~/lease" >/dev/null 2>&1 || true' EXIT
+setup "$name"
+echo "== sprite-test $(git log --oneline -1 "$sha") on $name ($id)"
+
+# The tree at <ref>, over what the sprite keeps: node_modules and the v8-exec target survive, everything else is replaced.
+on "$name" "cd ~/rt && find . -mindepth 1 -maxdepth 1 ! -name node_modules ! -name sandbox -exec rm -rf {} + && find sandbox -mindepth 1 -maxdepth 2 ! -path sandbox/v8-exec ! -path sandbox/v8-exec/target -exec rm -rf {} + 2>/dev/null; true"
+git archive --format=tar.gz "$sha" | sprite exec -o "$org" -s "$name" --stdin -- sh -c 'cd ~/rt && tar xzf -'
+on "$name" "sudo service postgresql start >/dev/null
+  for db in \$(sudo -u postgres psql -Atqc \"SELECT datname FROM pg_database WHERE datname NOT IN ('postgres','template0','template1')\"); do sudo -u postgres dropdb --force \"\$db\"; done
+  cd ~/rt
+  [ \"\$(cat ~/.lock 2>/dev/null)\" = $lock ] || { echo '== npm ci (package-lock.json changed)'; npm ci --silent --no-audit --no-fund && echo $lock > ~/.lock; }
+  [ \"\$(cat ~/.v8 2>/dev/null)\" = $v8 ] || { echo '== building v8-exec (sandbox/v8-exec changed)'; npm run -s build:v8-exec >/dev/null && echo $v8 > ~/.v8; }"
+
+echo "== $*"
+start=$(date +%s)
+set +e
+on "$name" "cd ~/rt && AGENT_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres $(printf '%q ' "$@") 2>&1 | tee ~/runs/$id.log"
+status=$?
+set -e
+echo "== exit $status in $(( $(date +%s) - start ))s on $name; log ~/runs/$id.log there"
+exit $status
