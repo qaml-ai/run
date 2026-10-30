@@ -10,17 +10,18 @@ import { discordGrant, speak, until, voiceCluster } from "./voice-fakes.ts";
 function fakeCredit(balances: Record<string, number>) {
   const log: string[] = [];
   const credit: VoiceCredit = {
-    async refusal(_tenant, endUser, _bucket, { usd = 0 } = {}) {
-      const left = balances[endUser] ?? 0;
-      return left > 0 && left >= usd ? undefined : { reason: "balance", message: `${endUser} has too little credit left` };
+    async refusal(_tenant, endUser) {
+      return (balances[endUser] ?? 0) > 0 ? undefined : { reason: "balance", message: `${endUser} is out of credit` };
     },
+    // As EndUserCredits.hold does for a small hold: what is left, if that is less; past it is written off, never owed.
     async hold(_tenant, endUser, bucket, usd, call, metadata) {
-      if ((balances[endUser] ?? 0) < usd) throw new HttpError(402, `${endUser} has no credit left`, "END_USER_CREDIT", { endUser, bucket, reason: "balance" });
-      balances[endUser] -= usd;
+      const held = Math.min(usd, balances[endUser] ?? 0);
+      if (!(held > 0)) throw new HttpError(402, `${endUser} has no credit left`, "END_USER_CREDIT", { endUser, bucket, reason: "balance" });
+      balances[endUser] -= held;
       log.push(`hold ${endUser} ${bucket} ${usd.toFixed(4)} ${call} ${JSON.stringify(metadata)}`);
       return {
-        settle: async actual => { balances[endUser] += usd - actual; log.push(`settle ${actual.toFixed(4)}`); },
-        release: async () => { balances[endUser] += usd; log.push("release"); },
+        settle: async actual => { balances[endUser] += held - Math.min(actual, held); log.push(`settle ${actual.toFixed(4)}`); },
+        release: async () => { balances[endUser] += held; log.push("release"); },
       };
     },
   };
@@ -38,13 +39,13 @@ test("a session for an end user with no credit is refused; one without a subject
   await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000055" }) });
 });
 
-test("a realtime session is refused when its subject has less than one response's hold left", async t => {
-  const { credit } = fakeCredit({ short: REALTIME_LIMITS.holdUsd / 2, enough: REALTIME_LIMITS.holdUsd });
+test("a realtime session starts with any credit left, even less than one response's hold, and is refused with none", async t => {
+  const { credit } = fakeCredit({ short: REALTIME_LIMITS.holdUsd / 2, none: 0 });
   const { node } = await voiceCluster(t, { credit });
   const a = await node("http://a");
-  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), subject: "short", bucket: "bot:7" }),
+  await assert.rejects(a.voice.create("alice", { discord: discordGrant(), subject: "none", bucket: "bot:7" }),
     (error: HttpError) => error.status === 402 && error.code === "END_USER_CREDIT" && error.details?.reason === "balance");
-  assert.equal((await a.voice.create("alice", { discord: discordGrant(), subject: "enough", bucket: "bot:7" })).subject, "enough");
+  assert.equal((await a.voice.create("alice", { discord: discordGrant(), subject: "short", bucket: "bot:7" })).subject, "short");
 });
 
 /** A response's usage that costs $0.04 on gpt-realtime-2.1 (625 output audio tokens at $64 a million). */
@@ -83,7 +84,11 @@ test("each response holds of the subject's credit before it is asked for, and se
     `hold ada bot:7 ${HOLD.toFixed(4)} voice_realtime {"session":"${created.id}"}`, "settle 0.0400",
   ]);
   assert.ok(Math.abs(balances.ada - 0.02) < 1e-9);
-  // The third cannot be held: its response is cancelled, unheard, and the session ends.
+  // The third holds the $0.02 left, and costs more: past that is not the subject's to pay.
+  await turn();
+  await until(() => log.length === 6, "the last hold settled");
+  assert.equal(balances.ada, 0);
+  // The fourth cannot be held: its response is cancelled, unheard, and the session ends.
   speak(cluster.fake.open()[0], "400000000000000004", 0.6);
   await until(async () => (await a.voice.get("alice", created.id)).state === "ended", "the end");
   assert.ok(model.of("cancel").length >= 1, "the refused response was cancelled");
@@ -122,11 +127,18 @@ test("with the runtime's end-user credits: a call's responses are held, posted t
   assert.equal(usage.bucket, "bot:7");
   await until(async () => Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count) === 0, "no hold left");
   await turn();
+  // $0.02 left, less than a response holds: a new call starts on it, as this one's next answer does.
+  const last = await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000068" }), subject: "ada", bucket: "bot:7" });
+  await a.voice.end("alice", last.id);
+  await turn();
+  await until(async () => Number((await cluster.db.query("select count(*) as count from end_user_holds")).rows[0].count) === 0, "no hold left");
+  assert.equal((await credits.get("alice", "ada")).balance, 0, "spent to nothing, never past it");
+  assert.equal((await cluster.db.query("select sum(written_off)::int as lost from end_user_days where bucket = 'bot:7'")).rows[0].lost, 20_000, "what it cost past that is written off");
   speak(cluster.fake.open()[0], "400000000000000004", 0.6);
   await until(async () => (await a.voice.get("alice", created.id)).state === "ended", "the end");
   const session = await a.voice.get("alice", created.id);
   assert.deepEqual([session.endReason, session.limit, session.endUserReason], ["budget", "end_user", "balance"]);
-  // $0.02 left, less than a response holds: a new call is refused as it starts, not ended at its first answer.
+  // Nothing left: a new call is refused as it starts.
   await assert.rejects(a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000067" }), subject: "ada", bucket: "bot:7" }),
     (error: HttpError) => error.status === 402 && error.code === "END_USER_CREDIT" && error.details?.reason === "balance");
 });
