@@ -152,6 +152,10 @@ the reply streams, it asks for more ahead of the end of what it holds. Holds are
 taken one at a time per person, on any node, so calls in parallel (sub-agents, several
 of their agents at once) never each see the whole balance.
 
+A call with too little left for all of that still starts, holding what is left, as long as its estimate is within
+$0.25 of it. It stops at the end of what it holds, with at least a short reply, and what it costs past that is written
+off: you bear it, as `writtenOff` in the ledger, and the person's balance and limits are never passed.
+
 When nothing more can be held:
 
 - **A new run** is refused with `402` and code `END_USER_CREDIT`, with `endUser`,

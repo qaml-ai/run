@@ -7,7 +7,7 @@ import { isSubscriptionProvider, platformUsage, usageMissing } from "./platform-
 import { enqueueEvents } from "./webhooks.ts";
 import { clock, network } from "./node-context.ts";
 import type { AttemptAck, ModelAttemptEvent, Superseded } from "./model-attempt.ts";
-import { lockEndUser, settleUsage, unmarked, utcDay, type EndUserCredits } from "./end-user-credits.ts";
+import { lastCallMin, lockEndUser, settleUsage, unmarked, utcDay, type EndUserCredits } from "./end-user-credits.ts";
 import { catalogCost, costAt, UNPRICED_COST, unpricedCost } from "./platform-pricing.ts";
 import { usageCost } from "./webhooks.ts";
 
@@ -16,7 +16,8 @@ const hash = (key: string) => createHash("sha256").update(key).digest("hex");
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /**
  * A metered call's hold (end-user-credits.ts) is its input and up to this much output, and grows by as much again each
- * time its stream reaches the end of what it holds; it needs its input and at least MIN_OUTPUT_TOKENS of output to start.
+ * time its stream reaches the end of what it holds. To start it needs its input and MIN_OUTPUT_TOKENS of output, less
+ * the shortfall a last call may have (`lastCallMin`).
  */
 export const HOLD_OUTPUT_TOKENS = 8_192;
 /** Past the runtime turn limit and its two overrun grace periods, a lost host cannot still be streaming. */
@@ -40,7 +41,8 @@ const ASK_AHEAD_TOKENS = 2_048;
  */
 const lines = (metered: Metered): Pick<AttemptAck, "checkAtChars" | "stopAtChars"> => {
   if (!(metered.perToken > 0)) return {};
-  const stop = Math.max(0, Math.floor((metered.held - metered.input) / metered.perToken * CHARS_PER_TOKEN));
+  // A last call may hold less than its input: it still gets a short reply, as any call that starts does.
+  const stop = Math.max(Math.min(metered.maxOutput, MIN_OUTPUT_TOKENS) * CHARS_PER_TOKEN, Math.floor((metered.held - metered.input) / metered.perToken * CHARS_PER_TOKEN));
   // A short hold asks halfway through, so a reply that fits it never asks at all.
   return { stopAtChars: stop, checkAtChars: Math.max(0, stop - Math.min(ASK_AHEAD_TOKENS * CHARS_PER_TOKEN, Math.floor(stop / 2))) };
 };
@@ -135,7 +137,7 @@ export class ModelAttempts {
     const perToken = Math.max(0, Number(rates.output) || 0) * funding, input = Math.ceil(((inputTokens - cached) * inputRate + cached * cachedRate) * funding);
     const maxOutput = Math.max(1, estimate?.maxOutputTokens ?? HOLD_OUTPUT_TOKENS);
     const want = input + Math.ceil(Math.min(maxOutput, INITIAL_OUTPUT_TOKENS) * perToken);
-    const reserved = await this.endUsers!.reserve(tenant, endUser!.id, endUser!.bucket, { id: event.id, want, min: input + Math.ceil(Math.min(maxOutput, MIN_OUTPUT_TOKENS) * perToken) });
+    const reserved = await this.endUsers!.reserve(tenant, endUser!.id, endUser!.bucket, { id: event.id, want, min: lastCallMin(input + Math.ceil(Math.min(maxOutput, MIN_OUTPUT_TOKENS) * perToken)) });
     if (!reserved) return undefined;
     if (reserved.refused) return { refused: reserved.refused };
     return { tenant, endUser: endUser!.id, bucket: endUser!.bucket, input, perToken, maxOutput, held: reserved.hold.raw };

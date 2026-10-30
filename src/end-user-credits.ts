@@ -535,12 +535,12 @@ export class EndUserCredits {
 
   /**
    * Hold `usd` of `endUser`'s credit for work that is not a model call (audio to transcribe, images), before it is sent:
-   * all of it, or a 402 END_USER_CREDIT. Settle it with what the work cost, or release it if none was done. Undefined:
-   * the tenant does not meter its end users.
+   * all of it, or as much as is left when that is within LAST_CALL_SHORTFALL of it, else a 402 END_USER_CREDIT. Settle it
+   * with what the work cost, or release it if none was done. Undefined: the tenant does not meter its end users.
    */
   async hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata: Record<string, unknown> = {}): Promise<CreditHold | undefined> {
     const id = randomUUID(), want = Math.ceil(usd * MICROS);
-    const reserved = await this.reserve(tenant, endUser, bucket, { id, want, min: want });
+    const reserved = await this.reserve(tenant, endUser, bucket, { id, want, min: lastCallMin(want) });
     if (!reserved) return undefined;
     if (reserved.refused) throw creditError(reserved.refused);
     return {
@@ -564,18 +564,15 @@ export class EndUserCredits {
 
   /**
    * Why `endUser` may not start more work in `bucket` now: nothing left of the bucket's allowance today and no paid room
-   * (balance, daily limit), after holds; with `usd`, too little of them to hold that much (what the work's first call
-   * holds, all of it, as a realtime voice response does). Undefined when they may, or the tenant does not meter its end
-   * users. A read, for refusing a run before it starts: the hold its first call takes is what decides.
+   * (balance, daily limit), after holds. Undefined when they may, or the tenant does not meter its end users. A read, for
+   * refusing a run before it starts: the hold its first call takes is what decides.
    */
-  async refusal(tenant: string, endUser: string, bucket: string, { usd = 0, now = Date.now() }: { usd?: number; now?: number } = {}): Promise<CreditRefusal | undefined> {
+  async refusal(tenant: string, endUser: string, bucket: string, { now = Date.now() }: { now?: number } = {}): Promise<CreditRefusal | undefined> {
     if (!await this.enabled(tenant)) return undefined;
     const user = (await this.db.query("select * from end_users where tenant = $1 and id = $2", [tenant, endUser])).rows[0]
       ?? { id: endUser, balance: 0, allowances: {}, bucket_limits: {}, daily_limit: null };
     const left = await room(this.db, tenant, user, await this.settings(tenant), bucket, now);
-    const want = Math.ceil(usd * MICROS);
-    const enough = want > 0 ? split(want, left).raw >= want : left.allowanceLeft > 0 || left.paidRoom > 0;
-    return enough ? undefined : refusal(endUser, bucket, left);
+    return left.allowanceLeft > 0 || left.paidRoom > 0 ? undefined : refusal(endUser, bucket, left);
   }
 
   /**
@@ -603,6 +600,15 @@ export class EndUserCredits {
     });
   }
 }
+
+/**
+ * How far (raw micro-USD) a call's estimate may be past what its end user has left, and it still starts: people spend
+ * what they have, rather than being refused with a few cents left. It holds what is left; what it costs past that is
+ * written off (`settleUsage`), so no balance or limit is passed, and with nothing left the next call is refused.
+ */
+export const LAST_CALL_SHORTFALL = 250_000;
+/** The least a call estimated at `need` (raw) must hold to start. */
+export const lastCallMin = (need: number) => Math.max(1, need - LAST_CALL_SHORTFALL);
 
 /** How long a call's hold lasts without a word from it: a call that streams extends it as it goes (`extend`). */
 export const HOLD_MS = 10 * 60_000;

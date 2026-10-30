@@ -34,14 +34,14 @@ test("an end user's allowance pays first, then their balance; out of both, the t
   const allowance = entries.reduce((total: number, entry: any) => total + entry.allowance, 0);
   const paid = entries.reduce((total: number, entry: any) => total - entry.amount, 0);
   assert.equal(allowance, 250_000, "the allowance is spent first, all of it");
-  assert.equal(paid, Math.ceil((entries.length * 100_000 - 250_000) * 1.25), "the rest from the balance, marked up");
+  assert.equal(paid, 100_000, "the rest from the balance, all of it");
+  const writtenOff = entries.reduce((total: number, entry: any) => total + entry.writtenOff, 0);
+  assert.equal(writtenOff, entries.length * 100_000 - 250_000 - 80_000, "the last call's cost past what was left is written off, at the balance's rate");
   const person = (await r.call("/v1/end-users/person?buckets=builder")).json;
-  assert.equal(person.balance, 100_000 - paid);
-  assert.ok(person.balance >= -125_000, "at most one response past the balance");
+  assert.equal(person.balance, 0, "spent to nothing, never past it");
   assert.equal(person.today.buckets[0].allowanceLeft, 0);
 
   // Nothing left at all: the next run is refused before it starts, with why.
-  await grant(r, "person", -person.balance, "zero");
   const refused = await r.call(`/v1/agents/${id}/prompt`, { body: { text: "again" } });
   assert.deepEqual([refused.status, refused.json.code, refused.json.reason, refused.json.endUser, refused.json.bucket], [402, "END_USER_CREDIT", "balance", "person", "builder"], refused.text);
 

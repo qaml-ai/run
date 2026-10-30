@@ -200,6 +200,45 @@ test("other spend obeys the same cap: a transcription's hold and a web search at
   assert.equal(await balance(db), 5 * USD - 30_000);
 });
 
+test("a person spends down to nothing: the last call starts on what is left, overdraws nothing, is written off, and the next is refused", async () => {
+  const { db, service } = await credits({ markupBps: 2_500 });
+  await service.post("t", "u", { kind: "grant", amount: 50_000, key: "pay" });
+  const hold = await service.hold("t", "u", "b", 0.2, "images");
+  const { logged } = await quiet(() => hold!.settle(0.2));
+  assert.equal(await balance(db), 0, "all of it spent, never below zero");
+  assert.equal(await ledgerSum(db), 0, "the ledger agrees");
+  // $0.05 charged at the markup is $0.04 of cost: the other $0.16 is the tenant's.
+  assert.deepEqual(await day(db, "b"), { allowanceSpent: 0, paidSpent: 50_000, writtenOff: 160_000 });
+  assert.ok(logged.some(line => line.type === "end_user_written_off" && line.writtenOff === 160_000));
+  await assert.rejects(service.hold("t", "u", "b", 0.01, "images"), (error: any) => error.status === 402 && error.details.reason === "balance");
+  assert.equal((await service.reserve("t", "u", "b", { id: randomUUID(), want: 1_000, min: 1 }))?.refused?.reason, "balance");
+  assert.ok(await service.refusal("t", "u", "b"), "a run is refused before it starts");
+});
+
+test("calls at once never overdraw: the first to ask holds what is left, the others are refused", async () => {
+  const { db, service } = await credits();
+  await service.post("t", "u", { kind: "grant", amount: 40_000, key: "pay" });
+  const results = await Promise.allSettled(Array.from({ length: 8 }, () => service.hold("t", "u", "b", 0.05, "voice_realtime")));
+  const held = results.filter(result => result.status === "fulfilled").map(result => (result as PromiseFulfilledResult<any>).value);
+  assert.equal(held.length, 1);
+  await quiet(() => held[0].settle(0.05));
+  assert.equal(await balance(db), 0);
+  assert.deepEqual(await day(db, "b"), { allowanceSpent: 0, paidSpent: 40_000, writtenOff: 10_000 });
+});
+
+test("the last call stays within the daily limit and the bucket's own: its overshoot is written off, not charged", async () => {
+  const { db, service } = await credits({ bucketLimits: { b: 30_000 } });
+  await service.post("t", "u", { kind: "grant", amount: 5 * USD, key: "pay" });
+  const hold = await service.hold("t", "u", "b", 0.05, "voice_realtime");
+  await quiet(() => hold!.settle(0.05));
+  assert.deepEqual(await day(db, "b"), { allowanceSpent: 0, paidSpent: 30_000, writtenOff: 20_000 });
+  assert.equal(await balance(db), 5 * USD - 30_000);
+  await service.setSettings("t", { enabled: true, bucketLimits: {}, dailyLimit: 40_000 });
+  const daily = await service.hold("t", "u", "b", 0.05, "voice_realtime");
+  await quiet(() => daily!.settle(0.05));
+  assert.equal(await balance(db), 5 * USD - 40_000, "the day's limit, not a cent past it");
+});
+
 const KEY = "fixture-only";
 const keyHash = createHash("sha256").update(KEY).digest("hex");
 const MODEL = "anthropic/claude-opus-4.1";

@@ -73,18 +73,17 @@ test("a call is refused when it cannot hold its minimum: for the balance, or for
   assert.deepEqual((await service.reserve("t", "nobody", "builder", { id: randomUUID(), want: 0, min: 0 }))?.hold?.raw, 0, "a free call is never refused");
 });
 
-test("a run whose first call holds a fixed amount is refused before it starts when less than that is left", async () => {
-  const { service } = await credits({ allowances: { "bot:*": 30_000 } });
-  // $0.03 of the bot's allowance left: some, so a run may start, but not the $0.05 a realtime voice response holds.
+test("a fixed hold takes what is left when it is near enough, and is refused with nothing left or far too little", async () => {
+  const { db, service } = await credits({ allowances: { "bot:*": 30_000 } });
+  // $0.03 of the bot's allowance left: less than the $0.05 a realtime voice response holds.
   assert.equal(await service.refusal("t", "u", "bot:1"), undefined);
-  const short = await service.refusal("t", "u", "bot:1", { usd: 0.05 });
-  assert.equal(short?.reason, "balance");
-  assert.equal(short!.message, 'This end user has too little credit left for this call: $0.03 is left of the free $0.03 for "bot:1" today, and their balance is $0.00');
-  assert.equal(await service.refusal("t", "u", "bot:1", { usd: 0.03 }), undefined, "exactly enough");
-  // The allowance and the balance together cover it, as the hold would take them.
-  await service.post("t", "u", { kind: "grant", amount: 20_000, key: "pay" });
-  assert.equal(await service.refusal("t", "u", "bot:1", { usd: 0.05 }), undefined);
-  assert.equal(await new EndUserCredits(service.db).refusal("off", "u", "bot:1", { usd: 0.05 }), undefined, "a tenant that does not meter its end users");
+  const hold = await service.hold("t", "u", "bot:1", 0.05, "voice_realtime");
+  assert.deepEqual((await holds(db)).map(row => [Number(row.allowance), Number(row.paid)]), [[30_000, 0]], "all that is left, not more");
+  await assert.rejects(service.hold("t", "u", "bot:1", 0.05, "voice_realtime"), (error: any) => error.status === 402 && error.details.reason === "balance");
+  await hold!.release();
+  // Far more than is left is still refused: a dollar of work on three cents.
+  await assert.rejects(service.hold("t", "u", "bot:1", 1, "images"), (error: any) => error.status === 402 && /too little credit/.test(error.message));
+  assert.equal(await new EndUserCredits(service.db).refusal("off", "u", "bot:1"), undefined, "a tenant that does not meter its end users");
 });
 
 test("a bucket's own daily limit caps what it charges the balance, whatever the balance: a bot cannot spend past it", async () => {
@@ -320,6 +319,42 @@ test("a begin delivered again holds once, and a request for more that lands afte
   await service.extend("payg", "person", "builder", id, 100_000);
   assert.equal((await holds(db)).length, 0);
   assert.equal((await service.get("payg", "person")).held, 0);
+});
+
+test("a call whose input alone is past what is left still starts: a short reply on what is left, the rest written off, then refused", async t => {
+  const { db, service, attempts } = await attemptsFixture();
+  const rates = catalogRates("openrouter", MODEL);
+  // $0.05 of balance at a 20% markup; a builder-sized input costs more than twice that.
+  await service.post("payg", "person", { kind: "grant", amount: 50_000, key: "pay" });
+  const begin = (id: string, inputTokens: number) => attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: MODEL, kind: "response", at: Date.now(), keyHash,
+    estimate: { inputTokens, maxOutputTokens: 8_192, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "builder" } }).then(attemptAck);
+  const inputTokens = Math.ceil(120_000 / rates.input);
+  // Past the shortfall a last call may have: refused, with what is left untouched.
+  const far = await begin(randomUUID(), Math.ceil(2 * USD / rates.input));
+  assert.equal(far.refused?.reason, "balance");
+  assert.match(far.refused!.message, /too little credit/);
+  assert.equal((await holds(db)).length, 0);
+
+  const id = randomUUID();
+  const ack = await begin(id, inputTokens);
+  assert.equal(ack.refused, undefined);
+  assert.equal(ack.stopAtChars, MIN_OUTPUT_TOKENS * 2, "a short reply, though what it holds does not cover its input");
+  assert.ok(ack.checkAtChars! < ack.stopAtChars!);
+  assert.deepEqual((await holds(db)).map(row => Number(row.paid)), [50_000], "all that is left, not more");
+  // Nothing more can be held: the stream is cut at the same line.
+  const cut = attemptAck(await attempts.event("payg", "agent", true, true, { type: "progress", id, chars: ack.checkAtChars! }));
+  assert.deepEqual([cut.refused?.reason, cut.stopAtChars, cut.checkAtChars], ["balance", ack.stopAtChars, undefined]);
+  assert.equal((await begin(randomUUID(), inputTokens)).refused?.reason, "balance", "a call at once finds nothing left");
+
+  const errors = t.mock.method(console, "error", () => {});
+  await attempts.event("payg", "agent", true, true, { type: "finish", id, usage: { input: inputTokens, output: 256, cacheRead: 0, cacheWrite: 0, providerCost: 0.14, providerCreditCost: 0.14 }, chars: 512, completed: true });
+  assert.equal((await service.get("payg", "person")).balance, 0, "all of it spent, never below zero");
+  assert.equal(Number((await db.query("select coalesce(sum(amount), 0) as total from end_user_ledger where tenant = 'payg' and end_user = 'person'")).rows[0].total), 0, "the ledger agrees");
+  const row = (await db.query("select end_user_raw, end_user_paid, end_user_written_off from model_attempts where id = $1", [id])).rows[0];
+  assert.equal(Number(row.end_user_paid), 50_000);
+  assert.ok(Number(row.end_user_written_off) > 0, "what it cost past that is the tenant's, recorded");
+  assert.ok(errors.mock.calls.some(call => String(call.arguments[0]).includes('"end_user_written_off"')));
+  assert.ok(await service.refusal("payg", "person", "builder"), "the next run is refused before it starts");
 });
 
 test("a failed call with no output releases its hold; one without an end user is the tenant's alone", async () => {

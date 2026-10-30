@@ -412,8 +412,8 @@ function discordInput(value: unknown, endpoints: RegExp, partial = false): Parti
  */
 export interface VoiceCredit {
   /** With `usd`, also refused when the subject cannot cover that much (a realtime brain's first response hold). */
-  refusal(tenant: string, endUser: string, bucket: string, options?: { usd?: number }): Promise<{ reason: string; message: string } | undefined>;
-  /** Throws 402 END_USER_CREDIT (`details.reason`) when the subject cannot cover `usd`. */
+  refusal(tenant: string, endUser: string, bucket: string): Promise<{ reason: string; message: string } | undefined>;
+  /** Throws 402 END_USER_CREDIT (`details.reason`) when the subject has too little left to start work costing `usd`. */
   hold(tenant: string, endUser: string, bucket: string, usd: number, call: string, metadata?: Record<string, unknown>): Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
 }
 
@@ -683,9 +683,7 @@ export class VoiceSessions {
     if (options.endOfTurn?.mode === "smart" && !this.options.turnModels) throw new HttpError(404, "Smart end of turn is not enabled on this runtime: use endOfTurn silence");
     if (options.deliver.agent && !await this.options.agentOwned(options.deliver.agent, tenant)) throw new HttpError(404, "Unknown agent in deliver.agent");
     await this.options.admit(tenant);
-    // A realtime brain holds REALTIME_LIMITS.holdUsd before each response: a subject with less could join, then end at
-    // its first answer (budget).
-    const refused = options.subject !== undefined ? await this.options.credit?.refusal(tenant, options.subject, options.bucket ?? DEFAULT_BUCKET, listen ? {} : { usd: REALTIME_LIMITS.holdUsd }) : undefined;
+    const refused = options.subject !== undefined ? await this.options.credit?.refusal(tenant, options.subject, options.bucket ?? DEFAULT_BUCKET) : undefined;
     if (refused) throw new HttpError(402, refused.message, "END_USER_CREDIT", { endUser: options.subject, bucket: options.bucket ?? DEFAULT_BUCKET, reason: refused.reason });
     if (listen) {
       const transcriber = this.options.transcriber!;
