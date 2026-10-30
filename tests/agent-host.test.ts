@@ -42,7 +42,7 @@ async function setup(t: Context) {
     { name: "fetch", description: "Fetch something, alongside other calls", parameters: { type: "object" }, exposure: "direct", executionMode: "parallel" },
   ];
   /** A host over the agent's Pi storage, as a node starting the agent: `call` answers its tools. */
-  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[]; tenant?: string } = {}) {
+  async function start(options: { resume?: boolean; call?: (name: string, host: ReturnType<typeof createAgentHost>) => unknown; runLimit?: HostIO["runLimit"]; storage?: (storage: PiStorage) => PiStorage; initialMessages?: AgentMessage[]; tenant?: string } = {}) {
     const events: any[] = [];
     const opened = await openPiStorage({ sessionId: "agent", directory });
     const storage = options.storage?.(opened) ?? opened;
@@ -50,7 +50,7 @@ async function setup(t: Context) {
       emit: event => events.push(event),
       tool: async name => (options.call ?? (() => "found"))(name, host),
       cancelTools: async () => null,
-      runLimit: async () => undefined,
+      runLimit: options.runLimit ?? (async () => undefined),
       legacyLog: { empty: async () => true },
       piStorage: async () => storage,
       file: async () => { throw new Error("no files"); },
@@ -90,6 +90,20 @@ const user = (text: string) => ({ role: "user", content: text, timestamp: 1 }) a
 const answer = (content: Parameters<typeof fauxAssistantMessage>[0], stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage => fauxAssistantMessage(content, { stopReason });
 const result = (toolCallId: string, toolName: string, text: string, details?: unknown) => ({ role: "toolResult", toolCallId, toolName, content: [{ type: "text", text }], ...(details !== undefined ? { details } : {}), isError: false, timestamp: 2 }) as AgentMessage;
 const roles = (messages: AgentMessage[]) => messages.map(message => message.role);
+
+test("a round with a call waiting on a person stops input_required, also when its run limit is reached as a call before it ends", async t => {
+  const fake = await setup(t);
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  // The lookup ends first and asks for the limit, which answers after the approval has asked for its input.
+  const { host } = await fake.start({
+    call: async name => { if (name === "approve") { await sleep(10); return { inputRequired: true, content: [] }; } return "found"; },
+    runLimit: async () => { await sleep(30); return { stopped: "turn_limit", message: "limit reached" } as never; },
+  });
+  fake.respond(answer([fauxToolCall("lookup", {}, { id: "call_1" }), fauxToolCall("approve", {}, { id: "call_2" })], "toolUse"), answer("never"));
+  const run = await host.handle("prompt", { text: "go", requestId: "request" });
+  assert.equal(run.stopped, "input_required");
+  assert.equal(fake.faux.getPendingResponseCount(), 1, "no model request after the round");
+});
 
 test("resume: a turn lost after a tool call answers the call as unknown and continues; a failed response is taken back first", async t => {
   const fake = await setup(t);

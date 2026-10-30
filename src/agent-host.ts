@@ -787,12 +787,13 @@ export function createAgentHost(hostIO: HostIO) {
         // A turn with calls waiting on a person suspends; one past a spend cap or its run's limits (responses, time) stops before the next model request, after this response's tool results.
         // Asked for each call of a round as its result is final, then for the round: a decision holds for the rest of the run.
         finishTurn: async turn => {
-          if (stopped || output) return { action: "end" };
+          // A call waiting on a person decides the stop, also over a limit an earlier call of the round reached.
           await journal.refresh();
           if (journal.awaiting.length) {
             stopped = { stopped: "input_required" };
             return { action: "end" };
           }
+          if (stopped || output) return { action: "end" };
           // An answer in the run's schema ends it.
           const answered = turn.toolResults.findLast(result => result.toolName === OUTPUT_TOOL && !result.isError);
           if (answered) {
