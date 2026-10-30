@@ -178,7 +178,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
       realtimeUrl: env.AGENT_OPENAI_REALTIME_URL || undefined, geminiLiveUrl: env.AGENT_GEMINI_LIVE_URL || undefined, grokRealtimeUrl: env.AGENT_GROK_REALTIME_URL || undefined,
       // Where each text-to-speech provider (POST /v1/speech) is dialled, when not its own address (a proxy, a test's fake).
       endpoints: { deepgram: env.AGENT_DEEPGRAM_URL, elevenlabs: env.AGENT_ELEVENLABS_URL, cartesia: env.AGENT_CARTESIA_URL },
-      perTenant: Number(env.AGENT_VOICE_SESSIONS_PER_TENANT ?? 10), perNode: Number(env.AGENT_VOICE_SESSIONS_PER_NODE ?? 200),
+      perTenant: Number(env.AGENT_VOICE_SESSIONS_PER_TENANT ?? 50), perNode: Number(env.AGENT_VOICE_SESSIONS_PER_NODE ?? 15),
       // Where each session's audio is handled (src/voice/media-host.ts): in media workers (the default; a crash there ends
       // only that session's audio, which restarts), or "inline" on the node's own thread.
       isolation: env.AGENT_VOICE_ISOLATION === "inline" ? "inline" as const : "worker" as const,

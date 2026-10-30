@@ -60,8 +60,17 @@ connection, `ask_agent` and webhooks. The worker keeps everything that touches a
 
 By default each session gets its own worker (`AGENT_VOICE_SESSIONS_PER_WORKER=1`), which is the only setting under
 which "a crash ends only that session" holds. With N > 1, sessions are packed N to a worker, and a crash hits that
-worker's sessions (at most N). This is for a node holding many sessions, where per-worker memory adds up. Measured
-numbers go into the isolation PR, and from them the default per-node cap (`AGENT_VOICE_SESSIONS_PER_NODE`, 200 today).
+worker's sessions (at most N). This is for a node holding many sessions, where per-worker memory adds up.
+
+### Sessions per node
+
+Measured in production (node_load, 5 days to 30 Oct, 1 vCPU and 4 GiB tasks): a session's media worker holds 37-62 MB
+(p99 170 MB), the node's resident memory grows 60-150 MB per session, and each takes about 3-6% of a vCPU (joined with
+Container Insights, 3 days, at most 4 sessions on a node). So a node holds about 15 before CPU, or
+`AGENT_MEMORY_HIGH_BYTES`, is at risk, which `AGENT_VOICE_SESSIONS_PER_NODE` (15) sets. It keeps a deploy's handoff from
+putting every session on the first new node, as it did with 200 (all 10 at once on 28 Oct). It refuses no one: a session
+no node has room for is taken after 30 seconds, and autoscaling adds nodes. Five tasks hold about 75 sessions, and the
+service's 20 about 300.
 
 ### Supervision
 

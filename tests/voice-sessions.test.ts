@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { HttpError } from "../src/http.ts";
-import { VoiceSessions } from "../src/voice-sessions.ts";
+import { nodeConfig } from "../src/node-config.ts";
+import { VOICE_LIMITS, VoiceSessions } from "../src/voice-sessions.ts";
 import { AGENT, discordGrant, fakeTransport, sleep, until, voiceCluster } from "./voice-fakes.ts";
 import { fakeRealtimeProvider } from "./voice-realtime-fakes.ts";
 
@@ -245,6 +246,66 @@ test("sessions are listed newest first, a page at a time, live or ended", async 
   assert.equal((await a.voice.list("alice", { state: "live" })).sessions.length, 4);
   assert.equal((await a.voice.list("bob")).sessions.length, 0);
   await assert.rejects(a.voice.list("alice", { after: "vs_nope" }), /after/);
+});
+
+test("a node at its share leaves new sessions to its peers, and a deploy's handoff spreads them", async t => {
+  const { fake, node } = await voiceCluster(t, { perNode: 2 });
+  const a = await node("http://a"), b = await node("http://b");
+  const guild = (index: number) => discordGrant({ guildId: `10000000000000010${index}` });
+  for (let index = 0; index < 3; index++) await a.voice.create("alice", { discord: guild(index) });
+  await until(() => fake.open().length === 2, "the first two connected");
+  assert.equal(a.voice.size, 2, "the request's node takes up to its share");
+  await b.voice.scan();
+  await until(() => b.voice.size === 1, "a peer takes the third");
+  assert.equal(a.voice.size, 2);
+  await until(() => fake.open().length === 3, "all connected");
+
+  // Sessions released at once: the next scans share them.
+  await Promise.all([a.voice.stop(), b.voice.stop()]);
+  const c = await node("http://c"), d = await node("http://d");
+  await c.voice.scan();
+  assert.equal(c.voice.size, 2, "the first new node takes its share, not every one");
+  await d.voice.scan();
+  assert.equal(d.voice.size, 1);
+});
+
+test("with no node's share left, a session waits a moment and is then taken anyway: never refused, nor left unconnected", async t => {
+  const { fake, node, db } = await voiceCluster(t, { perNode: 1, perNodeWaitMs: 60_000 });
+  const a = await node("http://a");
+  await a.voice.create("alice", { discord: discordGrant() });
+  await until(() => a.voice.size === 1, "the first held");
+  const second = await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000098" }) });
+  await a.voice.scan();
+  assert.equal(a.voice.size, 1, "left for a peer");
+  await db.query("update voice_sessions set updated_at = updated_at - 60000 where id = $1", [second.id]);
+  await a.voice.scan();
+  assert.equal(a.voice.size, 2, "nobody came: this node takes it");
+  await until(() => fake.open().length === 2, "both connected");
+});
+
+test("a node short of memory takes no sessions, however long they wait; its peers do", async t => {
+  const { node, db } = await voiceCluster(t);
+  let short = true;
+  const a = await node("http://a", { memoryHigh: () => short });
+  const created = await a.voice.create("alice", { discord: discordGrant() });
+  await db.query("update voice_sessions set updated_at = updated_at - 3600000 where id = $1", [created.id]);
+  await a.voice.scan();
+  assert.equal(a.voice.size, 0);
+  const b = await node("http://b");
+  await b.voice.scan();
+  assert.equal(b.voice.size, 1, "a peer with room takes it");
+  // Past it, this node takes them again.
+  short = false;
+  await a.voice.create("alice", { discord: discordGrant({ guildId: "100000000000000097" }) });
+  await until(() => a.voice.size === 1, "taken");
+});
+
+test("the runtime's defaults are VOICE_LIMITS', and its settings replace them", () => {
+  const voice = (env: Record<string, string> = {}) => nodeConfig(env).voice;
+  assert.deepEqual([voice().perTenant, voice().perNode], [VOICE_LIMITS.perTenant, VOICE_LIMITS.perNode]);
+  assert.equal(VOICE_LIMITS.perTenant, 50);
+  assert.equal(voice({ AGENT_VOICE_SESSIONS_PER_TENANT: "100" }).perTenant, 100);
+  assert.equal(voice({ AGENT_VOICE_SESSIONS_PER_NODE: "40" }).perNode, 40);
 });
 
 test("a session taken by its request and by scans at once connects once; scans leave a session a live peer holds alone", async t => {
