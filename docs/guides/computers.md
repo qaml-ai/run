@@ -85,9 +85,11 @@ at the first mount, and read-only mounts refuse downloads. Downloads create a
 new file version, record the agent as its author and count against storage quotas.
 Remote paths are interpreted by the computer.
 
-The computer needs `curl`, CA certificates and outbound access to the runtime's
-public API origin. The runtime supplies a single-use URL that expires within
-five minutes; it is not returned to the model. Each transfer has at most 120
+The computer needs `curl`, `sha256sum`, CA certificates and outbound access to the runtime's
+public API origin. The runtime supplies a signed file link that expires after
+120 seconds; it is not returned to the model or recorded in logs. These links
+can be reused until they expire. The runtime checks the remote file's size and
+SHA-256 against the workspace file after the transfer. Each transfer has at most 120
 seconds, limited by the session's remaining time. Sprites allows outbound access
 by default; if you set an egress policy, allow the runtime's public host.
 

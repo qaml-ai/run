@@ -1,3 +1,4 @@
+import type { FileLinks } from "./files.ts";
 import { COMPUTER_TOOLS, type Computers } from "./computers/service.ts";
 import { randomUUID } from "node:crypto";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
@@ -367,14 +368,14 @@ export class ToolSources {
   private readonly accounts?: Accounts;
   private readonly mcp: McpConnections;
   private readonly outbound: Outbound;
-  private readonly options: { scheduler?: Scheduler; search?: WebSearch; render?: WebRender; xSearch?: XSearch; computers?: Computers; volumes?: VolumeService; fileUrls?: FileUrls };
+  private readonly options: { scheduler?: Scheduler; search?: WebSearch; render?: WebRender; xSearch?: XSearch; computers?: Computers; volumes?: VolumeService; fileUrls?: FileUrls; links?: FileLinks };
 
   private readonly signer?: RuntimeSigner;
   /** Credentials fetched for servers with auth "exchange": this node's, in memory only. */
   readonly exchange: CredentialExchange;
 
   /** `fileUrls` signs the URLs of files sent to tools (file-arguments.ts). */
-  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch; render?: WebRender; xSearch?: XSearch; computers?: Computers; volumes?: VolumeService; fileUrls?: FileUrls }) {
+  constructor(options: { accounts?: Accounts; mcp: McpConnections; outbound: Outbound; scheduler?: Scheduler; signer?: RuntimeSigner; search?: WebSearch; render?: WebRender; xSearch?: XSearch; computers?: Computers; volumes?: VolumeService; fileUrls?: FileUrls; links?: FileLinks }) {
     this.accounts = options.accounts;
     this.mcp = options.mcp;
     this.outbound = options.outbound;
@@ -557,7 +558,7 @@ export class ToolSources {
         if (builtins.includes(name)) {
           const callFiles = files(name, runId);
           // web_fetch reads URLs the model chooses: never the operator's own services, however they are allowed for configured ones.
-          const services = { outbound: this.outbound.withoutOrigins(), scheduler: this.options.scheduler, search: this.options.search, render: this.options.render, xSearch: this.options.xSearch };
+          const services = { links: this.options.links, outbound: this.outbound.withoutOrigins(), scheduler: this.options.scheduler, search: this.options.search, render: this.options.render, xSearch: this.options.xSearch };
           return runBuiltin(services, { ...context, ...(sources?.webSearch ? { searchProviders: sources.webSearch.providers } : {}), ...(callFiles ? { files: callFiles } : {}) }, name, args, signal);
         }
         const api = sources?.openApi?.find(entry => name.startsWith(`${entry.name}__`));

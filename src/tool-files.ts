@@ -1,12 +1,13 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { errorText, scratchMount } from "./protocol.ts";
-import { safeName, type FileRef } from "./files.ts";
+import { declaredType, safeName, type FileLinks, type FileRef } from "./files.ts";
 import { digestOf, type FileUrls, type FileValue } from "./file-arguments.ts";
 import { fileRef } from "./inspect.ts";
 import { TOOL_FILE_LIMITS } from "./limits.ts";
+import type { Outbound } from "./outbound.ts";
 import type { McpResult } from "./mcp-results.ts";
-import { resolve, type ToolContext } from "./volume-tools.ts";
-import { TEMPORARY_SNAPSHOT, VolumeService, type FileEntry, type Mount } from "./volumes.ts";
+import { resolve, writable, type ToolContext } from "./volume-tools.ts";
+import { TEMPORARY_SNAPSHOT, VOLUME_LIMITS, VolumeService, type FileEntry, type Mount } from "./volumes.ts";
 
 /**
  * Files through the calls of tool sources (MCP servers, OpenAPI operations, web_fetch), without
@@ -22,10 +23,9 @@ import { TEMPORARY_SNAPSHOT, VolumeService, type FileEntry, type Mount } from ".
  * instead (openapi.ts). The marker is explicit, so nothing is guessed from a plain string, and it reads
  * the same from a direct call and from js_exec. Only sources whose `fileArguments` is on are sent files.
  *
- * Out: images, audio, blobs and long text an MCP tool returns, and binary responses, are saved to
- * the agent's workspace under tool-outputs/<tool>/<call>/<name>; the model gets a file reference
- * (path, type, size, and the file natively when it can view it). A call and a run may save only so
- * much (TOOL_FILE_LIMITS), and what they save counts toward the volume like any file.
+ * Out: MCP images, audio, blobs and long text resources, and binary HTTP responses, are saved under
+ * tool-outputs/<tool>/<call>, and the model gets a file reference.
+ * A call and a run may save only so much (TOOL_FILE_LIMITS); every file counts toward the volume.
  */
 export type FileArgument = { $file: string };
 export const isFileArgument = (value: unknown): value is FileArgument =>
@@ -133,6 +133,17 @@ export async function readCapped(response: Response, maxBytes: number): Promise<
   return Buffer.concat(parts);
 }
 
+/** Public downloads share web_fetch's guard, redirects, deadline and streaming byte cap. */
+/** A URL the model chose, through the public outbound guard: a page for web_fetch, or a whole file for file_import (`file`: any type, more time). */
+export function download(outbound: Outbound, url: string, signal: AbortSignal, maxBytes = TOOL_FILE_LIMITS.responseBytes, file = false) {
+  if (/^http:\/\//i.test(url) && !outbound.allowHttp) url = `https://${url.slice(7)}`;
+  return outbound.withoutOrigins().fetch(url, {
+    signal, timeoutMs: file ? 120_000 : 20_000, maxBytes, maxRedirects: 5,
+    headers: { Accept: file ? "*/*" : "text/html, text/plain, application/json;q=0.9, */*;q=0.5", "User-Agent": "agent-runtime web_fetch" },
+  });
+}
+
+
 /**
  * One tool call's access to the agent's files: reading the files its arguments name (within the
  * agent's mounts, read-only ones included), and saving its outputs to the agent's workspace (`scratchMount`) within
@@ -231,6 +242,53 @@ export class ToolFiles {
     }
   }
 
+  /** A model-created link uses the same mount boundaries as read and write. */
+  async link(links: FileLinks, args: Record<string, unknown>) {
+    if (typeof args.path !== "string" || !args.path) throw new Error("path must be a nonempty string");
+    const target = this.target(args.path);
+    const method = args.method;
+    if (method !== "GET" && method !== "PUT") throw new Error("method must be GET or PUT");
+    const expiresIn = args.expiresIn ?? 300;
+    if (!Number.isInteger(expiresIn) || Number(expiresIn) < 1 || Number(expiresIn) > 900) throw new Error("expiresIn must be 1–900 seconds");
+    if (method === "PUT") {
+      writable(target);
+      if (!Number.isSafeInteger(args.maxBytes) || Number(args.maxBytes) < 0 || Number(args.maxBytes) > VOLUME_LIMITS.fileBytes) throw new Error(`PUT needs maxBytes from 0 to ${VOLUME_LIMITS.fileBytes}`);
+    } else await this.open(args.path);
+    const contentType = declaredType(args.contentType);
+    if (args.contentType !== undefined && !contentType) throw new Error("Invalid contentType");
+    const { url, expiresAt } = links.sign({ tenant: this.options.tenant, volume: target.mount.volumeId, path: target.path, method, expiresIn,
+      ...(method === "PUT" ? { maxBytes: Number(args.maxBytes) } : {}), ...(contentType ? { contentType } : {}) });
+    return { url, method, path: target.show(target.path), expiresAt };
+  }
+
+  /** Check the destination before making an outbound request. */
+  destination(path: string) {
+    if (typeof path !== "string" || !path) throw new Error("path must be a nonempty string");
+    const target = this.target(path); writable(target); return target;
+  }
+
+  async import(response: Response, path: string) {
+    const target = this.destination(path);
+    if (!response.ok) { await response.body?.cancel(); throw new Error(`Download answered HTTP ${response.status}`); }
+    const hash = createHash("sha256");
+    const source = async function* () {
+      for await (const chunk of (response.body ?? []) as AsyncIterable<Uint8Array>) { hash.update(chunk); yield chunk; }
+    };
+    const { volumes, tenant, agent } = this.options;
+    let saved;
+    try { saved = await volumes.put(tenant, target.mount.volumeId, target.path, source(), { contentType: response.headers.get("content-type") ?? undefined, by: agent, limit: VOLUME_LIMITS.fileBytes }); }
+    finally { await response.body?.cancel().catch(() => {}); }
+    const shown = target.show(saved.path);
+    this.options.onWrite?.({ path: shown, version: saved.version, size: saved.size, contentType: saved.contentType! });
+    return { path: shown, size: saved.size, sha256: hash.digest("hex"), contentType: saved.contentType };
+  }
+
+  private workspace() {
+    return VolumeService.markWorkspace(this.options.agent, this.options.mounts).find(mount => mount.workspace || mount.path === "/workspace");
+  }
+  get hasWorkspace() { return !!this.workspace(); }
+
+
   /** Save one of the call's outputs as `name` (sanitized), and refer to it as the transcript does. */
   async save(name: string, source: Uint8Array | AsyncIterable<Uint8Array>, contentType?: string): Promise<FileRef> {
     const { volumes, tenant, agent, mounts, run } = this.options;
@@ -256,26 +314,17 @@ export class ToolFiles {
   }
 }
 
-/** A name for unnamed content: its kind and number, with an extension from its type. */
-const named = (kind: string, index: number, mimeType: unknown) => `${kind}-${index}${typeof mimeType === "string" && /^[a-z]+\/[a-z0-9]+/i.test(mimeType) ? `.${/^[a-z]+\/([a-z0-9]+)/i.exec(mimeType)![1].toLowerCase()}` : ""}`;
-/** A resource's name from its URI's last segment. */
-function resourceName(uri: unknown, index: number, mimeType: unknown) {
-  try { return decodeURIComponent(new URL(String(uri)).pathname.split("/").pop() ?? "") || named("resource", index, mimeType); }
-  catch { return named("resource", index, mimeType); }
-}
-
-/** A `data:` URI's bytes and type, or undefined if it is not one. */
 function dataUri(uri: string): { bytes: Buffer; type?: string } | undefined {
   const match = /^data:([^,;]*)((?:;[^,;]*)*),(.*)$/is.exec(uri);
   if (!match) return undefined;
   const base64 = match[2].split(";").includes("base64");
   return { bytes: base64 ? Buffer.from(match[3], "base64") : Buffer.from(decodeURIComponent(match[3])), ...(match[1] ? { type: match[1].toLowerCase() } : {}) };
 }
-
-/**
- * A `resource_link` saved as a file: a `data:` URI's bytes, or what an http(s) URI answers (`fetch` goes through the
- * outbound guard and caps the body at TOOL_FILE_LIMITS.responseBytes).
- */
+function resourceName(uri: unknown, index: number, mimeType: unknown) {
+  try { return decodeURIComponent(new URL(String(uri)).pathname.split("/").pop() ?? "") || named("resource", index, mimeType); }
+  catch { return named("resource", index, mimeType); }
+}
+const named = (kind: string, index: number, mimeType: unknown) => `${kind}-${index}${typeof mimeType === "string" && /^[a-z]+\/[a-z0-9]+/i.test(mimeType) ? `.${/^[a-z]+\/([a-z0-9]+)/i.exec(mimeType)![1].toLowerCase()}` : ""}`;
 async function savedLink(part: { uri: string; name?: unknown; mimeType?: unknown }, index: number, files: ToolFiles, fetch: (url: string) => Promise<Response>): Promise<FileRef> {
   const given = typeof part.mimeType === "string" ? part.mimeType : undefined;
   const inline = dataUri(part.uri);
@@ -308,6 +357,8 @@ export async function savedContent(result: McpResult, files: ToolFiles | undefin
       catch (error) { content.push({ type: "text", text: `[${label} not saved: ${errorText(error)}]` }); }
       continue;
     }
+    // Other servers' links stay links: the model can save one with file_import.
+    if (part?.type === "resource_link" && files?.hasWorkspace) { content.push(part, { type: "text", text: "Use file_import with this URL to save it to your workspace." }); continue; }
     const resource = part?.type === "resource" ? part.resource : undefined;
     let output: { name: string; bytes: Buffer; type?: string } | undefined;
     if ((part?.type === "image" || part?.type === "audio") && typeof part.data === "string") output = { name: named(part.type, ++index, part.mimeType), bytes: Buffer.from(part.data, "base64"), type: part.mimeType };

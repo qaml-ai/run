@@ -1,4 +1,3 @@
-import { TRANSFER_PATH, type ComputerTransfers } from "./computers/transfers.ts";
 import { computerRoutes } from "./computers/api.ts";
 import type { Computers } from "./computers/service.ts";
 import { workspaceRoutes } from "./workspaces-api.ts";
@@ -97,7 +96,6 @@ export interface ApiContext {
   scheduler?: Scheduler;
   channels?: Channels;
   volumes?: VolumeService;
-  transfers?: ComputerTransfers;
   definitions?: Definitions;
   /** Tenants whose operator tokens may adjust any tenant's credit (AGENT_BILLING_ADMINS). */
   billingAdmins?: string[];
@@ -239,22 +237,13 @@ export function api(context: ApiContext) {
     return context.links;
   };
 
-  for (const method of ["get", "put"] as const) route(createRoute({
-    method, path: TRANSFER_PATH, security: [],
-    description: "Single-use computer transfer capability. Issued internally; valid only for its bound file and direction.",
-    request: { query: z.object({ token: z.string() }), ...(method === "put" ? { body: binary("The file's bytes, within the transfer's size limit") } : {}) },
-    responses: method === "get" ? { 200: binary("The workspace file") } : { 204: { description: "File stored" } },
-  }), c => {
-    if (!context.transfers) throw new HttpError(404, "Computer transfers are not enabled");
-    return context.transfers.serve(c.req.raw);
-  });
-
   // A signed link is its own credential, so its routes come before the check below. The grant
   // still names a tenant, which must still own the volume.
   const linkRoute = { request: { params: z.object({ token: z.string(), name: z.string().openapi({ description: "The file's name, for browsers; not checked" }) }) }, security: [] };
   const granted = async (c: Context, method: "GET" | "PUT") => {
     const grant = links().verify(c.req.param("token")!);
     if (grant.method !== method) throw new HttpError(405, `This link is for ${grant.method}`);
+    if (grant.agent && !(await context.accounts.db.query("select 1 from agents where tenant=$1 and id=$2 and not revoked and purged_at is null and (expires_at is null or expires_at>$3)", [grant.tenant, grant.agent, Date.now()])).rowCount) throw new HttpError(403, "Agent no longer active");
     if (!await volumes().owns(grant.volume, grant.tenant)) throw new HttpError(404, "Unknown volume");
     return grant;
   };
@@ -262,6 +251,7 @@ export function api(context: ApiContext) {
     const grant = await granted(c, "GET");
     const entry = await volumes().call(grant.volume, grant.tenant, "stat", { path: grant.path });
     if (entry.type !== "file") throw new HttpError(404, `${grant.path} is a directory`);
+    if (grant.maxBytes !== undefined && entry.size > grant.maxBytes) throw new HttpError(413, "File exceeds the link size limit");
     return fileResponse(volumes(), grant.tenant, entry, c.req.header("range"));
   });
   route(createRoute({ ...linkRoute, method: "put", path: "/v1/links/{token}/{name}", request: { ...linkRoute.request, body: binary("The file's bytes, streamed; at most the link's maxBytes") }, responses: { 201: reply("The file's new version", schema.VolumeFile) } }), async c => {
@@ -270,7 +260,7 @@ export function api(context: ApiContext) {
     if (Number(c.req.header("content-length") ?? 0) > limit) throw new HttpError(413, `This link takes at most ${limit} bytes`);
     const declared = declaredType(c.req.header("content-type"));
     if (grant.contentType && declared && declared !== grant.contentType) throw new HttpError(415, `This link takes ${grant.contentType}`);
-    const { chunks: _chunks, ...entry } = await volumes().put(grant.tenant, grant.volume, grant.path, (c.req.raw.body ?? []) as AsyncIterable<Uint8Array>, { contentType: grant.contentType ?? declared, by: "link", limit });
+    const { chunks: _chunks, ...entry } = await volumes().put(grant.tenant, grant.volume, grant.path, (c.req.raw.body ?? []) as AsyncIterable<Uint8Array>, { contentType: grant.contentType ?? declared, by: grant.agent ?? "link", limit });
     return json(c, 201, entry);
   });
 

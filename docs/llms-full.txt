@@ -869,9 +869,11 @@ at the first mount, and read-only mounts refuse downloads. Downloads create a
 new file version, record the agent as its author and count against storage quotas.
 Remote paths are interpreted by the computer.
 
-The computer needs `curl`, CA certificates and outbound access to the runtime's
-public API origin. The runtime supplies a single-use URL that expires within
-five minutes; it is not returned to the model. Each transfer has at most 120
+The computer needs `curl`, `sha256sum`, CA certificates and outbound access to the runtime's
+public API origin. The runtime supplies a signed file link that expires after
+120 seconds; it is not returned to the model or recorded in logs. These links
+can be reused until they expire. The runtime checks the remote file's size and
+SHA-256 against the workspace file after the transfer. Each transfer has at most 120
 seconds, limited by the session's remaining time. Sprites allows outbound access
 by default; if you set an egress policy, allow the runtime's public host.
 
@@ -1651,8 +1653,15 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide", "workflow"]`.
+`"builtins": ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide", "workflow"]`.
 
+- `file_link` (`{path, method, expiresIn?, maxBytes?, contentType?}`) signs a
+  GET or PUT URL for another tool to transfer one workspace file. Default
+  lifetime: 5 minutes; maximum: 15. PUT requires a writable path and `maxBytes`
+  up to 256 MiB. Hand the URL to the tool; never paste file contents.
+- `file_import` (`{url, to}`) streams a public HTTP(S) URL to a writable workspace
+  path, up to 256 MiB and within the storage quota. It uses `web_fetch`'s outbound
+  guard and returns path, size, SHA-256 and content type.
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or
   saves any other content (a PDF, an image) to the workspace. Pages that are
@@ -1882,14 +1891,14 @@ A source's `fileArguments` says whether it is sent files: `"on"` or `"off"`.
 
 ### Files a tool returns
 
-- Images, audio, blobs and long text resources are saved to
-  `/workspace/tool-outputs/<tool>/<call>/<name>`, and the model gets a
-  reference to each (shown natively when it is an image or PDF it can view).
-  So are binary OpenAPI responses and `web_fetch` downloads.
-- For sources with `fileArguments` on, a `resource_link` to an `https:` or
-  `data:` URI is saved too. It is fetched through the outbound guard, at most
-  64 MiB. The transcript keeps the file's path, never the URL.
-- One call may save 64 MiB, and one run 256 MiB.
+- MCP images, audio, embedded blobs and long text resources are saved under
+  `/workspace/tool-outputs/<tool>/<call>/`, and the model gets a reference to each. Tools an application attaches
+  are treated the same way. Without a workspace mount, results keep their existing behavior.
+- `resource_link` items stay links, with a hint that `file_import` can fetch them.
+- Binary OpenAPI responses and `web_fetch` downloads still go to
+  `/workspace/tool-outputs/<tool>/<call>/<name>` and return file references.
+- MCP and automatic tool outputs may save 64 MiB per call and 256 MiB per run.
+  Explicit `file_import` calls use the volume's 256 MiB file limit and quota.
 
 ## Outbound calls
 
@@ -4219,6 +4228,34 @@ path the agent sees (`/workspace/report.pdf`), without the agent's token; `POST
 /v1/volumes/:id/links` does the same by a volume's own path. Both answer `{url,
 method, path, expiresAt}`, and a retry with the same `Idempotency-Key` never
 returns the link again.
+
+Enable `file_link` and `file_import` in `builtins` to move files through tools or
+machines the runtime has no driver for, such as a VM behind your own MCP server.
+The model passes URLs and paths; file bytes travel directly between the runtime
+and the other machine.
+
+- `file_link({path, method: "GET" | "PUT", expiresIn?, maxBytes?, contentType?})`
+  returns `{url, method, path, expiresAt}`. Paths use the agent's mounts, including
+  subpaths. GET needs an existing file. PUT needs a writable path and `maxBytes`
+  from 0 to 268,435,456 (256 MiB). These model-created links last 300 seconds by
+  default, at most 900. The API and SDK defaults above stay the same.
+- Give a GET link to a tool that accepts URLs, or to a remote shell as
+  `curl --fail -o report.pdf '<url>'`. Give a PUT link to the remote shell as
+  `curl --fail -T result.pdf '<url>'`. Never paste file contents into the model.
+  Treat links as credentials: anyone holding one can use it until it expires.
+- `file_import({url, to})` saves a public URL at a writable workspace path and
+  returns `{path, size, sha256, contentType}`. It streams up to 256 MiB through
+  the same outbound guard as `web_fetch`, with a 20-second deadline and at most
+  five redirects. Every hop is checked; private and internal addresses are
+  refused, including origins allowed for configured tools. HTTP URLs are tried
+  over HTTPS unless the operator enables HTTP. Imports count against storage
+  quotas. A failed import leaves the previous file version intact.
+
+Files an MCP tool returns (images, audio, embedded blobs, long text resources) are saved under
+`/workspace/tool-outputs/<tool>/<call>/`, and the model gets a reference to each. A `resource_link` from a server
+with `fileArguments` on is downloaded the same way; from any other server it stays a link, with a hint to use
+`file_import`.
+Without a workspace mount, MCP results keep their existing behavior.
 
 ---
 

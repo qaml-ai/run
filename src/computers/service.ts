@@ -181,7 +181,6 @@ export class Computers {
     return (await this.options.db.query("select workspace,provider,count(*)::integer as sessions,sum(greatest(0,least(coalesce(closed_at,$2),expires_at)-created_at))/1000.0 as seconds from computer_leases where tenant=$1 group by workspace,provider", [tenant, this.now()])).rows;
   }
   async sweep() {
-    await this.options.transfers?.sweep();
     const rows = (await this.options.db.query("select l.*, c.credentials, c.id as connection_id from computer_leases l join computer_connections c on c.id=l.connection left join agents a on a.id=l.agent and a.tenant=l.tenant where (l.state='closing' or (l.state='uncertain' and l.reference is not null) or (l.state='starting' and l.created_at<=$1::bigint-180000) or (l.state='active' and (l.expires_at<=$1 or a.id is null or a.revoked or a.purged_at is not null or a.expires_at<=$1))) order by l.cleanup_at, l.expires_at limit 100", [this.now()])).rows;
     for (const row of rows) {
       try { await this.lock(row.tenant, row.agent, async sql => { const current = (await sql.query("select * from computer_leases where id=$1", [row.id])).rows[0]; if (current.state === "closed" || (current.state === "active" && current.expires_at > this.now() && row.state !== "active")) return; await this.stop({ ...row, id: row.connection_id }, current, sql); }); } catch { /* Durable closing state retries next sweep. No credentials in logs. */ }

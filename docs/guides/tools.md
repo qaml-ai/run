@@ -707,8 +707,15 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide", "workflow"]`.
+`"builtins": ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide", "workflow"]`.
 
+- `file_link` (`{path, method, expiresIn?, maxBytes?, contentType?}`) signs a
+  GET or PUT URL for another tool to transfer one workspace file. Default
+  lifetime: 5 minutes; maximum: 15. PUT requires a writable path and `maxBytes`
+  up to 256 MiB. Hand the URL to the tool; never paste file contents.
+- `file_import` (`{url, to}`) streams a public HTTP(S) URL to a writable workspace
+  path, up to 256 MiB and within the storage quota. It uses `web_fetch`'s outbound
+  guard and returns path, size, SHA-256 and content type.
 - `web_fetch` (`{url, maxCharacters?}`) reads a public page as text (HTML
   reduced to readable text, 20,000 characters by default, at most 100,000), or
   saves any other content (a PDF, an image) to the workspace. Pages that are
@@ -938,14 +945,14 @@ A source's `fileArguments` says whether it is sent files: `"on"` or `"off"`.
 
 ### Files a tool returns
 
-- Images, audio, blobs and long text resources are saved to
-  `/workspace/tool-outputs/<tool>/<call>/<name>`, and the model gets a
-  reference to each (shown natively when it is an image or PDF it can view).
-  So are binary OpenAPI responses and `web_fetch` downloads.
-- For sources with `fileArguments` on, a `resource_link` to an `https:` or
-  `data:` URI is saved too. It is fetched through the outbound guard, at most
-  64 MiB. The transcript keeps the file's path, never the URL.
-- One call may save 64 MiB, and one run 256 MiB.
+- MCP images, audio, embedded blobs and long text resources are saved under
+  `/workspace/tool-outputs/<tool>/<call>/`, and the model gets a reference to each. Tools an application attaches
+  are treated the same way. Without a workspace mount, results keep their existing behavior.
+- `resource_link` items stay links, with a hint that `file_import` can fetch them.
+- Binary OpenAPI responses and `web_fetch` downloads still go to
+  `/workspace/tool-outputs/<tool>/<call>/<name>` and return file references.
+- MCP and automatic tool outputs may save 64 MiB per call and 256 MiB per run.
+  Explicit `file_import` calls use the volume's 256 MiB file limit and quota.
 
 ## Outbound calls
 

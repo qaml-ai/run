@@ -11,6 +11,8 @@ import { VolumeService } from "../src/volumes.ts";
 import { testDatabase } from "./database.ts";
 import { PNG, pdfBytes } from "./file-fixtures.ts";
 import { listen, OPERATOR, runtime, toolCall, toolResults, type T } from "./runtime-server.ts";
+import { AgentRuntime } from "../clients/node.ts";
+import { fromMcpServer } from "../clients/mcp.ts";
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const PDF = pdfBytes(["Quarterly report"]);
@@ -259,4 +261,18 @@ test("tool outputs go to the agent's own workspace wherever it is mounted, not a
   const mounts = await volumes.mountsFor("acme", "agent", [{ volumeId: project.id, path: "/workspace", mode: "rw" }, { workspace: true, path: "/scratch" }]);
   const saved = await new ToolFiles({ volumes, tenant: "acme", agent: "agent", mounts, tool: "t", run: { left: 100 } }).save("out.txt", Buffer.from("x"));
   assert.match(saved.path, /^\/scratch\/tool-outputs\/t\/[a-f0-9]{8}\/out\.txt$/);
+});
+
+test("application-attached MCP files are saved to the workspace like a server's", async t => {
+  const server = new Server({ name: "local", version: "1" }, { capabilities: { tools: {} } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "output", inputSchema: { type: "object", properties: {} } }] }));
+  server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "resource", resource: { uri: "file:///report.pdf", blob: PDF.toString("base64"), mimeType: "application/pdf" } }] }));
+  const mcp = await fromMcpServer(server);
+  t.after(() => mcp.close());
+  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("output", {}) : { role: "assistant", content: "done" });
+  const client = new AgentRuntime({ url: r.base, apiKey: OPERATOR });
+  const agent = await client.createAgent({ mcp });
+  t.after(() => agent.close());
+  const result = await agent.prompt("make files");
+  assert.ok(result.files.some((file: any) => /^\/workspace\/tool-outputs\/output\/[a-f0-9]{8}\/report\.pdf$/.test(file.path) && file.contentType === "application/pdf"));
 });
