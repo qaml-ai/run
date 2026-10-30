@@ -45,7 +45,7 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
       dispose() { client.close(); },
       async create(id, seconds, allocated) {
         const app = await client.apps.fromName("camelrun-computers", { createIfMissing: true });
-        const image = client.images.fromRegistry("python:3.11-slim");
+        const image = client.images.fromRegistry("python:3.11-slim").dockerfileCommands(["RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*"]);
         const sb = await client.sandboxes.create(app, image, { name: id, timeoutMs: seconds * 1000, cpu: 1, memoryMiB: 1024 });
         const ref = { id: sb.sandboxId }; await allocated?.(ref); return ref;
       },

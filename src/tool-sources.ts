@@ -553,7 +553,7 @@ export class ToolSources {
         const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}), ...(runId ? { request: runId } : {}), ...(toolCallId ? { toolCall: toolCallId } : {}), ...(lineage ?? {}) };
         // What a file URL is bound to: the call's stable key, else its tool call (and its place in a js_exec run).
         const call = idempotencyKey ?? (toolCallId && (innerCallId ? `${toolCallId}:${innerCallId}` : toolCallId)) ?? randomUUID();
-        if (COMPUTER_TOOLS.has(name) && this.options.computers) return jsonResult(await this.options.computers.call(context.tenant, context.agent, name, args, call));
+        if (COMPUTER_TOOLS.has(name) && this.options.computers) return jsonResult(await this.options.computers.call(context.tenant, context.agent, name, args, call, { mounts: context.mounts?.() ?? [], onWrite: context.onWrite }));
         if (builtins.includes(name)) {
           const callFiles = files(name, runId);
           // web_fetch reads URLs the model chooses: never the operator's own services, however they are allowed for configured ones.

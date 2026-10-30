@@ -82,7 +82,7 @@ export function resolve(mounts: Mount[], input: unknown): Resolved | undefined {
   };
 }
 
-function writable(target: Resolved) {
+export function writable(target: Resolved) {
   if (target.mount.mode !== "rw") throw new Error(`${target.mount.path} is mounted read-only`);
 }
 

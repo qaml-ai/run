@@ -124,6 +124,8 @@ python3 examples/computer/tunnel_server.py --tunnel \
 ```
 
 This starts one disposable Linux container and a temporary Cloudflare Tunnel.
+The container uses `python:3.11-bookworm`, which includes curl and CA certificates
+for native workspace transfers.
 The HTTP server binds only to loopback. Every request requires a random bearer
 credential, separate from the tunnel address, and only one client can claim the
 session. The connection file is mode 0600 and contains both values. Transfer it

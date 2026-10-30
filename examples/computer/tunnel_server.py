@@ -37,7 +37,7 @@ class BoundedServer(ThreadingHTTPServer):
 
 
 class Session:
-    def __init__(self, lifetime=900, image="python:3.11-slim"):
+    def __init__(self, lifetime=900, image="python:3.11-bookworm"):
         self.id = "camelrun-computer-" + uuid.uuid4().hex
         self.deadline = time.monotonic() + lifetime
         self.claim = None
