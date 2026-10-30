@@ -85,7 +85,7 @@ const FETCH = { maxBytes: 5 * 1024 * 1024, characters: 20_000, maxCharacters: 10
 const DEFINITIONS: Record<string, ToolDefinition> = {
   file_link: {
     name: "file_link", exposure: "both",
-    description: "Create a signed GET or PUT URL for one workspace file (5 minutes by default, at most 15). Hand the URL to another tool: curl -o <file> '<url>' to download, curl -T <file> '<url>' to upload, or any tool taking a URL. Never paste file contents. PUT needs maxBytes and a writable path.",
+    description: "Create a signed GET or PUT URL for one workspace file (5 minutes by default, at most 15). Hand the URL to another tool: curl -o <file> '<url>' to download, curl -T <file> '<url>' to upload, or any tool taking a URL. Never paste file contents. PUT needs maxBytes and a writable path. Other machines cannot see your workspace: to bring a file in from one, make a PUT link here and have that machine run curl -T <file> '<url>', rather than moving it through base64 or command output.",
     parameters: { type: "object", additionalProperties: false, required: ["path", "method"], properties: {
       path: { type: "string" }, method: { type: "string", enum: ["GET", "PUT"] },
       expiresIn: { type: "integer", minimum: 1, maximum: 900 },

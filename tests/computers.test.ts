@@ -106,7 +106,7 @@ test('an allocated machine is retained for cleanup when startup fails', async ()
     async call() { throw new Error('unused'); },
     async close() { removed = true; },
   }) });
-  await assert.rejects(service.call('alice','a','computer_start',{},'failed-start'), /uncertain/);
+  await assert.rejects(service.call('alice','a','computer_start',{},'failed-start'), /may have made a machine/);
   assert.equal((await service.status('alice','a')).session!.state,'uncertain');
   await service.sweep();
   assert.equal(removed,true);
@@ -119,8 +119,8 @@ test('an unknown allocation blocks replacement until the account confirms provid
   const service = new Computers({ ...f.service.options, driver: () => ({
     async create() { throw new Error('Reply lost'); }, async call() {}, async close() {},
   }) });
-  await assert.rejects(service.call('alice','a','computer_start',{},'failed-start'),/uncertain/);
-  await assert.rejects(service.call('alice','a','computer_start',{},'replacement'),/recovery/);
+  await assert.rejects(service.call('alice','a','computer_start',{},'failed-start'),/may have made a machine/);
+  await assert.rejects(service.call('alice','a','computer_start',{},'replacement'),/earlier operation/);
   await assert.rejects(service.confirmCleanup('bob','a'),/No computer/);
   await service.confirmCleanup('alice','a');
   assert.equal((await service.status('alice','a')).session!.state,'closed');
