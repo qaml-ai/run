@@ -159,8 +159,8 @@ variable "runtime_env" {
   description = "Non-secret runtime settings for the ECS tasks. Storage, database and public URL settings are derived in ecs.tf."
   type        = map(string)
   default = {
-    AGENT_PROVIDER              = "anthropic"
-    AGENT_MODEL                 = "claude-sonnet-5-5"
+    AGENT_PROVIDER              = "openrouter"
+    AGENT_MODEL                 = "deepseek/deepseek-v4.1-flash-1017"
     AGENT_MAX_AGENTS            = "1000"
     AGENT_MAX_AGENTS_PER_TENANT = "500"
     AGENT_IDLE_MS               = "300000"

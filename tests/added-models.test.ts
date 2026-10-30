@@ -49,9 +49,9 @@ test("DeepSeek V4.1 Flash 1017 is Pi's OpenRouter entry at its own id, name and 
   assert.equal(getModels("openrouter").filter(entry => entry.id === FLASH_1017).length, 1);
 });
 
-test("GET /v1/models lists it, unmeasured for tool-call streaming, and a response on it costs its list price", () => {
+test("GET /v1/models lists it, measured as not streaming tool-call arguments, and a response on it costs its list price", () => {
   const info = listModels("openrouter").find(model => model.id === `openrouter/${FLASH_1017}`)!;
-  assert.deepEqual([info.api, info.contextWindow, info.cost.input, info.cost.output, info.toolCallStreaming], ["openai-completions", 1_048_576, 0.15, 0.6, "unknown"]);
+  assert.deepEqual([info.api, info.contextWindow, info.cost.input, info.cost.output, info.toolCallStreaming], ["openai-completions", 1_048_576, 0.15, 0.6, false]);
   const { usage, known } = platformUsage({ input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 0 } as never, "openrouter", FLASH_1017);
   assert.equal(known, true);
   assert.ok(Math.abs((usage as { cost: { total: number } }).cost.total - 0.753) < 1e-12);

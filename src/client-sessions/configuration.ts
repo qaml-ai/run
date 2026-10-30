@@ -67,7 +67,7 @@ export async function resolveApiKey(ctx: ConfigurationContext, session: Session,
  * apply when an agent is made.
  */
 function reconfiguration(header: SessionHeader, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">, metadata: AgentMetadata,
-  mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string, own: Pick<Sources, "builtins" | "delegate" | "workflow" | "mcpServers" | "decide"> = {}, remount = false) {
+  mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string, own: Pick<Sources, "builtins" | "delegate" | "workflow" | "mcpServers" | "decide"> = {}, remount = false, keepModel = false) {
   const differs = (a: unknown, b: unknown) => canonical(a ?? null) !== canonical(b ?? null);
   const remounted = mounts !== undefined && differs((header.mounts ?? []).map(({ volumeId, path, mode }) => ({ volumeId, path, mode })), (VolumeService.resolved(header.id, mounts as unknown[]) as { volumeId: string; path: string; mode?: string }[]).map(({ volumeId, path, mode }) => ({ volumeId, path, mode: mode ?? "rw" })));
   const fixed = [
@@ -79,7 +79,7 @@ function reconfiguration(header: SessionHeader, definitions: ToolDefinition[], c
   if (fixed.length) throw new HttpError(409, `An existing agent's ${fixed.join(", ")} cannot change; delete it (DELETE /v1/agents/${header.id}) or use another idempotency key${fixed.includes("mounts") ? ", or send remount: true to change its mounts" : ""}`);
   return {
     ...remounted ? { mounts } : {},
-    provisionHash, model: `${config.model.provider}/${config.model.id}`, thinkingLevel: config.thinkingLevel ?? "off",
+    provisionHash, ...keepModel ? {} : { model: `${config.model.provider}/${config.model.id}` }, thinkingLevel: config.thinkingLevel ?? "off",
     systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, codeMode: config.codeMode !== false, runLimits: config.runLimits ?? null,
     maxOutputTokens: config.maxOutputTokens ?? null, temperature: config.temperature ?? null, dataCollection: config.dataCollection ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
     // A language only when the upsert gives one (null clears it): an upsert from an SDK that predates it, which drops the
@@ -130,7 +130,7 @@ export function agentId(tenant: string, key: string) {
  * (`origin.definition`), and `origin.provision` stands for its configuration in the
  * idempotency check, so a retry after the definition changed returns the same agent.
  */
-export async function create(ctx: ConfigurationContext, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; workflow?: WorkflowSettings; mcpServers?: McpServerSpec[]; decide?: boolean; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; messages: AgentMessage[]; turns: number[]; model: Message[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
+export async function create(ctx: ConfigurationContext, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools">, given: string | undefined, metadata: AgentMetadata = {}, tenant: string, ttlMs?: number | null, mounts?: unknown, origin?: { definition: DefinitionRef; provision: unknown; overrides?: string[]; sources?: Sources }, identity?: AgentIdentity, access: { keyScope?: string; spendLimit?: number; bucket?: string; toolsHash?: string; remount?: boolean; defaultModel?: boolean; idleTtlMs?: number; builtins?: string[]; delegate?: DelegateSettings; workflow?: WorkflowSettings; mcpServers?: McpServerSpec[]; decide?: boolean; parent?: SessionHeader["parent"]; fork?: { id: string; from: ForkedFrom; messages: AgentMessage[]; turns: number[]; model: Message[] }; admit?: (unchanged: boolean) => Promise<unknown>; run?: RunSettings } = {}, steps = new Steps()): Promise<{ id: string; token: string; expiresAt: number | null; [status: string]: unknown }> {
   metadata = agentMetadata(metadata);
   validateDefinitions(definitions);
   // The caller's key, shown in listings; an agent made without one gets a key nothing else knows.
@@ -151,7 +151,8 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
   const own = { ...(access.builtins?.length ? { builtins: access.builtins } : {}), ...(access.delegate ? { delegate: access.delegate } : {}), ...(access.workflow ? { workflow: access.workflow } : {}), ...(access.mcpServers?.length ? { mcpServers: access.mcpServers } : {}), ...(access.decide !== undefined ? { decide: access.decide } : {}) };
   const provisionHash = hash(canonical({ ...origin ? { definition: origin.provision } : { definitions, config: safeConfig, ...(Object.keys(metadata).length ? { metadata } : {}), ...(mounts !== undefined ? { mounts } : {}), ...own }, ...(identity ? { identity } : {}) }));
   // The same key for an existing agent updates it: create or reconfigure (the last upsert wins).
-  const changes = (header: SessionHeader) => ({ reconfigure: { ...reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash, own, access.remount), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(access.bucket !== undefined && access.bucket !== header.bucket ? { bucket: access.bucket } : {}) } });
+  // An upsert that names no model (nor its definition) leaves the agent's: the runtime's default is for agents being made.
+  const changes = (header: SessionHeader) => ({ reconfigure: { ...reconfiguration(header, definitions, safeConfig, metadata, mounts, origin, identity, provisionHash, own, access.remount, access.defaultModel), ...(access.toolsHash ? { toolsHash: access.toolsHash } : {}), ...(access.bucket !== undefined && access.bucket !== header.bucket ? { bucket: access.bucket } : {}) } });
   // An agent's own sources are its builtins (and their settings) and MCP servers; one made from a definition has the definition's.
   const sources: Sources | undefined = origin ? origin.sources : Object.keys(own).length ? own : undefined;
   // The caller counts the create (its rate limit) now, told whether the key's agent has this configuration already:

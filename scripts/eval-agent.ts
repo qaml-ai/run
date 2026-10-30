@@ -2,7 +2,7 @@
 // model turns, tokens, cost, wall time and success, checked the way the examples check. Each run
 // makes a fresh agent, so the numbers compare conditions (a runtime version, a model) fairly.
 //
-//   AGENT_URL=http://127.0.0.1:8790 AGENT_RUNTIME_TOKEN=… AGENT_MODEL=anthropic/claude-sonnet-5 \
+//   AGENT_URL=http://127.0.0.1:8790 AGENT_RUNTIME_TOKEN=… AGENT_MODEL=openrouter/deepseek/deepseek-v4.1-flash-1017 \
 //     node --experimental-strip-types scripts/eval-agent.ts [--runs 3] [--scenarios files,discovery,state,plain,list] [--label before]
 //   node --experimental-strip-types scripts/eval-agent.ts --summary .agent-runtime/eval/before.jsonl .agent-runtime/eval/after.jsonl
 //
@@ -202,7 +202,7 @@ async function evaluate(label: string, name: string, index: number) {
   const runtime = new AgentRuntime({ url: process.env.AGENT_URL, apiKey: process.env.AGENT_RUNTIME_TOKEN });
   const started = Date.now();
   const agent = await runtime.createAgent({
-    name: `eval ${name}`, model: process.env.AGENT_MODEL ?? "anthropic/claude-sonnet-5", systemPrompt: scenario.systemPrompt, tools, ttlSeconds: 3600,
+    name: `eval ${name}`, model: process.env.AGENT_MODEL ?? "openrouter/deepseek/deepseek-v4.1-flash-1017", systemPrompt: scenario.systemPrompt, tools, ttlSeconds: 3600,
     onEvent(event) {
       if (event.type === "tool_execution_start") {
         toolCalls[event.toolName] = (toolCalls[event.toolName] ?? 0) + 1;
@@ -221,7 +221,7 @@ async function evaluate(label: string, name: string, index: number) {
   try { failures = await scenario.run({ agent, appCalls }); }
   catch (error) { failures = [`error: ${(error as Error).message}`]; }
   finally { await agent.destroy().catch(() => {}); }
-  const row = { label, scenario: name, run: index, model: process.env.AGENT_MODEL ?? "anthropic/claude-sonnet-5", success: !failures.length, failures,
+  const row = { label, scenario: name, run: index, model: process.env.AGENT_MODEL ?? "openrouter/deepseek/deepseek-v4.1-flash-1017", success: !failures.length, failures,
     toolCalls, jsExec: toolCalls.js_exec ?? 0, calls: Object.values(toolCalls).reduce((a, b) => a + b, 0), appCalls, turns, ...usage, wallMs: Date.now() - started };
   appendFileSync(`${DIR}/${label}.jsonl`, JSON.stringify(row) + "\n");
   console.log(`${name} #${index}: ${row.success ? "ok" : `FAILED (${failures.join("; ")})`}, ${row.calls} calls (${row.jsExec} js_exec), ${turns} turns, ${usage.input + usage.cacheRead + usage.cacheWrite} in / ${usage.output} out, $${usage.cost.toFixed(3)}, ${(row.wallMs / 1000).toFixed(0)} s`);

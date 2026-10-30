@@ -32,8 +32,8 @@ import { ToolSources } from "../src/tool-sources.ts";
 const arg = (name: string) => { const at = process.argv.indexOf(`--${name}`); return at >= 0 ? process.argv[at + 1] : undefined; };
 const DIR = ".agent-runtime/eval";
 const TENANT = "eval", TOKEN = `eval-operator-${randomBytes(16).toString("hex")}`;
-// camelRun's default model; camelCode's and the bots' model, on OpenRouter (camelCode's own route is Azure's); camel-builder's model; chiridion's default.
-const MODELS = ["openrouter/anthropic/claude-sonnet-5.5", "openrouter/deepseek/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4.1-flash-1017:nitro", "openrouter/openai/gpt-6-luna"];
+// camelRun's default model and the bots'; camelCode's model, on OpenRouter (camelCode's own route is Azure's); camel-builder's model; chiridion's default; camelRun's earlier default.
+const MODELS = ["openrouter/deepseek/deepseek-v4.1-flash-1017", "openrouter/deepseek/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4.1-flash-1017:nitro", "openrouter/openai/gpt-6-luna", "openrouter/anthropic/claude-sonnet-5.5"];
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 // The fake shell. Never runs anything: known commands act on an in-memory file tree; the rest are "command not found".
