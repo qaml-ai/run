@@ -163,6 +163,14 @@ with the session's own size (1% in small sessions on a quiet minute, 25% past 20
 applied over less than a minute, with long calls asking for the most. The call goes on. The brain asks for a failed
 response once more after `retryMs` (`voice_realtime_stats.retried`), unless a newer turn's answer has replaced it.
 
+A rate-limit failure on Azure also moves the session to OpenAI on the platform's key, at once and until it ends
+(`voice_realtime_azure_fallback` with `reason: "rate_limit"`, counted in `VoiceRealtimeAzureFallbacks`, priced the same).
+Connecting there takes about a second (0.9 s median and 1.2 s at most, 14 measured), less than the 3 s wait. The new
+conversation is briefed as after a reconnect, with the last 20 lines said and the words of what Azure still had to
+transcribe, so its audio and earlier context stay behind. A session handed to another node starts on Azure again. New
+sessions reach this path too: Azure's limit fails responses, not connections, so the fallback at connect does not catch
+it. `voice_realtime_rate_limits` logs each connection's first report of its limits, when the host sends one.
+
 ## Streaming
 
 - **Per-speaker streams to the model.** Each speaker has one ordered stream from the jitter buffer through decoding, the

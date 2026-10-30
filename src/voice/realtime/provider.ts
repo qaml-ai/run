@@ -56,6 +56,8 @@ export interface RealtimeEvents {
   fallback?(detail: string): void;
   /** The session's language was left out (the provider does not take it) or refused: the provider detects the language. */
   language?(detail: string): void;
+  /** The provider's rate limits for this connection (the first report): what each is, not what is left of it. */
+  rateLimits?(limits: { name: string; limit: number }[]): void;
   /** Billable audio seconds and text input items, as they cross the provider connection. */
   meter?(audioSeconds: number, textInputs: number): void;
   /** The provider detected barge-in: stop buffered playback too. */
@@ -69,7 +71,7 @@ export interface RealtimeEvents {
   /** The model called a tool; its arguments are whole. */
   toolCall(call: { response: string; id: string; name: string; args: Record<string, unknown> }): void;
   /** A response ended: completed, cancelled (`cancel`, or the provider's), or failed; what it used. */
-  responseDone(response: string, outcome: { status: "completed" | "cancelled" | "failed" | "incomplete"; usage: RealtimeUsage; error?: string }): void;
+  responseDone(response: string, outcome: { status: "completed" | "cancelled" | "failed" | "incomplete"; usage: RealtimeUsage; error?: string; rateLimited?: boolean }): void;
   /** What a committed item (named by its `commit` tag) was heard to say, and the seconds transcribed. */
   heard(tag: string, text: string, seconds: number): void;
   /** Something went wrong that did not end the connection (an event refused): logged. */

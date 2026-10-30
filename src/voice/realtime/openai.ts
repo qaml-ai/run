@@ -47,6 +47,10 @@ export const OPENAI_REALTIME = Object.freeze({
 const BYTES_PER_MS = 48;
 /** Errors that say a race was lost, not that something is wrong: a cancel after the response ended, a truncate past it. */
 const BENIGN = new Set(["response_cancel_not_active"]);
+/** A response refused for the rate, by its code; Azure's only seen message so far is "too many tokens", without its code logged. */
+function rateLimited(error: { code?: unknown; type?: unknown; message?: unknown } | undefined) {
+  return /rate_?limit|too_many/i.test(`${error?.code} ${error?.type}`) || /too many tokens|rate limit/i.test(String(error?.message ?? ""));
+}
 
 export function openaiRealtime(options: { baseUrl?: string; socket?: SocketFactory } = {}): RealtimeProvider {
   return openaiCompatibleRealtime({
@@ -141,6 +145,7 @@ class OpenAIRealtime implements RealtimeConnection {
   /** Responses asked for and not yet begun; a cancel that comes first is sent as the response begins. */
   private asked = 0;
   private cancelOnCreate = false;
+  private limitsReported = false;
   private timer?: ReturnType<typeof setTimeout>;
 
   constructor(dial: SocketFactory, targets: Target[], config: RealtimeConfig, events: RealtimeEvents, options: RealtimeProtocol) {
@@ -325,9 +330,15 @@ class OpenAIRealtime implements RealtimeConnection {
         const status = ["completed", "cancelled", "failed", "incomplete"].includes(response.status) ? response.status : "failed";
         const detail = response.status_details?.error;
         const error = detail?.message ? [detail.code ?? detail.type, detail.message].filter(Boolean).join(": ") : response.status_details?.reason;
-        this.events.responseDone(response.id, { status, usage: usageOf(response.usage), ...(status === "failed" && error ? { error: this.redact(String(error)).slice(0, 200) } : {}) });
+        this.events.responseDone(response.id, { status, usage: usageOf(response.usage), ...(status === "failed" && error ? { error: this.redact(String(error)).slice(0, 200) } : {}), ...(status === "failed" && rateLimited(detail) ? { rateLimited: true } : {}) });
         return;
       }
+      case "rate_limits.updated":
+        if (!this.limitsReported && Array.isArray(event.rate_limits)) {
+          this.limitsReported = true;
+          this.events.rateLimits?.(event.rate_limits.filter((limit: any) => typeof limit?.name === "string" && typeof limit?.limit === "number").map((limit: any) => ({ name: limit.name, limit: limit.limit })));
+        }
+        return;
       case "input_audio_buffer.committed": {
         const tag = this.committing.shift();
         if (tag !== undefined && event.item_id) this.tags.set(event.item_id, tag);

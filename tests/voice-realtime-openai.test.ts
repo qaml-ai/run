@@ -291,6 +291,161 @@ test("the brain logs voice_realtime_azure_fallback and names the host it ran on 
   assert.deepEqual(metrics[0]._aws.CloudWatchMetrics[0].Dimensions.map((names: string[]) => names.filter(name => name !== "ServiceName")), [[], ["Host"]]);
 });
 
+/** A brain on Azure with OpenAI behind it, one turn in and answered with `response.done` failing as `error` says. */
+async function refusedOnAzure(t: { after(fn: () => void): void }, error: Record<string, string>, options: Parameters<typeof testBrain>[0] = {}) {
+  const lines: any[] = [];
+  setMetricSink(line => lines.push(JSON.parse(line)));
+  t.after(() => setMetricSink());
+  const azure = await fakeOpenAI(t), openai = await fakeOpenAI(t);
+  const state = testBrain({ provider: openaiRealtime({ baseUrl: openai.base }), credentials: onAzure(azure.origin), retryMs: 5, ...options });
+  t.after(() => state.brain.close());
+  await until(() => state.logs.some(log => log.type === "voice_realtime_ready"), "ready");
+  await utter(state.brain, "1", 200);
+  await until(() => azure.seen.events.some(event => event.type === "response.create"), "asked on Azure");
+  azure.send({ type: "response.created", response: { id: "r1" } });
+  azure.send({ type: "response.done", response: { id: "r1", status: "failed", status_details: { type: "failed", error } } });
+  return { ...state, azure, openai, lines };
+}
+const RATE_LIMIT = { type: "tokens_limit_reached", code: "rate_limit_exceeded", message: "too many tokens" };
+
+test("Azure's rate limit moves a live session to OpenAI: its words carried over, the turn answered there, and it stays", async t => {
+  const { brain, azure, openai, logs, playback, usage, lines } = await refusedOnAzure(t, RATE_LIMIT);
+  await until(() => openai.seen.urls.length === 1, "connected to OpenAI");
+  assert.deepEqual(openai.seen.auth, ["Bearer platform-openai-key"]);
+  assert.ok(!openai.seen.events.some(event => event.type === "response.create"), "not until the words are in");
+  azure.send({ type: "conversation.item.input_audio_transcription.completed", item_id: "item_1", transcript: "What time is it?" });
+  await until(() => openai.seen.events.some(event => event.type === "response.create"), "asked on OpenAI");
+  const notes = openai.seen.events.filter(event => event.type === "conversation.item.create").map(event => event.item.content[0].text);
+  assert.ok(notes.some(text => text.includes("What time is it?")), "the words carried over");
+  assert.deepEqual(logs.filter(log => log.type === "voice_realtime_azure_fallback").map(log => log.fields), [{ reason: "rate_limit" }]);
+  assert.equal(azure.seen.events.filter(event => event.type === "response.create").length, 1, "no second try on Azure");
+  openai.send({ type: "response.created", response: { id: "r2" } });
+  openai.send({ type: "response.output_audio.delta", response_id: "r2", item_id: "i2", delta: Buffer.from(tone(100)).toString("base64") });
+  const tokens = { input_token_details: { text_tokens: 100, audio_tokens: 10 }, output_token_details: { audio_tokens: 20 } };
+  openai.send({ type: "response.done", response: { id: "r2", status: "completed", usage: tokens } });
+  await until(() => playback.plays.length === 1, "the answer plays");
+  assert.ok(Math.abs(usage.at(-1)!.costUsd - (100 * 4 + 10 * 32 + 20 * 64) / 1e6) < 1e-12, "the same price");
+  // A dropped connection after the move reconnects to OpenAI, not Azure.
+  const azureConnections = azure.seen.urls.length;
+  openai.close();
+  await until(() => openai.seen.urls.length === 2, "reconnected");
+  assert.equal(azure.seen.urls.length, azureConnections);
+  brain.close();
+  const metric = lines.find(line => line.type === "voice_realtime");
+  assert.deepEqual([metric.Host, metric.VoiceRealtimeAzureFallbacks], ["openai", 1]);
+});
+
+test("the message alone names Azure's limit, and words that never come hold the answer only for a while", async t => {
+  const { openai } = await refusedOnAzure(t, { message: "too many tokens" });
+  await until(() => openai.seen.urls.length === 1, "connected to OpenAI");
+  await until(() => openai.seen.events.some(event => event.type === "response.create"), "asked on OpenAI", 4_000);
+});
+
+test("other failures on Azure stay on Azure, and are retried there", async t => {
+  const { azure, openai, logs } = await refusedOnAzure(t, { type: "server_error", message: "Request timed out waiting for first output" });
+  await until(() => azure.seen.events.filter(event => event.type === "response.create").length === 2, "the retry on Azure");
+  assert.equal(openai.seen.urls.length, 0);
+  assert.ok(!logs.some(log => log.type === "voice_realtime_azure_fallback"));
+});
+
+test("a rate limit on a session already on OpenAI, a tenant's key among them, has nowhere to move: it retries", async t => {
+  const openai = await fakeOpenAI(t);
+  const { brain, logs } = testBrain({ provider: openaiRealtime({ baseUrl: openai.base }), credentials: { apiKey: "sk-tenant" }, retryMs: 5 });
+  t.after(() => brain.close());
+  await until(() => logs.some(log => log.type === "voice_realtime_ready"), "ready");
+  await utter(brain, "1", 200);
+  await until(() => openai.seen.events.some(event => event.type === "response.create"), "asked");
+  openai.send({ type: "response.created", response: { id: "r1" } });
+  openai.send({ type: "response.done", response: { id: "r1", status: "failed", status_details: { error: RATE_LIMIT } } });
+  await until(() => openai.seen.events.filter(event => event.type === "response.create").length === 2, "the retry");
+  assert.equal(openai.seen.urls.length, 1);
+  assert.ok(!logs.some(log => log.type === "voice_realtime_azure_fallback"));
+});
+
+test("the agent's reply being answered goes with the move", async t => {
+  const azure = await fakeOpenAI(t), openai = await fakeOpenAI(t);
+  const replies: ((reply: string) => void)[] = [];
+  const { brain, logs } = testBrain({ provider: openaiRealtime({ baseUrl: openai.base }), credentials: onAzure(azure.origin), retryMs: 5, transcribed: false, askAgent: () => new Promise(resolve => { replies.push(resolve); }) });
+  t.after(() => brain.close());
+  await until(() => logs.some(log => log.type === "voice_realtime_ready"), "ready");
+  await utter(brain, "1", 200);
+  await until(() => azure.seen.events.some(event => event.type === "response.create"), "asked");
+  const creates = () => azure.seen.events.filter(event => event.type === "response.create").length;
+  const call = (id: string, call_id: string, status: string) => {
+    azure.send({ type: "response.created", response: { id } });
+    azure.send({ type: "response.function_call_arguments.done", response_id: id, call_id, name: "ask_agent", arguments: "{\"request\":\"weather\"}" });
+    azure.send({ type: "response.done", response: { id, status } });
+  };
+  call("r1", "call_1", "completed");
+  await until(() => replies.length === 1, "the agent asked");
+  replies[0]("Sunny.");
+  await until(() => creates() === 2, "asked to say it");
+  azure.send({ type: "response.created", response: { id: "r2" } });
+  azure.send({ type: "response.done", response: { id: "r2", status: "failed", status_details: { error: RATE_LIMIT } } });
+  await until(() => openai.seen.events.some(event => event.type === "response.create"), "said on OpenAI");
+  const notes = () => openai.seen.events.filter(event => event.type === "conversation.item.create").map(event => event.item.content?.[0]?.text ?? "");
+  assert.ok(notes().some(text => text.includes("Sunny.")));
+});
+
+test("the agent's reply still coming at the move is told to OpenAI and said", async t => {
+  const azure = await fakeOpenAI(t), openai = await fakeOpenAI(t);
+  const replies: ((reply: string) => void)[] = [];
+  const { brain, logs } = testBrain({ provider: openaiRealtime({ baseUrl: openai.base }), credentials: onAzure(azure.origin), retryMs: 5, transcribed: false, askAgent: () => new Promise(resolve => { replies.push(resolve); }) });
+  t.after(() => brain.close());
+  await until(() => logs.some(log => log.type === "voice_realtime_ready"), "ready");
+  await utter(brain, "1", 200);
+  const creates = () => azure.seen.events.filter(event => event.type === "response.create").length;
+  await until(() => creates() === 1, "asked");
+  azure.send({ type: "response.created", response: { id: "r1" } });
+  azure.send({ type: "response.function_call_arguments.done", response_id: "r1", call_id: "call_1", name: "ask_agent", arguments: "{\"request\":\"weather\"}" });
+  azure.send({ type: "response.done", response: { id: "r1", status: "completed" } });
+  await until(() => replies.length === 1, "the agent asked");
+  await utter(brain, "1", 200);
+  await until(() => creates() === 2, "the next turn asked");
+  azure.send({ type: "response.created", response: { id: "r2" } });
+  azure.send({ type: "response.done", response: { id: "r2", status: "failed", status_details: { error: RATE_LIMIT } } });
+  await until(() => openai.seen.events.some(event => event.type === "response.create"), "the turn asked on OpenAI");
+  openai.send({ type: "response.created", response: { id: "r3" } });
+  openai.send({ type: "response.done", response: { id: "r3", status: "completed" } });
+  replies[0]("Sunny.");
+  await until(() => openai.seen.events.filter(event => event.type === "response.create").length === 2, "the reply said");
+  assert.ok(openai.seen.events.some(event => event.type === "conversation.item.create" && event.item.content?.[0]?.text?.includes("Sunny.")));
+  assert.ok(!openai.seen.events.some(event => event.item?.type === "function_call_output"), "OpenAI does not know the call");
+});
+
+test("a session moved off Azure connects to OpenAI on the platform's key, billed the same", async t => {
+  const azure = await fakeOpenAI(t), openai = await fakeOpenAI(t);
+  const cluster = await voiceCluster(t, {
+    realtime: { providers: { openai: openaiRealtime({ baseUrl: openai.base }) }, key: async () => ({ ...onAzure(azure.origin), platform: true }) },
+  });
+  const a = await cluster.node("http://a");
+  const created = await a.voice.create("alice", { discord: discordGrant() });
+  const connection = await until(() => cluster.fake.open()[0], "voice transport");
+  connection.handlers.ready();
+  await until(() => azure.seen.events.some(event => event.type === "session.update"), "on Azure");
+  await a.voice.prompt("alice", created.id, { instructions: "Say hello." });
+  await until(() => azure.seen.events.some(event => event.type === "response.create"), "asked on Azure");
+  azure.send({ type: "response.created", response: { id: "r1" } });
+  azure.send({ type: "response.done", response: { id: "r1", status: "failed", status_details: { error: RATE_LIMIT } } });
+  await until(() => openai.seen.events.some(event => event.type === "response.create"), "asked on OpenAI");
+  assert.deepEqual(openai.seen.auth, ["Bearer platform-openai-key"]);
+  assert.equal(openai.seen.events.find(event => event.type === "session.update").session.model, "gpt-realtime-2.1", "the model, not Azure's deployment");
+  await a.voice.end("alice", created.id);
+});
+
+test("rate limits are logged once per connection: names and sizes", async t => {
+  const azure = await fakeOpenAI(t);
+  const { brain, logs } = testBrain({ provider: openaiRealtime({ baseUrl: "http://127.0.0.1:9" }), credentials: onAzure(azure.origin) });
+  t.after(() => brain.close());
+  await until(() => logs.some(log => log.type === "voice_realtime_ready"), "ready");
+  const report = { type: "rate_limits.updated", rate_limits: [{ name: "tokens", limit: 150000, remaining: 3, reset_seconds: 1 }] };
+  azure.send(report);
+  azure.send(report);
+  await until(() => logs.some(log => log.type === "voice_realtime_rate_limits"), "logged");
+  await sleep(20);
+  assert.deepEqual(logs.filter(log => log.type === "voice_realtime_rate_limits").map(log => log.fields), [{ host: "azure", limits: [{ name: "tokens", limit: 150000 }] }]);
+});
+
 test("OpenAI transcription language: BCP-47 as the base code its transcription takes, none for a language it does not", () => {
   for (const [input, expected] of [["es-ES", "es"], ["pt-BR", "pt"], ["en-US", "en"], ["en", "en"], ["ES", "es"], ["zh-Hant-TW", "zh"], ["fr-CA", "fr"], ["tl", "tl"], ["tl-PH", "tl"], ["fil", "tl"], ["iw", "he"], ["nb-NO", "no"]]) {
     assert.equal(transcriptionLanguage(input), expected);
