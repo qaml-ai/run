@@ -241,7 +241,7 @@ test("a sub-agent of the model's own design gets its instructions with its task,
   assert.doesNotMatch(first.get("defined")!, /Your role:/, "a definition's sub-agent gets its task alone");
 });
 
-test("a sub-agent of the model's own design reads its parent's files at the same paths; files: write shares them, none keeps them apart", async t => {
+test("a sub-agent of the model's own design shares its parent's files at the same paths; files: read makes them read-only, none keeps them apart", async t => {
   const { VolumeService } = await import("../src/volumes.ts");
   const r = await runtime(t, body => {
     if (roleText(body).includes("WORKER")) {
@@ -261,14 +261,14 @@ test("a sub-agent of the model's own design reads its parent's files at the same
     const wrote = (await r.call(`/v1/volumes/${workspace}/files/from-child.txt`)).status === 200;
     return { reply: reply.split(" | "), wrote };
   };
-  const read = await run();
-  assert.match(read.reply[0], /east,1350/, "it reads the parent's file at the parent's path");
+  const shared = await run();
+  assert.match(shared.reply[0], /east,1350/, "it reads the parent's file at the parent's path");
+  assert.equal(shared.wrote, true, "by default it writes the parent's files");
+  const read = await run("read");
+  assert.match(read.reply[0], /east,1350/);
   assert.match(read.reply[1], /read-only/);
   assert.doesNotMatch(read.reply[2], /error|not inside|read-only/i, "it writes its own files under /scratch");
   assert.equal(read.wrote, false);
-  const shared = await run("write");
-  assert.match(shared.reply[0], /east,1350/);
-  assert.equal(shared.wrote, true, "with files: write it writes the parent's files");
   const apart = await run("none");
   assert.doesNotMatch(apart.reply[0], /east,1350/, "with files: none the parent's files are not there");
   assert.equal(apart.wrote, false);

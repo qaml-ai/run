@@ -50,7 +50,7 @@ export interface DelegateSettings {
   agents?: AgentTarget[];
   /** Whether the model may start a child with instructions of its own instead (its model is the parent's). */
   instructions?: boolean;
-  /** What such a child sees of its parent's files: its mounts read-only (default), as they are, or none. */
+  /** What such a child sees of its parent's files: its mounts as they are (default), read-only, or none. */
   files?: DelegateFiles;
   maxDepth?: number;
   maxParallel?: number;
@@ -148,8 +148,8 @@ const listed = (targets: AgentTarget[], describe: (target: AgentTarget) => strin
 const filesSeen = (settings: DelegateSettings, named: boolean) => {
   if (!settings.instructions) return "";
   const own = named ? " One you give instructions" : " It";
-  return settings.files === "none" ? `, nor your files` : settings.files === "write"
-    ? `.${own} shares your files, at the same paths: it may change them` : `.${own} can read your files at the same paths (read-only), and writes its own under /scratch`;
+  return settings.files === "none" ? `, nor your files` : settings.files === "read"
+    ? `.${own} can read your files at the same paths (read-only), and writes its own under /scratch` : `.${own} shares your files, at the same paths: it may change them`;
 };
 
 const targetProperties = (settings: DelegateSettings, what: string) => {

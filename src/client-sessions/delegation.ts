@@ -205,12 +205,12 @@ export async function makeChild(ctx: DelegationContext, session: Session, run: R
 
 /**
  * What a child of the model's own design mounts of its parent's files (`delegate.files`), so a path its parent names
- * works there as is: "read" (default), the parent's mounts at the same paths, read-only, and its own workspace at
- * /scratch (or another free path) for what it writes; "write", the parent's mounts as they are, shared, and no
- * workspace of its own; "none", nothing of the parent's (its own /workspace). Nothing either way for a parent without
+ * works there as is: "write" (default), the parent's mounts as they are, shared, and no workspace of its own; "read",
+ * the parent's mounts at the same paths, read-only, and its own workspace at /scratch (or another free path) for what
+ * it writes; "none", nothing of the parent's (its own /workspace). Nothing either way for a parent without
  * mounts. Watches (notify) stay the parent's.
  */
-export function childMounts(mounts: Mount[] | undefined, files: DelegateFiles = "read") {
+export function childMounts(mounts: Mount[] | undefined, files: DelegateFiles = "write") {
   if (files === "none" || !mounts?.length) return {};
   const shared = mounts.map(({ volumeId, path, mode, subpath }) => ({ volumeId, path, mode: files === "write" ? mode : "ro" as const, ...subpath ? { subpath } : {} }));
   if (files === "write") return { mounts: [...shared, { workspace: false }] };

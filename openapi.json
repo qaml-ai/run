@@ -3969,7 +3969,7 @@
               "write",
               "none"
             ],
-            "description": "What a child of the model's own instructions sees of this agent's files: read (default), its mounts at the same paths, read-only, with a writable /scratch of its own; write, its mounts as they are (it shares them, and has no workspace of its own); none, only a /workspace of its own. A definition's child has the definition's mounts"
+            "description": "What a child of the model's own instructions sees of this agent's files: write (default), its mounts as they are (it shares them, and has no workspace of its own); read, its mounts at the same paths, read-only, with a writable /scratch of its own; none, only a /workspace of its own. A definition's child has the definition's mounts"
           },
           "maxDepth": {
             "type": "integer",
@@ -5663,7 +5663,7 @@
                   "write",
                   "none"
                 ],
-                "description": "What a child of the model's own instructions sees of this agent's files: read (default), its mounts at the same paths, read-only, with a writable /scratch of its own; write, its mounts as they are (it shares them, and has no workspace of its own); none, only a /workspace of its own. A definition's child has the definition's mounts"
+                "description": "What a child of the model's own instructions sees of this agent's files: write (default), its mounts as they are (it shares them, and has no workspace of its own); read, its mounts at the same paths, read-only, with a writable /scratch of its own; none, only a /workspace of its own. A definition's child has the definition's mounts"
               },
               "maxDepth": {
                 "type": "integer",

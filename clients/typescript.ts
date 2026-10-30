@@ -472,7 +472,7 @@ export type AgentTarget = string | { name?: string; definition: string; descript
 export interface WorkflowSettings { agents?: AgentTarget[]; instructions?: boolean; maxAgents?: number; maxDepth?: number; maxParallel?: number }
 export interface DelegateSettings {
   agents?: AgentTarget[]; instructions?: boolean;
-  /** What a child of the model's own instructions sees of the agent's files: its mounts read-only (default), as they are, or none. */
+  /** What a child of the model's own instructions sees of the agent's files: its mounts as they are (default), read-only, or none. */
   files?: "read" | "write" | "none";
   maxDepth?: number; maxParallel?: number;
 }
