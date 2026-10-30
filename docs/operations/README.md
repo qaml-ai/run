@@ -71,6 +71,13 @@ npm run openapi                  # regenerate openapi.json after changing /v1 ro
 The storage tests also run against S3 with `AGENT_TEST_S3_BUCKET=<bucket>`.
 `npm run studio` and `npm run demo:clients` need `AGENT_DATABASE_URL`.
 
+Model evals spend money and stay out of CI. `scripts/eval-agent.ts` measures how directly an agent gets work done
+against a running server. `scripts/eval-computers.ts` checks that an agent uses its computer and file-transfer tools
+at the right moment and is honest when no computer is there. It starts its own node with a fake computer driver, so
+only the model is real. It needs Postgres as above and `OPENROUTER_API_KEY`, and scores tool calls, files and fixed
+patterns in the reply, with no model grading (the file's header has its options). Run it after changing those tools'
+descriptions, their errors or the runtime's prompt. It stops at `--max-usd` (default 5).
+
 ### CI and deploys
 
 Every main commit's CI (`.github/workflows/ci.yml`) is its deploy gate: Deploy (`deploy.yml`) rolls the commit out
