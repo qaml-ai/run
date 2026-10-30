@@ -263,11 +263,13 @@ const expire = (run: Run) => pool.query("update computer_leases set expires_at=$
   return {
     async create(id: string) {
       if (run.provider.failure === "down") throw new Error("503 Service Unavailable");
-      if (run.provider.failure === "credentials") throw new Error("401 Unauthorized: invalid API key");
+      if (run.provider.failure === "credentials") throw Object.assign(new Error("401 Unauthorized: invalid API key"), { status: 401 });
       run.sessions++; run.files = new Map();
       return { id };
     },
     async close() { run.files = new Map(); },
+    // As a real driver classifies a credentials refusal; a runtime without it leaves the lease uncertain.
+    refused: (error: { status?: number }) => error.status === 401,
     async call(_ref: unknown, operation: string, args: any) {
       const log = (command: string) => run.commands.push({ session: run.sessions, command });
       if (operation.startsWith("browser_")) { log(operation); return { title: "Example", url: args.url ?? "about:blank", text: "A web page." }; }
@@ -292,13 +294,14 @@ function readFile(data: Buffer | undefined, path: string): Output & { truncated:
   try { return capped(ok(new TextDecoder("utf-8", { fatal: true }).decode(data).slice(0, 24_000) + "\n")); }
   catch { return traceback(`UnicodeDecodeError: 'utf-8' codec can't decode bytes in file '${path}': invalid start byte`); }
 }
-/** What the transfers' shell line does on a computer, the missing-file answer included (its `||` reports 413). */
+/** What the transfers' shell line does on a computer, the missing-file answer included. */
 async function transfer(run: Run, command: string): Promise<Output> {
   const quoted = `'((?:[^']|'"'"')*)'`, unquote = (value: string) => value.replaceAll(`'"'"'`, "'");
   const up = new RegExp(`--upload-file ${quoted} --output /dev/null -- ${quoted}`).exec(command), down = new RegExp(`--output ${quoted} -- ${quoted}`).exec(command);
   const path = norm(unquote((up ?? down)![1])), url = (up ?? down)![2];
   run.commands.push({ session: run.sessions, command: `${up ? "transfer-to-workspace" : "transfer-from-workspace"} ${path}` });
-  if (up && !run.files.has(path)) return { exitCode: 1, stdout: "CAMEL_TRANSFER 413\n", stderr: `bash: ${path}: No such file or directory` };
+  // Older runtimes' line has no existence check, and its `||` reports 413 for a missing file.
+  if (up && !run.files.has(path)) return { exitCode: 1, stdout: command.includes("CAMEL_MISSING") ? "CAMEL_MISSING\n" : "CAMEL_TRANSFER 413\n", stderr: command.includes("CAMEL_MISSING") ? "" : `bash: ${path}: No such file or directory` };
   const response = await fetch(local(url), up ? { method: "PUT", body: new Uint8Array(run.files.get(path)!) } : {});
   if (!response.ok) return { exitCode: 22, stdout: `CAMEL_TRANSFER ${response.status}\n`, stderr: "" };
   if (!up) run.files.set(path, Buffer.from(await response.arrayBuffer())); else await response.arrayBuffer();
