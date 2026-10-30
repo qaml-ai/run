@@ -1,7 +1,7 @@
 import { attemptStream, type UsageSink } from "./model-attempt-stream.ts";
-import type { CreditStop, ModelAttemptHook } from "./model-attempt.ts";
+import type { CreditStop, ModelAttemptHook, Superseded } from "./model-attempt.ts";
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
-import { getProviders, streamSimple, type Api, type Model } from "@earendil-works/pi-ai/compat";
+import { getProviders, streamSimple, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai/compat";
 import { estimateContextTokens, estimateTokens } from "./pi-harness/tokens.ts";
 import { BedrockRuntimeClient } from "@aws-sdk/client-bedrock-runtime";
 import { fileChars as charsOf, validFileRef } from "./files.ts";
@@ -288,7 +288,7 @@ function gatedSignal(gate: ModelGate | undefined, signal: AbortSignal | undefine
 /** `outbound` is the policy calls to endpoints tenants give go through: this process's unless given (its node's). */
 export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefined, modelHeaders?: () => Record<string, string> | null | undefined, gate?: ModelGate,
   timeouts?: (model: Model<Api>, reasoning: string | undefined) => StreamTimeouts, onStall?: (stall: Stall) => void, outbound: Outbound = outboundOfProcess(), attempt?: ModelAttemptHook,
-  onRefused?: (stop: CreditStop) => void): StreamFn {
+  onRefused?: (stop: CreditStop) => void, supersede?: (message: AssistantMessage) => Superseded | undefined): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent's model, ${model.provider}/${model.id}; set one with PUT /v1/providers/${model.provider}/key, or move the agent to a model you can use (GET /v1/models?available=true)`);
     // Includes Pi summary calls. Bound images before estimating or sending the request.
@@ -330,7 +330,7 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
         }
         return event;
       });
-    }, estimate, onRefused, !credentials.platform && (model.provider === "cloudflare-ai-gateway" || !!credentials.baseUrl && model.provider === "openrouter"));
+    }, estimate, onRefused, !credentials.platform && (model.provider === "cloudflare-ai-gateway" || !!credentials.baseUrl && model.provider === "openrouter"), supersede);
     const start = () => {
       const credentials = perCall?.();
       return credentials ? credentials.then(call) : call({ apiKey });

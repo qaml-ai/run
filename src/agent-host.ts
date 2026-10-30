@@ -19,12 +19,13 @@ import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } fro
 import { requestImageLimit } from "./request-images.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
-import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isImageRejection } from "./model-errors.ts";
+import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isContentFilterBlock, isImageRejection } from "./model-errors.ts";
+import { withContentFilterFallback } from "./content-filter-fallback.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
 import { describeFile, documentPayload, FILE_LIMITS, IMAGE_PAST_BUDGET, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
-import { observeContextMetrics, observeTurns, recordCodeExecution, recordContextRange, recordToolResultSize, safeError } from "./metrics.ts";
+import { observeContextMetrics, observeTurns, recordCodeExecution, recordContextRange, recordModelFallback, recordToolResultSize, safeError } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
@@ -79,8 +80,11 @@ export interface HostIO {
   search?(query: SearchQuery): Promise<SearchHit[]>;
   /** A file reference's bytes as base64, read by the supervisor: the agent holds no storage access. */
   file(ref: FileRef): Promise<string>;
-  /** Credentials for one model call of an agent whose key is resolved per call: an identity token the supervisor signs, or its key scope's entry. */
-  modelAuth(): Promise<Credentials>;
+  /**
+   * Credentials for one model call of an agent whose key is resolved per call: an identity token the supervisor signs,
+   * or its key scope's entry; `provider`'s key instead of its model's when given (its `contentFilterFallback`).
+   */
+  modelAuth(provider?: string): Promise<Credentials>;
   modelAttempt?: ModelAttemptHook;
   /** js_exec's `fs`, answered by the supervisor over the agent's mounts. */
   fs(op: string, args: Record<string, unknown>): Promise<unknown>;
@@ -748,9 +752,14 @@ export function createAgentHost(hostIO: HostIO) {
         recovered = true;
       }
       // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
+      // A response the agent's content-filter fallback replaces (`streamFn`) is recorded but never charged: the platform's filter blocked it.
+      const replaced = (message: AssistantMessage) => config.contentFilterFallback?.from === `${config.model.provider}/${config.model.id}` && isContentFilterBlock(message) ? "content_filter" as const : undefined;
       const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
-        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, io.modelAttempt, creditStop);
+        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, io.modelAttempt, creditStop, replaced);
+      const viaFallback = explicitKeyStream(() => io.modelAuth(config.contentFilterFallback!.model.provider), () => config.modelHeaders, gate,
+        (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
+        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.contentFilterFallback!.model.provider, model: config.contentFilterFallback!.model.id }), io.modelOutbound, io.modelAttempt, creditStop);
       const summaryAttempt: ModelAttemptHook | undefined = io.modelAttempt && (event => io.modelAttempt!(
         event.type === "begin" ? { ...event, kind: "compaction" } : event));
       const summaries = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
@@ -779,10 +788,20 @@ export function createAgentHost(hostIO: HostIO) {
         // tenant's own endpoint gets a fresh identity token for each call, and a key scope's agent its scope's current key.
         // A structured run's request may force final_output (`outputChoice`).
         // The agent's maxOutputTokens and temperature go on each of its own calls (not compaction's summaries), as far as the call takes them.
+        // A request the provider's content filter blocks is made again, at once, on the agent's contentFilterFallback (the
+        // same model on another provider, on that provider's key) before Pi sees the block (content-filter-fallback.ts).
         streamFn: (model, context, options) => {
           const toolChoice = outputChoice(model);
-          const settings = callSettings(model, config, options?.reasoning);
-          return stream(model, context, { ...options, ...settings, ...(toolChoice === undefined ? {} : { toolChoice }), ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options);
+          const asked = (on: typeof model) => ({ ...options, ...callSettings(on, config, options?.reasoning), ...(toolChoice === undefined ? {} : { toolChoice }), ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options);
+          const first = stream(model, context, asked(model));
+          const fallback = config.contentFilterFallback;
+          if (!fallback || fallback.from !== `${model.provider}/${model.id}`) return first;
+          const to = `${fallback.model.provider}/${fallback.model.id}`;
+          return withContentFilterFallback(first, () => viaFallback(fallback.model, context, asked(fallback.model)), {
+            blocked: () => recordModelFallback({ tenant: config.tenant, agent: config.id, from: fallback.from, to, reason: "content_filter" }),
+            unavailable: error => console.error(JSON.stringify({ type: "model_fallback_failed", agent: config.id, model: fallback.from, fallback: to, error: safeError(error) })),
+            aborted: () => !!options?.signal?.aborted,
+          });
         },
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),

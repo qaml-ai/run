@@ -9,7 +9,7 @@ import { readFile } from "node:fs/promises";
 import { join, extname, normalize, sep } from "node:path";
 import { AgentSupervisor } from "./supervisor.ts";
 import type { NodeConfig } from "./node-config.ts";
-import { configuredModel, defaultModels } from "./model.ts";
+import { configuredModel, contentFilterFallbacks, defaultModels } from "./model.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
@@ -853,7 +853,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     runEvents: tenant => subscribers.runs(tenant),
     // A self-hosted runtime configured by its environment takes keys there too.
     ...(config.selfHostedTenant ? { modelKeyHint: "On this self-hosted runtime, AGENT_TENANT_API_KEYS in its environment sets keys too ({\"anthropic\": \"sk-ant-...\"}; restart it after)." } : {}),
-    secret: sessionSecret, toolTimeoutMs, idleMs, streamTimeouts, contextRangeMaxBytes: config.contextRangeMaxBytes, ...(config.runOverrunMs !== undefined ? { runOverrunMs: config.runOverrunMs } : {}), maxAgentsPerTenant, codeCapacity: config.codeCapacity, ...(config.snapshotBytes !== undefined ? { snapshotBytes: config.snapshotBytes } : {}), orphanSweepMs: orphanMs, maxResumes: config.maxResumes, childSweepMs: config.childSweepMs, wakesPerHour: config.wakesPerHour, progressWaitMs: config.progressWaitMs, watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
+    secret: sessionSecret, toolTimeoutMs, idleMs, streamTimeouts, contentFilterFallbacks: contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS), contextRangeMaxBytes: config.contextRangeMaxBytes, ...(config.runOverrunMs !== undefined ? { runOverrunMs: config.runOverrunMs } : {}), maxAgentsPerTenant, codeCapacity: config.codeCapacity, ...(config.snapshotBytes !== undefined ? { snapshotBytes: config.snapshotBytes } : {}), orphanSweepMs: orphanMs, maxResumes: config.maxResumes, childSweepMs: config.childSweepMs, wakesPerHour: config.wakesPerHour, progressWaitMs: config.progressWaitMs, watcherLimitFor: tenant => tenants.maxWatchers(tenant), busyAgents, agentLimitFor: async tenant => {
       // Agents hosted on this node stay within the tenant's busy limit too: its own, or its tier's (else, and on the
       // internal tier, the node's default).
       const { limit, source } = await accounts.billing.busyLimit(tenant);
