@@ -64,8 +64,9 @@ export async function fixture(t: { after: (fn: () => Promise<void>) => void }, o
     const runtime = new AgentRuntime({ ...runtimeOptions, ...config });
     const agent = await runtime.createAgent({ tools, ...extra });
     clients.push(agent);
-    // A created agent starts in the background: these tests reach into its host, so wait until it answers.
-    await until(() => supervisor.request(agent.session.id, "status").then(() => true, () => false), "the agent to start");
+    // A created agent starts in the background: these tests reach into its host, so wait until its start is done. Its host
+    // answers before then (status works once Pi is made, while init still runs), and a stop meanwhile fails the start.
+    await until(() => !sessions.sessions.get(agent.session.id)?.starting && supervisor.agents.has(agent.session.id), "the agent to start");
     return agent;
   }
   async function post(agent: AgentClient, suffix: string, body: unknown) {
