@@ -24,7 +24,7 @@ const InferredOverflowDoc = defineDoc({
 });
 
 /**
- * The calls of a round whose run ends after it (\`afterTool\`), committed with the decision: a call a lost node left open
+ * The calls of a round whose run ends after it (`afterTool`), committed with the decision: a call a lost node left open
  * ends the round on the next owner too, whatever the host still knows. Cleared once the round is over.
  */
 const RoundEndDoc = defineDoc({
@@ -832,7 +832,7 @@ export class DurableAgent {
   }
 
   async syncContext() {
-    // The turn limit a round's end set (\`afterTool\`) and that round's calls go once the round is over; a round a lost
+    // The turn limit a round's end set (`afterTool`) and that round's calls go once the round is over; a round a lost
     // node left open keeps them, so it still ends here.
     const round = !!(await this.harness.snapshot(LiveDoc, this.conversation.id, context))?.tools;
     await this.conversation.configure({ model: { provider: this.state.model.provider, modelId: this.state.model.id },
