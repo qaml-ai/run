@@ -328,7 +328,7 @@ export class DurableAgent {
         }
         // A failed summary is not asked again. Pi reads the retry policy for it as it resumes from this call, before any
         // I/O, so the decision holds until the current macrotask's microtasks are done; a generation's own decision,
-        // pending at the same time, wins (\`retryPolicy\`).
+        // pending at the same time, wins (`retryPolicy`).
         if (summary!.stopReason === "error") {
           agent.summaryPlan = { retry: false };
           setImmediate(() => { agent.summaryPlan = undefined; });
@@ -573,7 +573,7 @@ export class DurableAgent {
 
   /**
    * What Pi's retry policy says as it is read: the adapter's decision for the generation's failed response until Pi has
-   * committed that response, then a failed summary's (\`completeSimple\`), else the host's for an interrupted request.
+   * committed that response, then a failed summary's (`completeSimple`), else the host's for an interrupted request.
    */
   private retryPolicy(): RetryDecision {
     return this.retryPlan ?? this.summaryPlan ?? this.options.durable.retry?.({ reason: "interrupted" }) ?? { retry: false };
