@@ -16,14 +16,16 @@ ref=${1:-HEAD}; shift || true
 cd "$(git rev-parse --show-toplevel)"
 sha=$(git rev-parse --verify "$ref^{commit}")
 lock=$(git rev-parse "$sha:package-lock.json"); v8=$(git rev-parse "$sha:sandbox/v8-exec")
-org=${SPRITE_ORG:-camelai}; pool=${SPRITE_POOL:-3}; lease_s=$(( ${SPRITE_LEASE_HOURS:-3} * 3600 ))
+org=${SPRITE_ORG:-camelai}; pool=${SPRITE_POOL:-6}; stale_s=${SPRITE_LEASE_STALE:-300}; wait_s=$(( ${SPRITE_WAIT_MINUTES:-30} * 60 ))
 id=$(date +%Y%m%d-%H%M%S)-$$; owner="$(whoami)@$(hostname -s) $id"
 on() { local name=$1; shift; sprite exec -o "$org" -s "$name" --no-stdin -- bash -o pipefail -c "$*"; }
 
-# Take the lease when it is free or stale: mkdir is atomic, so two runs never hold one sprite.
+# Take the lease when it is free, or dead: a live run refreshes it every minute, so one not refreshed for SPRITE_LEASE_STALE
+# seconds (default 300) has nobody behind it, and its job and Task go with it. mkdir and mv are atomic: two runs never hold one sprite.
 take() {
-  on "$1" "if ! mkdir ~/lease 2>/dev/null; then [ \$(( \$(date +%s) - \$(stat -c %Y ~/lease) )) -gt $lease_s ] || exit 1; rm -rf ~/lease; mkdir ~/lease || exit 1; fi; echo '$owner' > ~/lease/owner" >/dev/null 2>&1
+  on "$1" "if ! mkdir ~/lease 2>/dev/null; then [ \$(( \$(date +%s) - \$(stat -c %Y ~/lease) )) -gt $stale_s ] || exit 1; mv ~/lease ~/lease.dead.\$\$ || exit 1; rm -rf ~/lease.dead.\$\$; for s in \$(/.sprite/bin/sprite-env services list 2>/dev/null | grep -o 'sprite-test-[0-9-]*' | sort -u); do /.sprite/bin/sprite-env services delete \$s >/dev/null 2>&1; done; /.sprite/bin/sprite-env curl -X DELETE /v1/tasks/sprite-test >/dev/null 2>&1; mkdir ~/lease || exit 1; fi; echo '$owner' > ~/lease/owner" >/dev/null 2>&1
 }
+holders() { for candidate in "$@"; do echo "   $candidate: $(on "$candidate" "cat ~/lease/owner 2>/dev/null; echo" 2>/dev/null | head -1)"; done; }
 # A new sprite: a create that times out may still have made it, so it counts once the pool lists it.
 create() {
   echo "== creating $1"
@@ -36,16 +38,23 @@ setup() {
     && sudo service postgresql restart >/dev/null && mkdir -p ~/rt ~/runs && touch ~/.setup; }"
 }
 
-existing=$(sprite list -o "$org" 2>/dev/null || true); name=
-# SPRITE_NAME pins one sprite, to prepare it or to reuse what a failed run left there.
-for candidate in ${SPRITE_NAME:-$(for i in $(seq "$pool"); do echo "rt-pool-$i"; done)}; do
-  if ! grep -qx "$candidate" <<<"$existing"; then create "$candidate" || continue; fi
-  take "$candidate" && { name=$candidate; break; }
+# SPRITE_NAME pins one sprite, to prepare it or to reuse what a failed run left there. When all are busy, wait for one.
+candidates=(${SPRITE_NAME:-$(for i in $(seq "$pool"); do echo "rt-pool-$i"; done)}); name=; waited=0
+while :; do
+  existing=$(sprite list -o "$org" 2>/dev/null || true)
+  for candidate in "${candidates[@]}"; do
+    if ! grep -qx "$candidate" <<<"$existing"; then create "$candidate" || continue; fi
+    take "$candidate" && { name=$candidate; break 2; }
+  done
+  (( waited < wait_s )) || { echo "every sprite in the pool (rt-pool-1..$pool in $org) stayed leased for $(( wait_s / 60 )) minutes; raise SPRITE_POOL or SPRITE_WAIT_MINUTES" >&2; exit 75; }
+  (( waited )) || { echo "== every sprite is busy; waiting for one (up to $(( wait_s / 60 )) minutes):"; holders "${candidates[@]}"; }
+  sleep 30; waited=$(( waited + 30 ))
 done
-[[ -n $name ]] || { echo "every sprite in the pool (rt-pool-1..$pool in $org) is leased; wait, or raise SPRITE_POOL" >&2; exit 75; }
 # Until the job starts the lease is ours to release; after that the job's.
 started=0
-trap '[[ $started = 1 ]] || on "$name" "rm -rf ~/lease" >/dev/null 2>&1 || true' EXIT
+trap '[[ -z ${beat:-} ]] || kill "$beat" 2>/dev/null || true; [[ $started = 1 ]] || on "$name" "rm -rf ~/lease" >/dev/null 2>&1 || true' EXIT
+# Setup can take minutes on a new sprite (npm ci, v8-exec): the lease stays fresh until the job takes over refreshing it.
+( while sleep 60; kill -0 $$ 2>/dev/null; do on "$name" "touch ~/lease" >/dev/null 2>&1; done ) & beat=$!
 setup "$name"
 echo "== sprite-test $(git log --oneline -1 "$sha") on $name ($id)"
 
@@ -82,13 +91,13 @@ export AGENT_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres
 finish() { echo \$1 > ~/runs/$id.exit; rm -rf ~/lease; $api curl -X DELETE /v1/tasks/sprite-test >/dev/null 2>&1; $api services delete $service >/dev/null 2>&1; sleep 60; exit 0; }
 [ ! -e ~/runs/$id.begun ] || finish 137
 touch ~/runs/$id.begun
-(while :; do $api curl -X PUT /v1/tasks/sprite-test -d '{\"expire\":\"5m\"}' >/dev/null 2>&1; sleep 60; done) & hold=\$!
+(while :; do touch ~/lease; $api curl -X PUT /v1/tasks/sprite-test -d '{\"expire\":\"5m\"}' >/dev/null 2>&1; sleep 60; done) & hold=\$!
 timeout ${SPRITE_RUN_HOURS:-2}h $(printf '%q ' "$@") > ~/runs/$id.log 2>&1
 code=\$?; kill \$hold
 finish \$code"
 encoded=$(printf '%s' "$script" | base64 | tr -d '\n')
 on "$name" "{ echo \"export PATH=\$PATH HOME=\$HOME\"; echo $encoded | base64 -d; } > ~/runs/$id.sh && $api services create $service --cmd bash --args \$HOME/runs/$id.sh --dir \$HOME/rt --no-stream >/dev/null"
-started=1
+started=1; kill "$beat" 2>/dev/null || true
 # Poll: a failed poll is only a blip, the job carries on. After SPRITE_POLL_FAILURES (default 40, about 10 minutes) in a row, leave it running.
 chunk=$(mktemp); offset=0; misses=0; status=
 while [[ -z $status ]]; do
