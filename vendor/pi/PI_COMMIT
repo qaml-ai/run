@@ -1,5 +1,6 @@
-commit f09d01b85e0384647fcab6779d35ab9dabe04be3
-date 2026-10-29T22:11:08+01:00
-source https://github.com/earendil-works/pi/commit/f09d01b85e0384647fcab6779d35ab9dabe04be3
+commit a14cdf90f0a76532f3e20bc3c01872837cef24ba
+date 2026-10-30T18:18:23Z
+source https://github.com/earendil-works/pi/commit/a14cdf90f0a76532f3e20bc3c01872837cef24ba
+changes https://github.com/earendil-works/pi/compare/f09d01b85e0384647fcab6779d35ab9dabe04be3...a14cdf90f0a76532f3e20bc3c01872837cef24ba
 packages @earendil-works/pi-telemetry @earendil-works/chord @earendil-works/pi-codemode @earendil-works/pi-ai @earendil-works/pi-agent-core @earendil-works/pi-durable
-version main.f09d01b85e03
+version main.a14cdf90f0a7

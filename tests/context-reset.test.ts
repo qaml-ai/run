@@ -15,6 +15,7 @@ import { COMPACTION_SUMMARY_PREFIX } from "../src/pi-harness/messages.ts";
 import { AgentSupervisor } from "../src/supervisor.ts";
 import { testDatabase } from "./database.ts";
 import { OTHER_OPERATOR, runtime, toolCall, until } from "./runtime-server.ts";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const system = (fields: Partial<SystemMessage>): SystemMessage => ({ role: "system", content: "", timestamp: 1, ...fields });
 const user = (text: string): AgentMessage => ({ role: "user", content: text, timestamp: 2 });
@@ -56,7 +57,7 @@ for (const backend of ["sqlite", "postgres"] as const) test(`${backend} resets a
   await seedJournal({ storage, sessionId: "reset-test", model: [leading], messages });
   // A configuration change since: Pi's context holds it after the checkpoint, and the reset keeps it.
   const ids = [await storage.mintId(), await storage.mintId(), await storage.mintId(), await storage.mintId(), await storage.mintId(), await storage.mintId()] as EntryId[];
-  await storage.commit([
+  await commitWrites(storage, [
     { type: "entry", value: { id: ids[0], conversationId: root, kind: "camel.system", model: [system({ sections: { environment: "env v2" }, toolsRemoved: [{ name: "old" }] })] as never } },
     // An entry an edit omits counts for nothing, and a tool result's text naming a system message is not one.
     { type: "entry", value: { id: ids[1], conversationId: root, kind: "camel.system", model: [system({ sections: { omitted: "never" } })] as never } },
@@ -65,7 +66,7 @@ for (const backend of ["sqlite", "postgres"] as const) test(`${backend} resets a
     // An omit from an entry that names no system message counts too.
     { type: "entry", value: { id: ids[4], conversationId: root, kind: "camel.system", model: [system({ sections: { dropped: "later" } })] as never } },
     { type: "entry", value: { id: ids[5], conversationId: root, kind: "camel.context.message", model: [user("plain")] as never, edits: [{ target: ids[4], action: "omit" }] } as never },
-  ], () => {}, context);
+  ], context);
   const before = await contextRangeSize(storage, root);
   assert.ok(before.bytes > 80_000);
   const history = await JournalHistory.openAny(storage);
@@ -206,7 +207,7 @@ test("a reset refuses a context with replace edits, and writes nothing when its 
   await assert.rejects(resetContext(storage, { limit: 1 << 20, beforeCommit: () => { throw new Error("Agent is running"); } }), /Agent is running/);
   assert.equal(await marker(), first, "nothing was written");
   const id = await storage.mintId();
-  await storage.commit([{ type: "entry", value: { id, conversationId: root, kind: "camel.context.message", model: [user("x")] as never, edits: [{ target: first, action: "replace", messages: [] }] } as never }], () => {}, context);
+  await commitWrites(storage, [{ type: "entry", value: { id, conversationId: root, kind: "camel.context.message", model: [user("x")] as never, edits: [{ target: first, action: "replace", messages: [] }] } as never }], context);
   await assert.rejects(currentSystemMessage(storage), /replace edits/);
 });
 

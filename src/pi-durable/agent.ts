@@ -7,7 +7,7 @@ import { RUNTIME } from "../system-prompt.ts";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
   GenerationTask, Harness, LiveDoc, ToolTask, createRegistry, createSession, defineDoc, hook, section,
-  type Conversation, type ConversationId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Report, type Storage,
+  type Conversation, type ConversationId, type EntryId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Report, type Storage, type Tx,
 } from "@earendil-works/pi-durable";
 
 /** Small latest-value document: loading an agent never scans its journal for a limit. */
@@ -238,6 +238,8 @@ export class DurableAgent {
   private terminating = new Set<string>();
   private closed = false;
   private closing?: Promise<void>;
+  /** Entries the host's journal appended (`journalSession`), until they are published. */
+  private hostEntries = new Set<number>();
 
   private get messages() { return this._messages; }
   /** Pi's context as the agent last read it, with the run's messages since; a change of its system section keys reinstalls the `camel` extension's sections. */
@@ -448,6 +450,7 @@ export class DurableAgent {
         .sort((a, b) => (a as { value: EntryRecord }).value.id - (b as { value: EntryRecord }).value.id);
       for (const change of entries) if (change.type === "entry") {
         const entry = change.value;
+        if (agent.hostEntries.delete(entry.id)) continue;
         if (entry.kind === "camel.user" && entry.model?.[0]?.role === "user") {
           const original = originalUser(entry);
           if (original) agent.originalInputs.set(entry.id, { native: entry.model[0], message: original });
@@ -492,6 +495,15 @@ export class DurableAgent {
     }
     const reason = (entry.data as { reason?: string } | undefined)?.reason === "overflow" ? "overflow" : "threshold";
     await this.options.durable.onCompaction?.({ summary, keptMessages, at: entry.model?.[0]?.timestamp ?? Date.now(), reason });
+  }
+
+  /**
+   * A commit of the host's journal through Pi's Session, while it takes any: its entries are the host's, told by the host
+   * as it writes them and not by the commit observer, nor part of a run's messages (`written`).
+   */
+  journalSession() {
+    if (this.closed) return undefined;
+    return <T>(change: (tx: Tx, own: (id: EntryId) => void) => Promise<T>) => this.conversation.commit(tx => change(tx, id => { this.hostEntries.add(id); }), context);
   }
 
   get signal() { return this.controller?.signal; }

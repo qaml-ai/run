@@ -11,6 +11,7 @@ import { PostgresPiStorage } from "../src/pi-durable/storage.ts";
 import { contextAt } from "../src/pi-durable/fork.ts";
 import { testDatabase } from "./database.ts";
 import { lastUser, runtime, until } from "./runtime-server.ts";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const database = testDatabase();
 const never = ["pi.user", "pi.assistant", "pi.tool-result", "camel.user", "camel.message", "camel.history.marker",
@@ -25,7 +26,7 @@ async function fixture(content = "content must never be logged") {
   kinds.forEach((kind, i) => writes.push({ type: "entry", value: { id: (i + 2) as EntryId, conversationId: 1 as never, kind,
     ...(kind === "camel.legacy.context" ? { head: (i + 2) as EntryId } : {}), data: { fixture: content } } }));
   writes.push({ type: "entry", value: { id: 101 as EntryId, conversationId: 100 as never, kind: "pi.system" } });
-  await storage.commit(writes, () => {}, context);
+  await commitWrites(storage, writes, context);
   await storage.close(context);
   return { db, session, before: await snapshot(db, session) };
 }
@@ -167,8 +168,8 @@ test("after reclaim a cold agent runs, pages history, and forks retained and pre
     const last = (await r.db.query("select max(id) as id from pi_durable_entries where session_id = $1", [session])).rows[0].id;
     const model = await contextAt(storage, { entryId: Number(last), index: -1 });
     const [head, ...ids] = await storage.mintIds(model.length + 1);
-    await storage.commit([{ type: "entry", value: { id: head as EntryId, conversationId: 1 as never, kind: "camel.legacy.context", head: head as EntryId } },
-      ...model.map((message, i) => ({ type: "entry" as const, value: { id: ids[i] as EntryId, conversationId: 1 as never, kind: "camel.context.message", model: [message] } }))], () => {}, context);
+    await commitWrites(storage, [{ type: "entry", value: { id: head as EntryId, conversationId: 1 as never, kind: "camel.legacy.context", head: head as EntryId } },
+      ...model.map((message, i) => ({ type: "entry" as const, value: { id: ids[i] as EntryId, conversationId: 1 as never, kind: "camel.context.message", model: [message] } }))], context);
   } finally { await storage.close(context); }
   const result = await reclaimSession(r.db, session, true);
   assert.equal(result.skipped_reason, null);
@@ -251,7 +252,7 @@ async function hostTranscriptSession(options: { retired: boolean; content?: stri
     { type: "document.create", record: { id: 10 as never, kind: "camel.history.base", scope: { kind: "session" } }, content: { version: 1, kind: "base", value: { entry: 9 } } },
   ];
   if (options.retired) writes.push(entry(11, "camel.host.disabled", { retired: "journal" }));
-  await storage.commit(writes, () => {}, context);
+  await commitWrites(storage, writes, context);
   await storage.close(context);
   return { db, session };
 }

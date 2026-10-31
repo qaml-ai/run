@@ -1,9 +1,10 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SystemMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import type { Cursor, DocumentId, EntryId, JsonObject, Storage, StorageWrite } from "@earendil-works/pi-durable";
+import type { Cursor, DocumentId, EntryDraft, EntryId, JsonObject, Storage, StorageWrite, Tx } from "@earendil-works/pi-durable";
 import { BASE_ADDRESS, baseWrites, HOST_MESSAGE_KIND, HOST_SYSTEM_KIND, HOST_USER_KIND, JournalHistory, MARKER_KIND, type At, type HistoryBase } from "./history.ts";
 import { SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
+import { commitBatch } from "./storage.ts";
 
 /** What the agent host writes to its session's journal (`HostJournal.commit`). */
 export type HostRecord =
@@ -31,6 +32,11 @@ const REBASE_MESSAGES = 256;
 
 const json = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
+/** One journal commit's writes: an entry (its ID comes back), and a request's submission. */
+type JournalWrites = { entry(draft: Omit<EntryDraft, "head">): Promise<EntryId>; request(requestId: string): Promise<void> };
+/** A commit through Pi's Session; `own` names each entry the host appends in it. */
+export type JournalSession = <T>(change: (tx: Tx, own: (id: EntryId) => void) => Promise<T>) => Promise<T>;
+
 /**
  * An agent's history and turn as its host keeps them: in Pi's journal alone (plans/host-transcript-removal.md). Pi's
  * messages are history as Pi commits them; the host writes the messages it makes itself as native entries, and its
@@ -47,6 +53,12 @@ export class HostJournal {
   written?: At;
   /** Why a write failed: nothing more is written. */
   failed?: unknown;
+  /**
+   * Pi's open Session, if any: its reads of a conversation's newest entry and context know only what it commits itself,
+   * so what the host writes for them goes through it. Without one (no agent yet, or one closing, whose Session reads
+   * nothing more), the journal writes to the storage itself.
+   */
+  session?: () => JournalSession | undefined;
   private line: Promise<unknown> = Promise.resolve();
 
   private constructor(storage: Storage, history: JournalHistory) { this.storage = storage; this.history = history; }
@@ -63,8 +75,8 @@ export class HostJournal {
   get awaiting() { return this.history.awaiting; }
   callIndex(id: string) { return this.history.callIndex(id); }
 
-  /** Take in what Pi committed since the last read. */
-  refresh() { return this.history.refresh(); }
+  /** Take in what Pi committed since the last read; after a failed write, nothing more (its Session closed the storage). */
+  async refresh() { if (this.failed === undefined) await this.history.refresh(); }
 
   /** Whether request `requestId`'s message is in the history (its submission is recorded, compacted or not). */
   async hasRequest(requestId: string) { return !!await this.storage.submissionByRequest(conversationId, requestId, context); }
@@ -113,52 +125,70 @@ export class HostJournal {
       const records = await change();
       if (!records.length) return;
       try {
-        const writes: StorageWrite[] = [];
-        // The history as of the records before each: a retraction takes back the message an earlier one wrote.
-        const cursors: (At | undefined)[] = [];
-        let total = this.total, written: At | undefined;
-        const cursorOf = (index: number) => index >= this.total ? cursors[index - this.total] : this.history.cursorAt(index);
-        for (const record of records) {
-          const id = await this.storage.mintId<EntryId>();
-          if (record.t === "message") {
-            const message = record.message;
-            // An answer to a call that waited on a person replaces Pi's input-required placeholder in its context.
-            const placeholder = message.role === "toolResult" ? await this.placeholder(message.toolCallId) : undefined;
-            writes.push({ type: "entry", value: { id, conversationId, ...(message.role === "user"
-              ? { kind: HOST_USER_KIND, data: json({ message }) as never, model: json([{ role: "user", content: message.content, timestamp: message.timestamp }]) as never }
-              : { kind: HOST_MESSAGE_KIND, model: json([message]) as never, ...(placeholder ? { edits: [{ target: placeholder, action: "omit" as const }] } : {}) }) } });
-            const requestId = message.role === "user" ? (message as { requestId?: string }).requestId : undefined;
-            if (requestId && !await this.storage.submissionByRequest(conversationId, requestId, context)) writes.push({ type: "submission", value: {
-              id: await this.storage.mintId(), conversationId, requestId, type: "input", status: "unanswered", reason: "host_input",
-            } });
-            cursors.push(written = { entryId: id, index: 0 });
-            total++;
-          } else if (record.t === "retract") {
-            // Taken out of Pi's context too: a failed response Pi leaves out anyway, an answer the output reminder replaces.
-            const target = cursorOf(total - 1);
-            writes.push({ type: "entry", value: { id, conversationId, kind: MARKER_KIND, data: { t: "retract", index: total - 1 },
-              ...(target && target.index === 0 ? { edits: [{ target: target.entryId as EntryId, action: "omit" as const }] } : {}) } });
-            if (total > this.total) cursors.pop();
-            total--;
-          } else if (record.t === "system") {
-            writes.push({ type: "entry", value: { id, conversationId, kind: HOST_SYSTEM_KIND, model: json([record.message]) as never } });
-          } else if (record.t === "pi") {
-            // Out of Pi's context too: what Pi settled for the discarded run never reaches the model (a call made again
-            // answers it instead).
-            const skipped = [...new Set(this.history.cursorsBetween(record.after, record.cursor).map(at => at.entryId))];
-            writes.push({ type: "entry", value: { id, conversationId, kind: MARKER_KIND, data: json(record) as never,
-              ...(skipped.length ? { edits: skipped.map(target => ({ target: target as EntryId, action: "omit" as const })) } : {}) } });
-          } else {
-            writes.push({ type: "entry", value: { id, conversationId, kind: MARKER_KIND, data: json(record.t === "turn" ? { ...record, total } : record) as never } });
-          }
-        }
-        await this.storage.commit(writes, () => {}, context);
+        const session = this.session?.();
+        const written = session ? await session((tx, own) => this.write(records, {
+          entry: async draft => { const { id } = await tx.appendEntry(conversationId, draft); own(id); return id; },
+          request: async requestId => { await tx.createSubmission({ conversationId, requestId, type: "input", status: "unanswered", reason: "host_input" }); },
+        })) : await this.writeToStorage(records);
         if (written) this.written = written;
       } catch (error) { this.failed = error; throw error; }
       await this.refresh();
     });
     this.line = run.catch(() => {});
     return run;
+  }
+
+  private async writeToStorage(records: HostRecord[]): Promise<At | undefined> {
+    const writes: StorageWrite[] = [];
+    const written = await this.write(records, {
+      entry: async draft => { const id = await this.storage.mintId<EntryId>(); writes.push({ type: "entry", value: { id, conversationId, ...draft } }); return id; },
+      request: async requestId => {
+        writes.push({ type: "submission", value: { id: await this.storage.mintId(), conversationId, requestId, type: "input", status: "unanswered", reason: "host_input" } });
+      },
+    });
+    await commitBatch(this.storage, writes, context);
+    return written;
+  }
+
+  /** `records` as writes, as of the history now and each record before it. The newest message written, if any. */
+  private async write(records: HostRecord[], writes: JournalWrites): Promise<At | undefined> {
+    // The history as of the records before each: a retraction takes back the message an earlier one wrote.
+    const cursors: (At | undefined)[] = [];
+    let total = this.total, written: At | undefined;
+    const cursorOf = (index: number) => index >= this.total ? cursors[index - this.total] : this.history.cursorAt(index);
+    for (const record of records) {
+      if (record.t === "message") {
+        const message = record.message;
+        // An answer to a call that waited on a person replaces Pi's input-required placeholder in its context.
+        const placeholder = message.role === "toolResult" ? await this.placeholder(message.toolCallId) : undefined;
+        const id = await writes.entry(message.role === "user"
+          ? { kind: HOST_USER_KIND, data: json({ message }) as never, model: json([{ role: "user", content: message.content, timestamp: message.timestamp }]) as never }
+          : { kind: HOST_MESSAGE_KIND, model: json([message]) as never, ...(placeholder ? { edits: [{ target: placeholder, action: "omit" as const }] } : {}) });
+        const requestId = message.role === "user" ? (message as { requestId?: string }).requestId : undefined;
+        // Read from the storage, as a Session's commit reads no table after its first write.
+        if (requestId && !await this.storage.submissionByRequest(conversationId, requestId, context)) await writes.request(requestId);
+        cursors.push(written = { entryId: id, index: 0 });
+        total++;
+      } else if (record.t === "retract") {
+        // Taken out of Pi's context too: a failed response Pi leaves out anyway, an answer the output reminder replaces.
+        const target = cursorOf(total - 1);
+        await writes.entry({ kind: MARKER_KIND, data: { t: "retract", index: total - 1 },
+          ...(target && target.index === 0 ? { edits: [{ target: target.entryId as EntryId, action: "omit" as const }] } : {}) });
+        if (total > this.total) cursors.pop();
+        total--;
+      } else if (record.t === "system") {
+        await writes.entry({ kind: HOST_SYSTEM_KIND, model: json([record.message]) as never });
+      } else if (record.t === "pi") {
+        // Out of Pi's context too: what Pi settled for the discarded run never reaches the model (a call made again
+        // answers it instead).
+        const skipped = [...new Set(this.history.cursorsBetween(record.after, record.cursor).map(at => at.entryId))];
+        await writes.entry({ kind: MARKER_KIND, data: json(record) as never,
+          ...(skipped.length ? { edits: skipped.map(target => ({ target: target as EntryId, action: "omit" as const })) } : {}) });
+      } else {
+        await writes.entry({ kind: MARKER_KIND, data: json(record.t === "turn" ? { ...record, total } : record) as never });
+      }
+    }
+    return written;
   }
 
   push(message: AgentMessage) { return this.append([message]); }
@@ -186,7 +216,8 @@ export class HostJournal {
       const base = this.history.settledBase();
       if (!base || base.total - (this.rebasedAt ?? this.history.baseTotal) < REBASE_MESSAGES) return false;
       const document = await JournalHistory.baseDocument(this.storage);
-      try { await this.storage.commit(baseWrites(await this.storage.mintId<EntryId>(), base, { id: document ?? await this.storage.mintId<DocumentId>(), create: !document }), () => {}, context); }
+      // To the storage even with a Session: a marker Pi's context ignores, and a document no Session reads.
+      try { await commitBatch(this.storage, baseWrites(await this.storage.mintId<EntryId>(), base, { id: document ?? await this.storage.mintId<DocumentId>(), create: !document }), context); }
       catch (error) { this.failed = error; throw error; }
       this.rebasedAt = base.total;
       return true;

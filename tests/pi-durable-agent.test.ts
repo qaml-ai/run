@@ -8,6 +8,8 @@ import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { randomUUID } from "node:crypto";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
+import { HostJournal } from "../src/pi-durable/host-journal.ts";
+import { seedJournal } from "../src/pi-durable/seed.ts";
 import { testDatabase } from "./database.ts";
 
 const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "Fixture", reasoning: false, input: ["text"],
@@ -258,7 +260,7 @@ test("Pi adapter commits a streaming answer's progress about once a second, not 
   const storage = new MemoryStorage();
   let commits = 0, streaming = false;
   const commit = storage.commit.bind(storage);
-  storage.commit = async (writes, adopt, at) => { if (streaming) commits++; return commit(writes, adopt, at); };
+  storage.commit = async (batches, receive, at) => { if (streaming) commits += batches.length; return commit(batches, receive, at); };
   const response = answer("x".repeat(30));
   const fake = await fixture([], { streamFn: () => {
     const stream = createAssistantMessageEventStream();
@@ -583,4 +585,39 @@ test("steers given while no run is active go in with the next run's input, befor
   await fake.agent.prompt("Start");
   assert.deepEqual(fake.requests[0].messages.filter((message: any) => message.role === "user").map((message: any) => message.content), ["Start", "held one", "held two"]);
   assert.equal(fake.agent.hasQueuedMessages(), false);
+});
+
+test("what the host's journal writes while an agent is open reaches Pi's context, also within a run, and only the host tells it", async t => {
+  const storage = new MemoryStorage();
+  await seedJournal({ storage, sessionId: "test", model: [] });
+  const journal = (await HostJournal.open(storage))!;
+  const note = (text: string) => ({ role: "system", content: text, timestamp: 2 }) as never;
+  const read = tool("read", async () => {
+    await journal.system(note("written within the round"));
+    return { content: [{ type: "text", text: "found" }], details: undefined };
+  });
+  const fake = await fixture([call("read"), answer("Done")], { initialState: { model, tools: [read], messages: [] } }, storage, { conversationId: 1, written: () => journal.written });
+  t.after(() => fake.agent.close());
+  journal.session = () => fake.agent.journalSession();
+  const held = () => JSON.stringify(fake.agent.state.messages);
+
+  await journal.system(note("written while idle"));
+  await fake.agent.reload();
+  assert.match(held(), /written while idle/, "Pi's Session reads what it did not write from its own commits");
+
+  await fake.agent.prompt("go");
+  assert.match(JSON.stringify(fake.requests[1]), /written within the round/, "a running round's next request has it");
+
+  const events = fake.events.length;
+  await journal.push({ ...user("a message that lands without a turn"), requestId: "landing" } as AgentMessage);
+  assert.ok(await journal.hasRequest("landing"), "with its request taken");
+  await journal.push(answer("landed") as AgentMessage);
+  await journal.retract();
+  await journal.push(answer("kept") as AgentMessage);
+  await fake.agent.reload();
+  assert.equal(fake.events.length, events, "the commit observer leaves the host's entries to the host");
+  assert.match(held(), /kept/);
+  assert.doesNotMatch(held(), /landed/, "the retraction's edit reached Pi's context");
+  const cursor = fake.agent.latestCursor;
+  assert.ok(cursor && journal.written && cursor.entryId < journal.written.entryId, "nor do they move a run's cursor");
 });

@@ -5,6 +5,7 @@ import { durableEntryMessages } from "../../src/pi-durable/agent.ts";
 import { SESSION_CONVERSATION_ID as conversationId, HOST_ARCHIVE_KIND as ARCHIVE, HOST_BOOTSTRAP_KIND as BOOTSTRAP, SEED_MARKER_KIND } from "../../src/pi-durable/seed.ts";
 
 import { BASE_ADDRESS, baseWrites, JournalHistory, type HistoryBase } from "../../src/pi-durable/history.ts";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 /**
  * The host transcript's records and their retirement, as releases before the legacy readers' removal read and did them:
@@ -168,6 +169,6 @@ export async function retireHostTranscript(storage: Storage, options: {
     { type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "camel.host.disabled", data: { retired: "journal" } } },
     { type: "document.change", id: found.documentId, content: { version: 1, kind: "base", value: { ...found.value, enabled: false, retired: "journal" } as JsonObject } },
   );
-  await storage.commit(writes, () => {}, context);
+  await commitWrites(storage, writes, context);
   return true;
 }

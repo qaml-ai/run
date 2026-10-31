@@ -11,6 +11,7 @@ import { seedJournal } from "../src/pi-durable/seed.ts";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { testDatabase } from "./database.ts";
 import { OPERATOR, runtime, until } from "./runtime-server.ts";
+import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const imported = ["claude-sonnet-5", "claude-opus-4-1", "gpt-4o"].flatMap((model, index) => [
   { role: "user" as const, content: `Old question ${index}`, timestamp: index * 2 + 1 },
@@ -38,8 +39,8 @@ for (const mode of ["sqlite", "postgres", "remote-postgres"]) test(`seed commits
   await seedJournal(options);
   assert.deepEqual(effects, [], "imports, archives, checkpoints and seed retries have no commit effects");
   for (const kind of ["camel.message", "pi.assistant", "camel.compaction.usage"]) {
-    await storage.commit([{ type: "entry", value: { id: await storage.mintId(), conversationId: 1 as never, kind,
-      model: [imported[1]] as never } }], () => {}, context);
+    await commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId(), conversationId: 1 as never, kind,
+      model: [imported[1]] as never } }], context);
   }
   assert.deepEqual(effects, ["camel.message", "pi.assistant", "camel.compaction.usage"]);
 });
@@ -128,10 +129,10 @@ test("a rejected receipt rolls back the canonical response in the same Postgres 
   const storage = await openPiStorage({ db, sessionId: randomUUID(), directory: tmpdir(), committing: async (entry, sql) => {
     if (entry.kind === "pi.assistant") await sql!.query("insert into pi_usage_receipts(session_id,entry_id,tenant,message) values ('session',$1,'payg','{}')", [entry.id]);
   } });
-  await storage.commit([{ type: "conversation", value: { id: 1 as any } }], () => {}, context);
+  await commitWrites(storage, [{ type: "conversation", value: { id: 1 as any } }], context);
   await db.query("alter table pi_usage_receipts add constraint rejected check (false)");
   const id = await storage.mintId<any>();
-  await assert.rejects(storage.commit([{ type: "entry", value: { id, conversationId: 1 as any, kind: "pi.assistant" } }], () => {}, context), /rejected/);
+  await assert.rejects(commitWrites(storage, [{ type: "entry", value: { id, conversationId: 1 as any, kind: "pi.assistant" } }], context), /rejected/);
   assert.equal(await storage.entry(id, context), undefined);
   await storage.close(context);
 });

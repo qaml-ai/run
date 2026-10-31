@@ -27,6 +27,7 @@ import { placeEntries, type Placement } from "./ordinals.ts";
 import { SEED_MARKER_KIND } from "./seed.ts";
 
 import type {
+	CommitResult,
 	ConversationId,
 	ConversationQuery,
 	ConversationRecord,
@@ -57,12 +58,17 @@ import type {
 	TaskRecord,
 } from "@earendil-works/pi-durable";
 
-/**
- * `Storage.commit`'s adoption callback: the Session's in-memory adoption and publication of the batch. A storage calls it
- * exactly once, synchronously, once the batch is durable and before its next commit starts, then resolves with the same
- * `seq`; never for a commit that fails before the batch is durable. Writers outside a Session pass `() => {}`.
- */
-export type PiAdopt = (seq: Seq) => void;
+/** One batch through `Storage.commit`, for a writer outside a Session; a refusal throws. */
+export async function commitBatch(storage: Pick<Storage, "commit">, writes: readonly StorageWrite[], context: Context): Promise<void> {
+    const result = await storage.commit([writes], () => {}, context);
+    if (result.stored === 0) throw result.refused;
+}
+
+/** A batch Durable's own checks (global IDs, document actions, copy sources) refuse: nothing of it is stored. */
+class Refused {
+    readonly error: unknown;
+    constructor(error: unknown) { this.error = error; }
+}
 
 const TABLES = {
     durableMetadata: "pi_durable_metadata", recordIds: "pi_durable_record_ids",
@@ -168,6 +174,20 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim, retryMs = 0)
         async close() {}, // The supervisor, not an individual Pi session, owns the pool.
     };
 }
+/** `executor`, noting in `calls` when one of its statements fails: the database's failure, not a check's own. */
+function watchedExecutor(executor: PgExecutor, calls: { failed: boolean }): PgExecutor {
+    const watched = async <T>(call: Promise<T>): Promise<T> => {
+        try { return await call; }
+        catch (error) { calls.failed = true; throw error; }
+    };
+    return {
+        sql: executor.sql,
+        get: (text, ...params) => watched(executor.get(text, ...params)),
+        all: (text, ...params) => watched(executor.all(text, ...params)),
+        run: (text, ...params) => watched(executor.run(text, ...params)),
+    };
+}
+
 /** About as much as one statement of `Statements` carries: the bound each entries insert keeps for imports. */
 const STATEMENT_BYTES = 4 * 1024 * 1024;
 /**
@@ -271,9 +291,17 @@ export async function openPiStorage(options: { sessionId: string; directory: str
         };
         if (!options.committing) return storage;
         const inner = { commit: storage.commit.bind(storage) };
-        storage.commit = async (writes: readonly StorageWrite[], adopt: PiAdopt, context: Context) => {
-            await commitEffects(writes, options.committing);
-            return inner.commit(writes, adopt, context);
+        // A batch at a time: each batch's effects come before it is stored, and a refusal leaves those after it without any.
+        storage.commit = async (batches, receive, context) => {
+            const seqs: Seq[] = [];
+            try {
+                for (const writes of batches) {
+                    await commitEffects(writes, options.committing);
+                    const result = await inner.commit([writes], (_index, seq) => { seqs.push(seq); }, context);
+                    if (result.stored === 0) return { stored: seqs.length, refused: result.refused };
+                }
+                return { stored: seqs.length };
+            } finally { seqs.forEach((seq, index) => receive(index, seq)); }
         };
         return storage;
     } catch (error) { await database.close().catch(() => {}); throw error; }
@@ -379,10 +407,13 @@ export async function storageRequest(storage: Storage, request: PiStorageRequest
         return ids;
     }
     if (request.method === "commit") {
-        const [writes] = request.args;
-        if (!Array.isArray(writes)) throw new Error("Invalid Pi storage argument");
-        // The adoption callback cannot cross the process boundary: the child adopts once this answers.
-        return storage.commit(writes as StorageWrite[], () => {}, BACKGROUND_CONTEXT);
+        const [batches] = request.args;
+        if (!Array.isArray(batches) || !batches.every(Array.isArray)) throw new Error("Invalid Pi storage argument");
+        // The receipts cannot cross the process boundary: the child takes them once this answers (when it rejects, none:
+        // its Session fails, and a reopen finds what was stored).
+        const seqs: Seq[] = [];
+        const result = await storage.commit(batches as StorageWrite[][], (_index, seq) => { seqs.push(seq); }, BACKGROUND_CONTEXT);
+        return { seqs, ...result.stored < batches.length ? { refused: result.refused instanceof Error ? result.refused.message : String(result.refused) } : {} };
     }
     if (request.method === "contextRangeSize") {
         const [conversationId] = request.args as number[];
@@ -454,11 +485,11 @@ export function remotePiStorage(request: (request: PiStorageRequest) => Promise<
         const undefinedArgs = args.flatMap((value, index) => value === undefined ? [index] : []);
         return request({ method, args, ...(undefinedArgs.length ? { undefinedArgs } : {}) });
     }]));
-    // The batch is durable once the owner answers: adopt it then, before this resolves.
-    methods.commit = async (writes: readonly StorageWrite[], adopt: PiAdopt): Promise<Seq> => {
-        const seq = await request({ method: "commit", args: [writes] }) as Seq;
-        adopt(seq);
-        return seq;
+    // The batches are durable once the owner answers: its receipts come then, before this resolves.
+    methods.commit = async (batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: Seq) => void): Promise<CommitResult> => {
+        const { seqs, refused } = await request({ method: "commit", args: [batches] }) as { seqs: Seq[]; refused?: string };
+        seqs.forEach((seq, index) => receive(index, seq));
+        return refused === undefined ? { stored: seqs.length } : { stored: seqs.length, refused: new Error(refused) };
     };
     return methods as unknown as Storage;
 }
@@ -600,10 +631,29 @@ export class PostgresPiStorage implements Storage {
         return new PostgresPiStorage(database, { tables: TABLES }, Number(metadata.next_id), committing);
     }
 
-	/** `adopt` runs once the transaction has committed (also after a lost answer that landed), before this resolves. */
-	async commit(writes: readonly StorageWrite[], adopt: PiAdopt, _context?: Context): Promise<Seq> {
+	/**
+	 * Each batch in a transaction of its own, in order, as the one commit it is. The receipts come once the batches that
+	 * were stored are (also after a lost answer that landed), before this settles; a batch that fails rejects the call
+	 * with the earlier ones' receipts given, a refused one resolves with its refusal.
+	 */
+	async commit(batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: Seq) => void, _context?: Context): Promise<CommitResult> {
 		this.assertOpen();
-		const documentActions = this.prepareDocumentActions(writes);
+		const seqs: Seq[] = [];
+		try {
+			for (const writes of batches) seqs.push(await this.commitBatch(writes));
+			return { stored: seqs.length };
+		} catch (error) {
+			if (error instanceof Refused) return { stored: seqs.length, refused: error.error };
+			throw error;
+		} finally {
+			seqs.forEach((seq, index) => receive(index, seq));
+		}
+	}
+
+	private async commitBatch(writes: readonly StorageWrite[]): Promise<Seq> {
+		let documentActions: Map<DocumentId, DocumentAction>;
+		try { documentActions = this.prepareDocumentActions(writes); }
+		catch (error) { throw new Refused(error); }
 		const candidateNextId = this.candidateNextId(writes);
 		// The sequence the latest attempt took and the IDs it found unclaimed: a commit whose answer was lost is found by what it wrote (`landed`).
 		let attempted: { seq: Seq; created?: Id<string>[] } | undefined;
@@ -613,10 +663,19 @@ export class PostgresPiStorage implements Storage {
 			if (metadata === undefined) throw new Error("Durable Postgres metadata is missing");
 			const committedSeq = seqFromNumber(Number(metadata.next_seq));
 			attempted = { seq: committedSeq };
+			// Whether a statement of the checks failed: then what they throw is an unknown outcome, not a refusal.
+			const checks = { failed: false };
+			const checked = watchedExecutor(transaction, checks);
 			const stored = await this.readCommitState(transaction, writes, documentActions);
 			attempted.created = writes.flatMap(write => { const id = writeId(write); return id === undefined || stored.ids.has(id) ? [] : [id]; });
-			this.checkGlobalIds(writes, stored.ids);
-			const existing = await this.checkDocumentActions(transaction, documentActions, stored.documents);
+			let existing: Map<DocumentId, DocumentRecord>;
+			try {
+				this.checkGlobalIds(writes, stored.ids);
+				existing = await this.checkDocumentActions(checked, documentActions, stored.documents);
+			} catch (error) {
+				if (checks.failed) throw error;
+				throw new Refused(error);
+			}
 			// Each history entry's place (ordinals.ts): earlier rows moved now, the batch's own with its insert.
 			const ordinals = metadata.history_next === undefined || metadata.history_next === null ? undefined
 				: await placeEntries(transaction, writes, { next: metadata.history_next, lastId: Number(metadata.history_last_id ?? 0) });
@@ -630,7 +689,6 @@ export class PostgresPiStorage implements Storage {
 			return committedSeq;
 		}, { nextId: candidateNextId }), async () => attempted?.created !== undefined && await this.landed(writes, attempted.created, attempted.seq) ? { value: attempted.seq } : undefined);
 		this.nextId = Math.max(this.nextId, candidateNextId);
-		adopt(seq);
 		return seq;
 	}
 
@@ -1491,8 +1549,9 @@ export class PostgresPiStorage implements Storage {
 		for (const [id, action] of actions) {
 			let content = action.content;
 			if (action.copy !== undefined) {
+				const checks = { failed: false };
 				try {
-					const stored = await this.materializeDocument(executor, action.copy.id, action.copy.at);
+					const stored = await this.materializeDocument(watchedExecutor(executor, checks), action.copy.id, action.copy.at);
 					if (stored === undefined) throw new Error(`Fork source document ${action.copy.id} cannot be read`);
 					const create = action.create!;
 					if (
@@ -1507,7 +1566,8 @@ export class PostgresPiStorage implements Storage {
 					}
 					content = { kind: "base", version: stored.version, value: stored.value };
 				} catch (error) {
-					throw new Error(`Document copy ${id} was rejected`, { cause: error });
+					if (checks.failed) throw error;
+					throw new Refused(new Error(`Document copy ${id} was rejected`, { cause: error }));
 				}
 			}
 			let record: DocumentRecord;
