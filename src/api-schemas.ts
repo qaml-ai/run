@@ -4,6 +4,7 @@ import { END_REASONS as VOICE_END_REASONS, VOICE_LIMITS } from "./voice-sessions
 import { REALTIME_PROVIDERS } from "./voice/realtime/provider.ts";
 import { OPENAI_REALTIME } from "./voice/realtime/openai.ts";
 import { GROK_REALTIME } from "./voice/realtime/grok.ts";
+import { ELEVENLABS_AGENTS } from "./voice/realtime/elevenlabs.ts";
 import { GEMINI_LIVE } from "./voice/realtime/gemini.ts";
 import { MIN_CONTEXT_TOKENS } from "./protocol.ts";
 import { MODEL_ERROR_CLASSES } from "./model-errors.ts";
@@ -1515,7 +1516,7 @@ const VoiceSpeechProviders = z.strictObject({
 const VoiceRealtime = z.strictObject({
   publicOwnerId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/).optional().openapi({ description: "ElevenLabs library public owner ID from voices.search; retained with the selected voice for direct account addition" }),
   provider: z.enum(REALTIME_PROVIDERS).optional().openapi({ description: "The speech-to-speech provider, one of the runtime's (AGENT_VOICE_REALTIME): openai (OpenAI Realtime, your OpenAI key), gemini (Gemini Live, your google key), grok (xAI Voice Agent, your xai key), or elevenlabs (ElevenLabs Agents, your elevenlabs key). Default the runtime's first" }),
-  model: z.string().optional().openapi({ description: `The model: openai ${OPENAI_REALTIME.models.join(", ")} (default ${OPENAI_REALTIME.defaultModel}); gemini ${GEMINI_LIVE.models.join(", ")}; elevenlabs gemini-2.5-flash-lite; grok ${GROK_REALTIME.models.join(", ")} (default ${GROK_REALTIME.defaultModel})`, example: OPENAI_REALTIME.defaultModel }),
+  model: z.string().optional().openapi({ description: `The model: openai ${OPENAI_REALTIME.models.join(", ")} (default ${OPENAI_REALTIME.defaultModel}); gemini ${GEMINI_LIVE.models.join(", ")}; elevenlabs ${ELEVENLABS_AGENTS.models.join(", ")} (default ${ELEVENLABS_AGENTS.defaultModel}); grok ${GROK_REALTIME.models.join(", ")} (default ${GROK_REALTIME.defaultModel})`, example: OPENAI_REALTIME.defaultModel }),
   voice: z.string().optional().openapi({ description: `The provider's voice: elevenlabs accepts a voice_id (OpenAI names map to Jessica); openai ${OPENAI_REALTIME.voices.join(", ")}; gemini ${GEMINI_LIVE.voices.join(", ")}; grok ${GROK_REALTIME.voices.join(", ")}. Default the session's voice where the model has it, else the nearest (OpenAI: nova → marin, onyx → cedar, fable → ballad; Gemini: alloy → Aoede, coral → Kore, onyx → Charon…; Grok: alloy → sal, coral → ara, onyx → leo…)`, example: "marin" }),
   instructions: z.string().max(8_000).optional().openapi({ description: "The bot's persona and instructions, before the call's own rules (who speaks, short spoken answers, ask_agent, stay_silent): the voice and the agent stay one character" }),
   transcribe: z.boolean().optional().openapi({ description: "Transcribe what people say (OpenAI uses gpt-transcribe; ElevenLabs includes transcripts in its conversation): voice.utterance gets their words, and addressing.names can address the bot. Default true" }),

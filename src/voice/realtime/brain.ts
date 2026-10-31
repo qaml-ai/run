@@ -1,6 +1,6 @@
 import { clock as nodeClock, type Clock } from "../../node-context.ts";
 import { HttpError } from "../../http.ts";
-import { metricLine, safeError, writeMetricLine } from "../../metrics.ts";
+import { errorClass, metricLine, safeError, writeMetricLine } from "../../metrics.ts";
 import type { Playback, Player } from "../../voice-speech.ts";
 import type { Cut } from "../../voice-audio.ts";
 import { BargeInGuard, type BargeInOutcome, type BargeInPolicy } from "../echo-guard.ts";
@@ -700,7 +700,8 @@ export class RealtimeBrain {
     const now = this.clock.now();
     this.reconnects = [...this.reconnects.filter(at => now - at < REALTIME_LIMITS.reconnectWindowMs), now];
     const retrying = retryable && this.reconnects.length <= REALTIME_LIMITS.reconnects;
-    this.hooks.log("voice_realtime_lost", { detail: safeError(detail), attempt: this.reconnects.length, retrying });
+    const closeCode = /closed \((\d{4})\b/.exec(detail)?.[1];
+    this.hooks.log("voice_realtime_lost", { reference: this.options.reference, failure: errorClass(detail), ...(closeCode ? { closeCode: Number(closeCode) } : {}), detail: safeError(detail), attempt: this.reconnects.length, retrying });
     for (const response of [this.current, this.playing]) {
       if (!response || response.done) continue;
       response.done = true;

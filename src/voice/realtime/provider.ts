@@ -153,13 +153,13 @@ export const REALTIME_PRICES: Readonly<Record<string, RealtimePrice>> = Object.f
 /**
  * https://elevenlabs.io/pricing/agents and
  * https://elevenlabs.io/docs/help-center/product/eleven-agents/how-much-does-eleven-agents-cost (2026-10-19):
- * Agents bills connection minutes; Gemini 2.5 Flash Lite is billed separately. Configure the call-minute rate
+ * Agents bills connection minutes; the LLM is billed separately, with a rate per model. Configure the call-minute rate
  * and the model's estimated minute cost from the agent's Detailed costs panel. These are runtime settings,
  * not public rate defaults. Full connection duration is charged; silence discounts are not inferred locally.
  */
 export function realtimePrice(reference: string, env = process.env): RealtimePrice | undefined {
-  if (reference !== "elevenlabs/gemini-2.5-flash-lite") return REALTIME_PRICES[reference];
-  const names = ["AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD", "AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD"] as const;
+  if (reference !== "elevenlabs/gemini-2.5-flash-lite" && reference !== "elevenlabs/gemini-3.1-flash-lite") return REALTIME_PRICES[reference];
+  const names = ["AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD", reference === "elevenlabs/gemini-3.1-flash-lite" ? "AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD" : "AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD"] as const;
   const rates = names.map(name => {
     const raw = env[name];
     if (raw === undefined || raw === "") return undefined;
