@@ -715,7 +715,6 @@ export function messageAccepted(session: Session, id: string, params: any) {
 export function messageTaken(ctx: ChildrenContext, session: Session, id: string, params: any, turn: string) {
   const notice = params?.notice;
   if (notice?.metadata?.kind !== "message" || notice.metadata.to !== "parent") return;
-  session.agentMessages?.delete(id);
   ctx.publish(session, { type: "event", requestId: turn, event: { type: "subagent_message", agentId: notice.source.agentId, name: notice.source.name, text: params.text } });
 }
 
