@@ -63,6 +63,8 @@ const PRICES: Record<string, Record<string, Partial<Model<Api>["cost"]>>> = {
   openrouter: {
     "deepseek/deepseek-v4.1-flash": { input: 0.15, output: 0.6, cacheRead: 0.003 },
     "moonshotai/kimi-k3": { input: 0.304, output: 11.936, cacheRead: 0.21 },
+    // Pi has $0.25/$1/$0.03, which OpenRouter's pages also showed; it charged these (2026-10-30, each call's usage.cost).
+    "particle-ai/particle-1": { input: 0.05, output: 0.5, cacheRead: 0.003 },
     "z-ai/glm-5.3": { input: 0.079, output: 4.8, cacheRead: 0.078 },
   },
 };
