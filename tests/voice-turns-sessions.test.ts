@@ -175,5 +175,6 @@ test("in a media worker, smart end of turn reaches the node's models over a port
   await turnHost.ready;
   fakes.send({ guild, cmd: "send", speaker: "400000000000000001", packets: turn });
   await until(async () => (await cluster.events("voice.utterance")).length === 2, "an utterance after the models restarted", 20_000);
-  assert.ok(host.stats().modelPorts >= 1, "the worker was given a fresh port to the models");
+  // Asked for when the worker next needs the models, and answered once they are ready: an utterance does not wait for it.
+  await until(() => host.stats().modelPorts >= 1, "the worker was given a fresh port to the models");
 });
