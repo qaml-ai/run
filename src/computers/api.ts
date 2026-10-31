@@ -24,6 +24,7 @@ export function computerRoutes(route: Route, service: () => Computers | undefine
     operatorOnly(c);
     return get().managed.unblockTenant(c.req.param("id")!).then(r => c.json(r));
   });
+  route(createRoute({ method: "get", path: "/v1/computers/options", responses: { 200: reply("What this runtime offers: managed, a computer with no provider account of your own, billed to credit", z.object({ managed: z.boolean() })) } }), c => c.json({ managed: !!get().options.enabled }));
   route(createRoute({ method: "get", path: "/v1/computers", responses: { 200: reply("Computer connections; credentials are never returned", z.array(connection)) } }), c => get().list(c.var.principal.tenant).then(r => c.json(r)));
   route(createRoute({ method: "post", path: "/v1/computers", request: { body: { content: { "application/json": { schema: input } } } }, responses: { 201: reply("Connect an agent to a provider, whose account bills the compute, or to a managed computer, billed to credit", connection) } }), async c => {
     const value = input.safeParse(await readJson(c.req.raw.body, 65536, {}));

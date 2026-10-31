@@ -24,7 +24,7 @@ const grpcRefused = (error: any) => error?.name === "ClientError" && (error.code
 // Capture on the remote disk, then return bounded streams. SDK helpers otherwise
 // buffer an arbitrarily large command response in the shared runtime process.
 export const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
-export const bounded = (run: string) => `d=$(mktemp -d) || exit 1; ${run} >"$d/out" 2>"$d/err"; r=$?; head -c 24001 "$d/out"; head -c 24001 "$d/err" >&2; rm -rf "$d"; exit "$r"`;
+export const bounded = (run: string, before = "") => `d=$(mktemp -d) || exit 1; ${before}${run} >"$d/out" 2>"$d/err"; r=$?; head -c 24001 "$d/out"; head -c 24001 "$d/err" >&2; rm -rf "$d"; exit "$r"`;
 export function boundedCommand(command: string) { return bounded(`bash -lc ${quote(command)}`); }
 const shell = (args: Record<string, any>) => [boundedCommand(String(args.command)), Number(args.timeoutSeconds ?? 60)] as const;
 export const output = (code: number, stdout: string, stderr = "") => ({ exitCode: code, stdout: stdout.slice(0, 24000), stderr: stderr.slice(0, 24000), truncated: stdout.length > 24000 || stderr.length > 24000 });
