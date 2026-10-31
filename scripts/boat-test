@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# boat-test [ref] [command...]: run camelRun tests at <ref> in a fresh Boat sandbox (boat.dev), deleted at the end.
+#   scripts/boat-test                                     # the full suite at HEAD, as one CI shard
+#   scripts/boat-test origin/fix/x                        # the full suite at a ref
+#   scripts/boat-test HEAD node --experimental-strip-types --test tests/clients.test.ts   # any command, in the checkout
+#   BOAT_ATTACH=bx_x scripts/boat-test                    # follow a run whose script died, then delete its sandbox
+# Each run starts its own sandbox from a saved snapshot holding Node 22, Postgres, node_modules and the v8-exec build:
+# no pool, no leases, no waiting. The snapshot's name is a hash of package-lock.json, sandbox/v8-exec and the setup
+# below, so a change to any of them builds a new one first, a few minutes once. Each run gets the committed tree at
+# <ref> (git archive: never the working directory, so .env and ignored files stay here). The command runs detached and
+# this script polls its log, so a dropped connection doesn't end it.
+#
+# The key is BOAT_API_KEY or ~/.config/boat/key. Test sandboxes get none of the account's secrets (noEnv), no snapshots
+# and no monitoring, so nothing outlives the sandbox at Boat: no disk copy, no command history. If this script dies, the
+# job finishes and the sandbox is erased BOAT_TTL_MINUTES after the last poll.
+#
+# BOAT_TYPE: small, default or large (default large). BOAT_RUN_HOURS: the job's time limit (default 2).
+# BOAT_TTL_MINUTES: how long a sandbox outlives its last poll (default 60). BOAT_SNAPSHOTS_KEPT: this repo's saved snapshots (default 3).
+# BOAT_KEEP=1: leave the sandbox to its TTL, to look around. BOAT_REBUILD=1: build the snapshot again.
+# Exit status: the command's; 137 when the machine died under it; 69 when contact was lost (the job carries on).
+set -euo pipefail
+ref=${1:-HEAD}; shift || true
+type=${BOAT_TYPE:-large}
+case $type in small) files=2 ;; default) files=4 ;; *) files=8 ;; esac
+[[ $# -gt 0 ]] || set -- env TEST_DATABASE_PER_FILE=true TEST_CONCURRENCY=$files npm run -s test:shard -- 1/1
+cd "$(git rev-parse --show-toplevel)"
+key=${BOAT_API_KEY:-$(cat "$HOME/.config/boat/key" 2>/dev/null || true)}
+[[ -n $key ]] || { echo "no Boat key: set BOAT_API_KEY or write it to ~/.config/boat/key" >&2; exit 2; }
+base=https://boat.dev/api/v1; ttl=$(( ${BOAT_TTL_MINUTES:-60} * 60 )); kept=${BOAT_SNAPSHOTS_KEPT:-3}
+id=$(date +%Y%m%d-%H%M%S)-$$
+tmp=$(mktemp -d); log=${TMPDIR:-/tmp}/boat-test-$id.log; boxes=()
+
+# One request: sets $body and $http, and fails on no answer or a status of 400 and up. The key stays out of `ps`.
+api() {
+  local method=$1 path=$2 out; shift 2
+  http=000; body=
+  out=$(curl -sS --max-time "${api_timeout:-120}" -K <(printf 'header = "Authorization: Bearer %s"\n' "$key") -X "$method" \
+    -H 'Content-Type: application/json' -w '\n%{http_code}' "$base$path" "$@" 2>/dev/null) || return 1
+  http=${out##*$'\n'}; body=${out%$'\n'*}
+  (( http < 400 ))
+}
+remove() { api_timeout=30 api DELETE "/sandboxes/$1" -H "X-Ascii-Confirm-Delete: $1" || echo "== could not delete $1 ($http); its TTL erases it" >&2; }
+cleanup() {
+  [[ ${BOAT_KEEP:-} = 1 || ${lost:-} = 1 ]] || for box in ${boxes[@]+"${boxes[@]}"}; do remove "$box"; done
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+
+# A start that is refused waits as Boat says: the limits (429), no machine free (503). Nothing to do but wait, so wait.
+start() {
+  local request=$1 attempt=0 wait
+  while :; do
+    if api POST /sandboxes -H "Idempotency-Key: boat-test-$id-$RANDOM-$attempt" -d "$request"; then
+      started=$(jq -r .sandbox.id <<<"$body"); boxes+=("$started"); return
+    fi
+    case $(jq -r '.code // empty' <<<"$body" 2>/dev/null || true) in
+      rate_limited|out_of_capacity|no_ready_machine) wait=$(jq -r '.retryAfterSeconds // 60' <<<"$body"); (( attempt++ )) || true
+        echo "== Boat refused the start ($(jq -r '.code, .window // empty' <<<"$body" | xargs)); waiting ${wait}s" >&2; sleep "$wait" ;;
+      limit_reached) (( attempt++ )) || true; echo "== the plan's sandboxes-at-once limit is full; waiting 60s" >&2; sleep 60 ;;
+      "") [[ $http = 000 ]] && (( attempt++ < 5 )) || { echo "== create failed ($http): $body" >&2; exit 1; }; sleep 5 ;;
+      *) echo "== create failed ($http): $body" >&2; exit 1 ;;
+    esac
+  done
+}
+# A short command in the sandbox; its output in $out and its exit status as ours.
+on() {
+  api POST "/sandboxes/$box/commands" -d "$(jq -n --arg c "$1" --argjson t "${2:-60}" '{command: $c, timeoutSeconds: $t}')" || return 75
+  out=$(jq -r '.stdout // ""' <<<"$body")
+  return "$(jq -r '.exitCode // 1' <<<"$body")"
+}
+# The first seconds of a sandbox answer "not ready": retry until it runs commands.
+ready() { for _ in $(seq 90); do on true && return 0; sleep 2; done; echo "== $box never came up ($http): $body" >&2; exit 1; }
+# The tree at $sha into ~/rt, as a tar: the signed upload URL is good for any size.
+ship() {
+  git archive --format=tar.gz "$sha" > "$tmp/src.tgz"
+  api POST "/sandboxes/$box/files/upload-url" -d '{"path":"src.tgz","ttlSeconds":900}' || { echo "== no upload URL ($http): $body" >&2; exit 1; }
+  curl -sS --fail --retry 3 -o /dev/null -K <(printf 'url = "%s"\n' "$(jq -r .url <<<"$body")") -T "$tmp/src.tgz"
+  on 'mkdir -p ~/rt ~/runs && tar xzf ~/src.tgz -C ~/rt' 300 || { echo "== could not unpack the tree: $out" >&2; exit 1; }
+}
+# A long step: detached, so no connection holds it up. It writes ~/runs/<name>.log and, at the end, ~/runs/<name>.exit.
+launch() {
+  local name=$1 script=$2
+  api POST "/sandboxes/$box/commands" -d "$(jq -n --arg c "mkdir -p ~/runs; echo $(printf '%s' "$script" | base64 | tr -d '\n') | base64 -d > ~/runs/$name.sh; bash ~/runs/$name.sh > ~/runs/$name.log 2>&1 < /dev/null; echo \$? > ~/runs/$name.exit" '{command: $c, detached: true}')" \
+    || { echo "== could not start $name ($http): $body" >&2; exit 1; }
+}
+# Print the job's log as it grows; $status is its exit status. Base64, so a chunk can split a UTF-8 character.
+# A failed poll is only a blip unless the machine is gone, or Boat has called it degraded for minutes. The sandbox's TTL moves on while someone is watching.
+follow() {
+  local name=$1 offset=0 answered=$SECONDS renewed=$SECONDS state health size
+  status=
+  while :; do
+    if api_timeout=30 on "echo \$(cat ~/runs/$name.exit 2>/dev/null); tail -c +$((offset + 1)) ~/runs/$name.log 2>/dev/null | head -c 2000000 | base64 -w0"; then
+      answered=$SECONDS; status=$(head -1 <<<"$out")
+      sed -n 2p <<<"$out" | base64 --decode > "$tmp/chunk"; size=$(wc -c < "$tmp/chunk"); offset=$(( offset + size ))
+      tee -a "${tolog:-/dev/null}" < "$tmp/chunk"
+      (( size >= 2000000 )) && continue
+      [[ -z $status ]] || return 0
+    else
+      state=unknown; health=
+      if api_timeout=30 api GET "/sandboxes/$box"; then state=$(jq -r .sandbox.state <<<"$body"); health=$(jq -r .sandbox.health <<<"$body"); elif [[ $http = 404 ]]; then state=gone; fi
+      case $state in
+        ready|idle|running|unknown|provisioned|cloning) ;;
+        *) echo "== the machine is gone (state $state)" >&2; status=137; return 0 ;;
+      esac
+      if [[ $health = degraded ]] && (( SECONDS - answered >= 180 )); then
+        echo "== the machine stopped answering: $(jq -r .sandbox.healthReason <<<"$body")" >&2; status=137; return 0
+      fi
+      if (( SECONDS - answered >= ${BOAT_LOST_MINUTES:-10} * 60 )); then
+        echo "== lost contact with $box; the job carries on until its TTL. Follow it again: BOAT_ATTACH=$box scripts/boat-test" >&2; lost=1; exit 69
+      fi
+    fi
+    if (( SECONDS - renewed >= 60 )); then api_timeout=30 api PATCH "/sandboxes/$box" -d "{\"ttlSeconds\":$ttl}" || true; renewed=$SECONDS; fi
+    sleep 5
+  done
+}
+cost() { api_timeout=30 api GET "/sandboxes/$1/usage" && jq -r '"\(.dollars * 100000 | round / 100000)"' <<<"$body" || echo '?'; }
+finish() {
+  local spent; spent=$(cost "$box")
+  echo "== exit $status in $(( SECONDS - began ))s on $box ($type): \$$spent; log $log"
+  [[ ${BOAT_KEEP:-} != 1 ]] || echo "== left running until its TTL: $box"
+  exit "$status"
+}
+
+# Attach to a run already going: same follow, same end.
+if [[ -n ${BOAT_ATTACH:-} ]]; then
+  box=$BOAT_ATTACH; boxes=("$box"); began=$SECONDS; type=attached
+  echo "== following $box"
+  tolog=$log follow run
+  finish
+fi
+
+sha=$(git rev-parse --verify "$ref^{commit}")
+# What a snapshot holds, once: packages, Node 22, Postgres as CI runs it (.github/actions/test-postgres). Stopped cleanly
+# before the save: with fsync off, a copy of a running cluster may not start.
+read -r -d '' setup <<'SETUP' || true
+set -eo pipefail
+echo '== packages, Node 22, Postgres'
+export DEBIAN_FRONTEND=noninteractive
+sudo -E apt-get update -qq >/dev/null
+sudo -E apt-get install -y -qq postgresql gcc libc6-dev libseccomp-dev libsqlite3-dev xz-utils >/dev/null 2>&1
+tmp=$(mktemp -d); cd "$tmp"
+curl -fsSLO https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt
+file=$(awk 'index($2, "-linux-x64.tar.xz") { print $2 }' SHASUMS256.txt)
+curl -fsSLO "https://nodejs.org/dist/latest-v22.x/$file"
+grep " $file\$" SHASUMS256.txt | sha256sum -c --quiet
+mkdir -p ~/.node22 && tar xJf "$file" -C ~/.node22 --strip-components=1
+cd ~ && rm -rf "$tmp"
+export PATH=$HOME/.node22/bin:$PATH
+# A cluster in the C.UTF-8 locale: en_US.UTF-8 needn't exist where the snapshot starts, and then Postgres won't.
+sudo pg_dropcluster --stop 16 main
+sudo pg_createcluster --locale=C.UTF-8 16 main >/dev/null
+sudo systemctl enable --now postgresql 2>/dev/null
+sudo -u postgres psql -qc "ALTER USER postgres PASSWORD 'test'"
+sudo -u postgres psql -qc 'ALTER SYSTEM SET fsync=off' -c 'ALTER SYSTEM SET synchronous_commit=off' -c 'ALTER SYSTEM SET full_page_writes=off' -c 'ALTER SYSTEM SET max_connections=1000'
+sudo systemctl stop postgresql
+cd ~/rt
+echo '== npm ci'
+npm ci --silent --no-audit --no-fund
+echo '== building v8-exec'
+npm run -s build:v8-exec 2>&1 | tail -3
+# Dependencies and builds stay. The source goes: a run brings its own.
+tar tzf ~/src.tgz | grep -v '/$' | xargs -d '\n' rm -f --
+rm -f ~/src.tgz
+sudo sync
+SETUP
+
+lock=$(git rev-parse "$sha:package-lock.json"); v8=$(git rev-parse "$sha:sandbox/v8-exec")
+snapshot=rt-test-$(printf '%s %s %s' "$lock" "$v8" "$setup" | git hash-object --stdin | cut -c1-12)
+have=; if [[ ${BOAT_REBUILD:-} != 1 ]] && api GET "/saved-snapshots/$snapshot" && [[ $(jq -r '.snapshot.status // .status' <<<"$body") = ready ]]; then have=1; fi
+if [[ -z $have ]]; then
+  echo "== building snapshot $snapshot (package-lock.json, sandbox/v8-exec or the setup changed)"
+  began=$SECONDS
+  # noEnv: no account secrets to save. Two runs may build the same one at once; the last save wins, and either serves.
+  start "$(jq -n --argjson ttl 3600 --arg name "boat-test build $snapshot" '{type: "large", ttlSeconds: $ttl, noEnv: true, monitoring: false, name: $name, labels: {purpose: "boat-test-build"}}')"
+  box=$started; builder=$box
+  ready; ship; launch build "$setup"; follow build
+  [[ $status = 0 ]] || { echo "== the snapshot build failed (exit $status) on $box" >&2; exit "$status"; }
+  on 'rm -rf ~/runs' || true
+  api POST /saved-snapshots -d "$(jq -n --arg s "$box" --arg n "$snapshot" '{sandboxId: $s, name: $n}')" || { echo "== could not save the snapshot ($http): $body" >&2; exit 1; }
+  for _ in $(seq 360); do
+    api GET "/saved-snapshots/$snapshot" || true; state=$(jq -r '.snapshot.status // .status' <<<"$body" 2>/dev/null || true)
+    [[ $state != ready ]] || break
+    [[ $state != failed ]] || { echo "== the snapshot save failed: $body" >&2; exit 1; }
+    sleep 5
+  done
+  [[ $state = ready ]] || { echo "== the snapshot never became ready: $body" >&2; exit 1; }
+  echo "== snapshot $snapshot ready in $(( SECONDS - began ))s, \$$(cost "$box")"
+  remove "$box"; boxes=()
+  # Saved snapshots beyond the plan's count cost money: keep only the newest few of this repo.
+  if api GET /saved-snapshots; then
+    for old in $(jq -r '[.snapshots[] | select(.name | startswith("rt-test-"))] | sort_by(.createdAt) | reverse | .['"$kept"':][].name' <<<"$body"); do
+      api DELETE "/saved-snapshots/$old" -H "X-Ascii-Confirm-Delete: $old" && echo "== removed old snapshot $old" || true
+    done
+  fi
+fi
+
+began=$SECONDS
+start "$(jq -n --arg from "$snapshot" --arg type "$type" --argjson ttl "$ttl" --arg name "boat-test $(git log --format=%h -1 "$sha")" '{from: $from, type: $type, ttlSeconds: $ttl, noEnv: true, snapshots: false, monitoring: false, name: $name, labels: {purpose: "boat-test"}}')"
+box=$started
+ready; up=$(( SECONDS - began )); ship
+echo "== boat-test $(git log --oneline -1 "$sha") on $box ($type): up in ${up}s, tree in $(( SECONDS - began - up ))s"
+echo "== $*"
+launch run "$(cat <<RUN
+export PATH=\$HOME/.node22/bin:\$PATH TERM=dumb AGENT_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres
+for _ in \$(seq 60); do pg_isready -q -h 127.0.0.1 && break; sleep 1; done
+pg_isready -q -h 127.0.0.1 || { echo '== Postgres did not start'; sudo tail -5 /var/log/postgresql/*.log; exit 1; }
+cd ~/rt
+cpu() { awk '/^cpu /{print \$9, \$2+\$3+\$4+\$5+\$6+\$7+\$8+\$9}' /proc/stat; }
+before=\$(cpu)
+timeout ${BOAT_RUN_HOURS:-2}h $(printf '%q ' "$@")
+code=\$?
+echo "\$before \$(cpu)" | awk '{printf "== CPU steal %.0f%% (other sandboxes on the host; high means slow and timing flakes)\\n", (\$3-\$1)*100/(\$4-\$2)}'
+exit \$code
+RUN
+)"
+tolog=$log follow run
+finish
