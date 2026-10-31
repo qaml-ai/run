@@ -37,7 +37,7 @@ const createAgentSchema = z.object({
     asr: z.object({ user_input_audio_format: z.literal("pcm_16000") }).strict(),
     tts: z.object({ voice_id: z.string(), model_id: z.literal("eleven_v4_turbo"), agent_output_audio_format: z.literal("pcm_24000") }).strict(),
     turn: z.object({ turn_eagerness: z.enum(["patient", "normal", "eager"]), turn_timeout: z.number(), silence_end_call_timeout: z.number() }).strict(),
-    conversation: z.object({ max_duration_seconds: z.number().int().min(1), client_events: z.array(z.enum(["conversation_initiation_metadata", "ping", "audio", "interruption", "user_transcript", "agent_response", "agent_chat_response_part", "client_tool_call", "agent_response_complete", "client_error"])) }).strict(),
+    conversation: z.object({ max_duration_seconds: z.number().int().min(1), client_events: z.array(z.enum(["conversation_initiation_metadata", "ping", "audio", "interruption", "user_transcript", "agent_response", "client_tool_call", "agent_response_complete", "client_error"])) }).strict(),
   }).strict(),
   platform_settings: z.object({
     auth: z.object({ enable_auth: z.boolean() }).strict(), privacy: z.object({ record_voice: z.boolean() }).strict(),
@@ -112,7 +112,7 @@ test("ElevenLabs provisions once per credential, authenticates with signed URLs,
   const body = creates[0].body;
   createAgentSchema.parse(body);
   assert.equal(body.name, ELEVENLABS_AGENTS.name);
-  assert.equal(body.name, "camelRun realtime voice v4", "a new name: agents made before thinking_budget and text parts are not reused");
+  assert.equal(body.name, "camelRun realtime voice v4", "a new name: agents made before thinking_budget are not reused");
   assert.equal(body.conversation_config.conversation.max_duration_seconds, 1800);
   assert.equal(body.conversation_config.tts.voice_id, config.voice, "creation uses the requested voice, without depending on Jessica access");
   assert.equal(body.conversation_config.agent.prompt.llm, ELEVENLABS_AGENTS.defaultModel);
@@ -190,71 +190,6 @@ for (const late of [false, true]) test(`ElevenLabs brain: ask_agent ${late ? "la
   assert.equal(state.heard[0].speaker, "1");
   assert.equal(state.heard[0].costUsd, 0, "no OpenAI transcription charge");
   assert.equal(state.brain.stats.speculative, 0);
-});
-
-const part = (type: "start" | "delta" | "stop", text: string, id = "r1") => ({ type: "agent_chat_response_part", text_response_part: { text, type, event_id: 1, response_id: id } });
-
-test("ElevenLabs: a tool call written out as text is never played or kept as the bot's words, split across parts or whole", async t => {
-  for (const parts of [["", "tool_code\nprint(default_api.ask_agent(request='you hear that'))"], ["", "tool_", "code\nprint(default", "_api.ask_agent())"], ["", "One sec. print(default_", "api.stay_silent())"]]) {
-    const fake = await fakeElevenLabs(t);
-    const { got, events } = recorder();
-    const connection = elevenlabsAgents({ baseUrl: fake.base }).connect(config, { apiKey: "tenant-key" }, events);
-    t.after(() => connection.close());
-    await until(() => got.some(e => e.type === "ready"), "ready");
-    fake.send(transcript("you hear that?"));
-    parts.forEach((text, index) => fake.send(part(index ? "delta" : "start", text)));
-    await until(() => got.some(e => e.type === "warning"), "the guard");
-    fake.send(audio());
-    fake.send({ type: "agent_response", agent_response_event: { agent_response: parts.join(""), event_id: 1, response_id: "r1" } });
-    fake.send(audio());
-    fake.send(part("stop", ""));
-    fake.send({ type: "agent_response_complete", agent_response_complete_event: { event_id: 1 } });
-    fake.send({ type: "ping", ping_event: { event_id: 9 } });
-    await until(() => fake.seen.events.some(e => e.type === "pong"), "all of it read");
-    assert.equal(got.filter(e => e.type === "audio").length, 0);
-    assert.equal(got.filter(e => e.type === "said").length, 0);
-    assert.deepEqual(got.find(e => e.type === "warning"), { type: "warning", code: "tool_text_not_spoken", message: "" });
-    // The next generation (the bot's code asking, with no transcript between) is spoken.
-    fake.send(part("start", "", "r2"));
-    fake.send({ type: "agent_response", agent_response_event: { agent_response: parts.join(""), event_id: 1, response_id: "r1" } });
-    fake.send(part("delta", "Loud and clear.", "r2"));
-    fake.send(audio());
-    fake.send({ type: "agent_response", agent_response_event: { agent_response: "Loud and clear.", event_id: 2, response_id: "r2" } });
-    await until(() => got.some(e => e.type === "said"), "the next answer");
-    assert.equal(got.filter(e => e.type === "audio").length, 1);
-    assert.equal(got.find(e => e.type === "said")!.text, "Loud and clear.");
-  }
-});
-
-test("ElevenLabs: a tool call written out with no parts before it (agent_response only) stops what follows too", async t => {
-  const fake = await fakeElevenLabs(t);
-  const { got, events } = recorder();
-  const connection = elevenlabsAgents({ baseUrl: fake.base }).connect(config, { apiKey: "tenant-key" }, events);
-  t.after(() => connection.close());
-  await until(() => got.some(e => e.type === "ready"), "ready");
-  fake.send(transcript("hello"));
-  fake.send({ type: "agent_response", agent_response_event: { agent_response: "print(default_api.ask_agent())", event_id: 1, response_id: "r1" } });
-  fake.send(audio());
-  fake.send({ type: "ping", ping_event: { event_id: 9 } });
-  await until(() => fake.seen.events.some(e => e.type === "pong"), "all of it read");
-  assert.equal(got.filter(e => e.type === "said" || e.type === "audio").length, 0);
-});
-
-test("ElevenLabs: everyday speech about tools and calls is spoken", async t => {
-  const fake = await fakeElevenLabs(t);
-  const { got, events } = recorder();
-  const connection = elevenlabsAgents({ baseUrl: fake.base }).connect(config, { apiKey: "tenant-key" }, events);
-  t.after(() => connection.close());
-  await until(() => got.some(e => e.type === "ready"), "ready");
-  const said = "That tool call went fine, print the default API docs, and the code is 1234.";
-  fake.send(transcript("how did it go"));
-  fake.send(part("start", ""));
-  fake.send(part("delta", said));
-  fake.send(audio());
-  fake.send({ type: "agent_response", agent_response_event: { agent_response: said, event_id: 1, response_id: "r1" } });
-  await until(() => got.some(e => e.type === "said"), "said");
-  assert.equal(got.filter(e => e.type === "audio").length, 1);
-  assert.equal(got.filter(e => e.type === "warning").length, 0);
 });
 
 test("ElevenLabs brain: stay_silent returns a client result, interruption stops buffered playback and drops stale audio", async t => {
