@@ -503,7 +503,7 @@ export class EndUserCredits {
       if (taken.raw < Math.max(1, Math.min(call.min, call.want))) return { refused: await refused(sql, tenant, user, bucket, left, now) };
       await sql.query("insert into end_user_holds (id, tenant, end_user, bucket, day, allowance, paid, expires_at, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         [call.id, tenant, endUser, bucket, left.day, taken.allowance, taken.paid, now + HOLD_MS, now]);
-      return { hold: { id: call.id, ...taken } };
+      return { hold: { id: call.id, ...taken }, most: split(Number.MAX_SAFE_INTEGER, left).raw };
     });
   }
 
@@ -635,7 +635,7 @@ export const CREDIT_REASONS = ["balance", "daily_limit", "bucket_limit"] as cons
 export type CreditReason = typeof CREDIT_REASONS[number];
 /** What a call holds: raw micro-USD in all, of which `allowance` from the bucket's allowance, and `paid` (charged) from the balance. */
 export type Hold = { id: string; raw: number; allowance: number; paid: number };
-export type Reserved = { hold: Hold; refused?: undefined } | { refused: CreditRefusal; hold?: undefined };
+export type Reserved = { hold: Hold; refused?: undefined; most?: number } | { refused: CreditRefusal; hold?: undefined };
 
 /** What an end user may still spend now in a bucket: its allowance left (raw), and room on the balance (charged). */
 type Room = { day: string; allowance: number; allowanceLeft: number; paidRoom: number; bound: CreditRefusal["reason"]; balance: number; dailyLimit: number | null; bucketLimit: number | null; markupBps: number };

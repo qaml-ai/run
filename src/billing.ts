@@ -361,6 +361,20 @@ export class Billing {
     return undefined;
   }
 
+  /**
+   * What a prepaid tenant can spend now, read afresh in `sql` (credit-holds.ts): its balance, and on free credit no more
+   * than is left of the hour's allowance; nothing while a payment is disputed.
+   */
+  async spendable(tenant: string, sql: Sql): Promise<number> {
+    const { rows: [row] } = await sql.query(`
+      select balance, purchased, (select coalesce(sum(amount), 0) from credit_spend_minutes where tenant = $1 and minute >= $2) as last_hour,
+        exists (select 1 from billing_disputes where tenant = $1 and not closed) as disputed
+      from (select $1::text as tenant) as t left join credit_accounts using (tenant)`, [tenant, Math.floor((Date.now() - HOUR) / MINUTE)]);
+    if (row.disputed) return 0;
+    const pending = this.options.pending?.(tenant) ?? 0, balance = Number(row.balance ?? 0) - pending;
+    return Number(row.purchased ?? 0) > 0 ? balance : Math.min(balance, this.pricing.free.hourlySpend - Number(row.last_hour) - pending);
+  }
+
   /** Whether a prepaid tenant has never bought credit (or had it all refunded): it has the free limits. */
   async onFreeCredit(tenant: string) {
     return await this.mode(tenant) === "prepaid" && (await this.account(tenant)).purchased <= 0;

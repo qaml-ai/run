@@ -15,7 +15,10 @@ import { once } from "node:events";
 
 const KEY = "fixture-only";
 const keyHash = createHash("sha256").update(KEY).digest("hex");
+/** Credit to run on: a call's hold needs some (credit-holds.ts). `total` reads the balance net of it. */
+const FUNDS = 1_000_000_000;
 async function accounts(db: Db, tenant = "payg") {
+  await db.query("insert into credit_accounts (tenant, balance, purchased) values ($1, $2, $2) on conflict (tenant) do nothing", [tenant, FUNDS]);
   const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { [tenant]: { tokenSha256: keyHash, billing: "prepaid" } }, platformKeys: { openrouter: KEY } }) });
   await tenants.reload();
   return new Accounts({ tenants, db });
@@ -29,7 +32,7 @@ async function begin(attempts: ModelAttempts, id = randomUUID(), tenant = "payg"
   await attempts.event(tenant, "agent", true, true, { type: "begin", id, provider: "openrouter", model: "anthropic/claude-opus-4.1", kind: "response", at: Date.now(), keyHash });
   return id;
 }
-const total = async (db: Db, tenant = "payg") => Number((await db.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0]?.balance ?? 0);
+const total = async (db: Db, tenant = "payg") => Number((await db.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0]?.balance ?? FUNDS) - FUNDS;
 const finish = (id: string, cost: number) => ({ type: "finish" as const, id, usage: { input:100,output:10,providerCost:cost,providerCreditCost:0 }, chars:40, completed:true });
 
 test("one provider attempt charges once across duplicate delivery, concurrent owners and usage callbacks", async () => {
