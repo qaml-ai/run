@@ -67,7 +67,8 @@ export function openrouterDecisions(options: { outbound: Outbound; baseUrl?: str
 
 /**
  * The questions as the API takes them: a noul's missing side says what its other side leaves. Yes is the statement
- * itself, and no is anything else: on live calls these answered within 0.01 of a written side, bar one borderline message.
+ * itself, and no is anything else. On live calls (2026-10-31, 8 messages), "Anything else." came within 0.01 of a written
+ * `false`. Other fillers for `true` came within 0.01 of this one.
  */
 function wireQuestions(questions: Record<string, Question>): Record<string, Question> {
   return Object.fromEntries(Object.entries(questions).map(([id, question]) => {
