@@ -216,6 +216,25 @@ test("a close as a call is left waiting for a person: the wait is stored, the ne
   await second.host.dispose();
 });
 
+test("an abort that reaches a notification as its turn opens lands it without a turn; a person's message it drops", { timeout: 20_000 }, async t => {
+  for (const [notice, requestId] of [[{ metadata: { status: "completed" } }, "child_landed"], [undefined, "plain"]] as const) {
+    const f = await fixture(t);
+    const { host, storage } = await f.start();
+    // The abort comes while the host writes the turn's start, before Pi has the message.
+    const scan = storage.scanEntries.bind(storage);
+    let aborted: Promise<unknown> | undefined;
+    const running = () => { aborted ??= host.handle("abort", {}); };
+    storage.scanEntries = ((...args: Parameters<typeof scan>) => { running(); return scan(...args); }) as typeof scan;
+    const prompting = host.handle("prompt", { text: "worker done", requestId, ...notice ? { notice } : {} });
+    const result = await prompting;
+    await aborted;
+    assert.equal(f.asked(), 0, "no model is asked");
+    assert.equal((await f.history()).filter(message => (message as any).requestId === requestId).length, notice ? 1 : 0);
+    assert.equal(result.stopped ?? result.code, "aborted");
+    await host.dispose();
+  }
+});
+
 test("an answer to a waiting call is written into Pi's journal, so the next run checks no context in again", { timeout: 20_000 }, async t => {
   const f = await fixture(t);
   f.responses(answer(fauxToolCall("lookup", { key: "saved" }, { id: "dual-written-call" }), "toolUse"));

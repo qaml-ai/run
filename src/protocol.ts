@@ -160,3 +160,6 @@ export function scratchMount<M extends { path: string; mode: "ro" | "rw"; worksp
 export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+/** How a sub-agent's notification ends when an abort reaches it before its turn: its message lands, and no turn runs. */
+export const STOPPED_NOTICE = { stopped: "aborted", message: "The agent was stopped: this notification is in its history, but no turn ran" };

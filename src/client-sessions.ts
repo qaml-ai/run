@@ -9,7 +9,7 @@ import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type { AgentConfig, ToolDefinition } from "./protocol.ts";
-import { errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY } from "./protocol.ts";
+import { errorText, STOPPED_NOTICE, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY } from "./protocol.ts";
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
 import { withCatalogPrices } from "./pi-catalog.ts";
@@ -68,7 +68,6 @@ const CANCELLABLE = ["prompt", "continue", "execute"];
 const STEER_OPEN_WAIT_MS = 5_000;
 const CANCELLED = "Cancelled: the agent was stopped before this run began";
 /** A sub-agent's notification an abort reached before its turn: it lands without one (`stop`). */
-const STOPPED_NOTICE = { stopped: "aborted", message: "The agent was stopped: this notification is in its history, but no turn ran" };
 
 /** A running run's active time is reported at least this often. */
 const ACTIVE_REPORT_MS = 60_000;
