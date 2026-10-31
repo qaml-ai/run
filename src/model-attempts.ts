@@ -152,7 +152,8 @@ export class ModelAttempts {
     // A model the catalog lacks holds at a mid-range price, never the dearest it may be billed at: a hold that size would
     // refuse everyone on a small allowance. What it cost is what settles (`settle`).
     const listed = catalogCost(event.provider, event.model);
-    let rates: { input: number; output: number; cacheRead?: number } = catalog ? listed ?? UNPRICED_COST : estimate?.rates ?? listed ?? UNPRICED_COST;
+    // A pass-through OpenRouter model's prices are ours too, from its lookup (openrouter-model.ts), as the host has them.
+    let rates: { input: number; output: number; cacheRead?: number } = catalog ? listed ?? (event.provider === "openrouter" ? estimate?.rates : undefined) ?? UNPRICED_COST : estimate?.rates ?? listed ?? UNPRICED_COST;
     // A model with no price is never free to its end user: it holds at the price it settles at.
     const unpriced = !(Number(rates.input) > 0) && !(Number(rates.output) > 0) ? unpricedCost(event.provider, event.model) : undefined;
     if (unpriced) rates = unpriced;

@@ -5082,6 +5082,15 @@ from probing each model through the runtime several times
 (`scripts/probe-tool-streaming.ts`); a latency-first app that renders tool output
 should pick a model that says `true`.
 
+Any model OpenRouter serves can be named as `openrouter/<its id>`, including one
+released today and not in `GET /v1/models`. The runtime looks that one model up when an
+agent takes it, and the agent keeps its context window, longest reply, images and price.
+If OpenRouter has no such model, or lists no tool support for it, making the agent fails
+with a 400 that says so. If OpenRouter cannot be reached, the agent starts with defaults (a
+128,000-token window, 8,192-token replies) and OpenRouter's errors reach you at the call.
+Such a model that takes reasoning always gets at least `low`: the lookup cannot say whether
+it can turn reasoning off, and a third of OpenRouter's models refuse that.
+
 A model on a server of your own that speaks OpenAI's or Anthropic's API (vLLM,
 Ollama, a gateway, a hosted API the catalog lacks) is named the same way once
 you add its server as a provider, your account's or a key scope's: see

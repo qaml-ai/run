@@ -1,4 +1,5 @@
 import { getModel } from "./pi-catalog.ts";
+import type { Passthrough } from "./openrouter-model.ts";
 import { resolveModel } from "./session-config.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
@@ -23,6 +24,13 @@ export function configuredModel(env: NodeJS.ProcessEnv = process.env): Model<Api
  */
 const FALLBACKS = "azure/deepseek-v4.1-flash,anthropic/claude-sonnet-5-5,openrouter/anthropic/claude-sonnet-5.5,amazon-bedrock/global.anthropic.claude-sonnet-5-5";
 
+/** A model the operator names: a typo should stop a node starting, not pass through to OpenRouter. */
+function catalogModel(reference: string): Model<Api> {
+  const model = resolveModel(reference);
+  if ((model as Passthrough).passthrough) throw new Error(`Unknown model "${reference}"; see GET /v1/models`);
+  return model;
+}
+
 /**
  * The models an agent that names none may get, in order: `head` (AGENT_PROVIDER and AGENT_MODEL),
  * then AGENT_MODEL_FALLBACKS (provider/model references, comma-separated; empty for none). Each
@@ -32,7 +40,7 @@ export function defaultModels(head: Model<Api>, fallbacks = process.env.AGENT_MO
   const models = [head];
   for (const reference of (fallbacks ?? FALLBACKS).split(",").map(entry => entry.trim()).filter(Boolean)) {
     let model: Model<Api>;
-    try { model = resolveModel(reference); }
+    try { model = catalogModel(reference); }
     catch (error) { throw new Error(`AGENT_MODEL_FALLBACKS: ${(error as Error).message}`); }
     if (!models.some(known => known.provider === model.provider && known.id === model.id)) models.push(model);
   }
@@ -57,7 +65,7 @@ export function contentFilterFallbacks(given = process.env.AGENT_CONTENT_FILTER_
     const [from, to, ...rest] = entry.split("=").map(part => part.trim());
     if (!from || !to || rest.length) throw new Error(`AGENT_CONTENT_FILTER_FALLBACKS: ${entry} is not from=to`);
     let source: Model<Api>, target: Model<Api>;
-    try { source = resolveModel(from); target = resolveModel(to); }
+    try { source = catalogModel(from); target = catalogModel(to); }
     catch (error) { throw new Error(`AGENT_CONTENT_FILTER_FALLBACKS: ${(error as Error).message}`); }
     if (source.provider === target.provider) throw new Error(`AGENT_CONTENT_FILTER_FALLBACKS: ${entry} stays on ${source.provider}, whose filter blocked it`);
     fallbacks.set(`${source.provider}/${source.id}`, target);
