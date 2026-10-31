@@ -46,6 +46,17 @@ test("a prompt's requestId and metadata are kept on its user message and its req
 const byId = async (r: Awaited<ReturnType<typeof runtime>>, agent: string, id: string) => (await r.call(`/v1/agents/${agent}/requests/${id}`)).json;
 const userTexts = (body: any) => body.messages.filter((message: any) => message.role === "user").map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""));
 
+test("a message sent just after a first prompt joins its turn, though the agent is still starting", async t => {
+  const r = await runtime(t, (body, index) => ({ role: "assistant", content: `answer ${index}: ${userTexts(body).at(-1)}`, ...(index === 0 ? { delayMs: 1_500 } : {}) }));
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const first = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "first", requestId: "turn-1" } });
+  // At once: the turn has not begun, and its agent's process takes longer to start than this takes to arrive.
+  const steered = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "also this", requestId: "steer-1", whileRunning: "steer" } });
+  assert.equal(steered.json.steer, "accepted", "not queued behind the whole turn");
+  const turn = await until(async () => { const record = await byId(r, agent, first.json.id); return record.state === "completed" && record; }, "the turn");
+  assert.match(turn.outcome.result.reply, /also this/);
+});
+
 test("whileRunning: steer hands a running turn the message; with no turn running it starts one; retries are idempotent", async t => {
   const r = await runtime(t, (body, index) => ({ role: "assistant", content: `answer ${index}: ${userTexts(body).at(-1)}`, ...(index === 0 ? { delayMs: 1_500 } : {}) }));
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
