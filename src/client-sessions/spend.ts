@@ -421,14 +421,20 @@ export async function maxSeconds(ctx: SpendContext, session: Session, run?: stri
 
 /**
  * The spend limit a delegate call's child gets, held for it until it ends (`releaseBudget`): an even share of what the
- * run may still spend that no other child in flight holds, split among this run's calls in flight that hold none yet.
+ * run may still spend that no other child in flight holds, split among this run's calls in flight that hold none yet
+ * and the calls of this one's response that have not got here. A response's calls arrive one by one, and may wait for
+ * a slot: counting only those in flight, the first could take it all and leave the next none.
  * So parallel children together never get more than the parent has left. Undefined when the run has no limit.
  */
-export async function holdBudget(ctx: SpendContext, session: Session, runId: string) {
+export async function holdBudget(ctx: SpendContext, session: Session, runId: string, call: { messageIndex?: number; delegates?: number } = {}) {
   const left = await budgetLeft(ctx, session, runId);
   if (left === undefined) return undefined;
   const held = (session.childHeld ??= new Map()).get(runId) ?? { usd: 0, holders: 0 };
-  const sharing = Math.max(1, (session.delegating?.active ?? 1) - held.holders);
+  let response = session.delegateResponse;
+  if (call.messageIndex !== undefined && (response?.run !== runId || response.messageIndex !== call.messageIndex)) response = session.delegateResponse = { run: runId, messageIndex: call.messageIndex, taken: 0 };
+  const unstarted = call.messageIndex !== undefined ? (call.delegates ?? 1) - response!.taken : 0;
+  if (call.messageIndex !== undefined) response!.taken++;
+  const sharing = Math.max(1, (session.delegating?.active ?? 1) - held.holders, unstarted);
   const share = Math.max(0, left - held.usd) / sharing;
   session.childHeld.set(runId, { usd: held.usd + share, holders: held.holders + 1 });
   return share;

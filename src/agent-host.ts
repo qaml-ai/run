@@ -264,6 +264,12 @@ export function createAgentHost(hostIO: HostIO) {
     return messageIndex === undefined ? {} : { messageIndex };
   }
 
+  /** How many delegate calls the response at `messageIndex` makes. */
+  async function delegatesIn(messageIndex: number) {
+    const response = await journal.message(messageIndex);
+    return response?.role === "assistant" ? response.content.filter(part => part.type === "toolCall" && part.name === "delegate").length : 1;
+  }
+
   /**
    * The tool a run that asks for structured output ends with: its parameters are the run's schema, so Pi checks
    * the model's answer against it and hands a call that does not fit back to the model with what is wrong.
@@ -428,7 +434,8 @@ export function createAgentHost(hostIO: HostIO) {
         },
         execute: async (toolCallId, args, signal) => {
           signal?.throwIfAborted();
-          const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId, ...await made(toolCallId) });
+          const at = await made(toolCallId);
+          const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId, ...at, ...tool.name === "delegate" && at.messageIndex !== undefined ? { delegates: await delegatesIn(at.messageIndex) } : {} });
           signal?.throwIfAborted();
           // The call waits on a person (inputs.ts): it stays open, with no result, and the turn suspends after this step.
           if (value?.inputRequired) {

@@ -137,6 +137,26 @@ test("parallel children share what their parent's run has left, rather than each
   assert.equal(record.outcome.result.usage.subagentCostUsd.toFixed(2), "0.30");
 });
 
+test("children of one response share what their parent's run has left even when they run one after another", async t => {
+  // As above, on one slot: the second call waits for the first child to end, as it does when it reaches the node late.
+  // Counting only calls in flight, the first child got all $0.25 and made two responses, and the second got none and never ran.
+  let n = 0;
+  const r = await runtime(t, body => {
+    const usage = { prompt_tokens: 5000, completion_tokens: 0 };
+    if (roleText(body).includes("WORKER")) return { ...toolCall("missing_tool", {}, `call_w${++n}`), usage };
+    if (!toolResults(body).length) return { ...toolCalls(["delegate", { instructions: "You are a WORKER.", task: "work 1" }, "p1"], ["delegate", { instructions: "You are a WORKER.", task: "work 2" }, "p2"]), usage };
+    return { role: "assistant", content: "done", usage };
+  }, { AGENT_MODEL: "openai/gpt-5.5-pro" });
+  const parent = (await r.call("/v1/agents", { body: { builtins: ["delegate"], delegate: { instructions: true, maxParallel: 1 } } })).json.id;
+  const record = await r.prompt(parent, "fan out", undefined, { spendLimit: { usd: 0.4 } });
+  assert.ok(record.outcome, JSON.stringify(record));
+  const children = await Promise.all(record.outcome.result.toolCalls.filter((call: any) => call.tool === "delegate").map(async (call: any) =>
+    (await r.call(`/v1/agents/${call.agentId}`)).json.requests.find((request: any) => request.method === "prompt")));
+  assert.equal(children.length, 2);
+  for (const run of children) assert.equal(run?.outcome.result.stopped, "spend_limit");
+  assert.equal(record.outcome.result.usage.subagentCostUsd.toFixed(2), "0.30");
+});
+
 test("a caller cannot move a run's place in the delegation chain with prompt metadata", async t => {
   const r = await runtime(t, body => toolResults(body).length || body.messages.at(-1).role === "tool"
     ? { role: "assistant", content: `got: ${toolResults(body).at(-1)}` }

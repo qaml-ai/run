@@ -91,6 +91,11 @@ export class HostJournal {
     return [];
   }
 
+  /** The history's message at absolute index `index`, if the journal holds it. */
+  async message(index: number): Promise<AgentMessage | undefined> {
+    return (await this.history.messagesFrom(index, index + 1))?.[0];
+  }
+
   /** The history's latest message, if the journal holds it. */
   async last(): Promise<AgentMessage | undefined> {
     await this.refresh();
