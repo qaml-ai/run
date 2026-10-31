@@ -122,7 +122,8 @@ test("a session ended anywhere ends once: the owner lets go, and the app is told
   a.voice.heard(`http://b ${created.id}`);
   await until(() => !fake.open().length, "the owner to close");
   assert.equal(a.voice.size, 0);
-  assert.equal((await db.query("select node from actor_owners where actor = $1", [`voice:${created.id}`])).rows[0].node, null, "released");
+  // The last step of letting go, after the connection has closed.
+  await until(async () => (await db.query("select node from actor_owners where actor = $1", [`voice:${created.id}`])).rows[0].node === null, "released");
   // Again: the same answer, and still one event.
   assert.equal((await a.voice.end("alice", created.id)).endReason, "requested");
   const endedEvents = await events("voice.session.ended");
