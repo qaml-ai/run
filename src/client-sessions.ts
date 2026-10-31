@@ -1679,6 +1679,8 @@ export class ClientSessions {
       const pending = session.accepting?.get(record.id);
       sometimes(!!pending, "a retry waited for its request's record to be durable");
       if (pending) await pending;
+      // A record whose write failed is only in this memory: it was never taken, and the next load does not hold it.
+      if (session.fault) throw session.fault;
       return { status: 200 as const, record: visible(session.requests.get(record.id) ?? record) };
     };
     const retried = existing();
