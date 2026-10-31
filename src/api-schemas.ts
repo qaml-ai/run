@@ -56,7 +56,7 @@ export const Me = z.object({
   name: z.string().optional().openapi({ description: "The person's display name, for console sessions signed in with Google or GitHub" }),
   signIn: z.enum(["github", "google", "password"]).optional().openapi({ description: "How a console session was signed in" }),
   canStoreKeys: z.boolean(),
-  defaultModel: z.string().openapi({ description: "The model an agent of this tenant gets when it names none, as provider/model-id: the first of the runtime's defaults (DeepSeek V4.1 Flash on OpenRouter, then on Azure, then Claude Sonnet 5.5 on Anthropic, OpenRouter and Bedrock) the tenant holds a key for, else the first the platform's keys serve. An agent with a key scope counts the scope's keys too", example: "openrouter/deepseek/deepseek-v4.1-flash-1017" }),
+  defaultModel: z.string().openapi({ description: "The model an agent of this tenant gets when it names none, as provider/model-id: the first of the runtime's defaults (the virtual model camelrun/default on OpenRouter, then DeepSeek V4.1 Flash on Azure, then Claude Sonnet 5.5 on Anthropic, OpenRouter and Bedrock) the tenant holds a key for, else the first the platform's keys serve. An agent with a key scope counts the scope's keys too", example: "camelrun/default" }),
 }).openapi("Me");
 
 const KeyStatus = z.object({
@@ -313,6 +313,7 @@ export const WebhookEvents = {
 };
 
 export const Model = z.object({
+  routes: z.array(z.string()).optional().openapi({ description: "A virtual model's physical models, most preferred first: each request is made on the first that can take it, and its run and usage name the one that did. Its other fields are the first's" }),
   id: z.string().openapi({ description: "Pass this as `model` when creating or configuring an agent", example: "anthropic/claude-sonnet-5" }),
   provider: z.string(),
   modelId: z.string(),

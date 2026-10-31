@@ -18,7 +18,7 @@ import { testDatabase } from "./database.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { supervisorMessages } from "./fixtures/journal-messages.ts";
 
-const model = configuredModel();
+const model = configuredModel({ AGENT_PROVIDER: "openrouter" });
 async function fixture(t: { after: (fn: () => Promise<void>) => void }, maxAgents = 4) {
   const root = await mkdtemp(join(tmpdir(), "camelai-runtime-test-"));
   const supervisor = new AgentSupervisor(join(root, "sessions"), { runtime: process.env.AGENT_RUNTIME, maxAgents, hosting: process.env.AGENT_HOSTING as Hosting | undefined });

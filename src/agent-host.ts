@@ -4,7 +4,7 @@ import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { COMPACTION_SUMMARY_PREFIX, convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import {
   getCurrentSystemMessage, getCurrentTools, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
-  type AssistantMessage, type Message, type SystemMessage, type Tool, type ToolCall, type ToolResultMessage,
+  type AssistantMessage, type AssistantMessageEventStream, type Message, type SystemMessage, type Tool, type ToolCall, type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
@@ -19,13 +19,14 @@ import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } fro
 import { requestImageLimit } from "./request-images.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
-import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isContentFilterBlock, isImageRejection } from "./model-errors.ts";
-import { withContentFilterFallback } from "./content-filter-fallback.ts";
+import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isContentFilterBlock, isImageRejection, isModelUnavailable } from "./model-errors.ts";
+import { withModelFallback } from "./model-fallback.ts";
+import { routeModel, type ModelRouteReason } from "./virtual-models.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
 import { filesRefused, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
 import { describeFile, documentPayload, FILE_LIMITS, IMAGE_PAST_BUDGET, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
-import { observeContextMetrics, observeTurns, recordCodeExecution, recordContextRange, recordModelFallback, recordToolResultSize, safeError } from "./metrics.ts";
+import { errorClass, observeContextMetrics, observeTurns, recordCodeExecution, recordContextRange, recordModelFallback, recordToolResultSize, safeError } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
@@ -129,7 +130,7 @@ export function createAgentHost(hostIO: HostIO) {
   /** Why the agent's Pi context range is too large to load (#433's size check, without reading it), if it is (set at init). */
   let contextError: () => Promise<string | undefined>;
   // Each turn's outcome, timing and model and tool counts, as metrics (metrics.ts), from what the host emits.
-  const turns = observeTurns(() => config?.model && { provider: config.model.provider, id: config.model.id }, Date.now, () => config?.tenant);
+  const turns = observeTurns(() => config?.model && { provider: running().provider, id: running().id }, Date.now, () => config?.tenant);
   const io: HostIO = { ...hostIO, emit: value => {
     // Both Pi's native results and results settled/resumed by the host reach message_end after commit.
     const committed = value as { type: string; message?: ToolResultMessage };
@@ -243,15 +244,18 @@ export function createAgentHost(hostIO: HostIO) {
   /** Whether each model call asks the supervisor for its credentials. */
   const perCall = () => config.apiKey === IDENTITY_KEY || config.apiKey === SCOPE_KEY;
   /** Where its model requests go, for `retriesModelError`: its tenant's own endpoint retries for itself. */
-  const failureContext = () => ({ ownEndpoint: config.apiKey === IDENTITY_KEY, contextWindow: config.model.contextWindow });
+  const failureContext = () => ({ ownEndpoint: config.apiKey === IDENTITY_KEY, contextWindow: running().contextWindow });
+  /** The physical model the latest request went to: a virtual model's route, else the agent's. */
+  let routed: AgentConfig["model"] | undefined;
+  const running = (): AgentConfig["model"] => routed ?? config.model;
 
   /**
    * The model as Pi's compaction measures it: its context window lowered to the agent's `runLimits.contextTokens`, if
    * that is lower.
    */
   function compactionModel(): AgentConfig["model"] {
-    const limit = config.runLimits?.contextTokens;
-    return limit && limit < config.model.contextWindow ? { ...config.model, contextWindow: limit } : config.model;
+    const limit = config.runLimits?.contextTokens, model = running();
+    return limit && limit < model.contextWindow ? { ...model, contextWindow: limit } : model;
   }
 
   /**
@@ -305,7 +309,7 @@ export function createAgentHost(hostIO: HostIO) {
     if (active?.signal.aborted || stopped?.code === END_USER_CREDIT || stopped?.code === CONTEXT_TOO_LARGE) return { retry: false };
     const last = failed.message as AssistantMessage | undefined;
     if (failed.reason === "interrupted" || last?.errorMessage === MODEL_INTERRUPTED) return { retry: true, delayMs: 0 };
-    if (!last || isContextOverflow(last, config.model.contextWindow)) return { retry: false };
+    if (!last || isContextOverflow(last, running().contextWindow)) return { retry: false };
     if (forcing.last && !isRetryableAssistantError(last)) {
       forcing = { left: 0, reminding: false, last: false };
       return { retry: true, delayMs: 0 };
@@ -751,12 +755,35 @@ export function createAgentHost(hostIO: HostIO) {
         await closeInterruptedTurn(journal);
         recovered = true;
       }
+      /**
+       * One request as a virtual model routes it (virtual-models.ts): on the physical model for its `reason`, and made
+       * again on the next of the chain, before Pi sees the failure, when that model is unavailable and nothing has streamed.
+       * Any other model is simply called.
+       */
+      const routedCall = (reason: ModelRouteReason, call: (on: AgentConfig["model"]) => ReturnType<typeof stream>, signal: AbortSignal | undefined, selected: AgentConfig["model"], previous?: AssistantMessage): ReturnType<typeof stream> | Promise<AssistantMessageEventStream> => {
+        if (!selected.virtual) return call(selected);
+        const attempt = (on: AgentConfig["model"]): ReturnType<typeof stream> | Promise<AssistantMessageEventStream> => {
+          routed = on;
+          const first = call(on);
+          const next = routeModel(selected, { reason: "retry", failed: on });
+          if (!next) return first;
+          return withModelFallback(first, () => attempt(next), {
+            moves: (message, partial) => isModelUnavailable(message) && !partial?.content.length,
+            blocked: message => {
+              recordModelFallback({ tenant: config.tenant, agent: config.id, from: `${on.provider}/${on.id}`, to: `${next.provider}/${next.id}`, reason: "unavailable", errorClass: errorClass(message.errorMessage ?? "") });
+            },
+            unavailable: error => console.error(JSON.stringify({ type: "model_fallback_failed", agent: config.id, model: `${on.provider}/${on.id}`, fallback: `${next.provider}/${next.id}`, error: safeError(error) })),
+            aborted: () => !!signal?.aborted,
+          });
+        };
+        return attempt(routeModel(selected, { reason, ...(previous ? { previous: { provider: previous.provider, model: previous.model } } : {}) })!);
+      };
       // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
       // A response the agent's content-filter fallback replaces (`streamFn`) is recorded but never charged: the platform's filter blocked it.
       const replaced = (message: AssistantMessage) => config.contentFilterFallback?.from === `${config.model.provider}/${config.model.id}` && isContentFilterBlock(message) ? "content_filter" as const : undefined;
       const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
-        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, io.modelAttempt, creditStop, replaced);
+        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: running().provider, model: running().id }), io.modelOutbound, io.modelAttempt, creditStop, replaced);
       const viaFallback = explicitKeyStream(() => io.modelAuth(config.contentFilterFallback!.model.provider), () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
         stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.contentFilterFallback!.model.provider, model: config.contentFilterFallback!.model.id }), io.modelOutbound, io.modelAttempt, creditStop);
@@ -764,10 +791,10 @@ export function createAgentHost(hostIO: HostIO) {
         event.type === "begin" ? { ...event, kind: "compaction" } : event));
       const summaries = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
-        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: config.model.provider, model: config.model.id }), io.modelOutbound, summaryAttempt, creditStop);
+        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: running().provider, model: running().id }), io.modelOutbound, summaryAttempt, creditStop);
       // A summary reads the conversation as a turn does: the agent's OpenRouter data policy goes on it too.
-      const summaryStream: typeof summaries = (model, context, options) =>
-        summaries(model, context, { ...options, ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options);
+      const summaryStream: typeof summaries = (model, context, options) => routedCall("direct", on =>
+        summaries(on, context, { ...options, ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options), options?.signal, model);
       const agentOptions: Omit<DurableAgentOptions, "durable"> = {
         initialState: {
           model: config.model,
@@ -791,17 +818,19 @@ export function createAgentHost(hostIO: HostIO) {
         // A request the provider's content filter blocks is made again, at once, on the agent's contentFilterFallback (the
         // same model on another provider, on that provider's key) before Pi sees the block (content-filter-fallback.ts).
         streamFn: (model, context, options) => {
-          const toolChoice = outputChoice(model);
-          const asked = (on: typeof model) => ({ ...options, ...callSettings(on, config, options?.reasoning), ...(toolChoice === undefined ? {} : { toolChoice }), ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options);
-          const first = stream(model, context, asked(model));
-          const fallback = config.contentFilterFallback;
-          if (!fallback || fallback.from !== `${model.provider}/${model.id}`) return first;
-          const to = `${fallback.model.provider}/${fallback.model.id}`;
-          return withContentFilterFallback(first, () => viaFallback(fallback.model, context, asked(fallback.model)), {
-            blocked: () => recordModelFallback({ tenant: config.tenant, agent: config.id, from: fallback.from, to, reason: "content_filter" }),
-            unavailable: error => console.error(JSON.stringify({ type: "model_fallback_failed", agent: config.id, model: fallback.from, fallback: to, error: safeError(error) })),
-            aborted: () => !!options?.signal?.aborted,
-          });
+          const asked = (on: typeof model, toolChoice = outputChoice(on)) => ({ ...options, ...callSettings(on, config, options?.reasoning), ...(toolChoice === undefined ? {} : { toolChoice }), ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options);
+          const messages = context.messages, previous = messages.findLast(message => message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted") as AssistantMessage | undefined;
+          return routedCall(messages.at(-1)?.role === "toolResult" ? "continuation" : "user", on => {
+            const first = stream(on, context, asked(on));
+            const fallback = config.contentFilterFallback;
+            if (!fallback || fallback.from !== `${on.provider}/${on.id}`) return first;
+            const to = `${fallback.model.provider}/${fallback.model.id}`;
+            return withModelFallback(first, () => viaFallback(fallback.model, context, asked(fallback.model)), {
+              blocked: () => recordModelFallback({ tenant: config.tenant, agent: config.id, from: fallback.from, to, reason: "content_filter" }),
+              unavailable: error => console.error(JSON.stringify({ type: "model_fallback_failed", agent: config.id, model: fallback.from, fallback: to, error: safeError(error) })),
+              aborted: () => !!options?.signal?.aborted,
+            });
+          }, options?.signal, model, previous);
         },
         // Renders compaction summaries for the model (the default drops non-chat roles), and each message's sender.
         convertToLlm: messages => hydrate(convertToLlm(renderMessages(messages))),
@@ -904,7 +933,7 @@ export function createAgentHost(hostIO: HostIO) {
       if (params.systemPromptAppend !== undefined) config.systemPromptAppend = params.systemPromptAppend;
       if (params.fileTools !== undefined) config.fileTools = params.fileTools;
       if (params.codeMode !== undefined) config.codeMode = params.codeMode;
-      if (params.model !== undefined) { config.model = params.model; agent.state.model = params.model; }
+      if (params.model !== undefined) { config.model = params.model; agent.state.model = params.model; routed = undefined; }
       if (params.thinkingLevel !== undefined) { config.thinkingLevel = params.thinkingLevel; agent.state.thinkingLevel = params.thinkingLevel; }
       if (params.apiKey !== undefined) config.apiKey = params.apiKey;
       if (params.modelHeaders !== undefined) config.modelHeaders = params.modelHeaders;

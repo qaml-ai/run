@@ -529,7 +529,11 @@ export function api(context: ApiContext) {
     const declared = Object.entries(custom).filter(([provider]) => [undefined, provider].includes(c.req.query("provider")))
       .flatMap(([provider, entry]) => entry.models.map(model => ({ ...modelInfo(resolveModel(`${provider}/${model.id}`, undefined, custom)), available: true })));
     // Azure's models are the platform's (azure-openai.ts): available where it deploys them, to a tenant on its keys.
-    const models = [...own, ...declared, ...listModels(c.req.query("provider")).map(model => ({ ...model, available: (supported.has(model.provider) || model.provider === "azure") && keyed(model.provider, model.modelId) }))];
+    const models = [...own, ...declared, ...listModels(c.req.query("provider")).map(model => {
+      // A virtual model is available on its first member's key.
+      const [provider, ...id] = model.routes?.[0]?.split("/") ?? [model.provider, model.modelId];
+      return { ...model, available: (supported.has(provider) || provider === "azure") && keyed(provider, id.join("/")) };
+    })];
     const shown = available ? models.filter(model => model.available) : models;
     // No model usable: the list stays a list, and a header says why and what to do.
     if (available && !shown.length) c.header(MODELS_HINT_HEADER, NO_MODELS_HINT);

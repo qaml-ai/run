@@ -1,3 +1,4 @@
+import { currentModel, modelReference } from "../virtual-models.ts";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createHmac, randomUUID } from "node:crypto";
@@ -79,7 +80,7 @@ function reconfiguration(header: SessionHeader, definitions: ToolDefinition[], c
   if (fixed.length) throw new HttpError(409, `An existing agent's ${fixed.join(", ")} cannot change; delete it (DELETE /v1/agents/${header.id}) or use another idempotency key${fixed.includes("mounts") ? ", or send remount: true to change its mounts" : ""}`);
   return {
     ...remounted ? { mounts } : {},
-    provisionHash, ...keepModel ? {} : { model: `${config.model.provider}/${config.model.id}` }, thinkingLevel: config.thinkingLevel ?? "off",
+    provisionHash, ...keepModel ? {} : { model: modelReference(config.model) }, thinkingLevel: config.thinkingLevel ?? "off",
     systemPromptAppend: config.systemPromptAppend ?? "", fileTools: config.fileTools !== false, codeMode: config.codeMode !== false, runLimits: config.runLimits ?? null,
     maxOutputTokens: config.maxOutputTokens ?? null, temperature: config.temperature ?? null, dataCollection: config.dataCollection ?? null, name: metadata.name ?? null, type: metadata.type ?? null,
     // A language only when the upsert gives one (null clears it): an upsert from an SDK that predates it, which drops the
@@ -95,7 +96,7 @@ function upsertChanges(header: SessionHeader, target: Record<string, any>) {
   const differs = (a: unknown, b: unknown) => canonical(a ?? null) !== canonical(b ?? null);
   const current = header.config;
   const changes: Record<string, unknown> = {};
-  if (target.model !== undefined && target.model !== `${current.model.provider}/${current.model.id}`) changes.model = target.model;
+  if (target.model !== undefined && target.model !== modelReference(current.model)) changes.model = target.model;
   if (target.thinkingLevel !== undefined && target.thinkingLevel !== (current.thinkingLevel ?? "off")) changes.thinkingLevel = target.thinkingLevel;
   if (target.systemPromptAppend !== undefined && target.systemPromptAppend !== (current.systemPromptAppend ?? "")) changes.systemPromptAppend = target.systemPromptAppend;
   if (target.fileTools !== undefined && target.fileTools !== (current.fileTools !== false)) changes.fileTools = target.fileTools;
@@ -435,7 +436,7 @@ export async function modelAuth(ctx: ConfigurationContext, session: Session, oth
       tenant: header.tenant, agent: header.id, ...(header.definition ? { definition: header.definition.id } : {}), ...(header.identity ? { identity: header.identity } : {}), ...(actor ? { actor } : {}), ...lineage,
     }) };
   }
-  const provider = other ?? header.config.model.provider;
+  const provider = other ?? currentModel(header.config.model).provider;
   if (!ctx.options.scopedKey) throw new Error("This agent's model takes no per-call credentials");
   const resolved = await ctx.options.scopedKey(header.tenant, header.keyScope, provider);
   if (!resolved && !header.keyScope) throw new Error(`The ${provider} provider is gone: set it again with PUT /v1/providers/${provider}, or move this agent to another model`);

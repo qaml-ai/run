@@ -93,10 +93,21 @@ export function isImageRejection(message: string | null | undefined): boolean {
 }
 
 /**
+ * The model or its provider cannot take the request now (a 429, a 5xx, no host, a timeout, a stream gone quiet), as
+ * opposed to a request it would refuse anywhere (a bad request, an oversized context, a key, credit): another model of a
+ * virtual model's chain may answer it.
+ */
+export function isModelUnavailable(message: Pick<Failed, "errorMessage">): boolean {
+  const text = message.errorMessage ?? "";
+  if (/no (allowed )?(endpoints|providers)\b/i.test(text)) return true;
+  return ["rate_limit", "overloaded", "provider_5xx", "timeout", "network", "stream_stalled"].includes(errorClass(text));
+}
+
+/**
  * A provider's content filter blocked the request or its response, as Azure's says it (the response's
  * `finish_reason: content_filter`, or an error with `code: content_filter`, which pi-ai passes on as the provider's
  * text), as opposed to the model declining in its own words. Its filter, not the model, said no: the host asks the same
- * model on another provider once instead (content-filter-fallback.ts, `contentFilterFallback`).
+ * model on another provider once instead (model-fallback.ts, `contentFilterFallback`).
  */
 export function isContentFilterBlock(message: Pick<Failed, "errorMessage" | "rawStopReason">): boolean {
   if (message.rawStopReason && /^content_filter(ed)?$|\.content_filter$/i.test(message.rawStopReason)) return true;

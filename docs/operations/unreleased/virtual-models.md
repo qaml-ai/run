@@ -1,0 +1,7 @@
+### Virtual models, and `camelrun/default` as the default
+
+`camelrun/default` is a virtual model: a name an agent keeps, routed to a real model for each request. Today it is `openrouter/particle-ai/particle-1`, then `openrouter/deepseek/deepseek-v4.1-flash-1017`. A runtime that sets none of `AGENT_PROVIDER`, `AGENT_MODEL` and `AGENT_BASE_URL` now uses it as the default for agents that name no model; `AGENT_PROVIDER=camelrun` with `AGENT_MODEL=default` names it. A runtime that sets them otherwise keeps what it named.
+
+- **Failover per request.** A request a model cannot take now (a 429, a 5xx, no provider, a timeout, a stream gone quiet) and that has streamed nothing moves to the next model at once. A bad request, an oversized context, or a key or credit problem does not. Each new message starts on the first model; the rest of a turn stays where it moved. An agent naming a real model has none of this.
+- **Records.** A run's `servedModel`, `/v1/usage` and `usage.recorded` name the model that answered, at its price. `GET /v1/agents/:id` and `GET /v1/me` show the virtual name, and `GET /v1/models` lists it with `routes`. A move logs `model_fallback` with `Reason: unavailable` and its `errorClass`, and counts `ModelFallbacks`.
+- **Credit.** Each attempt holds end-user credit at its own model's price, so a failed attempt holds nothing afterwards and the next is checked at its price.

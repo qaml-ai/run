@@ -13,7 +13,7 @@ export type ModelAttemptEvent =
   | { type: "progress"; id: string; chars: number }
   /**
    * `superseded`: why the call's response is not the answer (`content_filter`: its provider's filter blocked it, and the
-   * request is made again on another model, content-filter-fallback.ts). Recorded for the platform's books; never charged.
+   * request is made again on another model, model-fallback.ts). Recorded for the platform's books; never charged.
    */
   | { type: "finish"; id: string; usage: Record<string, any>; chars: number; completed: boolean; superseded?: Superseded };
 /** Why a call's response was replaced by another call's (see `finish`). */
