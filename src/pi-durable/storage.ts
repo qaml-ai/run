@@ -64,6 +64,13 @@ export async function commitBatch(storage: Pick<Storage, "commit">, writes: read
     if (result.stored === 0) throw result.refused;
 }
 
+/** `storage` for a Harness or Session whose close leaves it open: its caller owns it. */
+export const keepingOpen = (storage: Storage): Storage => new Proxy(storage, { get(target, key) {
+    if (key === "close") return async () => {};
+    const value = Reflect.get(target, key, target);
+    return typeof value === "function" ? value.bind(target) : value;
+} });
+
 /** A batch Durable's own checks (global IDs, document actions, copy sources) refuse: nothing of it is stored. */
 class Refused {
     readonly error: unknown;

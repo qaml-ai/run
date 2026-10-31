@@ -151,7 +151,9 @@ export class AgentSupervisor {
       // A host transcript no release retired holds history before the journal that only its records have.
       if ((await JournalHistory.snapshotBase(storage))?.enabled) throw legacyFormatRefused(id, undefined, "host_transcript");
       const journal = await HostJournal.open(storage);
-      return journal ? await closeInterruptedTurn(journal) : false;
+      if (!journal) return false;
+      try { return await closeInterruptedTurn(journal); }
+      finally { await journal.close(); }
     } finally { await storage.close(BACKGROUND_CONTEXT); }
   }
 

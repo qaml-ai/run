@@ -8,7 +8,7 @@ import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { randomUUID } from "node:crypto";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
-import { HostJournal } from "../src/pi-durable/host-journal.ts";
+import { HostJournal, JournalClosed } from "../src/pi-durable/host-journal.ts";
 import { seedJournal } from "../src/pi-durable/seed.ts";
 import { testDatabase } from "./database.ts";
 
@@ -598,7 +598,7 @@ test("what the host's journal writes while an agent is open reaches Pi's context
   });
   const fake = await fixture([call("read"), answer("Done")], { initialState: { model, tools: [read], messages: [] } }, storage, { conversationId: 1, written: () => journal.written });
   t.after(() => fake.agent.close());
-  journal.session = () => fake.agent.journalSession();
+  await journal.attach(() => fake.agent.journalSession());
   const held = () => JSON.stringify(fake.agent.state.messages);
 
   await journal.system(note("written while idle"));
@@ -620,4 +620,16 @@ test("what the host's journal writes while an agent is open reaches Pi's context
   assert.doesNotMatch(held(), /landed/, "the retraction's edit reached Pi's context");
   const cursor = fake.agent.latestCursor;
   assert.ok(cursor && journal.written && cursor.entryId < journal.written.entryId, "nor do they move a run's cursor");
+});
+
+test("once its agent is closing, the journal refuses a write without failing: the next owner goes on from what is stored", async () => {
+  const storage = new MemoryStorage();
+  await seedJournal({ storage, sessionId: "test", model: [] });
+  const journal = (await HostJournal.open(storage))!;
+  const fake = await fixture([], {}, storage, { conversationId: 1, written: () => journal.written });
+  await journal.attach(() => fake.agent.journalSession());
+  const closing = fake.agent.close();
+  await assert.rejects(journal.push(answer("too late") as AgentMessage), JournalClosed);
+  assert.equal(journal.failed, undefined);
+  await closing;
 });
