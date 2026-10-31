@@ -2317,6 +2317,8 @@ export class ClientSessions {
   }
 
   endUserCharge(agent: string, usage: UsageRecord) { spend.endUserCharge(this.spendContext, agent, usage); }
+  /** Who pays for the agent's current run, where the tenant meters its end users. */
+  payerOf(agent: string) { const session = this.sessions.get(agent); return session && spend.payer(this.spendContext, session, runningRun(session)); }
 
   /** Give the agent a budget of `usd` from now (null: none). A new value starts counting from zero. */
   private async setSpendLimit(session: Session, usd: number | null) {

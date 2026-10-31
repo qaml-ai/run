@@ -2,11 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Accounts } from "../accounts.ts";
 import type { Db, DbClient } from "../db.ts";
 import { HttpError } from "../http.ts";
+import { MICROS } from "../pricing.ts";
 import type { Outbound } from "../outbound.ts";
 import type { ToolDefinition } from "../protocol.ts";
 import { Workspaces } from "../workspaces.ts";
 import type { ToolContext } from "../volume-tools.ts";
 import type { ComputerTransfers } from "./transfers.ts";
+import { LeaseMeter } from "./metering.ts";
 import { driver, isBrowserProvider, PROVIDERS, type Credentials, type DriverFactory, type ComputerDriver, type Provider, type Reference } from "./providers.ts";
 
 const id = () => `cmp_${randomUUID().replaceAll("-", "")}`;
@@ -22,8 +24,14 @@ const publicConnection = (r: any) => ({ id: r.id, agent: r.agent, provider: r.pr
 const publicLease = (r: any) => r ? ({ id: r.id, provider: r.provider, workspaceId: r.workspace, state: r.state, recoveryRequired: r.state === "uncertain" || r.state === "closing" && !!r.error, createdAt: r.created_at, expiresAt: r.expires_at, closedAt: r.closed_at, ...(r.error ? { error: r.error } : {}) }) : null;
 
 export class Computers {
-  readonly options: { db: Db; accounts: Pick<Accounts, "seal" | "unseal">; outbound: Outbound; transfers?: ComputerTransfers; driver?: DriverFactory; now?: () => number };
-  constructor(options: Computers["options"]) { this.options = options; }
+  readonly options: { db: Db; accounts: Pick<Accounts, "seal" | "unseal"> & LeaseMeter["options"]["accounts"]; outbound: Outbound; transfers?: ComputerTransfers; driver?: DriverFactory; now?: () => number; endUsers?: LeaseMeter["options"]["endUsers"]; payer?: LeaseMeter["options"]["payer"];
+    /** Whether a new lease runs on the platform's keys, and is charged for. Nothing sets this outside tests yet. */
+    platformLease?(connection: { provider: Provider }): boolean };
+  private readonly meter: LeaseMeter;
+  constructor(options: Computers["options"]) {
+    this.options = options;
+    this.meter = new LeaseMeter({ db: options.db, accounts: options.accounts, get endUsers() { return options.endUsers; }, payer: agent => options.payer?.(agent), now: () => this.now() });
+  }
   private now() { return this.options.now?.() ?? Date.now(); }
   private async lock<T>(tenant: string, agent: string, fn: (sql: DbClient) => Promise<T>) {
     const sql = await this.options.db.connect();
@@ -75,6 +83,11 @@ export class Computers {
   async status(tenant: string, agent: string) { const c = await this.connection(tenant, agent), session = publicLease(await this.latest(c.id)); return { connection: { ...publicConnection(c), session }, session }; }
   private async stop(connection: any, lease: any, sql: any) {
     if (!lease || lease.state === "closed") return;
+    if (lease.platform) {
+      await this.meter.accrue(lease.id, true);
+      // The next sweep settles it if this fails: the machine still has to go.
+      await this.meter.settle(lease.id).catch(() => console.error(JSON.stringify({ type: "computer_meter_failed", lease: lease.id })));
+    }
     await sql.query("update computer_leases set state='closing',cleanup_at=$2 where id=$1", [lease.id, this.now()]);
     if (!lease.reference) {
       // A provider may have accepted a create whose response was lost. Never create another
@@ -128,11 +141,14 @@ export class Computers {
         const used = (await sql.query("select coalesce(sum(greatest(0,least(coalesce(closed_at,expires_at),expires_at)-greatest(created_at,$2))),0) as used from computer_leases where connection=$1 and expires_at > $2", [c.id, Math.floor(this.now()/86400000)*86400000])).rows[0].used;
         if (Number(used) + c.lease_seconds*1000 > c.daily_seconds*1000) throw new HttpError(429, "Computer daily time budget reached");
         const session = id(), now = this.now(), workspace = await new Workspaces(this.options.db).current(tenant, "agent", agent, sql);
-        lease = (await sql.query("insert into computer_leases(id,tenant,agent,connection,workspace,provider,state,created_at,expires_at) values($1,$2,$3,$4,$5,$6,'starting',$7,$8) returning *", [session, tenant, agent, c.id, workspace?.workspace ?? null, c.provider, now, now+c.lease_seconds*1000])).rows[0];
+        const platform = this.options.platformLease?.(c) ?? false, price = platform ? this.meter.price(c.provider) : null;
+        const held = platform ? await this.meter.hold(tenant, agent, price!, c.lease_seconds) : undefined;
+        lease = (await sql.query("insert into computer_leases(id,tenant,agent,connection,workspace,provider,state,created_at,expires_at,platform,price_hour,hold,end_user,bucket) values($1,$2,$3,$4,$5,$6,'starting',$7,$8,$9,$10,$11,$12,$13) returning *", [session, tenant, agent, c.id, workspace?.workspace ?? null, c.provider, now, now+c.lease_seconds*1000, platform, price, held?.id ?? null, held?.endUser ?? null, held?.bucket ?? null])).rows[0];
         let creator: ComputerDriver | undefined, allocated = false;
         try {
           const ref = await this.useProvider(c, p => { creator = p; return p.create(session, c.lease_seconds, async ref => { allocated = true; await sql.query("update computer_leases set reference=$2 where id=$1", [session, this.options.accounts.seal(`computer-lease:${session}`, JSON.stringify(ref))]); }); });
-          await sql.query("update computer_leases set state='active',reference=$2 where id=$1", [session, this.options.accounts.seal(`computer-lease:${session}`, JSON.stringify(ref))]);
+          // A lease on the platform's keys is charged from here: never for a machine that did not start.
+          await sql.query("update computer_leases set state='active',reference=$2,metered_until=case when platform then $3::bigint end where id=$1", [session, this.options.accounts.seal(`computer-lease:${session}`, JSON.stringify(ref)), this.now()]);
         } catch (error) {
           // A provider that refused the credentials made nothing: no machine to reconcile, and a fixed key can start again.
           if (!allocated && creator?.refused?.(error)) {
@@ -186,9 +202,14 @@ export class Computers {
     });
   }
   async usage(tenant: string) {
-    return (await this.options.db.query("select workspace,provider,count(*)::integer as sessions,sum(greatest(0,least(coalesce(closed_at,$2),expires_at)-created_at))/1000.0 as seconds from computer_leases where tenant=$1 group by workspace,provider", [tenant, this.now()])).rows;
+    return (await this.options.db.query(`select workspace,provider,count(*)::integer as sessions,sum(greatest(0,least(coalesce(closed_at,$2),expires_at)-created_at))/1000.0 as seconds,(sum(round(metered_seconds*coalesce(price_hour,0)/3600.0))/${MICROS})::float8 as "costUsd" from computer_leases where tenant=$1 group by workspace,provider`, [tenant, this.now()])).rows;
   }
   async sweep() {
+    await this.meter.sweep(lease => this.lock(lease.tenant, lease.agent, async sql => {
+      const current = (await sql.query("select * from computer_leases where id=$1", [lease.id])).rows[0];
+      if (current?.state !== "active") return;
+      await this.stop((await sql.query("select * from computer_connections where id=$1", [lease.connection])).rows[0], current, sql);
+    })).catch(() => console.error(JSON.stringify({ type: "computer_meter_failed" })));
     const rows = (await this.options.db.query("select l.*, c.credentials, c.id as connection_id from computer_leases l join computer_connections c on c.id=l.connection left join agents a on a.id=l.agent and a.tenant=l.tenant where (l.state='closing' or (l.state='uncertain' and l.reference is not null) or (l.state='starting' and l.created_at<=$1::bigint-180000) or (l.state='active' and (l.expires_at<=$1 or a.id is null or a.revoked or a.purged_at is not null or a.expires_at<=$1))) order by l.cleanup_at, l.expires_at limit 100", [this.now()])).rows;
     for (const row of rows) {
       try { await this.lock(row.tenant, row.agent, async sql => { const current = (await sql.query("select * from computer_leases where id=$1", [row.id])).rows[0]; if (current.state === "closed" || (current.state === "active" && current.expires_at > this.now() && row.state !== "active")) return; await this.stop({ ...row, id: row.connection_id }, current, sql); }); } catch { /* Durable closing state retries next sweep. No credentials in logs. */ }

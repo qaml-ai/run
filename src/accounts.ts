@@ -31,10 +31,10 @@ export interface GoogleUser { sub: string; email: string }
 export type Totals = { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformResponses: number; platformCost: number };
 /**
  * What a tenant owes from a batch: model tokens, and web searches and renders, on the platform's keys
- * (USD, with their counts), tool search's ranking by meaning (at cost, with the searches' count), and
- * active agent time.
+ * (USD, with their counts), tool search's ranking by meaning (at cost, with the searches' count), computer
+ * and browser leases on the platform's keys (USD, with their seconds), and active agent time.
  */
-type Charge = { platformCost: number; fundingCost: number; activeMs: number; toolCost: number; searches: number; renders: number; toolSearchCost: number; toolSearches: number; transcriptionCost: number; transcriptions: number; audioSeconds: number; imageCost: number; images: number; speechCost: number; speeches: number; speechSeconds: number; decisionCost: number; decisions: number };
+type Charge = { platformCost: number; fundingCost: number; activeMs: number; toolCost: number; searches: number; renders: number; toolSearchCost: number; toolSearches: number; transcriptionCost: number; transcriptions: number; audioSeconds: number; imageCost: number; images: number; speechCost: number; speeches: number; speechSeconds: number; decisionCost: number; decisions: number; computerCost: number; computerSeconds: number; browserCost: number; browserSeconds: number };
 /**
  * Usage recorded and not yet written, applied as one transaction under `id` (a row in
  * `usage_flushes`), so a batch retried after a lost commit acknowledgement is skipped.
@@ -57,6 +57,8 @@ const TRANSCRIPTION = "transcription:";
 const IMAGE = "image:";
 const SPEECH = "speech:";
 const DECISION = "decision:";
+const COMPUTER = "computer:";
+const BROWSER = "browser:";
 /** Revocations reach other nodes within this long. */
 const TOKEN_CACHE_MS = 10_000;
 /** Spend on other nodes counts toward a tenant's cap within this long. */
@@ -412,6 +414,23 @@ export class Accounts {
     this.scheduleFlush();
   }
 
+  /**
+   * Record usage in the caller's transaction instead of the buffer, so it commits with whatever it pays for or not at
+   * all: `recordUsage` flushes later, and a crash before then loses it. Call `usageCommitted` after the commit.
+   */
+  async recordUsageIn(sql: Sql, tenant: string, agent: string, message: UsageRecord) {
+    const pending = batch();
+    this.collectUsage(pending, tenant, agent, message);
+    await this.apply(pending, sql);
+  }
+
+  /** After a transaction that used `recordUsageIn`: the tenant's balance and spend are read afresh, and automatic funding hears of it. */
+  async usageCommitted(tenant: string) {
+    this.spend.delete(tenant);
+    this.billing.invalidate([tenant]);
+    await this.billing.autoTopup?.balanceChanged([tenant]);
+  }
+
   /** Price and describe an attempt without enqueuing it in the volatile usage buffer. */
   quoteModelUsage(tenant: string, agent: string, message: UsageRecord) {
     const target = batch();
@@ -431,7 +450,7 @@ export class Accounts {
     const usage = message.usage ?? {};
     const day = new Date(message.timestamp ?? Date.now()).toISOString().slice(0, 10);
     const model = `${message.provider ?? "unknown"}/${message.model ?? "unknown"}`;
-    const key = JSON.stringify([tenant, day, message.kind === "compaction" ? `${COMPACTION}${model}` : message.kind === "transcription" ? `${TRANSCRIPTION}${model}` : message.kind === "image" ? `${IMAGE}${model}` : message.kind === "speech" ? `${SPEECH}${model}` : message.kind === "decision" ? `${DECISION}${model}` : model]);
+    const key = JSON.stringify([tenant, day, message.kind === "compaction" ? `${COMPACTION}${model}` : message.kind === "transcription" ? `${TRANSCRIPTION}${model}` : message.kind === "image" ? `${IMAGE}${model}` : message.kind === "speech" ? `${SPEECH}${model}` : message.kind === "decision" ? `${DECISION}${model}` : message.kind === "computer" ? `${COMPUTER}${model}` : message.kind === "browser" ? `${BROWSER}${model}` : model]);
     const totals = target.usage.get(key) ?? zero();
     const cost = usageCost(usage).usd;
     // OpenRouter's response cost is in provider credits. Funding those credits is
@@ -444,10 +463,11 @@ export class Accounts {
     const credits = typeof usage.providerCreditCost === "number" && Number.isFinite(usage.providerCreditCost) && usage.providerCreditCost >= 0
       ? Math.min(cost, usage.providerCreditCost) : cost;
     const fundedCost = cost + credits * (multiplier - 1);
+    const lease = message.kind === "computer" || message.kind === "browser";
     const increment: Totals = {
-      // A request for images counts the images it made, and decisions the questions answered.
-      responses: message.kind === "image" ? message.images ?? 1 : message.kind === "decision" ? message.decisions ?? 1 : 1, input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0, cost,
-      platformResponses: message.platform ? 1 : 0, platformCost: message.platform ? fundedCost : 0,
+      // A request for images counts the images it made, and decisions the questions answered. Time on a lease is no response.
+      responses: lease ? 0 : message.kind === "image" ? message.images ?? 1 : message.kind === "decision" ? message.decisions ?? 1 : 1, input: usage.input ?? 0, output: usage.output ?? 0, cacheRead: usage.cacheRead ?? 0, cacheWrite: usage.cacheWrite ?? 0, cost,
+      platformResponses: message.platform && !lease ? 1 : 0, platformCost: message.platform ? fundedCost : 0,
     };
     add(totals, increment);
     if (agent) target.attributed.push({ tenant, agent, timestamp: message.timestamp ?? Date.now(), day, model: JSON.parse(key)[2], ...increment });
@@ -459,6 +479,12 @@ export class Accounts {
         // On the platform's OpenRouter key: what the credits cost, funding included.
         charge.decisionCost += fundedCost;
         charge.decisions += message.decisions ?? 0;
+      } else if (message.kind === "computer") {
+        charge.computerCost += cost;
+        charge.computerSeconds += message.seconds ?? 0;
+      } else if (message.kind === "browser") {
+        charge.browserCost += cost;
+        charge.browserSeconds += message.seconds ?? 0;
       } else if (message.kind === "image") {
         charge.imageCost += cost;
         charge.images += message.images ?? 0;
@@ -498,7 +524,7 @@ export class Accounts {
 
   private charge(tenant: string, target = this.pending) {
     let charge = target.charges.get(tenant);
-    if (!charge) target.charges.set(tenant, charge = { platformCost: 0, fundingCost: 0, activeMs: 0, toolCost: 0, searches: 0, renders: 0, toolSearchCost: 0, toolSearches: 0, transcriptionCost: 0, transcriptions: 0, audioSeconds: 0, imageCost: 0, images: 0, speechCost: 0, speeches: 0, speechSeconds: 0, decisionCost: 0, decisions: 0 });
+    if (!charge) target.charges.set(tenant, charge = { platformCost: 0, fundingCost: 0, activeMs: 0, toolCost: 0, searches: 0, renders: 0, toolSearchCost: 0, toolSearches: 0, transcriptionCost: 0, transcriptions: 0, audioSeconds: 0, imageCost: 0, images: 0, speechCost: 0, speeches: 0, speechSeconds: 0, decisionCost: 0, decisions: 0, computerCost: 0, computerSeconds: 0, browserCost: 0, browserSeconds: 0 });
     return charge;
   }
 
@@ -509,7 +535,7 @@ export class Accounts {
 
   /** What `charges` come to in micro-USD. */
   private amount(charge: Charge) {
-    return Math.round((charge.platformCost + charge.fundingCost) * MICROS) + Math.round(charge.toolCost * MICROS) + Math.round(charge.toolSearchCost * MICROS) + Math.round(charge.transcriptionCost * MICROS) + Math.round(charge.imageCost * MICROS) + Math.round(charge.speechCost * MICROS) + Math.round(charge.decisionCost * MICROS) + activeCharge(this.billing.pricing, charge.activeMs);
+    return Math.round((charge.platformCost + charge.fundingCost) * MICROS) + Math.round(charge.toolCost * MICROS) + Math.round(charge.toolSearchCost * MICROS) + Math.round(charge.transcriptionCost * MICROS) + Math.round(charge.imageCost * MICROS) + Math.round(charge.speechCost * MICROS) + Math.round(charge.decisionCost * MICROS) + Math.round(charge.computerCost * MICROS) + Math.round(charge.browserCost * MICROS) + activeCharge(this.billing.pricing, charge.activeMs);
   }
 
   /** What this node has recorded for `tenant` and not yet written, in micro-USD, as if the tenant were prepaid. */
@@ -594,6 +620,8 @@ export class Accounts {
           ...(charge.images ? { image: Math.round(charge.imageCost * MICROS), images: charge.images } : {}),
           ...(charge.speeches ? { speech: Math.round(charge.speechCost * MICROS), speeches: charge.speeches, speechSeconds: Math.round(charge.speechSeconds * 100) / 100 } : {}),
           ...(charge.decisions ? { decision: Math.round(charge.decisionCost * MICROS), decisions: charge.decisions } : {}),
+          ...(charge.computerSeconds ? { computer: Math.round(charge.computerCost * MICROS), computerSeconds: charge.computerSeconds } : {}),
+          ...(charge.browserSeconds ? { browser: Math.round(charge.browserCost * MICROS), browserSeconds: charge.browserSeconds } : {}),
         } });
       }
     }
@@ -681,7 +709,7 @@ export class Accounts {
     const days = selected.map(row => {
       const value = { responses: row.responses, input: row.input, output: row.output, cacheRead: row.cache_read, cacheWrite: row.cache_write, cost: row.cost, platformResponses: row.platform_responses, platformCost: row.platform_cost };
       add(totals, value);
-      const kind = row.model.startsWith(COMPACTION) ? "compaction" : row.model.startsWith(TRANSCRIPTION) ? "transcription" : row.model.startsWith(IMAGE) ? "image" : row.model.startsWith(SPEECH) ? "speech" : row.model.startsWith(DECISION) ? "decision" : "turn";
+      const kind = row.model.startsWith(COMPACTION) ? "compaction" : row.model.startsWith(TRANSCRIPTION) ? "transcription" : row.model.startsWith(IMAGE) ? "image" : row.model.startsWith(SPEECH) ? "speech" : row.model.startsWith(DECISION) ? "decision" : row.model.startsWith(COMPUTER) ? "computer" : row.model.startsWith(BROWSER) ? "browser" : "turn";
       return { day: row.day, model: kind === "turn" ? row.model : row.model.slice(row.model.indexOf(":") + 1), kind, ...value };
     });
     // For the whole account: each workspace's spend by day (null: Unassigned), which a chart stacks.

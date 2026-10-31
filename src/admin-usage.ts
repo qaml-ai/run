@@ -323,7 +323,7 @@ export async function adminAccount(db: Db, tenant: string, options: { days: numb
     sql.query("select distinct client_name from oauth_grants where tenant = $1 order by client_name", [tenant]),
   ]));
   const row = account.rows[0];
-  const modelRows = models.rows.filter(model => !/^(compaction|transcription|image):|\/web_search$|^xai\/x_search$|^firecrawl\/web_fetch$|^runtime\/tool_search$/.test(model.model));
+  const modelRows = models.rows.filter(model => !/^(compaction|transcription|image|computer|browser):|\/web_search$|^xai\/x_search$|^firecrawl\/web_fetch$|^runtime\/tool_search$/.test(model.model));
   if (!row.known && !agents.rows.length && !models.rows.length) return undefined;
   const byDate = new Map(daily.rows.map(day => [day.date, n(day.responses)]));
   const c = credit.rows[0];

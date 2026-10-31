@@ -6444,9 +6444,11 @@
                     "transcription",
                     "image",
                     "speech",
-                    "decision"
+                    "decision",
+                    "computer",
+                    "browser"
                   ],
-                  "description": "decision: questions answered by a decision model (responses counts them); turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: speech made, by POST /v1/speech or voice sessions (responses counts speeches)"
+                  "description": "computer, browser: lease time on the platform's keys (responses is 0, cost is the time's); decision: questions answered by a decision model (responses counts them); turn: the agent's own responses; compaction: summaries of older context; transcription: audio transcribed (responses counts transcriptions); image: images made (responses counts images); speech: speech made, by POST /v1/speech or voice sessions (responses counts speeches)"
                 }
               },
               "required": [
@@ -20552,13 +20554,18 @@
                             "type": "string"
                           }
                         ]
+                      },
+                      "costUsd": {
+                        "type": "number",
+                        "description": "Charged to credit: time on the platform's keys. Time on your own provider account costs 0 here"
                       }
                     },
                     "required": [
                       "workspace",
                       "provider",
                       "sessions",
-                      "seconds"
+                      "seconds",
+                      "costUsd"
                     ]
                   }
                 }

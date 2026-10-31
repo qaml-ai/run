@@ -62,6 +62,17 @@ A **prepaid tenant** pays for:
   render. The hour's usage entry counts them (`searches`, `renders`, and their
   cost as `web`) apart from model tokens: see `web_search` and `web_fetch` under
   [Built-ins](../guides/tools.md#built-ins-a-definition-enables).
+- **Computer and browser leases: not on yet.** Nothing in production runs a lease on the platform's keys, so no tenant
+  is charged for one. The prices are placeholders until that ships. The meter is in place: on the platform's keys,
+  $0.12 per computer-hour and $0.10 per browser-hour
+  (`AGENT_PRICE_COMPUTER_HOUR_USD`, `AGENT_PRICE_BROWSER_HOUR_USD`), per second from when the machine has started until
+  the lease stops or expires, at the price when it started. The 30-second sweep (`src/computers/metering.ts`) charges
+  each running lease in one transaction with `metered_until`, so a retried or concurrent sweep charges nothing twice,
+  and one that was late catches up. It stops a lease once the tenant's credit is spent, so the overdraft is about one
+  sweep's time per lease. The hour's usage entry counts them apart (`computer`, `computerSeconds`, `browser`,
+  `browserSeconds`), and `/v1/usage` has rows with `kind: "computer"` and `kind: "browser"`; `usage.recorded` does not
+  carry them. A lease on a tenant's own provider key is never charged. An end user, where the tenant meters them, has
+  the whole lease held at its start (a refusal refuses the start) and pays what it cost when it stops.
 - **Transcription** on the platform's OpenAI key (`platformKeys.openai`), $0.0045 per minute of audio
   (`gpt-transcribe`'s list price; `AGENT_PRICE_TRANSCRIPTION_USD`), per second as OpenAI bills it. The hour's usage
   entry counts them apart (`transcription`, `transcriptions`, `audioSeconds`), and `/v1/usage` has a row with

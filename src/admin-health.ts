@@ -36,7 +36,7 @@ export interface AdminHealth {
   nodes: AdminNode[];
 }
 
-const KINDS: AdminUsageKind[] = ["models", "compaction", "web", "tool_search", "voice", "images"];
+const KINDS: AdminUsageKind[] = ["models", "compaction", "web", "tool_search", "voice", "images", "compute"];
 const MINUTE = 60_000;
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count.toLocaleString("en-US")} ${count === 1 ? one : many}`;
@@ -111,7 +111,7 @@ export async function adminHealth(db: Db, options: { days: number | string; now?
       [now - 10 * MINUTE, now - 60 * MINUTE, now - 7 * DAY_MS]),
   ]));
 
-  const days = new Map<string, AdminSpendDay>(windowDates(window).map(day => [day, { date: day, models: 0, compaction: 0, web: 0, tool_search: 0, voice: 0, images: 0 }]));
+  const days = new Map<string, AdminSpendDay>(windowDates(window).map(day => [day, { date: day, models: 0, compaction: 0, web: 0, tool_search: 0, voice: 0, images: 0, compute: 0 }]));
   for (const row of daily.rows) {
     const day = days.get(row.date);
     if (day && KINDS.includes(row.kind)) day[row.kind as AdminUsageKind] += n(row.cost);
