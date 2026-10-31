@@ -149,6 +149,19 @@ test("a run stays in flight until its outcome is durable and published, so a dra
   assert.deepEqual((await running).output, ["done"]);
 });
 
+test("a retry that comes after its request's write failed is refused: the record is only in this node's memory", async t => {
+  const f = await fixture(t);
+  const agent = await f.start();
+  const session = f.sessions.sessions.get(agent.session.id)!;
+  const flush = session.log.flush.bind(session.log);
+  session.log.flush = async durable => { if (durable) throw new Error("disk full"); return flush(durable); };
+  const body = { id: "lost", method: "execute", params: { code: "return 1" } };
+  assert.equal((await f.post(agent, "/requests", body)).status, 503);
+  assert.ok(session.requests.has("lost"), "the record its write failed for is still held");
+  // On the session as it is given up (a retry just behind the first, as seed 60 found): never told the run was taken.
+  await assert.rejects((f.sessions as any).accept(session, body), /persistence failed/);
+});
+
 test("a call goes to one connection: another client is refused while it serves, and one that takes over never runs it: the first one still answers it", async t => {
   const f = await fixture(t, { timeout: 5000 });
   let executions = 0;
