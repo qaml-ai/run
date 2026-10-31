@@ -88,6 +88,11 @@ test("an unknown price holds at a mid-range one; a router's zero is unknown; :fr
   // $3/$15 with funding: $0.3165 of input.
   assert.ok(await held(db) > 0.3 * USD, "held at $3 per million in");
   assert.ok(unknown.maxOutputTokens! < 100_000 && unknown.maxOutputTokens! > 30_000, String(unknown.maxOutputTokens));
+  // An OpenRouter model the catalog lacks, with a price from its lookup: held at that, not the mid-range one.
+  const priced = await held(db);
+  await begin("nobody/looked-up", { ...estimate, rates: { input: 1, output: 1 } });
+  const looked = await held(db) - priced;
+  assert.ok(looked > 0.1 * USD && looked < 0.11 * USD, String(looked));
   const before = await held(db);
   assert.equal(ack((await begin("openrouter/auto", estimate)).ack).tracked, true);
   assert.ok(await held(db) > before, "a router's listed zero is not free");

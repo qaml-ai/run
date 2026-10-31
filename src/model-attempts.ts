@@ -172,13 +172,14 @@ export class ModelAttempts {
 
   /**
    * Hold a call's estimate of its tenant's credit, where the platform's key pays for it and the tenant pays from credit
-   * (credit-holds.ts). A model with no price holds at a mid-range one, as for an end user: a router's cost depends on where
+   * (credit-holds.ts), at the catalog's rates, or for an OpenRouter model the catalog lacks, the host's copy of the runtime's
+   * own. A model with no price holds at a mid-range one, as for an end user: a router's cost depends on where
    * it sends the call, so its catalog entry says zero, and only a `:free` model is really free. What it cost is what settles.
    */
   private async creditHold(tenant: string, platform: boolean, event: Extract<ModelAttemptEvent, { type: "begin" }>): Promise<(Metered & { most: number }) | { refused: CreditStop } | undefined> {
     if (!platform || !event.estimate || isSubscriptionProvider(event.provider) || await this.accounts.billing.mode(tenant) !== "prepaid") return undefined;
     if (/:free$/.test(event.model)) return undefined;
-    const listed = catalogCost(event.provider, event.model);
+    const listed = catalogCost(event.provider, event.model) ?? (event.provider === "openrouter" ? event.estimate.rates : undefined);
     const rates = listed && (listed.input > 0 || listed.output > 0) ? listed : UNPRICED_COST;
     const funding = event.provider === "openrouter" ? this.accounts.billing.pricing.openrouterCreditMultiplier : 1;
     const cost = callCost(rates, event.estimate, funding);
