@@ -205,6 +205,11 @@ launch run "$(cat <<RUN
 export PATH=\$HOME/.node22/bin:\$PATH TERM=dumb AGENT_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres
 for _ in \$(seq 60); do pg_isready -q -h 127.0.0.1 && break; sleep 1; done
 pg_isready -q -h 127.0.0.1 || { echo '== Postgres did not start'; sudo tail -5 /var/log/postgresql/*.log; exit 1; }
+# A new sandbox's home is a FUSE file system until the snapshot has been copied in, about half a minute, and its disk
+# reads slowly until first read. A process that stands in the home then stays on FUSE for good: imports took 3 to 6 s
+# against 0.4, all through one busy process, and first turns timed out. So start after it, with the tree read once.
+for _ in \$(seq 180); do [[ \$(stat -f -c %T ~) != fuse* ]] && break; sleep 1; done
+tar -cf - -C ~ .node22 rt | cat > /dev/null
 cd ~/rt
 cpu() { awk '/^cpu /{print \$9, \$2+\$3+\$4+\$5+\$6+\$7+\$8+\$9}' /proc/stat; }
 before=\$(cpu)
