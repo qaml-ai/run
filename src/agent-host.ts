@@ -9,7 +9,7 @@ import {
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, legacyFormatRefused, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
+import { errorText, STOPPED_NOTICE, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, legacyFormatRefused, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, LANGUAGE, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { languageInstructions } from "./language.ts";
 import { AGENT_UPDATES, renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
@@ -1047,10 +1047,13 @@ export function createAgentHost(hostIO: HostIO) {
         if (journal.awaiting.length) {
           await settle(journal.awaiting.map(toolCallId => ({ toolCallId, result: { content: [{ type: "text", text: "Not answered: the user sent a new message instead (next)." }], isError: true } })), active.signal);
         }
-        if (active.signal.aborted) return await abortedBeforeLoop();
-        if (params.landOnly) {
-          // The runtime's refusal of a turn its message would start (a cap reached): the message lands in history, and no model is asked.
-          const messages = await fittedImages(promptMessages!);
+        // A sub-agent's notification is the runtime's, sent once: an abort that reaches it before Pi has it lands it all the same.
+        const notice = params.notice !== undefined && params.notice.metadata?.to !== "child";
+        if (active.signal.aborted && !notice) return await abortedBeforeLoop();
+        // Images enter the journal as requests carry them: scaled down once here, not on every request after.
+        const messages = await fittedImages(promptMessages!);
+        // The message lands in history, and no model is asked: the runtime's refusal of a turn it would start (a cap reached), or that abort.
+        const land = async (stop: RunStop) => {
           for (const message of messages) {
             io.emit({ type: "message_start", message });
             await journal.push(message);
@@ -1058,12 +1061,12 @@ export function createAgentHost(hostIO: HostIO) {
           }
           await journal.setActive(false);
           await compactLanded(messages);
-          const { stopped: why, message: said } = params.landOnly as RunStop;
-          return { messages: journal.total, error: said, stopped: why, ...stopFields(params.landOnly) };
-        }
-        // Images enter the journal as requests carry them: scaled down once here, not on every request after.
-        const messages = await fittedImages(promptMessages!);
+          return { messages: journal.total, error: stop.message, stopped: stop.stopped, ...stopFields(stop) };
+        };
+        if (params.landOnly) return await land(params.landOnly as RunStop);
+        if (notice && active.signal.aborted) return await land(STOPPED_NOTICE as RunStop);
         await agent.prompt(messages);
+        if (notice && active.signal.aborted && !(await journal.turnMessages()).some(message => (message as { requestId?: string }).requestId === params.requestId)) return await land(STOPPED_NOTICE as RunStop);
       }
       await remindOfOutput(active.signal);
       if (journal.failed !== undefined) throw journal.failed;
