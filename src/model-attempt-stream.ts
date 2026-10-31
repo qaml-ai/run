@@ -20,7 +20,7 @@ const zeroUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tot
  * call replaces it (`finish`'s `superseded`), so it is recorded but not charged.
  */
 export async function attemptStream(model: Model<Api>, key: string, kind: "response" | "compaction", hook: ModelAttemptHook | undefined,
-  start: (sink: UsageSink, halt: AbortSignal) => AssistantMessageEventStream, estimate?: AttemptEstimate, onRefused?: (stop: CreditStop) => void, gateway = false,
+  start: (sink: UsageSink, halt: AbortSignal, maxOutputTokens: number | undefined) => AssistantMessageEventStream, estimate?: AttemptEstimate, onRefused?: (stop: CreditStop) => void, gateway = false,
   supersede?: (message: AssistantMessage) => Superseded | undefined): Promise<AssistantMessageEventStream> {
   const id = randomUUID(), at = Date.now();
   let ack: AttemptAck;
@@ -41,7 +41,7 @@ export async function attemptStream(model: Model<Api>, key: string, kind: "respo
     generation = value;
   } } : {}) };
   const halt = new AbortController();
-  const stream = start(sink, halt.signal);
+  const stream = start(sink, halt.signal, ack.maxOutputTokens);
   if (!tracked) return stream;
   const out = createAssistantMessageEventStream();
   /**

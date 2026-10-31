@@ -6,7 +6,8 @@ import { databaseUnavailable, databaseRetryable, transaction, type Db } from "./
 import { isSubscriptionProvider, platformUsage, usageMissing } from "./platform-pricing.ts";
 import { enqueueEvents } from "./webhooks.ts";
 import { clock, network } from "./node-context.ts";
-import type { AttemptAck, ModelAttemptEvent, Superseded } from "./model-attempt.ts";
+import type { AttemptAck, AttemptEstimate, CreditStop, ModelAttemptEvent, Superseded } from "./model-attempt.ts";
+import { CreditHolds } from "./credit-holds.ts";
 import { lastCallMin, lockEndUser, settleUsage, unmarked, utcDay, type EndUserCredits } from "./end-user-credits.ts";
 import { catalogCost, costAt, UNPRICED_COST, unpricedCost } from "./platform-pricing.ts";
 import { usageCost } from "./webhooks.ts";
@@ -31,21 +32,40 @@ export const INITIAL_OUTPUT_TOKENS = 2_048;
 export const MIN_OUTPUT_TOKENS = 256;
 /** Streamed characters per output token, as an output estimate counts them: fewer than real tokens take, so it runs ahead of cost. */
 const CHARS_PER_TOKEN = 2;
-/** A call metered for its end user while it runs on this node: who pays, its input's estimated cost and its output's per token (raw micro-USD), the most output it asked for, and what it holds. */
-type Metered = { tenant: string; endUser: string; bucket: string; input: number; perToken: number; maxOutput: number; held: number };
+/**
+ * A hold on a call running on this node, of its end user's credit or its tenant's: its input's estimated cost and its
+ * output's per token (raw micro-USD), the most output it asked for, what it holds, and how to hold more.
+ */
+type Metered = { input: number; perToken: number; maxOutput: number; held: number; more(want: number): Promise<{ raw: number; refused?: CreditStop }>; renew(): Promise<unknown> };
 /** How far ahead of the end of its hold a streaming call asks for more, so its stream never waits on the answer. */
 const ASK_AHEAD_TOKENS = 2_048;
 /**
  * Where a metered call's estimate reaches what it holds (`stopAtChars`), and where it asks for more ahead of that
- * (`checkAtChars`); neither when its output costs nothing.
+ * (`checkAtChars`); neither when its output costs nothing. With two holds, the nearer.
  */
-const lines = (metered: Metered): Pick<AttemptAck, "checkAtChars" | "stopAtChars"> => {
-  if (!(metered.perToken > 0)) return {};
-  // A last call may hold less than its input: it still gets a short reply, as any call that starts does.
-  const stop = Math.max(Math.min(metered.maxOutput, MIN_OUTPUT_TOKENS) * CHARS_PER_TOKEN, Math.floor((metered.held - metered.input) / metered.perToken * CHARS_PER_TOKEN));
-  // A short hold asks halfway through, so a reply that fits it never asks at all.
-  return { stopAtChars: stop, checkAtChars: Math.max(0, stop - Math.min(ASK_AHEAD_TOKENS * CHARS_PER_TOKEN, Math.floor(stop / 2))) };
+const lines = (holds: Metered[]): Pick<AttemptAck, "checkAtChars" | "stopAtChars"> => {
+  const each = holds.filter(metered => metered.perToken > 0).map(metered => {
+    // A last call may hold less than its input: it still gets a short reply, as any call that starts does.
+    const stop = Math.max(Math.min(metered.maxOutput, MIN_OUTPUT_TOKENS) * CHARS_PER_TOKEN, Math.floor((metered.held - metered.input) / metered.perToken * CHARS_PER_TOKEN));
+    // A short hold asks halfway through, so a reply that fits it never asks at all.
+    return { stopAtChars: stop, checkAtChars: Math.max(0, stop - Math.min(ASK_AHEAD_TOKENS * CHARS_PER_TOKEN, Math.floor(stop / 2))) };
+  });
+  return each.length ? { stopAtChars: Math.min(...each.map(line => line.stopAtChars)), checkAtChars: Math.min(...each.map(line => line.checkAtChars)) } : {};
 };
+
+/** The most output `most` (micro-USD, all that could be held) pays for after the call's input: at least what any call that starts gets. */
+const affordable = (metered: Metered, most: number) => metered.perToken > 0 ? Math.max(Math.min(metered.maxOutput, MIN_OUTPUT_TOKENS), Math.floor((most - metered.input) / metered.perToken)) : undefined;
+
+/** A call's estimated cost at `rates`: the long-context tier its input reaches, where the rates have one. */
+function callCost(rates: { input: number; output: number; cacheRead?: number; tiers?: { inputTokensAbove: number; input: number; output: number; cacheRead?: number }[] }, estimate: AttemptEstimate | undefined, funding: number) {
+  const inputTokens = Math.max(0, estimate?.inputTokens ?? 0), cached = Math.min(inputTokens, Math.max(0, estimate?.cachedTokens ?? 0));
+  const tier = rates.tiers?.filter(entry => inputTokens > entry.inputTokensAbove).at(-1) ?? rates;
+  // USD per million tokens is micro-USD per token. Its input at the input rate, but for the part the provider likely reads from its cache, at that rate.
+  const inputRate = Math.max(0, Number(tier.input) || 0), cachedRate = Math.min(inputRate, Math.max(0, Number(tier.cacheRead ?? inputRate) || 0));
+  const perToken = Math.max(0, Number(tier.output) || 0) * funding, input = Math.ceil(((inputTokens - cached) * inputRate + cached * cachedRate) * funding);
+  const maxOutput = Math.max(1, estimate?.maxOutputTokens ?? HOLD_OUTPUT_TOKENS);
+  return { input, perToken, maxOutput, want: input + Math.ceil(Math.min(maxOutput, INITIAL_OUTPUT_TOKENS) * perToken), min: lastCallMin(input + Math.ceil(Math.min(maxOutput, MIN_OUTPUT_TOKENS) * perToken)) };
+}
 
 /** Durable provider attempts. Retried delivery and concurrent reconciliation change each charge only by its delta. */
 export class ModelAttempts {
@@ -58,10 +78,12 @@ export class ModelAttempts {
   readonly scopedKey?: (tenant: string, scope: string) => Promise<string | { baseUrl: string } | undefined>;
   /** End users' credit: a begin naming its end user holds its estimate, and a settlement posts what it cost them. */
   readonly endUsers?: EndUserCredits;
-  /** Calls metered for their end users, in flight on this node, by attempt id. */
-  private readonly metered = new Map<string, Metered>();
+  /** Calls metered for their end users or tenants, in flight on this node, by attempt id. */
+  private readonly metered = new Map<string, Metered[]>();
+  private readonly credit: CreditHolds;
   constructor(db: Db, accounts: Accounts, fetcher: typeof fetch = network().fetch, retryMs = 0, scopedKey?: (tenant: string, scope: string) => Promise<string | { baseUrl: string } | undefined>, endUsers?: EndUserCredits) {
     this.db = db; this.accounts = accounts; this.fetcher = fetcher; this.retryMs = retryMs; this.scopedKey = scopedKey; this.endUsers = endUsers;
+    this.credit = new CreditHolds(db, accounts.billing);
   }
 
   async event(tenant: string, agent: string, platform: boolean, catalogPriced: boolean, event: ModelAttemptEvent): Promise<boolean | AttemptAck> {
@@ -80,21 +102,28 @@ export class ModelAttempts {
     if (!uuid.test(event.id)) throw new Error("Invalid model attempt id");
     if (event.type === "begin") {
       if (!/^[a-f0-9]{64}$/.test(event.keyHash)) throw new Error("Invalid model key fingerprint");
-      // Its end user's hold comes first: a call their credit refuses is never made, and leaves no attempt.
+      // Its holds come first: a call their credit refuses is never made, and leaves no attempt.
       const metered = event.endUser && this.endUsers ? await this.hold(tenant, platform, platform && catalogPriced, event) : undefined;
       if (metered && "refused" in metered) return { tracked: false, refused: metered.refused };
+      const credit = await this.creditHold(tenant, platform, event);
+      if (credit && "refused" in credit) {
+        if (metered) await this.endUsers!.release(event.id);
+        return { tracked: false, refused: credit.refused };
+      }
       const prepaid = await this.accounts.billing.mode(tenant) === "prepaid";
       // Keep the input estimate for calls with evidence of usage but no final token counts.
       const inputTokens = Number(event.estimate?.inputTokens);
       await this.db.query(`insert into model_attempts (id,tenant,agent,provider,model,kind,platform,catalog_priced,prepaid,key_hash,context,started_at,updated_at,next_check_at,end_user,end_user_bucket,estimated_input_tokens)
         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16) on conflict (id) do nothing`,
         [event.id, tenant, agent, event.provider, event.model, event.kind, platform, catalogPriced, prepaid, event.keyHash, JSON.stringify({ ...event.context, ...(event.reconciliationEligible === undefined ? {} : { reconciliationEligible: event.reconciliationEligible }), ...(event.reconciliationDisabled || event.keyHash === hash("") ? { reconciliationDisabled: event.reconciliationDisabled ?? "Empty provider credential has no reconciliation; reported usage is final" } : {}) }), event.at, Date.now() + 300_000,
-          metered ? metered.endUser : null, metered ? metered.bucket : null, Number.isFinite(inputTokens) && inputTokens > 0 ? Math.min(Math.round(inputTokens), 2_000_000_000) : null]);
+          metered ? event.endUser!.id : null, metered ? event.endUser!.bucket : null, Number.isFinite(inputTokens) && inputTokens > 0 ? Math.min(Math.round(inputTokens), 2_000_000_000) : null]);
       const row = (await this.db.query("select tenant,agent,provider,model from model_attempts where id=$1", [event.id])).rows[0];
       if (row.tenant !== tenant || row.agent !== agent || row.provider !== event.provider || row.model !== event.model) throw new Error("Model attempt identity mismatch");
-      if (!metered) return true;
-      this.metered.set(event.id, metered);
-      return { tracked: true, ...lines(metered) };
+      const holds = [metered, credit].filter(hold => !!hold) as (Metered & { most: number })[];
+      if (!holds.length) return true;
+      this.metered.set(event.id, holds);
+      const most = holds.flatMap(hold => affordable(hold, hold.most) ?? []);
+      return { tracked: true, ...lines(holds), ...(most.length ? { maxOutputTokens: Math.min(...most) } : {}) };
     }
     if (event.type === "progress") {
       await this.db.query("update model_attempts set updated_at=$4 where id=$1 and tenant=$2 and agent=$3 and state<>'settled'", [event.id, tenant, agent, Date.now()]);
@@ -116,7 +145,7 @@ export class ModelAttempts {
    * rates where the tenant pays the platform for the call (its own key's call: at its model's, as the host has them).
    * Undefined: the tenant does not meter its end users.
    */
-  private async hold(tenant: string, platform: boolean, catalog: boolean, event: Extract<ModelAttemptEvent, { type: "begin" }>): Promise<Metered | { refused: NonNullable<AttemptAck["refused"]> } | undefined> {
+  private async hold(tenant: string, platform: boolean, catalog: boolean, event: Extract<ModelAttemptEvent, { type: "begin" }>): Promise<(Metered & { most: number }) | { refused: CreditStop } | undefined> {
     // The connected ChatGPT plan pays for this call, including through a tenant's gateway.
     if (isSubscriptionProvider(event.provider)) return undefined;
     const { endUser, estimate } = event;
@@ -130,17 +159,40 @@ export class ModelAttempts {
     if (catalog && !listed || unpriced) console.error(JSON.stringify({ type: "end_user_unpriced_model", tenant, attempt: event.id, provider: event.provider, model: event.model, stage: "hold" }));
     // On the platform's OpenRouter key, the tenant also pays for funding its credits (settled as it is charged: `settle`).
     const funding = platform && event.provider === "openrouter" ? this.accounts.billing.pricing.openrouterCreditMultiplier : 1;
-    // USD per million tokens is micro-USD per token.
-    // Its input at the input rate, but for the part the provider likely reads from its cache, at that rate.
-    const inputTokens = Math.max(0, estimate?.inputTokens ?? 0), cached = Math.min(inputTokens, Math.max(0, estimate?.cachedTokens ?? 0));
-    const inputRate = Math.max(0, Number(rates.input) || 0), cachedRate = Math.min(inputRate, Math.max(0, Number(rates.cacheRead ?? inputRate) || 0));
-    const perToken = Math.max(0, Number(rates.output) || 0) * funding, input = Math.ceil(((inputTokens - cached) * inputRate + cached * cachedRate) * funding);
-    const maxOutput = Math.max(1, estimate?.maxOutputTokens ?? HOLD_OUTPUT_TOKENS);
-    const want = input + Math.ceil(Math.min(maxOutput, INITIAL_OUTPUT_TOKENS) * perToken);
-    const reserved = await this.endUsers!.reserve(tenant, endUser!.id, endUser!.bucket, { id: event.id, want, min: lastCallMin(input + Math.ceil(Math.min(maxOutput, MIN_OUTPUT_TOKENS) * perToken)) });
+    const cost = callCost(rates, estimate, funding);
+    const reserved = await this.endUsers!.reserve(tenant, endUser!.id, endUser!.bucket, { id: event.id, want: cost.want, min: cost.min });
     if (!reserved) return undefined;
     if (reserved.refused) return { refused: reserved.refused };
-    return { tenant, endUser: endUser!.id, bucket: endUser!.bucket, input, perToken, maxOutput, held: reserved.hold.raw };
+    return {
+      input: cost.input, perToken: cost.perToken, maxOutput: cost.maxOutput, held: reserved.hold.raw, most: reserved.most ?? reserved.hold.raw,
+      more: async want => { const more = await this.endUsers!.extend(tenant, endUser!.id, endUser!.bucket, event.id, want); return more.hold ? { raw: more.hold.raw } : { raw: 0, refused: more.refused }; },
+      renew: () => this.endUsers!.renew(tenant, endUser!.id, event.id),
+    };
+  }
+
+  /**
+   * Hold a call's estimate of its tenant's credit, where the platform's key pays for it and the tenant pays from credit
+   * (credit-holds.ts). A model with no price holds at a mid-range one, as for an end user: a router's cost depends on where
+   * it sends the call, so its catalog entry says zero, and only a `:free` model is really free. What it cost is what settles.
+   */
+  private async creditHold(tenant: string, platform: boolean, event: Extract<ModelAttemptEvent, { type: "begin" }>): Promise<(Metered & { most: number }) | { refused: CreditStop } | undefined> {
+    if (!platform || !event.estimate || isSubscriptionProvider(event.provider) || await this.accounts.billing.mode(tenant) !== "prepaid") return undefined;
+    if (/:free$/.test(event.model)) return undefined;
+    const listed = catalogCost(event.provider, event.model);
+    const rates = listed && (listed.input > 0 || listed.output > 0) ? listed : UNPRICED_COST;
+    const funding = event.provider === "openrouter" ? this.accounts.billing.pricing.openrouterCreditMultiplier : 1;
+    const cost = callCost(rates, event.estimate, funding);
+    if (!(cost.want > 0)) return undefined;
+    const reserved = await this.credit.reserve(tenant, event.id, cost.want, cost.min);
+    if (!reserved) return { refused: { message: "This account's credit does not cover this model call", reason: "balance" } };
+    return {
+      input: cost.input, perToken: cost.perToken, maxOutput: cost.maxOutput, held: reserved.held, most: reserved.most,
+      more: async want => {
+        const raw = await this.credit.extend(tenant, event.id, want);
+        return raw ? { raw } : { raw: 0, refused: { message: "This account's credit ran out during this model call", reason: "balance" } };
+      },
+      renew: () => this.credit.renew(event.id),
+    };
   }
 
   /**
@@ -149,16 +201,18 @@ export class ModelAttempts {
    * that needs no more yet (a slow reply, reporting as time passes: `RENEW_MS`) keeps its hold from lapsing.
    */
   private async progress(id: string, chars: number): Promise<AttemptAck> {
-    const metered = this.metered.get(id);
-    if (!metered) return { tracked: true };
-    const spent = metered.input + Math.ceil(chars / CHARS_PER_TOKEN * metered.perToken);
-    const want = spent + Math.ceil(HOLD_OUTPUT_TOKENS * metered.perToken) - metered.held;
-    if (want > 0) {
-      const more = await this.endUsers!.extend(metered.tenant, metered.endUser, metered.bucket, id, want);
-      if (!more.hold) return { tracked: true, stopAtChars: lines(metered).stopAtChars, refused: more.refused };
-      metered.held += more.hold.raw;
-    } else await this.endUsers!.renew(metered.tenant, metered.endUser, id);
-    return { tracked: true, ...lines(metered) };
+    const holds = this.metered.get(id);
+    if (!holds) return { tracked: true };
+    for (const metered of holds) {
+      const spent = metered.input + Math.ceil(chars / CHARS_PER_TOKEN * metered.perToken);
+      const want = spent + Math.ceil(HOLD_OUTPUT_TOKENS * metered.perToken) - metered.held;
+      if (want > 0) {
+        const more = await metered.more(want);
+        if (more.refused) return { tracked: true, stopAtChars: lines(holds).stopAtChars, refused: more.refused };
+        metered.held += more.raw;
+      } else await metered.renew();
+    }
+    return { tracked: true, ...lines(holds) };
   }
 
   /**
@@ -179,6 +233,7 @@ export class ModelAttempts {
         await lockEndUser(sql, tenant, row.end_user);
         hold = (await sql.query("delete from end_user_holds where id=$1 returning allowance, paid", [id])).rows[0];
       }
+      if (!reconciled) await sql.query("delete from credit_holds where id=$1", [id]);
       // A provider-reconciled or completed record is final. Delayed host deliveries cannot overwrite it.
       if (row.state === "settled" || (!reconciled && !completed && row.totals)) return;
       if (superseded && row.context?.superseded !== superseded) {
