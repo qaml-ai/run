@@ -34,7 +34,7 @@ export async function fixture(t: { after: (fn: () => Promise<void>) => void }, o
     if (options.releaseDelayMs) busyAgents.release = async agent => { await sleep(options.releaseDelayMs!); await release(agent); };
   }
   let sessions = new ClientSessions(supervisor, { db, root: join(root, "sessions"), secret: token, apiKeyFor: () => "fixture-only", toolTimeoutMs: options.timeout ?? 3000, eventBytes: options.eventBytes, idleMs: options.idleMs, maxAgentsPerTenant: options.perTenant, ttlMs: options.ttlMs, maxWatchers: options.maxWatchers, maxNodeWatchers: options.maxNodeWatchers, maxTenantWatchers: options.maxTenantWatchers, busyAgents });
-  let model = configuredModel();
+  let model = configuredModel({ AGENT_PROVIDER: "openrouter" });
   const server = createServer(getRequestListener(async (req, env) => {
     if (new URL(req.url).pathname.startsWith("/clients/")) return sessions.app.fetch(req, env);
     if (req.headers.get("authorization") !== `Bearer ${token}`) return new Response(null, { status: 401 });

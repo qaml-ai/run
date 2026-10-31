@@ -146,7 +146,7 @@ test("a request that arrives while its idle agent is being stopped waits and res
 test("expired agents are removed, but an agent without a lifetime stays until deleted", async t => {
   // Shorter than an agent takes to start: the agent expires once it is made, never while it is being made.
   const f = await fixture(t, { ttlMs: 30, idleMs: 100 });
-  const config = { model: configuredModel() };
+  const config = { model: configuredModel({ AGENT_PROVIDER: "openrouter" }) };
   const brief = await f.sessions.create([], config, "brief", {}, "default");
   const lasting = await f.sessions.create([], config, "lasting", {}, "default", null);
   assert.equal(lasting.expiresAt, null);
@@ -159,7 +159,7 @@ test("expired agents are removed, but an agent without a lifetime stays until de
 
 test("an agent with an idle lifetime lives on from its runs, and expires once left idle", async t => {
   const f = await fixture(t, { idleMs: 100 });
-  const made = await f.sessions.create([], { model: configuredModel() }, "idle", {}, "default", undefined, undefined, undefined, undefined, { idleTtlMs: 1_500 });
+  const made = await f.sessions.create([], { model: configuredModel({ AGENT_PROVIDER: "openrouter" }) }, "idle", {}, "default", undefined, undefined, undefined, undefined, { idleTtlMs: 1_500 });
   const state = () => fetch(`${f.url}/clients/${made.id}/state`, { headers: { Authorization: `Bearer ${made.token}` } });
   const run = (id: string) => fetch(`${f.url}/clients/${made.id}/requests`, { method: "POST", headers: { Authorization: `Bearer ${made.token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ id, method: "execute", params: { code: "return 1", allowDisconnected: true } }) });
@@ -266,7 +266,7 @@ test("concurrent starts never take a tenant past its quota, and refused creates 
   const sessions = f.sessions as unknown as { writeHeader: (...args: unknown[]) => Promise<void> };
   const writeHeader = sessions.writeHeader.bind(sessions);
   sessions.writeHeader = async (...args) => { await sleep(50); return writeHeader(...args); };
-  const results = await Promise.allSettled(Array.from({ length: 6 }, (_, index) => f.sessions.create([], { model: configuredModel() }, `concurrent-${index}`, {}, "default")));
+  const results = await Promise.allSettled(Array.from({ length: 6 }, (_, index) => f.sessions.create([], { model: configuredModel({ AGENT_PROVIDER: "openrouter" }) }, `concurrent-${index}`, {}, "default")));
   for (const result of results) if (result.status === "rejected") assert.equal(result.reason.status, 429, String(result.reason));
   const created = results.filter(result => result.status === "fulfilled").map(result => (result as PromiseFulfilledResult<{ id: string }>).value.id);
   assert.ok(created.length >= 2);

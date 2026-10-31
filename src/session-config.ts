@@ -1,4 +1,5 @@
 import { passthroughModel } from "./openrouter-model.ts";
+import { VIRTUAL_PROVIDER, virtualModel } from "./virtual-models.ts";
 import { getModel, temperatureRefusal } from './pi-catalog.ts';
 import { MIN_CONTEXT_TOKENS, type AgentConfig, type RunLimits } from './protocol.ts';
 import { validateDefinitions } from './tool-policy.ts';
@@ -126,6 +127,11 @@ export function resolveModel(reference: string, endpoints?: ModelEndpoints, cust
   if (endpoints && Object.hasOwn(endpoints, provider)) return endpointModel(provider, reference.slice(slash + 1), endpoints[provider]);
   if (custom && Object.hasOwn(custom, provider)) return customModel(provider, reference.slice(slash + 1), custom[provider]);
   const id = reference.slice(slash + 1);
+  if (provider === VIRTUAL_PROVIDER) {
+    const selection = virtualModel(reference);
+    if (!selection) throw new Error(`Unknown model "${reference}"; see GET /v1/models`);
+    return selection as AgentConfig['model'];
+  }
   // A routing variant (`…:nitro`) is looked up without it and sent with it; exact ids (`…:batch`) win.
   const known = lookup(provider, id);
   const base = known ?? lookup(provider, id.replace(/:[a-z]+$/, ''));
@@ -197,7 +203,7 @@ export function dataCollectionInput(value: unknown): "deny" | null {
  * undefined when it can: more output than the model writes in a response, or a temperature it would refuse (`temperatureRefusal`).
  */
 export function modelSettingsRefusal(model: AgentConfig['model'], settings: Pick<AgentConfig, 'maxOutputTokens' | 'temperature' | 'thinkingLevel'>): string | undefined {
-  const name = `${model.provider}/${model.id}`;
+  const name = (model as { virtual?: string }).virtual ?? `${model.provider}/${model.id}`;
   if (settings.maxOutputTokens != null && settings.maxOutputTokens > model.maxTokens) return `maxOutputTokens must be at most ${model.maxTokens} for ${name}, the most it writes in a response`;
   const why = settings.temperature != null ? temperatureRefusal(model, settings.thinkingLevel ?? 'off') : undefined;
   return why && `${name} takes no temperature ${why}. Remove it with temperature: null`;

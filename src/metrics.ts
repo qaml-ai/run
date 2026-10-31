@@ -383,13 +383,13 @@ export function observeTurns(model: () => { provider: string; id: string } | und
 }
 
 /**
- * A model request made again on another provider's model (content-filter-fallback.ts): from which model to
+ * A model request made again on another provider's model (model-fallback.ts): from which model to
  * which, and why (`content_filter`: the provider's content filter blocked it). Names only, never what was blocked.
  */
-export function recordModelFallback(fallback: { tenant?: string; agent: string; from: string; to: string; reason: "content_filter" }) {
+export function recordModelFallback(fallback: { tenant?: string; agent: string; from: string; to: string; reason: "content_filter" | "unavailable"; errorClass?: string }) {
   emit("model_fallback", {
     dimensions: { From: fallback.from, To: fallback.to, Reason: fallback.reason }, rollups: [["Reason"], ["From", "To", "Reason"]],
-    metrics: { ModelFallbacks: 1 }, properties: { agent: fallback.agent, ...(fallback.tenant ? { tenant: fallback.tenant } : {}) },
+    metrics: { ModelFallbacks: 1 }, properties: { agent: fallback.agent, ...(fallback.tenant ? { tenant: fallback.tenant } : {}), ...(fallback.errorClass ? { errorClass: fallback.errorClass } : {}) },
   });
 }
 

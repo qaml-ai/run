@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { configuredModel, defaultModels } from "../src/model.ts";
+import { modelReference } from "../src/virtual-models.ts";
 import { anthropic, gateway } from "./provider-fixtures.ts";
 import { OPERATOR, OTHER_OPERATOR, runtime } from "./runtime-server.ts";
 import { createHash } from "node:crypto";
@@ -12,9 +13,9 @@ const FLAGSHIP = "openrouter/deepseek/deepseek-v4.1-flash-1017";
 const PRODUCTION = { ...LOCAL, AGENT_PROVIDER: "openrouter", AGENT_MODEL: "deepseek/deepseek-v4.1-flash-1017", AGENT_BASE_URL: "" };
 const NOBODY = "nobody-operator-token-at-least-24-chars";
 
-test("the default is DeepSeek V4.1 Flash 1017 on OpenRouter, without :nitro; a runtime that names any part of its model keeps what that named", () => {
-  const reference = (env: NodeJS.ProcessEnv) => { const model = configuredModel(env); return `${model.provider}/${model.id}`; };
-  assert.equal(reference({}), FLAGSHIP);
+test("the default is the virtual model camelrun/default; a runtime that names any part of its model keeps what that named", () => {
+  const reference = (env: NodeJS.ProcessEnv) => modelReference(configuredModel(env));
+  assert.equal(reference({}), "camelrun/default");
   assert.equal(reference({ AGENT_PROVIDER: "openrouter" }), FLAGSHIP);
   assert.equal(reference({ AGENT_PROVIDER: "anthropic" }), "anthropic/claude-sonnet-5-5");
   assert.equal(reference({ AGENT_MODEL: "claude-sonnet-5" }), "anthropic/claude-sonnet-5");
@@ -24,7 +25,7 @@ test("the default is DeepSeek V4.1 Flash 1017 on OpenRouter, without :nitro; a r
 });
 
 test("the default models are AGENT_MODEL, then DeepSeek on Azure and Sonnet 5.5 for a tenant without its key, or AGENT_MODEL_FALLBACKS", () => {
-  const head = configuredModel({});
+  const head = configuredModel({ AGENT_PROVIDER: "openrouter" });
   assert.deepEqual(defaultModels(head, undefined).map(model => `${model.provider}/${model.id}`), [
     FLAGSHIP, "azure/deepseek-v4.1-flash", "anthropic/claude-sonnet-5-5", "openrouter/anthropic/claude-sonnet-5.5", "amazon-bedrock/global.anthropic.claude-sonnet-5-5",
   ]);

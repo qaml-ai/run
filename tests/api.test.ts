@@ -132,7 +132,7 @@ async function runtime(t: { after(fn: () => Promise<void>): void }, github?: str
 test("tenants set provider keys over REST; keys are encrypted at rest and never returned", async t => {
   const { db, call } = await runtime(t);
   assert.equal((await call("/v1/me")).status, 401);
-  assert.deepEqual((await call("/v1/me", { token: alice })).json, { tenant: "alice", via: "operator", canStoreKeys: true, defaultModel: "openrouter/deepseek/deepseek-v4.1-flash-1017" });
+  assert.deepEqual((await call("/v1/me", { token: alice })).json, { tenant: "alice", via: "operator", canStoreKeys: true, defaultModel: "camelrun/default" });
   const providers = (await call("/v1/providers", { token: alice })).json as any[];
   const anthropic = providers.find(provider => provider.id === "anthropic");
   assert.equal(anthropic.apiKey, true);
@@ -283,7 +283,7 @@ test("console sessions require same-origin mutations; an email and password an o
   const cookie = signIn.headers.get("set-cookie")!.split(";")[0];
   assert.match(cookie, /^ar_session=[A-Za-z0-9_-]{43}$/, "the cookie is only a random id");
   assert.match(signIn.headers.get("set-cookie")!, /HttpOnly; SameSite=Lax/);
-  assert.deepEqual((await call("/v1/me", { headers: { Cookie: cookie } })).json, { tenant: "alice", via: "console", login: "alice@example.test", signIn: "password", canStoreKeys: true, defaultModel: "openrouter/deepseek/deepseek-v4.1-flash-1017" });
+  assert.deepEqual((await call("/v1/me", { headers: { Cookie: cookie } })).json, { tenant: "alice", via: "console", login: "alice@example.test", signIn: "password", canStoreKeys: true, defaultModel: "camelrun/default" });
   // Reads work with the cookie; writes need the console header and our origin, as Origin or Sec-Fetch-Site names it.
   const agent = { name: "x" };
   assert.equal((await call("/v1/agents", { body: agent, headers: { Cookie: cookie } })).status, 403);
@@ -456,7 +456,7 @@ test("GitHub sign-in admits active org members, links admin tenants, and creates
   assert.equal((await signIn("Bob-Builder", "//evil.example/oauth/authorize?")).location, "/console/");
   assert.equal((await call("/v1/me", { headers: { Cookie: bobSession.session! } })).json.tenant, "bob");
   const carol = await signIn("Carol");
-  assert.deepEqual((await call("/v1/me", { headers: { Cookie: carol.session! } })).json, { tenant: "carol", via: "console", login: "Carol", signIn: "github", canStoreKeys: true, defaultModel: "openrouter/deepseek/deepseek-v4.1-flash-1017" });
+  assert.deepEqual((await call("/v1/me", { headers: { Cookie: carol.session! } })).json, { tenant: "carol", via: "console", login: "Carol", signIn: "github", canStoreKeys: true, defaultModel: "camelrun/default" });
   const mallory = await signIn("Mallory");
   assert.equal(mallory.session, undefined);
   assert.match(decodeURIComponent(mallory.location), /Only members of the qaml-ai/);
@@ -486,7 +486,7 @@ test("Google sign-in verifies the ID token, creates separate tenants, and return
   };
   const ada = await signIn({ sub: "1001", email: "ada@example.com", email_verified: true, name: "Ada Lovelace" });
   assert.equal(ada.location, "/console/");
-  assert.deepEqual((await call("/v1/me", { headers: { Cookie: ada.session! } })).json, { tenant: neutral("1001"), via: "console", login: "ada@example.com", name: "Ada Lovelace", signIn: "google", canStoreKeys: true, defaultModel: "openrouter/deepseek/deepseek-v4.1-flash-1017" });
+  assert.deepEqual((await call("/v1/me", { headers: { Cookie: ada.session! } })).json, { tenant: neutral("1001"), via: "console", login: "ada@example.com", name: "Ada Lovelace", signIn: "google", canStoreKeys: true, defaultModel: "camelrun/default" });
   // No automatic starting credit: the account starts at zero.
   const billing = (await call("/v1/billing", { headers: { Cookie: ada.session! } })).json;
   assert.equal(billing.balance, 0);

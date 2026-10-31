@@ -655,9 +655,10 @@
               "superseded": {
                 "type": "string",
                 "enum": [
-                  "content_filter"
+                  "content_filter",
+                  "unavailable"
                 ],
-                "description": "A response that is not the answer, and not charged: content_filter, its provider's content filter blocked it and the request was made again on the same model elsewhere (AGENT_CONTENT_FILTER_FALLBACKS), whose own usage.recorded follows. Its usage and cost are what the blocked call took, for your books; do not charge your users for it"
+                "description": "A response that is not the answer, and not charged: unavailable, a virtual model's member could not take the request, which the next did; content_filter, its provider's content filter blocked it and the request was made again on the same model elsewhere (AGENT_CONTENT_FILTER_FALLBACKS), whose own usage.recorded follows. Its usage and cost are what the blocked call took, for your books; do not charge your users for it"
               }
             },
             "required": [
@@ -2551,8 +2552,8 @@
           },
           "defaultModel": {
             "type": "string",
-            "description": "The model an agent of this tenant gets when it names none, as provider/model-id: the first of the runtime's defaults (DeepSeek V4.1 Flash on OpenRouter, then on Azure, then Claude Sonnet 5.5 on Anthropic, OpenRouter and Bedrock) the tenant holds a key for, else the first the platform's keys serve. An agent with a key scope counts the scope's keys too",
-            "example": "openrouter/deepseek/deepseek-v4.1-flash-1017"
+            "description": "The model an agent of this tenant gets when it names none, as provider/model-id: the first of the runtime's defaults (the virtual model camelrun/default on OpenRouter, then DeepSeek V4.1 Flash on Azure, then Claude Sonnet 5.5 on Anthropic, OpenRouter and Bedrock) the tenant holds a key for, else the first the platform's keys serve. An agent with a key scope counts the scope's keys too",
+            "example": "camelrun/default"
           }
         },
         "required": [
@@ -3234,6 +3235,13 @@
       "Model": {
         "type": "object",
         "properties": {
+          "routes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A virtual model's physical models, most preferred first: each request is made on the first that can take it, and its run and usage name the one that did. Its other fields are the first's"
+          },
           "id": {
             "type": "string",
             "description": "Pass this as `model` when creating or configuring an agent",

@@ -1,16 +1,22 @@
 import { getModel } from "./pi-catalog.ts";
 import type { Passthrough } from "./openrouter-model.ts";
 import { resolveModel } from "./session-config.ts";
+import { VIRTUAL_PROVIDER, type VirtualSelection } from "./virtual-models.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
+const DEFAULT_VIRTUAL_MODEL = `${VIRTUAL_PROVIDER}/default`;
+
 /**
- * The default with none of AGENT_PROVIDER, AGENT_MODEL and AGENT_BASE_URL set. Any of them set names what it always
- * named, so a runtime configured before DeepSeek became the default starts as it did: AGENT_MODEL (or an endpoint) alone
- * is Anthropic's, AGENT_PROVIDER=anthropic alone is Claude Sonnet 5.5.
+ * The default with none of AGENT_PROVIDER, AGENT_MODEL and AGENT_BASE_URL set: the virtual model `camelrun/default`
+ * (virtual-models.ts; AGENT_PROVIDER=camelrun, AGENT_MODEL=default names it). Any of them set names what it always named,
+ * so a runtime configured earlier starts as it did: AGENT_MODEL (or an endpoint) alone is Anthropic's,
+ * AGENT_PROVIDER=anthropic alone is Claude Sonnet 5.5, and AGENT_PROVIDER=openrouter alone is DeepSeek V4.1 Flash 1017.
  */
-export function configuredModel(env: NodeJS.ProcessEnv = process.env): Model<Api> {
+export function configuredModel(env: NodeJS.ProcessEnv = process.env): VirtualSelection {
   const unset = env.AGENT_PROVIDER === undefined && env.AGENT_MODEL === undefined && env.AGENT_BASE_URL === undefined;
-  const provider = env.AGENT_PROVIDER ?? (unset ? "openrouter" : "anthropic");
+  if (unset) return resolveModel(DEFAULT_VIRTUAL_MODEL);
+  if (env.AGENT_PROVIDER === VIRTUAL_PROVIDER) return resolveModel(`${VIRTUAL_PROVIDER}/${env.AGENT_MODEL ?? "default"}`);
+  const provider = env.AGENT_PROVIDER ?? "anthropic";
   const id = env.AGENT_MODEL ?? (provider === "openrouter" ? "deepseek/deepseek-v4.1-flash-1017" : "claude-sonnet-5-5");
   const model = getModel(provider, id);
   if (!model) throw new Error(`Unknown Pi model: ${provider}/${id}`);
@@ -36,7 +42,7 @@ function catalogModel(reference: string): Model<Api> {
  * then AGENT_MODEL_FALLBACKS (provider/model references, comma-separated; empty for none). Each
  * agent gets the first its key scope or its tenant holds a key for, else the first the platform's keys serve.
  */
-export function defaultModels(head: Model<Api>, fallbacks = process.env.AGENT_MODEL_FALLBACKS): Model<Api>[] {
+export function defaultModels(head: VirtualSelection, fallbacks = process.env.AGENT_MODEL_FALLBACKS): VirtualSelection[] {
   const models = [head];
   for (const reference of (fallbacks ?? FALLBACKS).split(",").map(entry => entry.trim()).filter(Boolean)) {
     let model: Model<Api>;
@@ -56,7 +62,7 @@ const CONTENT_FILTER_FALLBACKS = "azure/deepseek-v4.1-flash=openrouter/deepseek/
 /**
  * The content-filter fallbacks, by `provider/model-id`: AGENT_CONTENT_FILTER_FALLBACKS (`from=to` references,
  * comma-separated; empty for none), else CONTENT_FILTER_FALLBACKS. An agent on a `from` model whose request the
- * provider's content filter blocks has it made once more on `to` (content-filter-fallback.ts), on the agent's key for
+ * provider's content filter blocks has it made once more on `to` (model-fallback.ts), on the agent's key for
  * `to`'s provider.
  */
 export function contentFilterFallbacks(given = process.env.AGENT_CONTENT_FILTER_FALLBACKS): Map<string, Model<Api>> {
