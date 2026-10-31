@@ -605,15 +605,16 @@ export class PostgresPiStorage implements Storage {
 		this.assertOpen();
 		const documentActions = this.prepareDocumentActions(writes);
 		const candidateNextId = this.candidateNextId(writes);
-		// The sequence the latest attempt took: a commit whose answer was lost is found by what it wrote at it (`landed`).
-		let attempted: Seq | undefined;
+		// The sequence the latest attempt took and the IDs it found unclaimed: a commit whose answer was lost is found by what it wrote (`landed`).
+		let attempted: { seq: Seq; created?: Id<string>[] } | undefined;
 		// Each statement is a round trip to the database, and a turn's every step commits: the metadata lock takes the
 		// sequence, one read checks the batch's IDs and documents, and one statement writes it all.
 		const seq = await whileUnavailable(this.db.retryMs, () => this.db.transaction(async (transaction, metadata) => {
 			if (metadata === undefined) throw new Error("Durable Postgres metadata is missing");
 			const committedSeq = seqFromNumber(Number(metadata.next_seq));
-			attempted = committedSeq;
+			attempted = { seq: committedSeq };
 			const stored = await this.readCommitState(transaction, writes, documentActions);
+			attempted.created = writes.flatMap(write => { const id = writeId(write); return id === undefined || stored.ids.has(id) ? [] : [id]; });
 			this.checkGlobalIds(writes, stored.ids);
 			const existing = await this.checkDocumentActions(transaction, documentActions, stored.documents);
 			// Each history entry's place (ordinals.ts): earlier rows moved now, the batch's own with its insert.
@@ -627,22 +628,25 @@ export class PostgresPiStorage implements Storage {
 			for (const id of after) await transaction.run(`DELETE FROM ${this.schema.tables.documentRevisions} WHERE session_id = $1 AND document_id = ?`, id);
             await commitEffects(writes, this.committing, transaction.sql);
 			return committedSeq;
-		}, { nextId: candidateNextId }), async () => attempted !== undefined && await this.landed(writes, attempted) ? { value: attempted } : undefined);
+		}, { nextId: candidateNextId }), async () => attempted?.created !== undefined && await this.landed(writes, attempted.created, attempted.seq) ? { value: attempted.seq } : undefined);
 		this.nextId = Math.max(this.nextId, candidateNextId);
 		adopt(seq);
 		return seq;
 	}
 
 	/**
-	 * Whether a commit whose answer was lost landed at `seq`: a record it created exists (its IDs are its own), or, writing
-	 * only documents, one has its revision at `seq`. Unsure (a retirement alone), it did not: it runs again.
+	 * Whether a commit whose answer was lost landed at `seq`: a record it created exists (`created`, its IDs are its own; a
+	 * record it only updated says nothing), or one of its documents has its revision or retirement at `seq`. Unsure (records
+	 * updated alone), it did not: it runs again, and an update writes the same record again.
 	 */
-	private async landed(writes: readonly StorageWrite[], seq: Seq): Promise<boolean> {
-		const id = writes.map(writeId).find(value => value !== undefined);
+	private async landed(writes: readonly StorageWrite[], created: readonly Id<string>[], seq: Seq): Promise<boolean> {
+		const id = created[0];
 		if (id !== undefined) return !!await this.db.get(`SELECT 1 AS found FROM ${this.schema.tables.recordIds} WHERE session_id = $1 AND id = ?`, id);
 		const change = writes.find(write => write.type === "document.change");
-		if (change?.type !== "document.change") return false;
-		return !!await this.db.get(`SELECT 1 AS found FROM ${this.schema.tables.documentRevisions} WHERE session_id = $1 AND document_id = ? AND seq = ?`, change.id, seq);
+		if (change?.type === "document.change") return !!await this.db.get(`SELECT 1 AS found FROM ${this.schema.tables.documentRevisions} WHERE session_id = $1 AND document_id = ? AND seq = ?`, change.id, seq);
+		const retire = writes.find(write => write.type === "document.retire");
+		if (retire?.type !== "document.retire") return false;
+		return !!await this.db.get(`SELECT 1 AS found FROM ${this.schema.tables.documents} WHERE session_id = $1 AND id = ? AND retired_at = ?`, retire.id, seq);
 	}
 
 	/**
