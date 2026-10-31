@@ -214,7 +214,7 @@ How it works:
   so the model knows what to ask it.
 
 `realtime` takes `provider` (`openai`, `gemini`, `grok`, or `elevenlabs`; default the runtime's first), `model` (OpenAI: `gpt-realtime-2.1`, the
-default, or `gpt-realtime-2.1-mini`; Gemini: `gemini-3.8-live`; Grok: `grok-voice-latest` or `grok-voice-3.0`; ElevenLabs: `gemini-2.5-flash-lite` by default, or `claude-haiku-5-5`), `voice` (the model's. OpenAI: `alloy`, `ash`, `ballad`,
+default, or `gpt-realtime-2.1-mini`; Gemini: `gemini-3.8-live`; Grok: `grok-voice-latest` or `grok-voice-3.0`; ElevenLabs: `claude-haiku-5-5` by default, or `gemini-2.5-flash-lite`), `voice` (the model's. OpenAI: `alloy`, `ash`, `ballad`,
 `coral`, `echo`, `sage`, `shimmer`, `verse`, `marin`, `cedar`; Gemini: its prebuilt voices, `Kore`, `Aoede`, `Leda`,
 `Puck`, `Charon`… Default the session's `voice`, or the nearest: OpenAI `nova` → `marin`, `onyx` → `cedar`, `fable` →
 `ballad`; Gemini `coral` → `Kore`, `alloy` → `Aoede`, `onyx` → `Charon`…), `instructions`, `transcribe` (default true:

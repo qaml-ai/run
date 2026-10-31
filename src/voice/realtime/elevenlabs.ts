@@ -24,7 +24,7 @@ import { NO_USAGE, type RealtimeConfig, type RealtimeConnection, type RealtimeEv
  */
 export const ELEVENLABS_AGENTS = Object.freeze({
   models: ["gemini-2.5-flash-lite", "claude-haiku-5-5"] as const,
-  defaultModel: "gemini-2.5-flash-lite",
+  defaultModel: "claude-haiku-5-5",
   voice: "cgSgspJ2msm6clMCkdW9", // Jessica, a conversational default; sessions may supply any voice_id their key can use.
   // v4: thinking is off, and text arrives as it is made (TOOL_TEXT). v3: conversations last up to maxDurationSeconds (v2
   // agents kept ElevenLabs' 10-minute default). The agent is found by name, so a changed creation setting needs a new name.

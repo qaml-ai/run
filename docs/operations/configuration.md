@@ -166,7 +166,7 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"name":"demo"}' http://127.0.0.1:8790/v1/agents
 ```
 
-ElevenLabs realtime uses Agents, with `realtime.provider: "elevenlabs"` and model `gemini-2.5-flash-lite`.
+ElevenLabs realtime uses Agents, with `realtime.provider: "elevenlabs"` and model `claude-haiku-5-5` by default (`gemini-2.5-flash-lite` on request).
 Set `realtime.voice` to an ElevenLabs voice_id your key can use; OpenAI voice names map to Jessica.
 The tenant's ElevenLabs key takes precedence over the platform key, as for other realtime providers. It needs Agents
 list/create and signed-conversation access. On first use each node resolves the private agent named

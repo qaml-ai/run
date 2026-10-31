@@ -12076,7 +12076,7 @@
           },
           "model": {
             "type": "string",
-            "description": "The model: openai gpt-realtime-2.1, gpt-realtime-2.1-mini (default gpt-realtime-2.1); gemini gemini-3.8-live; elevenlabs gemini-2.5-flash-lite, claude-haiku-5-5 (default gemini-2.5-flash-lite); grok grok-voice-latest, grok-voice-3.0 (default grok-voice-latest)",
+            "description": "The model: openai gpt-realtime-2.1, gpt-realtime-2.1-mini (default gpt-realtime-2.1); gemini gemini-3.8-live; elevenlabs gemini-2.5-flash-lite, claude-haiku-5-5 (default claude-haiku-5-5); grok grok-voice-latest, grok-voice-3.0 (default grok-voice-latest)",
             "example": "gpt-realtime-2.1"
           },
           "voice": {

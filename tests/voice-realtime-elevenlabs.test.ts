@@ -95,7 +95,7 @@ function recorder() {
   };
   return { got, events };
 }
-const config = { model: ELEVENLABS_AGENTS.defaultModel, voice: "character_voice", instructions: "Be Mochi.", transcribe: true, tools: [ASK_AGENT, STAY_SILENT], language: "ja" };
+const config = { model: "gemini-2.5-flash-lite", voice: "character_voice", instructions: "Be Mochi.", transcribe: true, tools: [ASK_AGENT, STAY_SILENT], language: "ja" };
 const transcript = (text: string) => ({ type: "user_transcript", user_transcription_event: { user_transcript: text } });
 const tool = (id: string, name = "ask_agent") => ({ type: "client_tool_call", client_tool_call: { tool_call_id: id, tool_name: name, parameters: name === "ask_agent" ? { request: "Check the server" } : {} } });
 const audio = () => ({ type: "audio", audio_event: { audio_base_64: tone(80).toString("base64"), event_id: 1 } });
@@ -116,7 +116,7 @@ test("ElevenLabs provisions once per credential, authenticates with signed URLs,
   assert.equal(body.name, "camelRun realtime voice v4", "a new name: agents made before thinking_budget and text parts are not reused");
   assert.equal(body.conversation_config.conversation.max_duration_seconds, 1800);
   assert.equal(body.conversation_config.tts.voice_id, config.voice, "creation uses the requested voice, without depending on Jessica access");
-  assert.equal(body.conversation_config.agent.prompt.llm, ELEVENLABS_AGENTS.defaultModel);
+  assert.equal(body.conversation_config.agent.prompt.llm, config.model);
   assert.deepEqual(body.conversation_config.agent.prompt.tools.map(({ name, description, parameters, type, expects_response }: any) => ({ name, description, parameters, type, expects_response })),
     [ASK_AGENT, STAY_SILENT].map(tool => ({ ...tool, type: "client", expects_response: true })));
   assert.deepEqual(body.platform_settings.overrides.conversation_config_override, { agent: { prompt: { prompt: true }, first_message: true, language: true }, tts: { voice_id: true } });
@@ -346,7 +346,7 @@ test("ElevenLabs pricing requires both runtime rates and includes the separately
 test("claude-haiku-5-5 has its own agent (v5) and its own LLM rate, and the default stays as it was", async t => {
   const fake = await fakeElevenLabs(t);
   const provider = elevenlabsAgents({ baseUrl: fake.base });
-  assert.equal(provider.defaultModel, "gemini-2.5-flash-lite");
+  assert.equal(provider.defaultModel, "claude-haiku-5-5");
   assert.ok(provider.models.includes("claude-haiku-5-5"));
   const a = recorder(), b = recorder();
   const older = provider.connect({ ...config, model: "gemini-2.5-flash-lite" }, { apiKey: "key" }, a.events);
