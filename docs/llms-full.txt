@@ -5097,9 +5097,8 @@ you add its server as a provider, your account's or a key scope's: see
 [Custom models](https://run.camelai.com/docs/guides/custom-models.md).
 
 An agent that names no model (and whose definition names none) gets the
-runtime's default: DeepSeek V4.1 Flash 1017 on OpenRouter
-(`openrouter/deepseek/deepseek-v4.1-flash-1017`) on run.camelai.com. Your own keys
-come first, the agent's key scope's too: with no OpenRouter key of your own, the
+runtime's default: `camelrun/default`, on run.camelai.com a
+[virtual model](https://run.camelai.com/docs/guides/models-and-keys.md#virtual-models) on OpenRouter. Your own keys come first, the agent's key scope's too: with no OpenRouter key of your own, the
 first of DeepSeek V4.1 Flash on the platform's Azure
 (`azure/deepseek-v4.1-flash`), Anthropic (`anthropic/claude-sonnet-5-5`), OpenRouter
 (`openrouter/anthropic/claude-sonnet-5.5`) and Bedrock
@@ -5110,8 +5109,24 @@ which (`defaultModel`; `runtime.me()` in the SDKs).
 
 The default is chosen when the agent is made and stays its model: an upsert or an
 applied definition that names no model leaves it, and a later change of the default
-moves nobody. These alternatives choose by who holds a key, not by who is up: an
-agent stays on its model when a provider fails.
+moves nobody. These alternatives choose by who holds a key, not by who is up.
+
+### Virtual models
+
+`camelrun/default` is a virtual model: a name that stays on the agent, with a list of
+real models behind it that we can change without touching agents. Today they are
+`openrouter/particle-ai/particle-1`, then `openrouter/deepseek/deepseek-v4.1-flash-1017`.
+`GET /v1/models` lists it with `routes`, and you can name it like any model.
+
+Each new message starts on the first. A request it cannot take now (a 429, a 5xx, no
+provider, a timeout, a stream that goes quiet) before any output moves to the next, at
+once, and the rest of that turn stays there. A request a model would refuse anywhere (a
+bad request, a context too large, a key or credit problem) does not move. History
+carries over, without the earlier model's reasoning; your reasoning settings go along.
+
+The run's `servedModel`, `/v1/usage` and `usage.recorded` name the real model that
+answered, at its price, and a call holds end-user credit at that model's price. An agent
+that names a real model keeps it, with no such failover.
 
 A model call uses, in order: the key of the agent's [key scope](https://run.camelai.com/docs/guides/models-and-keys.md#key-scopes) for
 the model's provider, else your account's own key for the provider

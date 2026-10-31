@@ -95,7 +95,8 @@ export type Credentials = { apiKey: string; platform?: boolean; identity?: boole
 export interface AgentConfig {
   id: string;
   directory: string;
-  model: Model<Api>;
+  /** `virtual`: the name of the virtual model it stands for (virtual-models.ts), when it is one's chain head. */
+  model: Model<Api> & { virtual?: string };
   apiKey?: string;
   systemPrompt?: string;
   /** Text after the system prompt, the agent's own: a definition's apply replaces the prompt and keeps this. */

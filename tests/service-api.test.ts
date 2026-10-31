@@ -15,7 +15,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, env: (root: 
   const root = await mkdtemp(join(tmpdir(), 'agent-service-api-'));
   const operator = 'operator-fixture-secret-at-least-24-chars';
   const { db, url } = await testDatabase();
-  writeFileSync(join(root, 'operator.json'), JSON.stringify({ tenants: { operator: { tokenSha256: createHash('sha256').update(operator).digest('hex'), apiKeys: { [configuredModel().provider]: 'host-fixture-key' } } } }));
+  writeFileSync(join(root, 'operator.json'), JSON.stringify({ tenants: { operator: { tokenSha256: createHash('sha256').update(operator).digest('hex'), apiKeys: { [configuredModel({ AGENT_PROVIDER: "openrouter" }).provider]: 'host-fixture-key' } } } }));
   const child = spawn(process.execPath, ['--experimental-strip-types', fileURLToPath(new URL('../src/server.ts', import.meta.url))], {
     env: {
       PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: url, AGENT_TENANTS_FILE: join(root, 'operator.json'),
@@ -64,7 +64,7 @@ test('scoped configuration persists allowed fields and rejects provider credenti
   const response = await f.post('/v1/agents', {});
   const session = await response.json() as any;
   const path = `/clients/${session.id}`;
-  for (const params of [{ model: configuredModel() }, { apiKey: 'secret' }, { initialMessages: [] }]) {
+  for (const params of [{ model: configuredModel({ AGENT_PROVIDER: "openrouter" }) }, { apiKey: 'secret' }, { initialMessages: [] }]) {
     assert.equal((await f.post(path + '/requests', { id: 'invalid', method: 'configure', params }, session.token)).status, 400);
   }
   const inspect = { name: 'inspect', description: 'Inspect a fixture', inputSchema: { type: 'object', properties: {} }, _meta: { 'agent-runtime/exposure': 'direct' } };
@@ -89,12 +89,12 @@ test('provisioning takes models by name only, never an endpoint or credentials',
   const f = await fixture(t);
   for (const extra of [
     { apiKey: 'should-not-persist' },
-    { model: { ...configuredModel(), headers: { Authorization: 'Bearer should-not-persist' } } },
-    { model: { ...configuredModel(), baseUrl: 'https://user:pass@example.test/v1' } },
-    { model: { ...configuredModel(), baseUrl: 'https://example.test/v1?key=secret' } },
+    { model: { ...configuredModel({ AGENT_PROVIDER: "openrouter" }), headers: { Authorization: 'Bearer should-not-persist' } } },
+    { model: { ...configuredModel({ AGENT_PROVIDER: "openrouter" }), baseUrl: 'https://user:pass@example.test/v1' } },
+    { model: { ...configuredModel({ AGENT_PROVIDER: "openrouter" }), baseUrl: 'https://example.test/v1?key=secret' } },
     // The host provider key must never be sent to an endpoint a caller names.
-    { model: { ...configuredModel(), baseUrl: 'https://collector.example.test/v1' } },
-    { model: { ...configuredModel(), maxTokens: -1 } },
+    { model: { ...configuredModel({ AGENT_PROVIDER: "openrouter" }), baseUrl: 'https://collector.example.test/v1' } },
+    { model: { ...configuredModel({ AGENT_PROVIDER: "openrouter" }), maxTokens: -1 } },
     { thinkingLevel: 'invalid' },
   ]) assert.equal((await f.post('/v1/agents', { ...extra })).status, 400);
 });
@@ -104,7 +104,7 @@ test('tenants provision and see only their own agents, billed to their own provi
   const alice = 'alice-operator-token-at-least-24-chars', bob = 'bob-operator-token-at-least-24-chars', carol = 'carol-operator-token-at-least-24-chars';
   const tenantsFile = (root: string) => join(root, 'tenants.json');
   const tenants = (extra = {}) => JSON.stringify({ tenants: {
-    alice: { tokenSha256: sha(alice), apiKeys: { [configuredModel().provider]: 'alice-provider-key' } },
+    alice: { tokenSha256: sha(alice), apiKeys: { [configuredModel({ AGENT_PROVIDER: "openrouter" }).provider]: 'alice-provider-key' } },
     bob: { tokenSha256: sha(bob), apiKeys: {} }, ...extra,
   } });
   let path = '';
@@ -128,7 +128,7 @@ test('tenants provision and see only their own agents, billed to their own provi
   assert.equal((await f.post(`/registry/${agent.id}/requests`, { id: 'own', method: 'status', params: {} }, alice)).status, 202);
   // The same idempotency key in another tenant is a different agent.
   const sameKey = (token: string) => fetch(new URL('/v1/agents', (created as Response).url), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'shared-key' }, body: JSON.stringify({}) });
-  await writeFile(path, tenants({ carol: { tokenSha256: sha(carol), apiKeys: { [configuredModel().provider]: 'carol-provider-key' } } }));
+  await writeFile(path, tenants({ carol: { tokenSha256: sha(carol), apiKeys: { [configuredModel({ AGENT_PROVIDER: "openrouter" }).provider]: 'carol-provider-key' } } }));
   f.child.kill('SIGHUP');
   let carolAgent: Response | undefined;
   for (let i = 0; i < 50 && carolAgent?.status !== 201; i++) { carolAgent = await sameKey(carol); if (carolAgent.status !== 201) await new Promise(resolve => setTimeout(resolve, 20)); }
