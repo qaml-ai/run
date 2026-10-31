@@ -303,11 +303,11 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
     const previous = context.messages.findLast(message => message.role === "assistant")?.usage;
     const inputTokens = input(), cachedTokens = Math.min(inputTokens, (previous?.cacheRead ?? 0) + (previous?.cacheWrite ?? 0));
     const estimate = { inputTokens, ...(cachedTokens > 0 ? { cachedTokens } : {}), maxOutputTokens: options.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead } };
-    const call = (credentials: Credentials) => attemptStream(attemptModel(model, credentials), credentials.apiKey, "response", attempt, (sink, halt) => {
+    const call = (credentials: Credentials) => attemptStream(attemptModel(model, credentials), credentials.apiKey, "response", attempt, (sink, halt, affordable) => {
       const { signal, cut, done } = gatedSignal(gate, options.signal ? AbortSignal.any([options.signal, halt]) : halt);
       let requested = false;
       return watchedStream(model, (watched, activity) => {
-        const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.(), outbound);
+        const [target, callOptions] = authorize(model, affordable !== undefined && affordable < (options.maxTokens ?? model.maxTokens) ? { ...options, maxTokens: affordable } : options, credentials, sink, modelHeaders?.(), outbound);
         const observe = callOptions.onProviderStreamEvent;
         requested = true;
         const stream = streamSimple(target, deepseekContext(target, context), { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown, at: Model<Api>) => { activity(event); return observe?.(event, at); } });

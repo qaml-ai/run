@@ -26,6 +26,8 @@ async function fixture() {
   const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: { tokenSha256: keyHash, billing: "prepaid" }, free: { tokenSha256: createHash("sha256").update("other").digest("hex") } }, platformKeys: { openrouter: KEY } }) });
   await tenants.reload();
   const service = new EndUserCredits(db);
+  // The tenant's credit to run on: a call on the platform's key holds some (credit-holds.ts).
+  await db.query("insert into credit_accounts (tenant, balance, purchased) values ('payg', $1, $1)", [1_000 * USD]);
   for (const tenant of ["payg", "free"]) {
     await service.setSettings(tenant, { enabled: true, markupBps: 2_000 });
     await service.post(tenant, "person", { kind: "grant", amount: 10 * USD, key: "pay" });

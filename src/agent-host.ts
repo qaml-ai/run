@@ -147,12 +147,13 @@ export function createAgentHost(hostIO: HostIO) {
   /** Why the current run ended early: a run or spend limit, or tool calls waiting on a person's input. */
   let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string; limit?: RunStop["limit"]; reason?: string; bucket?: string; endUser?: string } | undefined;
   /**
-   * A model call its end user's credit refused (before it was made) or cut (where its hold ran out, as it streamed):
+   * A model call its end user's or its tenant's credit refused (before it was made) or cut (where its hold ran out, as it streamed):
    * the running turn stops there, as at a spend limit, and is not retried.
    */
   const creditStop = (refused: CreditStop) => {
     if (!busy || stopped) return;
-    stopped = { stopped: "spend_limit", error: refused.message, code: END_USER_CREDIT, limit: "end_user", reason: refused.reason, bucket: refused.bucket, endUser: refused.endUser };
+    stopped = refused.endUser ? { stopped: "spend_limit", error: refused.message, code: END_USER_CREDIT, limit: "end_user", reason: refused.reason, bucket: refused.bucket, endUser: refused.endUser }
+      : { stopped: "spend_limit", error: refused.message, code: "spend_limit", limit: "credit" };
     io.emit({ type: "spend_limit_reached", message: refused.message });
   };
   /** Files' bytes (base64) by content, as requests carry them, least recently used first, kept between model requests. */
@@ -308,7 +309,7 @@ export function createAgentHost(hostIO: HostIO) {
    * credit or the context bound refused, nor an overflow (Pi compacts once).
    */
   function retryDecision(failed: FailedAttempt): RetryDecision {
-    if (active?.signal.aborted || stopped?.code === END_USER_CREDIT || stopped?.code === CONTEXT_TOO_LARGE) return { retry: false };
+    if (active?.signal.aborted || stopped?.code === END_USER_CREDIT || (stopped?.code === "spend_limit" && stopped.limit === "credit") || stopped?.code === CONTEXT_TOO_LARGE) return { retry: false };
     const last = failed.message as AssistantMessage | undefined;
     if (failed.reason === "interrupted" || last?.errorMessage === MODEL_INTERRUPTED) return { retry: true, delayMs: 0 };
     if (!last || isContextOverflow(last, config.model.contextWindow)) return { retry: false };

@@ -170,11 +170,24 @@ a running turn ends after the response that spent the last credit, as at the
 render on the platform's key checks credit first, so a `js_exec` loop of them stops
 there rather than at the next model request (a refused render returns the plain page).
 The balance counts this node's unwritten charges
-at once and other nodes' within about five seconds, and nothing is reserved for a
-response in flight: each running agent checks the balance before its next model
-request, not during one. So the overdraft is about one model response (and the agent
-time around it) per agent of the tenant running a turn when the credit runs out,
-bounded by its [busy-agent limit](../reference/limits.md#usage-tiers).
+at once and other nodes' within about five seconds.
+
+**Holds.** A model call on the platform's keys holds its estimate of a prepaid tenant's
+credit before it is made (`credit_holds`, `src/credit-holds.ts`), as an end user's call
+holds theirs: its input at the catalog's rate, long-context tier included, and about a
+reply's output, more as it streams. Room is the balance less what other calls hold, and
+on free credit no more than is left of the hour's allowance. A call that does not fit
+is not made, and ends the turn with `stopped: "spend_limit"`, `limit: "credit"`. Credit
+can all be spent: a last call starts if its estimate is within $0.25 of what is left.
+Each call asks for at most the output what is left pays for (`max_tokens`), so the
+provider also ends reasoning that never streams. A call settles at what the provider
+reported, and its hold goes.
+
+An overdraft remains possible in small ways, on the platform's account: a last call's
+$0.25; a provider charging more than listed; a model with no price or a router, held at
+$3/$15 per million; a Claude model before adaptive thinking, whose budget comes on top
+of `max_tokens`; and several reasoning calls at once, each sized to all that is left.
+Agent time, computer and browser leases, `web_search` and other tools are charged as before and not held.
 
 **Metering storage.** Storage is not listed to charge it. Every object Storage
 creates or deletes (log segments, snapshots and blobs, volume snapshot file maps,

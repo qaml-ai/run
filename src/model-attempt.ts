@@ -24,10 +24,12 @@ export type AttemptEstimate = { inputTokens: number; cachedTokens?: number; maxO
  * and for a call its end user pays for, where its hold runs out (`stopAtChars`: streamed characters, as an estimate
  * counts them) and when to ask for more ahead of that (`checkAtChars`). `refused`: nothing more will be held (its end
  * user is out of credit): refused at begin, the call is never made; after, its stream is cut at `stopAtChars`.
+ * `maxOutputTokens` (begin): the most output what is left can pay for, which the call asks for at most: the provider then
+ * ends a reply whose reasoning never streams, which `stopAtChars` cannot see.
  */
-export type AttemptAck = { tracked: boolean; checkAtChars?: number; stopAtChars?: number; refused?: CreditStop };
-/** An end user's credit refusing a call: what to say, why (`balance`, `daily_limit`, `bucket_limit`), whose and which bucket. */
-export type CreditStop = { message: string; reason: string; endUser: string; bucket: string };
+export type AttemptAck = { tracked: boolean; checkAtChars?: number; stopAtChars?: number; refused?: CreditStop; maxOutputTokens?: number };
+/** An end user's credit refusing a call: what to say, why (`balance`, `daily_limit`, `bucket_limit`), whose and which bucket; or, with no `endUser`, the tenant's own credit. */
+export type CreditStop = { message: string; reason: string; endUser?: string; bucket?: string };
 export type ModelAttemptHook = (event: ModelAttemptEvent) => Promise<boolean | AttemptAck>;
 /** An acknowledgment as a whole, from either form. */
 export const attemptAck = (ack: boolean | AttemptAck | undefined): AttemptAck => typeof ack === "object" ? ack : { tracked: !!ack };
