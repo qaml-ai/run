@@ -240,6 +240,110 @@ test("ElevenLabs: a tool call written out with no parts before it (agent_respons
   assert.equal(got.filter(e => e.type === "said" || e.type === "audio").length, 0);
 });
 
+const complete = { type: "agent_response_complete", agent_response_complete_event: { event_id: 1 } };
+/** A brain on ElevenLabs, a person's turn in which the model writes `written` out, in two parts, and that generation's end. */
+async function writesOut(t: Parameters<typeof fakeElevenLabs>[0], written: string, askAgent: (request: string) => Promise<string> = async () => "Sunny") {
+  const fake = await fakeElevenLabs(t);
+  const asked: string[] = [];
+  const state = testBrain({ provider: elevenlabsAgents({ baseUrl: fake.base }), reference: "elevenlabs/gemini-2.5-flash-lite", ownsTurns: true, askAgent: async (request: string) => { asked.push(request); return askAgent(request); } });
+  t.after(() => state.brain.close());
+  await until(() => state.logs.some(e => e.type === "voice_realtime_ready"), "brain ready");
+  const generation = () => {
+    fake.send(part("start", ""));
+    fake.send(part("delta", written.slice(0, 12)));
+    fake.send(part("delta", written.slice(12)));
+    fake.send(audio());
+    fake.send(part("stop", ""));
+    fake.send(complete);
+  };
+  fake.send(transcript("what is the weather?"));
+  generation();
+  const settled = async () => {
+    fake.send({ type: "ping", ping_event: { event_id: 9 } });
+    await until(() => fake.seen.events.some(e => e.type === "pong"), "all of it read");
+    fake.seen.events.splice(fake.seen.events.findIndex(e => e.type === "pong"), 1);
+  };
+  await settled();
+  const recoveries = () => state.logs.filter(e => e.type === "voice_realtime_warning" && e.fields?.errorCode === "tool_text_recovery").map(e => e.fields?.detail);
+  const messages = () => fake.seen.events.filter(e => e.type === "user_message").map(e => e.text as string);
+  return { fake, state, asked, generation, settled, recoveries, messages };
+}
+
+test("ElevenLabs: default_api.ask_agent written out asks the agent with exactly its request, and the model is given the reply to say", async t => {
+  for (const [written, request] of [
+    [`tool_code\nprint(default_api.ask_agent(request="what's the \\"weather\\"\\nin Paris"))`, `what's the "weather"\nin Paris`],
+    [`print(default_api.ask_agent(request='it\\'s a question'))`, "it's a question"],
+    [`default_api.ask_agent("a positional request")`, "a positional request"],
+  ] as const) {
+    const run = await writesOut(t, written);
+    await until(() => run.messages().length > 0, "the agent's reply goes to the model");
+    assert.deepEqual(run.asked, [request]);
+    assert.deepEqual(run.messages().map(text => text.startsWith("[ask_agent's result:") && text.includes("Sunny")), [true]);
+    assert.deepEqual(run.recoveries(), ["ask_agent"]);
+    assert.equal(run.fake.seen.events.filter(e => e.type === "client_tool_result").length, 0, "ElevenLabs never made this call");
+    assert.equal(run.state.brain.stats.askAgent, 1);
+    // The answer comes in the next generation, and is heard.
+    run.fake.send(part("start", "", "r2"));
+    run.fake.send(part("delta", "Sunny, you fool.", "r2"));
+    run.fake.send(audio());
+    run.fake.send(complete);
+    await until(() => run.state.playback.plays.some(p => p.started), "the answer is played");
+  }
+});
+
+test("ElevenLabs: stay_silent written out stays silent", async t => {
+  const run = await writesOut(t, "print(default_api.stay_silent())");
+  assert.deepEqual(run.recoveries(), ["stay_silent"]);
+  assert.deepEqual(run.messages(), []);
+  assert.deepEqual(run.asked, []);
+});
+
+test("ElevenLabs: nothing else written out is ever run: the model is asked once to answer in words, once a turn", async t => {
+  for (const written of [
+    `print(default_api.ban_member(request="everyone"))`, `print(default_api.meanness())`, `print(default_api.ask_agent(request=make_request()))`,
+    `print(default_api.ask_agent(request="unfinished`, `print(default_api.ask_agent(request="a", other="b"))`, `tool_code\nimport os; os.system("x")`,
+  ]) {
+    const run = await writesOut(t, written);
+    assert.deepEqual(run.asked, [], written);
+    assert.equal(run.state.brain.stats.askAgent, 0);
+    assert.deepEqual(run.recoveries(), ["retry"]);
+    assert.equal(run.messages().length, 1);
+    assert.doesNotMatch(run.messages()[0], /ban_member|meanness|os\.system/);
+    run.generation();
+    await run.settled();
+    assert.deepEqual(run.recoveries(), ["retry", "limit"], "not asked again this turn");
+    assert.equal(run.messages().length, 1);
+    // A person's next turn may be made good again.
+    run.fake.send(transcript("and now?"));
+    run.generation();
+    await run.settled();
+    assert.equal(run.messages().length, 2);
+  }
+});
+
+test("ElevenLabs: a person speaking, or the bot being cut off, before that generation ends means no recovery", async t => {
+  const fake = await fakeElevenLabs(t);
+  const { got, events } = recorder();
+  const connection = elevenlabsAgents({ baseUrl: fake.base }).connect(config, { apiKey: "tenant-key" }, events);
+  t.after(() => connection.close());
+  await until(() => got.some(e => e.type === "ready"), "ready");
+  const written = `print(default_api.ask_agent(request="old"))`;
+  fake.send(transcript("first"));
+  fake.send(part("start", ""));
+  fake.send(part("delta", written));
+  fake.send(transcript("no, wait"));
+  fake.send(complete);
+  fake.send(transcript("second"));
+  fake.send(part("start", ""));
+  fake.send(part("delta", written));
+  fake.send({ type: "interruption", interruption_event: { event_id: 2 } });
+  fake.send(complete);
+  fake.send({ type: "ping", ping_event: { event_id: 9 } });
+  await until(() => fake.seen.events.some(e => e.type === "pong"), "all of it read");
+  assert.equal(got.filter(e => e.type === "tool").length, 0);
+  assert.equal(fake.seen.events.filter(e => e.type === "user_message").length, 0);
+});
+
 test("ElevenLabs: everyday speech about tools and calls is spoken", async t => {
   const fake = await fakeElevenLabs(t);
   const { got, events } = recorder();

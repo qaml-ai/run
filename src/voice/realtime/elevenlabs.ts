@@ -49,7 +49,18 @@ const MAX_DURATION = /max call duration/i;
  * it in that generation is not played. Words nobody says in a call, as a false positive cuts off real speech.
  */
 const TOOL_TEXT = /\b(?:default_api|tool_code|tool_call)\b/;
-const TOOL_TEXT_TAIL = 20;
+/** The most of a generation's text kept, to read a call written out in it. */
+const GENERATION_TEXT_CHARS = 8_000;
+/** The one written-out call that is made for the model, and only with its request as one whole string. */
+const WRITTEN_ASK_AGENT = /\bdefault_api\.ask_agent\(\s*(?:request\s*=\s*)?("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*\)/s;
+const WRITTEN_STAY_SILENT = /\bdefault_api\.stay_silent\(\s*\)/;
+/** What a generation that wrote out any other call is told, once a turn, so the person still gets an answer. */
+const SAY_IT_AGAIN = "[Nobody heard your last reply. Answer now in spoken words, and call any tool as a real tool call.]";
+
+function writtenRequest(text: string): string | undefined {
+  const quoted = WRITTEN_ASK_AGENT.exec(text)?.[1];
+  return quoted?.slice(1, -1).replace(/\\(.)/gs, (_, char: string) => char === "n" ? "\n" : char === "t" ? "\t" : char);
+}
 const VOICE_FOR = Object.freeze(Object.fromEntries(
   ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar", "nova", "onyx", "fable"].map(name => [name, ELEVENLABS_AGENTS.voice]),
 ));
@@ -259,8 +270,15 @@ class ElevenLabs implements RealtimeConnection {
   private suppressed = false;
   /** This generation wrote out a tool call (TOOL_TEXT): the rest of it is not played, until the next one starts. */
   private toolText = false;
-  /** The end of this generation's text so far, for a match split across parts. */
-  private textTail = "";
+  /** This generation's text so far, for a match split across parts and to read the call from. */
+  private generationText = "";
+  /** The written-out call waits for its generation to end: its audio has stopped coming by then. */
+  private toolTextWaiting = false;
+  /** Asked again already this turn: a model that keeps writing calls out is not asked forever. */
+  private toolTextRecovered = false;
+  /** Calls made for the model from what it wrote: ElevenLabs doesn't know them, so their results are messages. */
+  private readonly writtenCalls = new Set<string>();
+  private writtenCount = 0;
   /** The generation that last wrote one out: its whole text may come after the next has started. */
   private toolTextResponse?: string;
   private stage = "provisioning";
@@ -316,6 +334,10 @@ class ElevenLabs implements RealtimeConnection {
   toolResult(callId: string, output: string) {
     const name = this.calls.get(callId);
     if (!this.calls.delete(callId)) return;
+    if (this.writtenCalls.delete(callId)) {
+      this.send({ type: "user_message", text: `[ask_agent's result: ${output}]` });
+      return;
+    }
     let isError = false;
     try { isError = !!JSON.parse(output).error; } catch { /* plain text result */ }
     this.suppressed = name === "stay_silent";
@@ -358,12 +380,35 @@ class ElevenLabs implements RealtimeConnection {
     if (id) this.events.responseDone(id, { status, usage: { ...NO_USAGE } });
   }
   private sawText(text: string, response?: string) {
-    const seen = this.textTail + text;
-    this.textTail = seen.slice(-TOOL_TEXT_TAIL);
-    if (this.toolText || !TOOL_TEXT.test(seen)) return;
+    this.generationText = (this.generationText + text).slice(-GENERATION_TEXT_CHARS);
+    if (this.toolText || !TOOL_TEXT.test(this.generationText)) return;
     this.toolText = true;
+    this.toolTextWaiting = true;
     this.toolTextResponse = response;
     this.events.warning("tool_text_not_spoken", "");
+    this.finish("completed");
+  }
+  /** The generation that wrote out a call ended unheard: that call is made good, so the turn isn't silence. */
+  private recoverToolText() {
+    if (!this.toolTextWaiting) return;
+    this.toolTextWaiting = false;
+    this.toolText = false;
+    const text = this.generationText;
+    const request = writtenRequest(text);
+    if (this.suppressed) return;
+    if (request === undefined && WRITTEN_STAY_SILENT.test(text)) { this.events.warning("tool_text_recovery", "stay_silent"); return; }
+    if (this.toolTextRecovered) { this.events.warning("tool_text_recovery", "limit"); return; }
+    this.toolTextRecovered = true;
+    if (request === undefined) {
+      this.events.warning("tool_text_recovery", "retry");
+      this.send({ type: "user_message", text: SAY_IT_AGAIN });
+      return;
+    }
+    this.events.warning("tool_text_recovery", "ask_agent");
+    const id = `written_${++this.writtenCount}`;
+    this.calls.set(id, ASK_AGENT.name);
+    this.writtenCalls.add(id);
+    this.events.toolCall({ response: this.start(), id, name: ASK_AGENT.name, args: { request } });
     this.finish("completed");
   }
   private message(event: any) {
@@ -394,13 +439,15 @@ class ElevenLabs implements RealtimeConnection {
         this.bytes = 0;
         this.suppressed = false;
         this.toolText = false;
-        this.textTail = "";
+        this.toolTextWaiting = false;
+        this.toolTextRecovered = false;
+        this.generationText = "";
         if (typeof event.user_transcription_event?.user_transcript === "string") this.events.heard("", event.user_transcription_event.user_transcript, seconds);
         break;
       }
       case "agent_chat_response_part": {
         const part = event.text_response_part;
-        if (part?.type === "start") { this.toolText = false; this.textTail = ""; }
+        if (part?.type === "start") { this.toolText = false; this.toolTextWaiting = false; this.generationText = ""; }
         if (typeof part?.text === "string") this.sawText(part.text, part.response_id);
         break;
       }
@@ -414,7 +461,7 @@ class ElevenLabs implements RealtimeConnection {
         if (this.suppressed || this.toolText) break;
         if (typeof event.audio_event?.audio_base_64 === "string") this.events.audio(this.start(), Buffer.from(event.audio_event.audio_base_64, "base64"));
         break;
-      case "agent_response_complete": this.finish("completed"); break;
+      case "agent_response_complete": this.finish("completed"); this.recoverToolText(); break;
       case "interruption": this.suppressed = true; this.events.interrupted?.(); this.finish("cancelled"); break;
       case "client_tool_call": {
         const call = event.client_tool_call;
