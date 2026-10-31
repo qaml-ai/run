@@ -132,7 +132,13 @@ these machines and nothing else.
   - `computer_unit_fallback`: a command ran without its unit because `sudo` had gone, so a background process would
     outlive it.
   - `computer_kill_stop`, `computer_tenant_stopped`, `computer_credit_stop`: the stops.
-  - `computer_pass`, `computer_pass_failed`: each pass. If passes stop, machines still end at their TTL, uncharged.
+  - `computer_agent_gone`: an agent revoked, purged or expired took its machine with it.
+  - `computer_pass`, `computer_pass_failed`: each pass. If passes stop, machines still end at their TTL, uncharged. The
+    `computer-pass-stalled` alarm fires when none has succeeded in 5 minutes, and `computer-pass-failing` on 3 failures
+    in 5 minutes.
+- **What a pass costs:** each node lists every 30 seconds, one call per 200 machines: at 1,000 machines, 5 calls a pass,
+  10 a minute per node, against Boat's 10,000 a minute per IP. Reads don't use Boat's start limits. A row a listing
+  misses gets one more call to confirm before it ends.
   - `computer_leak`: a machine labelled for this runtime with no open row, over 10 minutes old. It isn't deleted: its
     TTL ends it, at most 24 hours after it started.
 - **Egress:** not limited yet. Rules would go in `machineSetup` (`src/computers/abuse.ts`), which runs before an agent

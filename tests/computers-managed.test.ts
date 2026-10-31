@@ -23,7 +23,7 @@ const cost = (ms: number) => Math.floor(ms / 2000) * 10;
 /** Boat as these tests need it: a machine per key, what it has cost by the clock, and refusals when told to refuse. */
 function fakeBoat(clock: () => number) {
   const machines = new Map<string, { id: string; tenant: string; createdAt: number; since: string; ttlUntil: number }>();
-  const state = { refusals: [] as { code: string; retryAfterMs?: number }[], loseAnswer: false, creates: 0, removed: [] as string[], extended: [] as number[], runs: [] as { command: string; timeoutSeconds: number }[], listFails: false, removeFails: false, stderr: "" };
+  const state = { refusals: [] as { code: string; retryAfterMs?: number }[], loseAnswer: false, creates: 0, removed: [] as string[], extended: [] as number[], runs: [] as { command: string; timeoutSeconds: number }[], listFails: false, removeFails: false, stderr: "", hidden: new Set<string>(), dollars: undefined as number | undefined };
   let since = "2026-10-01T00:00:00.000Z";
   const expire = () => { for (const [key, machine] of machines) if (machine.ttlUntil <= clock()) machines.delete(key); };
   const boat: ManagedMachines = {
@@ -41,10 +41,10 @@ function fakeBoat(clock: () => number) {
     async list(computer) {
       if (state.listFails) throw new Error("provider down");
       expire();
-      return [...machines].filter(([key]) => !computer || key === computer).map(([key, machine]): Machine => {
+      return [...machines].filter(([key]) => computer ? key === computer : !state.hidden.has(key)).map(([key, machine]): Machine => {
         const start = Math.max(machine.createdAt, Date.parse(since) > machine.createdAt ? Date.parse(since) : 0);
         const micro = cost(clock() - start);
-        return { id: machine.id, computer: key, tenant: machine.tenant, createdAt: machine.createdAt, since, seconds: micro / 10, dollars: micro / 1e6 };
+        return { id: machine.id, computer: key, tenant: machine.tenant, createdAt: machine.createdAt, since, seconds: micro / 10, dollars: state.dollars ?? micro / 1e6 };
       });
     },
     async run(_id, command, timeoutSeconds) { state.runs.push({ command, timeoutSeconds }); return { exitCode: 0, stdout: "done", stderr: state.stderr, truncated: false }; },
@@ -52,7 +52,7 @@ function fakeBoat(clock: () => number) {
   return { boat, state, machines, rollover: (at: string) => { since = at; } };
 }
 
-async function fixture(options: { flag?: boolean; platformKey?: boolean; adminKey?: boolean; purchased?: boolean; balance?: number; payer?: { id: string; bucket: string }; price?: number; extraAgents?: string[] } = {}) {
+async function fixture(options: { flag?: boolean; platformKey?: boolean; adminKey?: boolean; purchased?: boolean; balance?: number; payer?: { id: string; bucket: string }; price?: number; extraAgents?: string[]; outbound?: any } = {}) {
   const { db } = await testDatabase();
   for (const [agent, tenant] of [["a", "payg"], ["b", "payg"], ["c", "rich"], ...(options.extraAgents ?? []).map(id => [id, "payg"])]) await db.query("insert into agents(id,tenant,header,revision,name,type,model) values ($1,$2,'{}',1,'A','test','x')", [agent, tenant]);
   const entry = (name: string, extra = {}) => ({ tokenSha256: createHash("sha256").update(name).digest("hex"), apiKeys: {}, billing: "prepaid", ...extra });
@@ -66,7 +66,7 @@ async function fixture(options: { flag?: boolean; platformKey?: boolean; adminKe
   let now = Date.now();
   const { boat, state, machines, rollover } = fakeBoat(() => now);
   const keys: string[] = [], waits: number[] = [];
-  const make = (flag: boolean) => new Computers({ db, accounts, outbound: new Outbound(), now: () => now, enabled: flag, runtime: "https://run.test", endUsers: () => endUsers, credit: () => credit, payer: () => options.payer, machines: key => { keys.push(key); return boat; }, sleep: async ms => { waits.push(ms); },
+  const make = (flag: boolean) => new Computers({ db, accounts, outbound: options.outbound ?? new Outbound(), now: () => now, enabled: flag, runtime: "https://run.test", endUsers: () => endUsers, credit: () => credit, payer: () => options.payer, machines: options.outbound ? undefined : key => { keys.push(key); return boat; }, sleep: async ms => { waits.push(ms); },
     driver: () => ({ async create(id: string) { return { id }; }, async call() { return { exitCode: 0, stdout: "byo" }; }, async close() {} }) });
   const service = make(options.flag !== false);
   const logged: any[] = [], error = console.error;
@@ -357,7 +357,7 @@ test("only this runtime's machines are listed, created with the key and labels t
     requests.push({ path, method, headers: init.headers, ...body ? { body } : {} });
     if (path.startsWith("/sandboxes?")) return Response.json(parsed.searchParams.get("cursor")
       ? { sandboxes: [{ id: "b2", state: "idle", createdAt: "2026-10-31T00:00:00Z", labels: { computer: "cmp_2", tenant: "t2" }, cost: { since: "2026-10-01T00:00:00Z", seconds: 8, dollars: 0.00008 } }, { id: "old", state: "stopped", createdAt: "2026-10-31T00:00:00Z", labels: { computer: "cmp_3" } }], pageInfo: { hasMore: false } }
-      : { sandboxes: [{ id: "b1", state: "running", createdAt: "2026-10-31T00:00:00Z", labels: { computer: "cmp_1", tenant: "t1" }, cost: { since: "2026-10-01T00:00:00Z", seconds: 4, dollars: 0.00004 } }], pageInfo: { hasMore: true, nextCursor: "next" } });
+      : { sandboxes: Array.from({ length: 200 }, (_, i) => ({ id: i ? "elsewhere" : "b1", state: i ? "stopped" : "running", createdAt: "2026-10-31T00:00:00Z", labels: { computer: "cmp_1", tenant: "t1" }, cost: { since: "2026-10-01T00:00:00Z", seconds: 4, dollars: 0.00004 } })), pageInfo: { hasMore: true, nextCursor: "next" } });
     if (path.endsWith("/commands") && body.detached) return Response.json({ processId: "p1" });
     if (path.endsWith("/commands")) return Response.json({ exitCode: 0, stdout: "waited\u001b[3J", stderr: "TERM environment variable not set.\n" });
     if (path.endsWith("/commands/p1")) return Response.json(++processPolls < 2 ? { status: "running", running: true } : { status: "exited", running: false, exitCode: 3, stdout: "polled", stderr: "e" });
@@ -625,4 +625,141 @@ test("the API shows a managed session as a session, and disconnecting stops the 
   assert.deepEqual(f.state.removed, [row.machine]);
   assert.ok((await f.row()).ended_at);
   f.done();
+});
+
+test("a listing with a page that fails or falls short is no listing: nothing ends, even past 200 machines", async () => {
+  const agents = Array.from({ length: 250 }, (_, i) => `agent-${i}`);
+  const box = (i: number) => ({ id: `bx_${i}`, state: "idle", createdAt: "2026-10-31T00:00:00Z", labels: { computer: `cmp_agent-${i}`, tenant: "payg" }, cost: { since: "2026-10-01T00:00:00Z", seconds: 10, dollars: 0.0001 } });
+  const whole = Array.from({ length: 250 }, (_, i) => box(i));
+  let second: () => Response = () => new Response("", { status: 500 });
+  const f = await fixture({ extraAgents: agents, outbound: { fetch: async (url: string) => {
+    const cursor = new URL(url).searchParams.get("cursor");
+    return cursor ? second() : Response.json({ sandboxes: whole.slice(0, 200), pageInfo: { hasMore: true, nextCursor: "page-2" } });
+  } } });
+  for (const agent of agents) await f.connect("payg", agent);
+  await f.db.query(`insert into managed_computers(id,tenant,agent,connection,platform,machine,deadline,created_at)
+    select 'cmp_' || agent, 'payg', agent, id, true, 'bx_' || agent, $1::bigint, $2::bigint from computer_connections where tenant='payg'`, [f.now() + HOUR, f.now()]);
+  f.advance(10 * 60_000);
+  const open = async () => Number((await f.db.query("select count(*)::int as n from managed_computers where ended_at is null")).rows[0].n);
+
+  const broken: (() => Response)[] = [
+    () => new Response("", { status: 500 }),
+    () => new Response("", { status: 429 }),
+    () => { throw new Error("connection lost"); },
+    () => Response.json({ sandboxes: whole.slice(200) }), // no pageInfo
+    () => Response.json({ pageInfo: { hasMore: false } }), // no machines at all
+    () => Response.json({ sandboxes: whole.slice(200, 210), pageInfo: { hasMore: true, nextCursor: "page-3" } }), // short, with more to come
+    () => Response.json({ sandboxes: whole.slice(0, 200), pageInfo: { hasMore: true } }), // more, but no way to it
+    () => Response.json({ sandboxes: whole.slice(0, 200), pageInfo: { hasMore: true, nextCursor: "page-2" } }), // the same page again
+    () => Response.json({ sandboxes: whole.slice(200).map(({ cost: _cost, ...rest }) => rest), pageInfo: { hasMore: false } }), // no costs
+  ];
+  for (const answer of broken) {
+    second = answer;
+    await assert.rejects(pass(f));
+    assert.equal(await open(), 250);
+  }
+  assert.equal(await f.spent(), 0, "nothing charged from half a listing");
+
+  second = () => Response.json({ sandboxes: whole.slice(200), pageInfo: { hasMore: false } });
+  await pass(f);
+  assert.equal(await open(), 250);
+  assert.equal(await f.spent(), 250 * 100);
+  f.done();
+});
+
+test("a row a listing misses ends only when a listing of that row alone agrees", async () => {
+  const f = await fixture();
+  await f.connect();
+  await f.start();
+  const row = await f.row();
+  f.advance(10 * 60_000);
+  f.state.hidden.add(row.id);
+  await pass(f);
+  assert.equal((await f.row()).ended_at, null, "still there when asked by name");
+  f.state.hidden.clear();
+  f.machines.clear();
+  await pass(f);
+  assert.ok((await f.row()).ended_at);
+  f.done();
+});
+
+test("an agent revoked, purged, expired or deleted takes its machine with it at the next pass, charged up to then; others keep theirs", async () => {
+  const agents = ["gone-revoked", "gone-purged", "gone-expired", "gone-deleted", "stays"];
+  const f = await fixture({ extraAgents: agents });
+  for (const agent of agents) { await f.connect("payg", agent); await f.start("payg", agent, `start-${agent}`); }
+  f.advance(60_000);
+  await f.db.query("update agents set revoked=true where id='gone-revoked'");
+  await f.db.query("update agents set purged_at=$1 where id='gone-purged'", [f.now()]);
+  await f.db.query("update agents set expires_at=$1 where id='gone-expired'", [f.now() - 1]);
+  await f.db.query("delete from agents where id='gone-deleted'");
+  await pass(f);
+  for (const agent of agents.slice(0, 4)) assert.ok((await f.row(agent)).ended_at, agent);
+  assert.equal((await f.row("stays")).ended_at, null);
+  assert.equal(f.state.removed.length, 4);
+  assert.equal(await f.spent(), 5 * cost(60_000));
+  assert.equal(f.logged.filter(line => line.type === "computer_agent_gone").length, 4);
+  f.done();
+});
+
+test("a connection removed, or an account deleted, stops its machines; a failed stop is not removed and says so", async () => {
+  const f = await fixture();
+  const a = await f.connect("payg", "a");
+  await f.connect("payg", "b");
+  await f.start("payg", "a");
+  await f.start("payg", "b", "start-b");
+  f.advance(60_000);
+  f.state.removeFails = true;
+  await assert.rejects(f.service.remove("payg", a.id), (error: unknown) => error instanceof HttpError && error.status === 502);
+  assert.equal((await f.row("a")).ended_at, null);
+  f.state.removeFails = false;
+  await f.service.removeTenant("payg");
+  assert.ok((await f.row("a")).ended_at);
+  assert.ok((await f.row("b")).ended_at);
+  assert.equal(f.state.removed.length, 2);
+  assert.equal(await f.spent(), 2 * cost(60_000));
+  assert.deepEqual(await f.service.list("payg"), []);
+  f.done();
+});
+
+test("pieces add up to the total at any price, and a lower figure never charges or moves anything", async () => {
+  const price = micros(0.0173);
+  const f = await fixture({ price });
+  await f.connect();
+  await f.start();
+  for (const seconds of [3, 7, 11, 2, 5, 13, 9, 1, 17, 4, 6, 8]) { f.advance(seconds * 1000); await pass(f); }
+  const total = cost(86_000);
+  assert.equal(await f.spent(), Math.round(total * price / micros(0.018)));
+  assert.equal(Number((await f.row()).charged_micros), await f.spent());
+
+  // Six decimals as Boat may send them, and the float they arrive as.
+  const g = await fixture();
+  await g.connect();
+  await g.start();
+  for (const dollars of [0.00029, 0.000291, 0.000583, 0.1, 0.100001]) { g.state.dollars = dollars; await pass(g); assert.equal(await g.spent(), Math.round(dollars * 1e6)); }
+
+  g.state.dollars = 0.05;
+  await pass(g);
+  assert.equal(await g.spent(), 100001, "no negative charge");
+  assert.equal(Number((await g.row()).usage_micros), 100001, "and the count stays where it was");
+  g.state.dollars = 0.100002;
+  await pass(g);
+  assert.equal(await g.spent(), 100002);
+  f.done();
+  g.done();
+});
+
+test("every sweep counts its pass, flag on or off, with a key or without; one that fails counts as failed", async () => {
+  const lines: any[] = [];
+  setMetricSink(line => { lines.push(JSON.parse(line)); });
+  try {
+    const off = await fixture({ flag: false, platformKey: false });
+    await off.service.sweep();
+    off.done();
+    const f = await fixture();
+    await f.service.sweep();
+    f.state.listFails = true;
+    await f.service.sweep();
+    f.done();
+  } finally { setMetricSink(); }
+  assert.deepEqual(lines.filter(line => line.type === "computer_pass_metric").map(line => line.ComputerPasses ?? `failed ${line.ComputerPassFailures}`), [1, 1, "failed 1"]);
 });
