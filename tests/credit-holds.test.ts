@@ -139,3 +139,26 @@ test("a hold whose host went away lapses and stops counting", async () => {
   assert.equal(next.tracked, true);
   assert.equal(Number((await db.query("select count(*) n from credit_holds")).rows[0].n), 1, "the lapsed one is gone");
 });
+
+test("a failed attempt's hold goes as it ends and costs nothing, on reconciliation too; only the attempt that answered is charged", async () => {
+  const { db, attempts, begin } = await setup(10 * USD);
+  const balance = async () => Number((await db.query("select balance from credit_accounts where tenant = 'payg'")).rows[0].balance);
+  const failed = await begin("particle-ai/particle-1", SMALL);
+  assert.ok(await held(db) > 0);
+  await attempts.event("payg", "agent", true, true, { type: "finish", id: failed.id, usage: { input: 0, output: 0 }, chars: 0, completed: false });
+  assert.equal(await held(db), 0, "the failed attempt's hold is gone");
+  assert.equal(await balance(), 10 * USD);
+
+  const answered = await begin("deepseek/deepseek-v4.1-flash-1017", SMALL);
+  assert.ok(await held(db) > 0);
+  await attempts.event("payg", "agent", true, true, { type: "finish", id: answered.id, usage: { input: 100, output: 10, providerCost: 0.01, providerCreditCost: 0 }, chars: 40, completed: true });
+  assert.equal(await held(db), 0);
+  const charged = 10 * USD - await balance();
+  assert.ok(charged > 0, "the answer is charged");
+
+  await db.query("update model_attempts set updated_at = 0, next_check_at = 0 where id = $1", [failed.id]);
+  await attempts.reconcile();
+  assert.equal(10 * USD - await balance(), charged, "reconciling the failed attempt charges nothing");
+  assert.equal(await held(db), 0);
+  assert.equal(Number((await db.query("select charge from model_attempts where id = $1", [failed.id])).rows[0].charge), 0);
+});
