@@ -105,7 +105,8 @@ test("node-loss resumes preserve growing backoff; the loss after the limit fails
   });
   let finish = false;
   const model = await fakeModel(t, () => finish ? { role: "assistant", content: "new turn finished" } : undefined);
-  const env = { ...model.env, AGENT_ORPHAN_SWEEP_MS: "500", AGENT_LEASE_TTL_MS: "6000", AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_USAGE_WEBHOOK_RETRY_MS: "100", AGENT_SECRETS_KEY: randomBytes(32).toString("hex") };
+  const sweepMs = 500;
+  const env = { ...model.env, AGENT_ORPHAN_SWEEP_MS: String(sweepMs), AGENT_LEASE_TTL_MS: "6000", AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_USAGE_WEBHOOK_RETRY_MS: "100", AGENT_SECRETS_KEY: randomBytes(32).toString("hex") };
   let node = await c.start("a", env);
   const registered = await fetch(`${node.url}/v1/webhooks`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ url: hookUrl, events: ["run.failed"] }) });
   assert.equal(registered.status, 201);
@@ -118,7 +119,8 @@ test("node-loss resumes preserve growing backoff; the loss after the limit fails
   const run = client.prompt("hang", { idempotencyKey: "poison", timeoutMs: 100_000 });
   run.catch(() => {});
   const row = async () => (await c.db.query("select turn_resumes, resume_failures, resume_after from agents where id = $1", [created.session.id])).rows[0];
-  let previousDelay = 0;
+  // The earliest the next reservation can be made: once its node is lost, and once the backoff before it has passed.
+  let notBefore = 0;
   for (let loss = 1; loss <= MAX_RESUMES + 1; loss++) {
     await until(() => model.bodies.length === loss, `model call ${loss}`);
     const before = await row();
@@ -126,10 +128,10 @@ test("node-loss resumes preserve growing backoff; the loss after the limit fails
     assert.equal(before.resume_failures, loss - 1);
     const deadline = Number(before.resume_after ?? 0);
     if (loss > 1) {
-      const remaining = deadline - Date.now();
-      assert.ok(remaining > previousDelay, `backoff grows: ${remaining} > ${previousDelay}`);
-      previousDelay = remaining;
+      const delay = sweepMs * 2 ** (loss - 2);
+      assert.ok(deadline - notBefore >= delay, `backoff grows: ${deadline - notBefore} >= ${delay}`);
     }
+    notBefore = Math.max(deadline, Date.now());
     node.child.kill("SIGKILL");
     await once(node.child, "close");
     node = await c.start(`a${loss}`, env, port);

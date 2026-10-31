@@ -141,6 +141,8 @@ test("a node killed just after a sweep load leaves growing backoff for the next 
   first.resolve();
   await closed;
   const row = async () => (await c.db.query("select sweep_failures, sweep_after, turn_resumes, resume_failures from agents where id = $1", [agent])).rows[0];
+  // The earliest the next reservation can be made: after the drain, then once the deadline before it has passed.
+  let notBefore = Date.now();
   node = await c.start("b", env);
   for (let attempt = 1; attempt <= 2; attempt++) {
     await until(() => node.logs.some(entry => entry.type === "agents_resumed" && entry.agents.includes(agent)), `sweep load ${attempt}`, 35_000);
@@ -150,16 +152,20 @@ test("a node killed just after a sweep load leaves growing backoff for the next 
     assert.equal(reserved.turn_resumes, attempt - 1, "the queued run's first start is not a turn resume");
     assert.equal(reserved.resume_failures, attempt - 1, "sweep attempts do not alter turn backoff");
     const deadline = Number(reserved.sweep_after);
-    const remaining = deadline - Date.now();
-    assert.ok(remaining > sweepMs * 2 ** (attempt - 1) - 3_000, `attempt ${attempt} reserved its growing delay: ${remaining}`);
+    const delay = sweepMs * 2 ** (attempt - 1);
+    assert.ok(deadline - notBefore >= delay, `attempt ${attempt} reserved its growing delay: ${deadline - notBefore} >= ${delay}`);
+    notBefore = deadline;
     node.child.kill("SIGKILL");
     await once(node.child, "close");
     node = await c.start(`next-${attempt}`, env);
     await until(async () => !await c.liveOwner(agent), "the dead owner to expire");
-    assert.ok(Date.now() < deadline, "the next node has time to sweep before backoff expires");
     await sleep(500);
-    assert.notEqual(await c.owner(agent), node.url, "a sweep before the deadline cannot load the agent");
-    assert.equal((await row()).sweep_failures, attempt, "a skipped sweep consumes no attempt");
+    const [owner, { sweep_failures: failures }] = [await c.owner(agent), await row()];
+    // Read before this check, so on a machine slow enough to have used up the backoff, only the load's wait below applies.
+    if (Date.now() < deadline) {
+      assert.notEqual(owner, node.url, "a sweep before the deadline cannot load the agent");
+      assert.equal(failures, attempt, "a skipped sweep consumes no attempt");
+    }
     if (attempt === 2) finish = true;
     await until(() => node.logs.some(entry => entry.type === "agents_resumed" && entry.agents.includes(agent)), "the next sweep to load after backoff", 35_000);
     assert.ok(Date.now() >= deadline, "the next load waited for the reserved deadline");
