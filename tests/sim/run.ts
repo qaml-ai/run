@@ -405,6 +405,8 @@ export async function runPlan(plan: Plan, options: { quiet?: boolean; inspect?: 
         for (const row of rows) if (seen.get(`child_${row.request_id}`) !== 1) failures.push(`I21: ${parent}'s notification of ${row.request_id} landed, but is ${seen.get(`child_${row.request_id}`) ?? 0} times in its history`);
       }
     }
+    // Every entry commits in the order of its ID (ordinals.ts): the journal and Pi write through one Session.
+    for (const log of sim.env.logs) if (log.line.includes('"history_ordinals_unplaced"') && log.line.includes('"reason":"late"')) failures.push(`an entry committed after one with a later ID: ${log.line}`);
     // I15: what a run that succeeded said is kept: its prompt, and its answer after it, are in its agent's history.
     const histories = new Map<number, string[]>();
     for (const [run, record] of records) {

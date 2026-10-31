@@ -51,9 +51,9 @@ type Marker = { t?: string; total?: number; kept?: unknown[]; active?: boolean }
 
 /**
  * The places of a commit's session entries, worked out under the commit's metadata lock (`state` as the row holds it).
- * An entry committed after one with a later ID (Pi and the host commit on their own) takes the place of the first
- * message after it, and those after it move up. A `pi` marker (the host's skip of a discarded run's messages) unplaces
- * the session, for `fillOrdinals` to place again. Earlier rows are changed here, the commit's own rows by `placements`.
+ * Every entry commits in the order of its ID (the journal and Pi write through one Session). One that did not, like a
+ * `pi` marker (the host's skip of a discarded run's messages), unplaces the session, for `fillOrdinals` to place again.
+ * Earlier rows are changed here, the commit's own rows by `placements`.
  */
 export async function placeEntries(sql: Executor, writes: readonly StorageWrite[], state: OrdinalState): Promise<{ placements: Map<number, Placement>; state: OrdinalState } | undefined> {
   const entries = writes.flatMap(write => write.type === "entry" && write.value.conversationId === SESSION_CONVERSATION_ID ? [write.value] : []).sort((a, b) => a.id - b.id);
@@ -68,9 +68,12 @@ export async function placeEntries(sql: Executor, writes: readonly StorageWrite[
       lastId = Math.max(lastId, entry.id);
       continue;
     }
-    // Where the entry goes: at the history's end, or (committed late) before the first message placed after it.
-    const late = entry.id < lastId;
-    const at = late ? (await sql.get<{ at: number | null }>(`SELECT min(msg_from) AS at FROM ${ENTRIES} WHERE session_id = $1 AND conversation_id = ? AND id > ? AND msg_from IS NOT NULL`, SESSION_CONVERSATION_ID, entry.id))?.at ?? next : next;
+    // Calls left waiting place nothing, and one may be stored as its agent closes, beside what Pi still stores.
+    if (entry.kind === MARKER_KIND && (entry.data as Marker | undefined)?.t === "awaiting") continue;
+    if (entry.id < lastId) {
+      console.error(JSON.stringify({ type: "history_ordinals_unplaced", entry: entry.id, reason: "late" }));
+      return { placements: new Map(), state: { next: null, lastId: 0 } };
+    }
     lastId = Math.max(lastId, entry.id);
     if (entry.kind === MARKER_KIND) {
       const marker = (entry.data ?? {}) as Marker;
@@ -89,7 +92,7 @@ export async function placeEntries(sql: Executor, writes: readonly StorageWrite[
         else await sql.run(`UPDATE ${ENTRIES} SET msg_count = CASE WHEN msg_count = 1 THEN NULL ELSE msg_count - 1 END, msg_from = CASE WHEN msg_count = 1 THEN NULL ELSE msg_from END
           WHERE session_id = $1 AND msg_from IS NOT NULL AND msg_count > 0 AND msg_from + msg_count = ?`, next);
         next--;
-      } else if (marker.t === "turn" && marker.active) placements.set(entry.id, { from: at, count: 0, skip: 0, turn: true });
+      } else if (marker.t === "turn" && marker.active) placements.set(entry.id, { from: next, count: 0, skip: 0, turn: true });
       else if (marker.t === "pi") {
         console.error(JSON.stringify({ type: "history_ordinals_unplaced", entry: entry.id, reason: "skip" }));
         return { placements: new Map(), state: { next: null, lastId: 0 } };
@@ -98,9 +101,8 @@ export async function placeEntries(sql: Executor, writes: readonly StorageWrite[
     }
     const count = historyPositions(entry).length;
     if (!count) continue;
-    placements.set(entry.id, { from: at, count, skip: 0, turn: false });
+    placements.set(entry.id, { from: next, count, skip: 0, turn: false });
     appended = true;
-    if (at < next) await sql.run(`UPDATE ${ENTRIES} SET msg_from = msg_from + ? WHERE session_id = $1 AND conversation_id = ? AND id > ? AND msg_from IS NOT NULL`, count, SESSION_CONVERSATION_ID, entry.id);
     next += count;
   }
   return { placements, state: { next, lastId } };

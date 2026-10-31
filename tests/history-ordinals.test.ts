@@ -116,13 +116,15 @@ test("commits place each history entry as JournalHistory counts it: a new sessio
   await storage.close(context); await fork.storage.close(context);
 });
 
-test("an entry committed after one with a later ID takes its place in ID order, and those after it move up", async () => {
+test("an entry committed after one with a later ID, which no writer does now, leaves the session unplaced, and the fill places it in ID order", async () => {
   const { storage, journal } = await busySession("late", 1);
   const [early, later] = [await storage.mintId<EntryId>(), await storage.mintId<EntryId>()];
   const entry = (id: EntryId, message: AgentMessage, kind = "pi.assistant"): StorageWrite => ({ type: "entry", value: { id, conversationId, kind, model: [message] as never } });
   await commitWrites(storage, [entry(later, reply("second"))], context);
-  await commitWrites(storage, [entry(early, user("first"), "pi.user")], context);
   await journal.refresh();
+  await commitWrites(storage, [entry(early, user("first"), "pi.user")], context);
+  assert.equal((await metadata("late")).history_next, null, "unplaced");
+  assert.equal((await fillOrdinals(db, "late", { dryRun: false })).code, "placed");
   await assertSame("late", storage, "late");
   assert.deepEqual((await byOrdinal("late")).messages.slice(-2).map(message => (message as { role: string }).role), ["user", "assistant"]);
   await storage.close(context);

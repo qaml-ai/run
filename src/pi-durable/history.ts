@@ -4,7 +4,6 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Cursor, DocumentId, EntryId, EntryRecord, Storage, StorageWrite } from "@earendil-works/pi-durable";
 import { durableEntryMessages } from "./agent.ts";
 import { HOST_BOOTSTRAP_KIND, SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
-import { entryIds, type EntryIdLister } from "./storage.ts";
 import { always } from "../assert.ts";
 import { MARKER_KIND } from "./ordinals.ts";
 
@@ -34,8 +33,6 @@ const SNAPSHOT_ADDRESS = { kind: "camel.host.snapshot", scope: { kind: "session"
 const RECORD_KIND = "camel.host.record";
 type Snapshot = { total: number; piCursor?: At; active: boolean; turnStart: number; awaiting?: string[]; calls?: [string, number][]; context?: AgentMessage[] };
 
-/** How far back a refresh looks for an entry committed after a later one: more than either writer has in flight. */
-const REORDER_WINDOW = 128;
 /**
  * The most message JSON (in characters) one read of the history takes into memory: past it the read fails, rather than
  * the node running out of heap (2026-10-27: reads of whole running turns took nodes to their 2 GB limit, one after another).
@@ -63,7 +60,7 @@ export function baseWrites(id: EntryId, base: HistoryBase, document: { id: Docum
  */
 type Slot = { at: At; size: number } | { kept: number; size: number };
 
-type Reader = Pick<Storage, "scanEntries" | "entry"> & Partial<Pick<Storage, "findDocument" | "document" | "conversation">> & Partial<EntryIdLister>;
+type Reader = Pick<Storage, "scanEntries" | "entry"> & Partial<Pick<Storage, "findDocument" | "document" | "conversation">>;
 
 export class JournalHistory {
   /** Messages in the history (after retractions); absolute indexes run 0 .. total - 1. */
@@ -80,8 +77,6 @@ export class JournalHistory {
   readonly base: HistoryBase;
   readonly baseId: number;
   private lastId: number;
-  /** The entries applied within the last REORDER_WINDOW IDs: one committed after a later one is found among them. */
-  private applied = new Set<number>();
   /** Where the history's entries begin: the base's cursor's entry, or past the base. */
   private readonly startId: number;
   /** The read in progress: reads run one at a time, so each starts past what the one before took in. */
@@ -93,17 +88,7 @@ export class JournalHistory {
     this.startId = base.through ? base.through.entryId : baseId + 1;
     this.total = base.total; this.active = base.active; this.turnStart = base.turnStart; this.awaiting = [...base.awaiting];
     this.calls = new Map(base.calls ?? []);
-    this.slots = this.keptSlots();
-  }
-
-  /** The slots of the base's `kept` messages. */
-  private keptSlots(): Slot[] { return (this.base.kept ?? []).map((message, kept) => ({ kept, size: JSON.stringify(message).length })); }
-
-  /** Back to the base, every entry since to be read again. */
-  private reset() {
-    this.lastId = this.baseId; this.applied.clear(); this.slots = this.keptSlots(); this.turnStarts = [];
-    this.total = this.base.total; this.active = this.base.active; this.turnStart = this.base.turnStart; this.awaiting = [...this.base.awaiting];
-    this.calls = new Map(this.base.calls ?? []);
+    this.slots = (base.kept ?? []).map((message, kept) => ({ kept, size: JSON.stringify(message).length }));
   }
 
   /**
@@ -199,25 +184,9 @@ export class JournalHistory {
    * call's index): each read waits for the one before, as two reads from the same point would count its entries twice.
    */
   refresh() {
-    const next = this.reading.catch(() => {}).then(() => this.catchUp());
+    const next = this.reading.catch(() => {}).then(() => this.read(this.lastId + 1));
     this.reading = next;
     return next;
-  }
-
-  /**
-   * One refresh, on the reading line. Pi and the host take entry IDs from one sequence but commit on their own, so an
-   * entry can land after one with a later ID that a read already took in: the recent IDs are listed again (IDs only,
-   * not their records), and one not taken in yet means reading the history again from its base, in ID order (a
-   * retraction or skip applies to what precedes it).
-   */
-  private async catchUp() {
-    const recent = await entryIds(this.storage, conversationId, Math.max(this.startId, this.lastId - REORDER_WINDOW + 1), this.lastId);
-    if (recent.some(id => id < this.lastId && !this.applied.has(id))) {
-      this.reset();
-      await this.read(this.startId);
-      return;
-    }
-    await this.read(this.lastId + 1);
   }
 
   private async read(from: number) {
@@ -227,13 +196,9 @@ export class JournalHistory {
       for (const entry of page.items) this.apply(entry);
       cursor = page.next;
     } while (cursor !== undefined);
-    for (const id of this.applied) if (id <= this.lastId - REORDER_WINDOW) this.applied.delete(id);
   }
 
   private apply(entry: EntryRecord) {
-    // Each entry counts once, whatever reads it.
-    if (this.applied.has(entry.id)) return;
-    this.applied.add(entry.id);
     this.lastId = Math.max(this.lastId, entry.id);
     if (entry.kind === MARKER_KIND) {
       // Markers count from the base on; those before it are in its counts.
