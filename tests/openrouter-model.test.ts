@@ -1,9 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID, createHash } from "node:crypto";
+import { Accounts } from "../src/accounts.ts";
+import { EndUserCredits } from "../src/end-user-credits.ts";
 import { defaultModels } from "../src/model.ts";
+import { ModelAttempts } from "../src/model-attempts.ts";
+import { Tenants } from "../src/tenants.ts";
 import { passthroughModel, withOpenRouterDetails } from "../src/openrouter-model.ts";
 import { reasoningFloor } from "../src/pi-catalog.ts";
 import { resolveModel } from "../src/session-config.ts";
+import { testDatabase } from "./database.ts";
 import { gateway, responses } from "./provider-fixtures.ts";
 import { listen, runtime } from "./runtime-server.ts";
 
@@ -69,4 +75,52 @@ test("over the API: an agent keeps what the lookup said, a move looks up too, an
   assert.equal(body.model, "new/dear");
   assert.equal(body.provider, undefined);
   assert.equal(body.reasoning?.effort, "low", "an agent with no level, on a model the lookup can't say can turn it off");
+});
+
+const USD = 1_000_000;
+
+test("a pass-through model's looked-up price is what a call on the platform's key holds, not the mid-range one", async () => {
+  const { db } = await testDatabase();
+  const key = createHash("sha256").update("fixture").digest("hex");
+  const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: { tokenSha256: key, billing: "prepaid" } }, platformKeys: { openrouter: "fixture" } }) });
+  await tenants.reload();
+  await db.query("insert into credit_accounts (tenant, balance, purchased) values ('payg', $1, $1)", [100 * USD]);
+  const service = new EndUserCredits(db);
+  await service.setSettings("payg", { enabled: true });
+  await service.post("payg", "person", { kind: "grant", amount: 50 * USD, key: "pay" });
+  const attempts = new ModelAttempts(db, new Accounts({ tenants, db }), undefined, 0, undefined, service);
+  const hold = async (rates?: { input: number; output: number }) => {
+    const id = randomUUID();
+    await attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model: "new/dear", kind: "response", at: Date.now(), keyHash: key,
+      estimate: { inputTokens: 100_000, maxOutputTokens: 1_000, rates: rates ?? { input: 0, output: 0 } }, endUser: { id: "person", bucket: "b" } } as never);
+    const held = Number((await db.query("select paid + allowance as n from end_user_holds where id = $1", [id])).rows[0].n);
+    await attempts.event("payg", "agent", true, true, { type: "finish", id, usage: { input: 0, output: 0 }, chars: 0, completed: false });
+    return held;
+  };
+  // As the agent holds it after its lookup: $75 and $300 per million, with OpenRouter's funding on top.
+  const looked = await hold({ input: 75, output: 300 });
+  assert.ok(looked > 75_000_000 / 10 && looked < 9 * USD, `about $8.25: ${looked}`);
+  const unknown = await hold();
+  assert.ok(unknown < USD, `the mid-range $3 and $15 with no price: ${unknown}`);
+});
+
+test("over the API: the lookup's price reaches an end user's hold, so a dear model is refused where the mid-range price would have started", async t => {
+  const list = await server(t);
+  const provider = await gateway(t, () => responses([{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Should not be asked." }] }]));
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_OPENROUTER_API_URL: list });
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: `${provider.url}/openrouter` } });
+  await r.call("/v1/end-user-settings", { method: "PUT", body: { enabled: true } });
+  await r.call("/v1/end-users/person/entries", { body: { kind: "grant", amount: USD / 10, key: "pay" } });
+  // About 10,000 tokens of input: $0.75 at the looked-up $75 per million, $0.03 at the mid-range $3. On $0.10, only the second would start.
+  const text = "word ".repeat(8_000);
+  const dear = (await r.call("/v1/agents", { body: { model: "openrouter/new/dear", keyScope: "hosted", subject: "person", bucket: "b" } })).json.id;
+  const refused = await r.prompt(dear, text);
+  assert.equal(provider.requests.length, 0, "no call was made");
+  assert.equal(refused.outcome.result.stopped, "spend_limit");
+  assert.equal(refused.outcome.result.limit, "end_user");
+  // With no lookup, the same call starts at the mid-range price.
+  const down = (await r.call("/v1/agents", { body: { model: "openrouter/new/down", keyScope: "hosted", subject: "person", bucket: "b" } })).json.id;
+  const started = await r.prompt(down, text);
+  assert.equal(started.outcome.result.reply, "Should not be asked.");
+  assert.equal(provider.requests.length, 1);
 });
