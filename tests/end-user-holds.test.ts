@@ -16,6 +16,8 @@ const today = () => utcDay(Date.now());
 
 async function credits(settings: Record<string, unknown> = {}) {
   const { db } = await testDatabase();
+  // The tenant's own credit to run on: a call on the platform's key holds some too (credit-holds.ts).
+  await db.query("insert into credit_accounts (tenant, balance, purchased) values ('payg', $1, $1) on conflict (tenant) do nothing", [1_000_000_000_000]);
   const service = new EndUserCredits(db);
   await service.setSettings("t", { enabled: true, ...settings });
   return { db, service };
