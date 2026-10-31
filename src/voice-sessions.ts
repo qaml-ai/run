@@ -1693,7 +1693,7 @@ export class VoiceSessions {
     const identity = () => ({ ...(options().subject !== undefined ? { subject: options().subject } : {}), context: { ...options().context, voiceSession: held.id } });
     const config = {
       model: realtime.model, voice: realtime.voice, publicOwnerId: realtime.publicOwnerId, transcribe: realtime.transcribe,
-      instructions: realtimeInstructions(realtime.instructions, { agent: !!submit, group: held.row.provider !== "browser" }),
+      instructions: realtimeInstructions(realtime.instructions, { agent: !!submit, group: held.row.provider !== "browser", forYouFirst: provider.id === "elevenlabs" && realtime.model === "gemini-3.1-flash-lite" }),
       tools: [...submit ? [ASK_AGENT] : [], STAY_SILENT],
       ...(options().language ? { language: options().language } : {}), ...(options().prompt ? { prompt: options().prompt } : {}),
       ...(options().bargeIn === false ? { interruptible: false } : {}),

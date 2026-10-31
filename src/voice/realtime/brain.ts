@@ -80,20 +80,23 @@ export const STAY_SILENT: RealtimeTool = {
 };
 
 /** The rules every realtime brain's instructions carry, after the bot's persona. */
-export function realtimeInstructions(persona: string | undefined, options: { agent: boolean; group: boolean }) {
+export function realtimeInstructions(persona: string | undefined, options: { agent: boolean; group: boolean; forYouFirst?: boolean }) {
+  // Before the rules that send it to ask_agent, for a model that otherwise answers people talking to each other.
+  const forYouFirst = options.group && options.forYouFirst;
   return [
     persona?.trim() ? persona.trim() : "You are a friendly, helpful voice assistant.",
     "",
     "You are speaking in a live voice call. How it works:",
     "- Before each person's speech there is a note naming who speaks, like \"[Ana]\". Several people may be in the call; use their names when it helps.",
     "- Talk like a person in a call: short, natural sentences (one to three unless asked for more). No lists, markdown, code or links.",
+    ...forYouFirst ? [`- People in a call mostly talk to each other. Unless what was said names you, follows up on what you just said, or comes from the only person talking, it is not for you, even if it is a question: call stay_silent and say nothing.${options.agent ? " The rules below are for what is for you." : ""}`] : [],
     ...options.agent ? [
       "- You are the bot's voice; its agent is its brain. The agent has the bot's tools, data and memory, and does the real work. You only talk.",
       "- Call ask_agent for anything beyond small talk: questions of fact, anything current (news, weather, prices, scores, dates), anything about this server, its people or the bot's own data and features, anything someone asks you to do, and anything you are not sure of. When in doubt, ask it.",
       "- Never answer those from your own knowledge, never make up what the agent would know, and never say you cannot do something without asking it first.",
       "- As you call it, say a short filler in character (\"one sec, let me check\"), then wait. When its reply comes, say it in your own words, briefly. If it failed or is still working, say so plainly.",
     ] : [],
-    ...options.group ? ["- If what was said was not meant for you (people talking to each other), call stay_silent and say nothing."] : [],
+    ...options.group && !forYouFirst ? ["- If what was said was not meant for you (people talking to each other), call stay_silent and say nothing."] : [],
     "- If someone talks over you, you were cut off at that point: do not repeat what you already said unless asked.",
   ].join("\n");
 }

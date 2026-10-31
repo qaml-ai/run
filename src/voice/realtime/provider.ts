@@ -150,6 +150,11 @@ export const REALTIME_PRICES: Readonly<Record<string, RealtimePrice>> = Object.f
   // thoughts are output text.
   "gemini/gemini-3.8-live": { inputText: micros(0.75), cachedText: micros(0.75), outputText: micros(4.5), inputAudio: micros(3), cachedAudio: micros(3), outputAudio: micros(12) },
 });
+const ELEVENLABS_LLM_RATES: Record<string, string | undefined> = {
+  "elevenlabs/gemini-2.5-flash-lite": "AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD",
+  "elevenlabs/claude-haiku-5-5": "AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD",
+  "elevenlabs/gemini-3.1-flash-lite": "AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD",
+};
 /**
  * https://elevenlabs.io/pricing/agents and
  * https://elevenlabs.io/docs/help-center/product/eleven-agents/how-much-does-eleven-agents-cost (2026-10-19):
@@ -158,8 +163,9 @@ export const REALTIME_PRICES: Readonly<Record<string, RealtimePrice>> = Object.f
  * not public rate defaults. Full connection duration is charged; silence discounts are not inferred locally.
  */
 export function realtimePrice(reference: string, env = process.env): RealtimePrice | undefined {
-  if (reference !== "elevenlabs/gemini-2.5-flash-lite" && reference !== "elevenlabs/claude-haiku-5-5") return REALTIME_PRICES[reference];
-  const names = ["AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD", reference === "elevenlabs/claude-haiku-5-5" ? "AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD" : "AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD"] as const;
+  const llmRate = ELEVENLABS_LLM_RATES[reference];
+  if (!llmRate) return REALTIME_PRICES[reference];
+  const names = ["AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD", llmRate] as const;
   const rates = names.map(name => {
     const raw = env[name];
     if (raw === undefined || raw === "") return undefined;
