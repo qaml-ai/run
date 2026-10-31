@@ -169,6 +169,34 @@ test("Pi bulk ID ranges stay unique, fenced, and durable across handles and RPC"
   await reopened.close(context);
 });
 
+test("Pi shared storage takes a lost commit that only updated a record for what it is: run again, not landed", async () => {
+  const { db } = await database;
+  // The next statement that writes tasks fails as a lost connection does, and the transaction rolls back.
+  let failNext = false;
+  const lost = () => Object.assign(new Error("Connection terminated unexpectedly"), { code: "ECONNRESET" });
+  const flaky = {
+    ...db,
+    query: (...args: Parameters<typeof db.query>) => db.query(...args),
+    connect: async () => {
+      const client = await db.connect();
+      return { ...client, release: client.release.bind(client), on: client.on.bind(client), off: client.off.bind(client),
+        query: async (text: string, values?: unknown[]) => {
+          if (failNext && text.includes("pi_durable_tasks")) { failNext = false; throw lost(); }
+          return client.query(text, values as never);
+        } };
+    },
+  } as unknown as typeof db;
+  const storage = await PostgresPiStorage.open(flaky, randomUUID(), undefined, undefined, 10_000);
+  const [conversation, id] = await storage.mintIds(2);
+  const task = (phase: string) => ({ id, conversationId: conversation, kind: "test", version: 1, input: {}, state: { status: "pending", checkpoint: { phase } }, background: false, abortRequested: false });
+  await storage.commit([{ type: "conversation", value: { id: conversation as ConversationId } }, { type: "task", value: task("first") }] as never, () => {}, context);
+  failNext = true;
+  await storage.commit([{ type: "task", value: task("second") }] as never, () => {}, context);
+  assert.equal(failNext, false);
+  assert.equal(((await storage.task(id as never, context))!.state as any).checkpoint.phase, "second", "what the commit said it stored is stored");
+  await storage.close(context);
+});
+
 test("Pi shared storage rides out a database it cannot reach: reads are asked again, and a commit whose answer was lost lands once", async () => {
   const { db } = await database;
   const sessionId = randomUUID();
