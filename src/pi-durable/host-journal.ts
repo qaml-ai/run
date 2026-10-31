@@ -89,7 +89,10 @@ export class HostJournal {
   private committing(): JournalSession {
     if (!this.session) return change => this.own.commit(tx => change(tx, () => {}), context);
     const session = this.session();
-    if (!session) throw new JournalClosed("The agent is closing");
+    if (!session) {
+      console.error(JSON.stringify({ type: "journal_write_refused", reason: "agent_closing" }));
+      throw new JournalClosed("The agent is closing");
+    }
     return session;
   }
 
