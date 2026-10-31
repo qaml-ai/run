@@ -179,7 +179,7 @@ test("an overflow limit survives reopen and images are not counted as base64 tex
 
 for (const byteRefusal of [false, "413 request_too_large: request too large", "status 413: maximum context length exceeded", "HTTP 413: maximum context length exceeded"] as const) test(byteRefusal ? "byte-size refusals do not learn token limits" : "a failed optional limit commit still lets Pi compact the overflow", async t => {
   const storage = new MemoryStorage();
-  let failed = false, calls = 0, summaries = 0;
+  let failed = false, calls = 0, summaries = 0, gaveUp: unknown;
   const backend = new Proxy(storage, { get(target, key) {
     if (key === "commit") return async (batches: any, receive: any, context: any) => {
       if (!byteRefusal && batches.flat().some((write: any) => write.type === "document.create" && write.record?.kind === "camel.context.limit")) {
@@ -194,10 +194,17 @@ for (const byteRefusal of [false, "413 request_too_large: request too large", "s
   const agent = await DurableAgent.create({
     initialState: { model: { ...model, contextWindow: 65_536 }, messages: [], tools: [] },
     streamFn: () => stream(++calls === 1 ? { ...fauxAssistantMessage("", { stopReason: "error" }), errorMessage: byteRefusal || "maximum context length exceeded: 1,050,413 tokens" } : fauxAssistantMessage("done")),
-    durable: { storage: backend, summaryStream: () => { summaries++; return stream(fauxAssistantMessage("summary")); } },
+    durable: { storage: backend, onStorageFailure: error => { gaveUp = error; }, summaryStream: () => { summaries++; return stream(fauxAssistantMessage("summary")); } },
   });
   t.after(() => agent.close());
   await agent.replaceContext(Array.from({ length: 12 }, (_, i) => [{ role: "user", content: "x".repeat(8_000), timestamp: i }, fauxAssistantMessage("ack")]).flat() as any);
+  // A failed write of the limit fails Pi's Session, as any failed write does: the agent is given up, and reloaded.
+  if (!byteRefusal) {
+    await agent.prompt("hello").catch(() => {});
+    assert.equal(failed, true);
+    assert.match(String(gaveUp), /optional limit write failed/);
+    return;
+  }
   await agent.prompt("hello");
   assert.equal(calls, 2, agent.state.errorMessage);
   assert.ok(summaries > 0);

@@ -6,7 +6,7 @@ import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { RUNTIME } from "../system-prompt.ts";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, LiveDoc, ToolTask, createRegistry, createSession, defineDoc, hook, section,
+  GenerationTask, Harness, LiveDoc, ToolTask, createRegistry, defineDoc, hook, section,
   type Conversation, type ConversationId, type EntryId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Report, type Storage, type Tx,
 } from "@earendil-works/pi-durable";
 
@@ -695,28 +695,17 @@ export class DurableAgent {
       if (final.stopReason === "error" && overflow(final) && !byteRefusal(final)) {
         const window = Math.max(limitFloor(this.state.model), Math.floor(Math.min(sent, inferred ? 272_000 : Infinity, this.overflowWindow, this.state.model.contextWindow, this.options.durable.contextWindow ?? Infinity) * 0.9));
         if (inferred || window < this.overflowWindow) {
-          // Optional learning uses its own session: a failed write must not poison Pi's running session.
-          const storage = this.options.durable.storage;
-          const learning = createSession(new Proxy(storage, { get(target, key) {
-            if (key === "close") return async () => {};
-            const value = Reflect.get(target, key, target);
-            return typeof value === "function" ? value.bind(target) : value;
-          } }));
-          try {
-            await learning.commit(async tx => {
-              if (inferred) {
-                const evidence = await tx.doc(InferredOverflowDoc, this.conversation.id);
-                const now = Date.now();
-                const repeated = evidence.provider === this.state.model.provider && evidence.model === this.state.model.id &&
-                  evidence.at > 0 && now >= evidence.at && now - evidence.at <= 24 * 60 * 60 * 1_000;
-                Object.assign(evidence, { provider: this.state.model.provider, model: this.state.model.id, at: now });
-                if (!repeated) return;
-              }
-              Object.assign(await tx.doc(ContextLimitDoc, this.conversation.id), { provider: this.state.model.provider, model: this.state.model.id, window });
-            }, context);
-          } catch {
-            // Still deliver the provider overflow so Pi can compact it.
-          } finally { await learning.close(context); }
+          await this.conversation.commit(async tx => {
+            if (inferred) {
+              const evidence = await tx.doc(InferredOverflowDoc, this.conversation.id);
+              const now = Date.now();
+              const repeated = evidence.provider === this.state.model.provider && evidence.model === this.state.model.id &&
+                evidence.at > 0 && now >= evidence.at && now - evidence.at <= 24 * 60 * 60 * 1_000;
+              Object.assign(evidence, { provider: this.state.model.provider, model: this.state.model.id, at: now });
+              if (!repeated) return;
+            }
+            Object.assign(await tx.doc(ContextLimitDoc, this.conversation.id), { provider: this.state.model.provider, model: this.state.model.id, window });
+          }, context);
           this.overflowWindow = window;
         }
       }
