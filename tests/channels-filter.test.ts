@@ -10,6 +10,9 @@ import { webhook } from "../src/channels-webhook.ts";
 import { Decider, DecisionFailed, type DecisionItem, type DeciderOptions } from "../src/decisions.ts";
 import { FILTER_TEXT_CHARS, channelFilter, filterState } from "../src/channel-filter.ts";
 import type { Input } from "../src/inputs.ts";
+import { AccountDeletions } from "../src/account-deletion.ts";
+import { memoryStorage } from "../shared/storage.ts";
+import { postgresTail } from "../src/log-tail.ts";
 import { testDatabase } from "./database.ts";
 import { free, listen, runtime, until as untilServer, type T } from "./runtime-server.ts";
 
@@ -66,7 +69,7 @@ async function setup(t: { after(fn: () => void): void }, options: Options = {}) 
   });
   const post = (payload: Record<string, unknown>) => channels.app.request(`/channels/webhook/${channel.id}`, { method: "POST", headers: { "Content-Type": "application/json", "x-token": TOKEN }, body: JSON.stringify({ from: "ada@example.com", thread: "t1", ...payload }) });
   const events = async (query: { limit?: number; outcome?: string; before?: string } = {}) => (await channels.events("default", channel.id, query)).events;
-  return { db, channels, channel, asked, prompts, usage, post, events };
+  return { db, accounts, channels, channel, asked, prompts, usage, post, events };
 }
 
 const eventOf = async (r: Awaited<ReturnType<typeof setup>>, count = 1) => until(async () => { const list = await r.events(); return list.length >= count && list; }, "the verdict");
@@ -297,6 +300,31 @@ test("deleting a channel removes its filtered messages and verdicts", async t =>
   await r.channels.remove("default", r.channel.id);
   assert.equal((await r.db.query("select count(*)::int as n from channel_items")).rows[0].n, 0);
   assert.equal((await r.db.query("select count(*)::int as n from channel_seen")).rows[0].n, 0);
+});
+
+test("deleting a channel is all or nothing, so a retry finds what is left", async t => {
+  const r = await setup(t, { score: () => 0.1 });
+  await r.post({ id: "m1", text: "hello" });
+  await eventOf(r);
+  await r.db.query("alter table email_messages rename to email_messages_away");
+  await assert.rejects(r.channels.remove("default", r.channel.id));
+  await r.db.query("alter table email_messages_away rename to email_messages");
+  assert.equal((await r.events()).length, 1, "the channel, its verdict and its message are all still there");
+  assert.equal((await r.db.query("select count(*)::int as n from channel_items")).rows[0].n, 1);
+  await r.channels.remove("default", r.channel.id);
+  assert.equal((await r.db.query("select count(*)::int as n from channel_items")).rows[0].n, 0);
+});
+
+test("deleting an account deletes its filtered messages and their verdicts", async t => {
+  const r = await setup(t, { score: () => 0.1 });
+  await r.db.query("insert into tenants (id, created_at) values ('default', 1) on conflict do nothing");
+  await r.post({ id: "m1", text: "a customer's words" });
+  await eventOf(r);
+  assert.equal((await r.db.query("select count(*)::int as n from channel_items where item->>'state' = 'filtered'")).rows[0].n, 1);
+  const deletions = new AccountDeletions({ db: r.db, accounts: r.accounts, storage: memoryStorage(postgresTail(r.db)), channels: r.channels, deleteAgent: async () => {} });
+  await deletions.request("default", "self");
+  await until(async () => (await deletions.status("default"))?.state === "deleted" || (await deletions.next(), false), "the deletion");
+  for (const table of ["channels", "channel_items", "channel_seen"]) assert.equal((await r.db.query(`select count(*)::int as n from ${table}`)).rows[0].n, 0, table);
 });
 
 // The real server: routes, billing and the decisions wire format, on a stand-in for OpenRouter.

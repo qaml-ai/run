@@ -65,7 +65,8 @@ refused (409) while an automatic top-up payment is in flight.
 **Then**, on whichever node claims it (`account_deletions`, with a five-minute lease, polled every
 `AGENT_SCHEDULER_INTERVAL_MS`), in order, each step safe to repeat:
 
-1. Channels are torn down at their provider and deleted, with their queued items and email threads.
+1. Channels are torn down at their provider and deleted, with their queued items (messages a filter is holding too), filter
+   verdicts and email threads, in one transaction for each channel.
 2. Every agent is deleted where it runs (`POST /internal/agents/:id/delete` to its owner) and purged
    by the agent sweep: logs, history, local files, chunk pins, schedules, inputs, channel bindings
    and email threads. The deletion waits, polling, until none is left.
@@ -105,6 +106,8 @@ email address may sign up again as a new, empty tenant.
 | An expired agent's data | the same, once its TTL passes |
 | Email thread metadata (addresses, subjects, Message-IDs) | until its agent or channel is deleted |
 | Inbound mail stored in S3 (large messages) | 7 days (`email.tf` lifecycle) |
+| A message a channel's filter left out (`channel_items`: the whole message, sender and text, and any attachments it carried inline) | until delivered, else 14 days; at once with its channel or account. Not in the account export |
+| A channel filter's verdict on a message (`channel_seen.verdict`: outcome, reason, score, cost, ids; no content) | 14 days; at once with its channel or account. Not in the account export |
 | A deleted volume's files | until storage collection's grace period passes (`AGENT_GC_GRACE_MS`, a day), once collection is enabled; at once on account deletion |
 | Runtime logs (`/ecs/camelai-agent-runtime`) | 30 days; ids, sizes and error classes only, and the email of whoever viewed the ops dashboard (see "What logs hold" in [architecture](architecture.md)) |
 | Other log groups | see [infra/terraform/README.md](../../infra/terraform/README.md#log-retention) |
@@ -116,6 +119,15 @@ email address may sign up again as a new, empty tenant.
 | Audio attached to a message, and its transcript | as the agent's other attachments and history: until the agent is deleted or expires (the audio in its workspace volume, the transcript on the user message) |
 | Audio and transcripts of `POST /v1/transcriptions` | not kept: in the node's memory while the request runs |
 | Prompts and images of `POST /v1/images` | not kept: in the node's memory while the request runs; with `volumeId`, the images made are files of that volume, kept until deleted |
+
+## Channel filters
+
+A channel with a [filter](../guides/channels.md#filtering-messages) sends each message it asks about (its sender, title, up
+to 16,000 characters of text, attachments' names) to OpenRouter and TypeSafe as a decision, on the tenant's OpenRouter key
+or the platform's, with the `dataCollection: "deny"` of the channel's definition if it has one. A message the filter leaves
+out stays in Postgres as above, for its tenant to read and deliver (`GET /v1/channels/{id}/events`). Its logs carry ids,
+the outcome, the reason, the time taken and error classes, never the message or the score (`channel_filter`,
+`tests/channels-filter.test.ts` checks the logs).
 
 ## Azure OpenAI models
 

@@ -213,8 +213,9 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   `dataCollection: "deny"` holds for it too. It does not count as a run; the turn it lets through does.
   In `usage.recorded` its `actor` is `channel:<id>`.
 
-The filter keeps noise out; it is not access control. A message's text is written by its sender and can sway the
-answer, so keep `access` and the agent's tools as you would without it.
+A filter is a convenience, not a security control. It keeps noise away from the agent and saves what the noise would
+cost. A message's text is written by its sender, and an email's body can argue its way past the question, so keep
+`access` and the agent's tools as tight as you would without a filter.
 
 `GET /v1/channels/:id/events` (and **Activity** on the console's Channels page) answers what it filtered and why,
 newest first, for 14 days. `?outcome=filtered` narrows it to what it left out, `limit` is up to 200, and `next`
@@ -232,7 +233,10 @@ message not yet delivered has `message`; a passed one's `id` is its run's id, an
 Logs have the outcome and reason, never the message or the score.
 
 `POST /v1/channels/:id/events/:event/deliver` sends a filtered message on, as if it had passed. It asks nothing
-again, and calling it twice starts one run.
+again, and calling it twice starts one run. A large email's stored copy lasts 7 days, so delivered later than that it
+goes without the attachments that were only there, and the prompt says so.
+
+Deleting the channel or the account deletes its filtered messages and records at once.
 
 A provider's retry of a message is dropped as usual, so it is asked about once and starts one run. If a node is lost
 during the question, the next one asks again and that second answer is billed too.

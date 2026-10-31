@@ -10,4 +10,8 @@ Each verdict is recorded (`channel_seen.verdict`, no content) for 14 days, and a
 seconds the message goes on (`reason: "decision_failed"`), logged as `channel_filter` with no content. Decisions bill as
 usual, with `actor: "channel:<id>"`, and do not count against the run rate limit.
 
+A filter is a convenience, not a security control: an email's body can argue its way past it. Deleting a channel or an
+account deletes its filtered messages and verdicts, in one transaction per channel. They are not in the account export. A
+large email's stored copy lasts 7 days, so one delivered later goes without the attachments that were only there.
+
 Migrations `105` and `106` add the column and a partial index, built concurrently.
