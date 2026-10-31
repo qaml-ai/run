@@ -185,6 +185,58 @@ What they all share:
   each file is a step recorded as it is sent, so a retry resumes after the last
   one sent rather than sending the reply again.
 
+## Filtering messages
+
+A channel's `filter` asks a [decision model](decisions.md) one yes/no question about each message before it
+starts a turn. It works on every channel type. For an agent that answers customer email:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"type":"email","settings":{"address":"support"},"definition":"def_…","access":{"public":true},
+       "filter":{"instructions":"This email is from a customer who needs a reply",
+                 "criteria":{"true":"A question or a problem","false":"Newsletters, receipts, spam, out-of-office"},
+                 "threshold":0.7}}' \
+  https://run.camelai.com/v1/channels
+```
+
+- **`instructions`** is a statement that should be true of the messages you want. **`criteria`** (optional) says
+  what counts as yes and as no. **`threshold`** (default 0.5) is the probability a message needs. `PATCH` with
+  `"filter": null` removes it.
+- **What the model sees:** the channel's type, the sender, the title (an email's subject), the message as the agent
+  would get it, up to 16,000 characters, and attachments' names. Not their content.
+- **Below the threshold** no agent is made and no run starts. The message is kept for 14 days.
+- **If the model cannot answer** (an outage, spent credit, 15 seconds without an answer), the message goes on, so a
+  customer's email is not lost to an outage. The event says so.
+- **Not asked about:** a reply in an email or Slack thread that already has an agent, an answer to a question the
+  agent is waiting on, and a message with no text (only files).
+- **Cost:** a [decision](decisions.md), billed the same way, on your OpenRouter key if you have one. A definition's
+  `dataCollection: "deny"` holds for it too. It does not count as a run; the turn it lets through does.
+  In `usage.recorded` its `actor` is `channel:<id>`.
+
+The filter keeps noise out; it is not access control. A message's text is written by its sender and can sway the
+answer, so keep `access` and the agent's tools as you would without it.
+
+`GET /v1/channels/:id/events` (and **Activity** on the console's Channels page) answers what it filtered and why,
+newest first, for 14 days. `?outcome=filtered` narrows it to what it left out, `limit` is up to 200, and `next`
+goes back as `before`:
+
+```json
+{"events": [{"id": "in_…", "conversationId": "…", "at": 1790000000000, "outcome": "filtered", "reason": "score",
+             "score": 0.04, "threshold": 0.7, "model": "typesafe/jev-1.14", "costUsd": 0.00002, "ms": 180,
+             "deliverableUntil": 1791209600000,
+             "message": {"from": {"id": "news@example.com"}, "title": "October deals", "text": "…", "files": []}}]}
+```
+
+`reason` is `score`, `decision_failed` (with `error`), `no_text`, `answers_input` or `follow_up`. Only a filtered
+message not yet delivered has `message`; a passed one's `id` is its run's id, and its `agent` the conversation's.
+Logs have the outcome and reason, never the message or the score.
+
+`POST /v1/channels/:id/events/:event/deliver` sends a filtered message on, as if it had passed. It asks nothing
+again, and calling it twice starts one run.
+
+A provider's retry of a message is dropped as usual, so it is asked about once and starts one run. If a node is lost
+during the question, the next one asks again and that second answer is billed too.
+
 ## Generic webhooks
 
 A `webhook` channel turns each delivery from any service into a prompt. Give it

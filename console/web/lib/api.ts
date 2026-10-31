@@ -212,7 +212,14 @@ export interface Definition {
 export interface Channel {
   id: string; type: string; name: string; webhookUrl?: string; definition?: string;
   access: { public: boolean; allow: string[] }; limits: { perSenderPerMinute: number; turnsPerDay: number };
-  greeting?: string; settings?: Record<string, any>; account: Record<string, string>; credentials: Record<string, string>; createdAt: number;
+  greeting?: string; settings?: Record<string, any>; filter?: ChannelFilter; account: Record<string, string>; credentials: Record<string, string>; createdAt: number;
+}
+export interface ChannelFilter { instructions: string; criteria?: { true?: string; false?: string }; threshold: number }
+/** What a channel's filter said about one message; `message` while a filtered one can still be delivered. */
+export interface ChannelEvent {
+  id: string; conversationId: string; at: number; outcome: "passed" | "filtered"; reason: "score" | "decision_failed" | "no_text" | "answers_input" | "follow_up";
+  threshold: number; score?: number; error?: { status: number; code?: string }; agent?: string; deliveredAt?: number; deliverableUntil?: number;
+  message?: { from: { id: string; name?: string; username?: string }; unverified?: boolean; title?: string; text: string; files: { name: string; size?: number | null }[] };
 }
 
 export interface ManagedDiscordConfig { enabled: boolean; applicationId?: string; installPath?: string; limits?: { servers: number; turnsPerDay: number } }

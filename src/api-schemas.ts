@@ -1104,6 +1104,11 @@ const ChannelLimits = z.object({
   perSenderPerMinute: z.number().int().min(1).max(600).optional().openapi({ description: "Messages per sender per minute; default 10" }),
   turnsPerDay: z.number().int().min(1).max(1_000_000).optional().openapi({ description: "Agent turns per UTC day across the channel; default 1000" }),
 });
+const ChannelFilter = z.object({
+  instructions: z.string().min(1).max(4_000).openapi({ description: "A statement about the message, to be true of the ones that should start a turn: \"This email is from a customer who needs a reply\"" }),
+  criteria: z.object({ true: z.string().min(1).max(1_000).optional(), false: z.string().min(1).max(1_000).optional() }).strict().optional().openapi({ description: "What counts as yes, and as no" }),
+  threshold: z.number().min(0).max(1).optional().openapi({ description: "The probability a message needs to start a turn; default 0.5" }),
+}).strict().openapi("ChannelFilter", { description: "A yes/no question about each message, answered by the decision model before it starts a turn, and billed as a decision" });
 const channelFields = {
   name: z.string().trim().min(1).max(120).optional(),
   credentials: z.record(z.string(), z.string().max(4096)).optional().openapi({ description: "Telegram: { botToken }. Slack: { botToken, signingSecret }. Discord: { botToken }. GitHub: { appId, privateKey, webhookSecret }. Webhook: { secret, replyUrl? }. Email: none. Required for every other type; stored encrypted and never returned" }),
@@ -1112,6 +1117,7 @@ const channelFields = {
   limits: ChannelLimits.optional(),
   greeting: z.string().trim().min(1).max(4096).optional().openapi({ description: "Reply to /start (Telegram)" }),
   settings: z.record(z.string(), z.unknown()).optional().openapi({ description: "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }. Email: { address?, fromName?, replies?: \"sender\" | \"none\" | { to }, forwarders?: [address or @domain], replyToForwarded? }" }),
+  filter: ChannelFilter.nullable().optional().openapi({ description: "Messages the decision model answers below the threshold start no turn; they are listed at GET /v1/channels/{id}/events and can be delivered. If it cannot answer, the message goes on. Null removes it" }),
 };
 export const ChannelInput = z.object({ type: z.enum(["telegram", "slack", "discord", "github", "webhook", "email"]), ...channelFields }).openapi("ChannelInput");
 export const ChannelUpdate = z.object(channelFields).openapi("ChannelUpdate");
@@ -1126,11 +1132,42 @@ export const Channel = z.object({
   limits: z.object({ perSenderPerMinute: z.number(), turnsPerDay: z.number() }),
   greeting: z.string().optional(),
   settings: z.record(z.string(), z.unknown()).optional(),
+  filter: z.object({ instructions: z.string(), criteria: z.object({ true: z.string().optional(), false: z.string().optional() }).optional(), threshold: z.number() }).optional(),
   account: z.record(z.string(), z.string()).openapi({ description: "The bot's identity at the provider" }),
   credentials: z.record(z.string(), z.string()).openapi({ description: "Masked credentials" }),
   createdAt: z.number(),
   updatedAt: z.number(),
 }).openapi("Channel");
+export const ChannelEventsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional().openapi({ description: "How many; default 50" }),
+  outcome: z.enum(["passed", "filtered"]).optional(),
+  before: z.string().optional().openapi({ description: "The next value of the page before" }),
+});
+const ChannelEvent = z.object({
+  id: z.string().openapi({ description: "The message's run id, when it started one" }),
+  conversationId: z.string(),
+  at: z.number(),
+  outcome: z.enum(["passed", "filtered"]),
+  reason: z.enum(["score", "decision_failed", "no_text", "answers_input", "follow_up"]).openapi({ description: "score: the answer against the threshold. decision_failed: no answer, so it went on. The others were not asked about: no_text, answers_input (answers an input the agent waits on), follow_up (a reply in a thread with an agent)" }),
+  threshold: z.number(),
+  score: z.number().optional().openapi({ description: "The probability the model gave" }),
+  model: z.string().optional(),
+  costUsd: z.number().optional(),
+  ms: z.number().optional(),
+  error: z.object({ status: z.number(), code: z.string().optional() }).optional().openapi({ description: "Why it had no answer" }),
+  agent: z.string().optional().openapi({ description: "The conversation's agent" }),
+  deliveredAt: z.number().optional().openapi({ description: "When someone delivered this filtered message" }),
+  deliverableUntil: z.number().optional().openapi({ description: "Present on a filtered message not yet delivered: when it is removed" }),
+  message: z.object({
+    from: z.object({ id: z.string(), name: z.string().optional(), username: z.string().optional() }),
+    unverified: z.boolean().optional(),
+    title: z.string().optional(),
+    text: z.string().openapi({ description: "Its first 4,000 characters" }),
+    files: z.array(z.object({ name: z.string(), size: z.number().nullable().optional() })),
+  }).optional().openapi({ description: "Present on a filtered message not yet delivered" }),
+}).openapi("ChannelEvent");
+export const ChannelEvents = z.object({ events: z.array(ChannelEvent), next: z.string().optional().openapi({ description: "Pass as before for the next page" }) }).openapi("ChannelEvents");
+export const ChannelEventDelivered = z.object({ id: z.string(), deliveredAt: z.number() }).openapi("ChannelEventDelivered");
 
 export const MountsInput = z.object({ mounts: z.array(MountInput) }).openapi("MountsInput");
 

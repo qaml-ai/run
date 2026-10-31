@@ -273,6 +273,7 @@ spend limits like any other.
 | Schedule delivery retries | 3, after 1, 5 and 15 minutes (none for a 402 or another refusal a retry cannot change, nor past the next occurrence); then that occurrence is skipped and recorded (`failures`, `lastError`) |
 | Schedule body | 64 KiB |
 | Channel senders | `perSenderPerMinute` 1–600 (default 10), `turnsPerDay` 1–1,000,000 (default 1,000); `allow` at most 1,000 senders |
+| Channel filters | what the model sees: 16,000 characters of a message; an answer within 15 s, or the message goes on; a filtered message and its record last 14 days |
 | Channel daily turns | count messages and, since they also post, turns started through the API or a schedule; past the limit those do not post |
 | Camel Discord servers per account | 10, or 1 on free credit (an operator can change either) |
 | A Camel Discord server | `perSenderPerMinute` 1–100 (default 5), `turnsPerDay` 1–10,000 (default 100; at most 500 on free credit); no `schedule` builtin |

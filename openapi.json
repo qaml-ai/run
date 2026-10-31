@@ -8675,6 +8675,32 @@
             "type": "object",
             "additionalProperties": {}
           },
+          "filter": {
+            "type": "object",
+            "properties": {
+              "instructions": {
+                "type": "string"
+              },
+              "criteria": {
+                "type": "object",
+                "properties": {
+                  "true": {
+                    "type": "string"
+                  },
+                  "false": {
+                    "type": "string"
+                  }
+                }
+              },
+              "threshold": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "instructions",
+              "threshold"
+            ]
+          },
           "account": {
             "type": "object",
             "additionalProperties": {
@@ -8786,6 +8812,48 @@
             "type": "object",
             "additionalProperties": {},
             "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }. Email: { address?, fromName?, replies?: \"sender\" | \"none\" | { to }, forwarders?: [address or @domain], replyToForwarded? }"
+          },
+          "filter": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "instructions": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000,
+                "description": "A statement about the message, to be true of the ones that should start a turn: \"This email is from a customer who needs a reply\""
+              },
+              "criteria": {
+                "type": "object",
+                "properties": {
+                  "true": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  },
+                  "false": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  }
+                },
+                "additionalProperties": false,
+                "description": "What counts as yes, and as no"
+              },
+              "threshold": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "The probability a message needs to start a turn; default 0.5"
+              }
+            },
+            "required": [
+              "instructions"
+            ],
+            "additionalProperties": false,
+            "description": "Messages the decision model answers below the threshold start no turn; they are listed at GET /v1/channels/{id}/events and can be delivered. If it cannot answer, the message goes on. Null removes it"
           }
         },
         "required": [
@@ -8858,8 +8926,225 @@
             "type": "object",
             "additionalProperties": {},
             "description": "Configuration particular to the channel's type; types without any reject it. GitHub: { events, repos, ignoreDrafts, reply, authors, debounceSeconds }. Webhook: { signature, key, prompt, sender, filter, idPath, idHeader }. Email: { address?, fromName?, replies?: \"sender\" | \"none\" | { to }, forwarders?: [address or @domain], replyToForwarded? }"
+          },
+          "filter": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "instructions": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000,
+                "description": "A statement about the message, to be true of the ones that should start a turn: \"This email is from a customer who needs a reply\""
+              },
+              "criteria": {
+                "type": "object",
+                "properties": {
+                  "true": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  },
+                  "false": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  }
+                },
+                "additionalProperties": false,
+                "description": "What counts as yes, and as no"
+              },
+              "threshold": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "The probability a message needs to start a turn; default 0.5"
+              }
+            },
+            "required": [
+              "instructions"
+            ],
+            "additionalProperties": false,
+            "description": "Messages the decision model answers below the threshold start no turn; they are listed at GET /v1/channels/{id}/events and can be delivered. If it cannot answer, the message goes on. Null removes it"
           }
         }
+      },
+      "ChannelEvents": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelEvent"
+            }
+          },
+          "next": {
+            "type": "string",
+            "description": "Pass as before for the next page"
+          }
+        },
+        "required": [
+          "events"
+        ]
+      },
+      "ChannelEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The message's run id, when it started one"
+          },
+          "conversationId": {
+            "type": "string"
+          },
+          "at": {
+            "type": "number"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "filtered"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "score",
+              "decision_failed",
+              "no_text",
+              "answers_input",
+              "follow_up"
+            ],
+            "description": "score: the answer against the threshold. decision_failed: no answer, so it went on. The others were not asked about: no_text, answers_input (answers an input the agent waits on), follow_up (a reply in a thread with an agent)"
+          },
+          "threshold": {
+            "type": "number"
+          },
+          "score": {
+            "type": "number",
+            "description": "The probability the model gave"
+          },
+          "model": {
+            "type": "string"
+          },
+          "costUsd": {
+            "type": "number"
+          },
+          "ms": {
+            "type": "number"
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "number"
+              },
+              "code": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "description": "Why it had no answer"
+          },
+          "agent": {
+            "type": "string",
+            "description": "The conversation's agent"
+          },
+          "deliveredAt": {
+            "type": "number",
+            "description": "When someone delivered this filtered message"
+          },
+          "deliverableUntil": {
+            "type": "number",
+            "description": "Present on a filtered message not yet delivered: when it is removed"
+          },
+          "message": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              },
+              "unverified": {
+                "type": "boolean"
+              },
+              "title": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string",
+                "description": "Its first 4,000 characters"
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "name"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "from",
+              "text",
+              "files"
+            ],
+            "description": "Present on a filtered message not yet delivered"
+          }
+        },
+        "required": [
+          "id",
+          "conversationId",
+          "at",
+          "outcome",
+          "reason",
+          "threshold"
+        ]
+      },
+      "ChannelEventDelivered": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "deliveredAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "deliveredAt"
+        ]
       },
       "Definition": {
         "type": "object",
@@ -19498,6 +19783,131 @@
                   "required": [
                     "deleted"
                   ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/channels/{id}/events": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "description": "How many; default 50"
+            },
+            "required": false,
+            "description": "How many; default 50",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "passed",
+                "filtered"
+              ]
+            },
+            "required": false,
+            "name": "outcome",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The next value of the page before"
+            },
+            "required": false,
+            "description": "The next value of the page before",
+            "name": "before",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the channel's filter said about each message, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelEvents"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/channels/{id}/events/{event}/deliver": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "event",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The filtered message is on its way to its agent, with its own run id; delivering it again changes nothing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelEventDelivered"
                 }
               }
             }

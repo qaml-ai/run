@@ -1104,6 +1104,15 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       pending: async agent => (await inputs.pending(agent)).map(inputView),
       answer: (agent, tenant, input, answer) => clients.answer(agent, tenant, [{ id: input, body: answer }], "channel"),
     },
+    // Filters: refused by spent credit, as the turn would be, but a message's turn is all that counts as a run.
+    decisions: {
+      decider,
+      admit: async tenant => {
+        const refused = await accounts.runLimit(tenant);
+        if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
+      },
+      record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
+    },
     ...(config.channelRetryMs !== undefined ? { retryBaseMs: config.channelRetryMs } : {}),
   });
   channels.start(config.schedulerIntervalMs);
