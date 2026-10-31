@@ -51,10 +51,10 @@ function fakeBoat(clock: () => number) {
   return { boat, state, machines, rollover: (at: string) => { since = at; } };
 }
 
-async function fixture(options: { flag?: boolean; platformKey?: boolean; adminKey?: boolean; purchased?: boolean; balance?: number; payer?: { id: string; bucket: string }; price?: number; extraAgents?: string[]; outbound?: any } = {}) {
+async function fixture(options: { billing?: "prepaid" | "none"; flag?: boolean; platformKey?: boolean; adminKey?: boolean; purchased?: boolean; balance?: number; payer?: { id: string; bucket: string }; price?: number; extraAgents?: string[]; outbound?: any } = {}) {
   const { db } = await testDatabase();
   for (const [agent, tenant] of [["a", "payg"], ["b", "payg"], ["c", "rich"], ...(options.extraAgents ?? []).map(id => [id, "payg"])]) await db.query("insert into agents(id,tenant,header,revision,name,type,model) values ($1,$2,'{}',1,'A','test','x')", [agent, tenant]);
-  const entry = (name: string, extra = {}) => ({ tokenSha256: createHash("sha256").update(name).digest("hex"), apiKeys: {}, billing: "prepaid", ...extra });
+  const entry = (name: string, extra = {}) => ({ tokenSha256: createHash("sha256").update(name).digest("hex"), apiKeys: {}, billing: options.billing ?? "prepaid", ...extra });
   const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: entry("payg", options.adminKey ? { apiKeys: { boat: "admin-key" } } : {}), rich: entry("rich") }, platformKeys: options.platformKey === false ? {} : { boat: "platform-key" } }) });
   await tenants.reload();
   const accounts = new Accounts({ db, tenants, pricing: { ...DEFAULT_PRICING, ...options.price ? { computerHour: options.price } : {} }, secretsKey: "ab".repeat(32) });
@@ -234,6 +234,52 @@ test("a start refuses credit that model calls hold all of, and an account that n
   await assert.rejects(none.start(), (error: unknown) => error instanceof HttpError && error.status === 503);
   assert.deepEqual(await none.rows(), []);
   none.done();
+});
+
+test("an internal account with no purchased credit starts, records usage without a debit, and keeps running", async () => {
+  const f = await fixture({ billing: "none", purchased: false, balance: 0 });
+  try {
+    assert.equal(await f.credit.available("payg", f.now()), 0);
+    await f.connect();
+    await f.start();
+    assert.equal(f.state.creates, 1);
+    assert.equal((await f.row()).platform, true);
+    f.advance(120_000);
+    await pass(f);
+    assert.equal((await f.row()).ended_at, null);
+    assert.equal(await f.balance(), 0);
+    assert.equal(Number((await f.db.query("select count(*) as n from credit_ledger where tenant='payg' and kind='usage'")).rows[0].n), 0);
+    assert.equal(Number((await f.row()).charged_micros), cost(120_000));
+    await f.stop();
+    assert.equal(f.state.removed.length, 1);
+  } finally { f.done(); }
+});
+
+test("internal accounts still obey operator blocks and the managed-computer switch", async () => {
+  const f = await fixture({ billing: "none", purchased: false, balance: 0 });
+  try {
+    await f.connect();
+    await f.service.managed.stopTenant("payg", "ops", true);
+    await assert.rejects(f.start(), (error: unknown) => error instanceof HttpError && error.status === 403 && /turned off/.test(error.message));
+    await f.service.managed.unblockTenant("payg");
+    await assert.rejects(f.start("payg", "a", "disabled", f.make(false)), (error: unknown) => error instanceof HttpError && error.status === 403 && /not available/.test(error.message));
+    assert.equal(f.state.creates, 0);
+  } finally { f.done(); }
+});
+
+test("internal accounts still reserve and enforce end-user credit", async () => {
+  const f = await fixture({ billing: "none", purchased: false, balance: 0, payer: USER });
+  try {
+    await fund(f, 1);
+    await f.connect();
+    await assert.rejects(f.start(), (error: unknown) => error instanceof HttpError && error.status === 402);
+    assert.equal(f.state.creates, 0);
+    await f.endUsers.post("payg", "u", { kind: "grant", amount: micros(1), key: "enough" });
+    await f.start("payg", "a", "funded-user");
+    assert.equal(f.state.creates, 1);
+    assert.equal((await f.holds()).length, 1);
+    await f.stop();
+  } finally { f.done(); }
 });
 
 test("an end user has the idle time held at the start, pays once when it ends, and a refused hold refuses the start", async () => {

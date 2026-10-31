@@ -245,7 +245,8 @@ export class ManagedComputers {
 
   /**
    * What a new computer needs: that it may start, on which key, and its end user's hold. On the platform's key an account
-   * that has never bought credit may not start one, and spent credit, or credit its model calls hold all of, refuses it.
+   * on prepaid billing must have bought credit and have credit left after its model-call holds. Internal accounts
+   * use their configured billing mode; end-user limits still apply to either mode.
    */
   private async newRow(connection: any, tenant: string, agent: string) {
     const { accounts, payer, endUsers, credit, now } = this.options;
@@ -254,9 +255,11 @@ export class ManagedComputers {
     if (!credential) throw new HttpError(503, "Computers are unavailable on this runtime. Do not retry in this turn; tell the user.");
     let held: { id: string; endUser: string; bucket: string } | undefined;
     if (credential.platform) {
-      if (await accounts.billing.onFreeCredit(tenant)) throw new HttpError(403, "Computers are available once this account has bought credit. Nothing was created or charged. Do not retry in this turn; tell the user.");
-      const available = await credit?.()?.available(tenant, now());
-      if (available !== undefined && available <= 0) throw new HttpError(402, "This account's credit is spent or held by calls in flight, so a computer can't start. Nothing was created or charged. Do not retry in this turn; tell the user.", "INSUFFICIENT_CREDIT");
+      if (await accounts.billing.mode(tenant) === "prepaid") {
+        if (await accounts.billing.onFreeCredit(tenant)) throw new HttpError(403, "Computers are available once this account has bought credit. Nothing was created or charged. Do not retry in this turn; tell the user.");
+        const available = await credit?.()?.available(tenant, now());
+        if (available !== undefined && available <= 0) throw new HttpError(402, "This account's credit is spent or held by calls in flight, so a computer can't start. Nothing was created or charged. Do not retry in this turn; tell the user.", "INSUFFICIENT_CREDIT");
+      }
       const user = payer?.(agent), users = endUsers?.();
       if (user && users) {
         const hold = randomUUID(), want = Math.ceil(connection.lease_seconds * accounts.billing.pricing.computerHour / 3600);
