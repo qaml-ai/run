@@ -5,14 +5,15 @@ import type { Computers } from "./service.ts";
 import { PROVIDERS } from "./providers.ts";
 
 type Route = (config: RouteConfig, handler: (c: Context<any>) => Promise<Response> | Response) => void;
-const input = z.object({ agent: z.string().min(1), provider: z.enum(PROVIDERS), credentials: z.record(z.string(), z.string()), leaseSeconds: z.number().int().min(60).max(900).default(900), dailySeconds: z.number().int().min(60).max(86400).default(3600) }).strict();
+const input = z.object({ agent: z.string().min(1), provider: z.enum(PROVIDERS), credentials: z.record(z.string(), z.string()).optional().openapi({ description: "The provider account's credentials. Leave out with provider boat for a managed computer, billed to credit" }), leaseSeconds: z.number().int().min(60).max(86400).optional().openapi({ description: "With credentials: how long a session lasts, at most 900 (default 900). Managed: how long it stays after its latest command, at most 24 hours after it started (default 7200)" }), dailySeconds: z.number().int().min(60).max(86400).optional().openapi({ description: "Session time a day: default 3600 with credentials, 86400 managed" }) }).strict()
+  .refine(value => value.credentials !== undefined ? (value.leaseSeconds ?? 0) <= 900 : value.provider === "boat");
 const session = z.object({ id: z.string(), provider: z.enum(PROVIDERS), workspaceId: z.string().nullable(), state: z.enum(["starting", "active", "closing", "closed", "uncertain"]), recoveryRequired: z.boolean(), createdAt: z.number(), expiresAt: z.number(), closedAt: z.number().nullable(), error: z.string().optional() }).nullable();
-const connection = z.object({ id: z.string(), agent: z.string(), provider: z.enum(PROVIDERS), leaseSeconds: z.number(), dailySeconds: z.number(), createdAt: z.number(), billing: z.literal("provider_account"), session });
+const connection = z.object({ id: z.string(), agent: z.string(), provider: z.enum(PROVIDERS), managed: z.boolean(), leaseSeconds: z.number(), dailySeconds: z.number(), createdAt: z.number(), billing: z.enum(["provider_account", "credits"]), session });
 const reply = (description: string, schema: z.ZodType = z.object({ stopped: z.boolean() })) => ({ description, content: { "application/json": { schema } } });
 export function computerRoutes(route: Route, service: () => Computers | undefined) {
   const get = () => { const value = service(); if (!value) throw new HttpError(503, "Computers unavailable"); return value; };
   route(createRoute({ method: "get", path: "/v1/computers", responses: { 200: reply("Computer connections; credentials are never returned", z.array(connection)) } }), c => get().list(c.var.principal.tenant).then(r => c.json(r)));
-  route(createRoute({ method: "post", path: "/v1/computers", request: { body: { content: { "application/json": { schema: input } } } }, responses: { 201: reply("Connect an agent to a provider. Compute is billed by that provider account", connection) } }), async c => {
+  route(createRoute({ method: "post", path: "/v1/computers", request: { body: { content: { "application/json": { schema: input } } } }, responses: { 201: reply("Connect an agent to a provider, whose account bills the compute, or to a managed computer, billed to credit", connection) } }), async c => {
     const value = input.safeParse(await readJson(c.req.raw.body, 65536, {}));
     if (!value.success) throw new HttpError(400, "Invalid computer connection");
     return c.json(await get().create(c.var.principal.tenant, value.data), 201);

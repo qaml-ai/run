@@ -479,7 +479,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   // Files sent to tools as URLs bound to their call, signed with the identity tokens' key (file-arguments.ts).
   const fileUrls = new FileUrls({ signer, get volumes() { return volumes; }, publicUrl: () => links.publicUrl });
-  const computers = new Computers({ db, accounts, outbound: outbound.withoutOrigins(), get transfers() { return transfers; }, get endUsers() { return endUsers; }, payer: agent => clients.payerOf(agent) });
+  const computers = new Computers({ db, accounts, outbound: outbound.withoutOrigins(), get transfers() { return transfers; }, get endUsers() { return endUsers; }, payer: agent => clients.payerOf(agent), managed: config.managedComputers });
   let sweepingComputers = false;
   const computerTimer = setInterval(() => {
     if (sweepingComputers) return;

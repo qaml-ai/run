@@ -12,11 +12,18 @@ export interface ComputerDriver {
   dispose?(): void | Promise<void>;
   /** Whether a create failed because the provider refused the credentials (401 or 403), so it made nothing. */
   refused?(error: unknown): boolean;
+  /** Why a create failed, when the provider says it made nothing for a reason other than the credentials: its out of machines, or of starts. */
+  unavailable?(error: unknown): Unavailable | undefined;
+  /** Move a running machine's own expiry to `seconds` from now. */
+  extend?(ref: Reference, seconds: number): Promise<void>;
 }
+/** A provider that made nothing: its code, and when it says to try again. */
+export type Unavailable = { code: string; retryAfterMs?: number };
 /** A provider's HTTP answer other than success. */
 class ProviderHttpError extends Error {
   readonly status: number;
-  constructor(status: number) { super(`Computer provider HTTP ${status}`); this.status = status; }
+  readonly detail?: Unavailable;
+  constructor(status: number, detail?: Unavailable) { super(`Computer provider HTTP ${status}`); this.status = status; this.detail = detail; }
 }
 const httpRefused = (error: unknown) => error instanceof ProviderHttpError && (error.status === 401 || error.status === 403);
 // Modal's SDK lets nice-grpc's ClientError through; its codes are gRPC's: UNAUTHENTICATED and PERMISSION_DENIED.
@@ -24,9 +31,17 @@ const grpcRefused = (error: any) => error?.name === "ClientError" && (error.code
 // Capture on the remote disk, then return bounded streams. SDK helpers otherwise
 // buffer an arbitrarily large command response in the shared runtime process.
 const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
-export function boundedCommand(command: string) {
-  return `d=$(mktemp -d) || exit 1; bash -lc ${quote(command)} >"$d/out" 2>"$d/err"; r=$?; head -c 24001 "$d/out"; head -c 24001 "$d/err" >&2; rm -rf "$d"; exit "$r"`;
+const bounded = (run: string) => `d=$(mktemp -d) || exit 1; ${run} >"$d/out" 2>"$d/err"; r=$?; head -c 24001 "$d/out"; head -c 24001 "$d/err" >&2; rm -rf "$d"; exit "$r"`;
+export function boundedCommand(command: string) { return bounded(`bash -lc ${quote(command)}`); }
+/** The command in a transient unit, so everything it started ends with it, and at `seconds` it exits 124: a managed computer is for work in the foreground. A machine whose agent gave up sudo runs it plainly. */
+export function unitCommand(command: string, seconds: number) {
+  const bash = `timeout -k 2 ${seconds} bash -lc ${quote(command)}`;
+  return `if sudo -n true 2>/dev/null; then sudo -n systemd-run --quiet --wait --pipe --collect --uid="$(id -u)" --gid="$(id -g)" --working-directory="$PWD" --property=RuntimeMaxSec=${seconds + 3} --setenv=HOME="$HOME" --setenv=PATH="$PATH" --setenv=TERM=dumb ${bash}; else ${bash}; fi`;
 }
+/** Boat's refusals that made nothing. */
+const BOAT_UNAVAILABLE = new Set(["rate_limited", "limit_reached", "member_limit_reached", "out_of_capacity", "no_ready_machine", "billing_required"]);
+/** The longest a Boat command waits on one request; longer ones run detached and are polled. */
+const BOAT_WAIT_SECONDS = 590;
 const shell = (args: Record<string, any>) => [boundedCommand(String(args.command)), Number(args.timeoutSeconds ?? 60)] as const;
 const output = (code: number, stdout: string, stderr = "") => ({ exitCode: code, stdout: stdout.slice(0, 24000), stderr: stderr.slice(0, 24000), truncated: stdout.length > 24000 || stderr.length > 24000 });
 
@@ -45,9 +60,10 @@ async function browserCall(ref: Reference, operation: string, args: Record<strin
   } finally { await browser.close(); }
 }
 
-export type DriverFactory = (provider: Provider, credentials: Credentials, outbound: Outbound) => ComputerDriver | Promise<ComputerDriver>;
+/** `managed`: the runtime's own machine for an agent, on Boat. */
+export type DriverFactory = (provider: Provider, credentials: Credentials, outbound: Outbound, options?: { managed?: boolean }) => ComputerDriver | Promise<ComputerDriver>;
 
-export async function driver(provider: Provider, credentials: Credentials, outbound: Outbound): Promise<ComputerDriver> {
+export async function driver(provider: Provider, credentials: Credentials, outbound: Outbound, options: { managed?: boolean } = {}): Promise<ComputerDriver> {
   if (provider === "modal") {
     const { ModalClient, NotFoundError: ModalNotFoundError } = await import("modal");
     const client = new ModalClient({ tokenId: credentials.tokenId, tokenSecret: credentials.tokenSecret, maxRetries: 0, timeoutMs: 120000 });
@@ -192,10 +208,19 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
       },
     };
   }
-  const request = async (path: string, body?: unknown, method = "POST", allowMissing = false) => {
+  const request = async (path: string, body?: unknown, method = "POST", allowMissing = false, waitSeconds = 125) => {
     const base = provider === "boat" ? "https://boat.dev/api/v1" : credentials.url;
-    const response = await outbound.fetch(base.replace(/\/$/, "") + path, { method, secrets: { Authorization: `Bearer ${credentials.apiKey}` }, headers: { "Content-Type": "application/json", ...(method === "DELETE" ? { "X-ASCII-Confirm-Delete": path.split("/").at(-1)! } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), timeoutMs: path.endsWith("/commands") || path === "/exec" ? 135000 : 30000, maxBytes: 2 * 1024 * 1024, maxRedirects: 0 });
-    if (!response.ok) { await response.body?.cancel(); if ((method === "DELETE" || allowMissing) && response.status === 404) return null; throw new ProviderHttpError(response.status); }
+    const response = await outbound.fetch(base.replace(/\/$/, "") + path, { method, secrets: { Authorization: `Bearer ${credentials.apiKey}` }, headers: { "Content-Type": "application/json", ...(method === "DELETE" ? { "X-ASCII-Confirm-Delete": path.split("/").at(-1)! } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), timeoutMs: path.endsWith("/commands") || path === "/exec" ? (waitSeconds + 10) * 1000 : 30000, maxBytes: 2 * 1024 * 1024, maxRedirects: 0 });
+    if (!response.ok) {
+      if ((method === "DELETE" || allowMissing) && response.status === 404) { await response.body?.cancel(); return null; }
+      if (provider === "boat" && [402, 429, 503].includes(response.status)) {
+        const value = await response.json().catch(() => ({})) as any, code = value.code ?? value.error?.code;
+        const next = Date.parse(value.nextStartAt ?? value.error?.details?.nextStartAt);
+        throw new ProviderHttpError(response.status, BOAT_UNAVAILABLE.has(code) ? { code, ...Number.isFinite(next) ? { retryAfterMs: Math.max(0, next - Date.now()) } : {} } : undefined);
+      }
+      await response.body?.cancel();
+      throw new ProviderHttpError(response.status);
+    }
     return response.status === 204 ? {} : await response.json() as any;
   };
   return provider === "tunnel" ? {
@@ -205,6 +230,8 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
     async close(ref) { await request("/close", { claim: ref.claim }); },
   } : {
     refused: httpRefused,
+    unavailable: error => error instanceof ProviderHttpError ? error.detail : undefined,
+    async extend(ref, seconds) { await request(`/sandboxes/${ref.id}`, { ttlSeconds: seconds }, "PATCH"); },
     async create(_id, seconds, allocated) {
       const r = await request("/sandboxes", { type: "small", ttlSeconds: seconds, noEnv: true, snapshots: false, monitoring: false });
       const ref = { id: r.sandbox.id };
@@ -217,7 +244,19 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
       await request(`/sandboxes/${ref.id}`, undefined, "DELETE");
       throw new Error("Computer startup timed out");
     },
-    async call(ref, _op, args) { const [command, timeout] = shell(args); const r = await request(`/sandboxes/${ref.id}/commands`, { command, timeoutSeconds: timeout }); return output(r.exitCode, r.stdout ?? "", r.stderr ?? ""); },
+    async call(ref, _op, args) {
+      const timeout = Number(args.timeoutSeconds ?? 60);
+      const command = options.managed ? bounded(unitCommand(String(args.command), timeout)) : shell(args)[0];
+      if (timeout <= BOAT_WAIT_SECONDS) { const r = await request(`/sandboxes/${ref.id}/commands`, { command, timeoutSeconds: options.managed ? timeout + 5 : timeout }, "POST", false, timeout + 5); return output(r.exitCode, r.stdout ?? "", r.stderr ?? ""); }
+      const { processId } = await request(`/sandboxes/${ref.id}/commands`, { command, detached: true });
+      for (const until = Date.now() + (timeout + 15) * 1000; Date.now() < until; await new Promise(resolve => setTimeout(resolve, 2000))) {
+        const r = await request(`/sandboxes/${ref.id}/commands/${processId}`, undefined, "GET");
+        if (r.status === "lost") throw new Error("Remote command outcome uncertain");
+        if (!r.running) return output(r.exitCode, r.stdout ?? "", r.stderr ?? "");
+      }
+      await request(`/sandboxes/${ref.id}/commands/${processId}`, undefined, "DELETE", true);
+      throw new Error("Remote command outcome uncertain");
+    },
     async close(ref) {
       await request(`/sandboxes/${ref.id}`, undefined, "DELETE");
       for (const until = Date.now() + 30000; Date.now() < until;) { if (await request(`/sandboxes/${ref.id}`, undefined, "GET", true) === null) return; await new Promise(r => setTimeout(r, 1000)); }

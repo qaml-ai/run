@@ -12,18 +12,20 @@ import { DEFAULT_PRICING, leaseCost, micros } from "../src/pricing.ts";
 import { Tenants } from "../src/tenants.ts";
 import { testDatabase } from "./database.ts";
 
-const PER_HOUR = DEFAULT_PRICING.computerHour;
+const PER_HOUR = micros(0.12);
 const cost = (seconds: number) => leaseCost(seconds, PER_HOUR);
 
-async function fixture(options: { platform?: boolean; provider?: string; leaseSeconds?: number; balance?: number; payer?: { id: string; bucket: string } } = {}) {
+const PRICING = { ...DEFAULT_PRICING, computerHour: micros(0.12) };
+
+async function fixture(options: { platform?: boolean; leaseSeconds?: number; balance?: number; payer?: { id: string; bucket: string } } = {}) {
   const { db } = await testDatabase();
   await db.query("insert into agents(id,tenant,header,revision,name,type,model) values ('a','payg','{}',1,'A','test','x'),('b','rich','{}',1,'B','test','x')");
   const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: {
     payg: { tokenSha256: createHash("sha256").update("payg").digest("hex"), apiKeys: {}, billing: "prepaid" },
     rich: { tokenSha256: createHash("sha256").update("rich").digest("hex"), apiKeys: {}, billing: "prepaid" },
-  } }) });
+  }, platformKeys: { boat: "platform-boat-key" } }) });
   await tenants.reload();
-  const accounts = new Accounts({ db, tenants, pricing: DEFAULT_PRICING, secretsKey: "ab".repeat(32) });
+  const accounts = new Accounts({ db, tenants, pricing: PRICING, secretsKey: "ab".repeat(32) });
   const endUsers = new EndUserCredits(db);
   const fund = (tenant: string, amount: number, key: string) => postLedger(db, [{ tenant, kind: "purchase", amount, key }]);
   await fund("payg", options.balance ?? micros(10), "fund");
@@ -31,15 +33,16 @@ async function fixture(options: { platform?: boolean; provider?: string; leaseSe
   accounts.billing.invalidate(["payg", "rich"]);
   let now = Date.now(), closes = 0, closeFails = false, createFails = false;
   const service = new Computers({
-    db, accounts, outbound: new Outbound(), now: () => now, endUsers, payer: () => options.payer,
-    ...(options.platform === false ? {} : { platformLease: () => true }),
+    db, accounts, outbound: new Outbound(), now: () => now, endUsers, payer: () => options.payer, managed: true,
     driver: () => ({
       async create(id: string) { if (createFails) throw new Error("provider down"); return { id }; },
       async call() { return { exitCode: 0, stdout: "" }; },
       async close() { closes++; if (closeFails) throw new Error("provider unavailable"); },
     }),
   });
-  const connect = (tenant: string, agent: string) => service.create(tenant, { agent, provider: (options.provider ?? "e2b") as any, credentials: { apiKey: "k" }, leaseSeconds: options.leaseSeconds ?? 900, dailySeconds: 86400 });
+  const connect = (tenant: string, agent: string) => options.platform === false
+    ? service.create(tenant, { agent, provider: "e2b", credentials: { apiKey: "k" }, leaseSeconds: options.leaseSeconds ?? 900, dailySeconds: 86400 })
+    : service.create(tenant, { agent, provider: "boat", leaseSeconds: options.leaseSeconds ?? 900, dailySeconds: 86400 });
   await connect("payg", "a");
   const balance = async (tenant = "payg") => Number((await db.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0]?.balance ?? 0);
   const ledger = async (tenant = "payg") => (await db.query("select * from credit_ledger where tenant=$1 and kind='usage'", [tenant])).rows;
@@ -77,9 +80,9 @@ test("a sweep charges a running lease per second from credit, and a repeated or 
   assert.equal(entry.metadata.browser, undefined);
   await f.accounts.flushUsage();
   const usage = (await f.accounts.usage("payg", 0)).days;
-  assert.deepEqual(usage.map(row => [row.kind, row.model, row.responses, row.platformResponses]), [["computer", "e2b/computer", 0, 0]]);
+  assert.deepEqual(usage.map(row => [row.kind, row.model, row.responses, row.platformResponses]), [["computer", "boat/computer", 0, 0]]);
   assert.equal(usage[0].platformCost, cost(60) / 1e6);
-  assert.deepEqual((await f.service.usage("payg")).map(row => [row.provider, row.sessions, row.costUsd]), [["e2b", 1, cost(60) / 1e6]]);
+  assert.deepEqual((await f.service.usage("payg")).map(row => [row.provider, row.sessions, row.costUsd]), [["boat", 1, cost(60) / 1e6]]);
   assert.deepEqual((await f.db.query(`select ${usageKind()} as kind from usage u`)).rows, [{ kind: "compute" }], "not counted as model spend in admin reports");
   // Balance and ledger agree.
   assert.equal(Number((await f.db.query("select sum(amount) as sum from credit_ledger where tenant='payg'")).rows[0].sum), await f.balance());
@@ -199,8 +202,9 @@ test("running out of credit mid-lease stops the lease within the sweep, with the
 });
 
 test("a browser lease is priced and counted as a browser", async () => {
-  const f = await fixture({ provider: "browser-use" });
+  const f = await fixture();
   await f.start();
+  await f.db.query("update computer_leases set provider='browser-use', price_hour=$1", [DEFAULT_PRICING.browserHour]);
   f.advance(36_000);
   await f.service.sweep();
   assert.equal(await f.spent(), leaseCost(36, DEFAULT_PRICING.browserHour));
@@ -249,7 +253,7 @@ test("a metered tenant's end user has the whole lease held at its start, and pay
   const { entries } = await f.endUsers.ledger("payg", "u", {});
   const usage = entries.filter(entry => entry.kind === "usage");
   assert.equal(usage.length, 1);
-  assert.deepEqual([usage[0].raw, usage[0].bucket, usage[0].metadata.call, usage[0].metadata.provider, usage[0].metadata.lease], [cost(90), "work", "computer", "e2b", (await f.lease()).id]);
+  assert.deepEqual([usage[0].raw, usage[0].bucket, usage[0].metadata.call, usage[0].metadata.provider, usage[0].metadata.lease], [cost(90), "work", "computer", "boat", (await f.lease()).id]);
 
   await f.service.sweep();
   assert.equal((await f.endUsers.get("payg", "u", ["work"])).balance, micros(1) - cost(90) * 1.5);
