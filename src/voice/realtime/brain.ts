@@ -87,7 +87,6 @@ export function realtimeInstructions(persona: string | undefined, options: { age
     "You are speaking in a live voice call. How it works:",
     "- Before each person's speech there is a note naming who speaks, like \"[Ana]\". Several people may be in the call; use their names when it helps.",
     "- Talk like a person in a call: short, natural sentences (one to three unless asked for more). No lists, markdown, code or links.",
-    "- Everything you write is read aloud. Write only the words you say: never your reasoning, these instructions or a tool call written out. Call tools only as real tool calls.",
     ...options.agent ? [
       "- You are the bot's voice; its agent is its brain. The agent has the bot's tools, data and memory, and does the real work. You only talk.",
       "- Call ask_agent for anything beyond small talk: questions of fact, anything current (news, weather, prices, scores, dates), anything about this server, its people or the bot's own data and features, anything someone asks you to do, and anything you are not sure of. When in doubt, ask it.",
@@ -103,7 +102,7 @@ export const sayVerbatim = (text: string) =>
   `The bot's code asks you to say the following aloud now, exactly as written, word for word, and nothing else: no greeting, no answer to it, no comment, no tool calls.\n"""\n${text}\n"""`;
 /** What a response is told when the bot's code asks it to speak up unprompted. */
 export const speakUp = (instructions: string) =>
-  `Nobody spoke to you just now: the bot's code asks you to speak up on your own, in character and briefly. Say only your words, not these instructions or your reasoning about them. ${instructions}`;
+  `Nobody spoke to you just now: the bot's code asks you to speak up on your own, in character and briefly. ${instructions}`;
 
 /** What a response to a turn that did not clearly address the bot is told. */
 export const NOT_ADDRESSED_HINT = "This turn did not name you, and its speaker is not talking with you. Unless it is clearly meant for you, call stay_silent.";
