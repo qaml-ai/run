@@ -1,3 +1,4 @@
+import { withOpenRouterDetails } from "../openrouter-model.ts";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createHmac, randomUUID } from "node:crypto";
@@ -475,6 +476,7 @@ export async function configure(ctx: ConfigurationContext, session: Session, par
   if (mounts !== undefined) await sessionTools.remount(ctx.toolsContext, session, mounts);
   const changed = provisionHash === undefined || reSourced || mounts !== undefined || Object.keys(given).length > 0 || (name !== undefined && name !== (session.header.metadata?.name ?? null)) || (type !== undefined && type !== (session.header.metadata?.type ?? null));
   const { keyScope, ...update } = (applied?.update ?? configurationUpdate(given, ctx.options.modelEndpoints?.(session.header.tenant), await ctx.options.customProviders?.(session.header.tenant, scopeAfter(session.header, given)))) as ReturnType<typeof configurationUpdate> & { fileTools?: boolean; codeMode?: boolean };
+  if (update.model) update.model = await withOpenRouterDetails(update.model);
   // Checked again as it applies, after the configuration queued before it (a definition's own change is not: its calls leave out what does not apply).
   const refusal = applied ? undefined : configurationRefusal(session.header.config, update);
   if (refusal) throw new HttpError(400, refusal);
