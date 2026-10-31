@@ -91,7 +91,7 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     untap = relay(ctx, session, run.id, at);
     if (!record) {
       try {
-        const budget = await spend.holdBudget(ctx.spendContext, session, run.id);
+        const budget = await spend.holdBudget(ctx.spendContext, session, run.id, call);
         held = budget;
         if (budget !== undefined && budget <= 0) throw new Error("This run has no budget left for a sub-agent: its spend limit is reached");
         call.signal.throwIfAborted();

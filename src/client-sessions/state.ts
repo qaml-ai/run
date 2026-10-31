@@ -227,6 +227,8 @@ export type Session = {
   decisionSpend?: Map<string, number>;
   /** What each running run's children in flight may still spend, held for them (`delegate`), and how many hold it. */
   childHeld?: Map<string, { usd: number; holders: number }>;
+  /** The response whose delegate calls are taking budgets now, and how many have. */
+  delegateResponse?: { run: string; messageIndex: number; taken: number };
   /** Listeners on this agent's stream on this node: a parent relaying its child's events to its own (`subagent_event`). */
   taps?: Set<(data: ClientEvent) => void>;
   /** Runs an abort reached after they began but before the agent had them: they end without running (see `markAborted`). */

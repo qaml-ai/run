@@ -201,7 +201,7 @@ export class AgentSupervisor {
     try {
       // A tool call may fail before its tool hears of it.
       if (buggify("tool.call.fails")) throw new Error("BUGGIFY: the tool call failed before it was sent");
-      const result = await handle.bridge.call(checked.tool.name, checked.args, controller.signal, params.toolCallId ? { toolCallId: params.toolCallId, ...(params.innerCallId ? { innerCallId: params.innerCallId } : {}), ...(Number.isSafeInteger(params.messageIndex) ? { messageIndex: params.messageIndex } : {}) } : undefined);
+      const result = await handle.bridge.call(checked.tool.name, checked.args, controller.signal, params.toolCallId ? { toolCallId: params.toolCallId, ...(params.innerCallId ? { innerCallId: params.innerCallId } : {}), ...(Number.isSafeInteger(params.messageIndex) ? { messageIndex: params.messageIndex } : {}), ...(Number.isSafeInteger(params.delegates) ? { delegates: params.delegates } : {}) } : undefined);
       controller.signal.throwIfAborted();
       return JSON.parse(jsonWithinLimit(result, SANDBOX_LIMITS.resultBytes, "Tool result"));
     }

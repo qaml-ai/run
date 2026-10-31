@@ -13,7 +13,7 @@ import { validFileRef } from "./files.ts";
  * `onProgress` hears the server's progress notifications for the call.
  */
 export type ToolCall = {
-  name: string; args: Record<string, unknown>; signal: AbortSignal; toolCallId?: string; innerCallId?: string; messageIndex?: number; run?: string; origin?: Record<string, unknown>; actor?: string;
+  name: string; args: Record<string, unknown>; signal: AbortSignal; toolCallId?: string; innerCallId?: string; messageIndex?: number; delegates?: number; run?: string; origin?: Record<string, unknown>; actor?: string;
   /** The same for every attempt of this call (a retry, a call run again after a person answered): a tool dedupes its effect by it. */
   idempotencyKey?: string;
   onProgress?: (progress: Progress) => void;
