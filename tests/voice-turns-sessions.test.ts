@@ -1,5 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { Opus } from "../src/opus.ts";
 import { opusStats } from "../src/opus.ts";
@@ -169,8 +170,11 @@ test("in a media worker, smart end of turn reaches the node's models over a port
   fakes.send({ guild, cmd: "send", speaker: "400000000000000001", packets: turn });
   const [first] = await until(async () => { const list = await cluster.events("voice.utterance"); return list.length && list; }, "the utterance, cut by turn-taking in the worker", 15_000);
   assert.ok(first.data.seconds > 1.5 && first.data.seconds < 4, `the turn's speech (${first.data.seconds} s)`);
-  // The models' host thread dies: it restarts itself, the worker's port closes, and it asks for (and gets) another.
-  await turnHost.thread?.terminate();
+  // The models' host thread dies: it restarts itself, the worker's port closes, and it asks for (and gets) another. It ends
+  // itself: onnxruntime can abort the whole process when a thread is terminated with a session alive (inference-worker.ts).
+  const exited = once(turnHost.thread!, "exit");
+  turnHost.thread!.postMessage({ type: "close" });
+  await exited;
   await sleep(500);
   await turnHost.ready;
   fakes.send({ guild, cmd: "send", speaker: "400000000000000001", packets: turn });
