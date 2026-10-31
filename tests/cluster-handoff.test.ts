@@ -60,7 +60,8 @@ test("on ECS a task is protected while turns run, and once superseded it retires
 test("a turn running when its node drains is handed off at once, and the next owner makes its model request again", { timeout: 90_000 }, async t => {
   const c = await cluster(t);
   const model = await fakeModel(t, (_body, index) => index === 0 ? undefined : { role: "assistant", content: "resumed after the drain" });
-  const a = await c.start("a", { ...model.env, AGENT_DRAIN_TIMEOUT_MS: "500" });
+  // Its model call never answers, so only a handoff can leave nothing unfinished, however long the drain may wait.
+  const a = await c.start("a", { ...model.env, AGENT_DRAIN_TIMEOUT_MS: "10000" });
   const b = await c.start("b", model.env);
   const created = await new AgentRuntime({ url: a.url, apiKey: token }).createAgent({ tools: {}, idempotencyKey: "outlives-drain" });
   await created.close();
