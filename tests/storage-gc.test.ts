@@ -105,8 +105,13 @@ test("a chunk written again between two collections stays; one written as it is 
   assert.equal(storage.blobs.has(key("eta")), true);
 });
 
+// A chunk is a candidate for collection from its write, until something refers to it. Production waits a day (graceMs).
+// With none, a collection could take an attachment's chunk before its prompt had read it back and pinned it, and the prompt
+// failed: "File content is missing or corrupt". This is long enough for the prompt, and the collecting below waits it out.
+const GRACE_MS = "5000";
+
 test("on a runtime, an attachment's chunks are pinned to its agent, and collected once the agent and its workspace are deleted", async t => {
-  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { AGENT_GC_ENABLED: "true", AGENT_PURGE_INTERVAL_MS: "1000", AGENT_GC_GRACE_MS: "0", AGENT_GC_INTERVAL_MS: "0", AGENT_GC_POLL_MS: "200" });
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { AGENT_GC_ENABLED: "true", AGENT_PURGE_INTERVAL_MS: "1000", AGENT_GC_GRACE_MS: GRACE_MS, AGENT_GC_INTERVAL_MS: "0", AGENT_GC_POLL_MS: "200" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "read this", files: [{ name: "note.txt", data: Buffer.from("attached words").toString("base64") }] } });
   assert.equal(accepted.status, 202, accepted.text);
@@ -185,7 +190,7 @@ test("a dry run reports what it would delete, and deletes nothing", async t => {
 });
 
 test("a new agent's initial messages pin the FileRefs they carry: a clone keeps its files after its source is gone", async t => {
-  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { AGENT_GC_ENABLED: "true", AGENT_PURGE_INTERVAL_MS: "1000", AGENT_GC_GRACE_MS: "0", AGENT_GC_INTERVAL_MS: "0", AGENT_GC_POLL_MS: "200" });
+  const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { AGENT_GC_ENABLED: "true", AGENT_PURGE_INTERVAL_MS: "1000", AGENT_GC_GRACE_MS: GRACE_MS, AGENT_GC_INTERVAL_MS: "0", AGENT_GC_POLL_MS: "200" });
   const source = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const accepted = await r.call(`/v1/agents/${source}/prompt`, { body: { text: "keep this", files: [{ name: "kept.txt", data: Buffer.from("cloned words").toString("base64") }] } });
   await until(async () => (await r.call(`/v1/agents/${source}/requests/${accepted.json.id}`)).json.state === "completed", "the turn");
