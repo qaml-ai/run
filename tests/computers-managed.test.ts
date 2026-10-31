@@ -10,7 +10,6 @@ import { Computers } from "../src/computers/service.ts";
 import { CreditHolds } from "../src/credit-holds.ts";
 import { EndUserCredits } from "../src/end-user-credits.ts";
 import { HttpError } from "../src/http.ts";
-import { setMetricSink } from "../src/metrics.ts";
 import { Outbound } from "../src/outbound.ts";
 import { DEFAULT_PRICING, micros } from "../src/pricing.ts";
 import { Tenants } from "../src/tenants.ts";
@@ -746,20 +745,4 @@ test("pieces add up to the total at any price, and a lower figure never charges 
   assert.equal(await g.spent(), 100002);
   f.done();
   g.done();
-});
-
-test("every sweep counts its pass, flag on or off, with a key or without; one that fails counts as failed", async () => {
-  const lines: any[] = [];
-  setMetricSink(line => { lines.push(JSON.parse(line)); });
-  try {
-    const off = await fixture({ flag: false, platformKey: false });
-    await off.service.sweep();
-    off.done();
-    const f = await fixture();
-    await f.service.sweep();
-    f.state.listFails = true;
-    await f.service.sweep();
-    f.done();
-  } finally { setMetricSink(); }
-  assert.deepEqual(lines.filter(line => line.type === "computer_pass_metric").map(line => line.ComputerPasses ?? `failed ${line.ComputerPassFailures}`), [1, 1, "failed 1"]);
 });

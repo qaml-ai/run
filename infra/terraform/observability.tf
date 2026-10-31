@@ -279,42 +279,6 @@ resource "aws_cloudwatch_metric_alarm" "database_pool_waiting" {
   ok_actions          = local.alarm_topics
 }
 
-# Managed computers are charged, and stopped when credit runs out, by a pass every 30 seconds on each node
-# (src/computers/managed.ts). Every node counts a pass whether or not any computer runs, so none in five minutes
-# means none is happening: machines still end at their TTL, but uncharged. Apply after a deploy that counts them.
-resource "aws_cloudwatch_metric_alarm" "computer_pass_stalled" {
-  alarm_name          = "${var.name}-computer-pass-stalled"
-  alarm_description   = "No managed-computer pass has succeeded for 5 minutes: machines aren't being charged or stopped"
-  namespace           = "AgentRuntime"
-  metric_name         = "ComputerPasses"
-  dimensions          = local.runtime_metric
-  statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 1
-  comparison_operator = "LessThanThreshold"
-  treat_missing_data  = "breaching"
-  alarm_actions       = local.alarm_topics
-  ok_actions          = local.alarm_topics
-}
-
-# Passes that fail, usually a listing from Boat: a node stuck on this while others succeed wouldn't trip the alarm above.
-resource "aws_cloudwatch_metric_alarm" "computer_pass_failing" {
-  alarm_name          = "${var.name}-computer-pass-failing"
-  alarm_description   = "Managed-computer passes failed 3 or more times in 5 minutes (computer_pass_failed)"
-  namespace           = "AgentRuntime"
-  metric_name         = "ComputerPassFailures"
-  dimensions          = local.runtime_metric
-  statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 1
-  threshold           = 3
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  treat_missing_data  = "notBreaching"
-  alarm_actions       = local.alarm_topics
-  ok_actions          = local.alarm_topics
-}
-
 locals {
   ns  = "AgentRuntime"
   svc = local.service_name

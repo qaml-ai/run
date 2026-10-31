@@ -578,8 +578,3 @@ export function recordStart(steps: Steps, start: { tenant: string; agent: string
 export function writeMetricLine(line: string) {
   sink(line);
 }
-
-/** A pass over managed computers ended (computers/managed.ts): every node's, flag on or off, so none in five minutes is an alarm. */
-export function recordComputerPass(ok: boolean) {
-  emit("computer_pass_metric", { dimensions: {}, rollups: [[]], metrics: ok ? { ComputerPasses: 1 } : { ComputerPassFailures: 1 } });
-}
