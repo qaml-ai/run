@@ -11,6 +11,9 @@ its history carries over. `?available=true` answers `[]` when your account has
 no key any model can use (a self-hosted runtime before its first key, say); that
 response's `X-Camelrun-Hint` header says how to set one.
 
+Particle-1 is listed as `openrouter/particle-ai/particle-1`. Particle AI is its only
+provider, so when Particle AI is down, there is no other host for OpenRouter to route to.
+
 GPT-6.1 Terra is listed as `openai/gpt-6.1-terra`,
 `openrouter/openai/gpt-6.1-terra` and `azure/gpt-6.1-terra`, with GPT-6.1 Sol's
 context window on each. Azure requires an operator-configured deployment.

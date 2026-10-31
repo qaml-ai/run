@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { listModels } from "../src/catalog.ts";
 import assert from "node:assert/strict";
 import { getModel, getModels, withCatalogPrices } from "../src/pi-catalog.ts";
 import { platformUsage } from "../src/platform-pricing.ts";
@@ -126,4 +127,9 @@ test("Azure DeepSeek V4.1 Flash has its measured limits, Azure prices and Chat C
   assert.deepEqual(model.cost, { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0 });
   assert.deepEqual(model.thinkingLevelMap, getModel("openrouter", "deepseek/deepseek-v4.1-flash")!.thinkingLevelMap);
   assert.deepEqual(model.compat, { ...getModel("azure", "deepseek-v4-pro")!.compat, maxTokensField: "max_tokens" });
+});
+
+test("Particle-1 on OpenRouter is listed at what OpenRouter charges, not streaming tool arguments", () => {
+  const info = listModels("openrouter").find(model => model.id === "openrouter/particle-ai/particle-1")!;
+  assert.deepEqual([info.cost.input, info.cost.output, info.cost.cacheRead, info.toolCallStreaming, info.contextWindow, info.maxTokens], [0.05, 0.5, 0.003, false, 1_048_576, 131_072]);
 });
