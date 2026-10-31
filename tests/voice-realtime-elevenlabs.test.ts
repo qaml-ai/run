@@ -345,7 +345,7 @@ test("ElevenLabs pricing requires both runtime rates and includes the separately
 
 test("gemini-3.1-flash-lite has its own agent (v5) and its own LLM rate, and the default stays as it was", async t => {
   const fake = await fakeElevenLabs(t);
-  const provider = elevenlabsAgents({ baseUrl: fake.base, socket: fake.socket });
+  const provider = elevenlabsAgents({ baseUrl: fake.base });
   assert.equal(provider.defaultModel, "gemini-2.5-flash-lite");
   assert.ok(provider.models.includes("gemini-3.1-flash-lite"));
   const a = recorder(), b = recorder();
