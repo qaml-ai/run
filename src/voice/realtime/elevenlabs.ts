@@ -26,8 +26,8 @@ export const ELEVENLABS_AGENTS = Object.freeze({
   models: ["gemini-2.5-flash-lite", "claude-haiku-5-5"] as const,
   defaultModel: "claude-haiku-5-5",
   voice: "cgSgspJ2msm6clMCkdW9", // Jessica, a conversational default; sessions may supply any voice_id their key can use.
-  // v4: thinking is off, and text arrives as it is made (TOOL_TEXT). v3: conversations last up to maxDurationSeconds (v2
-  // agents kept ElevenLabs' 10-minute default). The agent is found by name, so a changed creation setting needs a new name.
+  // v4: thinking is off. v3: conversations last up to maxDurationSeconds (v2 agents kept ElevenLabs' 10-minute default).
+  // The agent is found by name, so a changed creation setting needs a new name.
   name: "camelRun realtime voice v4",
   /**
    * The agent for sessions with barge-in off: ElevenLabs stops the agent whenever its VAD hears someone (the
@@ -46,13 +46,6 @@ const agentName = (model: string) => model === "claude-haiku-5-5" ? ELEVENLABS_A
  * itself goes on, in a fresh conversation (the brain reconnects and briefs it with what was said).
  */
 const MAX_DURATION = /max call duration/i;
-/**
- * A tool call written out as text, as Gemini sometimes does (`tool_code`, `print(default_api.ask_agent(...))`). Everything
- * this LLM writes goes to ElevenLabs' text to speech, whose audio comes back here, so it would be read aloud: what follows
- * it in that generation is not played. Words nobody says in a call, as a false positive cuts off real speech.
- */
-const TOOL_TEXT = /\b(?:default_api|tool_code|tool_call)\b/;
-const TOOL_TEXT_TAIL = 20;
 const VOICE_FOR = Object.freeze(Object.fromEntries(
   ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar", "nova", "onyx", "fable"].map(name => [name, ELEVENLABS_AGENTS.voice]),
 ));
@@ -195,7 +188,7 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
         asr: { user_input_audio_format: "pcm_16000" },
         tts: { voice_id: voice, model_id: "eleven_v4_turbo", agent_output_audio_format: "pcm_24000" },
         turn: { turn_eagerness: "normal", turn_timeout: 7, silence_end_call_timeout: -1 },
-        conversation: { max_duration_seconds: ELEVENLABS_AGENTS.maxDurationSeconds, client_events: ["conversation_initiation_metadata", "ping", "audio", ...interruptible ? ["interruption"] : [], "user_transcript", "agent_response", "agent_chat_response_part", "client_tool_call", "agent_response_complete", "client_error"] },
+        conversation: { max_duration_seconds: ELEVENLABS_AGENTS.maxDurationSeconds, client_events: ["conversation_initiation_metadata", "ping", "audio", ...interruptible ? ["interruption"] : [], "user_transcript", "agent_response", "client_tool_call", "agent_response_complete", "client_error"] },
       },
       platform_settings: {
         auth: { enable_auth: true }, privacy: { record_voice: false },
@@ -260,12 +253,6 @@ class ElevenLabs implements RealtimeConnection {
   private silence?: ReturnType<typeof setInterval>;
   private readonly calls = new Map<string, string>();
   private suppressed = false;
-  /** This generation wrote out a tool call (TOOL_TEXT): the rest of it is not played, until the next one starts. */
-  private toolText = false;
-  /** The end of this generation's text so far, for a match split across parts. */
-  private textTail = "";
-  /** The generation that last wrote one out: its whole text may come after the next has started. */
-  private toolTextResponse?: string;
   private stage = "provisioning";
   private readonly redact: (detail: string) => string;
 
@@ -360,15 +347,6 @@ class ElevenLabs implements RealtimeConnection {
     this.current = undefined;
     if (id) this.events.responseDone(id, { status, usage: { ...NO_USAGE } });
   }
-  private sawText(text: string, response?: string) {
-    const seen = this.textTail + text;
-    this.textTail = seen.slice(-TOOL_TEXT_TAIL);
-    if (this.toolText || !TOOL_TEXT.test(seen)) return;
-    this.toolText = true;
-    this.toolTextResponse = response;
-    this.events.warning("tool_text_not_spoken", "");
-    this.finish("completed");
-  }
   private message(event: any) {
     if (!event || this.ended) return;
     switch (event.type) {
@@ -396,25 +374,15 @@ class ElevenLabs implements RealtimeConnection {
         const seconds = this.bytes / 48 / 1_000;
         this.bytes = 0;
         this.suppressed = false;
-        this.toolText = false;
-        this.textTail = "";
         if (typeof event.user_transcription_event?.user_transcript === "string") this.events.heard("", event.user_transcription_event.user_transcript, seconds);
         break;
       }
-      case "agent_chat_response_part": {
-        const part = event.text_response_part;
-        if (part?.type === "start") { this.toolText = false; this.textTail = ""; }
-        if (typeof part?.text === "string") this.sawText(part.text, part.response_id);
-        break;
-      }
       case "agent_response":
-        if (event.agent_response_event?.response_id && event.agent_response_event.response_id === this.toolTextResponse) break;
-        if (typeof event.agent_response_event?.agent_response === "string") this.sawText(event.agent_response_event.agent_response, event.agent_response_event.response_id);
-        if (this.suppressed || this.toolText) break;
+        if (this.suppressed) break;
         if (typeof event.agent_response_event?.agent_response === "string") this.events.said(this.start(), event.agent_response_event.agent_response);
         break;
       case "audio":
-        if (this.suppressed || this.toolText) break;
+        if (this.suppressed) break;
         if (typeof event.audio_event?.audio_base_64 === "string") this.events.audio(this.start(), Buffer.from(event.audio_event.audio_base_64, "base64"));
         break;
       case "agent_response_complete": this.finish("completed"); break;
