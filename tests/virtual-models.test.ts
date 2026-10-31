@@ -1,13 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { listModels } from "../src/catalog.ts";
 import { configuredModel, defaultModels } from "../src/model.ts";
 import { isModelUnavailable } from "../src/model-errors.ts";
 import { withModelFallback } from "../src/model-fallback.ts";
+import { Accounts } from "../src/accounts.ts";
+import { EndUserCredits } from "../src/end-user-credits.ts";
+import { ModelAttempts } from "../src/model-attempts.ts";
+import { Tenants } from "../src/tenants.ts";
 import { resolveModel } from "../src/session-config.ts";
 import { currentModel, modelReference, routeModel, virtualChain } from "../src/virtual-models.ts";
+import { testDatabase } from "./database.ts";
 import { responses } from "./provider-fixtures.ts";
 import { listen, OPERATOR, OTHER_OPERATOR, runtime, toolCall, toolResults } from "./runtime-server.ts";
 
@@ -101,8 +106,8 @@ async function openrouter(t: Parameters<typeof runtime>[0], particle: () => { st
       return;
     }
     res.writeHead(200, { "Content-Type": "text/event-stream" });
-    const delta = flash(body), generation = `gen-${++generations}`;
-    for (const [content, finish_reason] of [[delta, null], [{}, (delta as any).tool_calls ? "tool_calls" : "stop"]]) res.write(`data: ${JSON.stringify({ id: generation, object: "chat.completion.chunk", choices: [{ index: 0, delta: content, finish_reason }] })}\n\n`);
+    const { usage, ...delta } = flash(body) as any, generation = `gen-${++generations}`;
+    for (const [content, finish_reason] of [[delta, null], [{}, (delta as any).tool_calls ? "tool_calls" : "stop"]]) res.write(`data: ${JSON.stringify({ id: generation, object: "chat.completion.chunk", choices: [{ index: 0, delta: content, finish_reason }], ...(finish_reason && usage ? { usage } : {}) })}\n\n`);
     res.end("data: [DONE]\n\n");
   });
   return { url, requests };
@@ -194,4 +199,65 @@ test("a tenant with no OpenRouter key falls to what it holds; an upsert keeps th
   assert.equal((await r.call(`/v1/agents/${made.id}`)).json.model, `openrouter/${FLASH}`);
   await applied((await r.call("/v1/agents", { body: { name: "two", model: ALIAS }, headers: { "Idempotency-Key": "keep" } })).json.reconfigured.id);
   assert.equal((await r.call(`/v1/agents/${made.id}`)).json.model, ALIAS, "and back by name");
+});
+
+const USD = 1_000_000;
+
+test("over the API: Particle's failed attempt releases its end user's hold and costs nothing; only the model that answered is charged", async t => {
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), ALIASED);
+  const provider = await openrouter(t, () => ({ status: 503 }), () => ({ role: "assistant", content: "From 1017.", usage: { prompt_tokens: 100, completion_tokens: 10, cost: 0.01 } }));
+  const holds = async () => Number((await r.db.query("select count(*) n from end_user_holds")).rows[0].n);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: provider.url } });
+  await r.call("/v1/end-user-settings", { method: "PUT", body: { enabled: true } });
+  await r.call("/v1/end-users/person/entries", { body: { kind: "grant", amount: 5 * USD, key: "pay" } });
+  const agent = (await r.call("/v1/agents", { body: { keyScope: "hosted", subject: "person", bucket: "b" } })).json.id;
+  const done = await r.prompt(agent, "Hello");
+  assert.equal(done.outcome.result.reply, "From 1017.");
+  assert.equal(await holds(), 0, "no hold outlives the turn");
+  const rows = (await r.db.query("select model, end_user_raw, end_user_paid from model_attempts order by started_at")).rows;
+  assert.deepEqual(rows.map(row => [row.model, Number(row.end_user_raw)]), [[PARTICLE, 0], [FLASH, 10_000]], "an attempt for each, and only the one that answered costs anything");
+  const ledger = (await r.db.query("select coalesce(sum(amount), 0)::bigint as total from end_user_ledger where end_user = 'person' and kind <> 'grant'")).rows[0].total;
+  assert.equal(Number(ledger), -10_000, "the end user pays once");
+  const usage = JSON.stringify((await r.call("/v1/usage")).json);
+  assert.ok(usage.includes(FLASH) && !usage.includes(PARTICLE), "usage names the model that answered");
+});
+
+test("the books for a move: a failed attempt's hold goes as it ends, the next holds at its own price, and reconciling the failure never charges it", async () => {
+  const { db } = await testDatabase();
+  const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: { tokenSha256: "a".repeat(64), billing: "prepaid" } }, platformKeys: { openrouter: "fixture" } }) });
+  await tenants.reload();
+  await db.query("insert into credit_accounts (tenant, balance, purchased) values ('payg', $1, $1)", [100 * USD]);
+  const service = new EndUserCredits(db);
+  await service.setSettings("payg", { enabled: true });
+  await service.post("payg", "person", { kind: "grant", amount: USD, key: "pay" });
+  const attempts = new ModelAttempts(db, new Accounts({ tenants, db }), undefined, 0, undefined, service);
+  const keyHash = createHash("sha256").update("fixture").digest("hex");
+  const begin = (id: string, model: string) => attempts.event("payg", "agent", true, true, { type: "begin", id, provider: "openrouter", model, kind: "response", at: Date.now(), keyHash,
+    estimate: { inputTokens: 100_000, maxOutputTokens: 2_048, rates: { input: 0, output: 0 } }, endUser: { id: "person", bucket: "b" } } as never);
+  const held = async () => Number((await db.query("select coalesce(sum(paid + allowance), 0)::bigint as n from end_user_holds")).rows[0].n);
+  const balance = async () => Number((await db.query("select balance from credit_accounts where tenant = 'payg'")).rows[0].balance);
+
+  const failed = randomUUID(), answered = randomUUID();
+  await begin(failed, PARTICLE);
+  const atParticle = await held();
+  assert.ok(atParticle > 0);
+  await attempts.event("payg", "agent", true, true, { type: "finish", id: failed, usage: { input: 0, output: 0 }, chars: 0, completed: false });
+  assert.equal(await held(), 0, "the failed attempt's hold is gone");
+  assert.equal(await balance(), 100 * USD, "and nothing is charged");
+
+  await begin(answered, FLASH);
+  assert.ok(await held() > atParticle, "1017 holds at its own, dearer price");
+  await attempts.event("payg", "agent", true, true, { type: "finish", id: answered, usage: { input: 100, output: 10, providerCost: 0.01, providerCreditCost: 0 }, chars: 40, completed: true });
+  assert.equal(await held(), 0);
+  const charged = 100 * USD - await balance();
+  assert.ok(charged > 0, "the tenant pays for the answer");
+
+  await db.query("update model_attempts set updated_at = 0, next_check_at = 0 where id = $1", [failed]);
+  await attempts.reconcile();
+  assert.equal(100 * USD - await balance(), charged, "reconciling the failed attempt charges nothing");
+  const rows = (await db.query("select model, charge, end_user_raw from model_attempts order by started_at, model")).rows;
+  const of = (model: string) => rows.find(row => row.model === model)!;
+  assert.deepEqual([Number(of(PARTICLE).charge), Number(of(PARTICLE).end_user_raw)], [0, 0]);
+  assert.ok(Number(of(FLASH).charge) > 0 && Number(of(FLASH).end_user_raw) > 0);
+  assert.deepEqual((await db.query("select model from usage where tenant = 'payg'")).rows.map(row => row.model).filter(model => model.includes("particle")), []);
 });
