@@ -20152,6 +20152,9 @@
                           "tunnel"
                         ]
                       },
+                      "managed": {
+                        "type": "boolean"
+                      },
                       "leaseSeconds": {
                         "type": "number"
                       },
@@ -20164,7 +20167,8 @@
                       "billing": {
                         "type": "string",
                         "enum": [
-                          "provider_account"
+                          "provider_account",
+                          "credits"
                         ]
                       },
                       "session": {
@@ -20240,6 +20244,7 @@
                       "id",
                       "agent",
                       "provider",
+                      "managed",
                       "leaseSeconds",
                       "dailySeconds",
                       "createdAt",
@@ -20304,25 +20309,25 @@
                     "type": "object",
                     "additionalProperties": {
                       "type": "string"
-                    }
+                    },
+                    "description": "The provider account's credentials. Leave out with provider boat for a managed computer, billed to credit"
                   },
                   "leaseSeconds": {
                     "type": "integer",
                     "minimum": 60,
-                    "maximum": 900,
-                    "default": 900
+                    "maximum": 86400,
+                    "description": "With credentials: how long a session lasts, at most 900 (default 900). Managed: how long it stays after its latest command, at most 24 hours after it started (default 7200)"
                   },
                   "dailySeconds": {
                     "type": "integer",
                     "minimum": 60,
                     "maximum": 86400,
-                    "default": 3600
+                    "description": "Session time a day: default 3600 with credentials, 86400 managed"
                   }
                 },
                 "required": [
                   "agent",
-                  "provider",
-                  "credentials"
+                  "provider"
                 ],
                 "additionalProperties": false
               }
@@ -20331,7 +20336,7 @@
         },
         "responses": {
           "201": {
-            "description": "Connect an agent to a provider. Compute is billed by that provider account",
+            "description": "Connect an agent to a provider, whose account bills the compute, or to a managed computer, billed to credit",
             "content": {
               "application/json": {
                 "schema": {
@@ -20356,6 +20361,9 @@
                         "tunnel"
                       ]
                     },
+                    "managed": {
+                      "type": "boolean"
+                    },
                     "leaseSeconds": {
                       "type": "number"
                     },
@@ -20368,7 +20376,8 @@
                     "billing": {
                       "type": "string",
                       "enum": [
-                        "provider_account"
+                        "provider_account",
+                        "credits"
                       ]
                     },
                     "session": {
@@ -20444,6 +20453,7 @@
                     "id",
                     "agent",
                     "provider",
+                    "managed",
                     "leaseSeconds",
                     "dailySeconds",
                     "createdAt",
@@ -20627,6 +20637,9 @@
                             "tunnel"
                           ]
                         },
+                        "managed": {
+                          "type": "boolean"
+                        },
                         "leaseSeconds": {
                           "type": "number"
                         },
@@ -20639,7 +20652,8 @@
                         "billing": {
                           "type": "string",
                           "enum": [
-                            "provider_account"
+                            "provider_account",
+                            "credits"
                           ]
                         },
                         "session": {
@@ -20715,6 +20729,7 @@
                         "id",
                         "agent",
                         "provider",
+                        "managed",
                         "leaseSeconds",
                         "dailySeconds",
                         "createdAt",

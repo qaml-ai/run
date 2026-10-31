@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Accounts } from "../accounts.ts";
-import { transaction, type Db } from "../db.ts";
+import { transaction, transactionOn, type Db, type Sql } from "../db.ts";
 import { creditError, type EndUserCredits } from "../end-user-credits.ts";
 import { leaseCost, MICROS } from "../pricing.ts";
 import { isBrowserProvider } from "./providers.ts";
@@ -20,7 +20,7 @@ export class LeaseMeter {
   readonly options: {
     db: Db;
     accounts: Pick<Accounts, "billing" | "recordUsageIn" | "usageCommitted">;
-    endUsers?: Pick<EndUserCredits, "reserve" | "settleHold" | "release" | "renew">;
+    endUsers?: Pick<EndUserCredits, "reserve" | "extend" | "settleHold" | "release" | "renew">;
     /** Who pays for the agent's current run, where the tenant meters its end users. */
     payer?(agent: string): { id: string; bucket: string } | undefined;
     now(): number;
@@ -48,10 +48,11 @@ export class LeaseMeter {
   /**
    * Charge an active lease up to now, or its expiry if sooner: whole seconds, the last one rounded up when `closing`,
    * which also moves it to `closing` in the same transaction, so time after that is never charged, even while its
-   * cleanup fails and retries.
+   * cleanup fails and retries. With `client`, on that connection (one that holds a lock, so this needs no second one
+   * from the pool), answering the tenant charged for the caller to pass to `usageCommitted` once it lets go of it.
    */
-  async accrue(lease: string, closing = false) {
-    const charged = await transaction(this.options.db, async sql => {
+  async accrue(lease: string, closing = false, client?: Sql) {
+    const work = async (sql: Sql) => {
       const row = (await sql.query("select * from computer_leases where id=$1 and platform for update", [lease])).rows[0];
       if (!row || row.state !== "active" || row.metered_until === null) return undefined;
       const now = this.options.now();
@@ -66,8 +67,19 @@ export class LeaseMeter {
       }
       if (closing) await sql.query("update computer_leases set state='closing',cleanup_at=$2 where id=$1", [lease, now]);
       return seconds > 0 ? row.tenant as string : undefined;
-    });
+    };
+    if (client) return transactionOn(client, work);
+    const charged = await transaction(this.options.db, work);
     if (charged) await this.options.accounts.usageCommitted(charged);
+    return undefined;
+  }
+
+  /** Hold `seconds` more of a running lease for its end user; false if they can't cover it. */
+  async extendHold(lease: { id: string; tenant: string; hold: string | null; end_user: string | null; bucket: string | null; price_hour: unknown }, seconds: number) {
+    const { endUsers } = this.options;
+    if (!lease.hold || !endUsers) return true;
+    const want = Math.ceil(seconds * Number(lease.price_hour) / 3600);
+    return !(await endUsers.extend(lease.tenant, lease.end_user!, lease.bucket!, lease.hold, want, this.options.now())).refused;
   }
 
   /** Post what a stopped lease cost its end user and let go of the rest of the hold, once: the ledger key is the lease's. */

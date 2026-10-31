@@ -106,6 +106,8 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   if (minAccountDays !== undefined && (!Number.isFinite(minAccountDays) || minAccountDays < 0 || !Number.isSafeInteger(Math.round(minAccountDays * 86_400_000)))) {
     throw new Error("AGENT_SIGNUP_MIN_ACCOUNT_DAYS must be a non-negative, safely representable number of days");
   }
+  const managedComputers = env.AGENT_MANAGED_COMPUTERS ?? "off";
+  if (managedComputers !== "on" && managedComputers !== "off") throw new Error("AGENT_MANAGED_COMPUTERS must be on or off");
   const searchTimeoutMs = Number(env.AGENT_WEB_SEARCH_TIMEOUT_MS ?? 5_000);
   if (!Number.isInteger(searchTimeoutMs) || searchTimeoutMs < 100 || searchTimeoutMs > 60_000) throw new Error("AGENT_WEB_SEARCH_TIMEOUT_MS must be an integer between 100 and 60000");
   const purgeMs = Number(env.AGENT_PURGE_INTERVAL_MS ?? 60_000);
@@ -153,6 +155,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     github: { org: env.GITHUB_ORG ?? "qaml-ai", webUrl: env.AGENT_GITHUB_WEB_URL, apiUrl: env.AGENT_GITHUB_API_URL },
     googleIssuer: env.AGENT_GOOGLE_ISSUER || undefined,
     searchTimeoutMs,
+    managedComputers: managedComputers === "on",
     firecrawlUrl: env.AGENT_FIRECRAWL_SCRAPE_URL,
     usageWebhookRetryMs: optional("AGENT_USAGE_WEBHOOK_RETRY_MS"),
     channelRetryMs: optional("AGENT_CHANNEL_RETRY_MS"),

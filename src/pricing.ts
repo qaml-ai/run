@@ -73,7 +73,8 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
   speech: micros(0.015),
   // OpenAI's list prices for gpt-image-2.5-flare, per million tokens.
   image: Object.freeze({ textInput: micros(5), imageInput: micros(8), output: micros(30) }),
-  computerHour: micros(0.12),
+  // Boat's list price for a small machine (2 vCPU, 4 GB): at cost.
+  computerHour: micros(0.018),
   browserHour: micros(0.10),
   purchaseFeeBps: 550,
   minPurchase: micros(5),

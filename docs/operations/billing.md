@@ -64,7 +64,7 @@ A **prepaid tenant** pays for:
   [Built-ins](../guides/tools.md#built-ins-a-definition-enables).
 - **Computer and browser leases: not on yet.** Nothing in production runs a lease on the platform's keys, so no tenant
   is charged for one. The prices are placeholders until that ships. The meter is in place: on the platform's keys,
-  $0.12 per computer-hour and $0.10 per browser-hour
+  $0.018 per computer-hour (Boat's list price for its small machine) and $0.10 per browser-hour
   (`AGENT_PRICE_COMPUTER_HOUR_USD`, `AGENT_PRICE_BROWSER_HOUR_USD`), per second from when the machine has started until
   the lease stops or expires, at the price when it started. The 30-second sweep (`src/computers/metering.ts`) charges
   each running lease in one transaction with `metered_until`, so a retried or concurrent sweep charges nothing twice,

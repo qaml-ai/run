@@ -362,6 +362,19 @@ export async function transaction<T>(db: Db, work: (sql: Sql) => Promise<T>, opt
   }
 }
 
+/** Run `work` in a transaction on a connection the caller already holds, once. */
+export async function transactionOn<T>(client: Sql, work: (sql: Sql) => Promise<T>): Promise<T> {
+  await client.query("begin");
+  try {
+    const result = await work(client);
+    await client.query("commit");
+    return result;
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  }
+}
+
 async function transactionOnce<T>(db: Db, work: (sql: Sql) => Promise<T>): Promise<T> {
   const client = await db.connect();
   // A checked-out client whose connection drops emits 'error'; unheard, that would crash the process.
