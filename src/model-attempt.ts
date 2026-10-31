@@ -12,12 +12,13 @@ export type ModelAttemptEvent =
   | { type: "generation"; id: string; generation: string }
   | { type: "progress"; id: string; chars: number }
   /**
-   * `superseded`: why the call's response is not the answer (`content_filter`: its provider's filter blocked it, and the
-   * request is made again on another model, model-fallback.ts). Recorded for the platform's books; never charged.
+   * `superseded`: why the call's response is not the answer (`content_filter`: its provider's filter blocked it;
+   * `unavailable`: a virtual model's member could not take it), and the request is made again on another model
+   * (model-fallback.ts). Recorded for the platform's books; never charged, and no response in the tenant's usage.
    */
   | { type: "finish"; id: string; usage: Record<string, any>; chars: number; completed: boolean; superseded?: Superseded };
 /** Why a call's response was replaced by another call's (see `finish`). */
-export type Superseded = "content_filter";
+export type Superseded = "content_filter" | "unavailable";
 export type AttemptEstimate = { inputTokens: number; cachedTokens?: number; maxOutputTokens: number; rates: { input: number; output: number; cacheRead?: number } };
 /**
  * What the runtime answers an attempt's begin or progress: whether it tracks the attempt (a bare boolean says only that),

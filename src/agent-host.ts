@@ -780,7 +780,11 @@ export function createAgentHost(hostIO: HostIO) {
       };
       // A request whose stream goes quiet ends as a retryable error (model-stream.ts), said on the run's stream as it happens.
       // A response the agent's content-filter fallback replaces (`streamFn`) is recorded but never charged: the platform's filter blocked it.
-      const replaced = (message: AssistantMessage) => config.contentFilterFallback?.from === `${config.model.provider}/${config.model.id}` && isContentFilterBlock(message) ? "content_filter" as const : undefined;
+      const replaced = (message: AssistantMessage) => {
+        if (config.contentFilterFallback?.from === `${config.model.provider}/${config.model.id}` && isContentFilterBlock(message)) return "content_filter" as const;
+        // A virtual model's next member takes this request (`routedCall`): this attempt was never the answer, and counts as no response.
+        return config.model.virtual && !message.content.length && isModelUnavailable(message) && routeModel(config.model, { reason: "retry", failed: { provider: message.provider, model: message.model } }) ? "unavailable" as const : undefined;
+      };
       const stream = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
         stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: running().provider, model: running().id }), io.modelOutbound, io.modelAttempt, creditStop, replaced);
@@ -791,7 +795,7 @@ export function createAgentHost(hostIO: HostIO) {
         event.type === "begin" ? { ...event, kind: "compaction" } : event));
       const summaries = explicitKeyStream(() => perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
         (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
-        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: running().provider, model: running().id }), io.modelOutbound, summaryAttempt, creditStop);
+        stall => io.emit({ type: "model_stream_stalled", phase: stall.phase, ms: stall.ms, provider: running().provider, model: running().id }), io.modelOutbound, summaryAttempt, creditStop, replaced);
       // A summary reads the conversation as a turn does: the agent's OpenRouter data policy goes on it too.
       const summaryStream: typeof summaries = (model, context, options) => routedCall("direct", on =>
         summaries(on, context, { ...options, ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options), options?.signal, model);

@@ -4,4 +4,4 @@
 
 - **Failover per request.** A request a model cannot take now (a 429, a 5xx, no provider, a timeout, a stream gone quiet) and that has streamed nothing moves to the next model at once. A bad request, an oversized context, or a key or credit problem does not. Each new message starts on the first model; the rest of a turn stays where it moved. An agent naming a real model has none of this.
 - **Records.** A run's `servedModel`, `/v1/usage` and `usage.recorded` name the model that answered, at its price. `GET /v1/agents/:id` and `GET /v1/me` show the virtual name, and `GET /v1/models` lists it with `routes`. A move logs `model_fallback` with `Reason: unavailable` and its `errorClass`, and counts `ModelFallbacks`.
-- **Credit.** Each attempt holds end-user credit at its own model's price, so a failed attempt holds nothing afterwards and the next is checked at its price.
+- **Credit.** Each attempt holds end-user credit at its own model's price. A failed attempt's hold goes as it ends, it costs nothing and counts as no response in `/v1/usage`, and the next is checked at its price.

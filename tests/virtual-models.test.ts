@@ -220,6 +220,8 @@ test("over the API: Particle's failed attempt releases its end user's hold and c
   assert.equal(Number(ledger), -10_000, "the end user pays once");
   const usage = JSON.stringify((await r.call("/v1/usage")).json);
   assert.ok(usage.includes(FLASH) && !usage.includes(PARTICLE), "usage names the model that answered");
+  const superseded = (await r.db.query("select context->>'superseded' as why from model_attempts where model = $1", [PARTICLE])).rows[0].why;
+  assert.equal(superseded, "unavailable", "the host says so, so a later reconcile counts no response for it");
 });
 
 test("the books for a move: a failed attempt's hold goes as it ends, the next holds at its own price, and reconciling the failure never charges it", async () => {
@@ -241,7 +243,7 @@ test("the books for a move: a failed attempt's hold goes as it ends, the next ho
   await begin(failed, PARTICLE);
   const atParticle = await held();
   assert.ok(atParticle > 0);
-  await attempts.event("payg", "agent", true, true, { type: "finish", id: failed, usage: { input: 0, output: 0 }, chars: 0, completed: false });
+  await attempts.event("payg", "agent", true, true, { type: "finish", id: failed, usage: { input: 0, output: 0 }, chars: 0, completed: false, superseded: "unavailable" });
   assert.equal(await held(), 0, "the failed attempt's hold is gone");
   assert.equal(await balance(), 100 * USD, "and nothing is charged");
 
