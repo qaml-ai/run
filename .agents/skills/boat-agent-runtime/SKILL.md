@@ -1,6 +1,6 @@
 ---
 name: boat-agent-runtime
-description: Run agent-runtime tests in a fresh Boat (boat.dev) sandbox instead of the laptop or the sprite pool. For people with the team's Boat API key. Use when running test files or the full suite off the machine.
+description: Run agent-runtime tests in a fresh Boat (boat.dev) sandbox instead of the laptop. For people with the team's Boat API key. Use when running test files or the full suite off the machine.
 ---
 
 # agent-runtime on Boat
@@ -39,4 +39,4 @@ history stays at Boat after the delete. If this script dies, the sandbox is eras
 France), so source code goes to Boat's machines there. Saved snapshots hold dependencies and builds without the tracked
 source, and Boat may store snapshot copies outside the EU.
 
-Sandboxes have Docker. `scripts/sprite-test` stays the default until the team decides otherwise.
+Sandboxes have Docker.
