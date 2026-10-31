@@ -691,7 +691,7 @@ export class RealtimeBrain {
         } else this.heardItem(tag, text, seconds);
       },
       // The provider's own words about what it refused (no audio or transcript in them).
-      warning: (code, detail) => { if (live()) this.hooks.log("voice_realtime_warning", { errorCode: code, detail: detail.slice(0, 200) }); },
+      warning: (code, detail) => { if (live()) this.hooks.log("voice_realtime_warning", { reference: this.options.reference, errorCode: code, detail: detail.slice(0, 200) }); },
       closed: (reason, detail, options) => { if (reason !== "requested" && live()) this.lost(detail ?? "closed", options?.retryable); },
     };
   }

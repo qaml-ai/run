@@ -322,6 +322,26 @@ test("gemini-3.1-flash-lite is the default, on its own agent (v6), thinking off 
   assert.equal(realtimePrice("elevenlabs/gemini-3.1-flash-lite", { AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD: "1", AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD: "2" }), undefined, "no rate of its own: unpriced, refused");
 });
 
+test("a tool call written out is counted by its form and model, with no text logged, and still played", async t => {
+  const fake = await fakeElevenLabs(t);
+  const state = testBrain({ provider: elevenlabsAgents({ baseUrl: fake.base }), reference: "elevenlabs/gemini-3.1-flash-lite", ownsTurns: true });
+  t.after(() => state.brain.close());
+  await until(() => state.logs.some(e => e.type === "voice_realtime_ready"), "brain ready");
+  const say = (text: string) => fake.send({ type: "agent_response", agent_response_event: { agent_response: text } });
+  const written = () => state.logs.filter(e => e.type === "voice_realtime_warning" && e.fields?.errorCode === "tool_text_written");
+  say("Mon dieu, what a call for a tool: I am Mochi."); // Words a person may say are not counted.
+  say("tool_code\nprint(default_api.ask_agent(request='secret words'))");
+  say("Zat is not for me. stay_silent()");
+  say(":call:lookup{}");
+  say("<tool_use>secret words</tool_use>");
+  fake.send(audio());
+  await until(() => written().length === 4, "counted");
+  assert.deepEqual(written().map(e => e.fields?.detail), ["tool_code", "stay_silent", ":call:", "<tool"]);
+  assert.ok(written().every(e => e.fields?.reference === "elevenlabs/gemini-3.1-flash-lite"));
+  assert.ok(!JSON.stringify(state.logs).includes("secret words"));
+  await until(() => state.playback.plays.length > 0, "still played");
+});
+
 test("ElevenLabs meters wall time once, including silence, interruption and the final close interval", async t => {
   const fake = await fakeElevenLabs(t);
   const { got, events } = recorder();
