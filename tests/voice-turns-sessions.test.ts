@@ -139,7 +139,8 @@ test("the energy segmenter, for comparison: the same noise is an utterance, and 
 
 test("smart sessions free their decoders when the session ends mid-turn; what was not a whole turn is not answered", { timeout: 60_000 }, async t => {
   const models = await turnModels(t);
-  const { a, created, play, realtime } = await liveSession(t, {}, models);
+  // The longest pauses a session allows, without answering early: on a busy machine a late packet is a real pause, and a turn ended.
+  const { a, created, play, realtime } = await liveSession(t, { endOfTurn: { commitMs: 3_000, maxSilenceMs: 5_000 }, realtime: { speculative: false } }, models);
   const before = opusStats().live;
   const turn = packets(wav16("spa-c-01d233b8.wav"));
   await play("400000000000000001", turn.slice(0, 100));
