@@ -570,9 +570,12 @@ rates below as your account is charged them.
   hour, and 1 GB stored. After it, 100 GB stored, and the
   [usage tiers](https://run.camelai.com/docs/reference/limits.md#usage-tiers) raise how many agents may be
   busy at once as your purchases add up.
-- At zero balance, new runs and file writes get 402 `INSUFFICIENT_CREDIT`, and a
-  running turn ends after the response that spent the last credit. Nothing is
-  deleted: add credit and send the next message.
+- At zero balance, new runs and file writes get 402 `INSUFFICIENT_CREDIT`. A model
+  call holds its estimate of your credit before it is made: one that credit does not
+  cover is not made, and ends the turn with `stopped: "spend_limit"` and
+  `limit: "credit"`. A last call starts if it is within $0.25 of what is left, and a
+  reply stops where the credit does, so you can spend all of it. Nothing is deleted: add
+  credit and send the next message.
 
 ## Spending less
 

@@ -249,6 +249,8 @@ async function attemptsFixture(funding = 1) {
   const { db } = await testDatabase();
   const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: { tokenSha256: keyHash, billing: "prepaid" } }, platformKeys: { openrouter: KEY } }) });
   await tenants.reload();
+  // The tenant's own credit to run on: a call on the platform's key holds some too (credit-holds.ts).
+  await db.query("insert into credit_accounts (tenant, balance, purchased) values ('payg', 1000000000, 1000000000) on conflict (tenant) do nothing");
   const service = new EndUserCredits(db);
   await service.setSettings("payg", { enabled: true, markupBps: 2_000 });
   const pricing = { ...DEFAULT_PRICING, openrouterCreditMultiplier: funding };
