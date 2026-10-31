@@ -1,14 +1,25 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import FakeTimers from "@sinonjs/fake-timers";
 import { buffered } from "../src/voice-audio.ts";
 import { sleep } from "./voice-fakes.ts";
 
 /**
  * A provider's speech as 20 ms packets, `rate` times faster than they play (steadily, or in bursts of `burst` packets),
  * played by a player that takes one each 20 ms: when the first went out after the first came, and the silence heard
- * after the start (a packet late is a frame of silence).
+ * after the start (a packet late is a frame of silence). On fake time: on real time, a busy machine's late timers are
+ * silence the buffer did not cause.
  */
 async function play(rate: number, seconds: number, expectedMs?: number, burst = 1) {
+  const time = FakeTimers.install({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  try {
+    const played = playback(rate, seconds, expectedMs, burst);
+    await time.runAllAsync();
+    return await played;
+  } finally { time.uninstall(); }
+}
+
+async function playback(rate: number, seconds: number, expectedMs: number | undefined, burst: number) {
   const total = Math.round(seconds * 50);
   let firstIn = 0;
   async function* provider() {
