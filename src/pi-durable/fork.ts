@@ -5,6 +5,7 @@ import { Harness, createRegistry, type EntryId, type Storage } from "@earendil-w
 import { convertToLlm } from "../pi-harness/messages.ts";
 import type { At, JournalHistory } from "./history.ts";
 import { SESSION_CONVERSATION_ID as conversationId } from "./seed.ts";
+import { keepingOpen } from "./storage.ts";
 
 /**
  * A fork cut from Pi's journal (plans/host-transcript-removal.md, appendix): which of the source's history messages the
@@ -76,12 +77,8 @@ export async function contextAt(storage: Storage, at: At): Promise<Message[]> {
   // Pi cuts after a stored entry: the newest through `end`.
   const last = end === undefined ? undefined : (await storage.scanEntries({ conversationId, order: "descending", maxEntryId: end }, 1, undefined, context)).items[0];
   if (end !== undefined && (!last || last.id === end && at.index >= 0 && at.index < (last.model?.length ?? 0) - 1)) throw new ForkBeforeHead();
-  // The caller owns the storage: the viewer's close leaves it open.
-  const viewer = await Harness.open(new Proxy(storage, { get(target, key) {
-    if (key === "close") return async () => {};
-    const value = Reflect.get(target, key, target);
-    return typeof value === "function" ? value.bind(target) : value;
-  } }),
+  // The caller owns the storage.
+  const viewer = await Harness.open(keepingOpen(storage),
     { registry: createRegistry(), models: { getModel: () => undefined, getAuth: () => undefined } as never, readOnly: true }, context);
   try {
     const conversation = (await viewer.conversation(conversationId, context))!;

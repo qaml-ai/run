@@ -191,6 +191,31 @@ test("a native human wait survives reopen and accepts its answer without project
   assert.deepEqual(await f.history(), before);
 });
 
+test("a close as a call is left waiting for a person: the wait is stored, the next owner stays suspended, and the answer reaches the run", { timeout: 20_000 }, async t => {
+  const f = await fixture(t);
+  f.responses(answer(fauxToolCall("lookup", { key: "saved" }, { id: "closing-call" }), "toolUse"));
+  const first = await f.start({ inputRequired: true });
+  // The host stops in the one window left: the tool has returned, and `journal.await` is reading the journal.
+  const scan = first.storage.scanEntries.bind(first.storage);
+  let closing: Promise<void> | undefined;
+  first.storage.scanEntries = ((...args: Parameters<typeof scan>) => {
+    if (f.calls.length && !closing) closing = first.host.dispose();
+    return scan(...args);
+  }) as typeof scan;
+  await first.host.handle("prompt", { text: "ask before acting", requestId: "closing-request" }).catch(() => {});
+  await closing;
+  assert.deepEqual(f.calls, ["lookup"]);
+  const second = await f.start({ resume: true });
+  assert.equal((second.init.resume?.finished ?? second.init.ended?.finished)?.stopped, "input_required", "still waiting for the person");
+  assert.equal(f.asked(), 1, "the model is not asked again, so it asks the person nothing twice");
+  f.responses(answer("the answer reached the run"));
+  const resumed = await second.host.handle("resume", { calls: [{ toolCallId: "closing-call", result: { content: [{ type: "text", text: "approved answer" }], isError: false } }] });
+  assert.equal(resumed.reply, "the answer reached the run");
+  assert.deepEqual(f.calls, ["lookup"], "nor is the call made again");
+  assert.equal((await f.history()).filter(message => message.role === "toolResult" && message.toolCallId === "closing-call").length, 1);
+  await second.host.dispose();
+});
+
 test("an answer to a waiting call is written into Pi's journal, so the next run checks no context in again", { timeout: 20_000 }, async t => {
   const f = await fixture(t);
   f.responses(answer(fauxToolCall("lookup", { key: "saved" }, { id: "dual-written-call" }), "toolUse"));
