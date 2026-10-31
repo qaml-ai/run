@@ -110,7 +110,7 @@ for entry in "${packages[@]}"; do
   fi
   (cd "$src/packages/$dir" && npm run "$build" > "$work/build.log" 2>&1) || { cat "$work/build.log" >&2; exit 1; }
   json="$(cd "$src/packages/$dir" && npm pack --ignore-scripts --json --pack-destination "$work/packed")"
-  packed="$(node -e 'const r = JSON.parse(process.argv[1]); console.log((Array.isArray(r) ? r[0] : r).filename)' "$json")"
+  packed="$(node -e 'const r = JSON.parse(process.argv[1]); console.log((r.filename ? r : Object.values(r)[0]).filename)' "$json")"
   mv "$work/packed/$packed" "$work/packed/$file.tgz"
 done
 
