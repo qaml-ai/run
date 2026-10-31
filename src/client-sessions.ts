@@ -2295,6 +2295,8 @@ export class ClientSessions {
     const queued = session.running.get(id);
     if (!queued) return;
     const { params: _params, ...rest } = queued;
+    // Now, not after the write below: the model can answer with its next wait_agent first, which must not take this for a new message.
+    session.agentMessages?.delete(id);
     const outcome: Outcome = { result: { steeredInto: turn } };
     const done = this.upsertRequest(session, { ...rest, state: "completed", outcome, endedAt: Date.now(), steeredInto: turn, ...(session.announcing ? { announce: true as const } : {}) });
     void (async () => {
