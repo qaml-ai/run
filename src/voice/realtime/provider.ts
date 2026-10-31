@@ -158,8 +158,8 @@ export const REALTIME_PRICES: Readonly<Record<string, RealtimePrice>> = Object.f
  * not public rate defaults. Full connection duration is charged; silence discounts are not inferred locally.
  */
 export function realtimePrice(reference: string, env = process.env): RealtimePrice | undefined {
-  if (reference !== "elevenlabs/gemini-2.5-flash-lite" && reference !== "elevenlabs/gemini-3.1-flash-lite") return REALTIME_PRICES[reference];
-  const names = ["AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD", reference === "elevenlabs/gemini-3.1-flash-lite" ? "AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD" : "AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD"] as const;
+  if (reference !== "elevenlabs/gemini-2.5-flash-lite" && reference !== "elevenlabs/claude-haiku-5-5") return REALTIME_PRICES[reference];
+  const names = ["AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD", reference === "elevenlabs/claude-haiku-5-5" ? "AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD" : "AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD"] as const;
   const rates = names.map(name => {
     const raw = env[name];
     if (raw === undefined || raw === "") return undefined;
