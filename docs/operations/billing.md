@@ -62,7 +62,9 @@ A **prepaid tenant** pays for:
   render. The hour's usage entry counts them (`searches`, `renders`, and their
   cost as `web`) apart from model tokens: see `web_search` and `web_fetch` under
   [Built-ins](../guides/tools.md#built-ins-a-definition-enables).
-- **Computer and browser leases** on the platform's keys, $0.12 per computer-hour and $0.10 per browser-hour
+- **Computer and browser leases: not on yet.** Nothing in production runs a lease on the platform's keys, so no tenant
+  is charged for one. The prices are placeholders until that ships. The meter is in place: on the platform's keys,
+  $0.12 per computer-hour and $0.10 per browser-hour
   (`AGENT_PRICE_COMPUTER_HOUR_USD`, `AGENT_PRICE_BROWSER_HOUR_USD`), per second from when the machine has started until
   the lease stops or expires, at the price when it started. The 30-second sweep (`src/computers/metering.ts`) charges
   each running lease in one transaction with `metered_until`, so a retried or concurrent sweep charges nothing twice,
