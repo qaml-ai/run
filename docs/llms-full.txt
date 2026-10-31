@@ -3906,7 +3906,7 @@ curl -X POST "$RUNTIME/v1/decisions" -H "Authorization: Bearer $TOKEN" -H "Conte
 
 | Question | Fields | Answer |
 | --- | --- | --- |
-| `noul` | `instructions`: a yes/no question or statement; `criteria?`: `{true?, false?}`, what counts as yes and as no | `noul`: the probability it is true |
+| `noul` | `instructions`: a yes/no question or statement; `criteria?`: `{true?, false?}`, what counts as yes and as no (a side left out: yes is the statement itself, no is anything else) | `noul`: the probability it is true |
 | `choice` | `instructions`: what to decide; `criteria`: `{option: description}`, 2 to 255 (an empty description judges the option by its name) | `choice`, the likeliest option; `confidence`; `probabilities` by option |
 | `score` | `instructions`: what to rate; `criteria`: 2 to 10 levels, lowest first | `score`, the expected level from 0 (may be fractional); `confidence`; `probabilities` by level |
 
