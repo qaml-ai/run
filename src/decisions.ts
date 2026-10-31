@@ -393,6 +393,8 @@ export class Decider {
         if (signal.aborted) throw error;
         const status = deadline.aborted ? 504 : errorStatus(error, 502);
         const message = deadline.aborted ? `No answer within ${this.limits.requestTimeoutMs} ms` : error instanceof HttpError ? error.message : `The decision failed (${safeError(error)})`;
+        // Never the provider's words, which may quote the state. A batch's failure is otherwise seen by nobody.
+        console.log(JSON.stringify({ type: "decision_failed", tenant: context.tenant, provider: provider.id, model: request.model, status, error: safeError(error) }));
         return { error: { status, ...(error instanceof HttpError && error.code ? { code: error.code } : {}), message } };
       }
     })).finally(() => {

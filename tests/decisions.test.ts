@@ -151,6 +151,20 @@ test("the OpenRouter adapter sends TypeSafe's body to /decisions with the key, r
   const credentials = { apiKey: "or-key" };
   const answered = await provider.decide(item, "typesafe/jev-1.14", credentials, AbortSignal.timeout(5_000));
   assert.deepEqual(seen[0], { path: "/api/alpha/decisions", auth: "Bearer or-key", body: { model: "typesafe/jev-1.14", state: STATE, questions: QUESTIONS } });
+  // A noul with one side of its criteria: OpenRouter refuses that (invalid_union), so the other side goes along. One with both, or none, goes as it is.
+  const sided = {
+    no_side: { type: "noul", instructions: "The message is spam.", criteria: { false: "A member mentioning their project." } },
+    yes_side: { type: "noul", instructions: "The message is spam.", criteria: { true: "An ad nobody asked for." } },
+    both: { type: "noul", instructions: "The message is spam.", criteria: { true: "An ad.", false: "Chat." } },
+    neither: { type: "noul", instructions: "The message is spam." },
+  } as DecisionItem["questions"];
+  await provider.decide({ state: STATE, questions: sided }, "typesafe/jev-1.14", credentials, AbortSignal.timeout(5_000)).catch(() => {});
+  assert.deepEqual(seen[1].body.questions, {
+    no_side: { type: "noul", instructions: "The message is spam.", criteria: { true: "The message is spam.", false: "A member mentioning their project." } },
+    yes_side: { type: "noul", instructions: "The message is spam.", criteria: { true: "An ad nobody asked for.", false: "Anything else." } },
+    both: sided.both,
+    neither: sided.neither,
+  });
   assert.deepEqual(answered, { answers: LIVE.answers, model: LIVE.model, inputTokens: 444, outputTokens: 77, costUsd: LIVE.usage.cost });
 
   const fails = async (status: number, body: unknown, check: (error: DecisionFailed) => boolean, headers?: Record<string, string>) => {

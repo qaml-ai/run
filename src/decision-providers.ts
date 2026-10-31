@@ -1,5 +1,5 @@
 import type { Outbound } from "./outbound.ts";
-import { DecisionFailed, type DecisionProvider } from "./decisions.ts";
+import { DecisionFailed, type DecisionProvider, type Question } from "./decisions.ts";
 import { DECISION_LIMITS } from "./limits.ts";
 import { safeError } from "./metrics.ts";
 
@@ -15,6 +15,9 @@ import { safeError } from "./metrics.ts";
  * this API. `dataCollection: "deny"` (an agent's or a request's) is sent as `provider.data_collection: "deny"`, which the
  * decisions API takes: a live call on 2026-10-28 was served by TypeSafe with it. Should no host serve the model without
  * collecting data, OpenRouter answers 404, which is said as DECISIONS_DATA_POLICY rather than as the API being gone.
+ *
+ * A noul's `criteria` goes with both sides or not at all: one side alone is a 400 (`invalid_union`, live calls on
+ * 2026-10-31), so `wireQuestions` fills in the other.
  */
 export function openrouterDecisions(options: { outbound: Outbound; baseUrl?: string; timeoutMs?: number; dataPolicy?: boolean }): DecisionProvider {
   const { outbound, baseUrl = "https://openrouter.ai/api/alpha", timeoutMs = DECISION_LIMITS.callTimeoutMs, dataPolicy = true } = options;
@@ -27,7 +30,7 @@ export function openrouterDecisions(options: { outbound: Outbound; baseUrl?: str
       let response: Response;
       try {
         response = await outbound.fetch(url, {
-          method: "POST", body: JSON.stringify({ model, state: item.state, questions: item.questions, ...provider }),
+          method: "POST", body: JSON.stringify({ model, state: item.state, questions: wireQuestions(item.questions), ...provider }),
           headers: { Accept: "application/json", "Content-Type": "application/json" },
           secrets: credentials.apiKey ? { Authorization: `Bearer ${credentials.apiKey}` } : {}, timeoutMs, maxBytes: 1024 * 1024, signal,
         });
@@ -60,6 +63,18 @@ export function openrouterDecisions(options: { outbound: Outbound; baseUrl?: str
       };
     },
   };
+}
+
+/**
+ * The questions as the API takes them: a noul's missing side says what its other side leaves. Yes is the statement
+ * itself, and no is anything else. On live calls (2026-10-31, 8 messages), "Anything else." came within 0.01 of a written
+ * `false`. Other fillers for `true` came within 0.01 of this one.
+ */
+function wireQuestions(questions: Record<string, Question>): Record<string, Question> {
+  return Object.fromEntries(Object.entries(questions).map(([id, question]) => {
+    if (question.type !== "noul" || !question.criteria || (question.criteria.true && question.criteria.false)) return [id, question];
+    return [id, { ...question, criteria: { true: question.criteria.true ?? question.instructions, false: question.criteria.false ?? "Anything else." } }];
+  }));
 }
 
 /**
