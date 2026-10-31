@@ -90,11 +90,11 @@ export function usageCost(usage: any): { usd: number; source: "provider" | "cata
 
 /**
  * The `usage.recorded` event for a model response, a transcription or images made, or undefined for other usage (web
- * searches, renders, tool search, computer and browser time). `agent` is empty for a transcription or images no agent made (POST /v1/transcriptions,
+ * searches, renders, tool search, computer time). `agent` is empty for a transcription or images no agent made (POST /v1/transcriptions,
  * POST /v1/images).
  */
 export function usageEvent(tenant: string, agent: string, message: UsageRecord): WebhookEvent | undefined {
-  if (message.searches || message.renders || message.toolSearch || message.kind === "computer" || message.kind === "browser") return undefined;
+  if (message.searches || message.renders || message.toolSearch || message.kind === "computer") return undefined;
   const transcription = message.kind === "transcription";
   const speech = message.kind === "speech";
   const image = message.kind === "image";

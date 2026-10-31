@@ -62,17 +62,17 @@ A **prepaid tenant** pays for:
   render. The hour's usage entry counts them (`searches`, `renders`, and their
   cost as `web`) apart from model tokens: see `web_search` and `web_fetch` under
   [Built-ins](../guides/tools.md#built-ins-a-definition-enables).
-- **Computer and browser leases: not on yet.** Nothing in production runs a lease on the platform's keys, so no tenant
-  is charged for one. The prices are placeholders until that ships. The meter is in place: on the platform's keys,
-  $0.018 per computer-hour (Boat's list price for its small machine) and $0.10 per browser-hour
-  (`AGENT_PRICE_COMPUTER_HOUR_USD`, `AGENT_PRICE_BROWSER_HOUR_USD`), per second from when the machine has started until
-  the lease stops or expires, at the price when it started. The 30-second sweep (`src/computers/metering.ts`) charges
-  each running lease in one transaction with `metered_until`, so a retried or concurrent sweep charges nothing twice,
-  and one that was late catches up. It stops a lease once the tenant's credit is spent, so the overdraft is about one
-  sweep's time per lease. The hour's usage entry counts them apart (`computer`, `computerSeconds`, `browser`,
-  `browserSeconds`), and `/v1/usage` has rows with `kind: "computer"` and `kind: "browser"`; `usage.recorded` does not
-  carry them. A lease on a tenant's own provider key is never charged. An end user, where the tenant meters them, has
-  the whole lease held at its start (a refusal refuses the start) and pays what it cost when it stops.
+- **Managed computers: not on yet.** `AGENT_MANAGED_COMPUTERS` is off, so no tenant is charged for one. The meter is in
+  place: Boat's reported cost for each machine, at $0.018 per hour of a small machine (`AGENT_PRICE_COMPUTER_HOUR_USD`
+  scales it: the default is at cost). A pass every 30 seconds lists this runtime's machines with what they have cost and
+  charges each the difference since the last charge, in one transaction, so a rerun or another node charges nothing more.
+  Boat no longer says what a machine has cost once it is gone, so one that ends at its TTL isn't charged for the time
+  since the last pass: at most about 30 seconds, about $0.00015. A stop reads the cost first. The pass stops a tenant's
+  machines once its credit is spent, an overdraft of about one pass's time per machine: small enough that charges aren't
+  held against model calls' `credit_holds`, though a start counts them. The hour's usage entry counts it apart (`computer`,
+  `computerSeconds`), and `/v1/usage` has rows with `kind: "computer"`; `usage.recorded` does not carry them. An end
+  user, where the tenant meters them, has the computer's idle time held at its start (a refusal refuses the start) and
+  more as it is kept, and pays what it cost when it ends. A machine on an admin's key for the tenant isn't charged.
 - **Transcription** on the platform's OpenAI key (`platformKeys.openai`), $0.0045 per minute of audio
   (`gpt-transcribe`'s list price; `AGENT_PRICE_TRANSCRIPTION_USD`), per second as OpenAI bills it. The hour's usage
   entry counts them apart (`transcription`, `transcriptions`, `audioSeconds`), and `/v1/usage` has a row with

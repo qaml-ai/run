@@ -107,6 +107,37 @@ A **self-serve** tenant's limits are set through the API instead, by a billing-a
 maxRunResponses, maxRunSeconds, codeCpuMs, codeMaxTimeoutMs, codeConcurrency, decisionConcurrency}`, and null returns
 a limit to its tier's. For a tenant in the tenants file it answers 409: set those in the file.
 
+## Managed computers
+
+Not on yet: `AGENT_MANAGED_COMPUTERS` is off, and no tenant has one. A managed computer's machine runs on the platform's
+Boat account (`platformKeys.boat`), and one tenant's abuse can get that account suspended, so use a Boat account for
+these machines and nothing else.
+
+- **Turning them off:** `AGENT_MANAGED_COMPUTERS=off` refuses new starts, and each pass stops every running one. For one
+  account: `POST /v1/tenants/{id}/computers/stop`, with `{"block": true}` to refuse new starts until
+  `DELETE /v1/tenants/{id}/computers/block`. Both need an `AGENT_BILLING_ADMINS` operator token. Bring-your-own
+  connections are the account's own and aren't touched.
+- **Changing the flag:** during a rolling deploy, tasks still on `off` stop machines started on tasks already `on`. For a
+  first enable there is nothing running to stop. Later on, expect running computers to stop while it rolls out.
+- **Whose machine:** each carries the labels `camelrun-runtime` (this runtime's public URL), `computer` and `tenant`, so
+  an abuse report's machine leads to its account: `GET /sandboxes?label=tenant=<id>`. A runtime only sees machines with
+  its own `camelrun-runtime`, so runtimes sharing an account leave each other alone. Give each its own
+  `AGENT_PUBLIC_URL`: two with the same one would see each other's machines as leaks in their logs, though they delete
+  nothing.
+- **Logs:**
+  - `computer_signature`: a command matched a miner, mining pool, mail-blast or scanner signature, by name, never the
+    text. It's only logged; nothing is refused.
+  - `computer_unavailable`: Boat refused a start (`code`).
+  - `computer_started`: how long a start took (`ms`).
+  - `computer_unit_fallback`: a command ran without its unit because `sudo` had gone, so a background process would
+    outlive it.
+  - `computer_kill_stop`, `computer_tenant_stopped`, `computer_credit_stop`: the stops.
+  - `computer_pass`, `computer_pass_failed`: each pass. If passes stop, machines still end at their TTL, uncharged.
+  - `computer_leak`: a machine labelled for this runtime with no open row, over 10 minutes old. It isn't deleted: its
+    TTL ends it, at most 24 hours after it started.
+- **Egress:** not limited yet. Rules would go in `machineSetup` (`src/computers/abuse.ts`), which runs before an agent
+  can use a machine. An agent has `sudo`, so rules set inside the machine don't bind it.
+
 ## Billing and keys
 
 Which keys a tenant's model calls use, and who pays, is in [Billing](billing.md) (its opening table). In
