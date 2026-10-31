@@ -296,7 +296,7 @@ class ElevenLabs implements RealtimeConnection {
   note(text: string) { this.send({ type: "contextual_update", text }); }
   respond(options: { instructions?: string } = {}) {
     // Tool results continue the turn automatically. A late reply needs a new user_message to start a turn.
-    if (options.instructions) this.send({ type: "user_message", text: `[${options.instructions}]` });
+    if (options.instructions) this.send({ type: "user_message", text: options.instructions });
   }
   cancel() { this.suppressed = true; this.finish("cancelled"); }
   truncate(_response: string, heardMs: number) { this.note(`[You were cut off after ${Math.round(heardMs / 1_000)} seconds of playback.]`); }

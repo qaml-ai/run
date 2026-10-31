@@ -182,6 +182,9 @@ for (const late of [false, true]) test(`ElevenLabs brain: ask_agent ${late ? "la
   if (late) {
     assert.ok(JSON.parse(results[0].result).pending);
     assert.ok(fake.seen.events.some(e => e.type === "contextual_update" && e.text.includes("All done")));
+    // Brackets here teach the model to write its own: gemini-2.5-flash-lite then wrote "[stay_silent]" as text, read aloud.
+    const message = fake.seen.events.find(e => e.type === "user_message");
+    assert.ok(message.text.length && !message.text.startsWith("["));
     assert.equal(state.brain.stats.askAgentLate, 1);
   } else assert.deepEqual(JSON.parse(results[0].result), { reply: "All done" });
   fake.send(audio());
