@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
+import { EndUserCredits } from "../src/end-user-credits.ts";
 import { ModelAttempts } from "../src/model-attempts.ts";
 import type { AttemptAck } from "../src/model-attempt.ts";
 import type { Db } from "../src/db.ts";
@@ -161,4 +162,39 @@ test("a failed attempt's hold goes as it ends and costs nothing, on reconciliati
   assert.equal(10 * USD - await balance(), charged, "reconciling the failed attempt charges nothing");
   assert.equal(await held(db), 0);
   assert.equal(Number((await db.query("select charge from model_attempts where id = $1", [failed.id])).rows[0].charge), 0);
+});
+
+test("a call an end user pays for on the platform's key holds both credits; a failed attempt releases both and costs neither, and only the attempt that answered is charged", async () => {
+  const { db } = await testDatabase();
+  const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: { tokenSha256: keyHash, billing: "prepaid" } }, platformKeys: { openrouter: KEY } }) });
+  await tenants.reload();
+  await db.query("insert into credit_accounts (tenant, balance, purchased) values ('payg', $1, $1)", [10 * USD]);
+  const service = new EndUserCredits(db);
+  await service.setSettings("payg", { enabled: true });
+  await service.post("payg", "person", { kind: "grant", amount: 5 * USD, key: "pay" });
+  const attempts = new ModelAttempts(db, new Accounts({ tenants, db }), undefined, 0, undefined, service);
+  const event = (body: object) => attempts.event("payg", "agent", true, true, body as never);
+  const begin = (id: string, model: string) => event({ type: "begin", id, provider: "openrouter", model, kind: "response", at: Date.now(), keyHash, estimate: SMALL, endUser: { id: "person", bucket: "b" } });
+  const endUserHeld = async () => Number((await db.query("select coalesce(sum(paid + allowance), 0)::bigint as n from end_user_holds")).rows[0].n);
+  const balance = async () => Number((await db.query("select balance from credit_accounts where tenant = 'payg'")).rows[0].balance);
+  const person = async () => Number((await db.query("select balance from end_users where tenant = 'payg' and id = 'person'")).rows[0].balance);
+
+  const failed = randomUUID(), answered = randomUUID();
+  await begin(failed, "particle-ai/particle-1");
+  assert.ok(await held(db) > 0 && await endUserHeld() > 0, "both held");
+  await event({ type: "finish", id: failed, usage: { input: 0, output: 0 }, chars: 0, completed: false });
+  assert.deepEqual([await held(db), await endUserHeld(), await balance(), await person()], [0, 0, 10 * USD, 5 * USD], "both released, neither charged");
+
+  await begin(answered, "deepseek/deepseek-v4.1-flash-1017");
+  assert.ok(await held(db) > 0 && await endUserHeld() > 0);
+  await event({ type: "finish", id: answered, usage: { input: 100, output: 10, providerCost: 0.01, providerCreditCost: 0 }, chars: 40, completed: true });
+  assert.deepEqual([await held(db), await endUserHeld()], [0, 0]);
+  const tenantPaid = 10 * USD - await balance(), personPaid = 5 * USD - await person();
+  assert.ok(tenantPaid >= 10_000 && personPaid >= 10_000, `the answer is charged to both: ${tenantPaid}, ${personPaid}`);
+
+  await db.query("update model_attempts set updated_at = 0, next_check_at = 0 where id = $1", [failed]);
+  await attempts.reconcile();
+  assert.deepEqual([10 * USD - await balance(), 5 * USD - await person()], [tenantPaid, personPaid], "reconciling the failed attempt charges neither");
+  const row = (await db.query("select charge, end_user_raw from model_attempts where id = $1", [failed])).rows[0];
+  assert.deepEqual([Number(row.charge), Number(row.end_user_raw)], [0, 0]);
 });
