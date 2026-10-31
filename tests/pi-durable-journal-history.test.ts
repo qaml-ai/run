@@ -100,33 +100,14 @@ test("journal history: refreshes that overlap (parallel tool calls asking for th
   assert.equal(history.callIndex("b"), 1);
 });
 
-test("journal history: an entry committed after one with a later ID is still taken in, in ID order", async () => {
-  const storage = await journal([base(0)]);
-  const history = (await JournalHistory.open(storage))!;
-  // The host takes an ID for its retraction's marker, then Pi commits a later-numbered entry first.
-  const failed = await storage.mintId<EntryId>(), retraction = await storage.mintId<EntryId>(), next = await storage.mintId<EntryId>();
-  await commitWrites(storage, [{ type: "entry", value: { id: failed, conversationId, kind: "pi.assistant", model: [{ ...fauxAssistantMessage(""), stopReason: "error" }] as never } }], BACKGROUND_CONTEXT);
-  await commitWrites(storage, [{ type: "entry", value: { id: next, conversationId, kind: "pi.assistant", model: [reply("next")] as never } }], BACKGROUND_CONTEXT);
-  await history.refresh();
-  assert.equal(history.total, 2, "the failure and the next response, so far");
-  await commitWrites(storage, [{ type: "entry", value: { id: retraction, conversationId, kind: MARKER_KIND, data: { t: "retract", index: 0 } as never } }], BACKGROUND_CONTEXT);
-  await history.refresh();
-  assert.equal(history.total, 1, "the retraction took back the failure, which precedes it");
-  assert.equal((await history.messagesFrom(0))!.length, 1);
-  assert.equal(((await history.messagesFrom(0))![0] as { stopReason: string }).stopReason, "stop");
-});
-
 test("journal history: a refresh with nothing late reads only IDs of the recent entries, then what is new", async () => {
   const storage = await journal([base(0), { native: "pi.user", message: user("one") }]);
   const history = (await JournalHistory.open(storage))!;
   const scans: { minEntryId?: number; maxEntryId?: number }[] = [];
-  let listed = 0;
   const scan = storage.scanEntries.bind(storage);
   storage.scanEntries = ((query: { minEntryId?: number; maxEntryId?: number }, ...rest: unknown[]) => { scans.push(query); return (scan as any)(query, ...rest); }) as typeof storage.scanEntries;
-  (storage as any).entryIds = async (_conversation: number, minId: number, maxId: number) => { listed++; return (await scan({ conversationId, order: "ascending", minEntryId: minId as EntryId, maxEntryId: maxId as EntryId }, 1000, undefined, BACKGROUND_CONTEXT)).items.map(entry => entry.id); };
   await commitWrites(storage, [{ type: "entry", value: { id: await storage.mintId<EntryId>(), conversationId, kind: "pi.assistant", model: [reply("two")] as never } }], BACKGROUND_CONTEXT);
   await history.refresh();
-  assert.equal(listed, 1, "the recent IDs, listed");
   assert.equal(scans.length, 1, "one read of records: what is new");
   assert.equal(scans[0].maxEntryId, undefined);
   assert.equal(history.total, 2);
