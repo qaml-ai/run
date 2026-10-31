@@ -3391,7 +3391,7 @@ How it works:
   so the model knows what to ask it.
 
 `realtime` takes `provider` (`openai`, `gemini`, `grok`, or `elevenlabs`; default the runtime's first), `model` (OpenAI: `gpt-realtime-2.1`, the
-default, or `gpt-realtime-2.1-mini`; Gemini: `gemini-3.8-live`; Grok: `grok-voice-latest` or `grok-voice-3.0`; ElevenLabs: `gemini-2.5-flash-lite`), `voice` (the model's. OpenAI: `alloy`, `ash`, `ballad`,
+default, or `gpt-realtime-2.1-mini`; Gemini: `gemini-3.8-live`; Grok: `grok-voice-latest` or `grok-voice-3.0`; ElevenLabs: `gemini-2.5-flash-lite` by default, or `gemini-3.1-flash-lite`), `voice` (the model's. OpenAI: `alloy`, `ash`, `ballad`,
 `coral`, `echo`, `sage`, `shimmer`, `verse`, `marin`, `cedar`; Gemini: its prebuilt voices, `Kore`, `Aoede`, `Leda`,
 `Puck`, `Charon`… Default the session's `voice`, or the nearest: OpenAI `nova` → `marin`, `onyx` → `cedar`, `fable` →
 `ballad`; Gemini `coral` → `Kore`, `alloy` → `Aoede`, `onyx` → `Charon`…), `instructions`, `transcribe` (default true:
@@ -3412,7 +3412,7 @@ Creation uses the first session's resolved voice, rather than requiring Jessica 
 [Default voices are account-dependent](https://elevenlabs.io/docs/help-center/product/voices/my-voices/how-do-i-access-eleven-labs-default-voices).
 The [create schema](https://elevenlabs.io/docs/api-reference/agents/create) and
 [published OpenAPI](https://api.elevenlabs.io/openapi.json) accept client tools with `parameters` and `expects_response`,
-`pre_tool_speech: force/off`, `gemini-2.5-flash-lite`, Flash v2.5 with `pcm_24000`, the configured client events,
+`pre_tool_speech: force/off`, `gemini-2.5-flash-lite` and `gemini-3.1-flash-lite`, Flash v2.5 with `pcm_24000`, the configured client events,
 and `turn_timeout: 7` / `silence_end_call_timeout: -1` (reviewed 2026-10-19). Conversations last up to
 30 minutes (`conversation.max_duration_seconds: 1800`; ElevenLabs' default is 10). When one reaches it, ElevenLabs
 closes it (1000, "Max call duration exceeded") and the call goes on in a fresh conversation, briefed with what was said,
@@ -3426,7 +3426,7 @@ The runtime lazily creates or reuses one private agent per credential, with per-
 and end-user credit holds, including silent time and interrupted responses. Configure both
 `AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD` and `AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD`: the former from the
 [Agents pricing page](https://elevenlabs.io/pricing/agents), the latter from Gemini Flash Lite's Detailed costs estimate
-in the agent settings. LLM usage is billed separately by ElevenLabs; this runtime uses the configured per-minute
+in the agent settings. `gemini-3.1-flash-lite` takes its own LLM rate, `AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD`. LLM usage is billed separately by ElevenLabs; this runtime uses the configured per-minute
 estimate, not post-call token reconciliation. Missing either rate refuses sessions with `REALTIME_UNPRICED`.
 Silence discounts, burst surcharges and account-specific allowances are not reconciled.
 

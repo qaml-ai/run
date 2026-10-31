@@ -16,6 +16,7 @@ import { testDatabase } from "./database.ts";
 // Synthetic rates only; real rates are supplied privately at runtime.
 process.env.AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD = "1";
 process.env.AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD = "2";
+process.env.AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD = "5";
 
 // Emitted subset of https://elevenlabs.io/docs/api-reference/agents/create and
 // https://api.elevenlabs.io/openapi.json (2026-10-19). Strict objects catch misspelled fields.
@@ -27,7 +28,7 @@ const createAgentSchema = z.object({
   name: z.string(),
   conversation_config: z.object({
     agent: z.object({ first_message: z.string(), language: z.string(), prompt: z.object({
-      prompt: z.string(), llm: z.literal("gemini-2.5-flash-lite"), temperature: z.number().min(0).max(1), thinking_budget: z.literal(0),
+      prompt: z.string(), llm: z.enum(["gemini-2.5-flash-lite", "gemini-3.1-flash-lite"]), temperature: z.number().min(0).max(1), thinking_budget: z.literal(0),
       tools: z.array(z.object({ type: z.literal("client"), name: z.string(), description: z.string(), parameters,
         expects_response: z.boolean(), response_timeout_secs: z.number().int().min(1).max(120),
         interruption_mode: z.enum(["allow", "disable_during_tool", "disable_during_tool_and_turn"]),
@@ -342,6 +343,29 @@ test("ElevenLabs pricing requires both runtime rates and includes the separately
   }
 });
 
+test("gemini-3.1-flash-lite has its own agent (v5) and its own LLM rate, and the default stays as it was", async t => {
+  const fake = await fakeElevenLabs(t);
+  const provider = elevenlabsAgents({ baseUrl: fake.base });
+  assert.equal(provider.defaultModel, "gemini-2.5-flash-lite");
+  assert.ok(provider.models.includes("gemini-3.1-flash-lite"));
+  const a = recorder(), b = recorder();
+  const older = provider.connect({ ...config, model: "gemini-2.5-flash-lite" }, { apiKey: "key" }, a.events);
+  const newer = provider.connect({ ...config, model: "gemini-3.1-flash-lite" }, { apiKey: "key" }, b.events);
+  t.after(() => { older.close(); newer.close(); });
+  await until(() => a.got.some(e => e.type === "ready") && b.got.some(e => e.type === "ready"), "both ready");
+  const creates = fake.seen.requests.filter(r => r.url.endsWith("agents/create")).map(r => r.body);
+  for (const body of creates) createAgentSchema.parse(body);
+  const made = Object.fromEntries(creates.map(body => [body.conversation_config.agent.prompt.llm, body]));
+  assert.equal(creates.length, 2);
+  assert.equal(made["gemini-2.5-flash-lite"].name, "camelRun realtime voice v4");
+  assert.equal(made["gemini-3.1-flash-lite"].name, "camelRun realtime voice v5");
+  assert.equal(made["gemini-3.1-flash-lite"].conversation_config.agent.prompt.thinking_budget, 0);
+  assert.deepEqual(made["gemini-3.1-flash-lite"].conversation_config.agent.prompt.tools.map((tool: any) => tool.pre_tool_speech), ["force", "off"]);
+  assert.equal(realtimeCost("elevenlabs/gemini-2.5-flash-lite", NO_USAGE, 60), 3);
+  assert.equal(realtimeCost("elevenlabs/gemini-3.1-flash-lite", NO_USAGE, 60), 6);
+  assert.equal(realtimePrice("elevenlabs/gemini-3.1-flash-lite", { AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD: "1", AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD: "2" }), undefined, "no rate of its own: unpriced, refused");
+});
+
 test("ElevenLabs meters wall time once, including silence, interruption and the final close interval", async t => {
   const fake = await fakeElevenLabs(t);
   const { got, events } = recorder();
@@ -442,6 +466,10 @@ test("ElevenLabs max call duration starts a fresh conversation, briefed, and the
   assert.equal(closes[0].retryable, true);
   assert.match(closes[0].detail!, /1000: Max call duration exceeded/);
   assert.equal(lost.fields?.detail, safeError(closes[0].detail), "logs keep only the privacy-safe classification");
+  assert.equal(lost.fields?.reference, "elevenlabs/gemini-2.5-flash-lite", "which provider and model lost its connection");
+  assert.equal(lost.fields?.failure, "other");
+  assert.equal(lost.fields?.closeCode, 1000);
+  assert.ok(!JSON.stringify(lost.fields).includes("Max call duration"), "never the provider's words");
   await until(() => fake.seen.events.some(e => e.type === "contextual_update" && String(e.text).startsWith("[Earlier in this call]")), "briefing");
   assert.match(fake.seen.events.find(e => e.type === "contextual_update" && String(e.text).startsWith("[Earlier in this call]")).text, /You: Welcome to the lounge/);
 
