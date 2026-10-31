@@ -1822,7 +1822,7 @@ export class ClientSessions {
       else void this.run(session, record, params);
       // A steer is answered at once: the running turn has it (accepted), or it runs as a turn of its own (queued).
       if (params.whileRunning === "steer") {
-        const steer = await this.steerTurn(session, params) ? "accepted" : "queued";
+        const steer = await this.steerTurn(session, record.id, params) ? "accepted" : "queued";
         if (steer === "accepted") childSessions.messageAccepted(session, record.id, params);
         const current = session.requests.get(record.id);
         if (current?.state === "running") return { status: 202, record: visible(this.upsertRequest(session, { ...current, steer })), ...(rate ? { rate } : {}) };
@@ -1840,10 +1840,13 @@ export class ClientSessions {
    * prompt is queued already: if the turn takes it (its message ends in the turn's events), its request completes then
    * (`steerTaken`); if not (the turn ended first, or stopped), the agent drops it and it runs as a turn of its own.
    */
-  private async steerTurn(session: Session, params: Record<string, unknown>): Promise<boolean> {
-    // A turn that has begun but not opened yet (its host still preparing it) takes steers in a moment: wait for it, so a
-    // message sent just after its prompt joins it rather than queuing behind all of it.
-    for (const turn = session.turn, deadline = Date.now() + STEER_OPEN_WAIT_MS; turn;) {
+  private async steerTurn(session: Session, id: string, params: Record<string, unknown>): Promise<boolean> {
+    // A turn that has not begun or opened yet (its agent starting, its host still preparing it) takes steers in a moment:
+    // wait for it, so a message sent just after its prompt joins it rather than queuing behind all of it.
+    const deadline = Date.now() + STEER_OPEN_WAIT_MS;
+    const ahead = () => [...session.running.values()].some(run => run.id !== id && run.method !== "execute" && RUN_METHODS.includes(run.method));
+    while (!session.turn && ahead() && Date.now() <= deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    for (const turn = session.turn; turn && turn.requestId !== id;) {
       let steered = false;
       try { steered = !!(await this.supervisor.request(session.header.id, "steer", params))?.steered; }
       catch { return false; /* Not running after all: the queued prompt runs. */ }
