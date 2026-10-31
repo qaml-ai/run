@@ -56,7 +56,7 @@ export const Me = z.object({
   name: z.string().optional().openapi({ description: "The person's display name, for console sessions signed in with Google or GitHub" }),
   signIn: z.enum(["github", "google", "password"]).optional().openapi({ description: "How a console session was signed in" }),
   canStoreKeys: z.boolean(),
-  defaultModel: z.string().openapi({ description: "The model an agent of this tenant gets when it names none, as provider/model-id: the first of the runtime's defaults (DeepSeek V4.1 Flash on OpenRouter, then on Azure, then Claude Sonnet 5.5 on Anthropic, OpenRouter and Bedrock) the tenant holds a key for, else the first the platform's keys serve. An agent with a key scope counts the scope's keys too", example: "openrouter/deepseek/deepseek-v4.1-flash-1017" }),
+  defaultModel: z.string().openapi({ description: "The model an agent of this tenant gets when it names none, as provider/model-id: the first of the runtime's defaults (the virtual model camelrun/default on OpenRouter, then DeepSeek V4.1 Flash on Azure, then Claude Sonnet 5.5 on Anthropic, OpenRouter and Bedrock) the tenant holds a key for, else the first the platform's keys serve. An agent with a key scope counts the scope's keys too", example: "camelrun/default" }),
 }).openapi("Me");
 
 const KeyStatus = z.object({
@@ -226,7 +226,7 @@ export const WebhookEvents = {
     agentId: z.string().nullable().openapi({ description: "null for a transcription made with POST /v1/transcriptions, images made with POST /v1/images, or decisions made with POST /v1/decisions, which no agent made" }), requestId: z.string().nullable(), subject: z.string().nullable(), actor: z.string().nullable(), context: z.record(z.string(), z.unknown()), keyScope: z.string().nullable(),
     provider: z.string(), model: z.string(), kind: z.enum(["response", "compaction", "transcription", "image", "speech", "decision"]).openapi({ description: "decision: questions answered by a decision model (POST /v1/decisions, the decide builtin; decisions of them); speech: speech made, by POST /v1/speech (audioSeconds of it; no tokens) or a voice session's realtime brain (its tokens, and audioSeconds); response: a model response of a run; compaction: a summary of older context; transcription: audio transcribed (audioSeconds of it; no tokens); image: images made (images of them; input is text and image tokens in, output image tokens out)" }), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
     reasoning: z.number().optional(), audioSeconds: z.number().optional().openapi({ description: "For a transcription: the seconds of audio billed; for speech: the seconds of speech made" }), images: z.number().optional().openapi({ description: "For images made: how many" }), decisions: z.number().optional().openapi({ description: "For decisions: the questions answered" }), cost: z.object({ usd: z.number(), source: z.enum(["provider", "catalog"]) }), at: z.number(),
-    superseded: z.enum(["content_filter"]).optional().openapi({ description: "A response that is not the answer, and not charged: content_filter, its provider's content filter blocked it and the request was made again on the same model elsewhere (AGENT_CONTENT_FILTER_FALLBACKS), whose own usage.recorded follows. Its usage and cost are what the blocked call took, for your books; do not charge your users for it" }),
+    superseded: z.enum(["content_filter", "unavailable"]).optional().openapi({ description: "A response that is not the answer, and not charged: unavailable, a virtual model's member could not take the request, which the next did; content_filter, its provider's content filter blocked it and the request was made again on the same model elsewhere (AGENT_CONTENT_FILTER_FALLBACKS), whose own usage.recorded follows. Its usage and cost are what the blocked call took, for your books; do not charge your users for it" }),
   }), "A model response's usage and cost, a transcription's, images', or decisions'"),
   "voice.session.started": envelope("voice.session.started", z.object(voiceFacts), "A voice session connected and is listening (once per session)"),
   "voice.session.ended": envelope("voice.session.ended", z.object({
@@ -313,6 +313,7 @@ export const WebhookEvents = {
 };
 
 export const Model = z.object({
+  routes: z.array(z.string()).optional().openapi({ description: "A virtual model's physical models, most preferred first: each request is made on the first that can take it, and its run and usage name the one that did. Its other fields are the first's" }),
   id: z.string().openapi({ description: "Pass this as `model` when creating or configuring an agent", example: "anthropic/claude-sonnet-5" }),
   provider: z.string(),
   modelId: z.string(),

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { contentFilterFallbacks } from "../src/model.ts";
 import { isContentFilterBlock } from "../src/model-errors.ts";
-import { withContentFilterFallback } from "../src/content-filter-fallback.ts";
+import { withModelFallback } from "../src/model-fallback.ts";
 import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEvent } from "@earendil-works/pi-ai";
 import { recordModelFallback, setMetricSink } from "../src/metrics.ts";
 import { micros } from "../src/pricing.ts";
@@ -207,30 +207,30 @@ async function drain(stream: AsyncIterable<AssistantMessageEvent> & { result(): 
   return { events, result: await stream.result() };
 }
 
-test("withContentFilterFallback: a block, even after part of an answer, is answered by the fallback's stream; anything else passes as it was", async () => {
+test("withModelFallback: a block, even after part of an answer, is answered by the fallback's stream; anything else passes as it was", async () => {
   const calls: string[] = [];
   const hooks = { blocked: () => calls.push("blocked"), unavailable: () => calls.push("unavailable"), aborted: () => false };
   const fallback = () => { calls.push("fallback"); return scripted("openrouter", "instead"); };
 
-  const swapped = await drain(await withContentFilterFallback(scripted("azure", "Here is part", { error: "Provider finish_reason: content_filter" }), fallback, hooks));
+  const swapped = await drain(await withModelFallback(scripted("azure", "Here is part", { error: "Provider finish_reason: content_filter" }), fallback, hooks));
   assert.deepEqual(swapped.events, ["start", "text_delta:Here is part", "start", "text_delta:instead", "done"], "the fallback's start begins the response again");
   assert.deepEqual([swapped.result.provider, swapped.result.stopReason, swapped.result.content], ["openrouter", "stop", [{ type: "text", text: "instead" }]]);
   assert.deepEqual(calls.splice(0), ["blocked", "fallback"]);
 
   for (const ending of [{}, { error: "429 Rate limit reached" }, { error: "The model refused to answer" }]) {
-    const passed = await drain(await withContentFilterFallback(scripted("azure", "hi", ending), fallback, hooks));
+    const passed = await drain(await withModelFallback(scripted("azure", "hi", ending), fallback, hooks));
     assert.equal(passed.result.provider, "azure");
     assert.equal(passed.result.errorMessage, ending.error);
   }
   assert.deepEqual(calls, [], "no fallback for an answer or another error");
 
   // No credentials for the fallback: the block is the response.
-  const unavailable = await drain(await withContentFilterFallback(scripted("azure", "", { error: '400 {"code":"content_filter"}' }), () => { throw new Error("No openrouter API key"); }, hooks));
+  const unavailable = await drain(await withModelFallback(scripted("azure", "", { error: '400 {"code":"content_filter"}' }), () => { throw new Error("No openrouter API key"); }, hooks));
   assert.deepEqual([unavailable.result.provider, unavailable.result.errorMessage], ["azure", '400 {"code":"content_filter"}']);
   assert.deepEqual(calls.splice(0), ["blocked", "unavailable"]);
 
   // An aborted request is not asked again.
-  const aborted = await drain(await withContentFilterFallback(scripted("azure", "", { error: "Provider finish_reason: content_filter" }), fallback, { ...hooks, aborted: () => true }));
+  const aborted = await drain(await withModelFallback(scripted("azure", "", { error: "Provider finish_reason: content_filter" }), fallback, { ...hooks, aborted: () => true }));
   assert.equal(aborted.result.provider, "azure");
   assert.deepEqual(calls, []);
 });

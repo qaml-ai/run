@@ -1,3 +1,4 @@
+import { modelReference } from "./virtual-models.ts";
 import { ComputerTransfers } from "./computers/transfers.ts";
 import { Computers } from "./computers/service.ts";
 import { Workspaces } from "./workspaces.ts";
@@ -553,10 +554,10 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   }
 
   /** A parent agent's model as the runtime knows it: one of its defaults, or the catalog's of that name. */
-  function parentModel(given: { provider?: unknown; id?: unknown; baseUrl?: unknown }) {
-    const own = defaults.find(candidate => candidate.provider === given.provider && candidate.id === given.id && candidate.baseUrl === given.baseUrl);
+  function parentModel(given: { provider?: unknown; id?: unknown; baseUrl?: unknown; virtual?: string }) {
+    const own = defaults.find(candidate => candidate.provider === given.provider && candidate.id === given.id && candidate.baseUrl === given.baseUrl && candidate.virtual === given.virtual);
     if (own) return own;
-    try { return resolveModel(`${given.provider}/${given.id}`); } catch { return undefined; }
+    try { return resolveModel(given.virtual ?? `${given.provider}/${given.id}`); } catch { return undefined; }
   }
 
   /** `admit` counts the create against the tenant's rate limit once the key's agent is known: told whether it changes nothing.
@@ -1319,7 +1320,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     await rateLimits.run(tenant);
   };
-  app.route("/", api({ computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return `${chosen.provider}/${chosen.id}`; }, keyScopes, webhooks, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
+  app.route("/", api({ computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),

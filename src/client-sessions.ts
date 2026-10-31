@@ -1,3 +1,4 @@
+import { currentModel, modelReference } from "./virtual-models.ts";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { END_USER_CREDIT } from "./model-attempt.ts";
@@ -270,7 +271,7 @@ export class ClientSessions {
     if (session.fault) throw session.fault;
     const header = session.header;
     const columns = [header.id, header.tenant, JSON.stringify(header), header.metadata?.name ?? header.id, header.metadata?.type ?? "general",
-      `${header.config.model.provider}/${header.config.model.id}`, header.expiresAt, header.revoked];
+      modelReference(header.config.model), header.expiresAt, header.revoked];
     try {
       const { rows } = session.revision === undefined
         ? await this.db.query(`
@@ -812,7 +813,7 @@ export class ClientSessions {
       await steps.time("room", this.makeRoom(id, session.header.tenant, !!session.header.run));
       // Read before any response is counted against it.
       await steps.time("spend", this.spendOf(session));
-      const [{ key: apiKey, platform }, priced] = await steps.time("key", Promise.all([configuration.resolveApiKey(this.configurationContext, session, session.header.config.model.provider, session.header.keyScope), this.options.catalogPriced?.(session.header.tenant)]));
+      const [{ key: apiKey, platform }, priced] = await steps.time("key", Promise.all([configuration.resolveApiKey(this.configurationContext, session, currentModel(session.header.config.model).provider, session.header.keyScope), this.options.catalogPriced?.(session.header.tenant)]));
       session.platformKey = platform;
       session.catalogPriced = !!priced;
       const fallback = await this.contentFilterFallback(session, apiKey);
@@ -824,7 +825,7 @@ export class ClientSessions {
       // Lost or given up while it got ready (its node fenced, or is leaving): it starts nothing. A host started now would
       // serve an owner that is gone, and whoever loads the agent next would find it and take it for theirs, still starting.
       if (session.fault || session.leaving) throw session.fault ?? new Error("Agent stopped");
-      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, model: withCatalogPrices(session.header.config.model), apiKey, mounts: VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(fallback ? { contentFilterFallback: fallback } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), contextRangeMaxBytes: this.options.contextRangeMaxBytes, ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
+      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, model: withCatalogPrices(currentModel(session.header.config.model)), apiKey, mounts: VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(fallback ? { contentFilterFallback: fallback } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), contextRangeMaxBytes: this.options.contextRangeMaxBytes, ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
         definitions,
         codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await spend.codeLimits(this.spendContext, session.header.tenant)).concurrent, signal),
         runLimit: async () => {

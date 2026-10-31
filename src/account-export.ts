@@ -1,3 +1,4 @@
+import { modelReference } from "./virtual-models.ts";
 import type { Accounts } from "./accounts.ts";
 import type { ClientSessions } from "./client-sessions.ts";
 import type { Channels } from "./channels.ts";
@@ -209,7 +210,7 @@ function agentView(header: any) {
   const config = header.config ?? {};
   return {
     id: header.id, key: header.key ?? null, name: header.metadata?.name ?? null, type: header.metadata?.type ?? "general", metadata: header.metadata ?? {},
-    model: config.model ? `${config.model.provider}/${config.model.id}` : null, systemPrompt: config.systemPrompt ?? "",
+    model: config.model ? modelReference(config.model) : null, systemPrompt: config.systemPrompt ?? "",
     ...(config.systemPromptAppend ? { systemPromptAppend: config.systemPromptAppend } : {}), ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
     ...(config.maxOutputTokens != null ? { maxOutputTokens: config.maxOutputTokens } : {}), ...(config.temperature != null ? { temperature: config.temperature } : {}), ...(config.dataCollection != null ? { dataCollection: config.dataCollection } : {}), ...(config.language != null ? { language: config.language } : {}),
     tools: header.definitions ?? [], mounts: header.mounts ?? [], definition: header.definition ?? null, keyScope: header.keyScope ?? null,
