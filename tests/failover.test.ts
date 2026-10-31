@@ -38,7 +38,7 @@ async function node(t: { after(fn: () => Promise<void>): void }) {
       env: {
         PATH: process.env.PATH, HOME: root, PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: url, AGENT_DATABASE_URL: link.url,
         AGENT_DATA_DIR: join(root, "data"), AGENT_STORAGE: "shared-file", AGENT_LEASE_TTL_MS: String(TTL_MS), AGENT_SCHEDULER_INTERVAL_MS: "200",
-        AGENT_DATABASE_QUERY_TIMEOUT_MS: "1000", AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "failover-session-secret-with-32-characters!",
+        AGENT_DATABASE_QUERY_TIMEOUT_MS: "1000", AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "failover-session-secret-with-32-characters!",
         ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}),
       } as NodeJS.ProcessEnv,
       stdio: ["ignore", "pipe", "pipe"],

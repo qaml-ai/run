@@ -18,6 +18,7 @@ import type { Journey } from "./journey.ts";
 import { checkNewPassword, checkPassword, normalizeEmail } from "./passwords.ts";
 import type { OAuth } from "./oauth.ts";
 import { listModels, listProviders, modelInfo, providerInfo, toolCallStreaming } from "./catalog.ts";
+import { ensureModel } from "./pi-catalog.ts";
 import { modelHeadersInput, resolveModel } from "./session-config.ts";
 import { checkProviderKey } from "./key-check.ts";
 import { errorText } from "./protocol.ts";
@@ -750,6 +751,7 @@ export function api(context: ApiContext) {
       // Resolved in the scope the agent will be in: its own providers come first.
       const custom = await context.modelProviders?.resolvable(tenant, scoped);
       let id: string;
+      await ensureModel(params.model);
       try { ({ provider, id } = resolveModel(params.model, accounts.tenants.modelEndpoints(tenant), custom)); } catch (error) { throw new HttpError(400, errorText(error)); }
       if (provider === "azure" && !Object.hasOwn(custom ?? {}, provider) && !await accounts.hasKey(tenant, provider, id)) throw new HttpError(400, `No azure deployment is configured for azure/${id} on this runtime for this tenant; choose a model from GET /v1/models?available=true`);
       if (!scoped && !Object.hasOwn(custom ?? {}, provider) && !await accounts.hasKey(tenant, provider)) throw new HttpError(400, `No ${provider} API key is configured for this tenant; set one with PUT /v1/providers/${provider}/key`);

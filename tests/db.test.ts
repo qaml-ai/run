@@ -206,7 +206,7 @@ test("the runtime refuses to start without AGENT_DATABASE_URL", async t => {
   const child = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
     env: {
       PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_TENANTS_FILE: join(root, "tenants.json"),
-      AGENT_SESSION_SECRET: "no-database-session-secret-with-32-chars", PORT: "0",
+      AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "no-database-session-secret-with-32-chars", PORT: "0",
     }, stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";

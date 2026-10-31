@@ -55,7 +55,7 @@ export async function cluster(t: { after(fn: () => Promise<void>): void }) {
       env: {
         PATH: process.env.PATH, HOME: root, PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: url, AGENT_DATABASE_URL: databaseUrl,
         AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
-        AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "cluster-session-secret-with-32-characters!", ...env,
+        AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "cluster-session-secret-with-32-characters!", ...env,
       } as NodeJS.ProcessEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });

@@ -19,7 +19,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, env: (root: 
   const child = spawn(process.execPath, ['--experimental-strip-types', fileURLToPath(new URL('../src/server.ts', import.meta.url))], {
     env: {
       PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: url, AGENT_TENANTS_FILE: join(root, 'operator.json'),
-      AGENT_SESSION_SECRET: 'fixture-session-secret-with-32-characters!', PORT: '0', HOST: '127.0.0.1', ...env(root),
+      AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: 'fixture-session-secret-with-32-characters!', PORT: '0', HOST: '127.0.0.1', ...env(root),
     } as NodeJS.ProcessEnv,
     stdio: ['ignore', 'pipe', 'inherit'],
   });

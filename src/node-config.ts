@@ -1,3 +1,4 @@
+import { OPENROUTER_MODELS_URL } from "./openrouter-models.ts";
 import { CONTEXT_RANGE_MAX_BYTES } from "./protocol.ts";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -128,6 +129,8 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     browserUrl: env.AGENT_BROWSER_URL?.replace(/\/+$/, ""),
     maxAgents, memoryHighBytes, memoryRetireMs, memoryRetireFallbackMs, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, progressWaitMs, hosting, ignored, toolTimeoutMs, contextRangeMaxBytes, runLimits, adminRunLimits, streamTimeouts, runRetentionSeconds, idleMs,
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
+    // Where OpenRouter's model list comes from; empty for none.
+    openRouterModelsUrl: env.AGENT_OPENROUTER_MODELS_URL ?? OPENROUTER_MODELS_URL,
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,
     // js_exec: the node's v8-exec runner, its executions at once for tenants with a limit, and whether startup requires

@@ -3,6 +3,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createHmac, randomUUID } from "node:crypto";
 import type { AgentConfig, Credentials, ToolDefinition } from "../protocol.ts";
 import type { AgentSupervisor } from "../supervisor.ts";
+import { ensureModel } from "../pi-catalog.ts";
 import { configurationRefusal, configurationUpdate } from "../session-config.ts";
 import { validateDefinitions } from "../tool-policy.ts";
 import { canonical } from "../../shared/durable-json.ts";
@@ -460,6 +461,7 @@ async function definitionUpdate(ctx: ConfigurationContext, session: Session, tar
 
 export async function configure(ctx: ConfigurationContext, session: Session, params: any, live: boolean) {
   const id = session.header.id;
+  await ensureModel(params.model);
   const applied = params.definition !== undefined ? await definitionUpdate(ctx, session, params.definition) : undefined;
   // An upsert's own fields (see `reconfiguration`): what the agent is called, and the configuration it now matches.
   // Of its target, only what the agent does not have already is applied.

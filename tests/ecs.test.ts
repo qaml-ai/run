@@ -268,11 +268,11 @@ test("runtime credentials including billing email load once from Secrets Manager
   });
   assert.deepEqual(requested.sort(), Object.keys(values).sort(), "Each secret is read once");
 
-  assert.deepEqual(await runtimeSecrets({ AGENT_SESSION_SECRET: "plain-session", AGENT_SECRETS_KEY: "plain-key", GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret", GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gsecret", STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x", AGENT_TOOL_SEARCH_API_KEY: "sk-or-plain" }), {
+  assert.deepEqual(await runtimeSecrets({ AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "plain-session", AGENT_SECRETS_KEY: "plain-key", GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret", GOOGLE_CLIENT_ID: "gid", GOOGLE_CLIENT_SECRET: "gsecret", STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x", AGENT_TOOL_SEARCH_API_KEY: "sk-or-plain" }), {
     sessionSecret: "plain-session", secretsKey: "plain-key", github: { clientId: "id", clientSecret: "secret" }, google: { clientId: "gid", clientSecret: "gsecret" }, stripe: { secretKey: "sk_test_x", webhookSecret: "whsec_x" }, toolSearchKey: "sk-or-plain",
   });
   assert.deepEqual(await runtimeSecrets({}), { sessionSecret: undefined, secretsKey: undefined, github: undefined, google: undefined, stripe: undefined, toolSearchKey: undefined });
-  await assert.rejects(runtimeSecrets({ ...env, AGENT_SESSION_SECRET: "plain-session" }), /AGENT_SESSION_SECRET or AGENT_SESSION_SECRET_ARN, not both/);
+  await assert.rejects(runtimeSecrets({ ...env, AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "plain-session" }), /AGENT_SESSION_SECRET or AGENT_SESSION_SECRET_ARN, not both/);
   await assert.rejects(runtimeSecrets({ ...env, AGENT_SESSION_SECRET_ARN: arn("session-secret-unset") }), /can't find the specified secret/);
   // So may the tool search key: search then uses the platform's OpenRouter key.
   assert.equal((await runtimeSecrets({ ...env, AGENT_TOOL_SEARCH_SECRET_ARN: arn("tool-search-unset") })).toolSearchKey, null);
@@ -294,7 +294,7 @@ test("runtime credentials including billing email load once from Secrets Manager
   await assert.rejects(runtimeSecrets({ ...env, GOOGLE_CLIENT_ID: "x" }), /GOOGLE_CLIENT_ID\/GOOGLE_CLIENT_SECRET or AGENT_GOOGLE_OAUTH_SECRET_ARN, not both/);
   await assert.rejects(runtimeSecrets({ ...env, STRIPE_SECRET_KEY: "sk_test_x" }), /STRIPE_SECRET_KEY\/STRIPE_WEBHOOK_SECRET or AGENT_STRIPE_SECRET_ARN, not both/);
 
-  await assert.rejects(runtimeSecrets({ ...env, AGENT_SESSION_SECRET: "x".repeat(32) }), /AGENT_SESSION_SECRET or AGENT_SESSION_SECRET_ARN, not both/);
+  await assert.rejects(runtimeSecrets({ ...env, AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "x".repeat(32) }), /AGENT_SESSION_SECRET or AGENT_SESSION_SECRET_ARN, not both/);
   await assert.rejects(runtimeSecrets({ ...env, AGENT_SECRETS_KEY: "x" }), /AGENT_SECRETS_KEY or AGENT_SECRETS_KEY_ARN, not both/);
   await assert.rejects(runtimeSecrets({ ...env, GITHUB_CLIENT_SECRET: "x" }), /GITHUB_CLIENT_ID\/GITHUB_CLIENT_SECRET or AGENT_GITHUB_OAUTH_SECRET_ARN, not both/);
   values[arn("github-oauth")] = JSON.stringify({ clientId: "Iv1.fixture" });

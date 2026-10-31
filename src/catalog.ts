@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { getProviders } from "@earendil-works/pi-ai/compat";
 import { getModels } from "./pi-catalog.ts";
+import { listedOpenRouterModel } from "./openrouter-models.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { SEARCH_PROVIDERS } from "./web-search.ts";
 import { deepseekOnOpenRouter } from "./deepseek-replay.ts";
@@ -49,7 +50,8 @@ export interface ModelInfo {
    * Whether the model streams tool-call arguments as it writes them. true: `toolcall_delta` events arrived as the
    * arguments were generated in every probe, so a page can render a section while it is written. false: they arrived in
    * one piece once the call was complete, in at least one probe (some models do this only on some hosts), so an app
-   * cannot count on streaming. "unknown": not measured. Measured by scripts/probe-tool-streaming.ts.
+   * cannot count on streaming, and any model known only from OpenRouter's list, which is not measured. "unknown": not
+   * measured. Measured by scripts/probe-tool-streaming.ts.
    */
   toolCallStreaming: boolean | "unknown";
 }
@@ -61,7 +63,8 @@ const MEASURED: Record<string, boolean> = JSON.parse(readFileSync(new URL("./too
  * a model not measured, through another gateway, or of a tenant's own provider is "unknown".
  */
 export function toolCallStreaming(reference: string): boolean | "unknown" {
-  return Object.hasOwn(MEASURED, reference) ? MEASURED[reference] : "unknown";
+  if (Object.hasOwn(MEASURED, reference)) return MEASURED[reference];
+  return reference.startsWith("openrouter/") && listedOpenRouterModel(reference.slice("openrouter/".length)) ? false : "unknown";
 }
 
 const models = (provider: string) => getModels(provider);

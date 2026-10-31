@@ -11,7 +11,7 @@ import type { AgentConfig, ToolDefinition } from "./protocol.ts";
 import { errorText, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, IDENTITY_KEY, NOT_MIGRATED, PERSISTENCE_FAILED, SCOPE_KEY } from "./protocol.ts";
 import { enqueueEvents, webhookEvent, type WebhookEvent } from "./webhooks.ts";
 import { AgentSupervisor } from "./supervisor.ts";
-import { withCatalogPrices } from "./pi-catalog.ts";
+import { ensureModel, withCatalogPrices } from "./pi-catalog.ts";
 import { configurationRefusal, configurationUpdate, runLimitsInput } from "./session-config.ts";
 import { outputInput } from "./tool-policy.ts";
 import { importedHistory, validateUserMessages } from "./history.ts";
@@ -1649,6 +1649,7 @@ export class ClientSessions {
     try {
       if (body.method === "configure" && !applying) {
         const { spendLimit: _limit, bucket: _bucket, provisionHash: _hash, name: _name, type: _type, toolsHash: _tools, mounts: _mounts, builtins, delegate, workflow, mcpServers, decide, ...update } = body.params;
+        await ensureModel(update.model);
         const checked = configurationUpdate(update, this.options.modelEndpoints?.(session.header.tenant), await this.options.customProviders?.(session.header.tenant, configuration.scopeAfter(session.header, update)));
         // A model, thinking level, maxOutputTokens or temperature that leaves the agent asking its model for what it refuses is refused now.
         const refusal = configurationRefusal(session.header.config, checked);

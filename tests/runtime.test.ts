@@ -229,7 +229,7 @@ test("HTTP control plane authenticates operators, provisions agents, and deletes
   const child = spawn(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
     env: {
       PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: databaseUrl, AGENT_TENANTS_FILE: join(root, "tenants.json"),
-      AGENT_SESSION_SECRET: "runtime-test-session-secret-with-32-chars", PORT: "0", ...(process.env.AGENT_RUNTIME ? { AGENT_RUNTIME: process.env.AGENT_RUNTIME } : {}),
+      AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "runtime-test-session-secret-with-32-chars", PORT: "0", ...(process.env.AGENT_RUNTIME ? { AGENT_RUNTIME: process.env.AGENT_RUNTIME } : {}),
     },
     stdio: ["ignore", "pipe", "inherit"],
   });

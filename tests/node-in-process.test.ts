@@ -45,7 +45,7 @@ test("two nodes run in one process, each serving its own agents and forwarding t
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
       AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
-      AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "in-process-session-secret-with-32-chars!", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
+      AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "in-process-session-secret-with-32-chars!", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
       AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url, AGENT_SERVICE_NAME: `node-${name}`,
     });
     // Node b's database is not a pg.Pool: anything with Db's methods will do. Its network is its own too.
@@ -153,7 +153,7 @@ for (const state of ["stop", "current", "waiting", "superseded", "unknown"] as c
       PORT: String(port), AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,
       AGENT_DATA_DIR: root, AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline",
       AGENT_TENANT: "alice", AGENT_OPERATOR_TOKEN: token,
-      AGENT_SESSION_SECRET: "memory-retirement-test-session-secret", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
+      AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "memory-retirement-test-session-secret", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
       AGENT_MEMORY_HIGH_BYTES: name === "high" ? "1" : undefined, AGENT_MEMORY_RETIRE_MS: "1",
     });
     const deps = await nodeDeps(config);
@@ -215,7 +215,7 @@ test("SIGTERM during a memory drain hands the running turn to a peer, which goes
       PORT: String(port), AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,
       AGENT_DATA_DIR: root, AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline",
       AGENT_TENANTS_FILE: join(root, "tenants.json"),
-      AGENT_SESSION_SECRET: "memory-retirement-test-session-secret", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
+      AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "memory-retirement-test-session-secret", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
       AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url,
       AGENT_MEMORY_HIGH_BYTES: name === "high" ? "1" : undefined, AGENT_MEMORY_RETIRE_MS: "1",
     });
@@ -255,7 +255,7 @@ for (const fails of [false, true]) test(`memory fallback exits ${fails ? 1 : 0} 
       PORT: String(port), AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,
       AGENT_DATA_DIR: root, AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline",
       AGENT_TENANT: "alice", AGENT_OPERATOR_TOKEN: token,
-      AGENT_SESSION_SECRET: "memory-retirement-test-session-secret", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
+      AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "memory-retirement-test-session-secret", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
       AGENT_MEMORY_HIGH_BYTES: name === "high" ? "1" : undefined, AGENT_MEMORY_RETIRE_MS: "1", AGENT_MEMORY_RETIRE_FALLBACK_MS: "100",
     });
     const deps = await nodeDeps(config);
@@ -297,7 +297,7 @@ test("SIGTERM during a memory claim releases the flag without undraining", { tim
       PORT: String(port), AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: url,
       AGENT_DATA_DIR: root, AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline",
       AGENT_TENANT: "alice", AGENT_OPERATOR_TOKEN: token,
-      AGENT_SESSION_SECRET: "memory-retirement-test-session-secret", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
+      AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "memory-retirement-test-session-secret", AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
       AGENT_MEMORY_HIGH_BYTES: name === "high" ? "1" : undefined, AGENT_MEMORY_RETIRE_MS: "1",
     });
     const node = await createNode(config, { ...await nodeDeps(config), random: { float: () => 0, bytes: randomBytes } });

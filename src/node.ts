@@ -11,6 +11,8 @@ import { join, extname, normalize, sep } from "node:path";
 import { AgentSupervisor } from "./supervisor.ts";
 import type { NodeConfig } from "./node-config.ts";
 import { configuredModel, contentFilterFallbacks, defaultModels } from "./model.ts";
+import { startOpenRouterModels } from "./openrouter-models.ts";
+import { ensureModel } from "./pi-catalog.ts";
 import { errorText, IDENTITY_KEY, SCOPE_KEY } from "./protocol.ts";
 import { checkScope, KeyScopes } from "./key-scopes.ts";
 import { ENDPOINTS_CHANNEL, Subscribers, Webhooks } from "./webhooks.ts";
@@ -318,6 +320,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   });
   // Past AGENT_MEMORY_HIGH_BYTES, large request bodies are refused (503, Retry-After) before they are read (http.ts).
   shedBodies(() => supervisor.memoryHigh);
+  startOpenRouterModels(config.openRouterModelsUrl, network().fetch);
   const model = configuredModel(env);
   // Where people are sent (the public URL), other names served in full (an earlier domain), and the issuer tokens name.
   const origins = publicOrigins(env, `http://127.0.0.1:${port}`);
@@ -598,6 +601,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       steps.time("providers", modelProviders.resolvable(tenant, keyScope)),
     ]);
     if (made) params = made.params;
+    await ensureModel(params.model);
     const fallback = inherited ?? (params.model === undefined ? await steps.time("providers", defaultModelFor(tenant, keyScope)) : model);
     const config = { ...sessionConfig(params, fallback, systemPrompt, tenants.modelEndpoints(tenant), custom), ...(modelHeaders ? { modelHeaders } : {}) };
     const ttl = params.ttlSeconds;

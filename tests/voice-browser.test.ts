@@ -52,7 +52,7 @@ test("a voice session from a browser: its socket (on any node) carries the page'
     const config = nodeConfig({
       PORT: String(port), HOST: "127.0.0.1", AGENT_NODE_URL: `http://127.0.0.1:${port}`, AGENT_DATABASE_URL: databaseUrl,
       AGENT_DATA_DIR: join(root, "shared"), AGENT_STORAGE: "shared-file", AGENT_HOSTING: "inline", AGENT_LEASE_TTL_MS: "1500", AGENT_SCHEDULER_INTERVAL_MS: "200",
-      AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "voice-browser-session-secret-32-chars!!!", AGENT_SECRETS_KEY: secretsKey,
+      AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "voice-browser-session-secret-32-chars!!!", AGENT_SECRETS_KEY: secretsKey,
       AGENT_OPENAI_REALTIME_URL: openai.url,
     });
     const made = await createNode(config, { ...await nodeDeps(config), voiceTransports: { discord: fakeTransport().transport, browser: browserVoice() } });

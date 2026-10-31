@@ -3,6 +3,7 @@ import type { Db } from "./db.ts";
 import type { RunLimits, ToolDefinition } from "./protocol.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import { errorText } from "./protocol.ts";
+import { ensureModel } from "./pi-catalog.ts";
 import { configurationUpdate, modelSettingsRefusal, resolveModel, runLimitsInput, type CustomProviders } from "./session-config.ts";
 import { HttpError } from "./http.ts";
 import { jsonWithinLimit } from "./limits.ts";
@@ -316,6 +317,7 @@ export class Definitions {
       else if (input[key] !== undefined) (spec as Record<string, unknown>)[key] = input[key];
     }
     try {
+      await ensureModel(spec.model);
       const model = spec.model !== undefined ? resolveModel(spec.model, this.accounts?.tenants.modelEndpoints(tenant), await this.customProviders?.(tenant)) : undefined;
       const settings = configurationUpdate(Object.fromEntries((["systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language"] as const).filter(key => spec[key] !== undefined).map(key => [key, spec[key]])));
       if (settings.language) spec.language = settings.language;

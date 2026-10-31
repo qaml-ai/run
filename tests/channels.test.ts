@@ -134,7 +134,7 @@ async function runtime(t: T, respond: (body: any, index: number) => object, env:
     env: {
       PATH: process.env.PATH, HOME: root, AGENT_DATA_DIR: root, AGENT_DATABASE_URL: databaseUrl, PORT: "0", HOST: "127.0.0.1",
       ...(process.env.AGENT_HOSTING ? { AGENT_HOSTING: process.env.AGENT_HOSTING } : {}),
-      AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_SESSION_SECRET: "channels-test-session-secret-32-characters",
+      AGENT_TENANTS_FILE: join(root, "tenants.json"), AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "channels-test-session-secret-32-characters",
       AGENT_SECRETS_KEY: randomBytes(32).toString("hex"), AGENT_PUBLIC_URL: "https://agents.example.test",
       AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url,
       AGENT_TELEGRAM_API_URL: tg.url, AGENT_SCHEDULER_INTERVAL_MS: "200", AGENT_CHANNEL_RETRY_MS: "100", ...env,

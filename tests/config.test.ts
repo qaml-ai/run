@@ -16,7 +16,7 @@ writeFileSync(tenantsFile, JSON.stringify({ tenants: { acme: { tokenSha256: crea
 /** Start the server with `env` and return what it failed with; the settings are checked before anything connects. */
 function startupError(env: Record<string, string>) {
   const result = spawnSync(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/server.ts", import.meta.url))], {
-    env: { PATH: process.env.PATH, AGENT_TENANTS_FILE: tenantsFile, AGENT_SESSION_SECRET: "config-test-session-secret-with-32-chars", ...env },
+    env: { PATH: process.env.PATH, AGENT_TENANTS_FILE: tenantsFile, AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "config-test-session-secret-with-32-chars", ...env },
     encoding: "utf8", timeout: 30_000,
   });
   assert.notEqual(result.status, 0);
@@ -26,7 +26,7 @@ function startupError(env: Record<string, string>) {
 test("the runtime refuses to start without a tenants file or secret, or a session secret", () => {
   assert.match(startupError({ AGENT_TENANTS_FILE: "" }), /Set AGENT_TENANT and AGENT_OPERATOR_TOKEN, or AGENT_TENANTS_FILE, AGENT_TENANTS_JSON or AGENT_TENANTS_SECRET_ARN/);
   assert.match(startupError({ AGENT_TENANTS_FILE: "", AGENT_RUNTIME_TOKEN: "an-operator-token-of-the-old-single-tenant-mode" }), /Set AGENT_TENANT and AGENT_OPERATOR_TOKEN, or AGENT_TENANTS_FILE, AGENT_TENANTS_JSON or AGENT_TENANTS_SECRET_ARN/);
-  assert.match(startupError({ AGENT_SESSION_SECRET: "" }), /Set AGENT_SESSION_SECRET/);
+  assert.match(startupError({ AGENT_OPENROUTER_MODELS_URL: "", AGENT_SESSION_SECRET: "" }), /Set AGENT_SESSION_SECRET/);
 });
 
 test("hosted-agent caps are AGENT_MAX_AGENTS(_PER_TENANT), positive integers", () => {

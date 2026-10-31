@@ -31,6 +31,16 @@ from probing each model through the runtime several times
 (`scripts/probe-tool-streaming.ts`); a latency-first app that renders tool output
 should pick a model that says `true`.
 
+Any model OpenRouter lists can be named as `openrouter/<its id>` once its tools work,
+including one released today. The runtime reads OpenRouter's list when it starts, every
+hour, and when a request names a model it has not seen, so it knows the model's context
+window, longest reply, images, reasoning levels and prices. Such a model is in
+`GET /v1/models` with `toolCallStreaming: false`, since nobody has measured it. A model
+OpenRouter lists without tool support cannot run an agent: making one on it fails with a
+400 that says so. A model that takes no images tells the agent so when a file is an
+image, as any such model does. Some OpenRouter models' providers log or train on
+prompts: `dataCollection: "deny"` keeps an agent off them (see [Key scopes](#key-scopes)).
+
 A model on a server of your own that speaks OpenAI's or Anthropic's API (vLLM,
 Ollama, a gateway, a hosted API the catalog lacks) is named the same way once
 you add its server as a provider, your account's or a key scope's: see

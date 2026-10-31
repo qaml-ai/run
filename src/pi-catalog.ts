@@ -1,5 +1,6 @@
 import { getModel as piGetModel, getModels as piGetModels } from "@earendil-works/pi-ai/compat";
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
+import { ensureOpenRouterModel, listedOpenRouterModel, listedOpenRouterModels } from "./openrouter-models.ts";
 
 const piCatalog = piGetModel as (provider: string, id: string) => Model<Api> | undefined;
 
@@ -28,7 +29,7 @@ const added = (provider: string, id: string): Model<Api> | undefined => {
   const { from, ...overrides } = entry;
   return { ...base, ...overrides, id, ...(overrides.compat ? { compat: { ...base.compat, ...overrides.compat } } : {}) };
 };
-const piModel = (provider: string, id: string): Model<Api> | undefined => piCatalog(provider, id) ?? added(provider, id);
+const piModel = (provider: string, id: string): Model<Api> | undefined => piCatalog(provider, id) ?? added(provider, id) ?? (provider === "openrouter" ? listedOpenRouterModel(id) : undefined);
 
 /**
  * Where Pi's catalog says more about Bedrock than Bedrock serves, read from the catalog itself:
@@ -217,9 +218,13 @@ export function withCatalogPrices<T extends Model<Api>>(model: T): T {
   return cost || most || window ? { ...model, ...(cost ? { cost: known.cost } : {}), ...(most ? { maxTokens: known.maxTokens } : {}), ...(window ? { contextWindow: known.contextWindow } : {}) } : model;
 }
 
-/** Pi's models for a provider and those ADDED, as this runtime corrects them: no Bedrock base id that has inference profiles. */
+/** For a model a request names: OpenRouter's list asked again when it may be too new for it (openrouter-models.ts). */
+export const ensureModel = (reference: unknown): Promise<void> => ensureOpenRouterModel(reference, id => getModel("openrouter", id));
+
+/** Pi's models for a provider, those ADDED and those only OpenRouter lists, as this runtime corrects them: no Bedrock base id that has inference profiles. */
 export function getModels(provider: string): Model<Api>[] {
-  const models = [...piGetModels(provider as never) as Model<Api>[], ...Object.keys(ADDED[provider] ?? {}).flatMap(id => added(provider, id) ?? [])];
+  const models = [...piGetModels(provider as never) as Model<Api>[], ...Object.keys(ADDED[provider] ?? {}).flatMap(id => added(provider, id) ?? []),
+    ...(provider === "openrouter" ? listedOpenRouterModels().filter(model => !piCatalog(provider, model.id)) : [])];
   return models.flatMap(model => provider === BEDROCK && PROFILES.has(model.id) ? [] : [corrected(model)!]);
 }
 
