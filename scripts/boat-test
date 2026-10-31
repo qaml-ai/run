@@ -17,18 +17,49 @@
 # BOAT_TYPE: small, default or large (default large). BOAT_RUN_HOURS: the job's time limit (default 2).
 # BOAT_TTL_MINUTES: how long a sandbox outlives its last poll (default 60). BOAT_SNAPSHOTS_KEPT: this repo's saved snapshots (default 3).
 # BOAT_KEEP=1: leave the sandbox to its TTL, to look around. BOAT_REBUILD=1: build the snapshot again.
-# Exit status: the command's; 137 when the machine died under it; 69 when contact was lost (the job carries on).
+# BOAT_RETRIES: fresh sandboxes to try after one that failed on Boat's side (default 2): no capacity, a machine that died,
+# or Postgres that did not start. A failing command is never tried again, and nothing but Boat is ever tried.
+# Each attempt ends with a line in its log and in ~/.config/boat/runs.jsonl (no secrets or test output): time, repo, ref,
+# type, sandbox, stage, status, cause, seconds, cost. Cause: ok, command_failed, out_of_capacity, machine_died,
+# contact_lost, postgres_not_started, killed (a signal, usually the caller's), or other (this script's own failure).
+# Exit status: the command's; 137 when the machine died under it; 69 when contact was lost (the job carries on); 75 when
+# Boat had no capacity.
 set -euo pipefail
 ref=${1:-HEAD}; shift || true
 type=${BOAT_TYPE:-large}
 case $type in small) files=2 ;; default) files=4 ;; *) files=8 ;; esac
 [[ $# -gt 0 ]] || set -- env TEST_DATABASE_PER_FILE=true TEST_CONCURRENCY=$files npm run -s test:shard -- 1/1
+# One attempt is this script again, so each has its own sandbox, log and cleanup. A signal goes on to it, and it deletes its sandbox.
+if [[ -z ${BOAT_ATTACH:-} && -z ${BOAT_ATTEMPT:-} ]]; then
+  retries=${BOAT_RETRIES:-2}
+  BOAT_SHA=$(git rev-parse --verify "$ref^{commit}"); export BOAT_SHA
+  BOAT_CAUSE_FILE=$(mktemp); export BOAT_CAUSE_FILE
+  child=
+  forward() { [[ -z $child ]] || { kill -TERM "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; }; rm -f "$BOAT_CAUSE_FILE"; exit "$1"; }
+  trap 'forward 130' INT; trap 'forward 143' TERM; trap 'forward 129' HUP
+  for (( attempt = 1; ; attempt++ )); do
+    status=0; : > "$BOAT_CAUSE_FILE"
+    BOAT_ATTEMPT=$attempt "$0" "$ref" "$@" & child=$!
+    wait "$child" || status=$?
+    child=
+    read -r cause hint < "$BOAT_CAUSE_FILE" || true
+    case ${cause:-} in out_of_capacity|machine_died|postgres_not_started) ;; *) break ;; esac
+    (( attempt <= retries )) || break
+    # Boat's own wait when it gives one, within reason.
+    wait_s=${hint:-15}; (( wait_s <= 60 )) || wait_s=60
+    echo "== attempt $attempt ended: $cause. Trying a fresh sandbox in ${wait_s}s (retry $attempt of $retries)" >&2
+    sleep "$wait_s" & child=$!; wait "$child" || true; child=
+  done
+  rm -f "$BOAT_CAUSE_FILE"
+  exit "$status"
+fi
 cd "$(git rev-parse --show-toplevel)"
 key=${BOAT_API_KEY:-$(cat "$HOME/.config/boat/key" 2>/dev/null || true)}
 [[ -n $key ]] || { echo "no Boat key: set BOAT_API_KEY or write it to ~/.config/boat/key" >&2; exit 2; }
 base=https://boat.dev/api/v1; ttl=$(( ${BOAT_TTL_MINUTES:-60} * 60 )); kept=${BOAT_SNAPSHOTS_KEPT:-3}
 id=$(date +%Y%m%d-%H%M%S)-$$
 tmp=$(mktemp -d); log=${TMPDIR:-/tmp}/boat-test-$id.log; boxes=()
+stage=snapshot; cause=; hint=; started_at=$SECONDS; box=; spent=; sha=${BOAT_SHA:-}
 
 # One request: sets $body and $http, and fails on no answer or a status of 400 and up. The key stays out of `ps`.
 api() {
@@ -40,12 +71,31 @@ api() {
   (( http < 400 ))
 }
 remove() { api_timeout=30 api DELETE "/sandboxes/$1" -H "X-Ascii-Confirm-Delete: $1" || echo "== could not delete $1 ($http); its TTL erases it" >&2; }
+cost() { api_timeout=30 api GET "/sandboxes/$1/usage" && jq -r '"\(.dollars * 100000 | round / 100000)"' <<<"$body" || echo '?'; }
+# How this attempt ended: the exit line, in the log too, and a line in runs.jsonl, while the sandbox can still say its cost.
+record() {
+  local code=$1 seconds=$(( SECONDS - started_at ))
+  [[ -n $cause ]] || if (( code == 0 )); then cause=ok; elif [[ $stage = job ]]; then cause=command_failed; else cause=other; fi
+  [[ -z $box ]] || spent=$(cost "$box")
+  echo "== exit $code in ${seconds}s on ${box:-no sandbox} ($type, $cause): \$${spent:-0}; log $log" | tee -a "$log" || true
+  [[ ${BOAT_KEEP:-} != 1 || -z $box ]] || echo "== left running until its TTL: $box" || true
+  [[ -z ${BOAT_CAUSE_FILE:-} ]] || echo "$cause $hint" > "$BOAT_CAUSE_FILE" || true
+  mkdir -p "$HOME/.config/boat" || true
+  jq -nc --arg time "$(date -u +%FT%TZ)" --arg repo qaml-ai/run --arg ref "$ref" --arg sha "$sha" --arg type "$type" --arg sandbox "$box" --arg stage "$stage" \
+    --argjson status "$code" --arg cause "$cause" --argjson seconds "$seconds" --arg cost "${spent:-}" --argjson attempt "${BOAT_ATTEMPT:-0}" \
+    '{time: $time, repo: $repo, ref: $ref, sha: $sha, type: $type, sandbox: $sandbox, stage: $stage, status: $status, cause: $cause, seconds: $seconds, cost: (($cost | tonumber?) // null), attempt: $attempt}' \
+    >> "$HOME/.config/boat/runs.jsonl" || true
+}
 cleanup() {
+  local code=$?
+  trap '' INT TERM HUP
+  record "$code" || true
   [[ ${BOAT_KEEP:-} = 1 || ${lost:-} = 1 ]] || for box in ${boxes[@]+"${boxes[@]}"}; do remove "$box"; done
   rm -rf "$tmp"
+  exit "$code"
 }
 trap cleanup EXIT
-trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+trap 'cause=killed; exit 130' INT; trap 'cause=killed; exit 143' TERM; trap 'cause=killed; exit 129' HUP
 
 # A start that is refused waits as Boat says: the limits (429), no machine free (503). Nothing to do but wait, so wait.
 start() {
@@ -55,8 +105,9 @@ start() {
       started=$(jq -r .sandbox.id <<<"$body"); boxes+=("$started"); return
     fi
     case $(jq -r '.code // empty' <<<"$body" 2>/dev/null || true) in
-      rate_limited|out_of_capacity|no_ready_machine) wait=$(jq -r '.retryAfterSeconds // 60' <<<"$body"); (( attempt++ )) || true
+      rate_limited) wait=$(jq -r '.retryAfterSeconds // 60' <<<"$body"); (( attempt++ )) || true
         echo "== Boat refused the start ($(jq -r '.code, .window // empty' <<<"$body" | xargs)); waiting ${wait}s" >&2; sleep "$wait" ;;
+      out_of_capacity|no_ready_machine) cause=out_of_capacity; hint=$(jq -r '.retryAfterSeconds // empty' <<<"$body"); echo "== Boat has no machine to start ($(jq -r .code <<<"$body"))" >&2; exit 75 ;;
       limit_reached) (( attempt++ )) || true; echo "== the plan's sandboxes-at-once limit is full; waiting 60s" >&2; sleep 60 ;;
       "") [[ $http = 000 ]] && (( attempt++ < 5 )) || { echo "== create failed ($http): $body" >&2; exit 1; }; sleep 5 ;;
       *) echo "== create failed ($http): $body" >&2; exit 1 ;;
@@ -70,7 +121,7 @@ on() {
   return "$(jq -r '.exitCode // 1' <<<"$body")"
 }
 # The first seconds of a sandbox answer "not ready": retry until it runs commands.
-ready() { for _ in $(seq 90); do on true && return 0; sleep 2; done; echo "== $box never came up ($http): $body" >&2; exit 1; }
+ready() { for _ in $(seq 90); do on true && return 0; sleep 2; done; echo "== $box never came up ($http): $body" >&2; cause=machine_died; exit 137; }
 # The tree at $sha into ~/rt, as a tar: the signed upload URL is good for any size.
 ship() {
   git archive --format=tar.gz "$sha" > "$tmp/src.tgz"
@@ -87,7 +138,7 @@ launch() {
 # Print the job's log as it grows; $status is its exit status. Base64, so a chunk can split a UTF-8 character.
 # A failed poll is only a blip unless the machine is gone, or Boat has called it degraded for minutes. The sandbox's TTL moves on while someone is watching.
 follow() {
-  local name=$1 offset=0 answered=$SECONDS renewed=$SECONDS state health size
+  local name=$1 offset=0 answered=$SECONDS renewed=$SECONDS reattached=0 state health size
   status=
   while :; do
     if api_timeout=30 on "echo \$(cat ~/runs/$name.exit 2>/dev/null); tail -c +$((offset + 1)) ~/runs/$name.log 2>/dev/null | head -c 2000000 | base64 -w0"; then
@@ -101,36 +152,38 @@ follow() {
       if api_timeout=30 api GET "/sandboxes/$box"; then state=$(jq -r .sandbox.state <<<"$body"); health=$(jq -r .sandbox.health <<<"$body"); elif [[ $http = 404 ]]; then state=gone; fi
       case $state in
         ready|idle|running|unknown|provisioned|cloning) ;;
-        *) echo "== the machine is gone (state $state)" >&2; status=137; return 0 ;;
+        *) echo "== the machine is gone (state $state)" >&2; status=137; cause=machine_died; return 0 ;;
       esac
       if [[ $health = degraded ]] && (( SECONDS - answered >= 180 )); then
-        echo "== the machine stopped answering: $(jq -r .sandbox.healthReason <<<"$body")" >&2; status=137; return 0
+        echo "== the machine stopped answering: $(jq -r .sandbox.healthReason <<<"$body")" >&2; status=137; cause=machine_died; return 0
       fi
       if (( SECONDS - answered >= ${BOAT_LOST_MINUTES:-10} * 60 )); then
-        echo "== lost contact with $box; the job carries on until its TTL. Follow it again: BOAT_ATTACH=$box scripts/boat-test" >&2; lost=1; exit 69
+        # The job doesn't depend on this script: follow it again before giving it up.
+        if (( reattached++ < 2 )); then echo "== lost contact with $box for ${BOAT_LOST_MINUTES:-10} min; following it again ($reattached of 2)" >&2; answered=$SECONDS; continue; fi
+        echo "== lost contact with $box; the job carries on until its TTL. Follow it again: BOAT_ATTACH=$box scripts/boat-test" >&2; lost=1; cause=contact_lost; exit 69
       fi
     fi
     if (( SECONDS - renewed >= 60 )); then api_timeout=30 api PATCH "/sandboxes/$box" -d "{\"ttlSeconds\":$ttl}" || true; renewed=$SECONDS; fi
     sleep 5
   done
 }
-cost() { api_timeout=30 api GET "/sandboxes/$1/usage" && jq -r '"\(.dollars * 100000 | round / 100000)"' <<<"$body" || echo '?'; }
+# The job's end: a first line of its log says Postgres never came up, which no command got to write.
 finish() {
-  local spent; spent=$(cost "$box")
-  echo "== exit $status in $(( SECONDS - began ))s on $box ($type): \$$spent; log $log"
-  [[ ${BOAT_KEEP:-} != 1 ]] || echo "== left running until its TTL: $box"
+  if (( status != 0 )) && [[ -z $cause && -s $log && $(head -1 "$log") = '== Postgres did not start' ]]; then stage=postgres; cause=postgres_not_started; fi
   exit "$status"
 }
 
 # Attach to a run already going: same follow, same end.
 if [[ -n ${BOAT_ATTACH:-} ]]; then
-  box=$BOAT_ATTACH; boxes=("$box"); began=$SECONDS; type=attached
+  box=$BOAT_ATTACH; boxes=("$box"); began=$SECONDS; type=attached; stage=job; ref=attached
   echo "== following $box"
+  # Already deleted, as a killed run's is: nothing died here.
+  if ! api_timeout=30 api GET "/sandboxes/$box" && [[ $http = 404 ]]; then echo "== $box does not exist (deleted, or never made)" >&2; cause=other; box=; boxes=(); exit 137; fi
   tolog=$log follow run
   finish
 fi
 
-sha=$(git rev-parse --verify "$ref^{commit}")
+[[ -n $sha ]] || sha=$(git rev-parse --verify "$ref^{commit}")
 # What a snapshot holds, once: packages, Node 22, Postgres as CI runs it (.github/actions/test-postgres). Stopped cleanly
 # before the save: with fsync off, a copy of a running cluster may not start.
 read -r -d '' setup <<'SETUP' || true
@@ -173,9 +226,9 @@ if [[ -z $have ]]; then
   began=$SECONDS
   # noEnv: no account secrets to save. Two runs may build the same one at once; the last save wins, and either serves.
   start "$(jq -n --argjson ttl 3600 --arg name "boat-test build $snapshot" '{type: "large", ttlSeconds: $ttl, noEnv: true, monitoring: false, name: $name, labels: {purpose: "boat-test-build"}}')"
-  box=$started; builder=$box
+  box=$started; builder=$box; stage=snapshot
   ready; ship; launch build "$setup"; follow build
-  [[ $status = 0 ]] || { echo "== the snapshot build failed (exit $status) on $box" >&2; exit "$status"; }
+  [[ $status = 0 ]] || { echo "== the snapshot build failed (exit $status) on $box" >&2; [[ -n $cause ]] || cause=other; exit "$status"; }
   on 'rm -rf ~/runs' || true
   api POST /saved-snapshots -d "$(jq -n --arg s "$box" --arg n "$snapshot" '{sandboxId: $s, name: $n}')" || { echo "== could not save the snapshot ($http): $body" >&2; exit 1; }
   for _ in $(seq 360); do
@@ -186,7 +239,7 @@ if [[ -z $have ]]; then
   done
   [[ $state = ready ]] || { echo "== the snapshot never became ready: $body" >&2; exit 1; }
   echo "== snapshot $snapshot ready in $(( SECONDS - began ))s, \$$(cost "$box")"
-  remove "$box"; boxes=()
+  remove "$box"; boxes=(); box=
   # Saved snapshots beyond the plan's count cost money: keep only the newest few of this repo.
   if api GET /saved-snapshots; then
     for old in $(jq -r '[.snapshots[] | select(.name | startswith("rt-test-"))] | sort_by(.createdAt) | reverse | .['"$kept"':][].name' <<<"$body"); do
@@ -195,16 +248,17 @@ if [[ -z $have ]]; then
   fi
 fi
 
-began=$SECONDS
+began=$SECONDS; stage=start
 start "$(jq -n --arg from "$snapshot" --arg type "$type" --argjson ttl "$ttl" --arg name "boat-test $(git log --format=%h -1 "$sha")" '{from: $from, type: $type, ttlSeconds: $ttl, noEnv: true, snapshots: false, monitoring: false, name: $name, labels: {purpose: "boat-test"}}')"
 box=$started
-ready; up=$(( SECONDS - began )); ship
+ready; up=$(( SECONDS - began )); stage=ship; ship
 echo "== boat-test $(git log --oneline -1 "$sha") on $box ($type): up in ${up}s, tree in $(( SECONDS - began - up ))s"
 echo "== $*"
+stage=job
 launch run "$(cat <<RUN
 export PATH=\$HOME/.node22/bin:\$PATH TERM=dumb AGENT_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres
 for _ in \$(seq 60); do pg_isready -q -h 127.0.0.1 && break; sleep 1; done
-pg_isready -q -h 127.0.0.1 || { echo '== Postgres did not start'; sudo tail -5 /var/log/postgresql/*.log; exit 1; }
+pg_isready -q -h 127.0.0.1 || { echo '== Postgres did not start'; sudo journalctl -u postgresql@16-main --no-pager -n 5; exit 1; }
 # A new sandbox's home is a FUSE file system until the snapshot has been copied in, about half a minute, and its disk
 # reads slowly until first read. A process that stands in the home then stays on FUSE for good: imports took 3 to 6 s
 # against 0.4, all through one busy process, and first turns timed out. So start after it, with the tree read once.

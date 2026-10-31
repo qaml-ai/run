@@ -28,10 +28,17 @@ busy host steal runs over 20%, a run takes twice as long and timing-sensitive te
 high steal mean rerun those files, not a bug in your change. The full suite retries up to 3 failed files alone, as CI
 does, so a run can pass with `Flaky test file` warnings; more than 3 failed files fail the run.
 
-Exit status is the command's. 137 means the machine died under the run, so rerun it. 69 means contact was lost for 10
-minutes: the job carries on, and `BOAT_ATTACH=<id> scripts/boat-test` follows it again and then deletes the sandbox. The
-same works after this script itself was killed. At a start limit (429) the script waits as long as Boat says and goes
-on; the plan allows 12 starts a minute, 60 an hour and 200 a day.
+Exit status is the command's. A failure on Boat's side gets a fresh sandbox, up to twice (`BOAT_RETRIES`): no capacity (exit
+75 if it stays so), a machine that died (137), or Postgres that did not start. Boat is never swapped for anything else, and a
+failing command is never run again. Contact lost for 10 minutes follows the job again twice, then exits 69: the job carries
+on, and `BOAT_ATTACH=<id> scripts/boat-test` follows it again and then deletes the sandbox. The same works after this script
+itself was killed with SIGKILL; killed with TERM, as `timeout` does, it deletes its sandbox. At a start limit (429) the script
+waits as long as Boat says and goes on; the plan allows 12 starts a minute, 60 an hour and 200 a day.
+
+Each attempt ends with its exit line in the terminal and its log, and one line in `~/.config/boat/runs.jsonl` (no secrets or
+test output). To see how runs have been ending:
+`jq -r .cause ~/.config/boat/runs.jsonl | sort | uniq -c`. Causes: `ok`, `command_failed`, `out_of_capacity`, `machine_died`,
+`contact_lost`, `postgres_not_started`, `killed` (a signal, usually the caller's), `other` (the script's own failure).
 
 Test sandboxes get `noEnv`, no snapshots and no monitoring: no account secrets go in, and no disk copy or command
 history stays at Boat after the delete. If this script dies, the sandbox is erased an hour after its last poll
