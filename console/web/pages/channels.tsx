@@ -10,13 +10,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ConfirmButton, EmptyState, ErrorAlert, PageHeader } from "@/components/common";
-import { api, formatTime, useApi, type Channel, type Definition, type ManagedDiscordConfig } from "@/lib/api";
+import { api, formatTime, useApi, type Channel, type ChannelEvent, type Definition, type ManagedDiscordConfig } from "@/lib/api";
 import { DefinitionDialog } from "./definitions";
 import { WorkspaceTag } from "@/components/workspace-ui";
 import { useWorkspaceDirectory } from "@/lib/workspace";
 import { ManagedDiscord } from "./discord-managed";
 import { Link } from "@/lib/router";
 
+/** How long a filtered message can be delivered (FILTERED_DAYS in src/channel-filter.ts). */
+const FILTER_DAYS = 14;
 const senders = (value: string) => value.split(/[\s,]+/).map(entry => entry.trim()).filter(Boolean);
 
 type ChannelType = "telegram" | "slack" | "discord" | "github" | "webhook" | "email";
@@ -249,6 +251,93 @@ function WebhookSettings({ settings, set }: { settings: Settings; set: (next: Se
   </div>;
 }
 
+type FilterForm = { on: boolean; instructions: string; yes: string; no: string; threshold: string };
+
+/** One yes/no question each message must pass before it starts a turn. */
+function FilterSettings({ filter, set }: { filter: FilterForm; set: (next: FilterForm) => void }) {
+  return <div className="flex flex-col gap-4 rounded border p-3">
+    <label className="flex items-center gap-2 text-sm">
+      <input type="checkbox" checked={filter.on} onChange={change => set({ ...filter, on: change.target.checked })} />
+      Filter messages before they start a turn
+    </label>
+    {filter.on && <>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="filter-instructions">A message should start a turn when</Label>
+        <Textarea id="filter-instructions" rows={2} placeholder="This email is from a customer who needs a reply" value={filter.instructions} onChange={change => set({ ...filter, instructions: change.target.value })} />
+      </div>
+      <div className="flex flex-wrap gap-4">
+        <div className="flex flex-1 flex-col gap-2">
+          <Label htmlFor="filter-yes">Counts as yes</Label>
+          <Input id="filter-yes" placeholder="Optional: a question or a problem" value={filter.yes} onChange={change => set({ ...filter, yes: change.target.value })} />
+        </div>
+        <div className="flex flex-1 flex-col gap-2">
+          <Label htmlFor="filter-no">Counts as no</Label>
+          <Input id="filter-no" placeholder="Optional: newsletters, receipts, spam" value={filter.no} onChange={change => set({ ...filter, no: change.target.value })} />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="filter-threshold">Threshold</Label>
+          <Input id="filter-threshold" type="number" min={0} max={1} step={0.05} className="w-24" value={filter.threshold} onChange={change => set({ ...filter, threshold: change.target.value })} />
+        </div>
+      </div>
+      <p className="text-muted-foreground text-xs">The decision model answers with a probability, billed as a decision. A message below the threshold starts no turn; you can see it and deliver it for {FILTER_DAYS} days under Activity. If the model cannot answer, the message goes on. Replies in a thread that has an agent, and answers to a question the agent asked, are not filtered.</p>
+    </>}
+  </div>;
+}
+
+/** Why a message went the way it did, for people. */
+function eventOutcome(event: ChannelEvent) {
+  if (event.outcome === "filtered") return event.deliveredAt ? "Delivered by hand" : "Filtered";
+  return { score: "Passed", decision_failed: "Passed: no answer from the model", no_text: "Passed: no text to judge", answers_input: "Passed: answers the agent's question", follow_up: "Passed: reply in a thread" }[event.reason];
+}
+
+/** What a channel's filter said about each message, and delivering what it left out. */
+function FilterActivity({ channel, onClose }: { channel: Channel; onClose: () => void }) {
+  const [filteredOnly, setFilteredOnly] = useState(false);
+  const [before, setBefore] = useState<string>();
+  const [error, setError] = useState<string>();
+  const page = useApi<{ events: ChannelEvent[]; next?: string }>(`/v1/channels/${channel.id}/events?limit=50${filteredOnly ? "&outcome=filtered" : ""}${before ? `&before=${encodeURIComponent(before)}` : ""}`);
+  async function deliver(event: ChannelEvent) {
+    setError(undefined);
+    try { await api(`/v1/channels/${channel.id}/events/${event.id}/deliver`, { method: "POST" }); await page.reload(); }
+    catch (caught) { setError((caught as Error).message); }
+  }
+  return <Dialog open onOpenChange={value => { if (!value) onClose(); }}>
+    <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-3xl">
+      <DialogHeader>
+        <DialogTitle>Activity of {channel.name}</DialogTitle>
+        <DialogDescription>What the filter said about each message. Only messages it left out keep their content here, for {FILTER_DAYS} days.</DialogDescription>
+      </DialogHeader>
+      <ErrorAlert error={page.error ?? error} />
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={filteredOnly} onChange={change => { setFilteredOnly(change.target.checked); setBefore(undefined); }} />
+        Filtered only
+      </label>
+      {!page.data ? <Skeleton className="h-32 w-full" /> : page.data.events.length === 0 ? <p className="text-muted-foreground text-sm">No messages yet.</p> : <Table>
+        <TableHeader><TableRow><TableHead>Message</TableHead><TableHead>Score</TableHead><TableHead>Outcome</TableHead><TableHead /></TableRow></TableHeader>
+        <TableBody>
+          {page.data.events.map(event => <TableRow key={event.id}>
+            <TableCell className="max-w-72 whitespace-normal">
+              {event.message ? <>
+                <div className="font-medium">{event.message.from.name ?? event.message.from.username ?? event.message.from.id}{event.message.unverified ? " (unverified)" : ""}</div>
+                <div className="text-muted-foreground line-clamp-3 text-xs">{event.message.text}</div>
+              </> : <span className="text-muted-foreground font-mono text-xs">{event.agent ?? event.id}</span>}
+              <div className="text-muted-foreground text-xs">{formatTime(event.at)}</div>
+            </TableCell>
+            <TableCell className="text-xs">{event.score === undefined ? "—" : `${event.score.toFixed(2)} / ${event.threshold}`}</TableCell>
+            <TableCell className="whitespace-normal">{event.outcome === "filtered" && !event.deliveredAt ? <Badge variant="outline">{eventOutcome(event)}</Badge> : <span className="text-sm">{eventOutcome(event)}</span>}</TableCell>
+            <TableCell className="text-right">{event.deliverableUntil && <Button size="xs" variant="outline" onClick={() => void deliver(event)}>Deliver</Button>}</TableCell>
+          </TableRow>)}
+        </TableBody>
+      </Table>}
+      <DialogFooter>
+        {before && <Button variant="outline" onClick={() => setBefore(undefined)}>Newest</Button>}
+        {page.data?.next && <Button variant="outline" onClick={() => setBefore(page.data!.next)}>Older</Button>}
+        <Button onClick={onClose}>Done</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
 /** Picking none gives a new channel a definition of its own with the runtime defaults. */
 const OWN = "own";
 
@@ -262,6 +351,7 @@ function ChannelDialog({ channel, initialType = "telegram", onClose, onSaved }: 
   const [allow, setAllow] = useState(channel?.access.allow.join(", ") ?? "");
   const [open, setOpen] = useState(channel?.access.public ?? false);
   const [settings, setSettings] = useState<Settings>(() => initialSettings((channel?.type as ChannelType) ?? "telegram", channel?.settings));
+  const [filter, setFilter] = useState<FilterForm>({ on: !!channel?.filter, instructions: channel?.filter?.instructions ?? "", yes: channel?.filter?.criteria?.true ?? "", no: channel?.filter?.criteria?.false ?? "", threshold: String(channel?.filter?.threshold ?? 0.7) });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const info = TYPES[type] ?? TYPES.telegram;
@@ -282,6 +372,10 @@ function ChannelDialog({ channel, initialType = "telegram", onClose, onSaved }: 
         ...(name.trim() ? { name: name.trim() } : {}), ...(definition !== OWN ? { definition } : {}), ...(hasAccess ? { access: { public: open, allow: senders(allow) } } : {}),
         ...(complete && entered.some(Boolean) ? { credentials: Object.fromEntries(info.fields.flatMap((field, index) => entered[index] ? [[field.key, entered[index]]] : [])) } : {}),
         ...(typeSettings ? { settings: typeSettings } : {}),
+        ...(filter.on ? { filter: {
+          instructions: filter.instructions.trim(), threshold: Number(filter.threshold),
+          ...(filter.yes.trim() || filter.no.trim() ? { criteria: { ...(filter.yes.trim() ? { true: filter.yes.trim() } : {}), ...(filter.no.trim() ? { false: filter.no.trim() } : {}) } } : {}),
+        } } : channel?.filter ? { filter: null } : {}),
       };
       if (channel) { await api(`/v1/channels/${channel.id}`, { method: "PATCH", body }); onSaved(); }
       else onSaved(await api<Channel>("/v1/channels", { body: { type, ...body } }));
@@ -334,6 +428,7 @@ function ChannelDialog({ channel, initialType = "telegram", onClose, onSaved }: 
           {type === "github" && <GitHubSettings settings={settings} set={setSettings} />}
           {type === "webhook" && <WebhookSettings settings={settings} set={setSettings} />}
           {type === "email" && <EmailSettings settings={settings} set={setSettings} />}
+          <FilterSettings filter={filter} set={setFilter} />
           <div className="flex flex-col gap-2">
             <Label htmlFor="channel-name">Name</Label>
             <Input id="channel-name" placeholder="Defaults to the bot's username" value={name} onChange={event => setName(event.target.value)} />
@@ -385,6 +480,7 @@ export function ChannelsPage() {
   const [modelDefinition, setModelDefinition] = useState<Definition>();
   const [connected, setConnected] = useState<Channel>();
   const [editing, setEditing] = useState<Channel | "new" | "own-discord">();
+  const [activity, setActivity] = useState<Channel>();
   const [error, setError] = useState<string>();
   const ownChannels = channels.data?.filter(channel => channel.type !== "discord-managed");
   // Channels are account-wide; the workspace their conversations' agents join comes from the channel's definition.
@@ -413,6 +509,7 @@ export function ChannelsPage() {
                   <TableCell className="text-muted-foreground hidden text-xs lg:table-cell">{formatTime(channel.createdAt)}</TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <Button size="xs" variant="outline" className="mr-2" disabled={!definitions.data?.some(d => d.id === channel.definition)} onClick={() => setModelDefinition(definitions.data?.find(d => d.id === channel.definition))}>Model &amp; prompt</Button>
+                    {channel.filter && <Button size="xs" variant="outline" className="mr-2" onClick={() => setActivity(channel)}>Activity</Button>}
                     <Button size="xs" variant="outline" className="mr-2" onClick={() => setEditing(channel)}>Edit</Button>
                     <ConfirmButton size="xs" label="Delete" title={`Delete “${channel.name}”?`} description="The channel stops answering (a Telegram bot's webhook is removed; other webhooks get 404). Its conversations' agents are kept until they expire." confirm="Delete channel"
                       onConfirm={async () => { try { await api(`/v1/channels/${channel.id}`, { method: "DELETE" }); await channels.reload(); } catch (caught) { setError((caught as Error).message); } }} />
@@ -425,6 +522,7 @@ export function ChannelsPage() {
       )}
       {managedConfig.data && <ManagedDiscord config={managedConfig.data} onChanged={() => { void channels.reload(); void definitions.reload(); }} />}
       {modelDefinition && <DefinitionDialog definition={modelDefinition} forChannel onClose={() => setModelDefinition(undefined)} onSaved={() => void definitions.reload()} />}
+      {activity && <FilterActivity channel={activity} onClose={() => setActivity(undefined)} />}
       {connected && <Dialog open onOpenChange={value => { if (!value) setConnected(undefined); }}><DialogContent>
         <DialogHeader><DialogTitle>{connected.name} connected</DialogTitle><DialogDescription>Token validated and stored. Invite the bot, then send a test message.</DialogDescription></DialogHeader>
         <DiscordHelp channel={connected} />

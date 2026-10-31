@@ -486,7 +486,7 @@ export function emailReceiver(channels: Channels, options: EmailOptions) {
       await options.db.query("insert into email_messages (channel, message_id, conversation, created_at) values ($1, $2, $3, $4) on conflict do nothing", [id, messageId, conversationId, now]);
       log({ accepted: forwarded ? "forwarded" : "direct", channel: id, ses });
       // The forwarder was checked against the allowlist above; the sender it carries is on nobody's.
-      await channels.inbound(id, { conversationId, messageId, sender, text, files, title: subject.slice(0, 100), ...(forwarded ? { trusted: true, unverified: true } : {}) });
+      await channels.inbound(id, { conversationId, messageId, sender, text, files, title: subject.slice(0, 100), ...(known ? { followUp: true } : {}), ...(forwarded ? { trusted: true, unverified: true } : {}) });
     }
   }
 

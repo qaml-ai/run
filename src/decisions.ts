@@ -54,9 +54,8 @@ const text = (value: unknown, max: number, what: string) => {
   return value;
 };
 
-/** A question as given, checked: its type, instructions and criteria within the limits. */
-export function questionInput(value: unknown, id: string): Question {
-  const where = `questions.${id}`;
+/** A question as given, checked: its type, instructions and criteria within the limits. `where` names it in errors. */
+export function questionInput(value: unknown, id: string, where = `questions.${id}`): Question {
   if (!isRecord(value)) throw new HttpError(400, `${where} is {type, instructions, criteria?}`);
   const extra = Object.keys(value).filter(key => !["type", "instructions", "criteria"].includes(key));
   if (extra.length) throw new HttpError(400, `${where} has unknown fields: ${extra.join(", ")}`);

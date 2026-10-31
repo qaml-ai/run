@@ -136,6 +136,11 @@ than one execution holds, loop executions over files in the workspace. What the 
 and the run's spend limits (the run's `usage.decisionCostUsd`), and the run's budget is checked against each call's
 estimate before it is sent.
 
+## Filtering what starts an agent
+
+A channel's [`filter`](channels.md#filtering-messages) asks one of these questions about each incoming message, and
+only the ones that pass start a turn.
+
 ## Errors
 
 | Status | Code | |

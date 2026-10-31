@@ -9,7 +9,8 @@ import PostalMime from "postal-mime";
 import { Accounts } from "../src/accounts.ts";
 import { Tenants } from "../src/tenants.ts";
 import { Definitions } from "../src/definitions.ts";
-import { Channels } from "../src/channels.ts";
+import { Decider } from "../src/decisions.ts";
+import { Channels, type ChannelsOptions } from "../src/channels.ts";
 import { email, emailReceiver, newText, type EmailOptions } from "../src/channels-email.ts";
 import { testDatabase } from "./database.ts";
 import { memoryFiles } from "./channel-files.ts";
@@ -89,7 +90,7 @@ function ses(raw: string, receipt: Receipt = {}) {
   };
 }
 
-async function setup(t: T) {
+async function setup(t: T, extra: Partial<ChannelsOptions> = {}) {
   const { db } = await testDatabase();
   const accounts = new Accounts({ tenants: new Tenants({ read: async () => JSON.stringify({ tenants: {} }) }), db, secretsKey: randomBytes(32).toString("hex") });
   const prompts: { agent: string; text: string; from?: any; files?: { path: string }[] }[] = [];
@@ -124,6 +125,7 @@ async function setup(t: T) {
       return { id: request.id, method: "prompt", fingerprint: "", state: "running" };
     },
     inputs: { pending: async () => state.pending, answer: async (_agent, _tenant, input, answer) => { state.answers.push({ input, answer }); state.pending = []; } },
+    ...extra,
   });
   const receiver = emailReceiver(channels, options);
   const post = async (message: object) => (await receiver.request("/channels/email/inbound", { method: "POST", headers: { "Content-Type": "text/plain; charset=UTF-8" }, body: JSON.stringify(message) })).status;
@@ -175,6 +177,31 @@ test("SNS messages must be signed by SNS for the configured topic; a subscriptio
   assert.equal(await r.post(signed({ ...confirmation, Timestamp: new Date(Date.now() - 2 * 86_400_000).toISOString() })), 400, "an old message is a replay");
   // Version 1 signatures (SHA1) still verify.
   assert.equal(await r.post(signed({ ...confirmation, MessageId: randomUUID() }, "1")), 200);
+});
+
+test("a filter judges a new email, with its from, subject and body; a reply in a thread with an agent is not judged, and a reply to a filtered one is", async t => {
+  const asked: any[] = [];
+  const r = await setup(t, { decisions: {
+    decider: new Decider({
+      provider: { id: "openrouter", async decide(item, model) { asked.push(item.state); return { answers: { passes: { noul: (item.state as any).text.includes("Unsubscribe") ? 0.1 : 0.9 } }, model, inputTokens: 1, outputTokens: 1, costUsd: 0.00001 }; } },
+      key: async () => ({ apiKey: "k", platform: false }),
+    }),
+    admit: async () => {}, record: () => {},
+  } });
+  const channel = await r.channels.create("default", { type: "email", settings: { address: "support" }, access: { public: true }, filter: { instructions: "A customer needs a reply", threshold: 0.7 } });
+  await r.deliver({ from: "ada@example.com", fromName: "Ada", messageId: "c1@example.com", subject: "Broken", text: "It is broken" });
+  await until(() => r.prompts[0], "the customer's prompt");
+  assert.deepEqual(asked[0], { channel: "email", from: { id: "ada@example.com", name: "Ada", username: "ada@example.com" }, title: "Broken", text: "Subject: Broken\n\nIt is broken" });
+  await r.deliver({ from: "ada@example.com", messageId: "c2@example.com", subject: "Re: Broken", inReplyTo: "c1@example.com", text: "Unsubscribe" });
+  await until(() => r.prompts[1], "the reply in the thread");
+  assert.equal(asked.length, 1, "a reply in a thread with an agent goes straight on");
+
+  await r.deliver({ from: "news@example.com", messageId: "n1@example.com", subject: "Deals", text: "Unsubscribe" });
+  await r.deliver({ from: "news@example.com", messageId: "n2@example.com", subject: "Re: Deals", inReplyTo: "n1@example.com", text: "Unsubscribe" });
+  const events = await until(async () => { const page = await r.channels.events("default", channel.id, { outcome: "filtered" }); return page.events.length === 2 && page.events; }, "both filtered");
+  assert.equal(asked.length, 3);
+  assert.deepEqual(events.map(event => event.message?.from.id), ["news@example.com", "news@example.com"]);
+  assert.equal(r.prompts.length, 2);
 });
 
 test("a message starts a thread; replies thread under it, quoted history is left out, attachments are saved", async t => {

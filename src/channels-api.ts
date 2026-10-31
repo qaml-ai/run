@@ -32,6 +32,13 @@ export function channelRoutes(route: Route, channels: () => Channels | undefined
     async c => json(c, 200, await service().get(c.var.principal.tenant, c.req.param("id")!)));
   route(createRoute({ method: "patch", path: "/v1/channels/{id}", request: { params: channelId, body: body(schema.ChannelUpdate) }, responses: { 200: reply("The updated channel", schema.Channel) } }),
     async c => json(c, 200, await service().update(c.var.principal.tenant, c.req.param("id")!, await parse(schema.ChannelUpdate, c))));
+  route(createRoute({ method: "get", path: "/v1/channels/{id}/events", request: { params: channelId, query: schema.ChannelEventsQuery }, responses: { 200: reply("What the channel's filter said about each message, newest first", schema.ChannelEvents) } }), async c => {
+    const query = schema.ChannelEventsQuery.safeParse(c.req.query());
+    if (!query.success) throw new HttpError(400, `${query.error.issues[0].path.join(".") || "query"}: ${query.error.issues[0].message}`);
+    return json(c, 200, await service().events(c.var.principal.tenant, c.req.param("id")!, query.data));
+  });
+  route(createRoute({ method: "post", path: "/v1/channels/{id}/events/{event}/deliver", request: { params: z.object({ id: z.string(), event: z.string() }) }, responses: { 200: reply("The filtered message is on its way to its agent, with its own run id; delivering it again changes nothing", schema.ChannelEventDelivered) } }),
+    async c => json(c, 200, await service().deliverEvent(c.var.principal.tenant, c.req.param("id")!, c.req.param("event")!)));
   route(createRoute({ method: "delete", path: "/v1/channels/{id}", request: { params: channelId }, responses: { 200: reply("The channel is deleted: it stops answering, and Telegram's webhook is removed", schema.Deleted) } }), async c => {
     await service().remove(c.var.principal.tenant, c.req.param("id")!);
     return json(c, 200, { deleted: true });

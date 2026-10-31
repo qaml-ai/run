@@ -15,6 +15,8 @@ import { underClaim, type Claim, type Ownership } from "./ownership.ts";
 import { validFileRef, type FileRef } from "./files.ts";
 import type { Input } from "./inputs.ts";
 import { network } from "./node-context.ts";
+import { DECISION_MODEL, decisionsRequest, type DecisionService } from "./decisions.ts";
+import { FILTERED_DAYS, FILTER_QUESTION, FILTER_TIMEOUT_MS, channelFilter, filterState, type ChannelFilter, type Verdict, type VerdictReason } from "./channel-filter.ts";
 
 /**
  * Channels let people talk to agents through messaging services. Each external
@@ -28,12 +30,13 @@ import { network } from "./node-context.ts";
  *   channel_conversations   the agent answering one external conversation
  *   channel_agents          the conversation an agent answers
  *   channel_items           live work: an inbound message until its reply is sent, or an outbound message
- *   channel_seen            inbound messages already recorded, so provider retries are dropped
+ *   channel_seen            inbound messages already recorded, so provider retries are dropped; a channel filter's verdict on each
  *   channel_counts          rate-limit and daily-turn counters
  *
  * Items move received → submitted → sending by writes conditional on their
  * revision, and whoever holds an item's claim is the only node advancing it, so a
- * reply is sent once.
+ * reply is sent once. A message a channel's filter leaves out stays as `filtered`,
+ * not due until it expires, until someone delivers it (back to received).
  *
  * Attachments are streamed into the agent's workspace and the prompt refers to them by
  * path; files the agent presents (or sends with send_message) go out after the reply's
@@ -50,6 +53,8 @@ export interface Inbound {
   command?: "start";
   /** Only handled when the conversation already has an agent: a reply in a thread that does not mention the bot. */
   continuation?: boolean;
+  /** A reply in a thread: a filter does not ask about it once the thread has an agent, so a customer's "yes please" is not judged alone. */
+  followUp?: boolean;
   /** What to call the conversation's agent when it is made (a pull request's title), instead of the sender. */
   title?: string;
   /** Vouched for by the provider under the channel's settings (a repository's member), so let in without the allowlist. */
@@ -155,6 +160,8 @@ export interface Channel {
   greeting?: string;
   /** Provider-specific configuration (see ChannelProvider.settings). */
   settings?: ChannelSettings;
+  /** The question each message must pass before it starts a turn. */
+  filter?: ChannelFilter;
   account: Record<string, string>;
   masked: Record<string, string>;
   sealed: Sealed;
@@ -163,14 +170,18 @@ export interface Channel {
 export type ChannelInput = Partial<Pick<Channel, "name" | "definition" | "greeting" | "settings">> & {
   type?: string; credentials?: Credentials;
   access?: Partial<Channel["access"]>; limits?: Partial<Channel["limits"]>;
+  /** Null removes it. */
+  filter?: unknown;
 };
 type Binding = { channel: string; tenant: string; conversationId: string };
 type Item = {
   id: string; channel: string; tenant: string; conversationId: string; createdAt: number;
-  state: "received" | "submitted" | "sending";
+  state: "received" | "submitted" | "sending" | "filtered";
   /** Not before this time: the next retry or re-check. */
   due: number;
   inbound?: Inbound;
+  /** The channel filter's answer, once asked: a retake does not ask again. */
+  verdict?: Verdict;
   agent?: string; prompt?: { text: string; from?: { id: string; name?: string; username?: string }; files?: { path: string }[]; requiredDefinition?: string };
   /** What to send: the text's parts, then each file; `sent` counts the steps done. */
   text?: string; files?: Presented[]; sent?: number; attempts?: number;
@@ -207,6 +218,8 @@ const SEEN_DAYS = 7;
 const PRUNE_EVERY_MS = 60 * 60_000;
 const MAX_ATTEMPTS = 8;
 const MAX_REPLY = 32_000;
+/** How much of a filtered message's text its event shows. */
+const EVENT_TEXT_CHARS = 4_000;
 const TYPING_MS = 4_000;
 /** How long a gateway whose credentials were rejected waits before trying again. */
 const GATEWAY_RETRY_MS = 5 * 60_000;
@@ -221,6 +234,7 @@ export async function fetchFile(url: string, headers: Record<string, string> = {
 export const sizeText = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+const seenKey = (messageId: string) => sha(messageId).slice(0, 40);
 const held = (row: any): Held => ({ item: { ...row.item, due: row.due }, revision: row.revision });
 const validConversation = (value: string) => /^[A-Za-z0-9_.-]{1,64}$/.test(value);
 /** A write that broke a unique index on channels (a provider's settings that must be unique, like an email address). */
@@ -263,6 +277,8 @@ export interface ChannelsOptions {
     pending(agent: string): Promise<Input[]>;
     answer(agent: string, tenant: string, input: string, answer: { action: "accept" | "decline"; content?: unknown; from: { id: string; name?: string; username?: string } }): Promise<unknown>;
   };
+  /** Asks channel filters, billed as POST /v1/decisions; without it a channel cannot have one. */
+  decisions?: DecisionService;
   retryBaseMs?: number;
 }
 export interface ChannelFiles {
@@ -345,13 +361,14 @@ export class Channels {
     const secret = randomBytes(32).toString("hex");
     const webhookUrl = `${this.options.publicUrl}/channels/${type}/${id}`;
     const settings = this.settings(provider, input, id);
+    const filter = await this.filterInput(tenant, input.filter);
     const { account, masked } = await provider.setup(credentials, { url: webhookUrl, secret });
     const now = Date.now();
     const name = input.name ?? `${provider.label} ${account.username ? `@${account.username}` : id}`;
     const channel: Channel = {
       id, tenant, type, name, ...(provider.verify ? { webhookUrl } : {}),
       definition: await this.definition(tenant, id, name, input), access: { public: false, allow: [], ...provider.defaults?.access, ...settings.access }, limits: { ...DEFAULT_LIMITS, ...provider.defaults?.limits, ...settings.limits },
-      ...(settings.greeting ? { greeting: settings.greeting } : {}), ...(settings.settings ? { settings: settings.settings } : {}), account, masked,
+      ...(settings.greeting ? { greeting: settings.greeting } : {}), ...(settings.settings ? { settings: settings.settings } : {}), ...(filter ? { filter } : {}), account, masked,
       sealed: this.options.accounts.seal(`channel:${id}`, JSON.stringify({ credentials, secret })), createdAt: now, updatedAt: now,
     };
     await (internal?.sql ?? this.db).query("insert into channels (id, tenant, channel, created_at) values ($1, $2, $3, $4)", [id, tenant, JSON.stringify(channel), now]).catch(taken);
@@ -363,12 +380,14 @@ export class Channels {
     if (this.provider(channel.type).managed && !internal?.managed) throw new HttpError(403, "Manage this integration through its server setup in the console");
     if (input.type !== undefined && input.type !== channel.type) throw new HttpError(400, "A channel's type cannot change");
     const settings = this.settings(this.provider(channel.type), input, id, channel.settings);
+    const filter = await this.filterInput(tenant, input.filter);
     const next: Channel = {
       ...channel, ...(input.name !== undefined ? { name: input.name } : {}),
       definition: await this.definition(tenant, id, input.name ?? channel.name, input, channel.definition),
       access: { ...channel.access, ...settings.access }, limits: { ...channel.limits, ...settings.limits },
-      ...(settings.greeting !== undefined ? { greeting: settings.greeting } : {}), ...(settings.settings ? { settings: settings.settings } : {}), updatedAt: Date.now(),
+      ...(settings.greeting !== undefined ? { greeting: settings.greeting } : {}), ...(settings.settings ? { settings: settings.settings } : {}), ...(filter ? { filter } : {}), updatedAt: Date.now(),
     };
+    if (input.filter === null) delete next.filter;
     if (input.credentials) {
       const provider = this.provider(channel.type);
       const old = this.secrets(channel).credentials;
@@ -400,6 +419,14 @@ export class Channels {
     }
   }
 
+  /** A filter as given, refused where it could only ever fail: a runtime or an account with no key decisions could use. */
+  private async filterInput(tenant: string, value: unknown) {
+    if (value === undefined || value === null) return undefined;
+    const filter = channelFilter(value);
+    if (!await this.options.decisions?.decider.available(tenant, undefined)) throw new HttpError(400, "A filter needs decisions, which need an OpenRouter key: add one under Models & keys (PUT /v1/providers/openrouter/key)", "DECISIONS_UNAVAILABLE");
+    return filter;
+  }
+
   private settings(provider: ChannelProvider, input: ChannelInput, id: string, current?: ChannelSettings) {
     if (input.settings !== undefined && !provider.settings) throw new HttpError(400, `${provider.label} channels take no settings`);
     const settings = provider.settings && (input.settings !== undefined || !current) ? provider.settings(input.settings, current, { id }) : undefined;
@@ -413,6 +440,74 @@ export class Channels {
   private async definition(tenant: string, id: string, name: string, input: ChannelInput, current?: string): Promise<string> {
     if (input.definition !== undefined) return (await this.options.definitions.read(tenant, input.definition)).id;
     return current ?? (await this.options.definitions.create(tenant, { name: name.slice(0, 120) }, { channel: id })).id;
+  }
+
+  // Filter activity --------------------------------------------------------------
+
+  /**
+   * What a channel's filter said, newest first: a verdict for each message (no content), and for one still waiting to be
+   * delivered, the message itself. `before` is the `next` of the page before.
+   */
+  async events(tenant: string, id: string, options: { limit?: number; outcome?: string; before?: string } = {}) {
+    await this.owned(tenant, id);
+    const limit = options.limit ?? 50;
+    let after: [string, string] | undefined;
+    if (options.before) {
+      try { after = JSON.parse(Buffer.from(options.before, "base64url").toString()); } catch { /* said below */ }
+      if (!Array.isArray(after) || after.length !== 2 || !after.every(part => typeof part === "string") || Number.isNaN(Date.parse(after[0]))) throw new HttpError(400, "before is the next value of an earlier page");
+    }
+    const { rows } = await this.db.query(`
+      select s.verdict, s.seen_at::text as seen_at, s.message, c.agent, i.item->>'state' as state, i.due,
+        i.item->'inbound'->'sender' as sender, i.item->'inbound'->>'title' as title, (i.item->'inbound'->>'unverified')::boolean as unverified,
+        left(i.item->'inbound'->>'text', $5) as text,
+        (select json_agg(json_build_object('name', f->>'name', 'size', f->'size')) from json_array_elements(i.item->'inbound'->'files') f) as files
+      from channel_seen s
+      left join channel_items i on i.id = s.verdict->>'item'
+      left join channel_conversations c on c.channel = s.channel and c.conversation = s.verdict->>'conversation'
+      where s.channel = $1 and s.verdict is not null and ($2::text is null or s.verdict->>'outcome' = $2)
+        and ($3::timestamptz is null or (s.seen_at, s.message) < ($3::timestamptz, $4::text))
+      order by s.seen_at desc, s.message desc limit $6`, [id, options.outcome ?? null, after?.[0] ?? null, after?.[1] ?? null, EVENT_TEXT_CHARS, limit + 1]);
+    const last = rows.length > limit ? rows[limit - 1] : undefined;
+    return {
+      events: rows.slice(0, limit).map(row => {
+        const { item, conversation, ...verdict } = row.verdict as Verdict;
+        const waiting = row.state === "filtered";
+        return {
+          id: item, conversationId: conversation, ...verdict, ...(row.agent && !waiting ? { agent: row.agent } : {}),
+          ...(waiting ? { deliverableUntil: Number(row.due), message: { from: row.sender, ...(row.unverified ? { unverified: true } : {}), ...(row.title ? { title: row.title } : {}), text: row.text ?? "", files: row.files ?? [] } } : {}),
+        };
+      }),
+      ...(last ? { next: Buffer.from(JSON.stringify([last.seen_at, last.message])).toString("base64url") } : {}),
+    };
+  }
+
+  /**
+   * Send a filtered message on, as if the filter had passed it. It keeps its id, which is its run's, so delivering it
+   * twice starts one run; a second call answers as the first did.
+   */
+  async deliverEvent(tenant: string, id: string, event: string) {
+    await this.owned(tenant, id);
+    const row = (await this.db.query("select item, due, revision from channel_items where id = $1 and item->>'channel' = $2", [event, id])).rows[0];
+    const current = row ? held(row) : undefined;
+    if (current?.item.state !== "filtered") {
+      const verdict = (await this.db.query("select verdict from channel_seen where channel = $1 and verdict->>'item' = $2", [id, event])).rows[0]?.verdict as Verdict | undefined;
+      if (verdict?.deliveredAt) return { id: event, deliveredAt: verdict.deliveredAt };
+      throw verdict ? new HttpError(409, verdict.outcome === "passed" ? "This message passed the filter: it was not held" : "This message's time to be delivered is up") : new HttpError(404, "Unknown event");
+    }
+    const deliveredAt = Date.now();
+    const verdict = { ...current.item.verdict!, deliveredAt };
+    let next: Held;
+    try {
+      next = await transaction(this.db, async sql => {
+        await sql.query("update channel_seen set verdict = $3 where channel = $1 and message = $2", [id, seenKey(current.item.inbound!.messageId), JSON.stringify(verdict)]);
+        return this.save(current, { verdict, state: "received", due: deliveredAt }, true, sql);
+      });
+    } catch (error) {
+      if (error instanceof PreconditionFailed) throw new HttpError(409, "This message changed while delivering it: try again");
+      throw error;
+    }
+    void this.advance(next).catch(error => this.failed(next.item, error));
+    return { id: event, deliveredAt };
   }
 
   // Inbound ---------------------------------------------------------------------
@@ -492,7 +587,7 @@ export class Channels {
     };
     // The seen marker and the item commit together, so a retried delivery finds one or the other.
     return transaction(this.db, async sql => {
-      const seen = await sql.query("insert into channel_seen (channel, message) values ($1, $2) on conflict do nothing", [channel.id, sha(inbound.messageId).slice(0, 40)]);
+      const seen = await sql.query("insert into channel_seen (channel, message) values ($1, $2) on conflict do nothing", [channel.id, seenKey(inbound.messageId)]);
       if (!seen.rowCount) return undefined;
       if (!inbound.coalesce) return this.insert(sql, item);
       // One not yet started with the same key takes this message instead (keeping its id), and waits again.
@@ -604,7 +699,7 @@ export class Channels {
   private async prune() {
     if (Date.now() - this.prunedAt < PRUNE_EVERY_MS) return;
     this.prunedAt = Date.now();
-    await this.db.query(`delete from channel_seen where seen_at < now() - interval '${SEEN_DAYS} days'`);
+    await this.db.query(`delete from channel_seen where seen_at < now() - interval '${SEEN_DAYS} days' and (verdict is null or seen_at < now() - interval '${FILTERED_DAYS} days')`);
     await this.db.query("delete from channel_counts where created_at < now() - interval '2 days'");
   }
 
@@ -612,11 +707,11 @@ export class Channels {
    * Write the next state of an item this node holds; the revision check fences out
    * anyone who retook it. `claim` true extends this node's claim, false releases it.
    */
-  private async save({ item, revision }: Held, changes: Partial<Item>, claim?: boolean): Promise<Held> {
+  private async save({ item, revision }: Held, changes: Partial<Item>, claim?: boolean, sql: Pick<Db, "query"> = this.db): Promise<Held> {
     const next = { ...item, ...changes };
     for (const key of Object.keys(changes) as (keyof Item)[]) if (changes[key] === undefined) delete next[key];
     const { due, ...stored } = next;
-    const { rows } = await this.db.query(`
+    const { rows } = await sql.query(`
       update channel_items set item = $3, due = $4, revision = revision + 1,
         claimed_by = case when $5::boolean is null then claimed_by when $5 then $6 end,
         claimed_until = case when $5::boolean is null then claimed_until when $5 then now() + $7 * interval '1 millisecond' end
@@ -646,6 +741,8 @@ export class Channels {
   private async advance(current: Held): Promise<void> {
     const channel = await this.read(current.item.channel);
     if (!channel) return this.finish(current);
+    // A filtered message comes due only when its time to be delivered is up.
+    if (current.item.state === "filtered") return this.finish(current);
     const phase = current.item.state === "received" ? "submit" : "send";
     if (await this.provider(channel.type).guard?.(channel, current.item.conversationId, phase) === false) return this.fenced(current, phase);
     if (this.provider(channel.type).managed && current.item.inbound && !this.allowed(channel, current.item.inbound.sender)) return this.finish(current);
@@ -659,10 +756,16 @@ export class Channels {
     const inbound = item.inbound!;
     const reply = (text: string) => this.save(current, { state: "sending", text, sent: 0, attempts: 0 }).then(next => this.deliver(channel, next));
     if (inbound.command === "start") return reply(channel.greeting ?? DEFAULT_GREETING);
-    const minute = Math.floor(Date.now() / 60_000);
-    const recent = await this.count(channel.id, `m${minute}/${sha(inbound.sender.id).slice(0, 16)}`);
-    // Only the first message over a limit is told why; the rest are dropped quietly.
-    if (recent > channel.limits.perSenderPerMinute) return recent === channel.limits.perSenderPerMinute + 1 ? reply("You're sending messages too quickly. Please wait a minute and try again.") : this.finish(current);
+    // One someone chose to deliver is not the sender's doing, whenever it comes.
+    if (!item.verdict?.deliveredAt) {
+      const minute = Math.floor(Date.now() / 60_000);
+      const recent = await this.count(channel.id, `m${minute}/${sha(inbound.sender.id).slice(0, 16)}`);
+      // Only the first message over a limit is told why; the rest are dropped quietly.
+      if (recent > channel.limits.perSenderPerMinute) return recent === channel.limits.perSenderPerMinute + 1 ? reply("You're sending messages too quickly. Please wait a minute and try again.") : this.finish(current);
+    }
+    const screened = await this.screen(channel, current);
+    if (!screened) return;
+    current = screened;
     const today = await this.count(channel.id, `d${new Date().toISOString().slice(0, 10)}/turns`);
     if (today > channel.limits.turnsPerDay) return today === channel.limits.turnsPerDay + 1 ? reply("This assistant has reached its limit for today. Please try again tomorrow.") : this.finish(current);
     const { credentials } = this.secrets(channel);
@@ -684,6 +787,60 @@ export class Channels {
       console.error(JSON.stringify({ type: "channel_submit_failed", item: item.id, error: safeError(error) }));
       await this.save(next, { due: Date.now() + this.retryDelay(0) }).catch(() => {});
     }
+  }
+
+  /**
+   * Put a message to its channel's filter, if any and if not yet asked: the item, or undefined when the filter left it
+   * out. The verdict and the item's next state commit together, so a retake (or a delivery) does not ask again; a node
+   * lost during the call does, and pays for the second answer.
+   */
+  private async screen(channel: Channel, current: Held): Promise<Held | undefined> {
+    const { item } = current;
+    if (!channel.filter || item.verdict) return current;
+    const verdict = await this.verdict(channel, channel.filter, item);
+    const filtered = verdict.outcome === "filtered";
+    console.log(JSON.stringify({ type: "channel_filter", channel: channel.id, item: item.id, outcome: verdict.outcome, reason: verdict.reason, ...(verdict.ms !== undefined ? { ms: verdict.ms } : {}), ...(verdict.error ?? {}) }));
+    const next = await transaction(this.db, async sql => {
+      await sql.query("update channel_seen set verdict = $3 where channel = $1 and message = $2", [channel.id, seenKey(item.inbound!.messageId), JSON.stringify(verdict)]);
+      return this.save(current, filtered ? { verdict, state: "filtered", due: Date.now() + FILTERED_DAYS * 86_400_000 } : { verdict }, !filtered, sql);
+    });
+    return filtered ? undefined : next;
+  }
+
+  /** The filter's say on a message. No answer lets it through: an outage must not drop a customer's email. */
+  private async verdict(channel: Channel, filter: ChannelFilter, item: Item): Promise<Verdict> {
+    const inbound = item.inbound!;
+    const facts = { item: item.id, conversation: item.conversationId, at: Date.now(), threshold: filter.threshold };
+    const passed = (reason: VerdictReason): Verdict => ({ ...facts, outcome: "passed", reason });
+    if (!inbound.text.trim()) return passed("no_text");
+    const agent = (await this.db.query("select agent from channel_conversations where channel = $1 and conversation = $2", [channel.id, item.conversationId])).rows[0]?.agent as string | undefined;
+    if (agent && (inbound.followUp || inbound.continuation)) return passed("follow_up");
+    if (agent && await this.awaitedAnswer(agent, inbound)) return passed("answers_input");
+    try {
+      const decisions = this.options.decisions;
+      if (!decisions) throw new HttpError(503, "Decisions are not enabled on this runtime");
+      const { spec } = await this.options.definitions.read(channel.tenant, channel.definition);
+      const { instructions, criteria } = filter;
+      const answered = await decisionsRequest(decisions, channel.tenant, {
+        items: [{ state: filterState(channel.type, inbound), questions: { [FILTER_QUESTION]: { type: "noul", instructions, ...(criteria ? { criteria } : {}) } } }],
+        batch: false, model: DECISION_MODEL, actor: `channel:${channel.id}`, ...(spec.dataCollection ? { dataCollection: spec.dataCollection } : {}),
+      }, AbortSignal.timeout(FILTER_TIMEOUT_MS));
+      const answer = "answers" in answered ? answered.answers?.[FILTER_QUESTION] : undefined;
+      if (answer?.type !== "noul") throw new HttpError(502, "The decision came back without an answer");
+      return { ...facts, outcome: answer.noul >= filter.threshold ? "passed" : "filtered", reason: "score", score: answer.noul, model: answered.model, costUsd: answered.costUsd, ms: answered.ms };
+    } catch (error) {
+      const { status, code } = error as { status?: number; code?: unknown };
+      console.error(JSON.stringify({ type: "channel_filter_failed", channel: channel.id, item: item.id, error: safeError(error) }));
+      return { ...passed("decision_failed"), error: { status: status ?? 504, ...(typeof code === "string" ? { code } : {}) } };
+    }
+  }
+
+  /** Whether a message answers the input an agent waits on (see `answerInput`), which no filter may stand in front of. */
+  private async awaitedAnswer(agent: string, inbound: Inbound) {
+    const inputs = this.options.inputs;
+    if (!inputs || inbound.unverified || inbound.files?.length) return false;
+    const input = (await inputs.pending(agent))[0];
+    return !!input && !!answerOf(input, inbound.text);
   }
 
   /**
