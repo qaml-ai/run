@@ -48,6 +48,8 @@ const agentName = (model: string) => model === "claude-haiku-5-5" ? ELEVENLABS_A
  * itself goes on, in a fresh conversation (the brain reconnects and briefs it with what was said).
  */
 const MAX_DURATION = /max call duration/i;
+/** A tool call written out as text, in the forms models have written or are reported to write. Counted only: what it says is still played. */
+const WRITTEN_TOOL = /\b(?:tool_code|default_api|tool_call|ask_agent|stay_silent|contextual_update|system__message_to_speak)\b|:call:|<\/?(?:tool|function|invoke)/i;
 const VOICE_FOR = Object.freeze(Object.fromEntries(
   ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar", "nova", "onyx", "fable"].map(name => [name, ELEVENLABS_AGENTS.voice]),
 ));
@@ -379,10 +381,14 @@ class ElevenLabs implements RealtimeConnection {
         if (typeof event.user_transcription_event?.user_transcript === "string") this.events.heard("", event.user_transcription_event.user_transcript, seconds);
         break;
       }
-      case "agent_response":
+      case "agent_response": {
+        // The matched form is one of WRITTEN_TOOL's own words, never what the model said.
+        const form = WRITTEN_TOOL.exec(String(event.agent_response_event?.agent_response ?? ""))?.[0];
+        if (form) this.events.warning("tool_text_written", `${form.toLowerCase()}${this.suppressed ? " muted" : ""}`);
         if (this.suppressed) break;
         if (typeof event.agent_response_event?.agent_response === "string") this.events.said(this.start(), event.agent_response_event.agent_response);
         break;
+      }
       case "audio":
         if (this.suppressed) break;
         if (typeof event.audio_event?.audio_base_64 === "string") this.events.audio(this.start(), Buffer.from(event.audio_event.audio_base_64, "base64"));
