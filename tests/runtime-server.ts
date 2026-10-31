@@ -138,14 +138,18 @@ export async function runtime(t: T, respond: (body: any, index: number) => objec
     try { json = JSON.parse(text); } catch { /* not JSON */ }
     return { status: response.status, json, text, headers: response.headers };
   };
-  /** Prompt an agent over the REST API and wait for the outcome of its turn. */
+  /**
+   * Prompt an agent over the REST API and wait for the outcome of its turn. A turn may rightly take a while: a model's 429 is
+   * retried for 14 s (DEFAULT_RETRY), and on a busy machine each sub-agent's process start and step take seconds (a 3-step
+   * turn with one child passed 15 s, moving all along). 60 s is what a stuck turn costs to find.
+   */
   const prompt = async (agent: string, text: string, token?: string, extra: Record<string, unknown> = {}) => {
     const accepted = await call(`/v1/agents/${agent}/prompt`, { body: { text, ...extra }, token });
     if (accepted.status !== 202) throw new Error(`prompt: ${accepted.status} ${accepted.text}`);
     return until(async () => {
       const record = (await call(`/v1/agents/${agent}/requests/${accepted.json.id}`, { token })).json;
       return record.state === "completed" && record;
-    }, "the turn to end");
+    }, "the turn to end", 60_000);
   };
   return { root, db: db!, databaseUrl, base, call, prompt, model, logs, child };
 }
