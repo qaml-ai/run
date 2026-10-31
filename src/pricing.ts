@@ -22,7 +22,7 @@ export interface Pricing {
   speech: number;
   /** Per million tokens of an image made on the platform's key (OpenAI's gpt-image-2.5-flare): text and image tokens in, image tokens out. */
   image: { textInput: number; imageInput: number; output: number };
-  /** Per hour of a managed computer, charged in proportion to what its provider reports: at `boatSmallHour`, at cost. */
+  /** Per hour of a managed computer, charged in proportion to what its provider reports: by default what the provider charges. */
   computerHour: number;
   /** Fee on a credit purchase, in basis points (550 = 5.5%). */
   purchaseFeeBps: number;
@@ -58,8 +58,6 @@ export type TierLimitName = typeof TIER_LIMITS[number];
 
 export const MICROS = 1_000_000;
 export const micros = (usd: number) => Math.round(usd * MICROS);
-/** Boat's list price for a small machine (2 vCPU, 4 GB) per hour. */
-export const boatSmallHour = micros(0.018);
 
 export const DEFAULT_PRICING: Pricing = Object.freeze({
   agentHour: micros(0.01),

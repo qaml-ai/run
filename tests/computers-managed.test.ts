@@ -10,6 +10,7 @@ import { Computers } from "../src/computers/service.ts";
 import { CreditHolds } from "../src/credit-holds.ts";
 import { EndUserCredits } from "../src/end-user-credits.ts";
 import { HttpError } from "../src/http.ts";
+import { setMetricSink } from "../src/metrics.ts";
 import { Outbound } from "../src/outbound.ts";
 import { DEFAULT_PRICING, micros } from "../src/pricing.ts";
 import { Tenants } from "../src/tenants.ts";

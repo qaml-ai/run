@@ -6,7 +6,7 @@ import { transaction, type Db } from "../db.ts";
 import { creditError, type EndUserCredits } from "../end-user-credits.ts";
 import { HttpError } from "../http.ts";
 import type { Outbound } from "../outbound.ts";
-import { boatSmallHour, MICROS } from "../pricing.ts";
+import { MICROS, micros as toMicros } from "../pricing.ts";
 import type { ToolDefinition } from "../protocol.ts";
 import type { ToolContext } from "../volume-tools.ts";
 import { Workspaces } from "../workspaces.ts";
@@ -22,6 +22,8 @@ import type { ComputerTransfers } from "./transfers.ts";
  */
 
 const NAME = "boat" as const;
+/** Boat's list price for a small machine (2 vCPU, 4 GB) per hour: what it reports is at this, and AGENT_PRICE_COMPUTER_HOUR_USD scales it. */
+const BOAT_SMALL_HOUR = toMicros(0.018);
 /** How long a command may run, by default and at most; how long a computer stays after its latest command unless its connection says, and at most. */
 export const MANAGED = { provider: NAME, commandSeconds: 1800, defaultCommandSeconds: 600, idleSeconds: 7200, maxSeconds: 86400, dailySeconds: 86400 };
 /** Waits before trying a provider that made nothing again, by attempt. */
@@ -39,6 +41,7 @@ const LISTING_GRACE_MS = 60_000;
 const RUNTIME_LABEL = "camelrun-runtime";
 const NO_UNIT = "CAMEL_NO_UNIT";
 const GONE_STATES = ["stopped", "archived", "deleted", "gone"];
+const PAGE = 200;
 
 /** What Boat reports for a machine: its id, the row it was made for, and what it has cost in `since`'s period. */
 export type Machine = { id: string; computer: string; tenant: string; createdAt: number; since: string; seconds: number; dollars: number };
@@ -96,11 +99,17 @@ export function boatMachines(apiKey: string, outbound: Outbound, runtime: string
     async list(computer) {
       const found: Machine[] = [];
       for (let cursor: string | undefined; ;) {
-        const page = await request(`/sandboxes?include=cost&limit=200&${label(RUNTIME_LABEL, runtime)}${computer ? `&${label("computer", computer)}` : ""}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, { method: "GET" });
-        for (const box of page.sandboxes ?? []) {
-          if (!GONE_STATES.includes(box.state) && box.labels?.computer) found.push({ id: box.id, computer: box.labels.computer, tenant: box.labels.tenant, createdAt: Date.parse(box.createdAt), since: box.cost?.since ?? "", seconds: box.cost?.seconds ?? 0, dollars: box.cost?.dollars ?? 0 });
+        const page = await request(`/sandboxes?include=cost&limit=${PAGE}&${label(RUNTIME_LABEL, runtime)}${computer ? `&${label("computer", computer)}` : ""}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, { method: "GET" });
+        // A machine missing from a listing has ended, so a listing is whole or it is no listing: anything short of that throws.
+        const more = page.pageInfo?.hasMore;
+        if (!Array.isArray(page.sandboxes) || typeof more !== "boolean" || (more && (page.sandboxes.length < PAGE || !page.pageInfo.nextCursor || page.pageInfo.nextCursor === cursor))) throw new Error("Incomplete computer listing");
+        for (const box of page.sandboxes) {
+          if (GONE_STATES.includes(box.state) || !box.labels?.computer) continue;
+          const { since, seconds, dollars } = box.cost ?? {};
+          if (typeof since !== "string" || !since || !Number.isFinite(seconds) || !Number.isFinite(dollars)) throw new Error("Incomplete computer listing");
+          found.push({ id: box.id, computer: box.labels.computer, tenant: box.labels.tenant, createdAt: Date.parse(box.createdAt), since, seconds, dollars });
         }
-        if (!page.pageInfo?.hasMore) return found;
+        if (!more) return found;
         cursor = page.pageInfo.nextCursor;
       }
     },
@@ -320,14 +329,15 @@ export class ManagedComputers {
     const tenant = await transaction(this.db, async sql => {
       const current = (await sql.query("select * from managed_computers where id=$1 and platform for update", [row.id])).rows[0];
       if (!current) return undefined;
+      // Whole micro-USD, on the running total: pieces add up to it at any price. What it reports can only add: a lower figure, unless a new period starts the count over, charges nothing and moves nothing.
       const fresh = current.usage_since !== machine.since;
       const micros = Math.round(machine.dollars * MICROS);
       const counted = fresh ? 0 : Number(current.usage_micros), countedSeconds = fresh ? 0 : Number(current.usage_seconds);
       if (micros <= counted) { if (fresh) await sql.query("update managed_computers set usage_since=$2,usage_micros=0,usage_seconds=0 where id=$1", [row.id, machine.since]); return undefined; }
-      // Boat's list price, at the runtime's price for it: at cost unless the operator sets another.
-      const amount = Math.round((micros - counted) * accounts.billing.pricing.computerHour / boatSmallHour), total = Number(current.charged_micros) + amount;
+      const ratio = accounts.billing.pricing.computerHour / BOAT_SMALL_HOUR;
+      const amount = Math.round(micros * ratio) - Math.round(counted * ratio), total = Number(current.charged_micros) + amount;
       await sql.query("update managed_computers set usage_since=$2,usage_micros=$3,usage_seconds=$4,charged_micros=$5 where id=$1", [row.id, machine.since, micros, machine.seconds, total]);
-      await accounts.recordUsageIn(sql, current.tenant, current.agent, { provider: NAME, model: "computer", kind: "computer", usage: { cost: { total: amount / MICROS } }, platform: true, seconds: machine.seconds - countedSeconds, timestamp: this.options.now() });
+      await accounts.recordUsageIn(sql, current.tenant, current.agent, { provider: NAME, model: "computer", kind: "computer", usage: { cost: { total: amount / MICROS } }, platform: true, seconds: Math.max(0, machine.seconds - countedSeconds), timestamp: this.options.now() });
       return current.tenant as string;
     });
     if (tenant) await accounts.usageCommitted(tenant);
@@ -401,12 +411,14 @@ export class ManagedComputers {
 
   /**
    * One pass: what Boat lists for this runtime is the truth. A row it lists is charged the difference; a row it no longer
-   * lists has ended; a listed machine with no row is only said, since its own expiry ends it. Then holds are kept, credit
-   * is checked, and with the flag off everything stops. A listing that fails changes nothing.
+   * lists has ended, once a listing of that row alone agrees; a listed machine with no row is only said, since its own
+   * expiry ends it. Then an agent gone takes its machine with it, holds are kept, credit is checked, and with the flag off
+   * everything stops. A listing that fails changes nothing.
    */
   async pass() {
     const { accounts, now } = this.options, started = now();
-    const { rows } = await this.db.query("select * from managed_computers where ended_at is null");
+    const { rows } = await this.db.query(`select m.*, (a.id is null or a.revoked or a.purged_at is not null or (a.expires_at is not null and a.expires_at<=$1)) as agent_gone
+      from managed_computers m left join agents a on a.id=m.agent and a.tenant=m.tenant where m.ended_at is null`, [started]);
     for (const row of rows) if (!row.platform && Number(row.deadline) <= started) await this.end(row);
     const key = accounts.tenants.platformKey(NAME);
     if (key) {
@@ -419,7 +431,7 @@ export class ManagedComputers {
           if (machine) {
             if (!row.machine) await this.db.query("update managed_computers set machine=$2 where id=$1 and machine is null", [row.id, machine.id]);
             await this.charge(row, machine);
-          } else if (Number(row.created_at) + (row.machine ? LISTING_GRACE_MS : SETTLE_MS) <= started) await this.end(row);
+          } else if (Number(row.created_at) + (row.machine ? LISTING_GRACE_MS : SETTLE_MS) <= started && !(await machines.list(row.id)).length) await this.end(row);
         } catch { this.log("computer_charge_failed", { computer: row.id }); }
       }
       for (const machine of listed) {
@@ -428,9 +440,17 @@ export class ManagedComputers {
       }
       if (listed.length || rows.length) this.log("computer_pass", { machines: listed.length, open: rows.length });
     }
+    for (const row of rows.filter(row => row.agent_gone)) {
+      try {
+        const current = (await this.db.query("select * from managed_computers where id=$1 and ended_at is null", [row.id])).rows[0];
+        if (!current) continue;
+        this.log("computer_agent_gone", { tenant: row.tenant, agent: row.agent, computer: row.id });
+        await this.stopRow(current);
+      } catch { this.log("computer_charge_failed", { computer: row.id }); }
+    }
     const users = this.options.endUsers?.();
     const limits = new Map<string, boolean>();
-    for (const row of rows.filter(row => row.platform)) {
+    for (const row of rows.filter(row => row.platform && !row.agent_gone)) {
       try {
         if (row.hold && users) await users.renew(row.tenant, row.end_user, row.hold, now());
         if (!this.options.enabled) continue;
