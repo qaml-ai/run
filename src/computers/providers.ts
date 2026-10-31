@@ -16,7 +16,11 @@ export interface ComputerDriver {
   unavailable?(error: unknown): Unavailable | undefined;
   /** Move a running machine's own expiry to `seconds` from now. */
   extend?(ref: Reference, seconds: number): Promise<void>;
+  /** The managed machines on this key, running or not yet stopped, for finding leaks. */
+  list?(): Promise<ManagedMachine[]>;
 }
+/** A machine made for a managed computer, by its labels. */
+export type ManagedMachine = { id: string; lease: string; tenant: string; createdAt: number };
 /** A provider that made nothing: its code, and when it says to try again. */
 export type Unavailable = { code: string; retryAfterMs?: number };
 /** A provider's HTTP answer other than success. */
@@ -40,6 +44,10 @@ export function unitCommand(command: string, seconds: number) {
 }
 /** Boat's refusals that made nothing. */
 const BOAT_UNAVAILABLE = new Set(["rate_limited", "limit_reached", "member_limit_reached", "out_of_capacity", "no_ready_machine", "billing_required"]);
+/** The label on a managed computer's machine, with its `lease` and `tenant`: how an abuse report or a leak finds its owner. */
+const MANAGED_LABEL = "camelrun-managed";
+/** The states of a Boat machine that no longer costs anything to run. */
+const BOAT_GONE = ["stopped", "archived", "deleted", "gone"];
 /** The longest a Boat command waits on one request; longer ones run detached and are polled. */
 const BOAT_WAIT_SECONDS = 590;
 const shell = (args: Record<string, any>) => [boundedCommand(String(args.command)), Number(args.timeoutSeconds ?? 60)] as const;
@@ -60,10 +68,11 @@ async function browserCall(ref: Reference, operation: string, args: Record<strin
   } finally { await browser.close(); }
 }
 
-/** `managed`: the runtime's own machine for an agent, on Boat. */
-export type DriverFactory = (provider: Provider, credentials: Credentials, outbound: Outbound, options?: { managed?: boolean }) => ComputerDriver | Promise<ComputerDriver>;
+/** `managed`: the runtime's own machine for an agent, on Boat, made for `tenant` and run through `setup` before anyone uses it. */
+export type DriverOptions = { managed?: boolean; tenant?: string; setup?: string };
+export type DriverFactory = (provider: Provider, credentials: Credentials, outbound: Outbound, options?: DriverOptions) => ComputerDriver | Promise<ComputerDriver>;
 
-export async function driver(provider: Provider, credentials: Credentials, outbound: Outbound, options: { managed?: boolean } = {}): Promise<ComputerDriver> {
+export async function driver(provider: Provider, credentials: Credentials, outbound: Outbound, options: DriverOptions = {}): Promise<ComputerDriver> {
   if (provider === "modal") {
     const { ModalClient, NotFoundError: ModalNotFoundError } = await import("modal");
     const client = new ModalClient({ tokenId: credentials.tokenId, tokenSecret: credentials.tokenSecret, maxRetries: 0, timeoutMs: 120000 });
@@ -232,13 +241,28 @@ export async function driver(provider: Provider, credentials: Credentials, outbo
     refused: httpRefused,
     unavailable: error => error instanceof ProviderHttpError ? error.detail : undefined,
     async extend(ref, seconds) { await request(`/sandboxes/${ref.id}`, { ttlSeconds: seconds }, "PATCH"); },
-    async create(_id, seconds, allocated) {
-      const r = await request("/sandboxes", { type: "small", ttlSeconds: seconds, noEnv: true, snapshots: false, monitoring: false });
+    async list() {
+      const machines: ManagedMachine[] = [];
+      for (let cursor: string | undefined; ;) {
+        const page = await request(`/sandboxes?label=${encodeURIComponent(`${MANAGED_LABEL}=true`)}&limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, undefined, "GET");
+        for (const box of page.sandboxes ?? []) if (!BOAT_GONE.includes(box.state) && box.labels?.lease) machines.push({ id: box.id, lease: box.labels.lease, tenant: box.labels.tenant, createdAt: Date.parse(box.createdAt) });
+        if (!page.pageInfo?.hasMore) return machines;
+        cursor = page.pageInfo.nextCursor;
+      }
+    },
+    async create(id, seconds, allocated) {
+      const r = await request("/sandboxes", { type: "small", ttlSeconds: seconds, noEnv: true, snapshots: false, monitoring: false, ...options.managed ? { labels: { [MANAGED_LABEL]: "true", lease: id, tenant: options.tenant ?? "" } } : {} });
       const ref = { id: r.sandbox.id };
       await allocated?.(ref);
       for (const until = Date.now() + 60000; Date.now() < until;) {
         const info = await request(`/sandboxes/${ref.id}`, undefined, "GET");
-        if (["ready", "idle", "running"].includes(info.sandbox?.state)) return ref;
+        if (["ready", "idle", "running"].includes(info.sandbox?.state)) {
+          if (options.setup) {
+            const done = await request(`/sandboxes/${ref.id}/commands`, { command: options.setup, timeoutSeconds: 60 });
+            if (done.exitCode !== 0) throw new Error("Computer setup failed");
+          }
+          return ref;
+        }
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       await request(`/sandboxes/${ref.id}`, undefined, "DELETE");

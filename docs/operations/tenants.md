@@ -107,6 +107,31 @@ A **self-serve** tenant's limits are set through the API instead, by a billing-a
 maxRunResponses, maxRunSeconds, codeCpuMs, codeMaxTimeoutMs, codeConcurrency, decisionConcurrency}`, and null returns
 a limit to its tier's. For a tenant in the tenants file it answers 409: set those in the file.
 
+## Managed computers
+
+Not on yet: `AGENT_MANAGED_COMPUTERS` is off, and no tenant has one. A managed computer's machine runs on the platform's
+Boat account (`platformKeys.boat`), so one tenant's abuse can get the whole account suspended. Use a Boat account for
+these machines and nothing else.
+
+- **Turning them off:** `AGENT_MANAGED_COMPUTERS=off` refuses new starts, and the next sweep stops every running one.
+  For one account: `POST /v1/tenants/{id}/computers/stop`, with `{"block": true}` to refuse new starts until
+  `DELETE /v1/tenants/{id}/computers/block`. Both need an `AGENT_BILLING_ADMINS` operator token. Bring-your-own
+  connections are the account's own and aren't touched.
+- **Who owns a machine:** each carries the labels `camelrun-managed`, `lease` and `tenant`, so an abuse report's machine
+  leads to its account in Boat's dashboard or `GET /sandboxes?label=tenant=<id>`.
+- **Logs:**
+  - `computer_signature`: a command matched a miner, mining pool, mail-blast or scanner signature. It carries the
+    signature's name, never the command. It's only logged; nothing is refused.
+  - `computer_unavailable`: Boat refused a start (`code`).
+  - `computer_started`: how long a start took (`ms`), which is how long it held its agent's lock and a connection.
+  - `computer_kill_stop` and `computer_tenant_stopped`: the two stops above.
+  - `computer_leak` and `computer_reconcile`: the hourly reconciler.
+- **Leaks:** every hour each node lists the machines labelled `camelrun-managed` on the platform's key. One more than 10
+  minutes old whose lease is gone, closed or uncertain is deleted, and uncertain leases on the platform's key with no
+  machine left are closed. Machines also expire on their own, at most 2 hours after their latest command.
+- **Egress:** not limited yet. Rules would go in `machineSetup` (`src/computers/abuse.ts`), which runs before an agent
+  can use a machine. An agent has `sudo`, so rules set inside the machine don't bind it.
+
 ## Billing and keys
 
 Which keys a tenant's model calls use, and who pays, is in [Billing](billing.md) (its opening table). In

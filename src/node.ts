@@ -487,6 +487,8 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     void computers.sweep().catch(() => console.error(JSON.stringify({ type: "computer_sweep_failed" }))).finally(() => { sweepingComputers = false; });
   }, 30000);
   computerTimer.unref();
+  const computerLeakTimer = setInterval(() => void computers.reconcile().catch(() => console.error(JSON.stringify({ type: "computer_reconcile_failed" }))), 3_600_000);
+  computerLeakTimer.unref();
   const toolSources = new ToolSources({ computers, accounts, mcp, outbound, signer, search, render, xSearch, get scheduler() { return scheduler; }, get volumes() { return volumes; }, fileUrls, get links() { return links; } });
   // Tenants' own OpenAI-compatible model providers.
   const modelProviders = new ModelProviders({ db, accounts, outbound });
@@ -1698,6 +1700,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     clearInterval(loadTimer);
     clearInterval(sweepTimer);
     clearInterval(computerTimer);
+    clearInterval(computerLeakTimer);
     clearInterval(purgeTimer);
     clearInterval(orphanTimer);
     clearInterval(childTimer);
