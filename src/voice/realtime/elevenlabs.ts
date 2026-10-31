@@ -23,8 +23,8 @@ import { NO_USAGE, type RealtimeConfig, type RealtimeConnection, type RealtimeEv
  * Agents sends no token usage here: NO_USAGE means unknown, not free service.
  */
 export const ELEVENLABS_AGENTS = Object.freeze({
-  models: ["gemini-2.5-flash-lite", "claude-haiku-5-5"] as const,
-  defaultModel: "claude-haiku-5-5",
+  models: ["gemini-2.5-flash-lite", "claude-haiku-5-5", "gemini-3.8-flash"] as const,
+  defaultModel: "gemini-3.8-flash",
   voice: "cgSgspJ2msm6clMCkdW9", // Jessica, a conversational default; sessions may supply any voice_id their key can use.
   // v4: thinking is off. v3: conversations last up to maxDurationSeconds (v2 agents kept ElevenLabs' 10-minute default).
   // The agent is found by name, so a changed creation setting needs a new name.
@@ -37,10 +37,12 @@ export const ELEVENLABS_AGENTS = Object.freeze({
   uninterruptibleName: "camelRun realtime voice v4 (no interruptions)",
   /** v5: claude-haiku-5-5, with no thinking budget (a Gemini setting), otherwise as v4. Each LLM has its own agent, as the LLM is a creation setting. */
   haikuName: "camelRun realtime voice v5",
+  /** v6: gemini-3.8-flash, with thinking off, otherwise as v5. */
+  gemini38Name: "camelRun realtime voice v6",
   connectTimeoutMs: 20_000,
   maxDurationSeconds: 1_800,
 });
-const agentName = (model: string) => model === "claude-haiku-5-5" ? ELEVENLABS_AGENTS.haikuName : ELEVENLABS_AGENTS.name;
+const agentName = (model: string) => model === "gemini-3.8-flash" ? ELEVENLABS_AGENTS.gemini38Name : model === "claude-haiku-5-5" ? ELEVENLABS_AGENTS.haikuName : ELEVENLABS_AGENTS.name;
 /**
  * ElevenLabs ends a conversation at the agent's max duration with close 1000 "Max call duration exceeded": the call
  * itself goes on, in a fresh conversation (the brain reconnects and briefs it with what was said).
@@ -181,7 +183,7 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
       conversation_config: {
         agent: { first_message: "", language: "en", prompt: {
           prompt: "You are the bot's voice. Delegate anything beyond small talk to ask_agent.",
-          llm: model, temperature: 0.3, ...(model === "gemini-2.5-flash-lite" ? { thinking_budget: 0 } : {}),
+          llm: model, temperature: 0.3, ...(model.startsWith("gemini-") ? { thinking_budget: 0 } : {}),
           tools: [ASK_AGENT, STAY_SILENT].map(tool => ({ ...tool, type: "client", expects_response: true,
             response_timeout_secs: 60, interruption_mode: "allow", pre_tool_speech: tool.name === ASK_AGENT.name ? "force" : "off" })),
         } },

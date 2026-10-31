@@ -176,6 +176,8 @@ variable "runtime_env" {
     AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD    = "0.001"
     # claude-haiku-5-5: ElevenLabs charged $0.0019 a minute on addressed speech and $0.0028 on crosstalk in the 2026-10-31 tests.
     AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD = "0.003"
+    # gemini-3.8-flash: tokens per minute measured on gemini-3.1-flash-lite in the 2026-10-31 tests, at $0.825/$4.125 per million.
+    AGENT_PRICE_ELEVENLABS_GEMINI_3_8_LLM_MINUTE_USD = "0.04"
     # Managed computers on platformKeys.boat, billed to credit at cost (docs/operations/tenants.md).
     AGENT_MANAGED_COMPUTERS = "on"
     GITHUB_ORG                               = "qaml-ai"
