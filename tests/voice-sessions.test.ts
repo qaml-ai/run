@@ -233,10 +233,14 @@ test("new credentials in time keep a lost session; a deleted one (its account go
 });
 
 test("sessions are listed newest first, a page at a time, live or ended", async t => {
-  const { node } = await voiceCluster(t);
+  const { node, db } = await voiceCluster(t);
   const a = await node("http://a");
   const ids: string[] = [];
-  for (let index = 0; index < 5; index++) ids.push((await a.voice.create("alice", { discord: discordGrant({ guildId: `10000000000000010${index}` }) })).id);
+  for (let index = 0; index < 5; index++) {
+    ids.push((await a.voice.create("alice", { discord: discordGrant({ guildId: `10000000000000010${index}` }) })).id);
+    // Its own moment: two made in one millisecond come in the order of their random ids.
+    await db.query("update voice_sessions set created_at = $2 where id = $1", [ids[index], 1_000 + index]);
+  }
   await a.voice.end("alice", ids[0]);
   const first = await a.voice.list("alice", { limit: 2 });
   assert.deepEqual(first.sessions.map(session => session.id), [ids[4], ids[3]]);
