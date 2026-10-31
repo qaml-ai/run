@@ -86,14 +86,20 @@ export class HostJournal {
   /** End the journal's own Session; the storage stays open. */
   close() { return this.own.close(context).catch(() => {}); }
 
-  private committing(): JournalSession {
+  /** Where a commit of these kinds of record goes. */
+  private committing(kinds: string[]): JournalSession {
     if (!this.session) return change => this.own.commit(tx => change(tx, () => {}), context);
     const session = this.session();
-    if (!session) {
-      console.error(JSON.stringify({ type: "journal_write_refused", reason: "agent_closing" }));
-      throw new JournalClosed("The agent is closing");
-    }
-    return session;
+    if (session) return session;
+    // Calls left waiting for a person are stored even so: the person was asked already, and their answer goes on from here.
+    // No place in the history hangs on this marker (`placeEntries`), so it may commit beside what Pi still stores.
+    if (kinds.every(kind => kind === "awaiting")) return async change => {
+      const closing = createSession(keepingOpen(this.storage));
+      try { return await closing.commit(tx => change(tx, () => {}), context); }
+      finally { await closing.close(context).catch(() => {}); }
+    };
+    console.error(JSON.stringify({ type: "journal_write_refused", reason: "agent_closing", kinds: [...new Set(kinds)] }));
+    throw new JournalClosed("The agent is closing");
   }
 
   get total() { return this.history.total; }
@@ -152,7 +158,7 @@ export class HostJournal {
       const records = await change();
       if (!records.length) return;
       try {
-        const written = await this.committing()((tx, own) => this.write(records, tx, own));
+        const written = await this.committing(records.map(record => record.t))((tx, own) => this.write(records, tx, own));
         if (written) this.written = written;
       } catch (error) { if (!(error instanceof JournalClosed)) this.failed = error; throw error; }
       await this.refresh();
@@ -228,7 +234,7 @@ export class HostJournal {
       const base = this.history.settledBase();
       if (!base || base.total - (this.rebasedAt ?? this.history.baseTotal) < REBASE_MESSAGES) return false;
       try {
-        await this.committing()(async (tx, own) => {
+        await this.committing(["base"])(async (tx, own) => {
           const { id } = await tx.appendEntry(conversationId, { kind: MARKER_KIND, data: json(base) as never });
           own(id);
           (await tx.doc(BaseDoc)).entry = id;
