@@ -17,6 +17,7 @@ import { testDatabase } from "./database.ts";
 process.env.AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD = "1";
 process.env.AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD = "2";
 process.env.AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD = "5";
+process.env.AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD = "7";
 
 // Emitted subset of https://elevenlabs.io/docs/api-reference/agents/create and
 // https://api.elevenlabs.io/openapi.json (2026-10-19). Strict objects catch misspelled fields.
@@ -28,7 +29,7 @@ const createAgentSchema = z.object({
   name: z.string(),
   conversation_config: z.object({
     agent: z.object({ first_message: z.string(), language: z.string(), prompt: z.object({
-      prompt: z.string(), llm: z.enum(["gemini-2.5-flash-lite", "claude-haiku-5-5"]), temperature: z.number().min(0).max(1), thinking_budget: z.literal(0).optional(),
+      prompt: z.string(), llm: z.enum(["gemini-2.5-flash-lite", "claude-haiku-5-5", "gemini-3.1-flash-lite"]), temperature: z.number().min(0).max(1), thinking_budget: z.literal(0).optional(),
       tools: z.array(z.object({ type: z.literal("client"), name: z.string(), description: z.string(), parameters,
         expects_response: z.boolean(), response_timeout_secs: z.number().int().min(1).max(120),
         interruption_mode: z.enum(["allow", "disable_during_tool", "disable_during_tool_and_turn"]),
@@ -281,10 +282,9 @@ test("ElevenLabs pricing requires both runtime rates and includes the separately
   }
 });
 
-test("claude-haiku-5-5 has its own agent (v5) and its own LLM rate, and the default stays as it was", async t => {
+test("claude-haiku-5-5 stays allowed, on its own agent (v5) and its own LLM rate", async t => {
   const fake = await fakeElevenLabs(t);
   const provider = elevenlabsAgents({ baseUrl: fake.base });
-  assert.equal(provider.defaultModel, "claude-haiku-5-5");
   assert.ok(provider.models.includes("claude-haiku-5-5"));
   const a = recorder(), b = recorder();
   const older = provider.connect({ ...config, model: "gemini-2.5-flash-lite" }, { apiKey: "key" }, a.events);
@@ -303,6 +303,23 @@ test("claude-haiku-5-5 has its own agent (v5) and its own LLM rate, and the defa
   assert.equal(realtimeCost("elevenlabs/gemini-2.5-flash-lite", NO_USAGE, 60), 3);
   assert.equal(realtimeCost("elevenlabs/claude-haiku-5-5", NO_USAGE, 60), 6);
   assert.equal(realtimePrice("elevenlabs/claude-haiku-5-5", { AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD: "1", AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD: "2" }), undefined, "no rate of its own: unpriced, refused");
+});
+
+test("gemini-3.1-flash-lite is the default, on its own agent (v6), thinking off and its own LLM rate", async t => {
+  const fake = await fakeElevenLabs(t);
+  const provider = elevenlabsAgents({ baseUrl: fake.base });
+  assert.equal(provider.defaultModel, "gemini-3.1-flash-lite");
+  const { got, events } = recorder();
+  const connection = provider.connect({ ...config, model: "gemini-3.1-flash-lite" }, { apiKey: "key" }, events);
+  t.after(() => connection.close());
+  await until(() => got.some(e => e.type === "ready"), "ready");
+  const body = fake.seen.requests.find(r => r.url.endsWith("agents/create"))!.body;
+  createAgentSchema.parse(body);
+  assert.equal(body.name, "camelRun realtime voice v6");
+  assert.equal(body.conversation_config.agent.prompt.llm, "gemini-3.1-flash-lite");
+  assert.equal(body.conversation_config.agent.prompt.thinking_budget, 0);
+  assert.equal(realtimeCost("elevenlabs/gemini-3.1-flash-lite", NO_USAGE, 60), 8);
+  assert.equal(realtimePrice("elevenlabs/gemini-3.1-flash-lite", { AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD: "1", AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD: "2" }), undefined, "no rate of its own: unpriced, refused");
 });
 
 test("ElevenLabs meters wall time once, including silence, interruption and the final close interval", async t => {

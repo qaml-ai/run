@@ -54,6 +54,12 @@ test("prices: tokens at OpenAI's list price, cached input at the cached rate; tr
   assert.match(instructions, /ask_agent/);
   assert.match(instructions, /stay_silent/);
   assert.doesNotMatch(realtimeInstructions(undefined, { agent: false, group: false }), /ask_agent|stay_silent/);
+  const forYou = "- People in a call mostly talk to each other. Unless what was said names you, follows up on what you just said, or comes from the only person talking, it is not for you, even if it is a question: call stay_silent and say nothing. The rules below are for what is for you.";
+  const first = realtimeInstructions("You are Mochi.", { agent: true, group: true, forYouFirst: true });
+  assert.ok(first.includes(`${forYou}\n- You are the bot's voice;`), "before every rule that sends it to ask_agent");
+  assert.doesNotMatch(first, /If what was said was not meant for you/);
+  assert.equal(realtimeInstructions("You are Mochi.", { agent: true, group: false, forYouFirst: true }), realtimeInstructions("You are Mochi.", { agent: true, group: false }), "alone with a browser tester, no rule about others");
+  assert.equal(realtimeInstructions("You are Mochi.", { agent: true, group: true, forYouFirst: false }), realtimeInstructions("You are Mochi.", { agent: true, group: true }));
 });
 
 test("speaker notes: each change of speaker commits what came before and names who speaks next", async () => {
