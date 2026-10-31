@@ -12,7 +12,7 @@ export class ComputerTransfers {
   readonly options: { volumes: VolumeService; links: FileLinks };
   constructor(options: ComputerTransfers["options"]) { this.options = options; }
 
-  async run(context: ToolContext, upload: boolean, args: Record<string, any>, driver: ComputerDriver, ref: Reference, seconds: number, requestKey: string) {
+  async run(context: ToolContext, upload: boolean, args: Record<string, any>, driver: Pick<ComputerDriver, "call">, ref: Reference, seconds: number, requestKey: string) {
     const remote = upload ? args.to : args.from, local = upload ? args.from : args.to;
     if (typeof remote !== "string" || !remote || remote.includes("\0") || typeof local !== "string" || !local || local.includes("\0")) throw new HttpError(400, "Invalid transfer path");
     let target;

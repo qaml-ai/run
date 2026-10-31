@@ -1350,7 +1350,7 @@ export function api(context: ApiContext) {
   channelRoutes(route, () => context.channels);
   definitionRoutes(route, () => context);
   workspaceRoutes(route, () => accounts.db);
-  computerRoutes(route, () => context.computers);
+  computerRoutes(route, () => context.computers, operatorOnly);
   runRoutes(route, () => context);
   endUserRoutes(route, () => context.endUsers);
   route(createRoute({

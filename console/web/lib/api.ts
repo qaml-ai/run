@@ -159,7 +159,7 @@ export interface Usage {
   workspaces?: { id: string | null; name: string; responses: number; cost: number }[];
   since: number;
   totals: { responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
-  days: { day: string; model: string; kind: "turn" | "compaction" | "transcription" | "image" | "speech" | "decision" | "computer" | "browser"; responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformCost: number }[];
+  days: { day: string; model: string; kind: "turn" | "compaction" | "transcription" | "image" | "speech" | "decision" | "computer"; responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; platformCost: number }[];
   /** Without workspaceId: each workspace's spend by UTC day (null: Unassigned). */
   workspaceDays?: { day: string; workspace: string | null; responses: number; cost: number }[];
 }

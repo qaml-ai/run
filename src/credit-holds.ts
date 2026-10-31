@@ -22,6 +22,12 @@ export class CreditHolds {
     return Math.max(0, await this.billing.spendable(tenant, sql) - held);
   }
 
+  /** What a tenant could still hold now: the room `reserve` would find. */
+  async available(tenant: string, now = Date.now()) {
+    const held = Number((await this.db.query("select coalesce(sum(amount), 0)::bigint as held from credit_holds where tenant = $1 and expires_at > $2", [tenant, now])).rows[0].held);
+    return Math.max(0, await this.billing.spendable(tenant, this.db) - held);
+  }
+
   /** Hold up to `want` (micro-USD) for call `id`, at least `min`: refused otherwise. `most`: all it could hold, for what the call may ask for. */
   async reserve(tenant: string, id: string, want: number, min: number, now = Date.now()): Promise<{ held: number; most: number } | undefined> {
     return transaction(this.db, async sql => {

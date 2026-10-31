@@ -85,11 +85,11 @@ export const windowDates = (window: { from: number; days: number }) => Array.fro
  * What a `usage` row (`u`) counts, by its model (src/accounts.ts `collectUsage`): a model's responses, a compaction's
  * (`compaction:`), a transcription's (`transcription:`) or images' (`image:`), web searches (`<provider>/web_search`),
  * X searches (`xai/x_search`), page renders (`firecrawl/web_fetch`), tool searches (`runtime/tool_search`) or time on
- * a computer or browser lease (`computer:`, `browser:`).
+ * a managed computer (`computer:`).
  */
 export const usageKind = (u = "u") => `case when ${u}.model like 'compaction:%' then 'compaction' when ${u}.model like 'transcription:%' then 'voice'
   when ${u}.model like 'image:%' then 'images' when ${u}.model like '%/web\\_search' or ${u}.model in ('firecrawl/web_fetch', 'xai/x_search') then 'web'
-  when ${u}.model = 'runtime/tool_search' then 'tool_search' when ${u}.model like 'computer:%' or ${u}.model like 'browser:%' then 'compute' else 'models' end`;
+  when ${u}.model = 'runtime/tool_search' then 'tool_search' when ${u}.model like 'computer:%' then 'compute' else 'models' end`;
 export type AdminUsageKind = "models" | "compaction" | "voice" | "images" | "web" | "tool_search" | "compute";
 /** A `usage` row (`u`) of a model's responses to an agent's turns. */
 export const modelCall = (u = "u") => `((${usageKind(u)}) = 'models')`;

@@ -404,15 +404,15 @@ export type DefinitionConfig = { id: string; revision: number; config: Partial<P
  * rendered), tool search's ranking by meaning (`toolSearch`: `toolSearches` searches, none for
  * embedding a catalog ahead of them), audio transcribed (kind `transcription`: `audioSeconds` of it), or
  * images made (kind `image`: `images` of them, their tokens in `usage`), decisions (kind `decision`: `decisions` answered),
- * or time on a computer or browser lease (kind `computer` or `browser`: `seconds` of it),
+ * or time on a managed computer (kind `computer`: `seconds` of it),
  * with its cost in `usage.cost.total`.
  */
 export type UsageRecord = {
-  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription" | "image" | "speech" | "decision" | "computer" | "browser"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
+  provider?: string; model?: string; usage: any; timestamp?: number; kind?: "turn" | "compaction" | "transcription" | "image" | "speech" | "decision" | "computer"; platform?: boolean; searches?: number; renders?: number; toolSearch?: boolean; toolSearches?: number;
   transcriptions?: number; audioSeconds?: number; images?: number; speeches?: number;
   /** Kind `decision`: questions answered (decisions.ts). */
   decisions?: number;
-  /** Kind `computer` or `browser`: seconds of the lease this charges (computers/metering.ts). */
+  /** Kind `computer`: seconds of it this charges (computers/managed.ts). */
   seconds?: number;
   /** Already persisted beside a Pi journal response. */
   durableReceipt?: boolean;

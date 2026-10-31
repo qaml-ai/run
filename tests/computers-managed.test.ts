@@ -2,382 +2,626 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { Accounts } from "../src/accounts.ts";
+import { usageKind } from "../src/admin-accounts.ts";
 import { postLedger } from "../src/billing.ts";
-import { driver as realDriver, unitCommand, type ComputerDriver, type Unavailable } from "../src/computers/providers.ts";
+import { signatures } from "../src/computers/abuse.ts";
+import { boatMachines, BoatRefused, unitCommand, type Machine, type ManagedMachines } from "../src/computers/managed.ts";
 import { Computers } from "../src/computers/service.ts";
+import { CreditHolds } from "../src/credit-holds.ts";
 import { EndUserCredits } from "../src/end-user-credits.ts";
 import { HttpError } from "../src/http.ts";
 import { Outbound } from "../src/outbound.ts";
-import { DEFAULT_PRICING, leaseCost, micros } from "../src/pricing.ts";
+import { DEFAULT_PRICING, micros } from "../src/pricing.ts";
 import { Tenants } from "../src/tenants.ts";
 import { testDatabase } from "./database.ts";
 
 const HOUR = 3_600_000;
-class Refusal extends Error {
-  readonly detail: Unavailable;
-  constructor(detail: Unavailable) { super(detail.code); this.detail = detail; }
-}
-/** A database of `slots` connections, as a node's pool is, so waiting for a second one while holding one can hang. */
-function pooled(db: any, slots: number) {
-  let free = slots;
-  const waiting: (() => void)[] = [];
-  const take = () => free > 0 ? (free--, Promise.resolve()) : new Promise<void>(resolve => waiting.push(resolve));
-  const give = () => { const next = waiting.shift(); if (next) next(); else free++; };
-  return {
-    held: () => slots - free,
-    db: {
-      async query(...args: any[]) { await take(); try { return await db.query(...args); } finally { give(); } },
-      async connect() {
-        await take();
-        const client = await db.connect(), release = client.release.bind(client);
-        client.release = (...args: any[]) => { release(...args); give(); };
-        return client;
-      },
-    } as any,
+/** What Boat bills a small machine: a billable second every two seconds, at 1e-5 dollars each. */
+const cost = (ms: number) => Math.floor(ms / 2000) * 10;
+
+/** Boat as these tests need it: a machine per key, what it has cost by the clock, and refusals when told to refuse. */
+function fakeBoat(clock: () => number) {
+  const machines = new Map<string, { id: string; tenant: string; createdAt: number; since: string; ttlUntil: number }>();
+  const state = { refusals: [] as { code: string; retryAfterMs?: number }[], loseAnswer: false, creates: 0, removed: [] as string[], extended: [] as number[], runs: [] as { command: string; timeoutSeconds: number }[], listFails: false, removeFails: false, stderr: "" };
+  let since = "2026-10-01T00:00:00.000Z";
+  const expire = () => { for (const [key, machine] of machines) if (machine.ttlUntil <= clock()) machines.delete(key); };
+  const boat: ManagedMachines = {
+    async create(computer, tenant, ttlSeconds) {
+      const refusal = state.refusals.shift();
+      if (refusal) throw new BoatRefused(refusal);
+      state.creates++;
+      let machine = machines.get(computer);
+      if (!machine) machines.set(computer, machine = { id: `bx_${machines.size + state.creates}`, tenant, createdAt: clock(), since, ttlUntil: clock() + ttlSeconds * 1000 });
+      if (state.loseAnswer) { state.loseAnswer = false; throw new Error("the answer was lost"); }
+      return { id: machine.id };
+    },
+    async extend(id, ttlSeconds) { state.extended.push(ttlSeconds); for (const machine of machines.values()) if (machine.id === id) machine.ttlUntil = clock() + ttlSeconds * 1000; },
+    async remove(id) { if (state.removeFails) throw new Error("provider down"); state.removed.push(id); for (const [key, machine] of machines) if (machine.id === id) machines.delete(key); },
+    async list(computer) {
+      if (state.listFails) throw new Error("provider down");
+      expire();
+      return [...machines].filter(([key]) => !computer || key === computer).map(([key, machine]): Machine => {
+        const start = Math.max(machine.createdAt, Date.parse(since) > machine.createdAt ? Date.parse(since) : 0);
+        const micro = cost(clock() - start);
+        return { id: machine.id, computer: key, tenant: machine.tenant, createdAt: machine.createdAt, since, seconds: micro / 10, dollars: micro / 1e6 };
+      });
+    },
+    async run(_id, command, timeoutSeconds) { state.runs.push({ command, timeoutSeconds }); return { exitCode: 0, stdout: "done", stderr: state.stderr, truncated: false }; },
   };
+  return { boat, state, machines, rollover: (at: string) => { since = at; } };
 }
 
-async function fixture(options: { flag?: boolean; platformKey?: boolean; adminKey?: boolean; purchased?: boolean; payer?: { id: string; bucket: string }; slots?: number; agents?: string[] } = {}) {
+async function fixture(options: { flag?: boolean; platformKey?: boolean; adminKey?: boolean; purchased?: boolean; balance?: number; payer?: { id: string; bucket: string }; price?: number; extraAgents?: string[] } = {}) {
   const { db } = await testDatabase();
-  const agents = options.agents ?? ["a"];
-  for (const agent of agents) await db.query("insert into agents(id,tenant,header,revision,name,type,model) values ($1,'payg','{}',1,'A','test','x')", [agent]);
-  const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: {
-    payg: { tokenSha256: createHash("sha256").update("payg").digest("hex"), apiKeys: options.adminKey ? { boat: "admin-boat-key" } : {}, billing: "prepaid" },
-  }, platformKeys: options.platformKey === false ? {} : { boat: "platform-boat-key" } }) });
+  for (const [agent, tenant] of [["a", "payg"], ["b", "payg"], ["c", "rich"], ...(options.extraAgents ?? []).map(id => [id, "payg"])]) await db.query("insert into agents(id,tenant,header,revision,name,type,model) values ($1,$2,'{}',1,'A','test','x')", [agent, tenant]);
+  const entry = (name: string, extra = {}) => ({ tokenSha256: createHash("sha256").update(name).digest("hex"), apiKeys: {}, billing: "prepaid", ...extra });
+  const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: { payg: entry("payg", options.adminKey ? { apiKeys: { boat: "admin-key" } } : {}), rich: entry("rich") }, platformKeys: options.platformKey === false ? {} : { boat: "platform-key" } }) });
   await tenants.reload();
-  const accounts = new Accounts({ db, tenants, pricing: DEFAULT_PRICING, secretsKey: "ab".repeat(32) });
-  const endUsers = new EndUserCredits(db);
-  if (options.purchased !== false) await postLedger(db, [{ tenant: "payg", kind: "purchase", amount: micros(10), key: "fund" }]);
-  else await postLedger(db, [{ tenant: "payg", kind: "grant", amount: micros(5), key: "grant" }]);
-  accounts.billing.invalidate(["payg"]);
+  const accounts = new Accounts({ db, tenants, pricing: { ...DEFAULT_PRICING, ...options.price ? { computerHour: options.price } : {} }, secretsKey: "ab".repeat(32) });
+  const endUsers = new EndUserCredits(db), credit = new CreditHolds(db, accounts.billing);
+  const balanceAtStart = options.balance ?? micros(10);
+  await postLedger(db, [options.purchased === false ? { tenant: "payg", kind: "grant", amount: balanceAtStart, key: "fund" } : { tenant: "payg", kind: "purchase", amount: balanceAtStart, key: "fund" }, { tenant: "rich", kind: "purchase", amount: micros(10), key: "fund-rich" }]);
+  accounts.billing.invalidate(["payg", "rich"]);
   let now = Date.now();
-  const creates: Unavailable[] = [], refusals: Unavailable[] = [], keys: string[] = [], managedFlags: boolean[] = [], extended: number[] = [], waits: number[] = [], closes: string[] = [];
-  const calls: any[] = [];
-  let gate: Promise<void> | undefined;
-  const fake: ComputerDriver = {
-    unavailable: error => error instanceof Refusal ? error.detail : undefined,
-    async extend(_ref, seconds) { extended.push(seconds); },
-    async create(id: string) { const refusal = refusals.shift(); if (refusal) { creates.push(refusal); throw new Refusal(refusal); } return { id }; },
-    async call(_ref, _op, args) { calls.push(args); await gate; return { exitCode: 0, stdout: "done" }; },
-    async close(ref) { closes.push(ref.id); },
-  };
-  const pool = pooled(db, options.slots ?? 100);
-  const service = new Computers({
-    db: pool.db, accounts, outbound: new Outbound(), now: () => now, endUsers, payer: () => options.payer, managed: options.flag !== false, sleep: async ms => { waits.push(ms); },
-    driver: (_provider, credentials, _outbound, driverOptions) => { keys.push(credentials.apiKey); managedFlags.push(!!driverOptions?.managed); return fake; },
-  });
+  const { boat, state, machines, rollover } = fakeBoat(() => now);
+  const keys: string[] = [], waits: number[] = [];
+  const make = (flag: boolean) => new Computers({ db, accounts, outbound: new Outbound(), now: () => now, enabled: flag, runtime: "https://run.test", endUsers: () => endUsers, credit: () => credit, payer: () => options.payer, machines: key => { keys.push(key); return boat; }, sleep: async ms => { waits.push(ms); },
+    driver: () => ({ async create(id: string) { return { id }; }, async call() { return { exitCode: 0, stdout: "byo" }; }, async close() {} }) });
+  const service = make(options.flag !== false);
   const logged: any[] = [], error = console.error;
   console.error = (line: string) => { try { logged.push(JSON.parse(line)); } catch { error(line); } };
-  const done = () => { console.error = error; };
-  const lease = async (agent = "a") => (await db.query("select * from computer_leases where agent=$1 order by sequence desc limit 1", [agent])).rows[0];
-  const leases = async () => Number((await db.query("select count(*)::int as n from computer_leases")).rows[0].n);
-  const balance = async () => Number((await db.query("select balance from credit_accounts where tenant='payg'")).rows[0]?.balance ?? 0);
-  const start = (key = "start", agent = "a") => service.call("payg", agent, "computer_start", {}, key);
+  const row = async (agent = "a") => (await db.query("select * from managed_computers where agent=$1 order by ended_at is null desc, created_at desc limit 1", [agent])).rows[0];
+  const rows = async () => (await db.query("select * from managed_computers")).rows;
+  const balance = async (tenant = "payg") => Number((await db.query("select balance from credit_accounts where tenant=$1", [tenant])).rows[0]?.balance ?? 0);
+  const spent = async (tenant = "payg") => (tenant === "payg" ? balanceAtStart : micros(10)) - await balance(tenant);
+  const holds = async () => (await db.query("select * from end_user_holds")).rows;
+  const connect = (tenant = "payg", agent = "a", input: Record<string, number> = {}, on = service) => on.create(tenant, { agent, provider: "boat", ...input });
+  const start = (tenant = "payg", agent = "a", key = "start", on = service) => on.call(tenant, agent, "computer_start", {}, key);
+  const stop = (tenant = "payg", agent = "a", key = "stop") => service.call(tenant, agent, "computer_stop", {}, key);
   const exec = (key: string, args: Record<string, unknown> = {}) => service.call("payg", "a", "computer_exec", { command: "make", ...args }, key);
-  return { db, accounts, endUsers, service, pool, start, exec, lease, leases, balance, done, logged, refusals, creates, keys, managedFlags, extended, waits, closes, calls, advance: (ms: number) => { now += ms; }, now: () => now,
-    connect: (agent = "a", input: Record<string, number> = {}) => service.create("payg", { agent, provider: "boat", ...input }), block: () => { let open!: () => void; gate = new Promise<void>(resolve => { open = resolve; }); return () => { gate = undefined; open(); }; } };
+  return { db, accounts, endUsers, credit, service, make, state, machines, rollover, keys, waits, logged, row, rows, balance, spent, holds, connect, start, stop, exec, advance: (ms: number) => { now += ms; }, now: () => now, done: () => { console.error = error; } };
 }
-const OUT = { code: "out_of_capacity" };
+const pass = (f: { service: Computers }) => f.service.managed.pass();
+const fund = async (f: Awaited<ReturnType<typeof fixture>>, amount = micros(1)) => { await f.endUsers.setSettings("payg", { enabled: true }); await f.endUsers.post("payg", "u", { kind: "grant", amount, key: "grant" }); };
+const USER = { id: "u", bucket: "work" };
 
-test("AGENT_MANAGED_COMPUTERS off: no managed connection, no start on an existing one, and its tools are gone", async () => {
-  const f = await fixture({ flag: false });
-  await assert.rejects(f.connect(), (error: unknown) => error instanceof HttpError && error.status === 403);
-  await f.db.query("insert into computer_connections(id,tenant,agent,provider,credentials,lease_seconds,daily_seconds,created_at,managed) values('c','payg','a','boat','{}',7200,86400,1,true)");
-  assert.deepEqual(await f.service.tools("payg", "a"), []);
-  await assert.rejects(f.start(), (error: unknown) => error instanceof HttpError && error.status === 403);
-  assert.equal(await f.leases(), 0);
+test("a pass charges what Boat reports since the last charge, and a repeated or concurrent pass charges nothing more", async () => {
+  const f = await fixture();
+  await f.connect();
+  await f.start();
+  await pass(f);
+  assert.equal(await f.spent(), 0, "nothing has run yet");
+  f.advance(60_000);
+  await pass(f);
+  assert.equal(await f.spent(), cost(60_000));
+  await pass(f);
+  await Promise.all([pass(f), pass(f), pass(f)]);
+  assert.equal(await f.spent(), cost(60_000));
+  f.advance(60_000);
+  await pass(f);
+  assert.equal(await f.spent(), cost(120_000));
+
+  const entry = (await f.db.query("select * from credit_ledger where tenant='payg' and kind='usage'")).rows[0];
+  assert.deepEqual([Number(entry.amount), entry.metadata.computer, entry.metadata.computerSeconds], [-cost(120_000), cost(120_000), 60]);
+  await f.accounts.flushUsage();
+  const usage = (await f.accounts.usage("payg", 0)).days;
+  assert.deepEqual(usage.map(day => [day.kind, day.model, day.responses]), [["computer", "boat/computer", 0]]);
+  assert.deepEqual((await f.db.query(`select ${usageKind()} as kind from usage u`)).rows, [{ kind: "compute" }]);
+  assert.deepEqual((await f.service.usage("payg")).map(line => [line.provider, line.sessions, line.costUsd]), [["boat", 1, cost(120_000) / 1e6]]);
+  assert.equal(Number((await f.db.query("select sum(amount) as sum from credit_ledger where tenant='payg'")).rows[0].sum), await f.balance());
   f.done();
 });
 
-test("a managed connection needs no credentials, defaults to two hours and a whole day, and bills to credit", async () => {
+test("a charge that fails before it commits moves nothing and the next pass catches up; one whose caller didn't hear charges no more", async () => {
+  const f = await fixture();
+  await f.connect();
+  await f.start();
+  f.advance(60_000);
+  const recordUsageIn = f.accounts.recordUsageIn;
+  f.accounts.recordUsageIn = async function () { throw new Error("database refused"); };
+  await pass(f);
+  f.accounts.recordUsageIn = recordUsageIn;
+  assert.equal(await f.spent(), 0);
+  assert.equal(Number((await f.row()).usage_micros), 0);
+  assert.ok(f.logged.some(line => line.type === "computer_charge_failed"));
+  const usageCommitted = f.accounts.usageCommitted;
+  f.accounts.usageCommitted = async function () { throw new Error("lost after commit"); };
+  await pass(f);
+  f.accounts.usageCommitted = usageCommitted;
+  assert.equal(await f.spent(), cost(60_000));
+  await pass(f);
+  assert.equal(await f.spent(), cost(60_000));
+  f.done();
+});
+
+test("a new period starts the count over, and nothing is lost or charged twice around it", async () => {
+  const f = await fixture();
+  await f.connect();
+  await f.start();
+  f.advance(60_000);
+  await pass(f);
+  f.rollover(new Date(f.now()).toISOString());
+  f.advance(60_000);
+  await pass(f);
+  assert.equal(await f.spent(), cost(60_000) + cost(60_000));
+  await pass(f);
+  assert.equal(await f.spent(), 2 * cost(60_000));
+  f.done();
+});
+
+test("the price scales what Boat reports: at cost by default, the operator's if set", async () => {
+  const f = await fixture({ price: micros(0.036) });
+  await f.connect();
+  await f.start();
+  f.advance(60_000);
+  await pass(f);
+  assert.equal(await f.spent(), 2 * cost(60_000));
+  assert.equal(Number((await f.row()).charged_micros), 2 * cost(60_000));
+  f.done();
+});
+
+test("stop reads the last of the cost, then deletes the machine, and charges nothing after", async () => {
+  const f = await fixture();
+  await f.connect();
+  await f.start();
+  const { machine } = await f.row();
+  f.advance(45_000);
+  await f.stop();
+  assert.equal(await f.spent(), cost(45_000));
+  assert.deepEqual(f.state.removed, [machine]);
+  assert.ok((await f.row()).ended_at);
+  f.advance(HOUR);
+  await pass(f);
+  assert.equal(await f.spent(), cost(45_000));
+  f.done();
+});
+
+test("a machine past its TTL ends by itself: its row ends at the next pass, and the time since the last charge is not charged", async () => {
+  const f = await fixture({ payer: USER });
+  await fund(f);
+  await f.connect("payg", "a", { leaseSeconds: 300 });
+  await f.start();
+  f.advance(240_000);
+  await pass(f);
+  assert.equal(await f.spent(), cost(240_000));
+  f.advance(120_000);
+  await pass(f);
+  assert.equal(await f.spent(), cost(240_000), "the last minute of a machine that is gone can't be read");
+  assert.ok((await f.row()).ended_at);
+  assert.deepEqual(f.state.removed, [], "nothing to delete");
+  assert.deepEqual(await f.holds(), []);
+  const user = await f.endUsers.get("payg", "u", ["work"]);
+  assert.equal(user.balance, micros(1) - cost(240_000));
+  await f.start("payg", "a", "again");
+  assert.equal((await f.row()).ended_at, null);
+  f.done();
+});
+
+test("out of credit mid-run: the charge posts though it overdraws, the machine stops at that pass, and other tenants are left alone", async () => {
+  const f = await fixture({ balance: 50 });
+  await f.connect();
+  await f.connect("rich", "c");
+  await f.start();
+  await f.start("rich", "c", "start-c");
+  f.advance(120_000);
+  await pass(f);
+  assert.equal(await f.balance(), 50 - cost(120_000));
+  assert.ok(await f.balance() < 0);
+  assert.ok((await f.row()).ended_at);
+  assert.equal(f.state.removed.length, 1);
+  assert.deepEqual(f.logged.filter(line => line.type === "computer_credit_stop").map(line => line.tenant), ["payg"]);
+  assert.equal((await f.row("c")).ended_at, null);
+  f.done();
+});
+
+test("a start refuses credit that model calls hold all of, and an account that never bought credit, with nothing created", async () => {
+  const held = await fixture({ balance: 1000 });
+  await held.connect();
+  await held.credit.reserve("payg", "11111111-1111-4111-8111-111111111111", 1000, 1000, held.now());
+  await assert.rejects(held.start(), (error: unknown) => error instanceof HttpError && error.status === 402 && error.code === "INSUFFICIENT_CREDIT");
+  assert.deepEqual(await held.rows(), []);
+  assert.equal(held.state.creates, 0);
+  held.done();
+
+  const free = await fixture({ purchased: false });
+  await free.connect();
+  await assert.rejects(free.start(), (error: unknown) => error instanceof HttpError && error.status === 403 && /bought credit/.test(error.message));
+  assert.deepEqual(await free.rows(), []);
+  free.done();
+
+  const none = await fixture({ platformKey: false });
+  await none.connect();
+  await assert.rejects(none.start(), (error: unknown) => error instanceof HttpError && error.status === 503);
+  assert.deepEqual(await none.rows(), []);
+  none.done();
+});
+
+test("an end user has the idle time held at the start, pays once when it ends, and a refused hold refuses the start", async () => {
+  const f = await fixture({ payer: USER });
+  await fund(f);
+  await f.connect();
+  await f.start();
+  const [hold] = await f.holds();
+  assert.equal(Number(hold.paid), Math.ceil(7200 * micros(0.018) / 3600));
+  assert.equal((await f.row()).hold, hold.id);
+  f.advance(60_000);
+  await pass(f);
+  assert.equal((await f.endUsers.get("payg", "u", ["work"])).balance, micros(1), "the tenant pays as it goes; the user at the end");
+  await f.stop();
+  const user = await f.endUsers.get("payg", "u", ["work"]);
+  assert.deepEqual([user.balance, user.held], [micros(1) - cost(60_000), 0]);
+  assert.equal((await f.row()).hold, null);
+  const usage = (await f.endUsers.ledger("payg", "u", {})).entries.filter(entry => entry.kind === "usage");
+  assert.deepEqual(usage.map(entry => [entry.raw, entry.metadata.call, entry.metadata.provider]), [[cost(60_000), "computer", "boat"]]);
+  await pass(f);
+  assert.equal((await f.endUsers.get("payg", "u", ["work"])).balance, micros(1) - cost(60_000));
+  f.done();
+
+  const poor = await fixture({ payer: USER });
+  await fund(poor, 100);
+  await poor.connect();
+  await assert.rejects(poor.start(), (error: unknown) => error instanceof HttpError && error.status === 402 && error.code === "END_USER_CREDIT");
+  assert.deepEqual([await poor.rows(), await poor.holds()], [[], []]);
+  poor.done();
+});
+
+test("a settlement that fails is retried by the pass, and posts once", async () => {
+  const f = await fixture({ payer: USER });
+  await fund(f);
+  await f.connect();
+  await f.start();
+  f.advance(60_000);
+  const settleHold = f.endUsers.settleHold;
+  f.endUsers.settleHold = async function () { throw new Error("database refused"); };
+  await f.stop();
+  f.endUsers.settleHold = settleHold;
+  assert.ok((await f.row()).hold);
+  await pass(f);
+  assert.equal((await f.row()).hold, null);
+  await f.db.query("update managed_computers set hold=gen_random_uuid()");
+  await pass(f);
+  assert.equal((await f.endUsers.get("payg", "u", ["work"])).balance, micros(1) - cost(60_000));
+  f.done();
+});
+
+test("a lost answer is the same machine: the next start finds it by its key, or the next pass by its label, and nothing is charged twice", async () => {
+  const f = await fixture();
+  await f.connect();
+  f.state.loseAnswer = true;
+  await assert.rejects(f.start(), (error: unknown) => error instanceof HttpError && error.status === 502 && /Call computer_start again/.test(error.message));
+  const row = await f.row();
+  assert.deepEqual([row.machine, row.ended_at], [null, null]);
+  assert.equal(f.machines.size, 1);
+  await f.start("payg", "a", "retry");
+  assert.equal(f.machines.size, 1, "the same key: no second machine");
+  assert.equal((await f.row()).id, row.id);
+  assert.equal((await f.row()).machine, [...f.machines.values()][0].id);
+  f.done();
+
+  const g = await fixture();
+  await g.connect();
+  g.state.loseAnswer = true;
+  await assert.rejects(g.start());
+  g.advance(60_000);
+  await pass(g);
+  assert.equal((await g.row()).machine, [...g.machines.values()][0].id, "adopted from the listing");
+  assert.equal(await g.spent(), cost(60_000));
+  g.done();
+
+  const h = await fixture();
+  await h.connect();
+  h.state.loseAnswer = true;
+  await assert.rejects(h.start());
+  h.machines.clear();
+  h.advance(5 * 60_000);
+  await pass(h);
+  assert.equal((await h.row()).ended_at, null, "may still be coming");
+  h.advance(6 * 60_000);
+  await pass(h);
+  assert.ok((await h.row()).ended_at);
+  h.done();
+});
+
+test("two starts at once make one machine", async () => {
+  const f = await fixture();
+  await f.connect();
+  await Promise.all([f.start("payg", "a", "one"), f.start("payg", "a", "two"), f.start("payg", "a", "three")]);
+  assert.equal(f.machines.size, 1);
+  assert.equal((await f.rows()).length, 1);
+  f.done();
+});
+
+test("a listing that fails changes nothing, and a machine with no row is only said: not deleted", async () => {
+  const f = await fixture();
+  await f.connect();
+  await f.start();
+  f.state.listFails = true;
+  f.advance(HOUR);
+  await f.service.sweep();
+  assert.equal((await f.row()).ended_at, null);
+  assert.ok(f.logged.some(line => line.type === "computer_pass_failed"));
+  f.state.listFails = false;
+  f.machines.set("cmp_other", { id: "bx_other", tenant: "payg", createdAt: f.now() - 20 * 60_000, since: "2026-10-01T00:00:00.000Z", ttlUntil: f.now() + HOUR });
+  await pass(f);
+  assert.deepEqual(f.logged.filter(line => line.type === "computer_leak").map(line => [line.computer, line.machine]), [["cmp_other", "bx_other"]]);
+  assert.deepEqual(f.state.removed, []);
+  f.done();
+});
+
+test("only this runtime's machines are listed, created with the key and labels that say so; another runtime's are never seen", async () => {
+  const requests: { path: string; method: string; body?: any; headers?: any }[] = [];
+  let processPolls = 0;
+  const outbound = { fetch: async (url: string, init: any) => {
+    const parsed = new URL(url), path = parsed.pathname.replace("/api/v1", "") + parsed.search, method = init.method ?? "GET", body = init.body ? JSON.parse(init.body) : undefined;
+    requests.push({ path, method, headers: init.headers, ...body ? { body } : {} });
+    if (path.startsWith("/sandboxes?")) return Response.json(parsed.searchParams.get("cursor")
+      ? { sandboxes: [{ id: "b2", state: "idle", createdAt: "2026-10-31T00:00:00Z", labels: { computer: "cmp_2", tenant: "t2" }, cost: { since: "2026-10-01T00:00:00Z", seconds: 8, dollars: 0.00008 } }, { id: "old", state: "stopped", createdAt: "2026-10-31T00:00:00Z", labels: { computer: "cmp_3" } }], pageInfo: { hasMore: false } }
+      : { sandboxes: [{ id: "b1", state: "running", createdAt: "2026-10-31T00:00:00Z", labels: { computer: "cmp_1", tenant: "t1" }, cost: { since: "2026-10-01T00:00:00Z", seconds: 4, dollars: 0.00004 } }], pageInfo: { hasMore: true, nextCursor: "next" } });
+    if (path.endsWith("/commands") && body.detached) return Response.json({ processId: "p1" });
+    if (path.endsWith("/commands")) return Response.json({ exitCode: 0, stdout: "waited\u001b[3J", stderr: "TERM environment variable not set.\n" });
+    if (path.endsWith("/commands/p1")) return Response.json(++processPolls < 2 ? { status: "running", running: true } : { status: "exited", running: false, exitCode: 3, stdout: "polled", stderr: "e" });
+    return Response.json({ sandbox: { id: "bx_1", state: "provisioned" } });
+  } } as any;
+  const boat = boatMachines("k", outbound, "https://run.test", "apply-rules");
+  assert.deepEqual(await boat.create("cmp_1", "payg", 7200), { id: "bx_1" });
+  assert.deepEqual(requests[0].body.labels, { "camelrun-runtime": "https://run.test", computer: "cmp_1", tenant: "payg" });
+  assert.equal(requests[0].headers["Idempotency-Key"], "cmp_1");
+  assert.deepEqual([requests[0].body.type, requests[0].body.ttlSeconds, requests[0].body.snapshots, requests[0].body.noEnv], ["small", 7200, false, true]);
+  assert.match(requests[1].body.command, /apply-rules/, "set up before anyone uses it");
+
+  requests.length = 0;
+  assert.deepEqual((await boat.list()).map(m => [m.id, m.computer, m.seconds, m.dollars]), [["b1", "cmp_1", 4, 0.00004], ["b2", "cmp_2", 8, 0.00008]]);
+  assert.match(requests[0].path, /include=cost/);
+  assert.equal(new URL(`https://x${requests[0].path}`).searchParams.get("label"), "camelrun-runtime=https://run.test");
+  await boat.extend("bx_1", 7200);
+  assert.deepEqual([requests.at(-1)!.method, requests.at(-1)!.body], ["PATCH", { ttlSeconds: 7200 }]);
+
+  const waited = await boat.run("bx_1", "make", 590);
+  assert.deepEqual([waited.stdout, waited.stderr], ["waited", ""], "what Boat's own shell adds on some machines isn't the command's");
+  assert.equal(requests.at(-1)!.body.timeoutSeconds, 595, "its unit's own limit comes first");
+  assert.match(requests.at(-1)!.body.command, /systemd-run/);
+  const long = await boat.run("bx_1", "make", 1800);
+  assert.deepEqual([long.exitCode, long.stdout, long.stderr], [3, "polled", "e"]);
+});
+
+test("Boat's refusals are read by code, a stored one's retry time from where Boat puts it", async () => {
+  const answer = (status: number, body: unknown) => ({ fetch: async () => Response.json(body, { status }) }) as any;
+  const f = await fixture();
+  await f.connect();
+  const refusal = async (status: number, body: unknown) => {
+    const boat = boatMachines("k", answer(status, body), "r");
+    return boat.create("cmp", "t", 60).then(() => assert.fail("should refuse"), error => (error as any).refused);
+  };
+  assert.deepEqual(await refusal(503, { code: "out_of_capacity" }), { code: "out_of_capacity" });
+  assert.deepEqual(await refusal(429, { error: { code: "limit_reached" } }), { code: "limit_reached" });
+  const limited = await refusal(429, { code: "rate_limited", error: { code: "rate_limited", details: { nextStartAt: new Date(Date.now() + 8000).toISOString() } } });
+  assert.ok(limited.retryAfterMs > 5000 && limited.retryAfterMs <= 8000);
+  assert.deepEqual(await refusal(401, {}), { code: "http_401" });
+  assert.equal(await refusal(500, {}), undefined, "what it may have made isn't known");
+  assert.equal(await refusal(503, { code: "something_new" }), undefined);
+  f.done();
+});
+
+test("out_of_capacity is tried again briefly and logged each time; if it lasts, a clear error, nothing charged, the hold back, and the next start works", async () => {
+  const f = await fixture({ payer: USER });
+  await fund(f);
+  await f.connect();
+  const OUT = { code: "out_of_capacity" };
+  f.state.refusals.push(OUT, OUT);
+  await f.start();
+  assert.deepEqual(f.waits, [5000, 10000]);
+  assert.equal((await f.row()).ended_at, null);
+  await f.stop();
+
+  f.waits.length = 0;
+  f.state.refusals.push(OUT, OUT, OUT);
+  await assert.rejects(f.start("payg", "a", "lasting"), (error: unknown) => error instanceof HttpError && error.status === 503 && error.code === "COMPUTER_UNAVAILABLE" && error.details?.reason === "out_of_capacity" && /no machines free right now. Nothing was created or charged/.test(error.message));
+  assert.ok((await f.row()).ended_at);
+  assert.equal(Number((await f.row()).charged_micros), 0);
+  assert.deepEqual(await f.holds(), []);
+  assert.equal(f.logged.filter(line => line.type === "computer_unavailable" && line.code === "out_of_capacity").length, 5);
+  await f.start("payg", "a", "next");
+  assert.equal((await f.row()).ended_at, null);
+  f.done();
+});
+
+test("rate_limited waits when Boat says it is soon and says when otherwise; limit_reached and billing_required don't wait", async () => {
+  const f = await fixture();
+  await f.connect();
+  f.state.refusals.push({ code: "rate_limited", retryAfterMs: 8000 });
+  await f.start("payg", "a", "soon");
+  assert.deepEqual(f.waits, [8000]);
+  await f.stop();
+  f.state.refusals.push({ code: "rate_limited", retryAfterMs: 90_000 });
+  await assert.rejects(f.start("payg", "a", "later"), (error: unknown) => error instanceof HttpError && error.status === 429 && /in about 90 seconds/.test(error.message));
+  f.state.refusals.push({ code: "limit_reached" });
+  await assert.rejects(f.start("payg", "a", "full"), (error: unknown) => error instanceof HttpError && error.status === 503 && /Too many computers are running/.test(error.message));
+  f.state.refusals.push({ code: "billing_required" });
+  await assert.rejects(f.start("payg", "a", "wallet"), (error: unknown) => error instanceof HttpError && error.status === 503 && /operator/.test(error.message));
+  assert.deepEqual(f.waits, [8000]);
+  f.done();
+});
+
+test("a connection needs no credentials, the flag gates it, and an admin's key is the tenant's to account for", async () => {
+  const off = await fixture({ flag: false });
+  await assert.rejects(off.connect(), (error: unknown) => error instanceof HttpError && error.status === 403);
+  await off.db.query("insert into computer_connections(id,tenant,agent,provider,credentials,lease_seconds,daily_seconds,created_at,managed) values('c','payg','a','boat','{}',7200,86400,1,true)");
+  assert.deepEqual(await off.service.tools("payg", "a"), []);
+  await assert.rejects(off.start(), (error: unknown) => error instanceof HttpError && error.status === 403);
+  assert.deepEqual(await off.rows(), []);
+  off.done();
+
   const f = await fixture();
   const connection = await f.connect();
   assert.deepEqual([connection.provider, connection.managed, connection.billing, connection.leaseSeconds, connection.dailySeconds], ["boat", true, "credits", 7200, 86400]);
-  const tools = await f.service.tools("payg", "a");
-  const exec = tools.find(t => t.name === "computer_exec")!;
+  const exec = (await f.service.tools("payg", "a")).find(t => t.name === "computer_exec")!;
   assert.match(exec.description, /a background process doesn't keep running after its command ends/);
   assert.equal((exec.parameters as any).properties.timeoutSeconds.maximum, 1800);
-  assert.equal(exec.timeoutMs, 1860_000);
-  await assert.rejects(f.service.create("payg", { agent: "a", provider: "boat", leaseSeconds: 86401 }), /time limits/);
+  await assert.rejects(f.service.create("payg", { agent: "b", provider: "boat", leaseSeconds: 86401 }), /time limits/);
   f.done();
+
+  const admin = await fixture({ adminKey: true, purchased: false });
+  await admin.connect();
+  await admin.start();
+  assert.equal((await admin.row()).platform, false);
+  assert.equal(admin.keys.at(-1), "admin-key");
+  admin.advance(60_000);
+  await pass(admin);
+  assert.equal(await admin.spent(), 0);
+  await admin.stop();
+  assert.equal(admin.keys.at(-1), "admin-key");
+  assert.equal(admin.state.removed.length, 1);
+  admin.done();
 });
 
-test("a start on the platform's key is charged at Boat's price with the platform's key; a machine that started bills from then", async () => {
-  const f = await fixture();
-  await f.connect();
-  await f.start();
-  const lease = await f.lease();
-  assert.deepEqual([lease.provider, lease.platform, Number(lease.price_hour), lease.state], ["boat", true, micros(0.018), "active"]);
-  assert.deepEqual([f.keys, f.managedFlags], [["platform-boat-key"], [true]]);
-  const before = await f.balance();
-  f.advance(3_600_000);
-  await f.service.sweep();
-  assert.equal(before - await f.balance(), micros(0.018), "an hour of a small machine, at cost");
-  f.done();
-});
-
-test("an admin's key for the tenant makes the computer the tenant's to account for: no charge, even on free credit", async () => {
-  const f = await fixture({ adminKey: true, purchased: false });
-  await f.connect();
-  await f.start();
-  const lease = await f.lease();
-  assert.deepEqual([lease.platform, lease.price_hour, lease.metered_until], [false, null, null]);
-  assert.equal(f.keys[0], "admin-boat-key");
-  const before = await f.balance();
-  f.advance(HOUR);
-  await f.service.sweep();
-  await f.service.call("payg", "a", "computer_stop", {}, "stop");
-  assert.equal(await f.balance(), before);
-  assert.deepEqual(f.keys.at(-1), "admin-boat-key", "closed with the key that made it");
-  f.done();
-});
-
-test("an account that has never bought credit is refused on the platform's key, with nothing created", async () => {
-  const f = await fixture({ purchased: false });
-  await f.connect();
-  await assert.rejects(f.start(), (error: unknown) => error instanceof HttpError && error.status === 403 && /bought credit/.test(error.message));
-  assert.equal(await f.leases(), 0);
-  f.done();
-});
-
-test("no key to run on: a clear refusal, with nothing created", async () => {
-  const f = await fixture({ platformKey: false });
-  await f.connect();
-  await assert.rejects(f.start(), (error: unknown) => error instanceof HttpError && error.status === 503);
-  assert.equal(await f.leases(), 0);
-  f.done();
-});
-
-test("out_of_capacity is tried again briefly, and logged each time, then a start that succeeds bills only from then", async () => {
-  const f = await fixture();
-  await f.connect();
-  f.refusals.push(OUT, OUT);
-  await f.start();
-  assert.deepEqual(f.waits, [5000, 10000]);
-  assert.equal((await f.lease()).state, "active");
-  assert.deepEqual(f.logged.filter(line => line.type === "computer_unavailable").map(line => [line.code, line.attempt, line.provider, line.tenant]), [["out_of_capacity", 0, "boat", "payg"], ["out_of_capacity", 1, "boat", "payg"]]);
-  f.done();
-});
-
-test("out_of_capacity that lasts: a clear error, nothing charged, the hold back, and the next start works", async () => {
-  const f = await fixture({ payer: { id: "u", bucket: "work" } });
-  await f.endUsers.setSettings("payg", { enabled: true });
-  await f.endUsers.post("payg", "u", { kind: "grant", amount: micros(1), key: "grant" });
-  await f.connect();
-  f.refusals.push(OUT, OUT, OUT);
-  const before = await f.balance();
-  await assert.rejects(f.start(), (error: unknown) => error instanceof HttpError && error.status === 503 && error.code === "COMPUTER_UNAVAILABLE" && /no machines free right now. Nothing was created or charged/.test(error.message) && error.details?.reason === "out_of_capacity");
-  const lease = await f.lease();
-  assert.deepEqual([lease.state, lease.metered_until, lease.hold, Number(lease.metered_seconds)], ["closed", null, null, 0]);
-  assert.deepEqual((await f.db.query("select * from end_user_holds")).rows, []);
-  assert.equal(await f.balance(), before);
-  assert.equal(f.logged.filter(line => line.type === "computer_unavailable").length, 3);
-  await f.start("start-again");
-  assert.equal((await f.lease()).state, "active");
-  f.done();
-});
-
-test("rate_limited waits when Boat says it is soon, and says when otherwise; limit_reached and billing_required don't wait", async () => {
-  const f = await fixture();
-  await f.connect();
-  f.refusals.push({ code: "rate_limited", retryAfterMs: 8000 });
-  await f.start("soon");
-  assert.deepEqual(f.waits, [8000]);
-  await f.service.call("payg", "a", "computer_stop", {}, "stop");
-
-  f.refusals.push({ code: "rate_limited", retryAfterMs: 90_000 });
-  await assert.rejects(f.start("later"), (error: unknown) => error instanceof HttpError && error.status === 429 && /in about 90 seconds/.test(error.message));
-  f.refusals.push({ code: "limit_reached" });
-  await assert.rejects(f.start("full"), (error: unknown) => error instanceof HttpError && error.status === 503 && /Too many computers are running/.test(error.message));
-  f.refusals.push({ code: "billing_required" });
-  await assert.rejects(f.start("wallet"), (error: unknown) => error instanceof HttpError && error.status === 503 && /operator/.test(error.message));
-  assert.deepEqual(f.waits, [8000]);
-  f.done();
-});
-
-test("a command may run half an hour, 10 minutes by default; a provider connection's stay at 2 minutes", async () => {
+test("commands: half an hour at most, 10 minutes by default, and a retry answers from what it did", async () => {
   const f = await fixture();
   await f.connect();
   await f.start();
   await f.exec("default");
   await f.exec("long", { timeoutSeconds: 1800 });
-  assert.deepEqual(f.calls.map(args => args.timeoutSeconds), [600, 1800]);
+  assert.deepEqual(f.state.runs.map(run => run.timeoutSeconds), [600, 1800]);
   await assert.rejects(f.exec("too-long", { timeoutSeconds: 1801 }), /1–1800 seconds/);
+  assert.deepEqual(await f.exec("long", { timeoutSeconds: 1800 }), { exitCode: 0, stdout: "done", stderr: "", truncated: false });
+  assert.equal(f.state.runs.length, 2);
+  await assert.rejects(f.exec("long", { timeoutSeconds: 60 }), /changed/);
+  await f.service.call("payg", "a", "computer_write_file", { path: "/tmp/x", content: "hi" }, "write");
+  assert.match(f.state.runs.at(-1)!.command, /write_text/);
+  await f.stop();
+  await assert.rejects(f.exec("after-stop"), /Call computer_start/);
   f.done();
-
-  const byo = await fixture();
-  await byo.service.create("payg", { agent: "a", provider: "boat", credentials: { apiKey: "k" } });
-  await byo.start();
-  await assert.rejects(byo.exec("too-long", { timeoutSeconds: 121 }), /1–120 seconds/);
-  await byo.exec("default");
-  assert.equal(byo.calls[0].timeoutSeconds, 60);
-  assert.equal(byo.managedFlags.at(-1), false);
-  assert.equal(byo.keys.at(-1), "k");
-  byo.done();
 });
 
-test("a command holds no connection while it runs, and the computer can be stopped under it", async () => {
-  const f = await fixture();
+test("a command keeps the computer for its idle time from now, up to 24 hours from its start, moving the machine's own expiry and the end user's hold", async () => {
+  const f = await fixture({ payer: USER });
+  await fund(f);
   await f.connect();
   await f.start();
-  const open = f.block();
-  const running = f.exec("long", { timeoutSeconds: 1800 });
-  for (let i = 0; i < 200 && !f.calls.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(f.calls.length, 1);
-  assert.equal(f.pool.held(), 0, "nothing held while the command runs");
-  assert.deepEqual(await f.service.call("payg", "a", "computer_stop", {}, "stop"), { stopped: true });
-  assert.equal((await f.lease()).state, "closed");
-  open();
-  assert.deepEqual(await running, { exitCode: 0, stdout: "done" });
-  // Its operation is recorded though it finished after the lock: a retry answers from it.
-  assert.deepEqual(await f.exec("long", { timeoutSeconds: 1800 }), { exitCode: 0, stdout: "done" });
-  assert.equal(f.calls.length, 1);
-  f.done();
-});
-
-test("a provider connection's command still runs under the lock", async () => {
-  const f = await fixture();
-  await f.service.create("payg", { agent: "a", provider: "e2b", credentials: { apiKey: "k" } });
-  await f.start();
-  const open = f.block();
-  const running = f.exec("one");
-  for (let i = 0; i < 200 && !f.calls.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(f.pool.held(), 1);
-  open();
-  await running;
-  f.done();
-});
-
-test("many stops and starts at once finish on a small pool: nothing holds its lock waiting for a second connection", async () => {
-  const agents = Array.from({ length: 12 }, (_, i) => `agent-${i}`);
-  const f = await fixture({ agents, slots: 3, payer: { id: "u", bucket: "work" } });
-  await f.endUsers.setSettings("payg", { enabled: true });
-  await f.endUsers.post("payg", "u", { kind: "grant", amount: micros(1), key: "grant" });
-  for (const agent of agents) await f.connect(agent);
-  const within = <T>(work: Promise<T>) => Promise.race([work, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the pool is stuck")), 30_000).unref())]);
-  await within(Promise.all(agents.map(agent => f.start(`start-${agent}`, agent))));
-  f.advance(30_000);
-  const before = await f.balance();
-  await within(Promise.all(agents.map(agent => f.service.call("payg", agent, "computer_stop", {}, `stop-${agent}`))));
-  assert.equal(f.closes.length, 12);
-  assert.equal(before - await f.balance(), 12 * leaseCost(30, micros(0.018)));
-  assert.deepEqual((await f.db.query("select * from end_user_holds")).rows, []);
-  assert.equal(f.pool.held(), 0);
-  f.done();
-});
-
-test("a command keeps the computer for its idle time from now, up to 24 hours from its start, and moves the machine's own expiry", async () => {
-  const f = await fixture();
-  await f.connect();
-  await f.start();
-  const started = Number((await f.lease()).created_at);
-  assert.equal(Number((await f.lease()).expires_at), started + 2 * HOUR);
-
-  // More than half is left: nothing to do.
+  const started = Number((await f.row()).created_at);
+  assert.equal(Number((await f.row()).deadline), started + 2 * HOUR);
   f.advance(30 * 60_000);
   await f.exec("soon");
-  assert.equal(Number((await f.lease()).expires_at), started + 2 * HOUR);
-  assert.deepEqual(f.extended, []);
-
+  assert.deepEqual(f.state.extended, [], "more than half is left");
   f.advance(40 * 60_000);
+  await pass(f);
   await f.exec("later");
-  assert.equal(Number((await f.lease()).expires_at), f.now() + 2 * HOUR);
-  assert.deepEqual(f.extended, [7200]);
-
-  for (let elapsed = 70 * 60_000; elapsed < 21.5 * HOUR; elapsed += 90 * 60_000) { f.advance(90 * 60_000); await f.exec(`step-${elapsed}`); }
+  assert.equal(Number((await f.row()).deadline), f.now() + 2 * HOUR);
+  assert.deepEqual(f.state.extended, [7200]);
+  const held = Number((await f.holds())[0].paid);
+  assert.ok(held > Math.ceil(7200 * micros(0.018) / 3600), "more of the user's credit is held");
+  for (let elapsed = 70; elapsed < 22 * 60; elapsed += 90) { f.advance(90 * 60_000); await pass(f); await f.exec(`step-${elapsed}`); }
   f.advance(60 * 60_000);
   await f.exec("near-the-end");
-  assert.equal(Number((await f.lease()).expires_at), started + 24 * HOUR, "never past its hard stop");
+  assert.equal(Number((await f.row()).deadline), started + 24 * HOUR, "never past its hard stop");
+
   f.done();
 });
 
-test("left alone, it is released after its idle time and charged for no more", async () => {
-  const f = await fixture();
+test("a hold refused leaves the expiry as it is, says so, and the command still runs", async () => {
+  const f = await fixture({ payer: USER });
+  await fund(f, Math.ceil(7200 * micros(0.018) / 3600));
   await f.connect();
   await f.start();
-  const before = await f.balance();
-  f.advance(3 * HOUR);
-  await f.service.sweep();
-  assert.equal((await f.lease()).state, "closed");
-  assert.deepEqual(f.closes.length, 1);
-  assert.equal(before - await f.balance(), leaseCost(7200, micros(0.018)));
-  f.done();
-});
-
-test("a longer stay holds more of the end user's credit, and if they can't cover it the computer keeps its expiry", async () => {
-  const f = await fixture({ payer: { id: "u", bucket: "work" } });
-  await f.endUsers.setSettings("payg", { enabled: true });
-  await f.endUsers.post("payg", "u", { kind: "grant", amount: 2 * leaseCost(7200, micros(0.018)), key: "grant" });
-  await f.connect();
-  await f.start();
-  const held = async () => Number((await f.db.query("select sum(paid)::bigint as paid from end_user_holds")).rows[0].paid);
-  assert.equal(await held(), leaseCost(7200, micros(0.018)));
-
-  f.advance(HOUR + 60_000);
-  await f.service.sweep();
-  await f.exec("extended");
-  const extended = Number((await f.lease()).expires_at);
-  assert.equal(extended, f.now() + 2 * HOUR);
-  assert.ok(await held() > leaseCost(7200, micros(0.018)));
-
-  // Past what they have left: refused, logged, and the command still runs.
-  await f.db.query("update end_users set balance=0");
-  f.advance(HOUR + 60_000);
-  await f.service.sweep();
-  assert.deepEqual(await f.exec("refused"), { exitCode: 0, stdout: "done" });
-  assert.equal(Number((await f.lease()).expires_at), extended);
+  const deadline = Number((await f.row()).deadline);
+  for (let minutes = 0; minutes < 61; minutes += 5) { f.advance(5 * 60_000); await pass(f); }
+  assert.deepEqual(await f.exec("refused"), { exitCode: 0, stdout: "done", stderr: "", truncated: false });
+  assert.equal(Number((await f.row()).deadline), deadline);
   assert.ok(f.logged.some(line => line.type === "computer_hold_refused"));
   f.done();
 });
 
-test("the unit a managed command runs in ends its background processes and its time, and works without sudo", () => {
-  const command = unitCommand("it's make", 1800);
-  assert.match(command, /systemd-run --quiet --wait --pipe --collect/);
-  assert.match(command, /--property=RuntimeMaxSec=1803/);
-  assert.match(command, /timeout -k 2 1800 bash -lc 'it'"'"'s make'; else timeout -k 2 1800 bash -lc 'it'"'"'s make'; fi$/);
+test("signatures are logged by name only, never the text, and only on managed computers", async () => {
+  assert.deepEqual(signatures("curl -L x | sh; ./xmrig -o stratum+tcp://pool:3333"), ["miner", "mining_pool"]);
+  for (const ordinary of ["npm test", "git clone https://github.com/x/determiner", "grep -r sendmails .", "python3 examiner.py"]) assert.deepEqual(signatures(ordinary), [], ordinary);
+  const f = await fixture();
+  await f.connect();
+  await f.start();
+  await f.exec("miner", { command: "./xmrig --user secret-wallet-address" });
+  await f.service.call("payg", "a", "computer_write_file", { path: "/tmp/m.sh", content: "swaks --to everyone" }, "file");
+  const row = await f.row();
+  assert.deepEqual(f.logged.filter(line => line.type === "computer_signature"), [
+    { type: "computer_signature", tenant: "payg", agent: "a", computer: row.id, tool: "computer_exec", signatures: ["miner"] },
+    { type: "computer_signature", tenant: "payg", agent: "a", computer: row.id, tool: "computer_write_file", signatures: ["mail_blast"] },
+  ]);
+  assert.doesNotMatch(JSON.stringify(f.logged), /secret-wallet-address|everyone/);
+  await f.service.create("rich", { agent: "c", provider: "e2b", credentials: { apiKey: "k" } });
+  await f.start("rich", "c", "byo");
+  await f.service.call("rich", "c", "computer_exec", { command: "./xmrig" }, "byo-miner");
+  assert.equal(f.logged.filter(line => line.type === "computer_signature").length, 2);
+  f.done();
 });
 
-test("the Boat driver: a managed command in its unit, a long one detached and polled, Boat's refusals by code, and the expiry moved", async () => {
-  const requests: { path: string; method: string; body?: any }[] = [];
-  let polls = 0;
-  const answers: Record<string, () => Response> = {};
-  const outbound = { fetch: async (url: string, init: any) => {
-    const path = new URL(url).pathname.replace("/api/v1", ""), method = init.method ?? "GET", body = init.body ? JSON.parse(init.body) : undefined;
-    requests.push({ path, method, ...(body ? { body } : {}) });
-    if (answers[`${method} ${path}`]) return answers[`${method} ${path}`]();
-    if (method === "POST" && path.endsWith("/commands")) return body.detached ? Response.json({ processId: "p1" }) : Response.json({ exitCode: 0, stdout: "waited", stderr: "" });
-    if (method === "GET" && path.endsWith("/commands/p1")) return Response.json(++polls < 2 ? { status: "running", running: true } : { status: "exited", running: false, exitCode: 3, stdout: "polled", stderr: "e" });
-    if (method === "PATCH") return Response.json({ ok: true });
-    return Response.json({ sandbox: { id: "bx_1", state: "idle" } });
-  } } as any;
-  const d = await realDriver("boat", { apiKey: "k" }, outbound, { managed: true });
+test("a command run without its unit is counted, with no content, and the marker doesn't reach the agent", async () => {
+  const f = await fixture();
+  await f.connect();
+  await f.start();
+  f.state.stderr = "CAMEL_NO_UNIT\nreal error";
+  assert.equal(((await f.exec("no-unit")) as any).stderr, "real error");
+  assert.deepEqual(f.logged.filter(line => line.type === "computer_unit_fallback").map(line => line.tenant), ["payg"]);
+  assert.match(unitCommand("it's make", 1800), /--property=RuntimeMaxSec=1803/);
+  assert.match(unitCommand("it's make", 1800), /echo CAMEL_NO_UNIT >&2; timeout -k 2 1800 bash -lc 'it'"'"'s make'; fi$/);
+  f.done();
+});
 
-  assert.equal(((await d.call({ id: "bx_1" }, "computer_exec", { command: "make", timeoutSeconds: 590 })) as any).stdout, "waited");
-  assert.equal(requests.at(-1)!.body.timeoutSeconds, 595, "its unit's own limit comes first");
-  assert.match(requests.at(-1)!.body.command, /systemd-run/);
+test("the flag off stops every running managed computer at the next pass, charging up to then; a provider connection keeps running", async () => {
+  const f = await fixture();
+  await f.connect();
+  await f.start();
+  await f.service.create("rich", { agent: "c", provider: "e2b", credentials: { apiKey: "k" } });
+  await f.start("rich", "c", "byo");
+  f.advance(60_000);
+  const off = f.make(false);
+  await off.sweep();
+  assert.ok((await f.row()).ended_at);
+  assert.equal(await f.spent(), cost(60_000));
+  assert.equal((await f.db.query("select state from computer_leases where agent='c'")).rows[0].state, "active");
+  assert.equal(f.logged.filter(line => line.type === "computer_kill_stop").length, 1);
+  f.done();
+});
 
-  const long: any = await d.call({ id: "bx_1" }, "computer_exec", { command: "make", timeoutSeconds: 1800 });
-  assert.deepEqual([long.exitCode, long.stdout, long.stderr], [3, "polled", "e"]);
-  assert.equal(requests.find(r => r.body?.detached)!.body.detached, true);
+test("the operator's stop gets every computer of an account, however many; with block no new one starts until lifted", async () => {
+  const agents = Array.from({ length: 250 }, (_, i) => `agent-${i}`);
+  const f = await fixture({ extraAgents: agents });
+  for (const agent of agents) await f.connect("payg", agent);
+  await f.connect("rich", "c");
+  await f.db.query(`insert into managed_computers(id,tenant,agent,connection,platform,machine,deadline,created_at)
+    select 'cmp_' || agent, 'payg', agent, id, true, 'bx_' || agent, $1::bigint, $2::bigint from computer_connections where tenant='payg'`, [f.now() + HOUR, f.now()]);
+  await f.start("rich", "c", "start-c");
+  const result = await f.service.managed.stopTenant("payg", "ops", true);
+  assert.deepEqual(result, { stopped: 250, failed: 0, blocked: true });
+  assert.equal((await f.db.query("select count(*)::int as n from managed_computers where tenant='payg' and ended_at is null")).rows[0].n, 0);
+  assert.equal((await f.row("c")).ended_at, null);
+  await assert.rejects(f.start("payg", "agent-0", "blocked"), (error: unknown) => error instanceof HttpError && error.status === 403 && /turned off for this account/.test(error.message));
+  assert.equal(f.logged.filter(line => line.type === "computer_tenant_stopped").at(-1).by, "ops");
+  assert.deepEqual(await f.service.managed.unblockTenant("payg"), { blocked: false });
+  await f.start("payg", "agent-0", "after");
+  f.done();
+});
 
-  await d.extend!({ id: "bx_1" }, 7200);
-  assert.deepEqual(requests.at(-1), { path: "/sandboxes/bx_1", method: "PATCH", body: { ttlSeconds: 7200 } });
+test("a failed delete: stop says so and can be retried, stop-all counts it and doesn't loop on it", async () => {
+  const f = await fixture();
+  await f.connect();
+  await f.start();
+  f.state.removeFails = true;
+  await assert.rejects(f.stop(), (error: unknown) => error instanceof HttpError && error.status === 502);
+  assert.equal((await f.row()).ended_at, null);
+  assert.deepEqual(await f.service.managed.stopTenant("payg", "ops", false), { stopped: 0, failed: 1, blocked: false });
+  f.state.removeFails = false;
+  await f.service.call("payg", "a", "computer_stop", {}, "stop-again");
+  assert.ok((await f.row()).ended_at);
+  f.done();
+});
 
-  const start = "POST /sandboxes";
-  const refusedWith = async (status: number, body: unknown) => {
-    answers[start] = () => Response.json(body, { status });
-    return d.create("cmp_1", 7200).then(() => assert.fail("should refuse"), error => d.unavailable!(error));
-  };
-  assert.deepEqual(await refusedWith(503, { code: "out_of_capacity" }), { code: "out_of_capacity" });
-  assert.deepEqual(await refusedWith(429, { error: { code: "limit_reached" } }), { code: "limit_reached" });
-  const limited = await refusedWith(429, { code: "rate_limited", nextStartAt: new Date(Date.now() + 8000).toISOString() });
-  assert.equal(limited!.code, "rate_limited");
-  assert.ok(limited!.retryAfterMs! > 5000 && limited!.retryAfterMs! <= 8000);
-  assert.equal(await refusedWith(503, { code: "something_new" }), undefined, "what it may have made isn't known");
-  assert.equal(await refusedWith(500, {}), undefined);
-
-  const plain = await realDriver("boat", { apiKey: "k" }, outbound);
-  delete answers[start];
-  await plain.call({ id: "bx_1" }, "computer_exec", { command: "make", timeoutSeconds: 60 });
-  assert.doesNotMatch(requests.at(-1)!.body.command, /systemd-run/, "a provider connection runs as it did");
+test("the API shows a managed session as a session, and disconnecting stops the machine", async () => {
+  const f = await fixture();
+  const connection = await f.connect();
+  await f.start();
+  const row = await f.row();
+  const [listed] = await f.service.list("payg");
+  assert.deepEqual([listed.session!.id, listed.session!.state, listed.session!.provider, listed.session!.recoveryRequired], [row.id, "active", "boat", false]);
+  assert.equal((await f.service.status("payg", "a")).session!.expiresAt, Number(row.deadline));
+  await f.service.remove("payg", connection.id);
+  assert.deepEqual(f.state.removed, [row.machine]);
+  assert.ok((await f.row()).ended_at);
+  f.done();
 });
