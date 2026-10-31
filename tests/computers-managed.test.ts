@@ -380,6 +380,7 @@ test("only this runtime's machines are listed, created with the key and labels t
   assert.deepEqual([waited.stdout, waited.stderr], ["waited", ""], "what Boat's own shell adds on some machines isn't the command's");
   assert.equal(requests.at(-1)!.body.timeoutSeconds, 595, "its unit's own limit comes first");
   assert.match(requests.at(-1)!.body.command, /systemd-run/);
+  assert.match(requests.at(-1)!.body.command, /printf %s 'make' > "\$d\/command"/, "not in the unit's arguments, where systemd would expand it");
   const long = await boat.run("bx_1", "make", 1800);
   assert.deepEqual([long.exitCode, long.stdout, long.stderr], [3, "polled", "e"]);
 });
@@ -558,8 +559,8 @@ test("a command run without its unit is counted, with no content, and the marker
   f.state.stderr = "CAMEL_NO_UNIT\nreal error";
   assert.equal(((await f.exec("no-unit")) as any).stderr, "real error");
   assert.deepEqual(f.logged.filter(line => line.type === "computer_unit_fallback").map(line => line.tenant), ["payg"]);
-  assert.match(unitCommand("it's make", 1800), /--property=RuntimeMaxSec=1803/);
-  assert.match(unitCommand("it's make", 1800), /echo CAMEL_NO_UNIT >&2; timeout -k 2 1800 bash -lc 'it'"'"'s make'; fi$/);
+  assert.match(unitCommand(1800), /--property=RuntimeMaxSec=1803/);
+  assert.match(unitCommand(1800), /echo CAMEL_NO_UNIT >&2; timeout -k 2 1800 bash -l "\$d\/command"; fi$/);
   f.done();
 });
 
@@ -745,4 +746,22 @@ test("pieces add up to the total at any price, and a lower figure never charges 
   assert.equal(await g.spent(), 100002);
   f.done();
   g.done();
+});
+
+test("upload and download reach the machine through the transfer code, with the agent's mounts", async () => {
+  const f = await fixture();
+  const seen: any[] = [];
+  f.service.options.transfers = { run: async (context: any, upload: boolean, args: any, driver: any, ref: any, seconds: number, key: string) => {
+    seen.push([context.tenant, context.agent, context.mounts, upload, args.from, ref.id, seconds, key]);
+    return driver.call(ref, "computer_exec", { command: "curl something", timeoutSeconds: seconds });
+  } } as any;
+  await f.connect();
+  await f.start();
+  const mounts = [{ volumeId: "v", path: "/workspace", mode: "rw" }];
+  await f.service.call("payg", "a", "computer_upload", { from: "hello.txt", to: "/tmp/hello.txt" }, "up", { mounts } as any);
+  await f.service.call("payg", "a", "computer_download", { from: "/tmp/out.txt", to: "out.txt" }, "down", { mounts } as any);
+  const { machine } = await f.row();
+  assert.deepEqual(seen, [["payg", "a", mounts, true, "hello.txt", machine, 120, "up"], ["payg", "a", mounts, false, "/tmp/out.txt", machine, 120, "down"]]);
+  assert.deepEqual(f.state.runs.map(run => [run.command, run.timeoutSeconds]), [["curl something", 120], ["curl something", 120]]);
+  f.done();
 });

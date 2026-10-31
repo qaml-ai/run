@@ -109,9 +109,10 @@ a limit to its tier's. For a tenant in the tenants file it answers 409: set thos
 
 ## Managed computers
 
-Not on yet: `AGENT_MANAGED_COMPUTERS` is off, and no tenant has one. A managed computer's machine runs on the platform's
-Boat account (`platformKeys.boat`), and one tenant's abuse can get that account suspended, so use a Boat account for
-these machines and nothing else.
+Off by default. To turn them on, add the Boat key as `platformKeys.boat` in the tenants file, and set
+`AGENT_MANAGED_COMPUTERS=on` (`runtime_env`). A managed computer's machine runs on the platform's Boat account, and one
+tenant's abuse can get that account suspended, so use a Boat account for these machines and nothing else. Machines reach
+the runtime's public URL for file transfers. `scripts/e2e-managed-computer.ts` runs an agent through all of it on real Boat.
 
 - **Turning them off:** `AGENT_MANAGED_COMPUTERS=off` refuses new starts, and each pass stops every running one. For one
   account: `POST /v1/tenants/{id}/computers/stop`, with `{"block": true}` to refuse new starts until

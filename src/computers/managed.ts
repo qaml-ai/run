@@ -8,6 +8,7 @@ import { HttpError } from "../http.ts";
 import type { Outbound } from "../outbound.ts";
 import { MICROS, micros as toMicros } from "../pricing.ts";
 import type { ToolDefinition } from "../protocol.ts";
+import { TOOL_DEADLINES } from "../tool-servers.ts";
 import type { ToolContext } from "../volume-tools.ts";
 import { Workspaces } from "../workspaces.ts";
 import { machineSetup, signatures } from "./abuse.ts";
@@ -59,9 +60,13 @@ export interface ManagedMachines {
   run(machine: string, command: string, timeoutSeconds: number): Promise<{ exitCode: number; stdout: string; stderr: string; truncated: boolean }>;
 }
 
-/** The command in a transient unit, so everything it started ends with it, and at `seconds` it exits 124: a managed computer is for work in the foreground. A machine whose agent gave up sudo runs it plainly, and says so. */
-export function unitCommand(command: string, seconds: number) {
-  const bash = `timeout -k 2 ${seconds} bash -lc ${quote(command)}`;
+/**
+ * The command, in `$d/command` (bounded's directory), in a transient unit, so everything it started ends with it, and at
+ * `seconds` it exits 124: a managed computer is for work in the foreground. It is in a file because systemd expands `$` and
+ * `%` in a unit's arguments. A machine whose agent gave up sudo runs it plainly, and says so.
+ */
+export function unitCommand(seconds: number) {
+  const bash = `timeout -k 2 ${seconds} bash -l "$d/command"`;
   return `if sudo -n true 2>/dev/null; then sudo -n systemd-run --quiet --wait --pipe --collect --uid="$(id -u)" --gid="$(id -g)" --working-directory="$PWD" --property=RuntimeMaxSec=${seconds + 3} --setenv=HOME="$HOME" --setenv=PATH="$PATH" --setenv=TERM=dumb ${bash}; else echo ${NO_UNIT} >&2; ${bash}; fi`;
 }
 
@@ -114,7 +119,7 @@ export function boatMachines(apiKey: string, outbound: Outbound, runtime: string
       }
     },
     async run(machine, command, timeoutSeconds) {
-      const script = bounded(unitCommand(command, timeoutSeconds));
+      const script = bounded(unitCommand(timeoutSeconds), `printf %s ${quote(command)} > "$d/command"; `);
       if (timeoutSeconds <= WAIT_SECONDS) {
         const done = await request(`/sandboxes/${machine}/commands`, { body: { command: script, timeoutSeconds: timeoutSeconds + 5 }, waitSeconds: timeoutSeconds + 5 });
         return answered(done.exitCode, done.stdout ?? "", done.stderr ?? "");
@@ -137,7 +142,7 @@ export function managedTools(common: ToolDefinition[], shell: ToolDefinition[], 
   return [
     ...common.map(t => t.name === "computer_start" ? tool("computer_start", "Start your attached computer or return its current session. Its files stay until it is released: 2 hours after your latest command, or 24 hours after it started. A new session after that starts empty.")
       : t.name === "computer_status" ? tool("computer_status", "Read your computer's session and when it will be released; does not start one.") : t),
-    ...shell.map(t => t.name !== "computer_exec" ? t : { ...tool("computer_exec", `Call computer_start first. Run a shell command in your attached remote Linux computer, never on the camelRun host. Inspect exitCode. This computer is for short-lived work, so a background process doesn't keep running after its command ends. Run work in the foreground and wait for it, with timeoutSeconds long enough for it (default ${MANAGED.defaultCommandSeconds}, at most ${MANAGED.commandSeconds}). Files stay until the computer is released.`, { command: text, timeoutSeconds: { type: "integer", minimum: 1, maximum: MANAGED.commandSeconds } }, ["command"]), timeoutMs: (MANAGED.commandSeconds + 60) * 1000 }),
+    ...shell.map(t => t.name !== "computer_exec" ? t : { ...tool("computer_exec", `Call computer_start first. Run a shell command in your attached remote Linux computer, never on the camelRun host. Inspect exitCode. This computer is for short-lived work, so a background process doesn't keep running after its command ends. Run work in the foreground and wait for it, with timeoutSeconds long enough for it (default ${MANAGED.defaultCommandSeconds}, at most ${MANAGED.commandSeconds}). Files stay until the computer is released.`, { command: text, timeoutSeconds: { type: "integer", minimum: 1, maximum: MANAGED.commandSeconds } }, ["command"]), timeoutMs: TOOL_DEADLINES.maxTotalMs }),
   ];
 }
 
