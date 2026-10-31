@@ -796,6 +796,20 @@ turns in the same session. Stopping the session or reaching its expiry discards
 that environment; a new session starts empty. These files are separate from
 camelRun workspace files.
 
+## Managed computers
+
+Where the runtime offers them, choose **Managed (no key needed)** in the console, or leave out the credentials:
+
+```json
+{"agent": "YOUR_AGENT_ID", "provider": "boat"}
+```
+
+There is no provider account to set up. The computer is a small Linux machine (2 vCPU, 4 GB) for work in the foreground:
+a background process ends when its command does, and a command may run for up to 30 minutes. Its files stay until it is
+released, 2 hours after its latest command or 24 hours after it started. It is charged to your credit at what the machine
+costs while it runs, $0.018 an hour, per second, and an account starts one once it has bought credit.
+`GET /v1/computers/options` says whether the runtime offers them.
+
 ## Connect a provider
 
 Choose an existing agent and provider in the console, enter its credentials,
@@ -912,7 +926,7 @@ of `--tunnel`, with `--port` for a stable local port.
 
 ## Usage and cleanup
 
-Compute is billed directly to your provider account. The console reports session
+A managed computer is charged to your credit, shown as `costUsd`. Otherwise compute is billed directly to your provider account. The console reports session
 time by provider and by the agent's workspace when the session started, capped
 at the configured expiry. Cleanup delays can add provider charges beyond these
 figures.

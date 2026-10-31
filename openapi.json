@@ -20253,6 +20253,40 @@
         }
       }
     },
+    "/v1/computers/options": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "What this runtime offers: managed, a computer with no provider account of your own, billed to credit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "managed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "managed"
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/computers": {
       "get": {
         "responses": {
