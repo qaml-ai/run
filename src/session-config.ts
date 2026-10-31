@@ -1,3 +1,4 @@
+import { passthroughModel } from "./openrouter-model.ts";
 import { getModel, temperatureRefusal } from './pi-catalog.ts';
 import { MIN_CONTEXT_TOKENS, type AgentConfig, type RunLimits } from './protocol.ts';
 import { validateDefinitions } from './tool-policy.ts';
@@ -128,6 +129,7 @@ export function resolveModel(reference: string, endpoints?: ModelEndpoints, cust
   // A routing variant (`…:nitro`) is looked up without it and sent with it; exact ids (`…:batch`) win.
   const known = lookup(provider, id);
   const base = known ?? lookup(provider, id.replace(/:[a-z]+$/, ''));
+  if (!base && provider === 'openrouter') return passthroughModel(id) as AgentConfig['model'];
   if (!base) throw new Error(`Unknown model "${reference}"; see GET /v1/models`);
   const model = known ? base : { ...base, id } as AgentConfig['model'];
   return provider === 'openrouter' ? { ...model, api: openRouterApi(model.api, model) } as AgentConfig['model'] : model;

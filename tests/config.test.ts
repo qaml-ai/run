@@ -123,7 +123,8 @@ test("a catalog model with a routing variant resolves like its base model and ke
   assert.equal(nitro.api, plain.api);
   assert.equal(nitro.contextWindow, plain.contextWindow);
   assert.equal(resolveModel("openrouter/openai/gpt-6-luna:floor").api, "openai-responses");
-  assert.throws(() => resolveModel("openrouter/nobody/no-such-model:nitro"), /Unknown model/);
+  assert.equal(resolveModel("openrouter/nobody/no-such-model:nitro").id, "nobody/no-such-model:nitro", "OpenRouter's to answer: it passes through");
+  assert.throws(() => resolveModel("anthropic/no-such-model"), /Unknown model/);
 });
 
 test("Claude Sonnet 5.5 resolves on Anthropic, OpenRouter and Bedrock (through its inference profiles), always reasoning, and is listed", () => {
