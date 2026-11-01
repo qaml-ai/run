@@ -111,5 +111,6 @@ its own at `<its URL>/r/`.
 
 The same reads work from any code: `GET /v1/agents/:id/events` (SSE; `?poll=1&wait=25`
 for one JSON long poll), `/state`, `/history?limit=50` (pages of whole turns,
-newest first, `before` for older) and `/inputs`, with a browser token or your
-API key. See the [event reference](../reference/events.md).
+newest first, `before` for older, `after` and its `nextAfter` for what is new) and
+`/inputs`, with a browser token or your API key. See the
+[event reference](../reference/events.md).

@@ -1465,21 +1465,24 @@ export class ClientSessions {
     this.purgeSoon();
   }
 
-  /** A page of the agent's history (AgentHistory.page), read from Pi storage by ordinal wherever the agent runs. */
-  private async historyPage(id: string, query: { before?: string; limit?: string; maxBytes?: string }): Promise<HistoryPage> {
+  /** A page of the agent's history (AgentHistory.page, or AgentHistory.pageAfter with `after`), read from Pi storage by ordinal wherever the agent runs. */
+  private async historyPage(id: string, query: { before?: string; after?: string; limit?: string; maxBytes?: string }): Promise<HistoryPage> {
     const before = query.before === undefined ? undefined : Number(query.before);
+    const after = query.after === undefined ? undefined : Number(query.after);
     const limit = query.limit === undefined ? 50 : Number(query.limit);
     const maxBytes = query.maxBytes === undefined ? undefined : Number(query.maxBytes);
+    if (before !== undefined && after !== undefined) throw new HttpError(400, "Ask for after or before, not both");
     if (before !== undefined && (!Number.isSafeInteger(before) || before < 0)) throw new HttpError(400, "before is a message index");
+    if (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) throw new HttpError(400, "after is a message index");
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new HttpError(400, "limit is 1 to 500 messages");
     if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 16_384 || maxBytes > PAGE_BYTES)) throw new HttpError(400, `maxBytes is 16384 to ${PAGE_BYTES} bytes`);
     // An agent starting here answers nothing yet: wait for it (it may write its journal's first entries as it starts).
     await this.sessions.get(id)?.starting?.catch(() => {});
-    return this.historyReader.page(id, { before, limit, maxBytes });
+    return after !== undefined ? this.historyReader.pageAfter(id, { after, limit, maxBytes }) : this.historyReader.page(id, { before, limit, maxBytes });
   }
 
-  /** A tenant's view of a page of one agent's history. */
-  async historyPageFor(id: string, tenant: string, query: { before?: string; limit?: string; maxBytes?: string }) {
+  /** A tenant's view of a page of one agent's history: the one ending at `before`, or (with `after`) the one starting there. */
+  async historyPageFor(id: string, tenant: string, query: { before?: string; after?: string; limit?: string; maxBytes?: string }) {
     if (!await this.owns(id, tenant)) throw new HttpError(404, "Unknown agent");
     return this.historyPage(id, query);
   }
@@ -1546,10 +1549,11 @@ export class ClientSessions {
       if (!await this.scheduler().remove(c.var.session.header.id, c.req.param("schedule"), c.var.session.claim)) throw new HttpError(404, "Unknown schedule");
       return json(c, 200, { deleted: true });
     });
-    // With `limit`, `before` or `maxBytes`, a page; without, the whole transcript.
+    // With `limit`, `before`, `after` or `maxBytes`, a page; without, the whole transcript.
     app.get(`${agent}/history`, async c => {
-      const { before, limit, maxBytes } = c.req.query();
-      return json(c, 200, before !== undefined || limit !== undefined || maxBytes !== undefined ? await this.historyPage(c.var.session.header.id, { before, limit, maxBytes }) : await this.history(c.var.session.header.id));
+      const { before, after, limit, maxBytes } = c.req.query();
+      const paged = before !== undefined || after !== undefined || limit !== undefined || maxBytes !== undefined;
+      return json(c, 200, paged ? await this.historyPage(c.var.session.header.id, { before, after, limit, maxBytes }) : await this.history(c.var.session.header.id));
     });
     // The agent's files by the paths it sees them at (/workspace/...), for applications holding its token.
     app.get(`${agent}/files`, async c => {
