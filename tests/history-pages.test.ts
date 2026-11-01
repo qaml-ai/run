@@ -157,6 +157,19 @@ async function afterPages(index: AgentHistory, agent: string, options: { limit: 
   }
 }
 
+test("a forward page ends when the history's last row holds several messages", { timeout: 20_000 }, async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "history-after-last-row-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const index = new AgentHistory(db);
+  const archive = [user("a"), assistant("A"), user("b"), assistant("B1"), assistant("B2")];
+  const { storage } = await agentWith(db, root, "client_after_last_row", { messages: archive, turns: [0, 2] }, []);
+  const page = await index.pageAfter("client_after_last_row", { after: 0, limit: 50 });
+  assert.deepEqual(page.entries.map(entry => entry.index), [0, 1, 2, 3, 4], "each message once");
+  assert.equal(page.nextAfter, 5);
+  await storage.close(BACKGROUND_CONTEXT);
+});
+
 test("a forward page starts at `after` and nextAfter reads every message once", async t => {
   const { db } = await testDatabase();
   const root = await mkdtemp(join(tmpdir(), "history-after-"));

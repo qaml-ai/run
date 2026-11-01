@@ -164,7 +164,7 @@ export class AgentHistory {
         pieces.push(piece);
         found.push(...piece.turns);
       }
-      cursor = rows.at(-1)!.msg_from + 1;
+      cursor = rows.at(-1)!.msg_from + rows.at(-1)!.msg_count;
       return true;
     };
     if (!await more()) return { entries: [], next: null, total, nextAfter: total, truncated: true };
