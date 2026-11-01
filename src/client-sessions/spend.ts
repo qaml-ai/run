@@ -168,6 +168,8 @@ export function judgeFor(ctx: SpendContext, session: Session): Judge | undefined
   return toolJudge(decider, {
     tenant: header.tenant, ...(header.keyScope ? { keyScope: header.keyScope } : {}), ...(header.config.dataCollection ? { dataCollection: header.config.dataCollection } : {}),
     budget: async () => { const run = runningRun(session); return run ? budgetLeft(ctx, session, run.id) : undefined; },
+    // As a decide call: when an end user pays, their credit holds the judge's estimate and settles what it cost.
+    hold: usd => endUserHold(ctx, session, runningRun(session), usd, "decision"),
     record: usage => {
       const run = runningRun(session);
       const cost = usage.usage.cost.total as number;
@@ -179,7 +181,8 @@ export function judgeFor(ctx: SpendContext, session: Session): Judge | undefined
     // A judge that could not answer says so once: the call then asks the person, and is not retried here.
     onError: error => console.log(JSON.stringify({ type: "tool_judge_failed", tenant: header.tenant, agent: header.id, provider: decider.provider, error: safeError(error) })),
     // What it decided, for counting denials and asks. Never the request, the arguments or the answer.
-    onJudged: (input, judged) => console.log(JSON.stringify({ type: "tool_judged", tenant: header.tenant, agent: header.id, provider: decider.provider, model: DECISION_MODEL, tool: input.tool, decision: judged.decision, risk: judged.risk })),
+    onJudged: (input, judged) => console.log(JSON.stringify({ type: "tool_judged", tenant: header.tenant, agent: header.id, provider: decider.provider, model: DECISION_MODEL,
+      tool: input.tool, decision: judged.decision, risk: judged.risk, ...(judged.reason ? { reason: judged.reason } : {}) })),
   });
 }
 

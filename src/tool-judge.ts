@@ -30,6 +30,11 @@ export type Judged = {
   risk: "low" | "medium" | "high";
   /** The probability of the answer that decided it (0..1), for a log line: never shown to the model or the person. */
   likely: number;
+  /**
+   * Why a call was not judged, when it was not: what the judge could not read (`unjudgeable`), a run with nothing left
+   * of its spend limit (`budget`), or a judge that failed or did not answer (`failed`). Absent when it answered.
+   */
+  reason?: "unjudgeable" | "budget" | "failed";
 };
 
 /** One call as the judge sees it: the tool, what it does, its arguments, and the request it answers. */
@@ -82,9 +87,14 @@ export function judgeable(input: JudgeInput) {
  */
 export function judgeState(input: JudgeInput) {
   const intent = input.intent?.trim() ?? "";
-  const request = intent.length <= JUDGE_LIMITS.intentChars ? intent || undefined
-    : `${intent.slice(0, JUDGE_LIMITS.intentChars - JUDGE_LIMITS.intentTailChars)}\n[…left out…]\n${intent.slice(-JUDGE_LIMITS.intentTailChars)}`;
-  return JSON.stringify({ request, tool: input.tool, description: input.description ?? "", arguments: JSON.stringify(input.args ?? {}) });
+  return JSON.stringify({ request: intent ? edges(intent) : undefined, tool: input.tool, description: input.description ?? "", arguments: JSON.stringify(input.args ?? {}) });
+}
+
+/** A request's start and end, cut between characters rather than into one (a surrogate pair is two code units). */
+function edges(intent: string) {
+  if (intent.length <= JUDGE_LIMITS.intentChars) return intent;
+  const points = Array.from(intent), head = JUDGE_LIMITS.intentChars - JUDGE_LIMITS.intentTailChars;
+  return `${points.slice(0, head).join("")}\n[…left out…]\n${points.slice(-JUDGE_LIMITS.intentTailChars).join("")}`;
 }
 
 /** The one item a judged call asks about. Its questions are fixed: a caller cannot ask fewer, or different ones. */
@@ -121,6 +131,8 @@ export type JudgeContext = {
   budget?: () => Promise<number | undefined>;
   /** Records what the judge cost, as a decision's usage is recorded (billing, `usage.recorded`). */
   record?: (usage: UsageRecord) => void;
+  /** When an end user pays: holds the estimate of their credit before the call, then settles or releases it. */
+  hold?: (usd: number) => Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
   /** A judge that could not answer, for a log line: the error only, never the state it was asked about. */
   onError?: (error: unknown) => void;
   /** What a judge decided, for a log line: the decision and its risk, never the request, the arguments or the answer. */
@@ -133,12 +145,20 @@ export type JudgeContext = {
  * cannot read — is `ask`, so the call waits for a person instead of running unjudged.
  */
 export function toolJudge(decider: Decider, context: JudgeContext): Judge {
+  /** An answer the judge did not give, and why: counted like any other, so asks are not invisible. */
+  const unanswered = (input: JudgeInput, reason: NonNullable<Judged["reason"]>): Judged => {
+    const judged = { ...UNJUDGED, reason };
+    context.onJudged?.(input, judged);
+    return judged;
+  };
   return async (input, signal) => {
     // What it cannot see whole, it does not judge: the person decides instead (see judgeable).
-    if (!judgeable(input)) return UNJUDGED;
+    if (!judgeable(input)) return unanswered(input, "unjudgeable");
+    let held: Awaited<ReturnType<NonNullable<JudgeContext["hold"]>>>;
     try {
       const budget = await context.budget?.();
-      if (budget !== undefined && budget <= 0) return UNJUDGED;
+      if (budget !== undefined && budget <= 0) return unanswered(input, "budget");
+      held = await context.hold?.(decider.estimate([judgeItem(input)], DECISION_MODEL));
       const decided = await decider.decide({
         tenant: context.tenant, ...(context.keyScope ? { keyScope: context.keyScope } : {}),
         ...(budget !== undefined ? { budget } : {}), ...(context.dataCollection ? { dataCollection: context.dataCollection } : {}),
@@ -146,18 +166,21 @@ export function toolJudge(decider: Decider, context: JudgeContext): Judge {
       const first = decided.results[0]!;
       // Recorded whether it answered or failed: a failed item is not billed, and the usage record says which answered.
       if (decided.usage) context.record?.(decided.usage);
+      await held?.settle(decided.chargedUsd);
+      held = undefined;
       if ("error" in first) {
         context.onError?.(new DecisionFailed(first.error.status, first.error.message, { ...(first.error.code ? { code: first.error.code } : {}) }));
-        return UNJUDGED;
+        return unanswered(input, "failed");
       }
       const judged = judgedOutcome(first.answers);
       context.onJudged?.(input, judged);
       return judged;
     } catch (error) {
+      await held?.release();
       // A call that was aborted is not a judge that could not answer: the abort goes where it was going.
       if (signal.aborted) throw signal.reason;
       context.onError?.(error);
-      return UNJUDGED;
+      return unanswered(input, "failed");
     }
   };
 }

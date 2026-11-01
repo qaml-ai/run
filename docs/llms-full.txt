@@ -1990,11 +1990,14 @@ print(run.text)
   is not remembered: a later call is judged on its own, so a rewritten retry is
   judged too, not automatically refused. A judge that cannot answer (no
   OpenRouter key, a spent limit, a provider failure, an answer it cannot read)
-  asks the person, as does one shown arguments or a description past its limits
-  (8,000 and 4,000 characters): a judged call is never allowed unjudged.
-  Judged calls are billed as decisions are (`kind: "decision"`), and judged
-  tools are declared to the model directly, like approved ones, since code in
-  `js_exec` cannot wait.
+  asks the person, as does one shown arguments past its limit (8,000 characters),
+  and so does a turn with no request of its own, such as one a schedule started:
+  only a request can authorize a call, so without one the person decides. A
+  judged call is never allowed unjudged. Judged calls are billed as decisions
+  are (`kind: "decision"`), an end user's credit holds and settles them the same
+  way, and a denial shows in a run's outcome as `tool_error`. Judged tools are
+  declared to the model directly, like approved ones, since code in `js_exec`
+  cannot wait.
 - **Questions.** The `ask_user` built-in (`"builtins": ["ask_user"]` on the
   agent or its definition) lets the model ask 1 to 4 multiple-choice questions, with free text
   allowed where it says so.

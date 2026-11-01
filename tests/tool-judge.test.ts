@@ -60,9 +60,22 @@ test("what the judge cannot see whole it does not judge: over-limit arguments or
   assert.equal(judgeable({ ...CALL, description: "d".repeat(JUDGE_LIMITS.descriptionChars) }), true);
 
   let asked = 0;
-  const judge = toolJudge(new Decider({ provider: provider(() => { asked++; return decided(0.99, 0, 0); }).fake, key }), { tenant: "t1" });
-  assert.deepEqual(await judge(big, AbortSignal.timeout(5_000)), UNJUDGED);
+  const seen: any[] = [];
+  const judge = toolJudge(new Decider({ provider: provider(() => { asked++; return decided(0.99, 0, 0); }).fake, key }), { tenant: "t1", onJudged: (input, judged) => seen.push({ tool: input.tool, ...judged }) });
+  assert.deepEqual(await judge(big, AbortSignal.timeout(5_000)), { ...UNJUDGED, reason: "unjudgeable" });
   assert.equal(asked, 0, "nothing was sent to the model: the person decides");
+  assert.deepEqual(seen, [{ tool: big.tool, ...UNJUDGED, reason: "unjudgeable" }], "an ask it could not judge is still counted");
+});
+
+test("an ask the judge did not make is logged with why, and a spent budget sends nothing", async () => {
+  const seen: any[] = [];
+  const budgeted = toolJudge(new Decider({ provider: provider(() => decided(0.99, 0, 0)).fake, key }), { tenant: "t1", budget: async () => 0, onJudged: (_input, judged) => seen.push(judged.reason) });
+  assert.equal((await budgeted(CALL, AbortSignal.timeout(5_000))).reason, "budget");
+  assert.deepEqual(seen, ["budget"]);
+  const failed: any[] = [];
+  const failing = toolJudge(new Decider({ provider: provider(() => { throw new DecisionFailed(502, "down"); }).fake, key, sleep: noWait }), { tenant: "t1", onJudged: (_input, judged) => failed.push(judged.reason) });
+  assert.equal((await failing(CALL, AbortSignal.timeout(5_000))).reason, "failed");
+  assert.deepEqual(failed, ["failed"]);
 });
 
 test("the decision table: ordinary allows, anything that may be irreversible asks, exfiltration denies", () => {
@@ -99,25 +112,25 @@ test("a judge answers from the decisions service and records what it cost", asyn
 test("a judge that cannot answer asks a person instead, and never allows: no key, no budget, a failure, a bad answer", async () => {
   // No key decisions could use: the decider refuses before sending anything.
   const keyless = new Decider({ provider: provider(() => decided(0.99, 0, 0)).fake, key: async () => undefined });
-  assert.deepEqual(await toolJudge(keyless, { tenant: "t1" })(CALL, AbortSignal.timeout(5_000)), UNJUDGED);
+  assert.deepEqual(await toolJudge(keyless, { tenant: "t1" })(CALL, AbortSignal.timeout(5_000)), { ...UNJUDGED, reason: "failed" });
 
   // A run with nothing left of its spend limit: nothing is sent, and the call asks.
   let asked = 0;
   const budgeted = toolJudge(new Decider({ provider: provider(() => { asked++; return decided(0.99, 0, 0); }).fake, key }), { tenant: "t1", budget: async () => 0 });
-  assert.deepEqual(await budgeted(CALL, AbortSignal.timeout(5_000)), UNJUDGED);
+  assert.deepEqual(await budgeted(CALL, AbortSignal.timeout(5_000)), { ...UNJUDGED, reason: "budget" });
   assert.equal(asked, 0);
 
   // A provider that fails, once and finally (a 401 is not retried).
   const errors: unknown[] = [];
   const failing = toolJudge(new Decider({ provider: provider(() => { throw new DecisionFailed(502, "OpenRouter rejected the API key (HTTP 401)"); }).fake, key, sleep: noWait }), { tenant: "t1", onError: error => errors.push(error) });
-  assert.deepEqual(await failing(CALL, AbortSignal.timeout(5_000)), UNJUDGED);
+  assert.deepEqual(await failing(CALL, AbortSignal.timeout(5_000)), { ...UNJUDGED, reason: "failed" });
   assert.equal(errors.length, 1);
 
   // An answer whose questions do not check out is a failure too: it fails closed, like no answer at all, and says so once.
   const malformedErrors: unknown[] = [];
   const malformed = toolJudge(new Decider({ provider: provider(() => ({ answers: { ordinary: "yes" }, inputTokens: 1, outputTokens: 0 })).fake, key }),
     { tenant: "t1", onError: error => malformedErrors.push(error) });
-  assert.deepEqual(await malformed(CALL, AbortSignal.timeout(5_000)), UNJUDGED);
+  assert.deepEqual(await malformed(CALL, AbortSignal.timeout(5_000)), { ...UNJUDGED, reason: "failed" });
   assert.equal(malformedErrors.length, 1);
 
   // A provider that answers too slowly asks too: a timed-out call is not a yes.
@@ -133,7 +146,7 @@ test("a judge that cannot answer asks a person instead, and never allows: no key
     },
   };
   const slow = toolJudge(new Decider({ provider: slowProvider, key, sleep: noWait, limits: { callTimeoutMs: 50, attempts: 1 } }), { tenant: "t1" });
-  assert.deepEqual(await slow(CALL, AbortSignal.timeout(5_000)), UNJUDGED);
+  assert.deepEqual(await slow(CALL, AbortSignal.timeout(5_000)), { ...UNJUDGED, reason: "failed" });
 
   // A call that was aborted is not a judge that could not answer: nothing is asked, and the abort goes on.
   const controller = new AbortController();
@@ -144,7 +157,7 @@ test("a judge that cannot answer asks a person instead, and never allows: no key
   // A revoked data policy where the provider cannot pass it on: refused, and the call asks.
   const strict: DecisionProvider = { ...provider(() => decided(0.99, 0, 0)).fake, id: "other", dataPolicy: false };
   const refused = toolJudge(new Decider({ provider: strict, key }), { tenant: "t1", dataCollection: "deny" });
-  assert.deepEqual(await refused(CALL, AbortSignal.timeout(5_000)), UNJUDGED);
+  assert.deepEqual(await refused(CALL, AbortSignal.timeout(5_000)), { ...UNJUDGED, reason: "failed" });
 });
 
 test("a denied call's result tells the model it did not run, without saying why or who decided", () => {
