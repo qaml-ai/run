@@ -214,7 +214,7 @@ How it works:
   so the model knows what to ask it.
 
 `realtime` takes `provider` (`openai`, `gemini`, `grok`, or `elevenlabs`; default the runtime's first), `model` (OpenAI: `gpt-realtime-2.1`, the
-default, or `gpt-realtime-2.1-mini`; Gemini: `gemini-3.8-live`; Grok: `grok-voice-latest` or `grok-voice-3.0`; ElevenLabs: `gemini-3.1-flash-lite` by default, `claude-haiku-5-5` or `gemini-2.5-flash-lite`), `voice` (the model's. OpenAI: `alloy`, `ash`, `ballad`,
+default, or `gpt-realtime-2.1-mini`; Gemini: `gemini-3.8-live`; Grok: `grok-voice-latest` or `grok-voice-3.0`; ElevenLabs: any model ElevenLabs Agents offers, `gemini-3.1-flash-lite` by default), `voice` (the model's. OpenAI: `alloy`, `ash`, `ballad`,
 `coral`, `echo`, `sage`, `shimmer`, `verse`, `marin`, `cedar`; Gemini: its prebuilt voices, `Kore`, `Aoede`, `Leda`,
 `Puck`, `Charon`… Default the session's `voice`, or the nearest: OpenAI `nova` → `marin`, `onyx` → `cedar`, `fable` →
 `ballad`; Gemini `coral` → `Kore`, `alloy` → `Aoede`, `onyx` → `Charon`…), `instructions`, `transcribe` (default true:
@@ -244,13 +244,19 @@ Failures identify the stage and HTTP status, retaining provider error codes/mess
 keys, tokens and URLs are redacted before the detail is capped at 300 characters. HTTP 4xx failures are terminal;
 network and HTTP 5xx failures use the bounded reconnect budget.
 
-The runtime lazily creates or reuses one private agent per credential, with per-session overrides and signed URLs
+ElevenLabs model names must be 1–100 letters, digits, dots, hyphens or underscores. The model is passed through
+to ElevenLabs. A refused model ends the session with an error naming `realtime.model`; it is not retried.
+Only `gemini-2.5-flash-lite` and `gemini-3.1-flash-lite` receive `thinking_budget: 0`.
+
+The runtime lazily creates or reuses one private agent per credential and model, with per-session overrides and signed URLs
 (see [configuration](../operations/configuration.md)). Conversation token counts are unavailable. Connection duration is billed through the normal speech usage records
 and end-user credit holds, including silent time and interrupted responses. Configure both
 `AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD` and `AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD`: the former from the
 [Agents pricing page](https://elevenlabs.io/pricing/agents), the latter from Gemini Flash Lite's Detailed costs estimate
 in the agent settings. `claude-haiku-5-5` and `gemini-3.1-flash-lite` take their own LLM rates, `AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD` and `AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD`. LLM usage is billed separately by ElevenLabs; this runtime uses the configured per-minute
-estimate, not post-call token reconciliation. Missing either rate refuses sessions with `REALTIME_UNPRICED`.
+estimate, not post-call token reconciliation. Other models use `AGENT_PRICE_ELEVENLABS_OTHER_LLM_MINUTE_USD`,
+default `0.05` USD per minute when unset, plus the call-minute rate. Missing the call-minute rate or a required
+named model rate refuses sessions with `REALTIME_UNPRICED`.
 Silence discounts, burst surcharges and account-specific allowances are not reconciled.
 
 The providers differ where their APIs do. Gemini Live hears a turn as one activity (a change of speaker inside it is a

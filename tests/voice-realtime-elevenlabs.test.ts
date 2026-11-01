@@ -29,7 +29,7 @@ const createAgentSchema = z.object({
   name: z.string(),
   conversation_config: z.object({
     agent: z.object({ first_message: z.string(), language: z.string(), prompt: z.object({
-      prompt: z.string(), llm: z.enum(["gemini-2.5-flash-lite", "claude-haiku-5-5", "gemini-3.1-flash-lite"]), temperature: z.number().min(0).max(1), thinking_budget: z.literal(0).optional(),
+      prompt: z.string(), llm: z.string(), temperature: z.number().min(0).max(1), thinking_budget: z.literal(0).optional(),
       tools: z.array(z.object({ type: z.literal("client"), name: z.string(), description: z.string(), parameters,
         expects_response: z.boolean(), response_timeout_secs: z.number().int().min(1).max(120),
         interruption_mode: z.enum(["allow", "disable_during_tool", "disable_during_tool_and_turn"]),
@@ -282,10 +282,9 @@ test("ElevenLabs pricing requires both runtime rates and includes the separately
   }
 });
 
-test("claude-haiku-5-5 stays allowed, on its own agent (v5) and its own LLM rate", async t => {
+test("claude-haiku-5-5 stays available, on its own agent (v5) and its own LLM rate", async t => {
   const fake = await fakeElevenLabs(t);
   const provider = elevenlabsAgents({ baseUrl: fake.base });
-  assert.ok(provider.models.includes("claude-haiku-5-5"));
   const a = recorder(), b = recorder();
   const older = provider.connect({ ...config, model: "gemini-2.5-flash-lite" }, { apiKey: "key" }, a.events);
   const newer = provider.connect({ ...config, model: "claude-haiku-5-5" }, { apiKey: "key" }, b.events);
@@ -494,7 +493,7 @@ for (const stage of ["list agents", "create agent", "signed URL"]) {
     for (const [index, log] of lost.entries()) {
       const detail = details[index];
       assert.equal(log.fields?.detail, safeError(detail), "logs omit provider text");
-      assert.ok(detail.startsWith(`ElevenLabs Agents ${stage} (HTTP ${status}):`));
+      assert.ok(detail.startsWith(`${stage === "create agent" ? "realtime.model gemini-2.5-flash-lite: " : ""}ElevenLabs Agents ${stage} (HTTP ${status}):`));
       assert.ok(detail.length <= 300);
       if (status === 422) assert.match(detail, /body.conversation_config.agent.prompt.tools.0.parameters: Invalid tool schema/);
       else {

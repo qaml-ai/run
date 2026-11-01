@@ -23,7 +23,6 @@ import { NO_USAGE, type RealtimeConfig, type RealtimeConnection, type RealtimeEv
  * Agents sends no token usage here: NO_USAGE means unknown, not free service.
  */
 export const ELEVENLABS_AGENTS = Object.freeze({
-  models: ["gemini-2.5-flash-lite", "claude-haiku-5-5", "gemini-3.1-flash-lite"] as const,
   defaultModel: "gemini-3.1-flash-lite",
   voice: "cgSgspJ2msm6clMCkdW9", // Jessica, a conversational default; sessions may supply any voice_id their key can use.
   // v4: thinking is off. v3: conversations last up to maxDurationSeconds (v2 agents kept ElevenLabs' 10-minute default).
@@ -42,7 +41,7 @@ export const ELEVENLABS_AGENTS = Object.freeze({
   connectTimeoutMs: 20_000,
   maxDurationSeconds: 1_800,
 });
-const agentName = (model: string) => model === "claude-haiku-5-5" ? ELEVENLABS_AGENTS.haikuName : model === "gemini-3.1-flash-lite" ? ELEVENLABS_AGENTS.gemini31Name : ELEVENLABS_AGENTS.name;
+const agentName = (model: string) => model === "claude-haiku-5-5" ? ELEVENLABS_AGENTS.haikuName : model === "gemini-3.1-flash-lite" ? ELEVENLABS_AGENTS.gemini31Name : model === "gemini-2.5-flash-lite" ? ELEVENLABS_AGENTS.name : `camelRun realtime voice v6 ${model}`;
 /**
  * ElevenLabs ends a conversation at the agent's max duration with close 1000 "Max call duration exceeded": the call
  * itself goes on, in a fresh conversation (the brain reconnects and briefs it with what was said).
@@ -185,7 +184,7 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
       conversation_config: {
         agent: { first_message: "", language: "en", prompt: {
           prompt: "You are the bot's voice. Delegate anything beyond small talk to ask_agent.",
-          llm: model, temperature: 0.3, ...(model.startsWith("gemini-") ? { thinking_budget: 0 } : {}),
+          llm: model, temperature: 0.3, ...((model === "gemini-2.5-flash-lite" || model === "gemini-3.1-flash-lite") ? { thinking_budget: 0 } : {}),
           tools: [ASK_AGENT, STAY_SILENT].map(tool => ({ ...tool, type: "client", expects_response: true,
             response_timeout_secs: 60, interruption_mode: "allow", pre_tool_speech: tool.name === ASK_AGENT.name ? "force" : "off" })),
         } },
@@ -198,12 +197,15 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
         auth: { enable_auth: true }, privacy: { record_voice: false },
         overrides: { conversation_config_override: { agent: { prompt: { prompt: true }, first_message: true, language: true }, tts: { voice_id: true } } },
       },
+    }).catch(error => {
+      if (error instanceof ElevenLabsFailure) error.message = `realtime.model ${model}: ${error.message}`;
+      throw error;
     });
     if (typeof created.agent_id !== "string") throw new ElevenLabsFailure("create agent", "no agent id returned", false);
     return created.agent_id;
   }
   return {
-    id: "elevenlabs", key: "elevenlabs", models: ELEVENLABS_AGENTS.models, defaultModel: ELEVENLABS_AGENTS.defaultModel,
+    id: "elevenlabs", key: "elevenlabs", models: [], defaultModel: ELEVENLABS_AGENTS.defaultModel,
     voices: [ELEVENLABS_AGENTS.voice], voiceFor: VOICE_FOR, customVoices: true, ownsTurns: true,
     connect(config, { apiKey }, events) {
       // The agent's language as ElevenLabs takes it; one it does not take leaves the agent's default (en).
@@ -225,7 +227,12 @@ export function elevenlabsAgents(options: { baseUrl?: string; socket?: SocketFac
         if (typeof signed.signed_url !== "string") throw new ElevenLabsFailure("signed URL", "no signed URL returned", false);
         try { return { socket: socket(signed.signed_url, {}), config }; }
         catch { throw new ElevenLabsFailure("websocket open", "could not create socket", false); }
-      }, detail => redactDetail(detail, 300, [apiKey]));
+      }, detail => {
+        const prefix = `realtime.model ${config.model}: `;
+        return detail.startsWith(prefix)
+          ? prefix + redactDetail(detail.slice(prefix.length), 300 - prefix.length, [apiKey])
+          : redactDetail(detail, 300, [apiKey]);
+      });
     },
   };
 }

@@ -120,7 +120,7 @@ export function fakePlayer(everyMs = 2) {
 }
 
 /** A brain over a fake provider and player, with hooks recording what it reports. */
-export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; hold?: BrainHooks["hold"]; provider?: RealtimeProvider; credentials?: RealtimeCredentials; refuse?: boolean; language?: string; synthesize?: BrainHooks["synthesize"]; speaking?: BrainHooks["speaking"] } = {}) {
+export function testBrain(options: Partial<BrainOptions> & { addressing?: Partial<AddressingPolicy>; humans?: number; askAgent?: BrainHooks["askAgent"]; hold?: BrainHooks["hold"]; provider?: RealtimeProvider; credentials?: RealtimeCredentials; refuse?: boolean; language?: string; synthesize?: BrainHooks["synthesize"]; failed?: BrainHooks["failed"]; speaking?: BrainHooks["speaking"] } = {}) {
   const realtime = fakeRealtimeProvider();
   const playback = fakePlayer();
   const usage: Parameters<BrainHooks["usage"]>[0][] = [];
@@ -147,7 +147,7 @@ export function testBrain(options: Partial<BrainOptions> & { addressing?: Partia
     hold: options.hold ?? (async () => undefined),
     budget: limit => { budget.push(limit); },
     usage: record => { usage.push(record); }, turn: turn => { turns.push(turn); }, heard: entry => { heard.push(entry); }, spoke: event => { spoke.push(event); },
-    failed: () => {}, log: (type, fields) => { logs.push({ type, ...(fields ? { fields } : {}) }); },
+    failed: options.failed ?? (() => {}), log: (type, fields) => { logs.push({ type, ...(fields ? { fields } : {}) }); },
   });
   return { brain, realtime, connection: () => realtime.last(), playback, usage, heard, spoke, logs, turns, budget, state };
 }

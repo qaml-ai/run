@@ -160,14 +160,14 @@ const ELEVENLABS_LLM_RATES: Record<string, string | undefined> = {
  * https://elevenlabs.io/docs/help-center/product/eleven-agents/how-much-does-eleven-agents-cost (2026-10-19):
  * Agents bills connection minutes; the LLM is billed separately, with a rate per model. Configure the call-minute rate
  * and the model's estimated minute cost from the agent's Detailed costs panel. These are runtime settings,
- * not public rate defaults. Full connection duration is charged; silence discounts are not inferred locally.
+ * with a $0.05/minute LLM fallback for other models. Full connection duration is charged; silence discounts are not inferred locally.
  */
 export function realtimePrice(reference: string, env = process.env): RealtimePrice | undefined {
-  const llmRate = ELEVENLABS_LLM_RATES[reference];
-  if (!llmRate) return REALTIME_PRICES[reference];
+  if (!reference.startsWith("elevenlabs/")) return REALTIME_PRICES[reference];
+  const llmRate = ELEVENLABS_LLM_RATES[reference] ?? "AGENT_PRICE_ELEVENLABS_OTHER_LLM_MINUTE_USD";
   const names = ["AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD", llmRate] as const;
   const rates = names.map(name => {
-    const raw = env[name];
+    const raw = env[name] ?? (name === "AGENT_PRICE_ELEVENLABS_OTHER_LLM_MINUTE_USD" ? "0.05" : undefined);
     if (raw === undefined || raw === "") return undefined;
     const value = Number(raw);
     if (!Number.isFinite(value) || value <= 0 || !Number.isSafeInteger(micros(value)) || micros(value) <= 0) throw new Error(`${name} must be a positive number of USD`);
