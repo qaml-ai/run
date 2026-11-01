@@ -1,3 +1,0 @@
-### DeepSeek V4.1 Flash 1017 skips InferenceNet and Wafer
-
-Calls to `openrouter/deepseek/deepseek-v4.1-flash-1017` and its `:nitro` variant now send `provider.ignore: ["inference-net", "wafer"]`. Those two OpenRouter hosts sometimes dropped a tool call's optional arguments: 13.6% of camel-builder's `bot__preview` calls failed on InferenceNet on the evening of 2026-10-27, and 15.6% failed on Wafer on 2026-10-26, against 1.7% on Together. OpenRouter still balances load across every other host. `:nitro` is still sent as given, and `ignore` combines with `dataCollection: "deny"`. The `:morph` canary is unchanged.

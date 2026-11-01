@@ -1,7 +1,0 @@
-### Luna context windows and model usage
-
-#410 was reverted after its fixed 272,000-token Luna cap made working 300–500k-token chats compact on every turn. The unbounded summary requests then failed and blocked those turns. OpenRouter and other aggregators now keep Pi's catalog window, including routing variants and the latest alias. Native OpenAI and Azure keep their catalog windows.
-
-A Luna stream failure with no output and a prompt over 272,000 tokens triggers overflow recovery. Learned token limits survive restarts. Limits cannot fall below 32,768 tokens or half the catalog window (half the native 272,000-token window for Luna). Byte-size refusals do not lower token limits. Summary requests split large histories into chunks that fit the effective window, carrying the previous summary forward. Compaction and summarization failures have their own metrics class.
-
-Failed model calls without usage evidence are never billed an estimate retroactively. Unreconcilable calls settle at zero when no usage was reported; platform Azure and ordinary tenant provider endpoints are not classified as gateways. Reconciliation waits past the maximum turn time and preserves the credentials recorded for the attempt. Real provider evidence can raise or lower an end user's charge, subject to the original usage day's limits. Calls still streaming refresh their activity time, and a late real finish bills its full reported usage. Direct OpenRouter credentials continue to reconcile against the provider's generation record.

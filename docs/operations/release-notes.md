@@ -11,6 +11,1400 @@ Changes on main since the last tag are in [unreleased/](unreleased/), a file for
 any order never conflict here), gathered into a version's notes when it is tagged: `npm run release-notes` shows them
 together, and `npm run release-notes -- <version>` writes them here and removes the files.
 
+## 0.12.0 (runtime-v0.12.0, 2026-11-01)
+
+Agents run on Pi: durable execution and storage are Pi's journal, and the old engine, its history index and their importer are gone. This release also adds decisions (`POST /v1/decisions` and the `decide` builtin, on by default), judged tool approvals, native and managed computers, workflows, realtime voice, virtual models and a console organized by workspaces. Breaking: the transcribe-and-reply voice pipeline and trace export are removed, and legacy history formats are refused.
+
+### Admin tenants' runs have a backstop
+
+A tenant in the tenants file (an admin tenant: chiridion-prod, camel-bots, an operator's own) had no run limit unless its
+entry set `maxRunResponses`/`maxRunSeconds`; on 2026-10-27 one scheduled run looped for 25 hours and 71k messages. Their
+runs now stop at `AGENT_ADMIN_MAX_RUN_RESPONSES` (default 1000) or `AGENT_ADMIN_MAX_RUN_SECONDS` (default 14400, 4
+hours), with `stopped: "turn_limit"`; an entry's own limits still replace them. Seven days of turns: 99.9% end within 25
+minutes and ~100 responses, the longest legitimate one 92 minutes and 229.
+
+### Agents have a primary language
+
+`language` sets an agent's primary language as a BCP 47 tag (`"es"`, `"es-ES"`, `"pt-BR"`, `"zh-Hant"`; at most 35
+characters, stored in canonical case, junk refused with 400). Give it when you make an agent, on a stateless run, or on
+a definition (its agents take it unless they set their own, which applying the definition keeps); change it with
+`PATCH /v1/agents/:id/configuration`, where `null` removes it. An upsert that leaves it out keeps the agent's (so an older
+SDK, which drops the field, does not clear it). `GET /v1/agents/:id` and definitions show it. With one
+set, the system prompt gets one fixed line after the environment summary, e.g. "Language: reply in Spanish (español) by
+default. If the person clearly writes in another language, reply in that language instead." The line is the same every
+turn, so prompt caching holds. Compaction summaries are unchanged. The TypeScript and Python SDKs take `language`
+(`language=`) on create, configure and runs. Agents without it are unchanged.
+
+### Sub-agents report progress without interrupting their parent
+
+A sub-agent the runtime made (a `spawn_agent` or `delegate` child) has `report_progress({ text })`: its latest status,
+at most 500 characters, latest wins. It never starts a turn and does not count against `AGENT_WAKES_PER_HOUR`. A
+background sub-agent's parent sees the reports it has not seen yet with its next tool result, as an `<agent_updates>`
+block the runtime writes (in history, a part of that result with `agentUpdates: true`), and as `progress` and
+`progressAt` in `list_agents` and `wait_agent`; a sub-agent's ending supersedes its reports. Watchers asking for
+sub-agents (`?subagents=1`) get `subagent_progress`, and a delegate sub-agent's report is also its call's
+`tool_execution_update`, which `<AgentChat>` shows under the call. The SDKs leave the block out of a tool result's
+`output` and of the chat's `ToolPart.result` (`agentUpdates` has it). Migration 098 adds `progress`, `progress_seq`
+and `progress_at` to `agent_children`. See [Progress](../guides/multi-agent.md#progress).
+
+### A sub-agent's message reaches its busy parent at once
+
+`send_message` to `"parent"` now joins the parent's running turn at its next step, as a `whileRunning: "steer"`
+prompt does, instead of waiting for that turn to end: it starts no turn (and so counts no wake), and its request ends
+`steeredInto` the turn. A parent's `wait_agent` returns as soon as one of its sub-agents messages it, with `messaged`
+naming who, so the model reads the message next. An idle parent still gets it as a turn of its own. The call answers
+`into: "its running turn"` or `"a new turn of its own"`.
+
+### A waiting parent can watch its sub-agents' progress
+
+`wait_agent({ untilProgress: true })` also returns when a sub-agent it waits on reports progress the parent has not
+seen, with `updated` naming whose and each one's latest `progress`, so the model can correct a sub-agent that went off
+track while it works. It answers no sooner than `AGENT_PROGRESS_WAIT_MS` (default 15 seconds) into the wait, so a
+sub-agent reporting each step costs its parent at most one model call per that long. Without it, a report never ends
+a wait.
+
+### Starting a sub-agent and messaging it in one response
+
+`wait_agent`, `send_message`, `list_agents` and `interrupt_agent` called in the same response as `spawn_agent` now run
+once the sub-agent has started: `send_message` found no agent, and `wait_agent` recorded the sub-agent as failed while
+it went on to run. A message to a sub-agent whose turn has not begun yet waits up to 10 seconds for it and joins it,
+instead of queuing behind the whole task.
+
+### A steer sent just after a prompt joins its turn
+
+A `whileRunning: "steer"` prompt (a person's, or a sub-agent's message) that arrives while a turn has begun but its
+host has not yet opened it now waits up to 5 seconds for it to open and joins it, instead of answering `steer: "queued"`
+and running after the whole turn.
+
+### Sub-agents of the model's own design require their instructions
+
+With `delegate: { instructions: true }` and no `agents`, `delegate` and `spawn_agent` now list `instructions` as
+required, as the runtime already demanded: models sent only a `task`, were refused, and wrote every call again. A call
+without it says which field is missing (`Give instructions too: who the sub-agent is …`).
+
+### wait_agent waits for a sub-agent's latest turn
+
+A message to a sub-agent that had already answered starts a turn of its own; `wait_agent` now waits for that turn's
+answer, instead of returning the earlier one at once. The earlier answer still comes as its notification. The
+`instructions` and `task` descriptions now tell the model to put the work (data, rules, steps) in `task`: a message can
+amend a task, but models hold to a system prompt over later messages.
+
+### A sub-agent of the model's own design gets its instructions as its first message
+
+With `delegate: { instructions: true }`, the model's `instructions` are no longer the sub-agent's system prompt: they
+come first in its first message (`Your role:` then `Your task:`), and the system prompt is the runtime's, saying its
+parent's later `<agent_message name="parent">` messages may correct its role or task. As a system prompt they
+outranked the parent's corrections: GPT-6 Astra and GPT-6.1 Sol put a task's rules in them, and their sub-agents
+answered the old total again however often they were corrected (a bare Sol agent followed a correction against its
+system prompt 0 times in 8, even when told it could; 4 in 4 with the rules in its first message). Text the parent
+model wrote now has its authority, no more: a parent misled by what it read cannot raise that text above what its
+sub-agent reads in turn. A sub-agent from a definition keeps the definition's system prompt.
+
+### A sub-agent shares its parent's files
+
+A sub-agent of the model's own design (`delegate: { instructions: true }`) now mounts its parent's mounts as they
+are, at the same paths, as Claude Managed Agents and Claude Code share one filesystem, so a file the parent names
+(`/workspace/rows.json`) is there and the sub-agent may change it. It had only an empty `/workspace` of its own:
+models wrote data to a file and handed sub-agents its path, which they could not open (DeepSeek v4.1 flash failed 4
+of 5 runs of a benchmark this way). A definition's sub-agent keeps the definition's mounts.
+
+### Cloudflare reaches the load balancers over HTTP/1.1
+
+Both load balancers have HTTP/2 off. Over HTTP/2, Cloudflare multiplexed many requests on one connection, and an
+unread ~1 MB history response (a load cancelled by a quick reload) stalled every other request on it for 25-183 s,
+so chat pages hit their 60 s stream timeout. Apply with `infra/apply.sh`; the change is in place, no replacement.
+
+### Platform Anthropic workload identity federation
+
+Operators can use the ECS task role for short-lived Anthropic credentials. Tenant keys keep precedence.
+The platform refreshes tokens per node and can fall back to its static Anthropic key during rollout.
+See Anthropic via Workload Identity Federation (`docs/operations/anthropic-federation.md`) for setup and verification.
+
+### Azure DeepSeek V4.1 Flash, over Chat Completions
+
+Azure DeepSeek V4.1 Flash is available as `azure/deepseek-v4.1-flash` when the platform maps it to its deployment, for example `deepseek-v4.1-flash=DeepSeek-V4.1-Flash` in `AGENT_AZURE_OPENAI_MODELS`.
+
+It uses Azure v1 Chat Completions with tools, reasoning, images and cached input. Its context window is 1,048,576 tokens, including output; the default maximum reply is 131,072 tokens. Azure Global prices per million tokens are $0.30 input, $1.20 output and $0.006 cached input, with no cache-write charge. The Azure version is 2026-09-10 (preview), not OpenRouter's 2026-10-17 snapshot. Calls and billing use the same platform credential path as Azure's Responses models.
+
+### Voice: realtime sessions on the platform's OpenAI key can run on Azure OpenAI
+
+Operators with an Azure OpenAI resource (`AGENT_AZURE_OPENAI_*`) now send realtime voice sessions made on the
+platform's OpenAI key to its `gpt-realtime-2.1` deployment (`realtimeDeployment` in the secret, or
+`AGENT_AZURE_REALTIME_DEPLOYMENT`; default that name, `""` keeps voice on OpenAI; `realtimeModels` /
+`AGENT_AZURE_REALTIME_MODELS` for other realtime models). A session connects to Azure's GA realtime endpoint with the
+`api-key` header, its input transcription on the `gpt-transcribe` deployment. When Azure refuses or fails before the
+session is live, it goes on on OpenAI with the platform's key (`voice_realtime_azure_fallback`). A tenant's own key
+stays on OpenAI. Billing is unchanged. The `voice_realtime` metric gains a `Host` dimension (`azure` or `openai`) and
+`VoiceRealtimeAzureFallbacks`. A secret stored before this change, without `realtimeDeployment`, sends voice to Azure's
+`gpt-realtime-2.1` deployment once the new image runs: store `"realtimeDeployment": ""` first to keep it on OpenAI.
+
+### Configure card-verification credit separately
+
+`AGENT_CARD_CREDIT_USD` sets the free credit for verifying a card. Unset, it follows
+`AGENT_CREDIT_GRANT_USD` (default $5). Set it to `0` to hide the console offer and
+refuse new checks with HTTP 409 (`CARD_CREDIT_UNAVAILABLE`). Pending checks still
+settle and are recorded without granting credit. GitHub starting grants and credit
+already granted are unchanged. Terraform exposes this as `agent_card_credit_usd`;
+its default empty string leaves the environment setting unset. See [Billing](billing.md).
+
+### Filter a channel's messages with a decision model
+
+A channel can now have a `filter`: one yes/no question (`instructions`, optional `criteria`, `threshold`) that Jev answers
+about each message before it starts a turn. A message below the threshold makes no agent and starts no run. It works on
+every channel type, through `POST`/`PATCH /v1/channels` and the console's channel dialog.
+
+Each verdict is recorded (`channel_seen.verdict`, no content) for 14 days, and a filtered message is kept as a
+`filtered` channel item for as long. `GET /v1/channels/:id/events` and the console's **Activity** list them;
+`POST /v1/channels/:id/events/:event/deliver` sends a filtered message on, once. If the decision fails or takes over 15
+seconds the message goes on (`reason: "decision_failed"`), logged as `channel_filter` with no content. Decisions bill as
+usual, with `actor: "channel:<id>"`, and do not count against the run rate limit.
+
+A filter is a convenience, not a security control: an email's body can argue its way past it. Deleting a channel or an
+account deletes its filtered messages and verdicts, in one transaction per channel. They are not in the account export. A
+large email's stored copy lasts 7 days, so one delivered later goes without the attachments that were only there.
+
+Migrations `105` and `106` add the column and a partial index, built concurrently.
+
+### Compact when a request leaves out older images
+
+A model request that has to leave out older inline images (past the request's image count or byte budget) sends less
+than the agent's Pi context holds, so Pi's compaction, which reads the size of the context from that response's usage,
+would never see them. Such a request now also starts Pi's compaction in the background, at most once a run and only when
+none is running; its summary is placed at the next boundary. Image-heavy agents are compacted sooner, which bounds the
+images their context holds in memory. Nothing changes for requests that send everything.
+
+### A refused computer key no longer blocks the computer
+
+A provider answering 401 or 403 when a computer starts has made nothing, so the session now closes instead of staying
+`uncertain` until someone confirms cleanup. `computer_start` says the credentials were refused; disconnect and reconnect
+with a working key. Any other failed start stays `uncertain`, because a lost response may have made a machine. Agents'
+computer tools also say when to stop a computer, that `computer_start` comes first, and who can clear a failed start.
+
+### Clearer computer transfer and file link errors
+
+`computer_download` of a remote file that does not exist now answers 404, `<path> not found on the computer`. It used to
+say the transfer exceeded the file size limit. `file_link` now accepts a generic `contentType`
+(`application/octet-stream`, `application/x-www-form-urlencoded`, `multipart/form-data`) as saying nothing about the file,
+instead of refusing it as invalid.
+
+### Computer file transfers
+
+Shell computers now offer `computer_upload` and `computer_download` to copy binary
+files between their remote filesystem and the agent's workspace. Results contain
+only the path, byte size and SHA-256 digest. Files can be up to 256 MiB, subject to
+workspace permissions and storage quotas. Each transfer uses a signed URL
+that expires within two minutes. See `docs/guides/computers.md`.
+
+### Console: organized around workspaces
+
+The console's sidebar now has a workspace switcher (shown once an account has a workspace) over the pages it scopes,
+and an **Account** group for what is account-wide. The selection is `?ws=` in the URL, so a link keeps it.
+
+- **Overview** is home once an account has an agent: spend against the previous 30 days, running agents, recent
+  failures (class and time only) and spend by model and tool. Get started stays home before the first agent.
+- **Agents** is paged and filtered on the server (search, Running, Failed · 24h, Sub-agents, Expiring), shows each
+  agent's workspace and last activity, and moves agents between workspaces in bulk.
+- **Workspaces** shows each workspace's spend and members; each has a settings page (rename, definitions, agents,
+  archive).
+- **Usage** moved out of Settings: a daily chart stacked by workspace, By workspace / By model / By day (paged)
+  tabs, the range in the URL, and CSV export of the current view.
+- Old console URLs keep working; `/console/settings` opens Settings → Telemetry.
+
+### Content-filter fallback
+
+A request whose provider's content filter blocks it (`finish_reason: content_filter`, or an error with `code: content_filter`) is made once more on the same model on another provider, where `AGENT_CONTENT_FILTER_FALLBACKS` names one (`from=to`, comma-separated; empty for none). The default sends `azure/deepseek-v4.1-flash`, whose Prompt Shields filter blocks ordinary coding answers as jailbreaks, to `openrouter/deepseek/deepseek-v4.1-flash-1017:nitro`. The fallback uses the agent's key for that provider (its key scope's entry, or the account's key), and is made inside the same model request, before Pi sees the block: history keeps only the fallback's answer, and a watcher sees the response begin again (a new `message_start`). The account pays for the fallback's answer alone: the blocked call is settled as the platform's cost (no credit charge, no end-user charge, out of the account's usage totals), and its `usage.recorded` event carries its tokens and `superseded: "content_filter"` so a receiver books it without charging for it. A failure of the fallback is the request's failure, retried as any other (on the agent's own model first). The next request goes to the agent's own model. Only agents whose key is resolved per call (a key scope, or the platform's Azure) fall back. Each fallback is a `model_fallback` metric line (`ModelFallbacks` by `From`, `To` and `Reason`).
+
+### Oversized agent contexts fail without loading the range
+
+An agent whose Pi journal range since its latest compaction exceeds 128 MiB now fails its run with code `context_too_large` before the host loads it. Interrupted runs fail with the same code instead of repeatedly resuming. History reads and abort remain available.
+
+Live runs check before each model request, stopping with `stopped: "turn_limit"` and code `context_too_large` when the range exceeds the bound. Operators can set `AGENT_CONTEXT_RANGE_MAX_BYTES` to a positive byte count. Use a new agent with a summary of the history, or raise the bound with enough heap capacity.
+
+### Reset an agent's context: `POST /v1/agents/{id}/context/reset`
+
+An agent whose runs fail with `context_too_large` can run again. `POST /v1/agents/{id}/context/reset` with `{ summary?, keepMessages? }` writes a new Pi head marker at the journal's tail: the agent's current system message, a summary (the one given, or a note that the operator reset it on that date), and its last `keepMessages` history messages (0 to 20, default 0, never starting on a tool result whose call is not kept). It reads the system message in SQL and never loads the old context range, so it works on an agent no node can start. History (`GET /v1/agents/{id}/history`), the history index, files and configuration are unchanged. It is refused with 409 `AGENT_BUSY` while a run is active or queued (or when the agent started while it was being reset), and with 409 `context_too_large` if the new context would itself be past `AGENT_CONTEXT_RANGE_MAX_BYTES`. Repeating it is safe.
+
+The SDKs have `agent.resetContext()` / `runtime.resetContext(agentId)` (TypeScript) and `reset_context()` (Python); the CLI has `camelrun agents reset-context <agent> [--summary text] [--keep n]`.
+
+The system-message read stops on the database after 120 s (`statement_timeout`), so a reset the client gave up on does not keep scanning, and it is not retried.
+
+### Model calls hold your credit before they are made
+
+A model call on the platform's keys now holds its estimate of a prepaid account's credit first, at the catalog's rates. Before, the balance was only checked between calls, so a few cents could start a call costing many dollars.
+
+- A call the credit does not cover is not made, and the turn ends with `stopped: "spend_limit"`, `limit: "credit"`. On free credit, the room is also what is left of the hour's allowance.
+- All of your credit can be spent: a last call starts within $0.25 of what is left, and a reply stops where the credit does.
+- Each call, on your credit or an end user's, asks for at most the output what is left pays for, so `max_tokens` can come out lower than the model's maximum near the end of a balance. That also bounds reasoning that never streams.
+- An estimate now uses a model's long-context rates for end users' holds as well.
+- A model with no price, or a router, holds at $3 and $15 per million tokens. It settles at what the provider reports.
+- Your own keys are not held, and neither are `:free` models.
+
+### Database connections stay open a minute when idle
+
+The control-plane pool now keeps an idle connection for 60 s (`AGENT_DATABASE_IDLE_TIMEOUT_MS`; it was pg's 10 s), so a node reconnects, with a TLS handshake, far less often.
+
+### The decide tool is on by default
+
+Every agent now has the `decide` tool (decisions with a decision model, `docs/guides/decisions.md`), directly and from
+js_exec as `tools.decide`, without listing it in `builtins`. Exceptions: an agent with no js_exec and no tools of its
+own, and a run with no tools at all, have none unless they send `decide: true`; it is not offered on an account with no
+OpenRouter key decisions can use (an agent whose `dataCollection` is `deny` has it, its calls sent with that policy).
+Opt out with `decide: false` on an agent (create or `PATCH .../configuration`; `null` restores the default), a
+run, or a definition; the agent view shows the setting (`decide`: true, false or null). The tool adds about 300 tokens
+to each request's tool list, so each agent's next request misses the prompt cache once. Calls are billed like any
+decision: on the platform's key, to prepaid credit.
+
+### Decisions with one side of a noul's criteria work
+
+OpenRouter refuses a noul question whose `criteria` has only `true` or only `false` (HTTP 400, `invalid_union`), which the
+API and SDKs allow. Such a question failed its whole decision. camelRun now sends the other side: yes is the question's
+statement, no is "Anything else.". Each failed decision also logs `decision_failed` with its status and error class.
+
+### Decisions: `POST /v1/decisions` and the `decide` builtin
+
+Typed questions about a state (`noul` yes/no, `choice`, `score`) answered with calibrated probabilities by a decision
+model: TypeSafe's Jev (`typesafe/jev-1.14`, pinned) through OpenRouter's decisions API (`/api/alpha/decisions`), on the
+tenant's OpenRouter key or the platform's at OpenRouter's reported cost. One state, or a batch of up to 100 answered in
+parallel (16 calls at once per tenant per node, 64 per node), with transient failures retried and Retry-After honoured.
+Agents get it as the `decide` builtin, and from js_exec as `tools.decide({items})`, billed to the run's and agent's
+spend limits (`usage.decisionCostUsd`). Usage has a new kind, `decision` (`decisions` counted), in `/v1/usage`, the
+ledger and `usage.recorded`. The provider sits behind `src/decision-providers.ts`; nothing is cached or logged of a
+state. `AGENT_DECISIONS_URL` points the adapter elsewhere (tests). See `docs/guides/decisions.md`.
+
+Also: a provider answer with neither cost nor tokens is billed at the estimate (logged as
+`decision_usage_untrusted`); `dataCollection: "deny"` (a request's, new on `POST /v1/decisions`, or an agent's) is sent as
+`provider.data_collection: "deny"`, which the decisions API takes and TypeSafe serves (a 404 for want of such a host
+is `DECISIONS_DATA_POLICY`); a
+request body is at most 2 MB and characters in flight are bounded per tenant (8M) and node (32M), with a 429 before the
+body is read; a key scope's chat `baseUrl` is not used; a call's own timeout is retried; end users settle at what the
+tenant pays (the OpenRouter credit multiplier on the platform's key). Images and transcriptions asked for alone now
+record their usage before settling an end user's hold.
+
+### DeepSeek V4.1 Flash 1017 skips InferenceNet and Wafer
+
+Calls to `openrouter/deepseek/deepseek-v4.1-flash-1017` and its `:nitro` variant now send `provider.ignore: ["inference-net", "wafer"]`. Those two OpenRouter hosts sometimes dropped a tool call's optional arguments: 13.6% of camel-builder's `bot__preview` calls failed on InferenceNet on the evening of 2026-10-27, and 15.6% failed on Wafer on 2026-10-26, against 1.7% on Together. OpenRouter still balances load across every other host. `:nitro` is still sent as given, and `ignore` combines with `dataCollection: "deny"`. The `:morph` canary is unchanged.
+
+### DeepSeek V4.1 Flash is the default model
+
+An agent that names no model, on a runtime that sets none of `AGENT_PROVIDER`, `AGENT_MODEL` and `AGENT_BASE_URL`, now gets `openrouter/deepseek/deepseek-v4.1-flash-1017`, in place of Claude Sonnet 5.5. A runtime that sets any of them keeps what it named: `AGENT_MODEL` or `AGENT_BASE_URL` alone is still Anthropic's, and `AGENT_PROVIDER=anthropic` alone is still Sonnet 5.5. run.camelai.com moves when its `AGENT_PROVIDER` and `AGENT_MODEL` are changed.
+
+- **Your own keys come first.** The default is the first model your key scope or account holds a key for, then the first the platform's keys serve. An account with only an Anthropic or Bedrock key gets Claude Sonnet 5.5 on that key, and is not moved onto the platform's keys and its credit.
+- **`AGENT_MODEL_FALLBACKS`** now defaults to `azure/deepseek-v4.1-flash`, then Sonnet 5.5 on Anthropic, OpenRouter and Bedrock's global profile. `openrouter/openai/gpt-6-luna` is gone from it: any account with an OpenRouter key stopped before it. These choose a model when an agent is made, by who holds a key. No running agent moves to them when a provider fails.
+- **Existing agents keep their model.** An upsert (`POST /v1/agents` with an `Idempotency-Key`) that names no model, or a definition applied that names none, now leaves an agent's model as it is. Before, either moved it to the runtime's default: an upsert with no model no longer undoes one that named a model. Name a model to change it.
+- **What a default agent notices.** DeepSeek takes `thinkingLevel: "off"` where Sonnet 5.5 always reasons, so a default agent does not reason unless you set a level. Its tool-call arguments may arrive in one piece (`toolCallStreaming: false`). It costs far less per token, and takes more tool calls per task.
+- The SDK examples and `camelrun init`'s template use the account's default, or show the new one.
+
+### Delegates in one response always share the run's budget
+
+With a run's spend limit, each delegate call in a response gets an even share of what the run has left. The share counted
+only calls already at the node, so one that arrived late, or waited for a `maxParallel` slot, could find the first child
+holding the whole budget and fail with "This run has no budget left for a sub-agent". Shares now count every delegate call
+in the response. Sequential children no longer get everything left to whichever ran first.
+
+### Delegate sub-agents are tracked in the database
+
+A `delegate` call's sub-agent now has a row in `agent_children` (kind `delegate`, migration 083), written before its
+prompt is sent. Aborting, stopping or deleting the parent reaches it from any node, also after the node that made it
+was lost and before the parent's run resumes; deleting the parent deletes the sub-agents the runtime made for it. An
+abort answers once the parent's delegate sub-agents have ended (at most 10 seconds, then `subagent_stop_timeout` is
+logged), and what they spent counts in the aborted run's `usage.subagentCostUsd` and against the parent's spend limit.
+A sub-agent whose parent's run ended without its answer is aborted by the child sweep, which charges what it spent to
+the parent's spend limit (`subagent_late_ending`).
+
+### Deploys: a hotfix lane, and never an older image over a newer one
+
+A hand-run Deploy is now the hotfix lane: `gh workflow run deploy.yml -R qaml-ai/run -f sha=<commit>` (main's head
+without `sha`) skips CI, uses CI's image or builds it, runs beside the automatic deploys instead of queuing behind
+them, and logs the ECS rollout (see [CI and deploys](README.md#ci-and-deploys)). Automatic deploys no longer cancel a
+hand-run one, and a newer commit's deploy cancels the older run's wait instead of queuing behind its whole rollout.
+Every deploy compares its commit with production's primary deployment right before the update and follows a
+deployment that already includes it, so an older commit never rolls over a newer one (`-f rollback=true` to do so on
+purpose), and each run checks at the end that every running task runs its image. Run titles name the deployed commit:
+a `workflow_run` run's own head SHA is main's head when CI finished, which made the deploy of #362 look like #368's.
+
+### ElevenLabs calls past 10 minutes
+
+- ElevenLabs Agents conversations now last up to 30 minutes, and a conversation that reaches its limit ("Max call
+  duration exceeded") is replaced by a fresh one, briefed with what was said, instead of ending the voice session with
+  `error`. Calls on ElevenLabs voices longer than 10 minutes used to end. The runtime creates a new agent per
+  credential (`camelRun realtime voice v3`) on first use; the earlier `v2` agents are no longer used and can be deleted
+  from the ElevenLabs account. See `docs/guides/voice-calls.md` for the realtime brain.
+
+### ElevenLabs realtime models
+
+ElevenLabs voice sessions accept any model ElevenLabs Agents offers, with `gemini-3.1-flash-lite` still the default.
+Each model uses its own agent; existing model agents are reused. Refused models produce an error naming the model.
+Other models use `AGENT_PRICE_ELEVENLABS_OTHER_LLM_MINUTE_USD`, default `0.05` USD per minute, plus the configured Agents rate.
+
+### Moving files with any tool that takes a URL
+
+Enable `file_link` to sign a GET or PUT URL for one workspace file (5 minutes by default, at most 15), and hand it to
+any tool, such as a shell on a machine behind your own MCP server. `file_import` streams a public URL into a writable
+path. Neither sends file bytes through the model. A PUT needs a size cap; imports allow up to 256 MiB and use the
+outbound guard and the storage quota.
+
+Files returned by tools an application attaches are now saved to the workspace, as an MCP server's already are. A
+resource link from a server without `fileArguments` stays a link, with a hint to use `file_import`.
+
+`computer_upload` and `computer_download` now use the same signed links, valid for 120 seconds, with size and SHA-256
+verification. A link can be reused until it expires. Migration 100 drops `computer_transfers`. See
+`docs/guides/files.md` and `docs/guides/computers.md`.
+
+### One place decides whether a turn ends the run
+
+- The agent asks the host whether a turn ends the run (`finishTurn`: a call waiting for input, `final_output`, a run
+  or spend limit, a hand-off) in one place, for a tool round and for an answer alike, from the response and results it
+  already holds, instead of reading them back from the journal at the end of every tool round. `turn_end` events carry
+  the round's results in call order, as before.
+- A steer sent `whileRunning: "steer"` that its run did not take is dropped by the agent itself when the run ends; the
+  host no longer keeps its own list of steers to take them back.
+- A tool result's `structuredContent` goes to Pi only for a tool that declares an output schema: Pi drops it otherwise,
+  and reported each one as an `extension_error` (`pi_report`).
+
+### Fork messages before a compaction or import cut
+
+Forking an early message now succeeds when it predates the source's retained model context. The fork copies
+the raw history through the requested point from the history index and journal, without the source's compaction
+summary. This also works after obsolete context checkpoints have been reclaimed. Later fork points still use
+Pi's retained context. Running turns and unknown messages keep their existing refusals.
+
+The raw context is seeded whole. Normal compaction summarizes an oversized context on the fork's first turn,
+in chunks when needed. If old usage counts understate its size, the normal provider-overflow path compacts
+and retries. History remains complete. `fork_from_history` logs the source agent, cut index and message count,
+without message content.
+
+### GPT-6.1 Terra
+
+The model catalog includes `openai/gpt-6.1-terra`, `azure/gpt-6.1-terra` and
+`openrouter/openai/gpt-6.1-terra`, with GPT-6.1 Sol's context window on each provider. Base prices
+per million tokens are $1 input, $5 output and $0.05 cache reads. Cache writes
+are $1.25. Above 272,000 input tokens, rates are $2 input, $7.50 output,
+$0.10 cache reads and $2.50 cache writes.
+
+The base prices come from OpenRouter's 2026-10-26 model list, and OpenAI and
+Azure use them too. Other capabilities are assumed to match each
+provider's GPT-6.1 Sol entry: Responses API, text and image input, 128,000 maximum
+output tokens, and low, medium, high, xhigh and max reasoning. Cache writes and
+the long-context tier are assumed to cost half Sol's rates at the same threshold.
+Tool-call streaming is unmeasured. With the vendored Pi these are Pi's own entries, at the same prices, and Terra
+can also reason not at all (effort `none`). Azure accepts Terra in the configured models
+map, but requires a deployment before it can be used; none is added by this change.
+
+### History pages read forward: `after` and `nextAfter`
+
+`GET /v1/agents/:id/history` (and the agent-token history endpoint) accepts `after`, a
+message index like `before`. The page holds whole turns from the first turn start at or
+after it (from `after` on when that is inside a turn, resuming a page a byte bound split),
+oldest first, up to `limit` messages and `maxBytes`. A forward page keeps the
+`{ entries, next, total }` shape and adds `nextAfter`: the `after` for the next page, one
+past its last message, `total` once caught up. A job that polls reads each new message once
+instead of paging back from the newest every run. `next` keeps its meaning (the older page's
+`before`), and pages requested without `after` are unchanged.
+
+`after` with `before` is a 400. An `after` older than the history the agent still holds
+(compaction dropped it) is answered with what exists and `truncated: true`, not an error;
+past `total` it is `entries: []` with `nextAfter: total`, so a caller sees the history
+shrank and starts again from `total`.
+
+Use `agent.historyPage({ after: 0, limit: 50 })` in TypeScript or
+`agent.history_page(after=0, limit=50)` in Python. Read `nextAfter` from the answer and
+pass it as `after` next time.
+
+### History is read from Pi storage by ordinal; the history index writer is gone
+
+History pages, the full history, account export, forks and a context reset's kept messages now read an agent's messages
+from Pi storage by ordinal (the columns #481 added), on whichever node serves the request, with every read bounded in bytes
+before it reads. Agents no longer write history index chunks: the index writer, the stop-time flush (`historyFlushMs`),
+the running agent's history tail, page forwarding to the owning node and the journal backlog read are deleted. A fork's
+copied history is stored in the fork's own Pi storage as archive entries instead of index chunks. History from before
+an agent's journal (retired host transcripts, older forks) is still read from the existing index chunks until it moves
+into Pi storage. An agent not yet placed is placed at its first history read. See `docs/operations/pi-durable.md`.
+
+### Imported history is not charged again
+
+Creating an agent with `initialMessages` charged each imported assistant message's original usage again: a usage receipt, agent spend and a `usage.recorded` event per message. An import is now free. Imported messages keep their usage for context accounting, and new model responses are charged as before.
+
+### Bound full-history reads to 64 MiB
+
+Full-history requests and forks now return HTTP 413 before reading indexed chunks when their stored size exceeds 64 MiB. Read large histories in pages with `limit`, `before` and `maxBytes`.
+
+The console polls the latest bounded page and keeps absolute message indexes when forking. The TypeScript SDK's `history()` collects bounded pages while keeping its existing return type; use `historyPage()` to avoid holding the whole history in your client.
+
+### The history index is gone
+
+Every agent's history is now read from its Pi storage alone: the history index's tables (`agent_history_index`,
+`agent_history_chunks`) are dropped (migration 095) after their messages moved into Pi storage as archive entries, and the
+move's endpoint (`/v1/operations/history-archive`), the chunk fallback, the legacy coverage's `retired_index_short` count
+and the pin backfill's history pages go with them. Journal reclaim's stage 2 now selects every retired host transcript.
+Leftover chunk blobs are removed with each agent's purge.
+
+### Bound history pages by bytes
+
+History paging accepts `maxBytes` (16,384 to 4,000,000) to cap the UTF-8 JSON response,
+including its envelope. It returns the newest messages that fit and the existing `next`
+cursor for older messages. Pages may start inside a turn; a single oversized message
+is returned whole. Requests without `maxBytes` keep their existing behavior.
+
+Use `agent.historyPage({ limit: 50, maxBytes: 65536 })` in TypeScript or
+`agent.history_page(limit=50, max_bytes=65536)` in Python. The parameter works on
+`GET /v1/agents/:id/history` and the agent-token history endpoint.
+
+### `history: "none"` is ignored: every run sees the agent's history
+
+Prompts (REST, the SDKs' `run`, `stream`, `send` and `client.prompt`) and schedules (REST, the SDKs' `schedule`, the
+`schedule` built-in, the MCP server's `add_schedule`) still accept `history: "none"` and `"full"`, so existing callers
+and stored schedules do not fail, but ignore it: every run, and every wake-up, sees the agent's history, which Pi's
+compaction keeps bounded. For a run that sees no history, use a stateless run (`docs/guides/stateless-runs.md`)
+(`POST /v1/runs`, `agents.run({ instructions, input })`). The field is marked deprecated in the OpenAPI schema and the
+SDKs; `camelrun schedules add --history` prints a deprecation warning. The runtime logs `history_none_ignored`
+(`agent`, `tenant`, `source`: `prompt` or `schedule`) once per agent and source per process, to find remaining callers.
+
+The `schedule` built-in still accepts `history`, described to the model as ignored, so a model that sends it does not
+fail; schedules no longer report it. A request that loses every user message no longer fails with code `context_lost`
+(that guard served only history-none runs).
+
+### History ordinal fill: records Postgres will not parse
+
+`POST /v1/operations/history-ordinals` no longer fails an agent whose entries hold a `\u0000` or a lone surrogate escape
+(Postgres refuses them as `jsonb`; about 1% of agents in the first dry run): such a page of entries is read and shaped
+on the node, one record at a time, and the agent is placed as its commits would have placed it. Rerun the fill after
+this deploys: agents placed already come back `current`.
+
+### History ordinals in Pi storage
+
+Each history entry in Pi storage now records its place in the agent's history (`msg_from`, `msg_count`, `msg_skip`,
+`turn_start` on `pi_durable_entries`; `history_next` and `history_last_id` on `pi_durable_metadata`), kept by every
+commit, so history reads can find a page of messages by ordinal in SQL instead of reading the journal from its base.
+New agents are placed from their start. Agents from before this release are placed by
+`POST /v1/operations/history-ordinals` (operator only; a dry run by default; resumable, bounded, idempotent), and
+`GET /v1/operations/history-ordinals-coverage` reports agents not placed yet. The index on `msg_from` is built
+concurrently at start. History reads do not use the ordinals yet. See `docs/operations/pi-durable.md`.
+
+### Large history reads in Python and journal backlogs
+
+The Python SDK's `history()` now collects bounded pages, like the TypeScript SDK,
+so histories larger than 64 MiB remain readable. Its return shape is unchanged.
+History pages that need messages before the journal's base read only the missing
+range from the index. The 64 MiB read limit applies to the chunks in that range.
+
+### One history read is capped, and a node near its heap limit names its busy agents
+
+A read of an agent's history messages from its journal (`JournalHistory.messagesFrom`: a turn's messages on resume,
+the history index's tail on a page read) fails past 64 MiB of message JSON, rather than taking it all into memory.
+On 2026-10-27 from 13:00Z such reads took nodes to their 2 GB heap limit about once a minute, and the orphan sweep
+carried the work to the next node. `agents_resumed` now lists the agents a sweep loaded, and `node_load` lists
+`busyAgents` (those with work running) while the heap is past 1 GiB.
+
+### jemalloc for the runtime's node process
+
+The image preloads jemalloc (`LD_PRELOAD`) for the runtime's node process. With glibc, memory a voice media worker
+thread allocated stays reserved in that thread's arena after the worker is ended, so the node's RSS steps up with each
+worker kill: measured, 32 kills left a node at 713 MB against 80 MB before them; with jemalloc, 144 MB against 100 MB.
+Baseline RSS is about 20 MB higher. Confined processes (v8-exec, file parsing) and agent processes do not get
+`LD_PRELOAD`: the launcher gives the former an empty environment and `agentProcessEnv` does not pass it. The build fails
+if jemalloc does not load. To turn it off without a rebuild, set `LD_PRELOAD` to empty in the task definition.
+
+### Reclaim superseded journal checkpoints
+
+Operators can size and reclaim obsolete context copies in idle sessions with
+`scripts/ops/reclaim-checkpoints.ts`. Dry run is the default; apply rechecks idleness under session locks and keeps
+native history, compactions, seed markers and every reserved ID. See the runbook (`docs/operations/journal-reclaim.md`).
+Journal forks before the newest retained context head use raw history from the history index and journal.
+
+### Journal reclaim stage 2: retired host transcripts
+
+`scripts/ops/reclaim-checkpoints.ts --stage host-transcript` removes a retired host transcript's records, archive and
+snapshot document, for sessions whose history index holds the history before their journal's base: dry run by
+default, idle sessions only, one transaction each. See [Reclaim superseded journal checkpoints](journal-reclaim.md).
+
+### Judged tool approvals
+
+A definition's MCP servers and OpenAPI sources take a fourth approval policy:
+`"approval": {"default": "judged"}` (or `judged` for one tool in `tools`). Before
+each call, the runtime asks the decision model (`typesafe/jev-1.14`, the one
+`decide` uses) whether the call is an ordinary reversible step toward the
+request. An ordinary call runs with no person in the loop; a call that may
+irreversibly delete or rewrite what already existed, write to production or
+change permissions asks the person, as `always` does; a call that would send
+credentials, secrets or private data out of the user's systems is denied before
+it runs, and the model reads that denial as the call's result. A judge that
+cannot answer — no OpenRouter key, a spent spend limit, a provider failure, an
+answer it cannot read, or arguments or a description past what it is shown —
+asks the person, so a judged call never runs unjudged; so does a turn with no
+request of its own (a prompt sent with no text), since a request is the only
+thing that can authorize a call.
+A denial is not remembered: the next call is judged on its own, and shows in a
+run's outcome as `tool_error`. A resumed turn is judged against the request that
+started it, not against nothing.
+
+A judged call costs about $0.00003 (Jev bills input tokens at $0.042 a million)
+and is billed as a decision is, under `kind: "decision"`, with an end user's
+credit holding and settling it when they pay. The judge sees the request's start
+and end (2,000 characters), the 4,000-character description the model is shown,
+and 8,000 characters of the call's arguments; past those it asks rather than
+guessing. Each decision logs `tool_judged` (tool, decision, risk, and why it
+asked), never the request, the arguments or the answer. Judged tools are
+declared to the model directly, since code in `js_exec` cannot wait for a person.
+
+Implementation: `src/tool-judge.ts` (the questions and the decision table),
+`src/tool-sources.ts` (the gate), the judge is built per session in
+`src/client-sessions/spend.ts` (`judgeFor`). Limits: `JUDGE_LIMITS` in
+`src/limits.ts`.
+
+### Messages that land without a turn are compacted
+
+Pi checks its compaction threshold only as it prepares a model request, so an agent that kept receiving messages without
+running a turn (a credit- or spend-stopped agent's sub-agent notices, notices past the wake cap) grew its context without
+bound. After such a message lands, the host now applies the same check, and past the threshold starts Pi's own
+compaction (`Conversation.compact()`), unless one is already listed. The write never waits for the summary. A turn that
+starts meanwhile waits for that compaction and starts on its summary, instead of compacting the same context again. The
+model sees the change only as the summary text.
+
+- The context is read only when the last measure plus the tokens landed since cross the threshold, and only after the
+  #433 range-size check passes; a range too large to load is skipped and logged (`compaction_skipped`).
+- A summary that fails (a bad key, a refused payment) is not retried for 5 minutes of landings.
+- Summaries are model calls billed to the tenant, credit-stopped agents' included: about one summary per window of
+  landed content. Between runs their usage is reported as the agent's background work (`background: true`).
+
+### A person can spend the credit they have
+
+- With end-user credits on, a model call whose estimate is more than what is left now starts anyway when the shortfall
+  is within $0.25, holding what is left, where it was refused (402 `END_USER_CREDIT`) with up to the cost of its input
+  left. What it costs past its hold is written off and recorded as any write-off is (`writtenOff`, `end_user_written_off`):
+  the tenant bears it, no balance goes negative, and no daily or bucket limit is passed. With nothing left, calls and
+  runs are refused as before.
+- The same holds for fixed holds: transcription, images and each realtime voice answer. A realtime voice session starts
+  with any credit left, not only with one answer's $0.05. `EndUserCredits.refusal` no longer takes `usd`.
+
+### Legacy format coverage endpoint
+
+`GET /v1/operations/legacy-coverage` (platform operator token only) counts the agents that still need the retired and
+legacy history readers: host transcripts never retired, retired ones whose history index is short of the journal base,
+Pi sessions with no journal history, and agents with no Pi storage (with and without hot legacy-log rows), with up to
+20 agent ids per nonzero count and a `gate` saying whether the readers can go. It walks agents in batches with a few
+index lookups each (never a scan of `pi_durable_entries`), about 20 s per call, and answers a `next` cursor carrying
+the counts until `complete`. Each batch is read-only, each statement stopped after 20 s. See
+`docs/operations/pi-durable.md`.
+
+### Legacy history formats are refused, not read
+
+Every agent in a legacy history format was converted by `POST /v1/operations/legacy-migrate`, and legacy coverage read
+0. The readers of the host transcript's records, its retirement, the legacy log, and the migration endpoint itself are
+removed. An agent whose history is still in such a format (none should be) is refused with `409 AGENT_NOT_MIGRATED` and
+its storage is left untouched; each refusal logs `legacy_format_refused` with the agent, tenant and `kind`:
+
+- `host_transcript`: a host transcript no release retired.
+- `not_on_pi`: Pi storage without a journal history (a session rolled back to the legacy engine, or imported before #322).
+- `legacy_log`: no Pi storage, but a legacy log (a session from before Pi).
+- `history_before_base`: a history read reaches before the journal's base, and the history index does not hold it.
+
+`GET /v1/operations/legacy-coverage` stays, to check none appears. The supervisor's `closeTurn` no longer takes a history
+index (only the retirement used it). Legacy logs themselves are not deleted.
+
+### Limit hits are logged with the tenant
+
+A `limit_hit` line (`tenant`, `limit`, `status`, `route`) when a limit refuses someone with a 402, 413, 429 or 507, in the
+API, the volumes and `TOOL_FILE_LIMITS` (`tool_file_*`); never what was refused. One line per tenant, limit and minute on
+each node, then `limit_hit_repeats` with how many more came. `turn_metrics` for `spend_limit` and `turn_limit` turns adds
+`tenant`, and `limit` and `limitReason` where known. Per-address 429s carry the tenant when the request's credential
+checks out, and `tenant: null` otherwise.
+
+```text
+filter type = "limit_hit" | stats count(*) by tenant, limit, status, route
+```
+
+### Luna context windows and model usage
+
+#410 was reverted after its fixed 272,000-token Luna cap made working 300–500k-token chats compact on every turn. The unbounded summary requests then failed and blocked those turns. OpenRouter and other aggregators now keep Pi's catalog window, including routing variants and the latest alias. Native OpenAI and Azure keep their catalog windows.
+
+A Luna stream failure with no output and a prompt over 272,000 tokens triggers overflow recovery. Learned token limits survive restarts. Limits cannot fall below 32,768 tokens or half the catalog window (half the native 272,000-token window for Luna). Byte-size refusals do not lower token limits. Summary requests split large histories into chunks that fit the effective window, carrying the previous summary forward. Compaction and summarization failures have their own metrics class.
+
+Failed model calls without usage evidence are never billed an estimate retroactively. Unreconcilable calls settle at zero when no usage was reported; platform Azure and ordinary tenant provider endpoints are not classified as gateways. Reconciliation waits past the maximum turn time and preserves the credentials recorded for the attempt. Real provider evidence can raise or lower an end user's charge, subject to the original usage day's limits. Calls still streaming refresh their activity time, and a late real finish bills its full reported usage. Direct OpenRouter credentials continue to reconcile against the provider's generation record.
+
+### Managed computers
+
+An agent can have a Linux computer with no provider account of your own: choose **Managed (no key needed)** under
+Computers, or `POST /v1/computers` with `provider: "boat"` and no credentials. It is a small machine for work in the
+foreground, charged to credit at what it costs while it runs, and an account starts one once it has bought credit.
+`AGENT_MANAGED_COMPUTERS` turns them on, off by default, with `platformKeys.boat` in the tenants file. See
+`docs/guides/computers.md`.
+
+### Ops: sign-ups and activity by MCP plugin (ChatGPT, Codex, Claude)
+
+The ops dashboard has an MCP plugins tab (`GET /ops/api/mcp?days=7|30|90`). It reads existing tables; there is no migration or change to OAuth authentication.
+
+- Sign-ups: self-serve `tenants.created_at` in the selected window, classified by the first retained `oauth_grants` row if it was created within one hour (inclusive). Later connections do not change acquisition. The Growth source report joins these accounts through `journey_accounts.account_ref` and substitutes the plugin label, including sign-ups whose browser ran in the OAuth flow. Growth joins first-touch sources from the journey store with local signup and usage counts. Missing sources stay Not captured, and plugin labels remain available without a journey connection.
+- Daily and weekly token activity: distinct accounts by kind from `oauth_grants.used_at`. Weeks start Monday UTC and cover only the selected dates. The column stores **token issuance/refresh**, not authenticated requests, and overwrites earlier activity. These are not complete historical MCP active-account counts; they can decrease as tokens refresh outside the window.
+- Funnel: accounts signed up in the window that have authorized each kind by now, then have an `agents` row or model-response usage, then model-response usage in `usage`, then usage on a day after their first response. Each step is a subset of the previous step. Progress is account-wide, including work outside the plugin. An account can appear under multiple kinds. Removed agents can be inferred from retained usage.
+- Tool calls: omitted. Neither hosted MCP (`src/hosted-mcp.ts`) nor per-agent MCP (`src/agent-mcp.ts`) stores incoming tool-call records with an OAuth grant/client. Model usage and outgoing MCP tool activity cannot establish the caller's plugin.
+
+All metrics exclude staff and erased accounts by the existing admin rules. Revoking a grant deletes it, so both attribution and authorization counts can disappear or change to the next retained grant. The report does not claim durable first-touch history.
+
+Registration data is in the signed `oauth_grants.client_id` payload (`n` = name, `r` = redirect URIs, `m` = auth method). The report decodes only stored registrations; it does not accept these ids as authentication. Exact HTTPS callback hosts `chatgpt.com` / `chat.openai.com` identify ChatGPT and `claude.ai` identifies Claude. Otherwise exact names ChatGPT, Codex, Claude and Claude Code are recognized, case-insensitively. Unrecognized registrations remain Other MCP; a loopback callback alone is not Codex. These fields are client-declared, not verified vendor identity.
+
+Evidence for matching (checked 2026-10-21):
+
+- [OpenAI plugin authentication](https://developers.openai.com/plugins/build/auth) describes ChatGPT's `chatgpt.com` callback URIs.
+- [Codex's OAuth registration implementation](https://github.com/openai/codex/blob/main/codex-rs/rmcp-client/src/oauth_client_registration.rs) sends `with_client_name("Codex")`; its callback is loopback, not a uniquely identifying host.
+- `src/oauth.ts` `register`, `clientId`, `exchange`, `issue`, `authenticate` establish the local storage format, grant creation, last token timestamp semantics, and absence of per-request writes. No production data was queried.
+
+### Retire nodes under sustained memory pressure
+
+`AGENT_MEMORY_RETIRE_MS` enables memory retirement after sustained pressure, plus up to 10 minutes of per-node jitter. It defaults to 0 (disabled); ECS sets 10 minutes. A claim requires a live, non-draining peer below its memory threshold, with one retirement at a time and at least 10 minutes between claims. Nodes publish their memory pressure with their heartbeat.
+
+A retiring node stops taking agents, hands turns to peers, and calls ECS StopTask on its own task. `/healthz` stays 200 while ECS deregisters and replaces it; the first SIGTERM joins the drain without cutting turns. Without an external signal, `AGENT_MEMORY_RETIRE_FALLBACK_MS` (default 10 minutes after claiming) finishes the drain and exits 0, or 1 if the drain fails. Handed-off turns record `memory` in `handoffs[].reason`.
+
+The task role needs `ecs:StopTask`; apply `infra/terraform/ecs.tf` to enable this path. If StopTask is unavailable or fails, the node uses `/healthz` 503 only when its deployment is current. Otherwise it releases the memory claim without undraining and retries after backoff. Logs identify the StopTask, health-check, or deferred path.
+
+### Native computers
+
+Agents can connect to Modal, Daytona, Boat, E2B, Browserbase, Browser Use Cloud, or a Docker runner
+reached through Cloudflare Tunnel. The Computers page stores provider credentials
+encrypted, attaches shell or browser tools automatically, and shows session state
+and compute seconds by workspace. Providers bill the connected account directly.
+
+Sessions have fixed expiries and daily time budgets. Durable operation receipts
+prevent duplicate mutations after retries. Cleanup is retried; credentials and
+references are removed after successful disconnect. Account deletion waits for
+provider cleanup. The setup and recovery guide is `docs/guides/computers.md`.
+
+### Native Pi system sections for every agent
+
+`AGENT_NATIVE_SECTIONS_TENANTS` is gone: every agent's system sections are native Pi sections, as they have been in
+production (`*`) since the canary finished. The non-native path, which gave Pi's generation the host's sections in place
+of its agent's through the task override, is removed. A conversation still under the old `instructions` key is re-keyed
+to `application` as it loads, with the same prompt text, as before. Self-hosted nodes that left the variable unset now
+render sections natively too; the variable is ignored if still set (the Terraform variable can be dropped with the next
+infrastructure change).
+
+### Search engines are asked not to list the console or the docs' Markdown copies
+
+The console and the pages that lead to it (`/`, `/console` and everything under it, its sign-in, billing and Discord
+routes, and `/oauth/authorize`) now answer with `X-Robots-Tag: noindex`, and so does every document the runtime
+serves for agents: `/llms.txt`, `/llms-full.txt`, `/SKILL.md`, `/docs/**/*.md` and the UI registry's `/r/*.json`.
+The runtime also serves a `/robots.txt` that blocks nothing, so crawlers can fetch those pages and see the header.
+The documents' bodies, types and caching are unchanged, and so are the API, `/mcp` and the other endpoints.
+
+### A sub-agent's notification survives an abort as its turn opens
+
+When a parent was aborted just as a sub-agent's notification began its turn, before Pi had the message, the notification
+was marked landed but never reached the parent's history, so the parent never learned the sub-agent had finished. It now
+lands without a turn, as it already did when an abort reached it earlier.
+
+### Any OpenRouter model passes through
+
+`openrouter/<id>` now works for a model not in the catalog. The runtime makes one lookup of that model (`GET /api/v1/models/{id}/endpoints`) when an agent takes it, and the agent keeps what it says: the largest context window, the longest reply every host serves, images, tool support and the dearest host's prices, which set estimates and holds. Calls are billed what OpenRouter reports.
+
+- OpenRouter has no such model, or lists no tool support for it: a 400 when the agent is made or moved to it.
+- OpenRouter out of reach: the agent starts with a 128,000-token window and 8,192-token replies, held at $3 and $15 per million. A provider's overflow compacts and asks again, as for any model.
+- These models are not listed in `GET /v1/models`. `AGENT_MODEL_FALLBACKS` and `AGENT_CONTENT_FILTER_FALLBACKS` still refuse a name the catalog lacks, so a typo stops the node.
+- A model that takes reasoning always gets at least `low`, with no `temperature`: the lookup does not say whether it can turn reasoning off, and a third of OpenRouter's models answer a 400 to that.
+
+### Runtime
+
+Pi compacts once when a model rejects a turn for exceeding its context window. If the retried request still overflows,
+the turn now fails with the provider's overflow error. Later turns use the learned smaller window. The runtime no
+longer retracts that final failure to compact and retry a second time.
+
+### Particle-1 on OpenRouter, at the price OpenRouter charges
+
+`openrouter/particle-ai/particle-1` is listed at $0.05 input, $0.50 output and $0.003 cached per million tokens, in place of the $0.25, $1 and $0.03 the catalog carried. `toolCallStreaming` is `false`. Particle AI is its only provider, so there is no other host to route to when it is down. A request with an image in its context cost about $0.002 more in our tests, which `GET /v1/models` does not show. Calls were and are billed what OpenRouter reports; the listed price sets estimates and holds.
+
+### Task size and memory watch for Pi
+
+Terraform runs 1 vCPU / 4 GiB tasks with the admission threshold
+(`AGENT_MEMORY_HIGH_BYTES`) at 65% of them (2.6 GiB) and `node_load` every five
+seconds (`AGENT_LOAD_INTERVAL_MS=5000`), which logs Node heap, RSS, voice workers
+and the visible cgroup current/high-water memory; the default stays 60 seconds.
+The cgroup may include helper processes: do not read it as the Node heap alone.
+The `-task-cgroup-memory` deployment alarm (cgroup memory over 3 GiB) replaces the
+hand-made `-pi-canary-memory` alarm.
+
+### Pi context size metrics
+
+Pi model requests now log `held_tokens`, `sent_tokens` and `held_sent_ratio` in CloudWatch
+namespace `AgentRuntime`, with only `ServiceName` as a dimension. Both counts use the same
+estimator, before context trimming and after request conversion respectively. Agent ids remain
+plain log fields. A `context_divergence` warning appears at most once per host run when held
+tokens exceed both four times sent tokens and 50,000.
+
+The existing context size guard also reports `context_range_bytes` and `context_range_entries`
+at host load and the first model request of each run, without extra SQL. Committed tool results
+report `tool_result_details_bytes` (serialized JSON) and `tool_result_inline_image_bytes`
+(stored base64 payloads). Contents are never logged. Held estimates reuse unchanged message
+objects; each request walks the message list without serializing the whole context. These
+metrics do not change model-visible messages or compaction behavior.
+
+### Smaller stored tool results
+
+Direct JSON tool results no longer repeat their content in `details`. Other direct-tool details over 16 KiB of
+JSON, and js_exec details over 32 KiB, become `{ truncated: true, path? }` in events and history. The full JSON is
+saved beside tool output in `tool-results/` when a writable workspace is available and it fits the 700 KiB
+file-write limit; otherwise it is dropped. Values past 700 KiB log `tool_details_dropped` with the agent, tool
+and byte count only. Model-visible content, input-required markers, and `final_output` results are unchanged.
+
+User-entry deduplication is off by default. `AGENT_PI_DEDUPE_USER_ENTRIES=true` stores content only in the model
+message; readers accept both formats. Leave it off until this reader is deployed everywhere and older releases
+are no longer rollback targets: older readers require content in `data.message`.
+
+### Vendored Pi carries no patches of ours (can be rolled back)
+
+A fork reads its source's context through Pi's own derivation on a read-only viewer Harness again (Pi's recommended
+way for a reader), instead of our patch `readStoredContext`. That was the last patch: the vendored packages are now
+Pi's own build, `1.4.0-main.f09d01b85e03`. The fork point refusals (before the newest head marker, inside an entry of
+several messages) and the compaction kept-range cut are unchanged. No stored format changes.
+
+### Pi durable 1.4.0
+
+The runtime moves to `@earendil-works/pi-durable` 1.4.0 with `pi-ai`, `pi-agent-core` and `chord` 1.4.0 (`pi-ai` was 1.1.0
+at the top level, 1.3.0 inside pi-durable; there is now one copy).
+
+- **No migration.** Pi 1.4.0 adds a `sleeping` task status (durable sleeps for retry and deferred-poll backoff) and a
+  `restarts` count on task records. `pi_durable_tasks.status` already allows `sleeping` (078), and `restarts` lives in the
+  JSON `record`. Pi's own SQLite schema-2 rebuild does not apply to the Postgres storage.
+- **Rolling deploy and rollback are safe.** Generation retry is off (`retry.enabled: false`, so compaction retry is
+  off as well), and no provider returns deferred responses, so this release never writes a `sleeping` task. A 1.3.0 node that
+  opens a session after a 1.4.0 node ignores `restarts`. It carries the field along unchanged, without the reset on
+  progress, so during the rollout a task's count can be stale; `AGENT_MAX_RESUMES` still ends turns first (below).
+  Rolling back needs nothing.
+- **Crash-loop guard (Pi default, 5).** Opening a session counts a restart for each task that was running when its node was
+  lost, and parks a task after 5 restarts in a row without progress. A clean close (drain, retire, memory hand-off) does not
+  count. `AGENT_MAX_RESUMES` (default 2) still ends a turn first: the third node loss fails the run with `resume_limit`
+  before Pi's count reaches 5. Pi's guard is a backstop for work our count does not cover, and for `AGENT_MAX_RESUMES` ≥ 5.
+  `pi_report` logs now carry `report` (for example `task_faulted`) and the task kind and id. (Parking is gone again with
+  the vendored Pi: see "Pi from its main branch, vendored".)
+- **No Pi attribution headers.** Pi 1.4.0 attributes every model request to pi by default: OpenRouter `HTTP-Referer:
+  https://pi.dev` and `X-OpenRouter-Title: pi`, plus NVIDIA and OpenCode origin headers. The runtime sets `identity: {
+  attribution: null }`, so it sends none of these (as before). `User-Agent` stays pi-ai's default `pi/<version> (…)`,
+  as with 1.1.0.
+- **pi-ai catalog moves from 1.1.0 to 1.4.0.** Models the platform prices itself keep their overrides
+  (`src/pi-catalog.ts`). Dropped because Pi now has them: Anthropic Sonnet 5.5 cache reads at $0.10, OpenRouter Gemini
+  3.8 Flash at list price, and the added OpenRouter DeepSeek V4.1 Flash 1017 entry (same list price). Changes agents will
+  see: OpenRouter DeepSeek V4.1 Flash's longest reply drops from 943,718 to 393,216 (DeepSeek's own endpoint); Anthropic
+  `claude-sonnet-4-5` has a 200,000 window, not 1,000,000; many OpenRouter list prices moved (for example
+  `openai/gpt-5.6-sol` doubled, and `deepseek/deepseek-v4-pro`). OpenRouter calls are still billed what OpenRouter reports;
+  catalog prices drive estimates, holds and calls that report nothing. Claude Haiku 5.5 can now turn thinking off
+  (pi-ai 1.3.0 fix), so a call that asks for no reasoning on it sends none instead of the minimum level. Pi removed
+  `openai-codex/gpt-5.5` and `gpt-5.3-codex-spark`, which the Codex backend rejects for ChatGPT accounts, and some old
+  OpenRouter ids such as `anthropic/claude-sonnet-4`, `deepseek/deepseek-r1` and `qwen/qwen3-max`. New agents
+  cannot name a removed model; existing agents keep the model they were created with.
+
+### Pi durable execution
+
+Every agent runs on Pi durable 1.3.0, in process or inline hosting. Pi owns
+execution, canonical history and compaction. The host loads a bounded native
+checkpoint and uses indexed request admissions; it does not replay a legacy
+transcript.
+
+Postgres responses and summary usage commit with durable accounting receipts and
+agent spend. Receipt consumption atomically updates daily usage, prepaid charges
+and webhook events, including after a crash or concurrent worker retry.
+Production's durable model-attempt accounting and end-user credit holds remain
+authoritative; native fallback receipts do not charge those tracked calls a second
+time. Storage metering is deferred.
+
+### The host transcript is removed: an agent's history is its Pi journal
+
+Every agent's history and model context are now Pi's journal alone: Pi's messages, the messages the host makes
+itself as native entries, and its turns, retractions, waiting calls and skips as markers. The host transcript
+(`camel.host.snapshot`, `camel.host.record`), its dual write and dual read, and its working set that runs checked
+into Pi's context are gone. A session's first load on this release retires its host transcript, once: it indexes
+whatever settled history before the journal's base its history index lacks, then disables the host document
+(`retired: "journal"`), and logs `host_transcript_retired`. A release before this one then refuses the session
+(409 `AGENT_NOT_MIGRATED`), so a rollback below it is one-way. See `docs/operations/pi-durable.md`.
+
+`AGENT_HISTORY_BACKLOG_BYTES`, `AGENT_PI_DUAL_WRITE`, `AGENT_PI_DUAL_READ` and `AGENT_PI_HISTORY_SOURCE_TENANTS` are
+ignored (`settings_ignored`), and their Terraform variables (`agent_pi_dual_write`, `agent_pi_dual_read`,
+`agent_pi_history_source_tenants`) and the `-dual-read-mismatches` and `-history-source-mismatches` alarms are
+removed: apply with this release's image, never before it. Migration 084 drops the `pi_sweep` table.
+
+What the model is sent changes in two places, for the same content: after a Pi compaction, requests carry Pi's own
+compacted context (its summary and kept messages, after its system message with every section in effect) rather
+than the host's copy of it.
+
+### Fewer database round trips per Pi step
+
+Pi sessions on Postgres make about 40% fewer database statements per model call: a commit takes its sequence in
+the metadata lock, checks its IDs and documents in one read and writes everything in one statement, and journal
+reads fetch their conversation in the same statement. A turn's first model request starts sooner, and so does each
+tool round. New metrics separate the runtime's part of time to first token from the model's: `TimeToFirstRequestMs`
+on `turn_metrics`, and `RequestFirstTokenMs` on `model_response` ([architecture](architecture.md)).
+
+### A person's answer survives a deploy that lands as their question is asked
+
+When a node stopped just as a tool call began waiting for a person, the next owner could lose track of the wait: the
+question was already shown, but the answer was then accepted and dropped, and the turn ended without it. The call now
+stays waiting on the next owner, and the answer reaches the run.
+
+The host's journal now always writes through Pi's Session. A journal write made once an agent is closing is refused and
+logged (`journal_write_refused`, with the kinds of record it held), except a call left waiting for a person, which is
+stored. The next owner goes on from what is stored, as after a lost node.
+
+### The legacy engine and its importer are removed
+
+The pi-agent-core loop that ran agents before Pi durable is gone, with its host
+compaction, the `AGENT_ENGINE` switch, the Pi canary allowlists, the rollback
+from Pi to it, the one-way importer of legacy sessions and the migration sweep
+(`AGENT_PI_SWEEP`, `/v1/operations/pi-sweep`, `infra/pi-sweep.sh`). A node with
+`AGENT_ENGINE`, `AGENT_PI_CANARY_AGENTS`, `AGENT_PI_CANARY_TENANTS` or
+`AGENT_PI_SWEEP` set still starts, ignores them and logs `settings_ignored` once.
+
+Every format the imports wrote is still read, including imports too large to copy,
+whose history reads their legacy log first. A session whose history is still only
+in the legacy format is refused with 409 `AGENT_NOT_MIGRATED` (logged as
+`legacy_session_not_imported`), and nothing is written. New agents and forks are
+seeded straight into Pi. See `docs/operations/pi-durable.md`.
+
+### Live Pi compaction limits
+
+Pi sessions now apply changes to `runLimits.contextTokens` on the next request,
+including recalculating how much context to reserve and retain. Host checkpoints
+preserve message boundaries so Pi can compact across separate user turns as well
+as long tool loops. Full history remains available.
+
+### One compaction path
+
+Agents always use Pi's native context selection and compaction. The adapter's
+older host-compaction mode and its extra context checkpoints have been removed.
+
+This does not change journal storage or the public session API.
+
+### Pi storage is ready for the next Pi release's commit contract
+
+The next `@earendil-works/pi-durable` release calls `Storage.commit(writes, adopt, context)` and expects the storage to
+call `adopt(seq)` once, synchronously, when the batch is durable and before its next commit. camelRun's Postgres
+storage, its SQLite wrapper and the agent-process RPC storage (`remotePiStorage`) take that shape, never adopt a commit
+that failed, and adopt a commit whose answer was lost but landed exactly once. (The vendored Pi uses it: the shapes
+for Pi 1.4.0 are gone again.)
+
+### A leaving node hands its turns to Pi on the next owner at once
+
+A node that retires (a deploy), drains with a live peer, or leaves under memory pressure no longer waits for each
+running turn to reach a step boundary. It closes each agent's Pi harness at once, mid-step and without an abort, records
+the hand-off on the run (`handoffs`, with what the run gathered), and its peer's Pi goes on with the run where it was: a
+model request the close cut is made again; a tool call in flight is answered as interrupted ("was interrupted and may
+have partially run"), or made again when it is safe to repeat (`delegate` and the other multi-agent tools, declared
+`replay: "safe"`). A code execution (`execute`) still finishes where it runs, up to `AGENT_RETIRE_MAX_MS`.
+
+A node lost mid-turn (a crash) recovers the same way: the next owner resumes Pi's run instead of aborting it and
+repairing the turn. A model request the crash cut ends Pi's run `interrupted` (Pi's retry is off), and the runtime asks
+again once (`task_interrupted` in `pi_report`). Turns lost between Pi's runs (a host retry's backoff, say) are still
+closed by the runtime as before.
+
+Visible: drains are faster; a non-replay-safe call in flight at a deploy or drain is answered as interrupted (before,
+only at a crash). `RunStop` loses `handoff`. Watch `turn_handed_off`, `task_interrupted` and turn outcomes after deploys.
+
+### Sessions a later release moved to Pi's journal alone are refused as newer
+
+Once a later release reads a session's history from Pi's journal alone, it retires the session's host transcript
+(the host document's `retired`). This release refuses such a session with 409 `AGENT_NOT_MIGRATED` saying its history
+format is newer than this runtime (logged as `session_format_newer`), rather than continue from the frozen host
+transcript, and writes nothing. Run a newer release.
+
+### Retries without Pi patches
+
+Vendored Pi drops two of our patches, `GenerationHooks.beforeRetry` and `settings.retry.keepRetried`
+(`1.4.0-main.f09d01b85e03-camel.2`). The host still decides every retry, now through `settings.retry` getters that Pi
+reads as it classifies a failed request, and through the adapter's stream for failures Pi would not make again (a refused
+forced tool choice or image, a cut lease, DeepSeek's reasoning-replay refusal). Attempts made again, the overflow Pi
+compacts for, and the partial answer a lost node left in flight stay in Pi's journal marked `retried`, and out of the
+history, events and billing as before. Retry events, delays and limits are unchanged.
+
+No stored document or task version changes: this deploy can be rolled back.
+
+### Ending a run after a tool round without a Pi patch
+
+Vendored Pi drops our `afterTools` `{ end: true }` patch (`1.4.0-main.f09d01b85e03-camel.1`). The host still decides
+after each call of a round whether the run ends there (a call waiting for input, final_output, a run or spend limit):
+the first call that ends it, and every call after it, return `control.terminate`, and when a call of the round had
+already settled, the conversation's turn limit ends the round, so Pi makes no further model request. The round's end is
+committed with the decision, so a node that takes over a round a lost node left open ends it too. Run outcomes, inputs
+and replies are unchanged.
+
+No stored document or task version changes: this deploy can be rolled back.
+
+### Pi's own storage failure rule
+
+The agent no longer wraps its Pi storage in a proxy that re-implemented Pi's rule for which storage failures fail the
+Session. Pi 1.4 guards its own storage calls and reports `session_failed`; the agent ends its run with
+`PERSISTENCE_FAILED` and is given up on that report, as before. A storage that fails to close also counts now, as Pi
+treats it.
+
+### Remove Pi migration scaffolding
+
+Remove the unused rollback helper, the migration dashboard check and temporary system-prompt hash logging.
+Persisted journal kinds and seed metadata stay unchanged. Bounded legacy-import reads are replaced by log
+emptiness checks; the unused importer replay path is removed. First-load host transcript retirement,
+history-index backfill, old-row reads, forks, compaction and both reclaim stages remain.
+
+Terraform no longer sets `AGENT_ENGINE` or accepts `agent_engine`. A human Terraform apply removes the env
+from the ECS task definition. Retired runtime settings remain accepted with a `settings_ignored` warning until
+infrastructure stops setting them. Rollback below the host transcript's removal is no longer supported.
+
+### Pi vendored at main a14cdf90f0a7
+
+Pi's Session now stores commits in groups and makes no storage reads in a normal run. Nothing changes in the API. An
+agent's Pi steps no longer wait for one another's database round trip, and a run reads less from Postgres.
+
+The Postgres storage implements Pi's new `Storage.commit(batches, receive, context)`, each batch in its own transaction
+as before. The host's journal writes now go through Pi's Session while an agent is open, since Pi keeps a conversation's
+newest entry and a run's context from its own commits: a failed journal write now fails Pi's Session too, and the agent
+is given up and reloaded, as after a failed Pi commit.
+
+No stored format moved: this deploy can be rolled back. Models and prices are unchanged.
+
+### Pi bumped to main f09d01b85e03 (can be rolled back)
+
+The vendored Pi moves from `02a2b2532d8f` (2026-10-28) to `f09d01b85e03` (2026-10-29), versioned
+`1.4.0-main.f09d01b85e03-camel.4`; our four patches apply unchanged (only their changelog context moved).
+
+No stored document or task version changes (`pi.live`, `pi.tool`, `pi.generation` and the rest keep their versions)
+and no change to the Postgres storage: this deploy can be rolled back.
+
+What changes for the runtime:
+
+- **Closing an agent is no longer read as a storage failure.** Pi now ends a commit observer `failed` ("session
+  closed") when its Session closes, where it ended it `ended`. The agent gives itself up on a `failed` end, so without
+  the adapter change every close (an idle unload, a hand-off) would have reported `Session persistence failed` and a
+  handed-off turn would have failed instead. The adapter now ignores the end after its own close.
+- **pi-ai**: a Zhipu/Z.ai plan usage limit (error code 1308, sent as HTTP 429) is no longer retried.
+- Upstream's other changes are new APIs the runtime does not use (`StoreStorage` on Chord v2's store,
+  `registryReader`, Chord v2 slices) and coding-agent/TUI changes outside the vendored packages.
+- **OpenRouter DeepSeek V4.1 Flash still asks for at most 131,072 output tokens.** Pi's catalog moved its longest reply
+  to 943,718, which OpenRouter would route only to hosts that serve that much (Nebius, one of its five allowed hosts,
+  serves 943,200) and which, with a long input, asks for more than the 1M window holds. The runtime now caps it at
+  131,072 as it does 1017 and Azure Flash, agents made before included.
+- **Model catalog** (pi-ai's, generated when the commit was vendored): 7 OpenRouter/Vercel/Mistral models added, 1
+  removed (`openrouter/upstage/solar-pro-3`), and list prices moved on some OpenRouter entries (V4.1 Flash, V4 Pro,
+  Kimi K3, GLM). V4.1 Flash, Kimi K3 and GLM 5.3 keep our own prices (`src/pi-catalog.ts`), and OpenRouter calls are
+  still billed what OpenRouter reports. The Anthropic, OpenAI, Google, Azure, Bedrock and DeepSeek entries are
+  unchanged.
+
+### Vendored Pi carries our own patches
+
+`vendor/pi/patches/*.patch` are changes of ours to Pi, applied on top of the vendored commit by `scripts/vendor-pi.sh`
+before it builds (`docs/operations/pi-vendoring.md`). The packages are now versioned
+`1.4.0-main.02a2b2532d8f-camel.4` (upstream version, `main.<commit>`, `camel.<number of patches>`), so a build of ours never
+passes for an npm release. The four patches add Pi features the host does not use yet (no behaviour change):
+
+- `GenerationHooks.beforeRetry`: the host decides whether and when a failed model request is retried.
+- `settings.retry.keepRetried: false`: failed attempts that are asked again stay out of the transcript.
+- `afterTools` returning `{ end: true }` ends the run after the tool round.
+- `readStoredContext(storage, conversationId, context, { at })`: Pi's context derivation from Storage alone.
+
+No stored document or task version changes: this deploy can be rolled back.
+
+### Pi from its main branch, vendored (cannot be rolled back)
+
+**This deploy cannot be rolled back.** The first session a node on this release touches is stored in formats Pi 1.4.0
+cannot read: `pi.live` version 3, and in-flight `pi.tool` version 3 and `pi.generation` version 2 tasks. A node on the
+release before fails to open such a session (`Document … (pi.live) has newer version 3 than 1`), and it works again
+once a node on this release loads it. The old node does write first, though: loading an agent whose turn was still
+open (its node died or handed it off mid-turn), it repairs that turn (retracts a cut-off response, answers lost calls
+as unknown) or closes it in the journal before Pi's open fails, so that turn ends instead of resuming. So if this
+release misbehaves, roll forward with a fix: a rollback (by hand, or ECS's circuit breaker or a deployment alarm)
+makes every agent that ran on it fail to load until the next deploy, and fails the turns that were running. During
+the rolling deploy the same can hit an agent that ran on a new node and was loaded next by an old node that has not
+started retiring yet: one idle for 5 minutes (unloaded; it fails to load), or one whose new node died or drained
+mid-turn (its turn fails); sessions from the release before open on new nodes as usual.
+
+The runtime now runs on Pi built from commit `02a2b2532d8f` of its main branch (2026-10-28) instead of the npm
+release 1.4.0: `vendor/pi/` holds the six packages (`pi-durable`, `pi-ai`, `chord`, `pi-codemode`, `pi-telemetry`,
+and `pi-agent-core` for types), `vendor/pi/PI_COMMIT` names the commit, and `scripts/vendor-pi.sh <sha>` bumps it
+(`docs/operations/pi-vendoring.md`). Nothing of Pi comes from npm any more. The published SDKs never depended on Pi.
+
+What changes with it:
+
+- **Runs a lost node left are no longer parked.** A model request in flight when its node died is not sent again on
+  open: with Pi's retry off, the run ends at once with "The host stopped while the model was answering" (Pi's
+  `runFailure` reason `interrupted`). Work cut off `restartLimit` (5) times in a row ends instead of parking: a tool call
+  with an error result (its outcome is shown as unknown, like an interrupted call's), a generation with the run failed
+  (`restart_limit`). The runtime's own resume of a turn its node lost (`AGENT_MAX_RESUMES`) is unchanged. The adapter's
+  handling of parked generations ("cut off by repeated node failures") is gone.
+- **`pi_report` logs**: `report` is `storage_failed` (was `session_failed`), `task_interrupted` (new; with `reason`
+  `interrupted` or `restart_limit`) or `task_outdated` with `reason` `task_too_old`; `task_parked` is gone. Each line
+  now carries the report's `reason` where it has one.
+- **A continue on a context that ends in an answer** asks no model: the run ends with "The conversation has nothing
+  to answer" (Pi's `nothing_to_answer`). Continues the runtime makes itself (after a failed or taken-back response, a
+  resumed tool round) end in a user message or tool results and are unaffected.
+- **A failed commit observer reloads the agent.** Pi detaches a commit observer that throws (and ends it when the
+  Session fails); the agent's would then stop seeing what is committed and could end a turn on an older answer. Now an
+  error in it is logged (`pi_observer_error`, the error's type and message) and, like a storage failure, the agent is
+  given up (`Session persistence failed`) and loaded again from what was committed.
+- **Streamed progress is stored as before**: Pi now defers storing partial answers and tool output by up to 1 s; the
+  runtime sets `persistWithinMs: 0`, so each is stored right after its commit, as on 1.4.0.
+- **Memory**: Pi no longer copies a growing answer or tool-call argument string on every partial commit, nor re-parses
+  streamed tool-call arguments on every delta (a 500 KB tool call took about 20 s of CPU and a 100 MB heap peak).
+- **Model catalog** (pi-ai's, generated when the commit was vendored): GPT-6.1 Terra is Pi's own entry on OpenAI,
+  Azure and OpenRouter (same prices; it can now reason not at all, `thinkingLevel: "off"` sends effort `none`).
+  OpenRouter DeepSeek V4.1 Flash's longest reply is 131,072 (was 393,216). Several OpenRouter list prices moved;
+  OpenRouter calls are still billed what OpenRouter reports. Realtime and image models are no longer chat models
+  (`openai/gpt-realtime-2.1`, `google/gemini-3.1-flash-live-preview`), and some old OpenRouter, OpenCode, Mistral and
+  Radius ids are gone; existing agents keep the model they were created with. The prices and limits of the Anthropic,
+  OpenAI, Google, Azure, Bedrock and DeepSeek models the runtime already listed are unchanged.
+
+Rollout: deploy when someone can roll forward at once, and watch, at 15 minutes and 1 hour: agent loads that fail with
+"has newer version" (expected only during the rollout, from old nodes), `pi_report` by `report` (`storage_failed` at
+the old `session_failed` rate; `task_interrupted` where node losses were), turn outcomes and `model_error`, Postgres
+commit latency and transactions per turn (flat, with `persistWithinMs: 0`), and `agent_memory` (lower peaks on long
+answers and tool calls).
+
+### Keep recent images within provider limits
+
+Model requests keep the newest 40 images, or 90 for Anthropic models, including
+models reached through gateways. Older images are replaced with text in the
+outgoing request. Saved history and files are unchanged. The same cap applies
+to summary requests, and image token estimates use the capped request.
+
+If a provider still rejects the image count, the runtime retries once without
+images for the rest of that turn. These failures are classified as `image_limit`.
+
+### Agents keep the runtime's rules after a compaction
+
+Since native compaction (#316), every agent lost the runtime's part of its system prompt (how to use tools, files and
+results, and who sent a message: the `RUNTIME_CONTEXT` sender rules) at its first compaction, and every request after
+it went without them; the application's instructions, the environment summary and the language stayed. The rules were
+the system message's content, and Pi's baseline after a compaction writes sections only. They are now the system
+message's first section, untagged: a new agent's prompt is the same text as before. An existing agent keeps its prompt
+until its next compaction, which now keeps the rules; one that already lost them gets them back, in their place, on its
+next request (one request re-declares its sections). No migration: stored contexts are read as they are.
+
+### Calendar schedules and emailed reports
+
+Agents can wake at a local time in an IANA time zone, daily or on selected weekdays,
+including daylight saving transitions. The console's Schedules tab creates and
+cancels schedules and shows email delivery status. Owners can have successful
+scheduled runs email their complete final reply through the runtime's SES mail
+configuration. Choose plain text, agent-authored HTML with its own styling, or
+Markdown rendered with basic formatting (the default). HTML delivery adds no platform
+layout or branding and includes a generated plain-text alternative.
+The durable outbox waits for completion and retries delivery errors.
+
+### Signups by source in Ops, kept on each account
+
+The Growth tab stacks daily signups by source. The Sources table compares outside self-serve signups
+with accounts that made an agent, ran a model, worked on two or more UTC days, and purchased credit.
+It also shows each source's share and the median UTC-day wait to a first model answer. Usage includes
+scheduled and channel runs and is counted through today. The range control selects 7, 30 or 90 signup
+days; 30 is the default.
+
+Every figure comes from the runtime's own tables in one read; nothing is asked of the journey store,
+so the panel answers as fast as the rest of Growth. (Asking the store page by page took 20 seconds
+for 414 signups and still left most of them unread.)
+
+A sign-up's source is kept on the account when it is made (`tenants.signup_source`, migration 091),
+as camelBot keeps `users.signup_ref`:
+
+- The console sends the `ref` of the link that opened it (`/console/?ref=run-slack`) and the host of
+  the site the browser came from when a GitHub or Google sign-in starts, or with an email sign-up.
+  They wait in a 10-minute cookie of the sign-in's own (`ar_source`, path `/console/auth`) or with the
+  mailed link, and are kept once, on the account the sign-in makes. Signing in again never changes it.
+- A browser that sends Global Privacy Control, or whose consent cookie says `denied`, keeps its link's
+  tag but not its referrer.
+- The sales site tags its links to the console with the page they are on (`ref=home`,
+  `ref=run-slack`, `ref=blog/<post>`).
+
+The dashboard's label is, in order: the MCP plugin whose first OAuth grant came within an hour of
+signup; `ref=<tag>`; the referring host; Direct (neither shown); Not captured (accounts made before
+this release, or by an operator). Missing sources are never counted as direct. The account export's
+`account.json` includes `signupSource`.
+
+The journey store's first-touch attribution, campaigns and landing pages are no longer part of this
+panel; the Journeys tab still shows them per account.
+
+### Sprites computers
+
+Connect a Fly.io Sprites account from Computers with its API token. Each session
+creates a private Linux sprite with shell and file tools. camelRun deletes the
+sprite when the session stops or expires. See `docs/guides/computers.md`.
+
+### A message sent just after a prompt joins its turn
+
+A prompt with `whileRunning: "steer"` that arrived after another prompt was taken, but before its turn had begun (the
+agent still starting), was queued as a turn of its own, to run after all of the first. A parent's `send_message` beside
+its `spawn_agent` met this: the sub-agent did its whole task without the message. It now waits up to 5 s for that turn
+and joins it.
+
+### Every message of a prompt is sent; steers are placed by Pi's own boundaries
+
+- **Fix:** a prompt of several messages sent with a `requestId` lost every message after the first: each was submitted
+  to Pi under the same request id, which Pi takes for the first. A run's input now goes into Pi's context at once, in
+  order, before its first model request (all but the last as entries, the last as the input that starts the run), and
+  only the first message of a request carries its id.
+- A steer given while a run runs is handed to Pi's inbox as the tool round ends, and Pi places it at that boundary,
+  instead of the agent placing it itself before the next model request. One given as the run answers starts a run of
+  its own, as before. Steers given while no run is running wait for the next run, which now starts with all of them after
+  its input (before: one per model request).
+- The agent's unused follow-up queue is removed.
+
+### Back off sweep loads after node crashes
+
+Orphan sweeps now reserve a retry delay before loading an agent. If the load or its run kills the node without recording an error, the next node waits for that delay. Repeated attempts double the sweep interval, up to one hour. The delay clears after the agent stays loaded for two minutes or its run ends.
+
+This backoff only gates sweep selection. It does not add a wait to a resumed turn's model call, change its resume limit, or count a load refused because another node owns the agent.
+
+### Trace export is removed
+
+The per-tenant OpenTelemetry trace export is gone: `PUT/GET/DELETE /v1/telemetry` and `POST /v1/telemetry/test`, the
+`runtime.telemetry` SDK object and the `traceparent` options (TypeScript and Python), `camelrun telemetry` and `run --traceparent`, the console's
+Telemetry page (Settings now opens the account), the run record's `trace`, and inbound `traceparent` handling (a header or
+param older clients send is ignored). Nobody used it: no tenant exported a span in the 14 days before (no
+`telemetry_spans` lines), and chiridion and camel-bots never configured it. `AGENT_TELEMETRY_INTERVAL_MS` and
+`AGENT_TELEMETRY_RETRY_MS` are no longer read.
+
+The `telemetry_exporters` table is dropped (migration 094; an account deletion still running old code during the
+rollout fails once and is retried). Operators keep the CloudWatch metric lines (`turn_metrics`, `model_response` and
+the rest); Pi's own spans (`@earendil-works/pi-telemetry`) can be attached to an operator pipeline if one is added.
+
+### Recover from damaged images
+
+Damaged or incomplete images are replaced with an omission notice before they
+reach the model, including images already in an agent's history. The saved
+history and files are unchanged.
+
+If a provider still cannot read an image, the runtime retries once without
+images and keeps them omitted for the rest of that turn. The next turn can use
+images again.
+
+### The by-hand agent quarantine is gone
+
+`QUARANTINED_AGENTS` is removed: a full indexed history read past 64 MiB now answers 413 before reading (#428), and a
+sweep load that takes its node down backs the agent off across nodes (#429), so one agent can no longer run node
+after node out of heap.
+
+### Usage tiers set every per-account limit, raised; an internal tier; per-account decision concurrency
+
+A prepaid account's usage tier (by credit paid in total) now sets every per-account limit, not only busy agents:
+runs and agent creates a minute, js_exec executions and decision calls at once per node. The defaults are much higher:
+
+| Tier | Paid | Busy agents | Runs/min | Creates/min | js_exec/node | Decisions/node |
+| --- | --- | --- | --- | --- | --- | --- |
+| Free | $0 | 50 (was 20) | 300 (was 240) | 600 | 4 (was 2) | 16 |
+| Tier 1 | $5 | 250 (was 50) | 1,500 (was 600) | 1,200 (was 600) | 8 (was 4) | 32 (was 16) |
+| Tier 2 | $50 | 1,000 (was 100) | 6,000 | 3,000 | 16 | 48 |
+| Tier 3 | $250 | 4,000 (was 250) | 20,000 | 6,000 | 16 | 64 |
+| Tier 4 | $1,000 | 10,000 (was 1,000) | 60,000 | 12,000 | 16 | 64 |
+
+Each limit is the first of: set for the account (its tenants-file field, or `PUT /v1/tenants/{id}/limits`), none on the
+internal tier, its tier's, the deployment's default. Unbilled accounts keep the defaults they had; an admin tenant
+with `billing: "prepaid"` now has its tier's rate and js_exec limits instead of none.
+
+- **`GET /v1/limits`** (new): the account's tier and the next one, every limit with its `source` (`tier`, `tenant`,
+  `internal`, `default`) and what the next tier raises it to, and the tier table. The 429 for runs and creates says
+  what the next tier unlocks.
+- **`tier: "internal"`** in the tenants file: the operator's own applications, with no per-account limit unless a field
+  of the entry sets one. Node caps (agents hosted, js_exec workers, decision calls, in-flight characters, memory, body
+  shedding) and spend limits still apply. `infra/tenant.sh set-tier <tenant> internal|default`.
+- **`decisionConcurrency`** (issue #493): decision calls at once for an account on a node, set like `codeConcurrency`
+  (tenants file, `PUT /v1/tenants/{id}/limits`, null clears; `infra/tenant.sh set-decision-concurrency`), at most
+  the node's, now `AGENT_DECISION_NODE_CONCURRENCY` (default 64). The account's queue and in-flight characters scale up
+  with it (48: 3,000 waiting, 24M characters), the characters at most the node's 32M.
+- **Visibility:** a `decision_wait` metric line (tenant, calls of a request that waited past 250 ms, the longest wait,
+  the queue depth) and a `decision_load` gauge per tenant with calls in flight, sampled with `node_load` (which adds
+  `decisionsActive` and `decisionsWaiting`).
+- `AGENT_USAGE_TIERS` takes the new fields, each optional (left out: the deployment's default). `GET /v1/billing`'s
+  `busyAgents.limit` is null on the internal tier.
+
+### Virtual models, and `camelrun/default` as the default
+
+`camelrun/default` is a virtual model: a name an agent keeps, routed to a real model for each request. Today it is `openrouter/particle-ai/particle-1`, then `openrouter/deepseek/deepseek-v4.1-flash-1017`. A runtime that sets none of `AGENT_PROVIDER`, `AGENT_MODEL` and `AGENT_BASE_URL` now uses it as the default for agents that name no model; `AGENT_PROVIDER=camelrun` with `AGENT_MODEL=default` names it. A runtime that sets them otherwise keeps what it named.
+
+- **Failover per request.** A request a model cannot take now (a 429, a 5xx, no provider, a timeout, a stream gone quiet) and that has streamed nothing moves to the next model at once. A bad request, an oversized context, or a key or credit problem does not. Each new message starts on the first model; the rest of a turn stays where it moved. An agent naming a real model has none of this.
+- **Records.** A run's `servedModel`, `/v1/usage` and `usage.recorded` name the model that answered, at its price. `GET /v1/agents/:id` and `GET /v1/me` show the virtual name, and `GET /v1/models` lists it with `routes`. A move logs `model_fallback` with `Reason: unavailable` and its `errorClass`, and counts `ModelFallbacks`.
+- **Credit.** Each attempt holds end-user credit at its own model's price. A failed attempt's hold goes as it ends, it costs nothing and counts as no response in `/v1/usage`, and the next is checked at its price.
+
+### Live MP3 streams that start mid-frame play
+
+`POST /v1/voice/sessions/{id}/audio` refused a live MP3 stream whose first bytes were the middle of a frame, as
+`AUDIO_UNSUPPORTED`. Such a stream is now told by two MP3 frames in a row within its first 4 KB, and plays from the
+first whole frame. HTML pages and other non-audio are still refused.
+
+### ElevenLabs voice defaults to gemini-3.1-flash-lite
+
+ElevenLabs calls now use `gemini-3.1-flash-lite` unless a session asks for another model, on a new agent,
+`camelRun realtime voice v6`, made as each key's first such call connects. In group calls on this model, a rule that what
+isn't for it comes first. `claude-haiku-5-5` stays allowed for rollback; other models and providers keep today's rules.
+
+Set `AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD` before this deploys (`0.012` in Terraform): without it, ElevenLabs
+calls are refused with `REALTIME_UNPRICED`. Their total goes from $0.083 to $0.092 a minute.
+
+### ElevenLabs voice defaults to claude-haiku-5-5
+
+`gemini-2.5-flash-lite` writes some tool calls out as text, which ElevenLabs speaks, and ElevenLabs is retiring it. A session
+on ElevenLabs Agents that names no model now runs on `claude-haiku-5-5`, at `AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD`.
+
+### ElevenLabs voice can run on claude-haiku-5-5
+
+A session may ask for `realtime.model: "claude-haiku-5-5"` on ElevenLabs Agents. It runs on its own agent,
+`camelRun realtime voice v5`, made as each key's first such call connects. The default stays `gemini-2.5-flash-lite`.
+
+Set `AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD` before the first such session (`0.003` in Terraform): without it,
+that model is refused with `REALTIME_UNPRICED`.
+
+`voice_realtime_lost` now names the `reference`, the `failure` class and any `closeCode`, with no provider text.
+
+### Exact voice ID checks
+
+- `GET /v1/voices/{provider}/{id}` and TypeScript/Python `voices.get(provider, id)` check a saved exact voice ID and return voice metadata, `usable`, and a reason. ElevenLabs uses the same keys as search and reads account copies and exact shared-library metadata without importing a voice. Grok, OpenAI, and Gemini use the fixed voice lists.
+
+### Voice: the transcribe-and-reply pipeline is removed (breaking for voice clients)
+
+A voice session either answers with the realtime model (`brain: "realtime"`, the default) or only listens (`brain:
+"listen"`: muted, each utterance transcribed and sent to webhooks, nothing answering). The pipeline released in 0.10.0 and 0.11.0,
+which sent each utterance to `deliver.agent` or your app and spoke replies through text to speech, is gone. What
+clients must change:
+
+- A session that only listened (no `speak`) now asks for `brain: "listen"`; left out, a session answers aloud.
+- `POST /v1/voice/sessions` no longer takes `speak.agentReplies`, `transcription`, `speech` or `bargeIn.backchannels`
+  (400). A realtime session speaks, so your app joins un-muted (`join.self_mute: false`); a listening one joins muted.
+  `speak: true` is still accepted, changes nothing, and is deprecated; leave it out. `voice` (OpenAI's names) maps to
+  the realtime provider's nearest voice; `realtime.voice` names the provider's own.
+- `deliver.agent` no longer gets each utterance as a prompt: the model asks it (`ask_agent`) when it needs it.
+  `voice.utterance` still comes for what people say, now always with `brain` (`realtime` or `listen`; a listening
+  session's have no `addressed`); it no longer has `echo` or `backchannel`.
+- `POST /v1/voice/sessions/{id}/speak` is removed (404), and so is a prompt's `speak` (400: not a field). `DELETE
+  /v1/voice/sessions/{id}/speak` still stops what the bot is saying. The SDKs drop `voice.speak()` and the `speak`
+  prompt option.
+- `voice.speech.*` events no longer carry `reply`; `by` is `requested`, `barge_in`, `end`, `superseded` or `budget`.
+  Sessions no longer show `speak`, `agentReplies`, `transcription`, `speech`, or `addressing.contextTurns` and
+  `contextMs`; `brain` is `realtime` or `listen`, and `bargeIn` and `voice` are shown for realtime sessions only.
+- A session made before this change, still live when the runtime is upgraded, ends (`voice.session.ended` with
+  `reason: "error"`; logged as `brain_removed`).
+- `POST /v1/speech` has no runtime default chain any more: it speaks through the providers the request names
+  (`speech.providers`, else those `speech.voices` names, in its order, then OpenAI), else OpenAI.
+- Operators: `AGENT_VOICE_TTS`, `AGENT_VOICE_STT`, `AGENT_VOICE_LIVE_TRANSCRIPTION`, `AGENT_VOICE_LIVE_MODEL`,
+  `AGENT_VOICE_LIVE_DELAY`, `AGENT_PRICE_LIVE_TRANSCRIPTION_USD`, `AGENT_SONIOX_URL` and `AGENT_ASSEMBLYAI_URL` are no
+  longer read, and `AGENT_SPEECH_PRICES` takes `tts` only. Soniox and AssemblyAI keys are no longer offered (`PUT
+  /v1/providers/soniox/key`). `AGENT_VOICE_REALTIME` defaults to `openai`. `AGENT_VOICE_TURN_MODELS` stays: the
+  realtime brain ends turns with Smart Turn.
+
+### Voice: record a call
+
+`POST /v1/voice/sessions/{id}/recording` records a voice session's call as Ogg Opus: one mixed file (mono, 24 kHz, 16 kbps) or a
+file per speaker (`tracks: "speakers"`, the bot's own speech among them, all lined up from the recording's start), until
+`DELETE …/recording`, `maxMinutes` (default 60, at most 240), `maxBytes` (default 25 MiB, at most 100 MiB) or the
+session's end. The answer has a `notice` for the voice channel's chat. Its files are kept `retentionHours` (default 24,
+at most 720), at `GET /v1/voice/recordings/{id}/files/{name}`, and `voice.recording.ended` says when they are ready
+(add it to an endpoint's events to get it). While it records, the owning node writes the audio to object storage in
+chunks (`recordings/<tenant>/<id>/`), so a session handed to another node goes on recording into the same recording.
+Audio is stored only while a call is recorded. The TypeScript client has `voice.record`, `stopRecording`, `recording`,
+`recordingFile` and `deleteRecording`. Migration `096_voice_recordings.sql`. Logs: `voice_recording_created`,
+`voice_recording_started`, `voice_recording_ended`, `voice_recording_failed`.
+
+### Voice sessions say words and play audio
+
+A voice session's bot can now speak from your app, not only in answer to people:
+
+- `POST /v1/voice/sessions/{id}/say` says given words, word for word, in the call's voice (text to speech, billed as
+  `POST /v1/speech`), and `POST …/prompt` has the realtime model speak up on its own. Both wait their turn behind
+  what the bot is saying, or cut it off with `interrupt`. Their `voice.speech.*` events carry `source: "say"`.
+- `POST …/audio` plays MP3, Ogg Opus or WAV files and streams, by https URL or as an upload, from a queue;
+  `GET`/`PATCH …/audio` read and control it (pause, resume, skip, stop, volume). The bot's speech holds the music, and
+  barge-in leaves it be. New webhook events: `voice.audio.started` and `voice.audio.ended`. Sessions count `tracks`
+  and `playedSeconds`. Playing audio is not billed.
+
+The TypeScript and Python clients have `say`, `prompt`, `play`, `audio` and `controlAudio` (`control_audio`).
+Implementation: `src/voice/jukebox.ts`, `src/voice/audio-decode.ts` (minimp3, Apache-2.0, for MP3), and the brain's
+`say`/`prompt` in `src/voice/realtime/brain.ts`. Migration `097_voice_audio.sql`.
+
+### Voice calls survive a Discord voice server going down
+
+- A Discord voice connection whose reconnects keep failing (a voice server that is down answers 521 or 522) now asks
+  the app for new credentials (`voice.session.error`, `credentials_needed`) instead of ending the session with
+  `error`: Discord's answer to the app's OP 4 can be another voice server. Without new credentials within the grace
+  the session ends with `credentials`. See [voice calls](../guides/voice-calls.md).
+
+### 50 live voice sessions per account, spread across nodes
+
+- `AGENT_VOICE_SESSIONS_PER_TENANT` now defaults to 50 (was 10), measured against what a node holds; see
+  [the pipeline](voice-pipeline.md#sessions-per-node). A tenant's `maxVoiceSessions` still comes first.
+- `AGENT_VOICE_SESSIONS_PER_NODE` now defaults to 15 (was 200), and is no longer a hard stop: a node at its share leaves
+  a session to its peers, and any node takes one no peer has taken within 30 seconds. **Self-hosters:** on a single node,
+  a session past 15 connects about 30 seconds later, unless you set this for your machine.
+- A node past `AGENT_MEMORY_HIGH_BYTES` takes no voice sessions until it falls.
+
+### ElevenLabs voice counts tool calls written as text
+
+A tool call an ElevenLabs model writes out as text is read aloud. Each one now logs `voice_realtime_warning` with
+`errorCode: tool_text_written`, the session's `reference`, and in `detail` the form it matched, plus `muted` if the
+adapter was muting that audio. It logs no text and changes nothing that's played. `voice_realtime_warning` lines now all
+carry `reference`.
+
+### ElevenLabs voice agents set thinking off
+
+New agents, `camelRun realtime voice v4`, set `thinking_budget: 0`; they are made as each key's next call connects.
+
+### Voice media workers: memory counted once, and a memory kill says what grew
+
+A media worker's memory check (`AGENT_VOICE_WORKER_MAX_MB`, 256) added `arrayBuffers` to `external`, which already
+includes it, so every Buffer counted twice. `arrayBuffers` also counts Buffers the worker transferred to another
+thread for as long as that thread keeps them. Workers were ended for memory they did not hold: 58 times since
+2026-10-20, all in long, busy calls. The check is now heap plus external. The worker's heartbeat carries its memory
+split (heap, external, ArrayBuffers, the Opus heap and its codecs) and, for each session, counts of what it holds:
+streams, SSRCs, packets held, playbacks. `voice_worker_crashed` logs that split (`memory`) when a worker is ended for
+its memory.
+
+### wait_agent no longer answers twice for one sub-agent message
+
+A sub-agent's message cuts its parent's `wait_agent` short. A `wait_agent` the model called right after reading that
+message could be cut short by it again, while the node was still saving that the message was read, and return "running"
+with "sent you a message". It now waits for the sub-agent.
+
+### Workflows: a script an agent runs to coordinate sub-agents
+
+An agent with the `workflow` builtin gets `run_workflow`: it writes a JavaScript
+script that calls `agent()`, `parallel()`, `pipeline()`, `phase()` and `log()`, and
+gets back only the script's return value. Each `agent()` makes a real child agent,
+with `delegate`'s limits, links, budget and events. The
+script runs in the runtime's `v8-exec` sandbox (no Node globals, no filesystem, no
+network), holding a sandbox slot for its run, and a turn resumed on another node
+replays it against the children it already made rather than running agent work twice.
+
+```ts
+const lead = await agents.upsert("migration-lead", { workflow: { agents: ["worker"], maxAgents: 40 } });
+```
+
+```python
+lead = await agents.upsert("migration-lead", workflow={"agents": ["worker"], "maxAgents": 40})
+```
+
+`workflow` takes `agents`, `instructions`, `maxAgents` (256 by default, up to 4,096),
+`maxParallel` (16, up to 64) and `maxDepth`; it goes with the builtin, as `delegate`
+does, on an agent, a definition and a stateless run. Progress reaches streams that
+ask for sub-agents' events (`?subagents=1`): `workflow_start`,
+`workflow_progress`, `workflow_end`, beside each child's `subagent_start` and
+`subagent_end`. See `docs/guides/workflows.md` and `docs/reference/limits.md`.
+
+### Workspaces and spend attribution
+
+Workspaces group agents and definitions inside an account. Create, rename,
+archive, and assign them on the console's Workspaces page; the workspace
+switcher scopes Overview, Agents, Definitions and Usage. Usage shows model and
+tool spend by workspace, including native X search. Moving an agent preserves its
+earlier attribution, including later provider cost corrections. New agents
+inherit their definition's group; sub-agents and forks inherit their parent's.
+Existing usage stays Unassigned. The REST API and SDK creation options support
+workspace assignment. Account export and deletion include workspace data.
+
+### X search for agents
+
+Agents and stateless runs can enable the `x_search` builtin to search X posts
+with Grok, regardless of their main model. Enable it on a definition or directly
+on an agent, and add an xAI provider key under Models & keys. The platform's key
+is used when available and allowed for the account.
+
+Queries support included or excluded handles and a UTC date range. Results
+contain a summary, citations, a truncation indicator and usage counts. Calls are
+bounded to two model turns, 1,800 output tokens and a two-minute deadline.
+
+The provider's reported total cost, including model tokens and posts or profiles
+fetched, is recorded under `xai/x_search`. Platform-key calls charge prepaid
+credit at that cost. The existing web-tools ledger amount includes X searches;
+there is no additional flat search fee.
+
+Implementation: `src/x-search.ts`. Test endpoint override:
+`AGENT_XAI_RESPONSES_URL` (default `https://api.x.ai/v1/responses`).
+
 ## 0.11.3 (runtime-v0.11.3, 2026-10-19)
 
 The published self-host image is 0.11.1 plus the image build fixes
