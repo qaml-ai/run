@@ -6,6 +6,7 @@ import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamable
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { Accounts, Sealed } from "./accounts.ts";
 import type { ToolDefinition } from "./protocol.ts";
+import { DENIED_PERMISSION, type Judge, type JudgeInput } from "./tool-judge.ts";
 import { errorText } from "./protocol.ts";
 import { safeError } from "./metrics.ts";
 import { HttpError } from "./http.ts";
@@ -46,11 +47,14 @@ export type Exposure = "direct" | "codemode" | "both";
  */
 export type SourceAuth = { type: "bearer" } | { type: "runtime" } | ExchangeAuth;
 /**
- * Which of a source's tools ask the user before each call: `default` for all (never, always, or
+ * Which of a source's tools ask before each call: `default` for all (never, always, or
  * destructive: MCP tools annotated destructiveHint, OpenAPI operations that are not GET, HEAD or
  * OPTIONS), `tools` by name, and for OpenAPI `methods` (["POST", "DELETE"]). Off by default.
+ * `judged` is decided per call by a decision model instead of a person (tool-judge.ts): an ordinary call runs, a
+ * high-risk one is denied, and anything else — including a judge that could not answer — asks the person, as `always` does.
  */
-export type ApprovalPolicy = { default?: "never" | "always" | "destructive"; tools?: Record<string, "never" | "always">; methods?: string[] };
+export type ApprovalMode = "never" | "always" | "destructive" | "judged";
+export type ApprovalPolicy = { default?: ApprovalMode; tools?: Record<string, "never" | "always" | "judged">; methods?: string[] };
 /** An MCP server as a definition stores it: its credentials sealed, their header names kept for display. */
 export interface McpServerSpec {
   name: string; url: string;
@@ -103,7 +107,14 @@ export interface Sources { builtins?: string[]; webSearch?: { providers: string[
  * MCP servers with credentials come only from one; an agent's own builtins and MCP servers have none), its mounts (for files in and out), and who
  * hears of files saved.
  */
-export type SourceContext = { tenant: string; agent: string; definition?: string; claim?: Claim; identity?: AgentIdentity; mounts?: () => Mount[]; onWrite?: ToolContext["onWrite"] };
+export type SourceContext = {
+  tenant: string; agent: string; definition?: string; claim?: Claim; identity?: AgentIdentity; mounts?: () => Mount[]; onWrite?: ToolContext["onWrite"];
+  /**
+   * Judges a call whose source's policy says `judged` (tool-judge.ts), with the run's request. Built for the session the
+   * tools are for; without one (no decision model on this node) a judged call asks the person, never runs unjudged.
+   */
+  judge?: Judge;
+};
 
 const SERVER_NAME = /^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$/;
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/;
@@ -257,23 +268,34 @@ export async function openApiInput(input: unknown, previous: OpenApiSpec[] | und
 }
 
 function approvalInput(value: any, label: string, openApi = false): ApprovalPolicy {
-  const usage = `${label}: approval is { default?: "never" | "always" | "destructive", tools?: { <tool>: "never" | "always" }${openApi ? ", methods?: [\"POST\", ...]" : ""} }`;
+  const usage = `${label}: approval is { default?: "never" | "always" | "destructive" | "judged", tools?: { <tool>: "never" | "always" | "judged" }${openApi ? ", methods?: [\"POST\", ...]" : ""} }`;
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["default", "tools", ...(openApi ? ["methods"] : [])].includes(key))) throw bad(usage);
-  if (value.default !== undefined && !["never", "always", "destructive"].includes(value.default)) throw bad(usage);
-  if (value.tools !== undefined && (!value.tools || typeof value.tools !== "object" || Array.isArray(value.tools) || Object.keys(value.tools).length > 1024 || Object.values(value.tools).some(mode => mode !== "never" && mode !== "always"))) throw bad(usage);
+  if (value.default !== undefined && !["never", "always", "destructive", "judged"].includes(value.default)) throw bad(usage);
+  if (value.tools !== undefined && (!value.tools || typeof value.tools !== "object" || Array.isArray(value.tools) || Object.keys(value.tools).length > 1024 || Object.values(value.tools).some(mode => mode !== "never" && mode !== "always" && mode !== "judged"))) throw bad(usage);
   if (value.methods !== undefined && (!Array.isArray(value.methods) || value.methods.some((method: unknown) => typeof method !== "string" || !["GET", "PUT", "POST", "DELETE", "PATCH", "HEAD", "OPTIONS"].includes(method.toUpperCase())))) throw bad(usage);
   return { ...(value.default ? { default: value.default } : {}), ...(value.tools ? { tools: value.tools } : {}), ...(value.methods ? { methods: value.methods.map((method: string) => method.toUpperCase()) } : {}) };
 }
 
-/** Whether a source's policy asks the user before a call of `tool` (its own name, unprefixed). */
-function needsApproval(policy: ApprovalPolicy | undefined, tool: string, destructive: boolean, method?: string) {
+/**
+ * How a source's policy treats a call of `tool` (its own name, unprefixed): never, always, or judged (the decision model
+ * decides, ask if it cannot). `destructive` is the static standing of the call, which `judged` judges for itself.
+ */
+function approvalFor(policy: ApprovalPolicy | undefined, tool: string, destructive: boolean, method?: string): Exclude<ApprovalMode, "destructive"> {
   const named = policy?.tools?.[tool];
-  if (named) return named === "always";
-  if (method && policy?.methods?.includes(method.toUpperCase())) return true;
-  return policy?.default === "always" || (policy?.default === "destructive" && destructive);
+  if (named) return named;
+  if (method && policy?.methods?.includes(method.toUpperCase())) return "always";
+  if (policy?.default === "always") return "always";
+  if (policy?.default === "judged") return "judged";
+  return policy?.default === "destructive" && destructive ? "always" : "never";
 }
-/** A tool that asks first is declared to the model directly: code in js_exec cannot wait for the user. */
-const gated = (tool: ToolDefinition, ask: boolean): ToolDefinition => ask ? { ...tool, exposure: "direct", needsApproval: true } : tool;
+/** Whether a source's policy asks someone before a call of `tool`: a person, or the judge. */
+const asksBefore = (mode: Exclude<ApprovalMode, "destructive">) => mode !== "never";
+/**
+ * A tool that asks first — a person, or the judge — is declared to the model directly: code in js_exec cannot wait for
+ * the user, and a judged call must be able to pause there too.
+ */
+const gated = (tool: ToolDefinition, mode: Exclude<ApprovalMode, "destructive">): ToolDefinition =>
+  mode === "never" ? tool : { ...tool, exposure: "direct", ...(mode === "judged" ? { judged: true } : { needsApproval: true }) };
 /** What a gated tool answers before it is approved: the runtime's approval request, as MCP's `input_required`. */
 const APPROVAL_REQUIRED: McpResult = { resultType: "input_required", inputRequests: { approval: { method: "agent-runtime/approval", params: {} } } };
 
@@ -435,6 +457,20 @@ export class ToolSources {
     return new CredentialExchangeError("rejected", `MCP server ${spec.name} refused the credential from its exchange (HTTP ${status}), and a second one fetched after: check what ${origin}${pathname} issues for it`, status);
   }
 
+  /**
+   * The gate a call passes before it runs: `undefined` when it may. `always` asks the person; `judged` asks the decision
+   * model, which allows an ordinary call, denies a high-risk one, and asks the person when the call may be irreversible or
+   * the judge could not answer. A judged source with no judge asks: a call is never allowed unjudged.
+   */
+  private async gate(context: SourceContext, mode: Exclude<ApprovalMode, "destructive">, input: JudgeInput, signal: AbortSignal): Promise<McpResult | undefined> {
+    if (!asksBefore(mode)) return undefined;
+    if (mode === "always" || !context.judge) return APPROVAL_REQUIRED;
+    const judged = await context.judge(input, signal);
+    if (judged.decision === "allow") return undefined;
+    if (judged.decision === "deny") return { content: [{ type: "text", text: DENIED_PERMISSION(input.tool) }], isError: true };
+    return APPROVAL_REQUIRED;
+  }
+
   private offered(spec: McpServerSpec, tool: Tool) {
     return (!spec.allowTools || spec.allowTools.includes(tool.name)) && !spec.denyTools?.includes(tool.name);
   }
@@ -446,7 +482,7 @@ export class ToolSources {
     return defaultExposure(tools.filter(tool => this.offered(spec, tool)).map((tool): ToolDefinition => gated({
       name: mcpToolName(spec.name, tool.name), description: (tool.description || tool.title || tool.name).slice(0, MAX_DESCRIPTION),
       parameters: takesFiles(spec) ? acceptFiles(tool.inputSchema) : tool.inputSchema, ...own(tool),
-    }, needsApproval(spec.approval, tool.name, tool.annotations?.destructiveHint === true))), spec.exposure);
+    }, approvalFor(spec.approval, tool.name, tool.annotations?.destructiveHint === true))), spec.exposure);
   }
 
   /**
@@ -486,8 +522,8 @@ export class ToolSources {
   server(context: SourceContext, sources: Sources | undefined): ToolServer {
     const builtins = builtinNames(sources?.builtins);
     const mcpServer = (name: string) => sources?.mcpServers?.find(server => name.startsWith(`${server.name}__`));
-    const apiAsks = (api: OpenApiSpec, operation: Operation) => needsApproval(api.approval, operation.name, !operation.readOnly, operation.method);
-    const apiTools = (api: OpenApiSpec) => defaultExposure(api.operations.map(operation => gated(operationTool(api.name, operation, takesFiles(api)), apiAsks(api, operation))), api.exposure);
+    const apiApproval = (api: OpenApiSpec, operation: Operation) => approvalFor(api.approval, operation.name, !operation.readOnly, operation.method);
+    const apiTools = (api: OpenApiSpec) => defaultExposure(api.operations.map(operation => gated(operationTool(api.name, operation, takesFiles(api)), apiApproval(api, operation))), api.exposure);
     type Listing = { tools: ToolDefinition[]; at: number } | { error: string; at: number };
     const list = async (spec: McpServerSpec): Promise<Listing> => {
       try {
@@ -549,7 +585,7 @@ export class ToolSources {
           ...mcp,
         ];
       },
-      call: async ({ name, args, signal, origin, actor, run: runId, toolCallId, innerCallId, idempotencyKey, onProgress, approval, inputResponses, requestState, elicit, lineage }) => {
+      call: async ({ name, args, signal, origin, actor, intent, run: runId, toolCallId, innerCallId, idempotencyKey, onProgress, approval, inputResponses, requestState, elicit, lineage }) => {
         // An approved call proves it to the tool: in its identity token and its `_meta`.
         const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}), ...(runId ? { request: runId } : {}), ...(toolCallId ? { toolCall: toolCallId } : {}), ...(lineage ?? {}) };
         // What a file URL is bound to: the call's stable key, else its tool call (and its place in a js_exec run).
@@ -564,7 +600,10 @@ export class ToolSources {
         const api = sources?.openApi?.find(entry => name.startsWith(`${entry.name}__`));
         const operation = api?.operations.find(entry => operationTool(api.name, entry).name === name);
         if (api && operation) {
-          if (apiAsks(api, operation) && !approval) return APPROVAL_REQUIRED;
+          if (!approval) {
+            const gate = await this.gate(context, apiApproval(api, operation), { tool: name, description: operation.description || operation.name, args, ...(intent ? { intent } : {}) }, signal);
+            if (gate) return gate;
+          }
           const callFiles = files(name, runId, call, api);
           try {
             const { url, init } = await operationRequest(api.baseUrl, operation, args, callFiles);
@@ -585,7 +624,11 @@ export class ToolSources {
         const server = this.endpoint(context, spec);
         const tool = (await this.mcp.tools(context.tenant, server).catch(error => { throw this.rejected(spec, error); })).find(entry => this.offered(spec, entry) && mcpToolName(spec.name, entry.name) === name);
         if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
-        if (needsApproval(spec.approval, tool.name, tool.annotations?.destructiveHint === true) && !approval) return APPROVAL_REQUIRED;
+        if (!approval) {
+          const gate = await this.gate(context, approvalFor(spec.approval, tool.name, tool.annotations?.destructiveHint === true),
+            { tool: name, description: tool.description || tool.title || tool.name, args, ...(intent ? { intent } : {}) }, signal);
+          if (gate) return gate;
+        }
         const callFiles = files(name, runId, call, spec);
         try {
           // Each file sent as a URI, described by its argument's JSON pointer (SEP-2631's FileValue).

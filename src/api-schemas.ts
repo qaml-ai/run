@@ -472,9 +472,9 @@ const SourceAuth = z.object({
   url: z.string().optional().openapi({ description: "With type exchange: the endpoint the runtime fetches the server's credential from" }),
   audience: z.string().optional().openapi({ description: "With type exchange: the aud of the token the endpoint is asked with, when not its url" }),
 }).openapi("SourceAuth");
-const approvalMode = z.enum(["never", "always"]);
+const approvalMode = z.enum(["never", "always", "judged"]);
 const approvalFields = {
-  default: z.enum(["never", "always", "destructive"]).optional().openapi({ description: "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)" }),
+  default: z.enum(["never", "always", "destructive", "judged"]).optional().openapi({ description: "never (the default), always, destructive (tools annotated destructiveHint, MCP; operations other than GET, HEAD and OPTIONS, OpenAPI), or judged: the decision model decides each call, allowing ordinary calls, denying high-risk ones and asking the person for anything else" }),
   tools: z.record(z.string(), approvalMode).optional().openapi({ description: "Per tool, by its own name: overrides the default" }),
 };
 const fileArguments = z.enum(["on", "off"]).openapi({ description: "Whether the model may send the agent's files to its tools ({\"$file\": path}), and the runtime saves files they link to. Default on with auth \"runtime\", off otherwise: another party's server could be sent any file the agent can read" });

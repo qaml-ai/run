@@ -21,6 +21,7 @@ import { essence, type FileRef } from "../files.ts";
 import { checkedAudio } from "../transcription.ts";
 import { GENERATE_IMAGE, generateImage } from "../images.ts";
 import { DECIDE, decideTool } from "../decisions.ts";
+import { toolJudge, type Judge } from "../tool-judge.ts";
 import type { ToolContext } from "../volume-tools.ts";
 import { type Session, type ClientSessionOptions, type UsageRecord, type Refusal, type SpendLimit, RUN_METHODS, MODEL_RUNS, runningRun } from "./state.ts";
 
@@ -151,6 +152,33 @@ export function decisionServer(ctx: SpendContext, session: Session, sources: Sou
       }, call.args, call.signal);
     },
   };
+}
+
+/**
+ * The judge a source's `judged` approval policy asks before a call (tool-judge.ts): the decisions service's model, with
+ * the run's own facts, billed as a decision is and counted against the agent's spend limit and the run's. `undefined` when
+ * the node has no decisions service, or the agent denies data collection while the provider cannot pass that on: its
+ * judged calls then ask the person, as they do when the judge cannot answer.
+ */
+export function judgeFor(ctx: SpendContext, session: Session): Judge | undefined {
+  const { decider } = ctx.options;
+  const { header } = session;
+  if (!decider) return undefined;
+  if (header.config.dataCollection === "deny" && !decider.options.provider.dataPolicy) return undefined;
+  return toolJudge(decider, {
+    tenant: header.tenant, ...(header.keyScope ? { keyScope: header.keyScope } : {}), ...(header.config.dataCollection ? { dataCollection: header.config.dataCollection } : {}),
+    budget: async () => { const run = runningRun(session); return run ? budgetLeft(ctx, session, run.id) : undefined; },
+    record: usage => {
+      const run = runningRun(session);
+      const cost = usage.usage.cost.total as number;
+      const { identity, keyScope } = header;
+      ctx.options.onUsage?.(header.tenant, header.id, { ...usage, ...(run ? { requestId: run.id } : {}), ...(run?.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
+      ctx.spent(session, cost);
+      if (run && cost > 0) (session.decisionSpend ??= new Map()).set(run.id, (session.decisionSpend.get(run.id) ?? 0) + cost);
+    },
+    // A judge that could not answer says so once: the call then asks the person, and is not retried here.
+    onError: error => console.log(JSON.stringify({ type: "tool_judge_failed", tenant: header.tenant, agent: header.id, provider: decider.provider, error: safeError(error) })),
+  });
 }
 
 /**
