@@ -20,7 +20,7 @@ import { ToolFiles } from "../tool-files.ts";
 import { essence, type FileRef } from "../files.ts";
 import { checkedAudio } from "../transcription.ts";
 import { GENERATE_IMAGE, generateImage } from "../images.ts";
-import { DECIDE, decideTool } from "../decisions.ts";
+import { DECIDE, DECISION_MODEL, decideTool } from "../decisions.ts";
 import { toolJudge, type Judge } from "../tool-judge.ts";
 import type { ToolContext } from "../volume-tools.ts";
 import { type Session, type ClientSessionOptions, type UsageRecord, type Refusal, type SpendLimit, RUN_METHODS, MODEL_RUNS, runningRun } from "./state.ts";
@@ -178,6 +178,8 @@ export function judgeFor(ctx: SpendContext, session: Session): Judge | undefined
     },
     // A judge that could not answer says so once: the call then asks the person, and is not retried here.
     onError: error => console.log(JSON.stringify({ type: "tool_judge_failed", tenant: header.tenant, agent: header.id, provider: decider.provider, error: safeError(error) })),
+    // What it decided, for counting denials and asks. Never the request, the arguments or the answer.
+    onJudged: (input, judged) => console.log(JSON.stringify({ type: "tool_judged", tenant: header.tenant, agent: header.id, provider: decider.provider, model: DECISION_MODEL, tool: input.tool, decision: judged.decision, risk: judged.risk })),
   });
 }
 

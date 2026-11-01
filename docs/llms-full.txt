@@ -1986,12 +1986,15 @@ print(run.text)
   change permissions or security asks the person, as `always` does; a call that
   would send credentials, secrets or private data outside the user's systems
   **does not run**, and nobody is asked. The model reads
-  `Permission to use <tool> has been denied: …` as the call's result, and a
-  denied call cannot be retried. A judge that cannot answer (no OpenRouter key,
-  a spent limit, a provider failure, an answer it cannot read) asks the person:
-  a judged call is never allowed unjudged. Judged calls are billed as decisions
-  are (`kind: "decision"`), and judged tools are declared to the model directly,
-  like approved ones, since code in `js_exec` cannot wait.
+  `Permission to use <tool> has been denied: …` as the call's result. A denial
+  is not remembered: a later call is judged on its own, so a rewritten retry is
+  judged too, not automatically refused. A judge that cannot answer (no
+  OpenRouter key, a spent limit, a provider failure, an answer it cannot read)
+  asks the person, as does one shown arguments or a description past its limits
+  (8,000 and 4,000 characters): a judged call is never allowed unjudged.
+  Judged calls are billed as decisions are (`kind: "decision"`), and judged
+  tools are declared to the model directly, like approved ones, since code in
+  `js_exec` cannot wait.
 - **Questions.** The `ask_user` built-in (`"builtins": ["ask_user"]` on the
   agent or its definition) lets the model ask 1 to 4 multiple-choice questions, with free text
   allowed where it says so.

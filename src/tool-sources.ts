@@ -466,7 +466,8 @@ export class ToolSources {
     if (!asksBefore(mode)) return undefined;
     if (mode === "always" || !context.judge) return APPROVAL_REQUIRED;
     const judged = await context.judge(input, signal);
-    if (judged.decision === "allow") return undefined;
+    // A turn stopped while the judge was deciding runs nothing, whatever the answer was.
+    if (judged.decision === "allow") { signal.throwIfAborted(); return undefined; }
     if (judged.decision === "deny") return { content: [{ type: "text", text: DENIED_PERMISSION(input.tool) }], isError: true };
     return APPROVAL_REQUIRED;
   }

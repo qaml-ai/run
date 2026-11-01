@@ -122,7 +122,10 @@ export const IMAGE_LIMITS = Object.freeze({
  * hold the runtime's thread or bill a tenant for a document, and how long a judge may take before the call asks a person.
  */
 export const JUDGE_LIMITS = Object.freeze({
-  intentChars: 2_000, descriptionChars: 1_000, argumentsChars: 8_000,
+  /** What the judge is shown of the request: its start and its end, since a condition can come last. */
+  intentChars: 2_000, intentTailChars: 500,
+  /** A source's description is capped at 4,000 on the model's side too (tool-sources), so nothing is hidden from the judge. */
+  descriptionChars: 4_000, argumentsChars: 8_000,
   /** One judged call's deadline, waits for a decision slot included (a Jev call answers in 70–500 ms). */
   timeoutMs: 15_000,
 });

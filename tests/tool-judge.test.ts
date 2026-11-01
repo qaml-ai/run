@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Decider, DecisionFailed, type DecisionItem, type DecisionProvider, type ProviderDecision } from "../src/decisions.ts";
 import { JUDGE_LIMITS } from "../src/limits.ts";
-import { DENIED_PERMISSION, judgedOutcome, judgeItem, judgeState, toolJudge, UNJUDGED, type JudgeInput } from "../src/tool-judge.ts";
+import { DENIED_PERMISSION, judgeable, judgedOutcome, judgeItem, judgeState, toolJudge, UNJUDGED, type JudgeInput } from "../src/tool-judge.ts";
 
 const CALL: JudgeInput = { tool: "shop__delete_item", description: "Delete an item", args: { id: "a" }, intent: "Delete item a from the shop" };
 
@@ -39,15 +39,30 @@ test("a judged call asks three fixed questions about the request, the tool and i
   assert.equal(JSON.parse(judgeState({ ...CALL, intent: "   " })).request, undefined);
 });
 
-test("what the judge is shown of one call is cut to its limits, and says where it was cut", () => {
-  const state = JSON.parse(judgeState({ ...CALL, intent: "x".repeat(JUDGE_LIMITS.intentChars + 100), description: "d".repeat(JUDGE_LIMITS.descriptionChars + 100), args: { blob: "a".repeat(JUDGE_LIMITS.argumentsChars * 2) } }));
-  assert.equal(state.request.length, JUDGE_LIMITS.intentChars + 1);
-  assert.ok(state.request.endsWith("…"));
-  assert.equal(state.description.length, JUDGE_LIMITS.descriptionChars + 1);
-  assert.equal(state.arguments.length, JUDGE_LIMITS.argumentsChars + 1);
-  assert.ok(state.arguments.endsWith("…"));
+test("a request longer than its limit keeps its start and its end, so a restriction said last is seen", () => {
+  const intent = `${"x".repeat(JUDGE_LIMITS.intentChars)}…and never touch production.`;
+  const state = JSON.parse(judgeState({ ...CALL, intent }));
+  assert.ok(state.request.startsWith("x"));
+  assert.ok(state.request.endsWith("and never touch production."), "the end is kept");
+  assert.match(state.request, /left out/);
+  assert.ok(state.request.length < intent.length);
   // A call within the limits is shown whole: an argument that is JSON stays JSON.
   assert.equal(JSON.parse(judgeState(CALL)).arguments, JSON.stringify({ id: "a" }));
+  assert.equal(JSON.parse(judgeState({ ...CALL, intent: "  " })).request, undefined);
+});
+
+test("what the judge cannot see whole it does not judge: over-limit arguments or a description ask the person", async () => {
+  const big = { ...CALL, args: { padding: "a".repeat(JUDGE_LIMITS.argumentsChars), action: "delete_everything" } };
+  assert.equal(judgeable(CALL), true);
+  assert.equal(judgeable({ ...CALL, args: { blob: "a".repeat(JUDGE_LIMITS.argumentsChars) } }), false, "arguments past their limit are not judged from a prefix");
+  assert.equal(judgeable({ ...CALL, description: "d".repeat(JUDGE_LIMITS.descriptionChars + 1) }), false);
+  // A description exactly at the limit is fine: tool-sources caps a model-facing description at the same length.
+  assert.equal(judgeable({ ...CALL, description: "d".repeat(JUDGE_LIMITS.descriptionChars) }), true);
+
+  let asked = 0;
+  const judge = toolJudge(new Decider({ provider: provider(() => { asked++; return decided(0.99, 0, 0); }).fake, key }), { tenant: "t1" });
+  assert.deepEqual(await judge(big, AbortSignal.timeout(5_000)), UNJUDGED);
+  assert.equal(asked, 0, "nothing was sent to the model: the person decides");
 });
 
 test("the decision table: ordinary allows, anything that may be irreversible asks, exfiltration denies", () => {
@@ -104,6 +119,21 @@ test("a judge that cannot answer asks a person instead, and never allows: no key
     { tenant: "t1", onError: error => malformedErrors.push(error) });
   assert.deepEqual(await malformed(CALL, AbortSignal.timeout(5_000)), UNJUDGED);
   assert.equal(malformedErrors.length, 1);
+
+  // A provider that answers too slowly asks too: a timed-out call is not a yes.
+  const slowProvider: DecisionProvider = {
+    id: "openrouter", dataPolicy: true,
+    // Answers after the judge's own deadline: the call's signal aborts first, as a real provider's would.
+    decide: async (_item, _model, _credentials, signal) => {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 120);
+        signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted by the deadline")); }, { once: true });
+      });
+      return decided(0.99, 0, 0);
+    },
+  };
+  const slow = toolJudge(new Decider({ provider: slowProvider, key, sleep: noWait, limits: { callTimeoutMs: 50, attempts: 1 } }), { tenant: "t1" });
+  assert.deepEqual(await slow(CALL, AbortSignal.timeout(5_000)), UNJUDGED);
 
   // A call that was aborted is not a judge that could not answer: nothing is asked, and the abort goes on.
   const controller = new AbortController();
