@@ -711,7 +711,12 @@ export class RealtimeBrain {
       if (!response.played) { response.turn?.end("error"); this.settle(response, 0); }
     }
     this.current = undefined;
-    if (!retrying) { this.hooks.failed("realtime_failed", safeError(detail)); return; }
+    if (!retrying) {
+      const model = /^realtime\.model ([a-zA-Z0-9._-]{1,100}):/.exec(detail)?.[1];
+      this.hooks.failed("realtime_failed", model && this.options.reference === `elevenlabs/${model}`
+        ? `realtime.model ${model}: ElevenLabs agent creation failed` : safeError(detail));
+      return;
+    }
     this.stats.reconnects++;
     this.open();
   }

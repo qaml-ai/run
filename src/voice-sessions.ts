@@ -651,7 +651,9 @@ export class VoiceSessions {
     const provider = providers[id as RealtimeProviderId];
     if (!provider) throw new HttpError(400, `realtime.provider must be one of this runtime's: ${Object.keys(providers).join(", ")}`);
     const model = given.model === undefined ? provider.defaultModel : given.model;
-    if (typeof model !== "string" || !provider.models.includes(model)) throw new HttpError(400, `realtime.model must be one of ${provider.models.join(", ")}`);
+    if (provider.id === "elevenlabs") {
+      if (typeof model !== "string" || !/^[a-zA-Z0-9._-]{1,100}$/.test(model)) throw new HttpError(400, "realtime.model must be 1–100 letters, digits, dots, hyphens or underscores");
+    } else if (typeof model !== "string" || !provider.models.includes(model)) throw new HttpError(400, `realtime.model must be one of ${provider.models.join(", ")}`);
     if (!realtimePrice(`${provider.id}/${model}`)) throw new HttpError(400, `Realtime model ${provider.id}/${model} has no price configured`, "REALTIME_UNPRICED");
     if (given.voice !== undefined && (typeof given.voice !== "string" || !(provider.customVoices ? /^[a-zA-Z0-9_-]{1,100}$/.test(given.voice) : provider.voices.includes(given.voice)))) throw new HttpError(400, `realtime.voice must be one of ${provider.id}'s: ${provider.voices.join(", ")}`);
     if (given.publicOwnerId !== undefined && (provider.id !== "elevenlabs" || typeof given.publicOwnerId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(given.publicOwnerId))) throw new HttpError(400, "realtime.publicOwnerId must be an ElevenLabs public owner ID");
