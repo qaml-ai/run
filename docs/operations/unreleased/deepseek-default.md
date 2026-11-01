@@ -1,9 +1,0 @@
-### DeepSeek V4.1 Flash is the default model
-
-An agent that names no model, on a runtime that sets none of `AGENT_PROVIDER`, `AGENT_MODEL` and `AGENT_BASE_URL`, now gets `openrouter/deepseek/deepseek-v4.1-flash-1017`, in place of Claude Sonnet 5.5. A runtime that sets any of them keeps what it named: `AGENT_MODEL` or `AGENT_BASE_URL` alone is still Anthropic's, and `AGENT_PROVIDER=anthropic` alone is still Sonnet 5.5. run.camelai.com moves when its `AGENT_PROVIDER` and `AGENT_MODEL` are changed.
-
-- **Your own keys come first.** The default is the first model your key scope or account holds a key for, then the first the platform's keys serve. An account with only an Anthropic or Bedrock key gets Claude Sonnet 5.5 on that key, and is not moved onto the platform's keys and its credit.
-- **`AGENT_MODEL_FALLBACKS`** now defaults to `azure/deepseek-v4.1-flash`, then Sonnet 5.5 on Anthropic, OpenRouter and Bedrock's global profile. `openrouter/openai/gpt-6-luna` is gone from it: any account with an OpenRouter key stopped before it. These choose a model when an agent is made, by who holds a key. No running agent moves to them when a provider fails.
-- **Existing agents keep their model.** An upsert (`POST /v1/agents` with an `Idempotency-Key`) that names no model, or a definition applied that names none, now leaves an agent's model as it is. Before, either moved it to the runtime's default: an upsert with no model no longer undoes one that named a model. Name a model to change it.
-- **What a default agent notices.** DeepSeek takes `thinkingLevel: "off"` where Sonnet 5.5 always reasons, so a default agent does not reason unless you set a level. Its tool-call arguments may arrive in one piece (`toolCallStreaming: false`). It costs far less per token, and takes more tool calls per task.
-- The SDK examples and `camelrun init`'s template use the account's default, or show the new one.
