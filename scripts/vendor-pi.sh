@@ -24,6 +24,7 @@ for patch in "$out"/patches/*.patch; do [ -e "$patch" ] && patches+=("$patch"); 
 # Pi package directory, npm name and our tarball name, in build order (each after the packages it depends on).
 # pi-agent-core is a devDependency: camelRun imports only its types (AgentMessage, AgentTool, StreamFn).
 packages=(
+  "schema @earendil-works/pi-schema pi-schema"
   "telemetry @earendil-works/pi-telemetry pi-telemetry"
   "chord @earendil-works/chord chord"
   "codemode @earendil-works/pi-codemode pi-codemode"

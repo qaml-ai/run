@@ -101,7 +101,7 @@ test("only a sub-agent reports progress, and a report is short", async t => {
   assert.doesNotMatch(JSON.stringify(listed.toolSources), /report_progress/, "an agent no one started has no parent to report to");
   const parent = await r.call("/v1/agents", { body: { systemPrompt: "You are LEAD.", builtins: ["delegate"], delegate: { instructions: true } } }).then(made => made.json.id as string);
   const run = await r.prompt(parent, "go");
-  assert.match(run.outcome.result.reply, /report_progress[\s\S]*must not have more than 500 characters/);
+  assert.match(run.outcome.result.reply, /report_progress[\s\S]*expected at most 500 characters/);
 });
 
 const lastUserText = (body: any) => { const message = body.messages.findLast((entry: any) => entry.role === "user"); return typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""); };

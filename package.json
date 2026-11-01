@@ -128,6 +128,8 @@
     "@earendil-works/pi-ai": "$@earendil-works/pi-ai",
     "@earendil-works/pi-agent-core": "$@earendil-works/pi-agent-core",
     "@earendil-works/pi-codemode": "file:vendor/pi/pi-codemode.tgz",
-    "@earendil-works/pi-telemetry": "file:vendor/pi/pi-telemetry.tgz"
+    "@earendil-works/pi-schema": "file:vendor/pi/pi-schema.tgz",
+    "@earendil-works/pi-telemetry": "file:vendor/pi/pi-telemetry.tgz",
+    "ws": "$ws"
   }
 }

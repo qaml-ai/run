@@ -11,6 +11,7 @@ npm release, so a fix or change on Pi's main reaches us without waiting for a re
 | `chord.tgz` | `@earendil-works/chord` | contexts, documents and SQLite for pi-durable |
 | `pi-codemode.tgz` | `@earendil-works/pi-codemode` | a dependency of pi-durable |
 | `pi-telemetry.tgz` | `@earendil-works/pi-telemetry` | a dependency of pi-durable, pi-ai and chord |
+| `pi-schema.tgz` | `@earendil-works/pi-schema` | a dependency of pi-durable, pi-ai, pi-agent-core and chord: JSON Schema builders and validation |
 | `pi-agent-core.tgz` | `@earendil-works/pi-agent-core` | devDependency: we import only its types (`AgentMessage`, `AgentTool`, `StreamFn`) |
 
 Each package's version is Pi's with the commit appended (`1.4.0-main.a14cdf90f0a7`, and `-camel.<n>` with our patches, below;
@@ -34,7 +35,7 @@ published to npm. The self-host image is the runtime image, which has Pi install
    ```
 
    The script fetches only that commit into a temporary directory outside the repository, installs Pi's dependencies
-   with its own lockfile (`npm ci`, no install scripts), builds the six packages, packs each into `vendor/pi/`, and
+   with its own lockfile (`npm ci`, no install scripts), builds the seven packages, packs each into `vendor/pi/`, and
    rewrites `PI_COMMIT` and `LICENSE`. It stops when one of them depends on a Pi package it does not ship (add it to the
    list in the script, to `overrides`, and to the table above) or when a package's license is not MIT. `npm install`
    updates `package-lock.json` with the new tarballs' integrity.
