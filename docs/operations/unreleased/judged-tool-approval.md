@@ -10,7 +10,12 @@ change permissions asks the person, as `always` does; a call that would send
 credentials, secrets or private data out of the user's systems is denied before
 it runs, and the model reads that denial as the call's result. A judge that
 cannot answer — no OpenRouter key, a spent spend limit, a provider failure, an
-answer it cannot read — asks the person, so a judged call never runs unjudged.
+answer it cannot read, or arguments or a description past what it is shown —
+asks the person, so a judged call never runs unjudged; so does a turn with no
+request of its own (a prompt sent with no text), since a request is the only
+thing that can authorize a call.
+A denial is not remembered: the next call is judged on its own, and shows in a
+run's outcome as `tool_error`.
 
 A judged call costs about $0.00003 (Jev bills input tokens at $0.042 a million)
 and is billed as a decision is, under `kind: "decision"`. The judge never sees

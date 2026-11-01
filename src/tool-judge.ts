@@ -1,4 +1,5 @@
 import { DECISION_MODEL, Decider, DecisionFailed, type Answer, type DecisionItem, type NoulQuestion } from "./decisions.ts";
+import { HttpError } from "./http.ts";
 import { JUDGE_LIMITS } from "./limits.ts";
 import type { UsageRecord } from "./client-sessions/state.ts";
 
@@ -30,6 +31,11 @@ export type Judged = {
   risk: "low" | "medium" | "high";
   /** The probability of the answer that decided it (0..1), for a log line: never shown to the model or the person. */
   likely: number;
+  /**
+   * Why a call was not judged, when it was not: what the judge could not read (`unjudgeable`), a run with nothing left
+   * of its spend limit (`budget`), or a judge that failed or did not answer (`failed`). Absent when it answered.
+   */
+  reason?: "unjudgeable" | "budget" | "failed";
 };
 
 /** One call as the judge sees it: the tool, what it does, its arguments, and the request it answers. */
@@ -66,20 +72,30 @@ const QUESTIONS: Record<string, NoulQuestion> = {
   },
 };
 
-const clip = (text: string, chars: number) => text.length > chars ? `${text.slice(0, chars)}…` : text;
+/**
+ * Whether the judge can be shown the whole call. Arguments past their limit are not judged from a prefix: a caller could
+ * pad the part the judge reads with ordinary work and put the rest — a delete, an upload, a webhook — after it, which
+ * would turn a limit into a way through (tool-judge.test.ts pins it). A description past its limit is refused for the
+ * same reason: it is a server's text, and the judge reasons over it.
+ */
+export function judgeable(input: JudgeInput) {
+  return JSON.stringify(input.args ?? {}).length <= JUDGE_LIMITS.argumentsChars && (input.description ?? "").length <= JUDGE_LIMITS.descriptionChars;
+}
 
 /**
- * The state the questions are asked about: the request, the tool and the call's arguments as JSON. Each part is cut to
- * its limit so one call's arguments cannot hold the runtime's thread or bill a tenant for a document; what was cut says so.
+ * The state the questions are asked about: the request, the tool and the call's arguments as JSON. A request longer than
+ * its limit keeps its start and its end, since a restriction is often the last thing said; the rest is marked as left out.
  */
 export function judgeState(input: JudgeInput) {
-  const arguments_ = JSON.stringify(input.args ?? {});
-  return JSON.stringify({
-    request: input.intent?.trim() ? clip(input.intent.trim(), JUDGE_LIMITS.intentChars) : undefined,
-    tool: input.tool,
-    description: clip(input.description ?? "", JUDGE_LIMITS.descriptionChars),
-    arguments: arguments_.length > JUDGE_LIMITS.argumentsChars ? `${arguments_.slice(0, JUDGE_LIMITS.argumentsChars)}…` : arguments_,
-  });
+  const intent = input.intent?.trim() ?? "";
+  return JSON.stringify({ request: intent ? edges(intent) : undefined, tool: input.tool, description: input.description ?? "", arguments: JSON.stringify(input.args ?? {}) });
+}
+
+/** A request's start and end, cut between characters rather than into one (a surrogate pair is two code units). */
+function edges(intent: string) {
+  if (intent.length <= JUDGE_LIMITS.intentChars) return intent;
+  const points = Array.from(intent), head = JUDGE_LIMITS.intentChars - JUDGE_LIMITS.intentTailChars;
+  return `${points.slice(0, head).join("")}\n[…left out…]\n${points.slice(-JUDGE_LIMITS.intentTailChars).join("")}`;
 }
 
 /** The one item a judged call asks about. Its questions are fixed: a caller cannot ask fewer, or different ones. */
@@ -116,8 +132,12 @@ export type JudgeContext = {
   budget?: () => Promise<number | undefined>;
   /** Records what the judge cost, as a decision's usage is recorded (billing, `usage.recorded`). */
   record?: (usage: UsageRecord) => void;
+  /** When an end user pays: holds the estimate of their credit before the call, then settles or releases it. */
+  hold?: (usd: number) => Promise<{ settle(usd: number): Promise<void>; release(): Promise<void> } | undefined>;
   /** A judge that could not answer, for a log line: the error only, never the state it was asked about. */
   onError?: (error: unknown) => void;
+  /** What a judge decided, for a log line: the decision and its risk, never the request, the arguments or the answer. */
+  onJudged?: (input: JudgeInput, judged: Judged) => void;
 };
 
 /**
@@ -126,10 +146,20 @@ export type JudgeContext = {
  * cannot read — is `ask`, so the call waits for a person instead of running unjudged.
  */
 export function toolJudge(decider: Decider, context: JudgeContext): Judge {
+  /** An answer the judge did not give, and why: counted like any other, so asks are not invisible. */
+  const unanswered = (input: JudgeInput, reason: NonNullable<Judged["reason"]>): Judged => {
+    const judged = { ...UNJUDGED, reason };
+    context.onJudged?.(input, judged);
+    return judged;
+  };
   return async (input, signal) => {
+    // What it cannot see whole, it does not judge: the person decides instead (see judgeable).
+    if (!judgeable(input)) return unanswered(input, "unjudgeable");
+    let held: Awaited<ReturnType<NonNullable<JudgeContext["hold"]>>>;
     try {
       const budget = await context.budget?.();
-      if (budget !== undefined && budget <= 0) return UNJUDGED;
+      if (budget !== undefined && budget <= 0) return unanswered(input, "budget");
+      held = await context.hold?.(decider.estimate([judgeItem(input)], DECISION_MODEL));
       const decided = await decider.decide({
         tenant: context.tenant, ...(context.keyScope ? { keyScope: context.keyScope } : {}),
         ...(budget !== undefined ? { budget } : {}), ...(context.dataCollection ? { dataCollection: context.dataCollection } : {}),
@@ -137,23 +167,31 @@ export function toolJudge(decider: Decider, context: JudgeContext): Judge {
       const first = decided.results[0]!;
       // Recorded whether it answered or failed: a failed item is not billed, and the usage record says which answered.
       if (decided.usage) context.record?.(decided.usage);
+      await held?.settle(decided.chargedUsd);
+      held = undefined;
       if ("error" in first) {
         context.onError?.(new DecisionFailed(first.error.status, first.error.message, { ...(first.error.code ? { code: first.error.code } : {}) }));
-        return UNJUDGED;
+        return unanswered(input, "failed");
       }
-      return judgedOutcome(first.answers);
+      const judged = judgedOutcome(first.answers);
+      context.onJudged?.(input, judged);
+      return judged;
     } catch (error) {
+      await held?.release();
       // A call that was aborted is not a judge that could not answer: the abort goes where it was going.
       if (signal.aborted) throw signal.reason;
+      // Nothing left of what the person may spend is a refusal to spend, not a judge that broke: no failure line.
+      if (error instanceof HttpError && error.status === 402) return unanswered(input, "budget");
       context.onError?.(error);
-      return UNJUDGED;
+      return unanswered(input, "failed");
     }
   };
 }
 
 /**
- * A refused call, as its tool result: the model learns that it did not run and that nothing it says will change that, not
- * which question answered or with what. Pinned by a test, since a model reads it as the whole story of the call.
+ * A refused call, as its tool result: the model learns that it did not run, not which question answered or with what.
+ * A denial is not remembered — the next call is judged on its own — so it says do not retry rather than claiming that a
+ * retry cannot pass. Pinned by a test, since a model reads it as the whole story of the call.
  */
 export const DENIED_PERMISSION = (tool: string) =>
-  `Permission to use ${tool} has been denied: it was judged too risky to run in this turn, and nothing in a tool call can change that. Do not retry it. If it is what the user asked for, say what you would run and let them start it.`;
+  `Permission to use ${tool} has been denied: it was judged too risky to run here, and it did not run. Do not retry it, or a rewrite of it. If the user wants it done, say what you would run and let them start it themselves.`;

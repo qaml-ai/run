@@ -23,6 +23,7 @@ import * as childSessions from "./children.ts";
 import * as workflows from "./workflows.ts";
 import * as humanInput from "./inputs.ts";
 import { type Session, type ClientSessionOptions, type AgentRef, type UsageRecord, RUN_METHODS, validId } from "./state.ts";
+import type { RequestRecord } from "../../shared/client-protocol.ts";
 
 const mcpBudgets = new WeakMap<Session, { id?: string; left: number }>();
 
@@ -171,6 +172,21 @@ export async function callTool(ctx: ToolsContext, session: Session, call: ToolCa
   }
 }
 
+/**
+ * The text that started the run a call is made in, for a source whose approval is `judged`. A `resume` run continues a
+ * suspended one and records no prompt of its own, so the chain of suspensions is followed to the run that has one: after
+ * an approval, the next judged call in the same turn must still be judged against what the person asked for.
+ */
+export function intentOf(session: Session, request: RequestRecord | undefined): string | undefined {
+  let record = request;
+  // A chain of suspensions is short (one per answered input); the bound only stops a malformed one looping.
+  for (let depth = 0; record && depth < 8; depth++) {
+    if (record.prompt) return record.prompt;
+    record = record.suspension ? session.requests.get(record.suspension) : undefined;
+  }
+  return undefined;
+}
+
 async function answerToolCall(ctx: ToolsContext, session: Session, call: ToolCall) {
   const server = session.route?.get(call.name);
   if (!server) throw new Error(`Unknown tool ${call.name}`);
@@ -192,8 +208,9 @@ async function answerToolCall(ctx: ToolsContext, session: Session, call: ToolCal
   try {
     result = await recordingFailures(session, call, () => server.call({
       ...call, ...(request ? { run: request.id } : {}), ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}), ...(onProgress ? { onProgress } : {}),
-      // What a judged source (tool-judge.ts) shows the decision model: the request that started the run.
-      ...(request?.prompt ? { intent: request.prompt } : {}),
+      // What a judged source (tool-judge.ts) shows the decision model: the request that started this turn, which a
+      // resumed turn shares with the run it continues (`resume` records copy the actor and bucket, not the prompt).
+      ...(intentOf(session, request) ? { intent: intentOf(session, request) } : {}),
       ...(call.toolCallId ? { idempotencyKey: toolCallKey(session.header.id, call.messageIndex, call.toolCallId, call.innerCallId) } : {}),
       ...(plan?.approval ? { approval: { input: plan.approval.input, by: humanInput.approver(plan.approval.by), at: plan.approval.at } } : {}),
       ...(plan?.inputResponses ? { inputResponses: plan.inputResponses } : {}), ...(plan?.requestState !== undefined ? { requestState: plan.requestState } : {}),

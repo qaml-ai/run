@@ -4,8 +4,10 @@ import { listen, runtime, toolCall, toolResults, until, type T } from "./runtime
 
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 
-/** A stateless MCP server answering in JSON: one tool here, recording each call as it is made. */
-async function rawMcp(t: T, tools: Record<string, (args: any) => object>) {
+/** A stateless MCP server answering in JSON, recording each call as it is made; a tool may carry a description. */
+type FixtureTool = ((args: any) => object) | { description?: string; call: (args: any) => object };
+const callOf = (tool: FixtureTool) => typeof tool === "function" ? tool : tool.call;
+async function rawMcp(t: T, tools: Record<string, FixtureTool>) {
   const calls: { name: string; args: any }[] = [];
   const url = await listen(t, async (req, res) => {
     let text = "";
@@ -15,8 +17,8 @@ async function rawMcp(t: T, tools: Record<string, (args: any) => object>) {
     if (message.id === undefined) { res.writeHead(202).end(); return; }
     const reply = (result: object) => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
     if (message.method === "initialize") return reply({ protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "raw", version: "1" } });
-    if (message.method === "tools/list") return reply({ tools: Object.entries(tools).map(([name]) => ({ name, description: name, inputSchema: { type: "object", properties: { id: { type: "string" } } } })) });
-    if (message.method === "tools/call") { calls.push({ name: message.params.name, args: message.params.arguments }); return reply(tools[message.params.name](message.params.arguments) as any); }
+    if (message.method === "tools/list") return reply({ tools: Object.entries(tools).map(([name, tool]) => ({ name, description: (tool as { description?: string }).description ?? name, inputSchema: { type: "object", properties: { id: { type: "string" } } } })) });
+    if (message.method === "tools/call") { calls.push({ name: message.params.name, args: message.params.arguments }); return reply(callOf(tools[message.params.name])(message.params.arguments) as any); }
     res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: {} }));
   });
   return { url: `${url}/mcp`, calls };
@@ -44,11 +46,12 @@ async function decisions(t: T, answer: (body: any) => Verdict) {
 }
 
 /** An agent whose MCP server's calls are judged, and a model that makes one call and then answers with its result. */
-async function judgedAgent(t: T, reply: (body: any) => Verdict) {
-  const shop = await rawMcp(t, { read_item: args => ({ content: [{ type: "text", text: `item ${args.id}` }] }) });
+async function judgedAgent(t: T, reply: (body: any) => Verdict, options: { tools?: Record<string, FixtureTool>; respond?: (body: any, index: number) => object } = {}) {
+  const shop = await rawMcp(t, options.tools ?? { read_item: args => ({ content: [{ type: "text", text: `item ${args.id}` }] }) });
   const judge = await decisions(t, reply);
-  const r = await runtime(t, (body, index) => index === 0 ? toolCall("shop__read_item", { id: "a" }, "call_a")
-    : { role: "assistant", content: toolResults(body).at(-1) }, { ...LOCAL, AGENT_DECISIONS_URL: judge.url });
+  const respond = options.respond ?? ((body: any, index: number) => index === 0 ? toolCall("shop__read_item", { id: "a" }, "call_a")
+    : { role: "assistant", content: toolResults(body).at(-1) });
+  const r = await runtime(t, respond, { ...LOCAL, AGENT_DECISIONS_URL: judge.url });
   const definition = await r.call("/v1/definitions", { body: { name: "Shop", mcpServers: [{ name: "shop", url: shop.url, approval: { default: "judged" } }] } });
   assert.equal(definition.status, 201, definition.text);
   assert.deepEqual(definition.json.mcpServers[0].approval, { default: "judged" }, "the policy is kept as given");
@@ -112,4 +115,31 @@ test("an approval mode that is not one of the four is refused when the definitio
   const refused = await r.call("/v1/definitions", { body: { name: "Shop", mcpServers: [{ name: "shop", url: "https://shop.example.test/mcp", approval: { default: "probably" } }] } });
   assert.equal(refused.status, 400);
   assert.match(refused.text, /Invalid option: expected one of \\"never\\"\\|\\"always\\"\\|\\"destructive\\"\\|\\"judged\\"/);
+});
+
+test("after an approval, a judged call in the resumed turn is still judged against the request that started it", async (t) => {
+  const { r, agent, judge } = await judgedAgent(t, () => ({ ordinary: 0.4, irreversible: 0.3, exfiltration: 0.05 }), {
+    respond: (body, index) => index === 0 ? toolCall("shop__read_item", { id: "a" }, "call_a")
+      : index === 1 ? toolCall("shop__read_item", { id: "b" }, "call_b")
+      : { role: "assistant", content: toolResults(body).at(-1) },
+  });
+  const suspended = await r.prompt(agent, "Show me item a");
+  const [first] = suspended.outcome.result.inputs;
+  assert.equal(JSON.parse(judge.asked[0].state).request, "Show me item a");
+  const approved = await r.call(`/v1/agents/${agent}/inputs/${first.id}`, { body: { action: "accept", actor: "ops-1" } });
+  assert.equal(approved.status, 202, approved.text);
+  await until(async () => (await r.call(`/v1/agents/${agent}/requests/${approved.json.request.id}`)).json.state === "completed", "the resumed run");
+  assert.ok(judge.asked.length >= 2, "the second call was judged");
+  // A resume run records no prompt of its own: the request it continues is followed back through the suspension.
+  assert.equal(JSON.parse(judge.asked[1].state).request, "Show me item a");
+});
+
+test("a description longer than the model sees is cut for the judge, not refused", async (t) => {
+  const { r, agent, shop, judge } = await judgedAgent(t, () => ({ ordinary: 0.95, irreversible: 0.02, exfiltration: 0 }), {
+    tools: { read_item: { description: "d".repeat(6_000), call: (args: any) => ({ content: [{ type: "text", text: `item ${args.id}` }] }) } },
+  });
+  const run = await r.prompt(agent, "Show me item a");
+  assert.equal(run.outcome.result.stopped, undefined, "nobody was asked");
+  assert.deepEqual(shop.calls.map(call => call.args), [{ id: "a" }], "the call ran");
+  assert.equal(JSON.parse(judge.asked[0].state).description.length, 4_000, "the same 4,000 characters the model is shown");
 });

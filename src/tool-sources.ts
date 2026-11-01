@@ -464,8 +464,12 @@ export class ToolSources {
    */
   private async gate(context: SourceContext, mode: Exclude<ApprovalMode, "destructive">, input: JudgeInput, signal: AbortSignal): Promise<McpResult | undefined> {
     if (!asksBefore(mode)) return undefined;
-    if (mode === "always" || !context.judge) return APPROVAL_REQUIRED;
+    // Only a request can authorize a call, so a turn that has none — a prompt sent with no text — is not judged at all:
+    // the person decides, as they do for a call the judge cannot read.
+    if (mode === "always" || !context.judge || !input.intent?.trim()) return APPROVAL_REQUIRED;
     const judged = await context.judge(input, signal);
+    // A turn stopped while the judge was deciding runs nothing and asks nothing, whatever the answer was.
+    signal.throwIfAborted();
     if (judged.decision === "allow") return undefined;
     if (judged.decision === "deny") return { content: [{ type: "text", text: DENIED_PERMISSION(input.tool) }], isError: true };
     return APPROVAL_REQUIRED;
@@ -601,7 +605,8 @@ export class ToolSources {
         const operation = api?.operations.find(entry => operationTool(api.name, entry).name === name);
         if (api && operation) {
           if (!approval) {
-            const gate = await this.gate(context, apiApproval(api, operation), { tool: name, description: operation.description || operation.name, args, ...(intent ? { intent } : {}) }, signal);
+            const gate = await this.gate(context, apiApproval(api, operation),
+              { tool: name, description: (operation.description || operation.name).slice(0, MAX_DESCRIPTION), args, ...(intent ? { intent } : {}) }, signal);
             if (gate) return gate;
           }
           const callFiles = files(name, runId, call, api);
@@ -626,7 +631,7 @@ export class ToolSources {
         if (!tool) throw new Error(`${spec.name} no longer offers ${name.slice(spec.name.length + 2)}`);
         if (!approval) {
           const gate = await this.gate(context, approvalFor(spec.approval, tool.name, tool.annotations?.destructiveHint === true),
-            { tool: name, description: tool.description || tool.title || tool.name, args, ...(intent ? { intent } : {}) }, signal);
+            { tool: name, description: (tool.description || tool.title || tool.name).slice(0, MAX_DESCRIPTION), args, ...(intent ? { intent } : {}) }, signal);
           if (gate) return gate;
         }
         const callFiles = files(name, runId, call, spec);

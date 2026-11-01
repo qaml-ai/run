@@ -20,8 +20,8 @@ import { ToolFiles } from "../tool-files.ts";
 import { essence, type FileRef } from "../files.ts";
 import { checkedAudio } from "../transcription.ts";
 import { GENERATE_IMAGE, generateImage } from "../images.ts";
-import { DECIDE, decideTool } from "../decisions.ts";
-import { toolJudge, type Judge } from "../tool-judge.ts";
+import { DECIDE, DECISION_MODEL, decideTool } from "../decisions.ts";
+import { toolJudge, UNJUDGED, type Judge } from "../tool-judge.ts";
 import type { ToolContext } from "../volume-tools.ts";
 import { type Session, type ClientSessionOptions, type UsageRecord, type Refusal, type SpendLimit, RUN_METHODS, MODEL_RUNS, runningRun } from "./state.ts";
 
@@ -157,28 +157,39 @@ export function decisionServer(ctx: SpendContext, session: Session, sources: Sou
 /**
  * The judge a source's `judged` approval policy asks before a call (tool-judge.ts): the decisions service's model, with
  * the run's own facts, billed as a decision is and counted against the agent's spend limit and the run's. `undefined` when
- * the node has no decisions service, or the agent denies data collection while the provider cannot pass that on: its
- * judged calls then ask the person, as they do when the judge cannot answer.
+ * the node has no decisions service; its judged calls then ask the person, as they do when the judge cannot answer.
  */
 export function judgeFor(ctx: SpendContext, session: Session): Judge | undefined {
   const { decider } = ctx.options;
-  const { header } = session;
   if (!decider) return undefined;
-  if (header.config.dataCollection === "deny" && !decider.options.provider.dataPolicy) return undefined;
-  return toolJudge(decider, {
-    tenant: header.tenant, ...(header.keyScope ? { keyScope: header.keyScope } : {}), ...(header.config.dataCollection ? { dataCollection: header.config.dataCollection } : {}),
-    budget: async () => { const run = runningRun(session); return run ? budgetLeft(ctx, session, run.id) : undefined; },
-    record: usage => {
-      const run = runningRun(session);
-      const cost = usage.usage.cost.total as number;
-      const { identity, keyScope } = header;
-      ctx.options.onUsage?.(header.tenant, header.id, { ...usage, ...(run ? { requestId: run.id } : {}), ...(run?.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
-      ctx.spent(session, cost);
-      if (run && cost > 0) (session.decisionSpend ??= new Map()).set(run.id, (session.decisionSpend.get(run.id) ?? 0) + cost);
-    },
-    // A judge that could not answer says so once: the call then asks the person, and is not retried here.
-    onError: error => console.log(JSON.stringify({ type: "tool_judge_failed", tenant: header.tenant, agent: header.id, provider: decider.provider, error: safeError(error) })),
-  });
+  // The scope and the data policy are read when a call is judged, not when the agent's tools were built: a live
+  // configure can change either without rebuilding them, and a judge built with the old data policy would send a call
+  // the agent has since refused to send (`src/client-sessions/configuration.ts` writes the header after the rebuild).
+  return (input, signal) => {
+    const { header } = session;
+    const { identity, keyScope } = header;
+    // An agent that denies data collection, where the provider cannot pass that on: nothing is sent, and its judged calls
+    // ask the person. `decide` refuses this too (decisions.ts), but only after a budget read and a credit hold.
+    if (header.config.dataCollection === "deny" && !decider.options.provider.dataPolicy) return Promise.resolve({ ...UNJUDGED, reason: "unjudgeable" });
+    return toolJudge(decider, {
+      tenant: header.tenant, ...(keyScope ? { keyScope } : {}), ...(header.config.dataCollection ? { dataCollection: header.config.dataCollection } : {}),
+      budget: async () => { const run = runningRun(session); return run ? budgetLeft(ctx, session, run.id) : undefined; },
+      // As a decide call: when an end user pays, their credit holds the judge's estimate and settles what it cost.
+      hold: usd => endUserHold(ctx, session, runningRun(session), usd, "decision"),
+      record: usage => {
+        const run = runningRun(session);
+        const cost = usage.usage.cost.total as number;
+        ctx.options.onUsage?.(header.tenant, header.id, { ...usage, ...(run ? { requestId: run.id } : {}), ...(run?.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
+        ctx.spent(session, cost);
+        if (run && cost > 0) (session.decisionSpend ??= new Map()).set(run.id, (session.decisionSpend.get(run.id) ?? 0) + cost);
+      },
+      // A judge that could not answer says so once: the call then asks the person, and is not retried here.
+      onError: error => console.log(JSON.stringify({ type: "tool_judge_failed", tenant: header.tenant, agent: header.id, provider: decider.provider, error: safeError(error) })),
+      // What it decided, for counting denials and asks. Never the request, the arguments or the answer.
+      onJudged: (input, judged) => console.log(JSON.stringify({ type: "tool_judged", tenant: header.tenant, agent: header.id, provider: decider.provider, model: DECISION_MODEL,
+        tool: input.tool, decision: judged.decision, risk: judged.risk, ...(judged.reason ? { reason: judged.reason } : {}) })),
+    })(input, signal);
+  };
 }
 
 /**
