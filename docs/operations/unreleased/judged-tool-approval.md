@@ -15,14 +15,17 @@ asks the person, so a judged call never runs unjudged; so does a turn with no
 request of its own (a prompt sent with no text), since a request is the only
 thing that can authorize a call.
 A denial is not remembered: the next call is judged on its own, and shows in a
-run's outcome as `tool_error`.
+run's outcome as `tool_error`. A resumed turn is judged against the request that
+started it, not against nothing.
 
 A judged call costs about $0.00003 (Jev bills input tokens at $0.042 a million)
-and is billed as a decision is, under `kind: "decision"`. The judge never sees
-more than the request (2,000 characters), the tool's description and 8,000
-characters of the call's arguments, and neither the request nor the arguments
-are logged. Judged tools are declared to the model directly, since code in
-`js_exec` cannot wait for a person.
+and is billed as a decision is, under `kind: "decision"`, with an end user's
+credit holding and settling it when they pay. The judge sees the request's start
+and end (2,000 characters), the 4,000-character description the model is shown,
+and 8,000 characters of the call's arguments; past those it asks rather than
+guessing. Each decision logs `tool_judged` (tool, decision, risk, and why it
+asked), never the request, the arguments or the answer. Judged tools are
+declared to the model directly, since code in `js_exec` cannot wait for a person.
 
 Implementation: `src/tool-judge.ts` (the questions and the decision table),
 `src/tool-sources.ts` (the gate), the judge is built per session in
