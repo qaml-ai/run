@@ -81,7 +81,7 @@ async function toolServers(ctx: ToolsContext, session: Session, tools: ToolDefin
     ...workflow ? [workflow] : [],
     ...images ? [images] : [],
     ...decisions ? [decisions] : [],
-    ...ctx.options.sources ? [ctx.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: () => session.header.mounts ?? [], onWrite: toolContext(ctx, session).onWrite }, sources)] : [],
+    ...ctx.options.sources ? [ctx.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: () => session.header.mounts ?? [], onWrite: toolContext(ctx, session).onWrite, judge: spend.judgeFor(ctx.spendContext, session) }, sources)] : [],
   ];
 }
 
@@ -192,6 +192,8 @@ async function answerToolCall(ctx: ToolsContext, session: Session, call: ToolCal
   try {
     result = await recordingFailures(session, call, () => server.call({
       ...call, ...(request ? { run: request.id } : {}), ...(origin ? { origin } : {}), ...(request?.actor ? { actor: request.actor } : {}), ...(onProgress ? { onProgress } : {}),
+      // What a judged source (tool-judge.ts) shows the decision model: the request that started the run.
+      ...(request?.prompt ? { intent: request.prompt } : {}),
       ...(call.toolCallId ? { idempotencyKey: toolCallKey(session.header.id, call.messageIndex, call.toolCallId, call.innerCallId) } : {}),
       ...(plan?.approval ? { approval: { input: plan.approval.input, by: humanInput.approver(plan.approval.by), at: plan.approval.at } } : {}),
       ...(plan?.inputResponses ? { inputResponses: plan.inputResponses } : {}), ...(plan?.requestState !== undefined ? { requestState: plan.requestState } : {}),

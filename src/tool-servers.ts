@@ -21,6 +21,11 @@ export type ToolCall = {
   approval?: { input: string; by: Record<string, unknown>; at: number }; inputResponses?: Record<string, unknown>; requestState?: string;
   /** The agent has someone to ask: the call may answer MCP's `input_required` with elicitations. */
   elicit?: boolean;
+  /**
+   * The request that started the run, as the person or caller wrote it: what a source whose approval is `judged`
+   * (tool-judge.ts) shows the decision model. Only the request can authorize a call; a tool's own result cannot.
+   */
+  intent?: string;
   /** In a child's run: its parent agent and its chain's first, from the run's signed chain (identity tokens' `par` and `root`). */
   lineage?: { parent: string; root: string };
 };

@@ -491,7 +491,7 @@ export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" }
 export interface InlineMcpServer {
   name: string; url: string; auth?: { type: "runtime" }; audience?: string; allowTools?: string[]; denyTools?: string[]; exposure?: "direct" | "codemode" | "both"; timeoutMs?: number; fileArguments?: "on" | "off";
   /** Which tools the user approves before each call. */
-  approval?: { default?: "never" | "always" | "destructive"; tools?: Record<string, "never" | "always"> };
+  approval?: { default?: "never" | "always" | "destructive" | "judged"; tools?: Record<string, "never" | "always" | "judged"> };
 }
 /**
  * `fileArguments`: whether the model may send the agent's files to the source's tools (`{"$file": path}`, as a URL bound

@@ -4118,9 +4118,10 @@
                 "enum": [
                   "never",
                   "always",
-                  "destructive"
+                  "destructive",
+                  "judged"
                 ],
-                "description": "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)"
+                "description": "never (the default), always, destructive (tools annotated destructiveHint, MCP; operations other than GET, HEAD and OPTIONS, OpenAPI), or judged: the decision model decides each call, allowing ordinary calls, denying high-risk ones and asking the person for anything else"
               },
               "tools": {
                 "type": "object",
@@ -4128,7 +4129,8 @@
                   "type": "string",
                   "enum": [
                     "never",
-                    "always"
+                    "always",
+                    "judged"
                   ]
                 },
                 "description": "Per tool, by its own name: overrides the default"
@@ -4915,9 +4917,10 @@
                 "enum": [
                   "never",
                   "always",
-                  "destructive"
+                  "destructive",
+                  "judged"
                 ],
-                "description": "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)"
+                "description": "never (the default), always, destructive (tools annotated destructiveHint, MCP; operations other than GET, HEAD and OPTIONS, OpenAPI), or judged: the decision model decides each call, allowing ordinary calls, denying high-risk ones and asking the person for anything else"
               },
               "tools": {
                 "type": "object",
@@ -4925,7 +4928,8 @@
                   "type": "string",
                   "enum": [
                     "never",
-                    "always"
+                    "always",
+                    "judged"
                   ]
                 },
                 "description": "Per tool, by its own name: overrides the default"
@@ -9434,9 +9438,10 @@
                 "enum": [
                   "never",
                   "always",
-                  "destructive"
+                  "destructive",
+                  "judged"
                 ],
-                "description": "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)"
+                "description": "never (the default), always, destructive (tools annotated destructiveHint, MCP; operations other than GET, HEAD and OPTIONS, OpenAPI), or judged: the decision model decides each call, allowing ordinary calls, denying high-risk ones and asking the person for anything else"
               },
               "tools": {
                 "type": "object",
@@ -9444,7 +9449,8 @@
                   "type": "string",
                   "enum": [
                     "never",
-                    "always"
+                    "always",
+                    "judged"
                   ]
                 },
                 "description": "Per tool, by its own name: overrides the default"
@@ -9802,9 +9808,10 @@
                 "enum": [
                   "never",
                   "always",
-                  "destructive"
+                  "destructive",
+                  "judged"
                 ],
-                "description": "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)"
+                "description": "never (the default), always, destructive (tools annotated destructiveHint, MCP; operations other than GET, HEAD and OPTIONS, OpenAPI), or judged: the decision model decides each call, allowing ordinary calls, denying high-risk ones and asking the person for anything else"
               },
               "tools": {
                 "type": "object",
@@ -9812,7 +9819,8 @@
                   "type": "string",
                   "enum": [
                     "never",
-                    "always"
+                    "always",
+                    "judged"
                   ]
                 },
                 "description": "Per tool, by its own name: overrides the default"
@@ -9962,9 +9970,10 @@
                 "enum": [
                   "never",
                   "always",
-                  "destructive"
+                  "destructive",
+                  "judged"
                 ],
-                "description": "never (the default), always, or destructive: tools annotated destructiveHint (MCP), operations other than GET, HEAD and OPTIONS (OpenAPI)"
+                "description": "never (the default), always, destructive (tools annotated destructiveHint, MCP; operations other than GET, HEAD and OPTIONS, OpenAPI), or judged: the decision model decides each call, allowing ordinary calls, denying high-risk ones and asking the person for anything else"
               },
               "tools": {
                 "type": "object",
@@ -9972,7 +9981,8 @@
                   "type": "string",
                   "enum": [
                     "never",
-                    "always"
+                    "always",
+                    "judged"
                   ]
                 },
                 "description": "Per tool, by its own name: overrides the default"

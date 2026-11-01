@@ -1970,13 +1970,28 @@ print(run.text)
 - **Approvals.** A tool with `needsApproval: true` (`@tool(needs_approval=True)`),
   or a function of its arguments deciding per call, is approved before each call.
   A definition's sources take an approval policy:
-  `"approval": {"default": "never" | "always" | "destructive", "tools": {"delete_repo": "always"}}`
+  `"approval": {"default": "never" | "always" | "destructive" | "judged", "tools": {"delete_repo": "always"}}`
   (`destructive`: MCP tools annotated `destructiveHint`, OpenAPI operations other
-  than GET, HEAD and OPTIONS; OpenAPI also takes `"methods": ["POST", "DELETE"]`).
-  The person sees the real call: the tool, its source and its arguments. An
-  approved call runs with exactly those arguments, and carries the approval
-  (`context.identity.approval`), so a tool can require it; a declined call never
-  runs.
+  than GET, HEAD and OPTIONS; OpenAPI also takes `"methods": ["POST", "DELETE"]`;
+  `judged`: below). The person sees the real call: the tool, its source and its
+  arguments. An approved call runs with exactly those arguments, and carries the
+  approval (`context.identity.approval`), so a tool can require it; a declined
+  call never runs.
+- **Judged approvals.** `"approval": {"default": "judged"}` asks a decision
+  model (the `decide` model, TypeSafe's Jev, about 0.3 s and $0.00003 a call)
+  about each call instead of a person. It reads the request that started the
+  run, the tool and the call's arguments, and answers three yes/no questions.
+  An ordinary, reversible call runs with nobody in the loop; a call that may
+  irreversibly delete or rewrite what already existed, write to production or
+  change permissions or security asks the person, as `always` does; a call that
+  would send credentials, secrets or private data outside the user's systems
+  **does not run**, and nobody is asked. The model reads
+  `Permission to use <tool> has been denied: …` as the call's result, and a
+  denied call cannot be retried. A judge that cannot answer (no OpenRouter key,
+  a spent limit, a provider failure, an answer it cannot read) asks the person:
+  a judged call is never allowed unjudged. Judged calls are billed as decisions
+  are (`kind: "decision"`), and judged tools are declared to the model directly,
+  like approved ones, since code in `js_exec` cannot wait.
 - **Questions.** The `ask_user` built-in (`"builtins": ["ask_user"]` on the
   agent or its definition) lets the model ask 1 to 4 multiple-choice questions, with free text
   allowed where it says so.

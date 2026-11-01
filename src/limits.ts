@@ -118,6 +118,16 @@ export const IMAGE_LIMITS = Object.freeze({
 });
 
 /**
+ * A judged call (tool-judge.ts): what the decision model is shown of the request and the call, cut so one call cannot
+ * hold the runtime's thread or bill a tenant for a document, and how long a judge may take before the call asks a person.
+ */
+export const JUDGE_LIMITS = Object.freeze({
+  intentChars: 2_000, descriptionChars: 1_000, argumentsChars: 8_000,
+  /** One judged call's deadline, waits for a decision slot included (a Jev call answers in 70–500 ms). */
+  timeoutMs: 15_000,
+});
+
+/**
  * Decisions (decisions.ts): typed questions about one state, answered by a decision model. A request asks about one state
  * or a batch of `items`; each item is one provider call. Characters, not tokens, so the arithmetic is the same for every
  * provider (Jev takes about 32k tokens of state and question, which `itemChars` stays well under).
