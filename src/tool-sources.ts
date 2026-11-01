@@ -464,8 +464,8 @@ export class ToolSources {
    */
   private async gate(context: SourceContext, mode: Exclude<ApprovalMode, "destructive">, input: JudgeInput, signal: AbortSignal): Promise<McpResult | undefined> {
     if (!asksBefore(mode)) return undefined;
-    // Only a request can authorize a call, so a turn that has none — a scheduled or continued turn with no text of its
-    // own — is not judged at all: the person decides, as they do for a call the judge cannot read.
+    // Only a request can authorize a call, so a turn that has none — a prompt sent with no text — is not judged at all:
+    // the person decides, as they do for a call the judge cannot read.
     if (mode === "always" || !context.judge || !input.intent?.trim()) return APPROVAL_REQUIRED;
     const judged = await context.judge(input, signal);
     // A turn stopped while the judge was deciding runs nothing and asks nothing, whatever the answer was.

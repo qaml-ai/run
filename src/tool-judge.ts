@@ -180,9 +180,10 @@ export function toolJudge(decider: Decider, context: JudgeContext): Judge {
       await held?.release();
       // A call that was aborted is not a judge that could not answer: the abort goes where it was going.
       if (signal.aborted) throw signal.reason;
+      // Nothing left of what the person may spend is a refusal to spend, not a judge that broke: no failure line.
+      if (error instanceof HttpError && error.status === 402) return unanswered(input, "budget");
       context.onError?.(error);
-      // Nothing left of what the person may spend is a refusal to spend, not a judge that broke.
-      return unanswered(input, error instanceof HttpError && error.status === 402 ? "budget" : "failed");
+      return unanswered(input, "failed");
     }
   };
 }
