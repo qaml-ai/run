@@ -1,4 +1,4 @@
-# ElevenLabs realtime models
+### ElevenLabs realtime models
 
 ElevenLabs voice sessions accept any model ElevenLabs Agents offers, with `gemini-3.1-flash-lite` still the default.
 Each model uses its own agent; existing model agents are reused. Refused models produce an error naming the model.
