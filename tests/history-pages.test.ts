@@ -145,6 +145,111 @@ test("byte-bounded pages count UTF-8 and the envelope, preserve cursors, and kee
   await storage.close(BACKGROUND_CONTEXT);
 });
 
+/** Every page forward from 0, in the order a poller reads them: its nextAfter is the next call's after. */
+async function afterPages(index: AgentHistory, agent: string, options: { limit: number; maxBytes?: number }) {
+  const pages = [];
+  for (let after = 0; ;) {
+    const page = await index.pageAfter(agent, { ...options, after });
+    pages.push(page);
+    if (page.nextAfter === page.total) return pages;
+    assert.ok(page.nextAfter! > after, `after ${after} moved on`);
+    after = page.nextAfter!;
+  }
+}
+
+test("a forward page starts at `after` and nextAfter reads every message once", async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "history-after-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const index = new AgentHistory(db);
+  const archive = [user("a"), assistant("A"), user("b"), assistant("B1"), assistant("B2")];
+  const { storage } = await agentWith(db, root, "client_after", { messages: archive, turns: [0, 2] }, [[user("c"), assistant("C")], [user("d"), assistant("D1"), assistant("D2"), assistant("D3")]]);
+  const whole = await index.messages("client_after");
+  assert.deepEqual(await index.allTurns("client_after"), [0, 2, 5, 7]);
+  const first = await index.pageAfter("client_after", { after: 0, limit: 1 });
+  assert.deepEqual(first.entries.map(entry => entry.index), [0, 1], "the first turn, from 0");
+  assert.equal(first.next, null);
+  assert.equal(first.nextAfter, 2);
+  assert.equal(first.total, 11);
+  assert.equal(first.split, undefined);
+  assert.equal(first.truncated, undefined);
+  for (const limit of [1, 2, 3, 50]) {
+    const pages = await afterPages(index, "client_after", { limit });
+    assert.deepEqual(pages.flatMap(page => page.entries.map(entry => entry.message)), whole, `limit ${limit}: every message once`);
+    assert.deepEqual(pages.flatMap(page => page.entries.map(entry => entry.index)), whole.map((_, at) => at));
+    for (const page of pages) {
+      assert.equal(page.total, 11);
+      assert.equal(page.nextAfter, page.entries.length ? page.entries.at(-1)!.index + 1 : 11);
+      assert.equal(page.next, page.entries.length && page.entries[0].index > 0 ? page.entries[0].index : null);
+      assert.equal(page.entries[0].message.role, "user", "a page starts at a turn");
+    }
+  }
+  assert.deepEqual((await afterPages(index, "client_after", { limit: 1 })).map(page => page.entries.length), [2, 3, 2, 4]);
+  // Caught up: nothing new, and the cursor stays where the history ends.
+  assert.deepEqual(await index.pageAfter("client_after", { after: 11, limit: 5 }), { entries: [], next: null, total: 11, nextAfter: 11 });
+  // Past the end (the history shrank): what exists, total for the caller to reset from, and the flag.
+  assert.deepEqual(await index.pageAfter("client_after", { after: 99, limit: 5 }), { entries: [], next: null, total: 11, nextAfter: 11, truncated: true });
+  // A limit past what is left is the rest of the history, whole turns and all.
+  const rest = await index.pageAfter("client_after", { after: 5, limit: 500 });
+  assert.deepEqual(rest.entries.map(entry => entry.index), [5, 6, 7, 8, 9, 10]);
+  assert.equal(rest.nextAfter, 11);
+  assert.equal(rest.next, 5);
+  assert.equal((await index.pageAfter("client_after", { after: 3, limit: 1 })).entries[0].index, 3, "inside a turn: it starts there");
+  assert.deepEqual(await index.pageAfter("missing", { after: 0, limit: 5 }), { entries: [], next: null, total: 0, nextAfter: 0 }, "no Pi storage: no history");
+  // The backward page is what it was: the older page's before, and nothing new in the response.
+  const newest = await index.page("client_after", { limit: 1 });
+  assert.deepEqual(Object.keys(newest).sort(), ["entries", "next", "total"]);
+  assert.deepEqual(newest.entries.map(entry => entry.index), [7, 8, 9, 10]);
+  assert.equal(newest.next, 7);
+  assert.deepEqual((await allPages(index, "client_after", { limit: 1 })).map(page => page.entries.length), [2, 3, 2, 4]);
+  await storage.close(BACKGROUND_CONTEXT);
+});
+
+test("a byte-bounded forward page keeps the oldest messages that fit and resumes where it ended", async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "history-after-bytes-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const index = new AgentHistory(db);
+  const agent = `client_${"a".repeat(40)}`;
+  // Two turns, the first one big enough that a small page ends inside it.
+  const messages = [user("q"), assistant("y".repeat(12_000)), assistant("z".repeat(12_000)), user("next"), assistant("n")];
+  const { storage } = await agentWith(db, root, agent, { messages: messages.slice(0, 3), turns: [0] }, [messages.slice(3)]);
+  const maxBytes = 16_384;
+  const size = (page: unknown) => Buffer.byteLength(JSON.stringify(page));
+  assert.deepEqual((await index.pageAfter(agent, { after: 0, limit: 50 })).entries.map(entry => entry.message), messages);
+  const pages = await afterPages(index, agent, { limit: 50, maxBytes });
+  assert.deepEqual(pages.flatMap(page => page.entries.map(entry => entry.message)), messages, "every message once, no gap where the turn split");
+  assert.ok(pages.length > 1);
+  for (const page of pages) assert.ok(size(page) <= maxBytes || page.entries.length === 1, "a page fits, or is one message");
+  assert.deepEqual(pages.map(page => page.entries.map(entry => entry.index)), [[0, 1], [2, 3, 4]]);
+  assert.equal(pages[0].split, true, "the page ends inside a turn");
+  assert.equal(pages[0].nextAfter, 2);
+  assert.equal(pages[1].split, true, "and the next one starts there");
+  assert.equal(pages[1].nextAfter, 5);
+  assert.equal((await index.pageAfter(agent, { after: 5, limit: 50, maxBytes })).nextAfter, 5, "caught up with a byte bound too");
+  await storage.close(BACKGROUND_CONTEXT);
+});
+
+test("a forward page from before the history a journal still holds says truncated and starts where the history does", async t => {
+  const { db } = await testDatabase();
+  const root = await mkdtemp(join(tmpdir(), "history-after-compact-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const index = new AgentHistory(db);
+  // A journal whose base opens at 10 (compaction took the history before it): only 10 and 11 are kept.
+  const { storage } = await agentWith(db, root, "client_compacted", undefined, [[user("n"), assistant("N")]], 10);
+  assert.equal(await index.total("client_compacted"), 12);
+  const page = await index.pageAfter("client_compacted", { after: 0, limit: 50 });
+  assert.deepEqual(page.entries.map(entry => entry.index), [10, 11], "what exists, not an error");
+  assert.equal(page.total, 12);
+  assert.equal(page.next, 10);
+  assert.equal(page.nextAfter, 12);
+  assert.equal(page.truncated, true);
+  const inside = await index.pageAfter("client_compacted", { after: 10, limit: 50 });
+  assert.equal(inside.truncated, undefined, "10 is kept: nothing was skipped");
+  assert.deepEqual(inside.entries.map(entry => entry.index), [10, 11]);
+  await storage.close(BACKGROUND_CONTEXT);
+});
+
 test("history comes in pages of whole turns, newest first, from Pi storage wherever the agent runs or not", async t => {
   const r = await runtime(t, body => {
     const last = body.messages.at(-1);
@@ -223,6 +328,60 @@ test("history maxBytes works alone on the API and through the SDK, with validate
     await assert.rejects(client.historyPage({ maxBytes: Number(value) }), /maxBytes/);
   }
   assert.equal((await r.call(`/v1/agents/${session.id}/history?maxBytes=4000000`)).status, 200);
+});
+
+test("history after pages forward on the API and through the SDK; after with before is a 400", async t => {
+  const r = await runtime(t, () => ({ content: "reply" }));
+  const session = (await r.call("/v1/agents", { body: {} })).json;
+  const agent = session.id as string;
+  for (const text of ["one", "two"]) await r.prompt(agent, text);
+  const whole = (await r.call(`/v1/agents/${agent}/history`)).json.messages;
+  assert.equal(whole.length, 4);
+  const seen: any[] = [];
+  for (let after = 0;;) {
+    const page = await r.call(`/v1/agents/${agent}/history?limit=1&after=${after}`);
+    assert.equal(page.status, 200, page.text);
+    assert.equal(page.json.total, 4);
+    if (page.json.entries.length) assert.equal(page.json.entries[0].message.role, "user", "a page starts at a turn");
+    seen.push(...page.json.entries);
+    if (page.json.nextAfter === page.json.total) break;
+    assert.ok(page.json.nextAfter > after);
+    after = page.json.nextAfter;
+  }
+  assert.deepEqual(seen.map(entry => entry.index), [0, 1, 2, 3]);
+  assert.deepEqual(seen.map(entry => entry.message), whole);
+  const firstPage = await r.call(`/v1/agents/${agent}/history?after=0&limit=1`);
+  assert.deepEqual(firstPage.json.entries.map((entry: any) => entry.index), [0, 1]);
+  assert.deepEqual([firstPage.json.next, firstPage.json.nextAfter, firstPage.json.total], [null, 2, 4]);
+  assert.equal(firstPage.json.truncated, undefined);
+  const caught = await r.call(`/v1/agents/${agent}/history?after=4`);
+  assert.equal(caught.status, 200);
+  assert.equal(caught.json.nextAfter, 4);
+  assert.deepEqual(caught.json.entries, []);
+  const past = await r.call(`/v1/agents/${agent}/history?after=9`);
+  assert.equal(past.status, 200);
+  assert.deepEqual(past.json.entries, []);
+  assert.equal(past.json.total, 4);
+  assert.equal(past.json.nextAfter, 4);
+  assert.equal(past.json.truncated, true);
+  assert.equal((await r.call(`/v1/agents/${agent}/history?after=4&maxBytes=16384`)).status, 200, "a byte bound alone pages too");
+
+  const both = await r.call(`/v1/agents/${agent}/history?after=0&before=2`);
+  assert.equal(both.status, 400, both.text);
+  assert.match(both.json.error, /after or before/);
+  for (const value of ["-1", "1.5", "NaN", "Infinity"])
+    assert.equal((await r.call(`/v1/agents/${agent}/history?after=${value}`)).status, 400, value);
+
+  const client = await new AgentRuntime({ url: r.base, apiKey: OPERATOR }).connectAgent(session, { tools: {} });
+  t.after(() => client.close());
+  assert.deepEqual((await client.historyPage({ after: 2, limit: 1 })).entries.map(entry => entry.index), [2, 3]);
+  assert.deepEqual(await client.historyPage({ after: 0, limit: 1 }), (await r.call(`/v1/agents/${agent}/history?after=0&limit=1`)).json);
+  await assert.rejects(client.historyPage({ after: 0, before: 2 }), /after or before/);
+  // The backward page is unchanged: its next is still the older page's before.
+  const newest = await client.historyPage({ limit: 1 });
+  assert.equal(newest.next, 2);
+  assert.equal(newest.nextAfter, undefined);
+  assert.deepEqual((await client.historyPage({ limit: 1, before: newest.next! })).entries.map(entry => entry.index), [0, 1]);
 });
 
 test("the newest page has the running turn's finished messages, at their indexes; purging removes the agent's history", async t => {

@@ -5242,7 +5242,18 @@
             "enum": [
               true
             ],
-            "description": "The page starts inside a turn because of a size bound"
+            "description": "The page starts or ends inside a turn because of a size bound"
+          },
+          "nextAfter": {
+            "type": "number",
+            "description": "With after: pass as after for the newer page. One past the last message returned, total once caught up"
+          },
+          "truncated": {
+            "type": "boolean",
+            "enum": [
+              true
+            ],
+            "description": "With after: the history does not reach back to it (older history compacted away, or after past total). The page holds what exists and nextAfter puts you back in step"
           }
         },
         "required": [
@@ -15635,37 +15646,47 @@
           {
             "schema": {
               "type": "string",
-              "description": "Page the history: at least this many messages (1 to 500, default 50) in whole turns, where there are that many. Without limit, before or maxBytes, the whole transcript"
+              "description": "Page the history: at least this many messages (1 to 500, default 50) in whole turns, where there are that many. Without limit, before, after or maxBytes, the whole transcript"
             },
             "required": false,
-            "description": "Page the history: at least this many messages (1 to 500, default 50) in whole turns, where there are that many. Without limit, before or maxBytes, the whole transcript",
+            "description": "Page the history: at least this many messages (1 to 500, default 50) in whole turns, where there are that many. Without limit, before, after or maxBytes, the whole transcript",
             "name": "limit",
             "in": "query"
           },
           {
             "schema": {
               "type": "string",
-              "description": "The page ends before this message index: a page's next"
+              "description": "The page ends before this message index: a page's next. Not with after"
             },
             "required": false,
-            "description": "The page ends before this message index: a page's next",
+            "description": "The page ends before this message index: a page's next. Not with after",
             "name": "before",
             "in": "query"
           },
           {
             "schema": {
               "type": "string",
-              "description": "Maximum UTF-8 JSON response bytes (16384 to 4000000). Keeps the newest messages that fit, even inside a turn or below limit; always returns at least one message when available, even if oversized"
+              "description": "The page starts at this message index (usually a page's nextAfter) and goes forward: newer messages, for a job that reads only what is new. It holds whole turns from the first turn start at or after it, or from `after` on when that is inside a turn (resuming a page a byte bound split); pass its nextAfter as the next call's after. Not with before"
             },
             "required": false,
-            "description": "Maximum UTF-8 JSON response bytes (16384 to 4000000). Keeps the newest messages that fit, even inside a turn or below limit; always returns at least one message when available, even if oversized",
+            "description": "The page starts at this message index (usually a page's nextAfter) and goes forward: newer messages, for a job that reads only what is new. It holds whole turns from the first turn start at or after it, or from `after` on when that is inside a turn (resuming a page a byte bound split); pass its nextAfter as the next call's after. Not with before",
+            "name": "after",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Maximum UTF-8 JSON response bytes (16384 to 4000000). Keeps the newest messages that fit (the oldest, with after), even inside a turn or below limit; always returns at least one message when available, even if oversized"
+            },
+            "required": false,
+            "description": "Maximum UTF-8 JSON response bytes (16384 to 4000000). Keeps the newest messages that fit (the oldest, with after), even inside a turn or below limit; always returns at least one message when available, even if oversized",
             "name": "maxBytes",
             "in": "query"
           }
         ],
         "responses": {
           "200": {
-            "description": "With limit, before or maxBytes, a page (HistoryPage); otherwise the whole transcript (History)",
+            "description": "With limit, before, after or maxBytes, a page (HistoryPage); otherwise the whole transcript (History)",
             "content": {
               "application/json": {
                 "schema": {

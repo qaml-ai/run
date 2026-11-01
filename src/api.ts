@@ -686,17 +686,18 @@ export function api(context: ApiContext) {
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/history",
     request: { params: agentId, query: z.object({
-      limit: z.string().optional().openapi({ description: "Page the history: at least this many messages (1 to 500, default 50) in whole turns, where there are that many. Without limit, before or maxBytes, the whole transcript" }),
-      before: z.string().optional().openapi({ description: "The page ends before this message index: a page's next" }),
-      maxBytes: z.string().optional().openapi({ description: "Maximum UTF-8 JSON response bytes (16384 to 4000000). Keeps the newest messages that fit, even inside a turn or below limit; always returns at least one message when available, even if oversized" }),
+      limit: z.string().optional().openapi({ description: "Page the history: at least this many messages (1 to 500, default 50) in whole turns, where there are that many. Without limit, before, after or maxBytes, the whole transcript" }),
+      before: z.string().optional().openapi({ description: "The page ends before this message index: a page's next. Not with after" }),
+      after: z.string().optional().openapi({ description: "The page starts at this message index (usually a page's nextAfter) and goes forward: newer messages, for a job that reads only what is new. It holds whole turns from the first turn start at or after it, or from `after` on when that is inside a turn (resuming a page a byte bound split); pass its nextAfter as the next call's after. Not with before" }),
+      maxBytes: z.string().optional().openapi({ description: "Maximum UTF-8 JSON response bytes (16384 to 4000000). Keeps the newest messages that fit (the oldest, with after), even inside a turn or below limit; always returns at least one message when available, even if oversized" }),
     }) },
     security: readers,
-    responses: { 200: { description: "With limit, before or maxBytes, a page (HistoryPage); otherwise the whole transcript (History)", content: { "application/json": { schema: z.union([schema.HistoryPage, schema.History]) } } } },
+    responses: { 200: { description: "With limit, before, after or maxBytes, a page (HistoryPage); otherwise the whole transcript (History)", content: { "application/json": { schema: z.union([schema.HistoryPage, schema.History]) } } } },
   }), async c => {
-    const { before, limit, maxBytes } = c.req.query();
+    const { before, after, limit, maxBytes } = c.req.query();
     const tenant = c.var.principal.tenant, id = c.req.param("id")!, browser = c.var.principal.browser;
-    if (before !== undefined || limit !== undefined || maxBytes !== undefined) {
-      const page = await clients.historyPageFor(id, tenant, { before, limit, maxBytes });
+    if (before !== undefined || after !== undefined || limit !== undefined || maxBytes !== undefined) {
+      const page = await clients.historyPageFor(id, tenant, { before, after, limit, maxBytes });
       return json(c, 200, browser ? { ...page, entries: page.entries.map(entry => ({ ...entry, message: readableMessage(browser, entry.message) })) } : page);
     }
     const history = await clients.agentHistory(id, tenant) as { messages: unknown[] } | undefined;

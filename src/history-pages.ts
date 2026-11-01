@@ -10,10 +10,12 @@ import { ARCHIVE_KIND, fillOrdinals, historyPositions, MARKER_KIND } from "./pi-
 export type HistoryEntry = { index: number; message: AgentMessage };
 /**
  * A page of history: whole turns, oldest first, ending where the request said (`before`) or at the
- * newest message. `next` is the `before` of the page older than this one, null at the start.
- * `split`: this page starts inside a turn (a size bound can split turns between messages).
+ * newest message; a forward page (`after`) starts there instead. `next` is the `before` of the page older
+ * than this one, null at the start. `split`: this page starts or ends inside a turn (a size bound can split
+ * turns between messages). A forward page also says `nextAfter`: the `after` of the page newer than this one.
+ * `truncated`: the history does not reach back to `after` (compacted away, or past its end).
  */
-export type HistoryPage = { entries: HistoryEntry[]; next: number | null; total: number; split?: true };
+export type HistoryPage = { entries: HistoryEntry[]; next: number | null; total: number; split?: true; nextAfter?: number; truncated?: true };
 
 /** Full-history reads (export, fork) may load at most this many stored UTF-8 bytes. */
 export const FULL_HISTORY_READ_BYTES = 64 * 1024 * 1024;
@@ -133,6 +135,108 @@ export class AgentHistory {
       return { entries: kept, next: start > 0 ? start : null, total, ...(!turns.has(start) ? { split: true as const } : {}) };
     }
     return { entries, next: start > 0 ? start : null, total, ...(split ? { split: true as const } : {}) };
+  }
+
+  /**
+   * The forward page: whole turns from `after` (a message index, usually a previous page's `nextAfter`), of at least
+   * `limit` messages where the history has them and about PAGE_BYTES at most. `nextAfter` is one past the last message
+   * returned (`total` once caught up), so a poller reads each new message once. An `after` the history does not reach
+   * (older history compacted away, or past its end) is answered with what exists and `truncated: true` rather than an
+   * error; `nextAfter` puts the caller back in step.
+   */
+  async pageAfter(agent: string, { after, limit, maxBytes }: { after: number; limit: number; maxBytes?: number }): Promise<HistoryPage> {
+    const total = await this.total(agent);
+    // Caught up, or past the end (the history shrank: the caller starts again from `total`).
+    if (after >= total) return { entries: [], next: null, total, nextAfter: total, ...(after > total ? { truncated: true as const } : {}) };
+    const pieces: Piece[] = [], found: number[] = [];
+    let cursor = after;
+    // Rows oldest first from the one holding `after`, each with the turn starts it holds.
+    const more = async () => {
+      if (cursor >= total) return false;
+      const rows = (await this.db.query<OrdinalRow>(`select id, msg_from, msg_count, msg_skip, octet_length(record) as bytes from pi_durable_entries
+        where session_id = $1 and msg_from < $2 and msg_from + msg_count > $3 and msg_count > 0 order by msg_from limit $4`, [agent, total, cursor, ROWS])).rows;
+      if (!rows.length) return false;
+      const high = Math.min(rows.at(-1)!.msg_from + rows.at(-1)!.msg_count, total);
+      const turns = await this.turns(agent, cursor, high);
+      for (const row of rows) {
+        const piece: Piece = { start: row.msg_from, count: Math.min(row.msg_count, total - row.msg_from), bytes: Number(row.bytes), row: Number(row.id), skip: row.msg_skip, turns: [] };
+        piece.turns = turns.filter(turn => turn >= piece.start && turn < piece.start + piece.count);
+        pieces.push(piece);
+        found.push(...piece.turns);
+      }
+      cursor = rows.at(-1)!.msg_from + 1;
+      return true;
+    };
+    if (!await more()) return { entries: [], next: null, total, nextAfter: total, truncated: true };
+    // History older than the rows kept (compaction, or a journal that starts past its beginning): the page starts
+    // where the history does, and says so.
+    const start = Math.max(after, pieces[0].start);
+    const truncated = start > after;
+    let turn = 0, index = 0, bytes = 0, end: number | undefined;
+    // The next turn start after `from`, reading rows until it is found (none left: the history's end).
+    const nextTurn = async (from: number): Promise<number | undefined> => {
+      while (turn < found.length || await more()) {
+        if (found[turn] > from) return found[turn];
+        turn++;
+      }
+      return undefined;
+    };
+    // The bytes of the rows before `boundary`.
+    const countThrough = async (boundary: number) => {
+      while (index < pieces.length || await more()) {
+        if (pieces[index].start >= boundary) break;
+        bytes += pieces[index++].bytes;
+      }
+    };
+    // Turn by turn until the page has `limit` messages or is about to pass PAGE_BYTES.
+    for (let from = start; ;) {
+      const boundary = await nextTurn(from) ?? total;
+      await countThrough(boundary);
+      if (bytes > PAGE_BYTES) {
+        if (end !== undefined) break;
+        // One turn larger than a page: end the page inside it, after the last row that fits.
+        let sum = 0, cut = start;
+        for (const piece of pieces.slice(0, index)) {
+          if (sum + piece.bytes > PAGE_BYTES && cut > start) break;
+          sum += piece.bytes;
+          cut = Math.max(cut, Math.min(piece.start + piece.count, boundary));
+        }
+        end = Math.max(cut, start + 1);
+        break;
+      }
+      end = boundary;
+      if (boundary === total || boundary - start >= limit) break;
+      from = boundary;
+    }
+    end ??= total;
+    const needed = pieces.filter(piece => piece.start < end! && piece.start + piece.count > start);
+    const loaded = await this.load(agent, needed, PAGE_READ_BYTES);
+    const entries: HistoryEntry[] = [];
+    needed.forEach((piece, pieceIndex) => loaded[pieceIndex].forEach((message, offset) => {
+      const at = piece.start + offset;
+      if (at >= start && at < end!) entries.push({ index: at, message });
+    }));
+    entries.sort((a, b) => a.index - b.index);
+    const splitAt = (at: number) => (start !== 0 && !found.includes(start)) || (at !== total && !found.includes(at));
+    const response = (kept: HistoryEntry[]): HistoryPage => {
+      const last = kept.length ? kept.at(-1)!.index + 1 : total;
+      return { entries: kept, next: kept[0]?.index ? kept[0].index : null, total, nextAfter: last, ...(truncated ? { truncated: true as const } : {}), ...(splitAt(last) ? { split: true as const } : {}) };
+    };
+    if (maxBytes !== undefined && entries.length) {
+      // Keep a prefix of the normal page: the caller resumes at the end of what it got. Count UTF-8 bytes of the
+      // response, including indexes, commas and the envelope; a message is indivisible, so the first always survives.
+      const first = entries[0].index > 0 ? entries[0].index : null;
+      let kept = 1, entryBytes = Buffer.byteLength(JSON.stringify(entries[0]));
+      for (let at = 1; at < entries.length; at++) {
+        const candidateBytes = entryBytes + Buffer.byteLength(JSON.stringify(entries[at])) + 1;
+        const envelope = { entries: [], next: first, total, nextAfter: entries[at].index + 1, ...(truncated ? { truncated: true as const } : {}), ...(splitAt(entries[at].index + 1) ? { split: true as const } : {}) };
+        if (candidateBytes + Buffer.byteLength(JSON.stringify(envelope)) > maxBytes) break;
+        kept = at + 1;
+        entryBytes = candidateBytes;
+      }
+      return response(entries.slice(0, kept));
+    }
+    return response(entries);
   }
 
   /**

@@ -1622,12 +1622,16 @@ class _AgentCalls:
     """An agent's calls that are one request each, with its own token, shared by the async AgentClient and the
     synchronous one (camelai_run.sync): each returns what self._http (or self.request) returns."""
 
-    def history_page(self, *, before=None, limit=50, max_bytes=None):
+    def history_page(self, *, before=None, after=None, limit=50, max_bytes=None):
         """The page of whole turns ending before `before` (default: the newest message), with at least `limit`
         messages where there are that many: {"entries": [{"index", "message"}], "next", "total"}.
+        With `after` (usually the last page's nextAfter), the page going forward from it instead: whole turns
+        from the first turn start at or after `after`, and nextAfter is the next call's after. Not both.
         max_bytes (16384 to 4000000) caps UTF-8 JSON bytes, splitting turns between messages;
         one oversized message is returned whole."""
-        return self._http("/history?" + urlencode({"limit": limit, **({"before": before} if before is not None else {}), **({"maxBytes": max_bytes} if max_bytes is not None else {})}))
+        if before is not None and after is not None:
+            raise ValueError("Ask for after or before, not both")
+        return self._http("/history?" + urlencode({"limit": limit, **({"before": before} if before is not None else {}), **({"after": after} if after is not None else {}), **({"maxBytes": max_bytes} if max_bytes is not None else {})}))
 
     def execute(self, code, *, execution_timeout_ms=None, actor=None, allow_disconnected=False, **options):
         params = {"code": code, **({"actor": actor} if actor else {}), **({"allowDisconnected": True} if allow_disconnected else {})}
@@ -2680,8 +2684,8 @@ class Agent:
         """Its whole history: every message, oldest first (history_page reads a page at a time)."""
         return (await self.client.history())["messages"]
 
-    async def history_page(self, *, before=None, limit=50, max_bytes=None):
-        return await self.client.history_page(before=before, limit=limit, max_bytes=max_bytes)
+    async def history_page(self, *, before=None, after=None, limit=50, max_bytes=None):
+        return await self.client.history_page(before=before, after=after, limit=limit, max_bytes=max_bytes)
 
     async def steer(self, text, *, wait=False, **options):
         """A message for the running turn, which reads it after its current step; with no turn running, it starts one.

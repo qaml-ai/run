@@ -621,8 +621,8 @@ export interface LinkOptions { method?: "GET" | "PUT"; expiresIn?: number; maxBy
 /** A message as the runtime records it: a user message also names its sender (if given), the request that sent it, and the application's `metadata`. */
 export type RecordedMessage = Message & { from?: Sender; requestId?: string; metadata?: Record<string, string> };
 export interface AgentHistory { messages: RecordedMessage[] }
-/** A page of history: oldest first, whole turns unless a size bound splits them, each message at its index in the agent's history. `next` is the older page's `before` (null at the start). */
-export interface HistoryPage { entries: { index: number; message: RecordedMessage }[]; next: number | null; total: number; split?: true }
+/** A page of history: oldest first, whole turns unless a size bound splits them, each message at its index in the agent's history. `next` is the older page's `before` (null at the start); `nextAfter` (with `after`) is the newer page's `after`, and `truncated` says the history does not reach back to the `after` asked for. */
+export interface HistoryPage { entries: { index: number; message: RecordedMessage }[]; next: number | null; total: number; split?: true; nextAfter?: number; truncated?: true }
 /** What a run's model responses used (`run.completed`, `run.failed`); null when it made none on the node that ended it. */
 export interface RunUsage {
   responses: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number;
@@ -2521,11 +2521,13 @@ export class AgentClient {
   /**
    * The page of whole turns ending before `before` (default: the newest message, the running turn's
    * included), with at least `limit` messages (default 50) where there are that many. It reads only
-   * that page, however long the history. `maxBytes` (16384 to 4000000) caps UTF-8 JSON bytes,
-   * splitting turns between messages if needed; one oversized message is returned whole.
+   * that page, however long the history. With `after` (usually the last page's `nextAfter`), the page
+   * going forward from it instead: whole turns from the first turn start at or after `after`, for reading
+   * only what is new. `maxBytes` (16384 to 4000000) caps UTF-8 JSON bytes, splitting turns between
+   * messages if needed; one oversized message is returned whole.
    */
-  historyPage(options: { before?: number; limit?: number; maxBytes?: number } = {}): Promise<HistoryPage> {
-    const query = new URLSearchParams({ limit: String(options.limit ?? 50), ...(options.before !== undefined ? { before: String(options.before) } : {}), ...(options.maxBytes !== undefined ? { maxBytes: String(options.maxBytes) } : {}) });
+  historyPage(options: { before?: number; after?: number; limit?: number; maxBytes?: number } = {}): Promise<HistoryPage> {
+    const query = new URLSearchParams({ limit: String(options.limit ?? 50), ...(options.before !== undefined ? { before: String(options.before) } : {}), ...(options.after !== undefined ? { after: String(options.after) } : {}), ...(options.maxBytes !== undefined ? { maxBytes: String(options.maxBytes) } : {}) });
     return this.http(`/history?${query}`);
   }
   continue(options?: RunRequestOptions & { actor?: string }) { return this.request("continue", { ...(options?.actor ? { actor: options.actor } : {}), ...(options?.allowDisconnected ? { allowDisconnected: true } : {}) }, options); }

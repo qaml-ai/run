@@ -811,7 +811,9 @@ export const HistoryPage = z.object({
   entries: z.array(z.object({ index: z.number().openapi({ description: "The message's index in the agent's history" }), message: z.unknown() })).openapi({ description: "Messages, oldest first; whole turns unless a size bound splits them" }),
   next: z.number().nullable().openapi({ description: "Pass as before for the older page; null at the start of the history" }),
   total: z.number().openapi({ description: "Messages in the history, the running turn's included" }),
-  split: z.literal(true).optional().openapi({ description: "The page starts inside a turn because of a size bound" }),
+  split: z.literal(true).optional().openapi({ description: "The page starts or ends inside a turn because of a size bound" }),
+  nextAfter: z.number().optional().openapi({ description: "With after: pass as after for the newer page. One past the last message returned, total once caught up" }),
+  truncated: z.literal(true).optional().openapi({ description: "With after: the history does not reach back to it (older history compacted away, or after past total). The page holds what exists and nextAfter puts you back in step" }),
 }).openapi("HistoryPage");
 
 export const Upload = z.object({
