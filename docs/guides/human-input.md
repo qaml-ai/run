@@ -51,7 +51,7 @@ print(run.text)
   judged too, not automatically refused. A judge that cannot answer (no
   OpenRouter key, a spent limit, a provider failure, an answer it cannot read)
   asks the person, as does one shown arguments past its limit (8,000 characters),
-  and so does a turn with no request of its own, such as one a schedule started:
+  and so does a turn with no request of its own, such as a prompt sent with no text:
   only a request can authorize a call, so without one the person decides. A
   judged call is never allowed unjudged. Judged calls are billed as decisions
   are (`kind: "decision"`), an end user's credit holds and settles them the same

@@ -1,4 +1,5 @@
 import { DECISION_MODEL, Decider, DecisionFailed, type Answer, type DecisionItem, type NoulQuestion } from "./decisions.ts";
+import { HttpError } from "./http.ts";
 import { JUDGE_LIMITS } from "./limits.ts";
 import type { UsageRecord } from "./client-sessions/state.ts";
 
@@ -180,7 +181,8 @@ export function toolJudge(decider: Decider, context: JudgeContext): Judge {
       // A call that was aborted is not a judge that could not answer: the abort goes where it was going.
       if (signal.aborted) throw signal.reason;
       context.onError?.(error);
-      return unanswered(input, "failed");
+      // Nothing left of what the person may spend is a refusal to spend, not a judge that broke.
+      return unanswered(input, error instanceof HttpError && error.status === 402 ? "budget" : "failed");
     }
   };
 }

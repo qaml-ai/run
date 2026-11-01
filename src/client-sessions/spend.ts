@@ -162,28 +162,32 @@ export function decisionServer(ctx: SpendContext, session: Session, sources: Sou
  */
 export function judgeFor(ctx: SpendContext, session: Session): Judge | undefined {
   const { decider } = ctx.options;
-  const { header } = session;
   if (!decider) return undefined;
-  if (header.config.dataCollection === "deny" && !decider.options.provider.dataPolicy) return undefined;
-  return toolJudge(decider, {
-    tenant: header.tenant, ...(header.keyScope ? { keyScope: header.keyScope } : {}), ...(header.config.dataCollection ? { dataCollection: header.config.dataCollection } : {}),
-    budget: async () => { const run = runningRun(session); return run ? budgetLeft(ctx, session, run.id) : undefined; },
-    // As a decide call: when an end user pays, their credit holds the judge's estimate and settles what it cost.
-    hold: usd => endUserHold(ctx, session, runningRun(session), usd, "decision"),
-    record: usage => {
-      const run = runningRun(session);
-      const cost = usage.usage.cost.total as number;
-      const { identity, keyScope } = header;
-      ctx.options.onUsage?.(header.tenant, header.id, { ...usage, ...(run ? { requestId: run.id } : {}), ...(run?.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
-      ctx.spent(session, cost);
-      if (run && cost > 0) (session.decisionSpend ??= new Map()).set(run.id, (session.decisionSpend.get(run.id) ?? 0) + cost);
-    },
-    // A judge that could not answer says so once: the call then asks the person, and is not retried here.
-    onError: error => console.log(JSON.stringify({ type: "tool_judge_failed", tenant: header.tenant, agent: header.id, provider: decider.provider, error: safeError(error) })),
-    // What it decided, for counting denials and asks. Never the request, the arguments or the answer.
-    onJudged: (input, judged) => console.log(JSON.stringify({ type: "tool_judged", tenant: header.tenant, agent: header.id, provider: decider.provider, model: DECISION_MODEL,
-      tool: input.tool, decision: judged.decision, risk: judged.risk, ...(judged.reason ? { reason: judged.reason } : {}) })),
-  });
+  // The scope and the data policy are read when a call is judged, not when the agent's tools were built: a live
+  // configure can change either without rebuilding them, and a judge built with the old data policy would send a call
+  // the agent has since refused to send (`src/client-sessions/configuration.ts` writes the header after the rebuild).
+  return (input, signal) => {
+    const { header } = session;
+    return toolJudge(decider, {
+      tenant: header.tenant, ...(header.keyScope ? { keyScope: header.keyScope } : {}), ...(header.config.dataCollection ? { dataCollection: header.config.dataCollection } : {}),
+      budget: async () => { const run = runningRun(session); return run ? budgetLeft(ctx, session, run.id) : undefined; },
+      // As a decide call: when an end user pays, their credit holds the judge's estimate and settles what it cost.
+      hold: usd => endUserHold(ctx, session, runningRun(session), usd, "decision"),
+      record: usage => {
+        const run = runningRun(session);
+        const cost = usage.usage.cost.total as number;
+        const { identity, keyScope } = header;
+        ctx.options.onUsage?.(header.tenant, header.id, { ...usage, ...(run ? { requestId: run.id } : {}), ...(run?.actor ? { actor: run.actor } : {}), ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
+        ctx.spent(session, cost);
+        if (run && cost > 0) (session.decisionSpend ??= new Map()).set(run.id, (session.decisionSpend.get(run.id) ?? 0) + cost);
+      },
+      // A judge that could not answer says so once: the call then asks the person, and is not retried here.
+      onError: error => console.log(JSON.stringify({ type: "tool_judge_failed", tenant: header.tenant, agent: header.id, provider: decider.provider, error: safeError(error) })),
+      // What it decided, for counting denials and asks. Never the request, the arguments or the answer.
+      onJudged: (input, judged) => console.log(JSON.stringify({ type: "tool_judged", tenant: header.tenant, agent: header.id, provider: decider.provider, model: DECISION_MODEL,
+        tool: input.tool, decision: judged.decision, risk: judged.risk, ...(judged.reason ? { reason: judged.reason } : {}) })),
+    })(input, signal);
+  };
 }
 
 /**

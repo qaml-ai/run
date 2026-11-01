@@ -166,3 +166,24 @@ test("a denied call's result tells the model it did not run, without saying why 
   assert.match(text, /Do not retry/);
   assert.ok(!/probab|Jev|decide|risk score/i.test(text), "the judge's own reading is not the model's to argue with");
 });
+
+test("the judge reads the session's scope and data policy at call time, not when the agent's tools were built", async () => {
+  const scopes: (string | undefined)[] = [];
+  const strict: DecisionProvider = { ...provider(() => decided(0.99, 0, 0)).fake, id: "other", dataPolicy: false };
+  const decider = new Decider({ provider: strict, key: async (_tenant, keyScope) => { scopes.push(keyScope); return { apiKey: "k", platform: true }; } });
+  const session: any = { header: { tenant: "t1", id: "a1", keyScope: "old", config: { dataCollection: null } }, running: new Map(), spend: undefined };
+  const { judgeFor } = await import("../src/client-sessions/spend.ts");
+  const judge = judgeFor({ options: { decider }, spent: () => {} } as any, session)!;
+  assert.ok(judge, "a decider gives a judge");
+  await judge(CALL, AbortSignal.timeout(5_000));
+  assert.deepEqual(scopes, ["old"], "the key scope of the call");
+  // A live configure changes the header without rebuilding the tools: the next call must use the new values.
+  session.header.keyScope = "new";
+  await judge(CALL, AbortSignal.timeout(5_000));
+  assert.deepEqual(scopes, ["old", "new"], "the scope the session has now, not the one it had at build time");
+  // The data policy the agent has now: this provider cannot pass it on, so the call asks and nothing is sent.
+  session.header.config.dataCollection = "deny";
+  const asked = await judge(CALL, AbortSignal.timeout(5_000));
+  assert.equal(asked.decision, "ask");
+  assert.deepEqual(scopes, ["old", "new"], "a refused data policy sends nothing");
+});

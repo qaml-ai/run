@@ -12,7 +12,8 @@ it runs, and the model reads that denial as the call's result. A judge that
 cannot answer — no OpenRouter key, a spent spend limit, a provider failure, an
 answer it cannot read, or arguments or a description past what it is shown —
 asks the person, so a judged call never runs unjudged; so does a turn with no
-request of its own, since a request is the only thing that can authorize a call.
+request of its own (a prompt sent with no text), since a request is the only
+thing that can authorize a call.
 A denial is not remembered: the next call is judged on its own, and shows in a
 run's outcome as `tool_error`.
 
