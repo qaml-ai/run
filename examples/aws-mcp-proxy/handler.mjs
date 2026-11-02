@@ -148,7 +148,7 @@ function longestArray(node, best = []) {
 }
 
 /** JSON as the model reads it, shortened by dropping items rather than by cutting the text. */
-function present(xml, max = 16_000) {
+function present(xml, max = 24_000) {
   const parsed = compact(parseXml(xml));
   const data = parsed === undefined || (typeof parsed === "object" && parsed !== null && Object.keys(parsed).length === 0) ? { empty: "AWS returned no items" } : parsed;
   const cursor = /<(nextToken|NextToken|nextMarker|NextMarker|marker|Marker)>([^<]*)</.exec(xml);
@@ -161,10 +161,12 @@ function present(xml, max = 16_000) {
   const withCursor = (value) => merged(value, {});
   let json = JSON.stringify(withCursor(data));
   if (json.length > max) {
+    // Drop items from the end one at a time rather than halving: halving throws away most of a page
+    // that would have fit, and the ids are the point.
     const items = longestArray(data);
     const total = items.length;
     while (json.length > max && items.length > 1) {
-      items.splice(Math.ceil(items.length / 2));
+      items.pop();
       json = JSON.stringify(merged(data, { clipped: `${items.length} of the ${total} items in this page; ask for a smaller page with MaxResults` }));
     }
   }

@@ -236,10 +236,11 @@ test("a query answer comes back as compact JSON, and a long one drops items inst
     const body = result.json.result.content[0].text;
     const json = JSON.parse(body.slice(body.indexOf("\n") + 1));
     assert.ok(!body.includes("<item>"), "no XML reaches the model");
-    assert.ok(body.length < 20_000, "still inside the clip");
+    assert.ok(body.length < 26_000, "still inside the clip");
     assert.equal(json.nextToken, "abc123", "the cursor survives");
     assert.match(json.continueWith, /NextToken/);
     assert.match(json.clipped, /of the \d+ items in this page/, "it is shortened by dropping items, not characters");
+    assert.ok(json.reservationSet.length > 100, `it keeps as many items as fit, kept ${json.reservationSet?.length}`);
     assert.ok(Array.isArray(json.reservationSet) && json.reservationSet.length > 0, "some items remain");
     assert.ok(!("requestId" in json), "request ids are dropped");
   } finally { globalThis.fetch = real; }
