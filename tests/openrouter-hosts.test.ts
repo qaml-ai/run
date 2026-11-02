@@ -8,7 +8,7 @@ import { fakeModel, runtime, toolCall } from "./runtime-server.ts";
 const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
 const HOSTS = ["fireworks", "together", "parasail", "coreweave", "nebius"];
 /** 1017's hosts it is never served by: they drop tool-call arguments (2026-10-27). */
-const IGNORED = ["inference-net", "wafer"];
+const IGNORED = ["inference-net", "wafer", "relace"];
 const FLASH = getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
 const FLASH_1017 = getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!;
 /** Never an order or sort: either turns off OpenRouter's load balancing. An only or an ignore, never both; nor a quantization or anything else. */
