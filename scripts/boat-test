@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # boat-test [ref] [command...]: run camelRun tests at <ref> in a fresh Boat sandbox (boat.dev), deleted at the end.
-#   scripts/boat-test                                     # the full suite at HEAD, as one CI shard
+#   scripts/boat-test                                     # the full suite at HEAD, as 5 shards in 5 sandboxes at once (BOAT_SHARDS)
 #   scripts/boat-test origin/fix/x                        # the full suite at a ref
 #   scripts/boat-test HEAD node --experimental-strip-types --test tests/clients.test.ts   # any command, in the checkout
 #   BOAT_ATTACH=bx_x scripts/boat-test                    # follow a run whose script died, then delete its sandbox
@@ -28,6 +28,26 @@ set -euo pipefail
 ref=${1:-HEAD}; shift || true
 type=${BOAT_TYPE:-large}
 case $type in small) files=2 ;; default) files=4 ;; *) files=8 ;; esac
+# The full suite (no command) runs as BOAT_SHARDS shards at once (default 5, as CI), one sandbox each: about the
+# time of the slowest shard instead of the whole suite. Each shard is this script again, with its own retries.
+shards=${BOAT_SHARDS:-5}
+if [[ $# -eq 0 && $shards -gt 1 && -z ${BOAT_ATTACH:-} && -z ${BOAT_ATTEMPT:-} ]]; then
+  [[ $shards =~ ^[0-9]+$ ]] || { echo "BOAT_SHARDS must be a number" >&2; exit 2; }
+  pids=() logs=()
+  trap 'kill -TERM "${pids[@]}" 2>/dev/null; wait; exit 130' INT TERM HUP
+  for (( i = 1; i <= shards; i++ )); do
+    logs+=("$(mktemp)")
+    BOAT_SHARDS=1 "$0" "$ref" env TEST_DATABASE_PER_FILE=true TEST_CONCURRENCY=$files npm run -s test:shard -- "$i/$shards" > "${logs[i-1]}" 2>&1 &
+    pids+=($!)
+  done
+  status=0
+  for (( i = 1; i <= shards; i++ )); do
+    code=0; wait "${pids[i-1]}" || code=$?
+    (( code == 0 )) || status=$code
+    sed "s/^/[$i\/$shards] /" "${logs[i-1]}"; rm -f "${logs[i-1]}"
+  done
+  exit "$status"
+fi
 [[ $# -gt 0 ]] || set -- env TEST_DATABASE_PER_FILE=true TEST_CONCURRENCY=$files npm run -s test:shard -- 1/1
 # One attempt is this script again, so each has its own sandbox, log and cleanup. A signal goes on to it, and it deletes its sandbox.
 if [[ -z ${BOAT_ATTACH:-} && -z ${BOAT_ATTEMPT:-} ]]; then
