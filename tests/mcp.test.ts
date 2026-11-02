@@ -93,7 +93,7 @@ test("an MCP server's tools reach the model and js_exec; its credentials are sea
   assert.equal(failed.isError, true);
   assert.deepEqual(failed.details, { reason: "broken" });
   assert.ok(failed.content.some((part: any) => part.type === "file" && part.contentType === "image/png") || failed.content.some((part: any) => part.type === "image"), JSON.stringify(failed.content));
-  assert.match(toolResults(r.model.bodies[5]).at(-1), /Validation failed[\s\S]*required properties text/, "arguments are checked against the server's schema before it is called");
+  assert.match(toolResults(r.model.bodies[5]).at(-1), /Validation failed[\s\S]*text: missing/, "arguments are checked against the server's schema before it is called");
   assert.deepEqual(mcp.seen.calls, ["echo:hi", "echo:from code"]);
   assert.deepEqual([...mcp.seen.authorizations], ["Bearer s3cret"]);
 });

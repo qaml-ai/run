@@ -1,6 +1,6 @@
-commit a14cdf90f0a76532f3e20bc3c01872837cef24ba
-date 2026-10-30T18:18:23Z
-source https://github.com/earendil-works/pi/commit/a14cdf90f0a76532f3e20bc3c01872837cef24ba
-changes https://github.com/earendil-works/pi/compare/f09d01b85e0384647fcab6779d35ab9dabe04be3...a14cdf90f0a76532f3e20bc3c01872837cef24ba
-packages @earendil-works/pi-telemetry @earendil-works/chord @earendil-works/pi-codemode @earendil-works/pi-ai @earendil-works/pi-agent-core @earendil-works/pi-durable
-version main.a14cdf90f0a7
+commit c9f4c7b9fcd0f3e6b5bbc35c7c9b6cda35580eb8
+date 2026-11-01T23:11:22Z
+source https://github.com/earendil-works/pi/commit/c9f4c7b9fcd0f3e6b5bbc35c7c9b6cda35580eb8
+changes https://github.com/earendil-works/pi/compare/a14cdf90f0a76532f3e20bc3c01872837cef24ba...c9f4c7b9fcd0f3e6b5bbc35c7c9b6cda35580eb8
+packages @earendil-works/pi-schema @earendil-works/pi-telemetry @earendil-works/chord @earendil-works/pi-codemode @earendil-works/pi-ai @earendil-works/pi-agent-core @earendil-works/pi-durable
+version main.c9f4c7b9fcd0
