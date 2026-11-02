@@ -47,6 +47,7 @@ import { EmailAccounts } from "./email-accounts.ts";
 import { OAuth } from "./oauth.ts";
 import { hostedMcp } from "./hosted-mcp.ts";
 import { agentMcp } from "./agent-mcp.ts";
+import { opsMcp } from "./ops-mcp.ts";
 import { api } from "./api.ts";
 import { ScheduleMailer } from "./schedule-mailer.ts";
 import { calendarPrompt } from "./calendar.ts";
@@ -398,7 +399,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Identity tokens for tool servers with auth "runtime", verified against /.well-known/jwks.json.
   const signer = new RuntimeSigner({ db, accounts, issuer: origins.issuer });
   // OAuth for the hosted MCP endpoints, under the same issuer.
-  const oauth = new OAuth({ db, accounts, consoleAuth, secret: sessionSecret, origins, github: !!github, google: !!google });
+  const oauth = new OAuth({ db, accounts, consoleAuth, secret: sessionSecret, origins, github: !!github, google: !!google, opsAdmins: new Set(config.opsAdmins) });
   // web_search and web_fetch's renderer: the tenant's key for each provider, else an admin's, else the platform's (for a
   // prepaid tenant, or an admin tenant without platformKeys: false), whose calls a prepaid tenant pays for at that
   // provider's price, and so does its end user, where the tenant meters them.
@@ -1321,6 +1322,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   app.route("/", hostedMcp(mcpOptions));
   // Each agent as an MCP server of its own: one tool that messages it. Before api, whose /v1/agents/:id/* it is in.
   app.route("/", agentMcp({ ...mcpOptions, agents: clients, definitions }));
+  // The team's read-only operations endpoint (src/ops-mcp.ts): OAuth tokens for the `ops` resource only, and only the
+  // tenants on AGENT_OPS_ADMINS. Before api, whose catch-alls would otherwise answer it.
+  app.route("/", opsMcp({ db, origins, authenticate: oauth.authenticate.bind(oauth), opsAdmin: tenant => oauth.opsAdmin(tenant) }));
   // Before channels.app, whose /channels/:type/:id would take /channels/email/inbound.
   if (emailOptions) app.route("/", emailReceiver(channels, emailOptions));
   app.route("/", channels.app);

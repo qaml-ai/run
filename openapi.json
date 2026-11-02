@@ -6225,6 +6225,14 @@
           "scope": {
             "type": "string"
           },
+          "resource": {
+            "type": "string",
+            "enum": [
+              "agents",
+              "ops"
+            ],
+            "description": "What its tokens act on: agents is /mcp and the API, ops is the team's read-only /ops/mcp endpoint"
+          },
           "createdAt": {
             "type": "number"
           },
@@ -6241,6 +6249,7 @@
           "clientName",
           "login",
           "scope",
+          "resource",
           "createdAt",
           "usedAt"
         ]

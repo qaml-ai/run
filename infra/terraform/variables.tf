@@ -187,6 +187,8 @@ variable "runtime_env" {
     AGENT_HOSTING     = "inline"
     # Operator tenants that may post manual credit adjustments (POST /v1/billing/adjustments).
     AGENT_BILLING_ADMINS = "miguel"
+    # Tenants that may connect the team's read-only operations MCP endpoint, /ops/mcp (src/ops-mcp.ts).
+    AGENT_OPS_ADMINS = "miguel"
   }
 }
 

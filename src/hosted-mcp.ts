@@ -35,10 +35,10 @@ export const MCP_CORS = {
 
 export const mcpPreflight = (c: Context) => c.body(null, 204, { ...MCP_CORS, "Access-Control-Max-Age": "86400" });
 
-/** The 401 an MCP client signs in from: `metadata` is the resource's protected-resource metadata (RFC 9728). */
-export function mcpSignIn(c: Context, authorization: string | undefined, metadata: string) {
+/** The 401 an MCP client signs in from: `metadata` is the resource's protected-resource metadata (RFC 9728), and `scope` the one its tokens carry. */
+export function mcpSignIn(c: Context, authorization: string | undefined, metadata: string, scope = "agents") {
   return c.json({ error: authorization ? "invalid_token" : "unauthorized", error_description: authorization ? "The token is invalid, expired or revoked" : "Sign in (OAuth), or send Authorization: Bearer <API token>" }, 401, {
-    ...MCP_CORS, "WWW-Authenticate": `Bearer resource_metadata="${metadata}"${authorization ? ", error=\"invalid_token\"" : ""}, scope="agents"`,
+    ...MCP_CORS, "WWW-Authenticate": `Bearer resource_metadata="${metadata}"${authorization ? ", error=\"invalid_token\"" : ""}, scope="${scope}"`,
   });
 }
 

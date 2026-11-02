@@ -33,9 +33,16 @@ export interface OAuthOptions {
   /** Whether the console signs in with GitHub and with Google (the sign-in page also takes an email and password). */
   github: boolean;
   google?: boolean;
+  /** The tenants (AGENT_OPS_ADMINS) who may connect to the team's read-only operations endpoint, /ops/mcp; nobody without it. */
+  opsAdmins?: ReadonlySet<string>;
 }
 
 export const SCOPE = "agents";
+/** The operations endpoint's scope: a token for it works there alone, as /mcp's works at /mcp (src/ops-mcp.ts). */
+export const OPS_SCOPE = "ops";
+export const OPS_PATH = "/ops/mcp";
+/** What a grant's tokens act on: the hosted endpoint and agents ('agents'), or the team's operations endpoint ('ops'). */
+export type OAuthResource = "agents" | "ops";
 export const ACCESS_TOKEN_MS = 3600_000;
 export const REFRESH_TOKEN_MS = 30 * 86_400_000;
 /** How long after a refresh token is rotated presenting it again returns the same new tokens, instead of revoking the grant. */
@@ -45,7 +52,7 @@ const ACCESS = "aro_", REFRESH = "arr_", CODE = "arc_";
 const AUTH_METHODS = ["none", "client_secret_post", "client_secret_basic"] as const;
 type AuthMethod = typeof AUTH_METHODS[number];
 interface Client { name: string; redirectUris: string[]; method: AuthMethod; nonce?: string }
-export interface Grant { id: string; clientName: string; login: string | null; scope: string; createdAt: number; usedAt: number | null }
+export interface Grant { id: string; clientName: string; login: string | null; scope: string; resource: OAuthResource; createdAt: number; usedAt: number | null }
 export type OAuthPrincipal = Principal & { via: "oauth"; grantId: string; login?: string };
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -84,6 +91,10 @@ export class OAuth {
   constructor(options: OAuthOptions) { this.options = options; }
 
   get issuer() { return this.options.origins.issuer; }
+  private get opsAdmins() { return this.options.opsAdmins; }
+  /** Whether `tenant` is one of the team's: who may connect to /ops/mcp, and whose grants there stand. */
+  opsAdmin(tenant: string) { return this.options.opsAdmins?.has(tenant) ?? false; }
+  private scopeOf(resource: OAuthResource) { return resource === "ops" ? OPS_SCOPE : SCOPE; }
   private get base() { return this.options.origins.canonical; }
 
   /** The authorization server's metadata (RFC 8414), merged into the runtime's /.well-known/oauth-authorization-server. */
@@ -91,7 +102,7 @@ export class OAuth {
     return {
       authorization_endpoint: `${this.base}/oauth/authorize`, token_endpoint: `${this.base}/oauth/token`,
       registration_endpoint: `${this.base}/oauth/register`, revocation_endpoint: `${this.base}/oauth/revoke`,
-      scopes_supported: [SCOPE], response_types_supported: ["code"], response_modes_supported: ["query"],
+      scopes_supported: [SCOPE, OPS_SCOPE], response_types_supported: ["code"], response_modes_supported: ["query"],
       grant_types_supported: ["authorization_code", "refresh_token"], code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: [...AUTH_METHODS], revocation_endpoint_auth_methods_supported: [...AUTH_METHODS],
       authorization_response_iss_parameter_supported: true,
@@ -102,24 +113,27 @@ export class OAuth {
    * An MCP endpoint's metadata (RFC 9728), the hosted one's or an agent's (agent-mcp.ts): where its tokens come from.
    * `resource` is the endpoint at the origin the client reached, which clients check; the issuer is the same at every one.
    */
-  protectedResource(resource: string, documentation = "reference/cli.md") {
-    return { resource, authorization_servers: [this.issuer], scopes_supported: [SCOPE], bearer_methods_supported: ["header"], resource_name: "camelRun", resource_documentation: `${this.base}/docs/${documentation}` };
+  protectedResource(resource: string, documentation = "reference/cli.md", options: { scope?: string; name?: string } = {}) {
+    return { resource, authorization_servers: [this.issuer], scopes_supported: [options.scope ?? SCOPE], bearer_methods_supported: ["header"], resource_name: options.name ?? "camelRun", resource_documentation: `${this.base}/docs/${documentation}` };
   }
 
-  /** The tenant an OAuth access token acts for, while it is unexpired and its grant stands. */
-  async authenticate(authorization: string | undefined): Promise<OAuthPrincipal | undefined> {
+  /**
+   * The tenant an OAuth access token acts for, while it is unexpired and its grant stands, at `resource`: a token for
+   * /ops/mcp answers nothing at /mcp or /v1, and the other way around (the grant's resource is what binds it).
+   */
+  async authenticate(authorization: string | undefined, resource: OAuthResource = "agents"): Promise<OAuthPrincipal | undefined> {
     if (!authorization?.startsWith(`Bearer ${ACCESS}`)) return undefined;
     const hash = sha(authorization.slice(7));
     const row = (await this.options.db.query(
-      "select g.id, g.tenant, g.login, t.expires_at from oauth_tokens t join oauth_grants g on g.id = t.grant_id where t.sha256 = $1 and t.kind = 'access'", [hash])).rows[0];
+      "select g.id, g.tenant, g.login, t.expires_at from oauth_tokens t join oauth_grants g on g.id = t.grant_id where t.sha256 = $1 and t.kind = 'access' and g.resource = $2", [hash, resource])).rows[0];
     if (!row || Number(row.expires_at) <= Date.now() || !await this.options.accounts.exists(row.tenant)) return undefined;
     return { tenant: row.tenant, via: "oauth", grantId: row.id, ...(row.login ? { login: row.login } : {}) };
   }
 
   /** The clients a tenant has let act for it. */
   async grants(tenant: string): Promise<Grant[]> {
-    const { rows } = await this.options.db.query("select id, client_name, login, scope, created_at, used_at from oauth_grants where tenant = $1 order by created_at desc", [tenant]);
-    return rows.map(row => ({ id: row.id, clientName: row.client_name, login: row.login, scope: row.scope, createdAt: Number(row.created_at), usedAt: row.used_at === null ? null : Number(row.used_at) }));
+    const { rows } = await this.options.db.query("select id, client_name, login, scope, resource, created_at, used_at from oauth_grants where tenant = $1 order by created_at desc", [tenant]);
+    return rows.map(row => ({ id: row.id, clientName: row.client_name, login: row.login, scope: row.scope, resource: row.resource, createdAt: Number(row.created_at), usedAt: row.used_at === null ? null : Number(row.used_at) }));
   }
 
   /** Revoke a grant: its tokens stop working at once, on every node. */
@@ -175,13 +189,17 @@ export class OAuth {
     if (params.get("response_type") !== "code") throw fail("unsupported_response_type", "response_type must be code");
     const challenge = params.get("code_challenge") ?? "";
     if (params.get("code_challenge_method") !== "S256" || !/^[A-Za-z0-9._~-]{43,128}$/.test(challenge)) throw fail("invalid_request", "PKCE is required: code_challenge with code_challenge_method S256");
-    const resource = params.get("resource");
+    const named = params.get("resource");
     // The hosted endpoint, or an agent's, at any origin the runtime answers at: a token acts for the tenant at each.
-    const ours = (origin: string) => resource !== null && ([`${origin}/mcp`, `${origin}/mcp/`, origin, `${origin}/`].includes(resource)
-      || (resource.startsWith(`${origin}/v1/agents/`) && AGENT_RESOURCE.test(resource.slice(origin.length))));
-    if (resource !== null && !this.options.origins.all.some(ours)) throw fail("invalid_target", `The resource is ${this.base}/mcp`);
+    const ours = (origin: string) => ([`${origin}/mcp`, `${origin}/mcp/`, origin, `${origin}/`].includes(named ?? "")
+      || (named !== null && named.startsWith(`${origin}/v1/agents/`) && AGENT_RESOURCE.test(named.slice(origin.length))));
+    // The team's operations endpoint, by itself: a token there answers nothing at /mcp, and the other way around.
+    const operations = (origin: string) => [`${origin}${OPS_PATH}`, `${origin}${OPS_PATH}/`].includes(named ?? "");
+    const ops = named !== null && this.options.origins.all.some(operations);
+    if (named !== null && !this.options.origins.all.some(ours) && !ops) throw fail("invalid_target", `The resource is ${this.base}/mcp or ${this.base}${OPS_PATH}`);
     if ((request.state?.length ?? 0) > 2000) throw fail("invalid_request", "state is too long");
-    return { ...request, challenge };
+    const resource: OAuthResource = ops || (params.get("scope") ?? "").split(" ").includes(OPS_SCOPE) ? "ops" : "agents";
+    return { ...request, challenge, resource };
   }
 
   private redirect(c: Context, to: { redirectUri: string; state?: string }, params: Record<string, string>) {
@@ -194,7 +212,7 @@ export class OAuth {
   private async code(tenant: string, login: string | undefined, request: ReturnType<OAuth["authorization"]>) {
     const code = `${CODE}${randomBytes(32).toString("base64url")}`;
     await this.options.db.query("insert into oauth_tokens (sha256, kind, expires_at, data) values ($1, 'code', $2, $3)", [sha(code), Date.now() + CODE_MS, JSON.stringify({
-      tenant, login: login ?? null, clientId: request.clientId, clientName: request.client.name, redirectUri: request.redirectUri, challenge: request.challenge,
+      tenant, login: login ?? null, resource: request.resource, clientId: request.clientId, clientName: request.client.name, redirectUri: request.redirectUri, challenge: request.challenge,
     })]);
     return code;
   }
@@ -215,7 +233,7 @@ export class OAuth {
     return { clientId: clientId!, client };
   }
 
-  private async issue(grantId: string) {
+  private async issue(grantId: string, resource: OAuthResource = "agents") {
     const now = Date.now();
     const access = `${ACCESS}${randomBytes(32).toString("base64url")}`, refresh = `${REFRESH}${randomBytes(32).toString("base64url")}`;
     await this.options.db.query("insert into oauth_tokens (sha256, kind, grant_id, expires_at) values ($1, 'access', $3, $4), ($2, 'refresh', $3, $5)",
@@ -226,7 +244,7 @@ export class OAuth {
       this.swept = now;
       await this.options.db.query("delete from oauth_tokens where expires_at < $1", [now - 86_400_000]).catch(() => {});
     }
-    return { access_token: access, token_type: "Bearer", expires_in: ACCESS_TOKEN_MS / 1000, refresh_token: refresh, scope: SCOPE };
+    return { access_token: access, token_type: "Bearer", expires_in: ACCESS_TOKEN_MS / 1000, refresh_token: refresh, scope: this.scopeOf(resource) };
   }
 
   private async exchange(c: Context, form: URLSearchParams) {
@@ -243,21 +261,29 @@ export class OAuth {
         const verifier = form.get("code_verifier") ?? "";
         if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier) || !same(b64(createHash("sha256").update(verifier).digest()), data.challenge)) throw new OAuthError("invalid_grant", "The code_verifier does not match the code_challenge");
         if (!await this.options.accounts.exists(data.tenant)) throw new OAuthError("invalid_grant", "The account no longer exists");
+        const resource: OAuthResource = data.resource === "ops" ? "ops" : "agents";
+        // The team's endpoint again, at the exchange: a consent from before someone was taken off the list grants nothing.
+        if (resource === "ops" && !this.opsAdmin(data.tenant)) throw new OAuthError("access_denied", "camelRun operations is for the camelRun team only");
         const grantId = `grt_${randomBytes(12).toString("hex")}`;
-        await this.options.db.query("insert into oauth_grants (id, tenant, client_id, client_name, login, scope, created_at) values ($1, $2, $3, $4, $5, $6, $7)",
-          [grantId, data.tenant, clientId, client.name, data.login, SCOPE, Date.now()]);
-        return this.issue(grantId);
+        await this.options.db.query("insert into oauth_grants (id, tenant, client_id, client_name, login, scope, resource, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8)",
+          [grantId, data.tenant, clientId, client.name, data.login, this.scopeOf(resource), resource, Date.now()]);
+        return this.issue(grantId, resource);
       }
       case "refresh_token": {
         const presented = form.get("refresh_token") ?? "", hash = sha(presented);
         const current = (await this.options.db.query(
-          "select t.grant_id, t.expires_at, t.used_at, t.data, g.client_id from oauth_tokens t join oauth_grants g on g.id = t.grant_id where t.sha256 = $1 and t.kind = 'refresh'", [hash])).rows[0];
+          "select t.grant_id, t.expires_at, t.used_at, t.data, g.client_id, g.tenant, g.resource, g.scope from oauth_tokens t join oauth_grants g on g.id = t.grant_id where t.sha256 = $1 and t.kind = 'refresh'", [hash])).rows[0];
         if (!current) throw new OAuthError("invalid_grant", "The refresh token is unknown, used or revoked");
         if (current.client_id !== clientId) throw new OAuthError("invalid_grant", "The refresh token was issued to another client");
         if (Number(current.expires_at) <= Date.now()) throw new OAuthError("invalid_grant", "The refresh token expired; connect again");
+        // Taken off AGENT_OPS_ADMINS: an ops grant's next refresh ends it, rather than carrying on until it expires.
+        if (current.resource === "ops" && !this.opsAdmin(current.tenant)) {
+          await this.options.db.query("delete from oauth_grants where id = $1", [current.grant_id]);
+          throw new OAuthError("invalid_grant", "camelRun operations is for the camelRun team only");
+        }
         if (current.used_at === null) {
           // The successor is stored before the rotation is claimed, so a request that loses the claim finds it.
-          const tokens = await this.issue(current.grant_id);
+          const tokens = await this.issue(current.grant_id, current.resource === "ops" ? "ops" : "agents");
           const claimed = (await this.options.db.query("update oauth_tokens set used_at = $2, data = $3 where sha256 = $1 and used_at is null returning 1",
             [hash, Date.now(), { successor: seal(presented, tokens) }])).rowCount;
           if (claimed) return tokens;
@@ -281,7 +307,7 @@ export class OAuth {
     const app = new Hono();
     // Clients in browsers (an inspector, a web app) call these directly: they take no cookies.
     const open = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type, MCP-Protocol-Version", "Cache-Control": "no-store" };
-    const publicPaths = ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/oauth/register", "/oauth/token", "/oauth/revoke"];
+    const publicPaths = ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource/ops/mcp", "/oauth/register", "/oauth/token", "/oauth/revoke"];
     for (const path of publicPaths) app.options(path, c => c.body(null, 204, { ...open, "Access-Control-Max-Age": "86400" }));
     const oauthError = (c: Context, error: unknown) => {
       if (!(error instanceof OAuthError)) throw error;
@@ -298,6 +324,8 @@ export class OAuth {
 
     const reached = (c: Context) => this.options.origins.of(c.req.raw.headers);
     for (const path of publicPaths.slice(0, 2)) app.get(path, c => c.json(this.protectedResource(`${reached(c)}/mcp`), 200, { ...open, "Cache-Control": "public, max-age=300" }));
+    // The team's operations endpoint, which only its own scope's tokens reach (src/ops-mcp.ts).
+    app.get("/.well-known/oauth-protected-resource/ops/mcp", c => c.json(this.protectedResource(`${reached(c)}${OPS_PATH}`, "operations/ops-mcp.md", { scope: OPS_SCOPE, name: "camelRun operations" }), 200, { ...open, "Cache-Control": "public, max-age=300" }));
     const agentMetadata = "/.well-known/oauth-protected-resource/v1/agents/:id{client_[a-f0-9]{40}}/mcp";
     app.options(agentMetadata, c => c.body(null, 204, { ...open, "Access-Control-Max-Age": "86400" }));
     app.get(agentMetadata, c => c.json(this.protectedResource(`${reached(c)}/v1/agents/${c.req.param("id")}/mcp`, "guides/mcp-server.md"), 200, { ...open, "Cache-Control": "public, max-age=300" }));
@@ -349,11 +377,16 @@ export class OAuth {
       const principal = await this.options.consoleAuth.principal(c.req.raw);
       const here = `/oauth/authorize?${params}`;
       if (!principal) return this.signInPage(c, request, here);
+      if (request.resource === "ops" && !this.opsAdmin(principal.tenant)) return this.notTeam(c, principal);
       const destination = escape(destinationOf(request.redirectUri));
+      // Ops is read-only and across every account: the page says what it shows, and what it never does.
+      const about = request.resource === "ops"
+        ? `<p>An application calling itself <strong>${escape(request.client.name)}</strong> <span class="muted">(a name it chose; camelRun has not verified it)</span> is asking to read camelRun's production operations data: sign-ups, agents, model usage, spend, storage and OAuth grants across every account, read-only. It sees counts, names and times, and never messages, prompts, tokens, secrets or sessions. It reads as this account until you revoke it.</p>`
+        : `<p>An application calling itself <strong>${escape(request.client.name)}</strong> <span class="muted">(a name it chose; camelRun has not verified it)</span> is asking to manage your camelRun agents: to create, configure, run and delete agents and definitions, read their history, and answer their questions and approvals. It acts for this account until you revoke it.</p>`;
       return page(c, 200, "Connect", `<h1>Connect an application?</h1>
 <p class="muted">Signed in as <strong>${escape(principal.name ? `${principal.name} (${principal.login ?? principal.tenant})` : principal.login ?? principal.tenant)}</strong></p>
 <p class="destination">Access goes to<br><strong><code>${destination}</code></strong></p>
-<p>An application calling itself <strong>${escape(request.client.name)}</strong> <span class="muted">(a name it chose; camelRun has not verified it)</span> is asking to manage your camelRun agents: to create, configure, run and delete agents and definitions, read their history, and answer their questions and approvals. It acts for this account until you revoke it.</p>
+${about}
 <p class="muted">Only connect if you trust <code>${destination}</code>, whatever the application calls itself.</p>
 <form method="post" action="/oauth/authorize">${[...params].map(([key, value]) => `<input type="hidden" name="${escape(key)}" value="${escape(value)}">`).join("")}
 <button type="submit" name="decision" value="allow">Allow</button> <button type="submit" name="decision" value="deny" class="secondary">Deny</button></form>`);
@@ -368,7 +401,9 @@ export class OAuth {
       try { request = this.authorization(params); } catch (error) { return shown(c, error); }
       const principal = await this.options.consoleAuth.principal(c.req.raw);
       if (!principal) return c.redirect(`/oauth/authorize?${params}`, 303);
+      if (request.resource === "ops" && !this.opsAdmin(principal.tenant)) return this.notTeam(c, principal);
       if (decision !== "allow") return this.redirect(c, request, { error: "access_denied", error_description: "The person declined" });
+      console.log(JSON.stringify({ type: "mcp_consent", tenant: principal.tenant, resource: request.resource }));
       return this.redirect(c, request, { code: await this.code(principal.tenant, principal.login, request) });
     });
 
@@ -420,6 +455,17 @@ export class OAuth {
 <p class="muted">The link expires in 24 hours. Nothing there? Check spam, or <a href="${escape(next)}">start again</a>.</p>`);
     });
     return app;
+  }
+
+  /**
+   * The page a consent to /ops/mcp gets when the signed-in account is not on AGENT_OPS_ADMINS: the same answer at the
+   * consent page and at the endpoint (src/ops-mcp.ts), and recorded, so a team member can see who asked.
+   */
+  private notTeam(c: Context, principal: { tenant: string; login?: string }) {
+    console.log(JSON.stringify({ type: "ops_consent_refused", tenant: principal.tenant }));
+    return c.html(PAGE("camelRun operations", `<h1>camelRun operations is for the camelRun team only</h1>
+<p class="muted">Signed in as <strong>${escape(principal.login ?? principal.tenant)}</strong>.</p>
+<p>This endpoint reads the platform's own operations data, so only the team's accounts may connect it. Nothing was shared. If this account should have access, ask the team to add its tenant (<code>${escape(principal.tenant)}</code>) to <code>AGENT_OPS_ADMINS</code>.</p>`), 403, PAGE_HEADERS);
   }
 
   /**
