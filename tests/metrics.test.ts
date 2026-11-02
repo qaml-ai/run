@@ -164,6 +164,7 @@ test("a turn's line: its outcome, duration, time to first token and to its first
   assert.equal(toolError.toolName, "camel__query");
   assert.ok(!JSON.stringify(toolError).includes("secret stuff"), "a tool's result never goes to the logs");
   assert.equal(toolError._aws, undefined, "tool failures are a log line; the turn line counts them");
+  assert.equal(toolError.host, undefined, "no host said for the response that made the call: none on its failure");
 
   const turn = lines.find(line => line.type === "turn_metrics");
   assert.equal(turn.Outcome, "completed");
@@ -367,6 +368,8 @@ test("each model response logs its time, first token and the host that served it
     turns.event({ type: "message_update", message: { role: "assistant" }, assistantMessageEvent: { type: "thinking_delta", delta: "a secret plan" } });
     now += 4_100;
     turns.event({ type: "message_end", message: { role: "assistant", provider: "openrouter", model: "deepseek/deepseek-v4.1-flash-1017:nitro", stopReason: "toolUse", content: [{ type: "text", text: "my secret memo" }], usage: { output: 321, providerHost: "Parasail" } } });
+    // A call that response made fails: its failure names the host.
+    turns.event({ type: "tool_execution_end", toolName: "bot__create_bot", isError: true, result: { content: [{ type: "text", text: "Give either name" }] } });
     // A response with no host said (another provider, an older runtime): "unknown"; an error's response too.
     turns.event({ type: "message_start", message: { role: "assistant" } });
     now += 2_000;
@@ -385,4 +388,5 @@ test("each model response logs its time, first token and the host that served it
   assert.deepEqual([second.Host, second.ResponseMs, second.ResponseFirstTokenMs, second.RequestFirstTokenMs, second.stopReason], ["unknown", 2_000, undefined, undefined, "error"]);
   const text = JSON.stringify(responses);
   assert.ok(!text.includes("secret"), "no text of a response, its reasoning or its error");
+  assert.equal(lines.find(line => line.type === "tool_failed").host, "Parasail", "a failed call says which host's response made it");
 });

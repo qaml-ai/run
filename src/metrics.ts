@@ -264,6 +264,8 @@ export function observeTurns(model: () => { provider: string; id: string } | und
   let ran = false;
   // The model response being streamed: when it started (its stream's headers), when its request began, and its first token.
   let response: { started: number; requested?: number; firstToken?: number } | undefined;
+  // The host that served the latest response (OpenRouter's), for the failures of the tool calls it made.
+  let host: string | undefined;
   // When the latest model request began (`turn_start`: the runtime has its context and starts the call), until its response starts.
   let requested: number | undefined;
 
@@ -283,11 +285,12 @@ export function observeTurns(model: () => { provider: string; id: string } | und
       if (response && response.firstToken === undefined) response.firstToken = clock();
     } else if (event.type === "message_end" && event.message?.role === "assistant") {
       if (turn) turn.responses++;
+      host = typeof event.message.usage?.providerHost === "string" ? event.message.usage.providerHost : undefined;
       // Each response's time and the host that served it (OpenRouter's, compaction.ts callFetch; else "unknown"):
       // counts and names only, never text.
       if (response) {
         const at = clock(), served = event.message;
-        const host = typeof served.usage?.providerHost === "string" ? served.usage.providerHost : "unknown";
+        const servedBy = typeof served.usage?.providerHost === "string" ? served.usage.providerHost : "unknown";
         const output = Number(served.usage?.output), stopReason = String(served.stopReason ?? "unknown");
         const Provider = String(served.provider ?? model()?.provider ?? "unknown"), Model = String(served.model ?? model()?.id ?? "unknown");
         // ResponseFirstTokenMs counts from the stream's headers, which some hosts send only with the first token;
@@ -295,7 +298,7 @@ export function observeTurns(model: () => { provider: string; id: string } | und
         const firstToken = response.firstToken !== undefined ? { ResponseFirstTokenMs: [response.firstToken - response.started, "Milliseconds"] as Value,
           ...(response.requested !== undefined ? { RequestFirstTokenMs: [response.firstToken - response.requested, "Milliseconds"] as Value } : {}) } : {};
         emit("model_response", {
-          dimensions: { Provider, Model, Host: host }, rollups: [["Provider", "Model", "Host"]],
+          dimensions: { Provider, Model, Host: servedBy }, rollups: [["Provider", "Model", "Host"]],
           metrics: { ResponseMs: [at - response.started, "Milliseconds"], ...firstToken },
           properties: { stopReason, ...(Number.isFinite(output) ? { outputTokens: output } : {}), ...(tenant() ? { tenant: tenant() } : {}) },
         });
@@ -322,9 +325,10 @@ export function observeTurns(model: () => { provider: string; id: string } | und
       if (turn) turn.tools++;
       if (event.isError) {
         if (turn) turn.toolErrors++;
-        // The error's class only, never its text: a tool's error can echo what a user wrote.
+        // The error's class only, never its text: a tool's error can echo what a user wrote. The host whose response made
+        // the call: one that drops a call's arguments shows as its failures (Relace, 2026-11-02).
         const text = String(event.result?.content?.find?.((part: any) => part?.type === "text")?.text ?? "");
-        sink(JSON.stringify({ type: "tool_failed", toolName: event.toolName ?? "", tenant: tenant(), errorClass: event.toolName === "js_exec" ? codeErrorClass(text) : errorClass(text || "error"), provider: model()?.provider, model: model()?.id }));
+        sink(JSON.stringify({ type: "tool_failed", toolName: event.toolName ?? "", tenant: tenant(), errorClass: event.toolName === "js_exec" ? codeErrorClass(text) : errorClass(text || "error"), provider: model()?.provider, model: model()?.id , ...(host ? { host } : {}) }));
       }
     }
   }
