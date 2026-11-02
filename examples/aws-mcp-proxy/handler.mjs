@@ -73,7 +73,7 @@ async function callAws({ service, operation, params, region }) {
   const protocol = PROTOCOL[service];
   const endpoint = new URL(`https://${ENDPOINT[service] ?? service}.${region}.amazonaws.com`);
   const body = protocol.kind === "query"
-    ? new URLSearchParams({ Action: operation, Version: protocol.version, ...flat(params) }).toString()
+    ? new URLSearchParams({ Action: operation, Version: protocol.version, ...flat(params, service) }).toString()
     : JSON.stringify(params ?? {});
   const headers = protocol.kind === "query"
     ? { "content-type": "application/x-www-form-urlencoded; charset=utf-8" }
@@ -81,16 +81,55 @@ async function callAws({ service, operation, params, region }) {
   const signed = sign({ method: "POST", host: endpoint.host, path: "/", body, headers, credentials, region, service: signingService(service), now: new Date() });
   const response = await fetch(endpoint, { method: "POST", headers: signed, body, signal: AbortSignal.timeout(25_000) });
   const text = await response.text();
-  return { status: response.status, body: text.length > 18_000 ? `${text.slice(0, 18_000)}\n[clipped: ${text.length} characters from AWS]` : text };
+  return { status: response.status, body: clip(text) };
 }
 
-/** Query parameters are flat: a list is `Key.member.1=a&Key.member.2=b`, not a JSON array. */
-function flat(params = {}) {
+/**
+ * A long answer is clipped, but the page cursor is kept: it sits at the end of the document, so
+ * truncating from the end loses it and the model can only re-read the first page. Any token AWS
+ * names is lifted out and appended after the clip.
+ */
+function clip(text, max = 18_000) {
+  if (text.length <= max) return text;
+  const token = /<(nextToken|NextToken|nextMarker|NextMarker|marker|Marker)>([^<]*)</.exec(text);
+  return text.slice(0, max) + (token
+    ? `\n[clipped: ${text.length} characters from AWS. Continue with ${token[1]}=${token[2]}]`
+    : `\n[clipped: ${text.length} characters from AWS: ask for a smaller page with MaxResults]`);
+}
+
+
+/**
+ * Query parameters are flat, and the shape differs by service:
+ *
+ *   CloudWatch, IAM, STS   AlarmNames.member.1=a     (a list is `member.N`)
+ *   EC2                    InstanceId.1=i-…          (no `member`)
+ *                          Filter.1.Name=…&Filter.1.Value.1=…
+ *
+ * Getting this wrong is `MalformedInput` for a list and silence (or an empty filter) for the rest,
+ * so a structure's fields and a field's own list are encoded too.
+ */
+function flat(params = {}, service = "") {
+  const member = (index) => service === "ec2" ? String(index + 1) : `member.${index + 1}`;
+  // EC2 names a list's members in the singular: `Filters` is sent as `Filter.1.Name`, `Values` as
+  // `Value.1`. A key that does not follow it can be passed exactly, e.g. "Filter.1.Name": "…".
+  const name = (key) => service === "ec2" && key.endsWith("s") ? key.slice(0, -1) : key;
+  const scalar = (value) => String(value);
   const out = {};
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null) continue;
-    if (Array.isArray(value)) value.forEach((entry, index) => { out[`${key}.member.${index + 1}`] = typeof entry === "object" ? JSON.stringify(entry) : String(entry); });
-    else out[key] = typeof value === "object" ? JSON.stringify(value) : String(value);
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => {
+        const at = `${name(key)}.${member(index)}`;
+        if (entry !== null && typeof entry === "object") {
+          for (const [field, fieldValue] of Object.entries(entry)) {
+            if (Array.isArray(fieldValue)) fieldValue.forEach((item, inner) => { out[`${at}.${name(field)}.${member(inner)}`] = scalar(item); });
+            else if (fieldValue !== undefined && fieldValue !== null) out[`${at}.${field}`] = scalar(fieldValue);
+          }
+        } else out[at] = scalar(entry);
+      });
+    } else if (typeof value === "object") {
+      for (const [field, fieldValue] of Object.entries(value)) out[`${key}.${field}`] = scalar(fieldValue);
+    } else out[key] = scalar(value);
   }
   return out;
 }

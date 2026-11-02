@@ -163,6 +163,23 @@ test("cloudwatch is called at monitoring, and signed under that name", async () 
   } finally { globalThis.fetch = real; }
 });
 
+test("ec2 lists of structures become Filter.N.Name and Filter.N.Value.M", async () => {
+  const real = globalThis.fetch;
+  let sent;
+  globalThis.fetch = async (_url, init) => { sent = init.body; return new Response("<ok/>", { status: 200 }); };
+  try {
+    await call({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "aws_read", arguments: {
+      service: "ec2", operation: "DescribeInstances",
+      params: { Filters: [{ Name: "instance-state-name", Values: ["running", "pending"] }, { Name: "tag:env", Values: ["prod"] }] },
+    } } });
+    assert.match(sent, /Filter\.1\.Name=instance-state-name/);
+    assert.match(sent, /Filter\.1\.Value\.1=running/);
+    assert.match(sent, /Filter\.1\.Value\.2=pending/);
+    assert.match(sent, /Filter\.2\.Name=tag%3Aenv/);
+    assert.ok(!sent.includes("member"), "EC2 takes no member in its lists");
+  } finally { globalThis.fetch = real; }
+});
+
 test("query parameters carry lists as member.N, as AWS expects", async () => {
   const real = globalThis.fetch;
   let sent;
@@ -206,3 +223,15 @@ test("a write needs the digest back, and only allowlisted operations get one", a
 });
 
 test.after(() => jwks.close());
+
+test("a clipped answer keeps the pagination token", async () => {
+  const real = globalThis.fetch;
+  const instances = "<item><instanceId>i-0aeccdd21e8547361</instanceId></item>".repeat(400);
+  globalThis.fetch = async () => new Response(`<DescribeInstancesResponse>${instances}<nextToken>abc123</nextToken></DescribeInstancesResponse>`, { status: 200 });
+  try {
+    const result = await call({ jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "aws_read", arguments: { service: "ec2", operation: "DescribeInstances" } } });
+    const body = result.json.result.content[0].text;
+    assert.ok(body.length < 20_000, "still clipped");
+    assert.match(body, /nextToken=abc123/, "the cursor survives the clip");
+  } finally { globalThis.fetch = real; }
+});
