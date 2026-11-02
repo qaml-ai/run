@@ -20,9 +20,7 @@ see which agent, for whom, read what.
 ## What it will not do
 
 - **Writes.** `aws_read` only calls an operation whose name reads (`Describe`, `List`, `Get`,
-  `Search`, …). `aws_write` exists in the code, behind `ALLOW_WRITES=1` and a preview/confirm digest,
-  and is off: turning it on is its own project (approval, target allowlists, verification). If you do,
-  the digest is what a person approves — the model cannot invent it.
+  `Search`, …). Writes are off; see [Writes](#writes) for what exists and what it still needs.
 - **Return credentials, secrets or object data.** `sts:GetSessionToken`, `secretsmanager:GetSecretValue`,
   `ssm:GetParameter`, `kms:Decrypt`, `s3:GetObject`, `ec2:GetPasswordData`, `lambda:GetFunction` and
   the rest of the list in `handler.mjs` are refused before anything is signed.
@@ -58,6 +56,32 @@ time, not a mystery later.
 Behind a custom domain, set `audience` to what the runtime will sign — its own URL as called, or a
 name in your tenant's namespace (`urn:camelrun:<tenant>:aws`) if you also set the same `audience` on
 the definition.
+
+## Writes
+
+Off by default, and what exists is a demonstration rather than a feature. `ALLOW_WRITES=1` adds
+`aws_write`, still limited to three operations: `cloudwatch:PutMetricAlarm`, `cloudwatch:DeleteAlarms`,
+and `ec2:RunInstances` with `DryRun=true`.
+
+It takes two steps, and the second carries the first's answer:
+
+1. Call without `confirm`. Nothing runs; the reply says exactly what would run and gives a digest —
+   a SHA-256 of the service, operation and parameters.
+2. Call again with that digest. A digest that does not match is refused: it means someone approved
+   a different action.
+
+One attempt is sent once: the runtime's `agent-runtime/idempotencyKey` names it, and a retry of the
+same attempt answers "already sent" rather than running again. The cache is in the process, so a
+cold Lambda starts without it.
+
+Before enabling this in production, add what it lacks:
+
+- **Approval a person gave.** The runtime's token carries an `approval` claim when a call needed one;
+  require it, and pin it to the call, instead of relying on the digest alone.
+- **Targets.** Restrict by resource ARN or tag, in the proxy and in the role, not just by operation.
+- **Verification.** Read the resource back after the write and return observed state, not AWS's 200.
+- **CloudTrail attribution.** `AssumeRole` per call with `RoleSessionName=agent-<id>` and
+  `SourceIdentity=<tenant>/<subject>/<actor>`, or the log says only "the function's role did it".
 
 ## Test it
 

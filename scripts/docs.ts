@@ -42,6 +42,7 @@ export const PAGES: { section: string; path: string; about: string }[] = [
   { section: "Guides", path: "guides/channels.md", about: "Slack, Telegram, Discord, GitHub, email and any service that sends webhooks" },
   { section: "Guides", path: "guides/migrating.md", about: "coming from the OpenAI Agents SDK or LangGraph: sessions, handoffs (not supported) and sub-agents, guardrails, tracing, structured output and the rest mapped, with what camelRun does not have" },
   { section: "Guides", path: "guides/mcp-server.md", about: "every agent as an MCP server with one tool, message: connecting Claude or Cursor to an agent" },
+  { section: "Guides", path: "guides/aws.md", about: "an agent reads your AWS account through an MCP server you run yourself: one Lambda, identity tokens instead of a secret, reads only, what enabling writes needs" },
   { section: "Guides", path: "guides/export.md", about: "the account export (GET /v1/account/export): what the zip holds, that it is whole or fails, and moving to a self-hosted runtime (no import yet)" },
   { section: "Guides", path: "production.md", about: "the checklist before shipping" },
   { section: "Reference", path: "reference/sdk.md", about: "the TypeScript and Python SDKs" },
