@@ -89,8 +89,9 @@ To keep a tool out of `js_exec`, make it `direct`:
 
 A tool with `needsApproval` is always direct. The console's agent page shows each
 tool's exposure (**Tools the model gets**), and `GET /v1/agents/:id` its
-`toolSources`. `js_exec` itself stays: it still runs code, with `fs` and
-`fetch`, and the tools left in it.
+`toolSources`. `js_exec` itself stays: it still runs code, with `fs` and the
+tools left in it. There is no `fetch` in the sandbox and no network at all: a URL the model chooses
+is reachable only through a tool, such as `web_fetch`.
 
 ## Attached tools: in your process
 
