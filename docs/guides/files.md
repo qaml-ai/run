@@ -56,7 +56,7 @@ changed or deleted later still reads as it was when attached.
 
 ## The agent's file tools
 
-`read`, `write`, `edit`, `ls`, `glob` and `grep` work on mount paths
+`read`, `write`, `edit`, `ls`, `glob`, `grep`, `cp` and `mv` work on mount paths
 (`/workspace/notes.md`). `read` shows an image or PDF to a model that can view
 it. The runtime remembers which version of each file the agent last read or wrote,
 so a `write` or `edit` of a file someone else changed since then fails ("changed
@@ -83,6 +83,22 @@ including a diff and patch. In `js_exec`, text reads return an object with
 `content` and any truncation details. Images and PDFs still use file references when the model can view them. PDF text windows use character
 `offset` and `length`. Raw bytes use `encoding: "base64"`, with byte `offset` and
 `length` on reads, and base64 `content` on writes. Writes can also set `contentType`.
+
+`cp({ from, to, overwrite? })` copies files between mounts without putting their
+contents in the model's context. `mv({ from, to, overwrite? })` moves them;
+`cp` needs `recursive: true` for directories. The destination is the exact new
+path, and must not exist unless `overwrite: true`. Both return
+`{from, to, files, bytes}` and handle at most 1,000 files. Same-volume moves are
+atomic renames. Cross-mount moves copy and verify before removing each source;
+a failure can leave part of a directory moved. Read-only mounts refuse writes
+and moves out of them.
+
+An attached, running shell computer adds `/computer`, a read-write mount of its
+home directory (`~`, not `/`). All these tools and the `fs` helpers can use it.
+Its files live only as long as the computer session and are gone after it
+expires. Use `cp` or `mv` to save results to a volume. With no running session,
+paths under `/computer` say to call `computer_start`; with no computer attached,
+it is not a mount. See [Computers](computers.md) for transfer limits and examples.
 
 Code in `js_exec` has `fs` over the same mounts:
 

@@ -819,12 +819,13 @@ export class ClientSessions {
       // Its tool servers are listed (remote MCP servers connected to) before its host starts.
       session.hosted = session.header.mounts ?? [];
       session.computerRevision = await this.options.sources?.computerRevision(session.header.tenant, session.header.id);
+      const computer = await this.options.sources?.computerFilesystem(session.header.tenant, session.header.id);
       const definitions = await steps.time("tools", tools.toolset(this.toolsContext, session));
       const { cpuMs, maxTimeoutMs } = await spend.codeLimits(this.spendContext, session.header.tenant);
       // Lost or given up while it got ready (its node fenced, or is leaving): it starts nothing. A host started now would
       // serve an owner that is gone, and whoever loads the agent next would find it and take it for theirs, still starting.
       if (session.fault || session.leaving) throw session.fault ?? new Error("Agent stopped");
-      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, model: withCatalogPrices(currentModel(session.header.config.model)), apiKey, mounts: VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...(this.options.retry ? { retry: this.options.retry } : {}), ...(fallback ? { contentFilterFallback: fallback } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), contextRangeMaxBytes: this.options.contextRangeMaxBytes, ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
+      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, model: withCatalogPrices(currentModel(session.header.config.model)), apiKey, mounts: [...VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace }) => ({ path, mode, ...workspace ? { workspace } : {} })), ...computer ? [{ path: "/computer", mode: "rw" as const, computer: true }] : []], ...(this.options.retry ? { retry: this.options.retry } : {}), ...(fallback ? { contentFilterFallback: fallback } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), contextRangeMaxBytes: this.options.contextRangeMaxBytes, ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
         definitions,
         codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await spend.codeLimits(this.spendContext, session.header.tenant)).concurrent, signal),
         runLimit: async () => {

@@ -77,7 +77,7 @@ async function toolServers(ctx: ToolsContext, session: Session, tools: ToolDefin
   return [
     ...feature ? [view("channel", feature)] : [],
     { tools: () => defaultExposure(tools), call: call => events.callAttached(ctx.eventContext, session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
-    ...volumes && header.mounts?.length && !bare ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(toolContext(ctx, session), name, args, signal)))] : [],
+    ...volumes && (header.mounts?.length || await ctx.options.sources?.computerFilesystem(tenant, header.id) !== undefined) && !bare ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(toolContext(ctx, session), name, args, signal)))] : [],
     ...multiAgent ? [multiAgent] : [],
     ...workflow ? [workflow] : [],
     ...images ? [images] : [],
@@ -94,6 +94,7 @@ async function toolServers(ctx: ToolsContext, session: Session, tools: ToolDefin
 export function toolContext(ctx: ToolsContext, session: Session): ToolContext {
   const header = session.header;
   return {
+    computer: async () => ctx.options.sources?.computerFilesystem(header.tenant, header.id),
     tenant: header.tenant, agent: header.id, mounts: header.mounts ?? [], model: () => session.header.config.model, seen: session.seen ??= new Map(),
     onWrite: file => {
       const files = session.outputs?.files;
@@ -438,7 +439,7 @@ async function fetchAttachment(ctx: ToolsContext, url: URL): Promise<{ body: Asy
 
 /** js_exec's `fs`: the file tools over the agent's mounts, durable before any effect like any other tool call. */
 export async function fsCall(ctx: ToolsContext, session: Session, op: string, args: Record<string, unknown>, signal: AbortSignal) {
-  if (!ctx.options.volumes || !session.header.mounts?.length) throw new Error("This agent has no volumes mounted");
+  if (!ctx.options.volumes || (!session.header.mounts?.length && await ctx.options.sources?.computerFilesystem(session.header.tenant, session.header.id) === undefined)) throw new Error("This agent has no volumes mounted");
   if (!["readFile", "writeFile", "stat", "list", "remove"].includes(op)) throw new Error("Unknown fs call");
   await ctx.beforeEffect(session);
   return ctx.options.volumes.tool(toolContext(ctx, session), `fs.${op}`, args, signal);

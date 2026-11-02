@@ -1,3 +1,4 @@
+import { fileReceipts } from "./providers.ts";
 import { randomUUID } from "node:crypto";
 import type { Accounts } from "../accounts.ts";
 import { resolveKey } from "../capabilities/router.ts";
@@ -13,7 +14,6 @@ import type { ToolContext } from "../volume-tools.ts";
 import { Workspaces } from "../workspaces.ts";
 import { machineSetup, signatures } from "./abuse.ts";
 import { bounded, output, quote } from "./providers.ts";
-import type { ComputerTransfers } from "./transfers.ts";
 
 /**
  * Managed computers: a machine on the platform's Boat account for an agent, billed to credit at Boat's price. Boat keeps
@@ -166,7 +166,6 @@ export class ManagedComputers {
     enabled: boolean;
     /** What names this runtime on its machines: its public URL. */
     runtime: string;
-    transfers?(): ComputerTransfers | undefined;
     endUsers?(): Pick<EndUserCredits, "reserve" | "extend" | "settleHold" | "release" | "renew"> | undefined;
     credit?(): Pick<CreditHolds, "available"> | undefined;
     /** Who pays for the agent's current run, where the tenant meters its end users. */
@@ -192,7 +191,7 @@ export class ManagedComputers {
   }
 
   /** A tool call on a managed connection. A call's key is recorded before it runs, so a retry answers from it, or says its outcome is unknown. */
-  async call(connection: any, tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, hash: string, files?: Pick<ToolContext, "mounts" | "onWrite">) {
+  async call(connection: any, tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, hash: string, files?: Pick<ToolContext, "mounts" | "onWrite">, receiptsOnly = false) {
     const { db } = this;
     if (name === "computer_status") return publicSession(await this.open(connection.id));
     const inserted = (await db.query("insert into computer_operations(connection,key,input_hash,state,tenant) values($1,$2,$3,'pending',$4) on conflict do nothing", [connection.id, requestKey, hash, tenant])).rowCount;
@@ -203,9 +202,10 @@ export class ManagedComputers {
       return old.result;
     }
     try {
-      const result = name === "computer_start" ? await this.start(connection, tenant, agent)
+      const value = name === "computer_start" ? await this.start(connection, tenant, agent)
         : name === "computer_stop" ? await this.stopOpen(connection.id)
         : await this.command(connection, tenant, agent, name, args, requestKey, files);
+      const result = receiptsOnly ? fileReceipts(value) : value;
       await db.query("update computer_operations set state='completed',result=$3 where connection=$1 and key=$2", [connection.id, requestKey, JSON.stringify(result)]);
       return result;
     } catch (error) {
@@ -280,10 +280,9 @@ export class ManagedComputers {
   private async command(connection: any, tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, files?: Pick<ToolContext, "mounts" | "onWrite">) {
     const row = await this.open(connection.id);
     if (!row?.machine || Number(row.deadline) <= this.options.now()) throw new HttpError(409, "Call computer_start before using the computer");
-    const transfer = name === "computer_upload" || name === "computer_download";
-    const command = transfer ? "true" : fileCommand(name, args) ?? args.command;
+    const command = fileCommand(name, args) ?? args.command;
     if (typeof command !== "string" || !command || command.length > 32000) throw new HttpError(400, "Invalid command");
-    const timeout = transfer ? 120 : args.timeoutSeconds ?? MANAGED.defaultCommandSeconds;
+    const timeout = args.timeoutSeconds ?? MANAGED.defaultCommandSeconds;
     if (!Number.isInteger(timeout) || timeout < 1 || timeout > MANAGED.commandSeconds) throw new HttpError(400, `Command timeout must be 1–${MANAGED.commandSeconds} seconds`);
     const found = signatures([args.command, args.content].filter(part => typeof part === "string").join("\n"));
     if (found.length) this.log("computer_signature", { tenant, agent, computer: row.id, tool: name, signatures: found });
@@ -291,10 +290,9 @@ export class ManagedComputers {
     const deadline = await this.keep(connection, row, machines);
     const seconds = Math.max(1, Math.min(timeout, Math.floor((deadline - this.options.now()) / 1000)));
     try {
-      const value = transfer ? await this.transfer(tenant, agent, name, args, machines, row.machine, seconds, requestKey, files) : await this.runIn(machines, row, command, seconds);
+      const value = await this.runIn(machines, row, command, seconds);
       return storable(value);
     } catch (error) {
-      if (transfer && error instanceof HttpError) throw error;
       throw new HttpError(502, "Computer command failed; outcome may be uncertain");
     }
   }
@@ -305,13 +303,6 @@ export class ManagedComputers {
     // Without its unit a background process outlives its command: counted, with no content.
     this.log("computer_unit_fallback", { tenant: row.tenant, computer: row.id });
     return { ...done, stderr: done.stderr.slice(NO_UNIT.length + 1) };
-  }
-
-  private transfer(tenant: string, agent: string, name: string, args: Record<string, any>, machines: ManagedMachines, machine: string, seconds: number, requestKey: string, files?: Pick<ToolContext, "mounts" | "onWrite">) {
-    const transfers = this.options.transfers?.();
-    if (!transfers) throw new HttpError(400, "Computer transfers are not enabled");
-    const driver = { call: (_ref: unknown, _op: string, call: Record<string, any>) => machines.run(machine, String(call.command), Number(call.timeoutSeconds)) };
-    return transfers.run({ tenant, agent, mounts: files?.mounts ?? [], onWrite: files?.onWrite }, name === "computer_upload", args, driver, { id: machine }, seconds, requestKey);
   }
 
   /** Keep a computer for its idle time from now, up to its hard stop, when less than half of that is left. A hold or an extension refused leaves it as it is. Answers its deadline. */

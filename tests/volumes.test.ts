@@ -760,3 +760,23 @@ test("js_exec's fs reads and writes bytes and text within the mounts, and write 
   await assert.rejects(writer.execute(`await fs.writeFile("/workspace/big", new Uint8Array(${700 * 1024 + 1}))`), /at most/);
   await assert.rejects(writer.execute('await fs.writeFile("/workspace/x", 42)'), /Uint8Array/);
 });
+
+test("copy and rename commit shared chunks, preserve types and publish versions together", async t => {
+  const { volumes } = await service(t);
+  const { id } = await volumes.create("acme");
+  await volumes.put("acme", id, "/source/a.txt", bytes("a"), { contentType: "text/custom" });
+  await volumes.put("acme", id, "/source/nested/b.txt", bytes("bb"));
+  const original = await volumes.call(id, "acme", "stat", { path: "/source/a.txt" });
+  const call = tools(volumes, [{ volumeId: id, path: "/workspace", mode: "rw" }]);
+  assert.deepEqual(await call("cp", { from: "/workspace/source", to: "/workspace/copy", recursive: true }), { from: "/workspace/source", to: "/workspace/copy", files: 2, bytes: 3 });
+  const copy = await volumes.call(id, "acme", "stat", { path: "/copy/a.txt" });
+  assert.deepEqual(copy.chunks, original.chunks);
+  assert.equal(copy.contentType, "text/custom");
+  assert.ok(copy.version > original.version);
+  await assert.rejects(call("cp", { from: "/workspace/source", to: "/workspace/copy", recursive: true }), /exists/);
+  await call("mv", { from: "/workspace/copy", to: "/workspace/moved" });
+  await assert.rejects(volumes.call(id, "acme", "stat", { path: "/copy" }), /does not exist/);
+  const changes = await volumes.call(id, "acme", "changes", { since: 0 });
+  assert.ok(changes.changes.some((change: any) => change.path === "/copy/a.txt" && change.kind === "delete"));
+  assert.ok(changes.changes.some((change: any) => change.path === "/moved/a.txt" && change.kind === "write"));
+});

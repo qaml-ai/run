@@ -145,6 +145,6 @@ export class VolumeEnv implements ExecutionEnv {
   watch: FileSystem["watch"] = () => this.unsupported();
   createTempDir: FileSystem["createTempDir"] = () => this.unsupported();
   createTempFile: FileSystem["createTempFile"] = () => this.unsupported();
-  async exec(): Promise<Result<never, ExecutionError>> { return { ok: false, error: new ExecutionError("shell_unavailable", "Volume files have no shell; computers use a separate filesystem") }; }
+  async exec(..._args: any[]): ReturnType<ExecutionEnv["exec"]> { return { ok: false, error: new ExecutionError("shell_unavailable", "Volume files have no shell; use computer_exec on the computer") }; }
   async cleanup() {}
 }

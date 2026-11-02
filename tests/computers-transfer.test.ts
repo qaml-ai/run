@@ -76,7 +76,7 @@ async function fixture(t: Context) {
   let key = 0;
   const writes: unknown[] = [];
   return { db, volumes, id, mounts, directory, app, requests, transfers, links,
-    call: (name: string, from: string, to: string, requestKey = String(++key)) => service.call("alice", "a", name, { from, to }, requestKey, { mounts, onWrite: file => writes.push(file) }),
+    call: async (name: string, from: string, to: string, requestKey = String(++key)) => transfers.run({ tenant: "alice", agent: "a", mounts, onWrite: file => writes.push(file) }, name === "upload", { from, to }, await service.options.driver!("sprites", {}, new Outbound()), { id: "test" }, 120, requestKey),
     writes, calls: () => calls, advance: (ms: number) => now += ms,
     intercept: (fn: typeof intercept) => intercept = fn, fail: () => fail = true, corrupt: () => corrupt = true,
     quota: (value: typeof quota) => quota = value,
@@ -84,21 +84,20 @@ async function fixture(t: Context) {
   };
 }
 
-test("computer transfers round trip binary files, safely quote paths, attribute writes and replay receipts", async t => {
+test("computer transfers round trip binary files, safely quote paths, attribute writes", async t => {
   const f = await fixture(t);
   const bytes = Buffer.from([0, 255, 42, 13, 10, 128]);
   await f.volumes.put("alice", f.id, "/source.bin", bytes);
   const remote = "dir with spaces/file [1-2] {a,b} ' $(touch injected).bin";
-  const sent = await f.call("computer_upload", "source.bin", remote, "upload");
+  const sent = await f.call("upload", "source.bin", remote, "upload");
   assert.deepEqual(sent, { path: remote, size: bytes.length, sha256: sha256(bytes) });
   assert.deepEqual(await readFile(join(f.directory, remote)), bytes);
   await assert.rejects(readFile(join(f.directory, "injected")), /ENOENT/);
-  const received = await f.call("computer_download", remote, "copy.bin", "download");
+  const received = await f.call("download", remote, "copy.bin", "download");
   assert.deepEqual(received, { path: "/workspace/copy.bin", size: bytes.length, sha256: sha256(bytes) });
   assert.deepEqual(await f.read("/copy.bin"), bytes);
   assert.equal((await f.volumes.call(f.id, "alice", "stat", { path: "/copy.bin" })).by, "a");
   assert.equal(f.writes.length, 1);
-  assert.deepEqual(await f.call("computer_download", remote, "copy.bin", "download"), received);
   assert.equal(f.calls(), 2);
   const records = (await f.db.query("select result from computer_commands")).rows;
   assert.doesNotMatch(JSON.stringify(records), /runtime\.example|token=|untrusted/);
@@ -120,7 +119,7 @@ test("signed links bind the direction and file, expire in 120 seconds and can be
     assert.deepEqual([first.status, second.status], [200, 200]);
     assert.equal(await first.text(), "hello"); assert.equal(await second.text(), "hello");
   });
-  await f.call("computer_upload", "source", "dest");
+  await f.call("upload", "source", "dest");
   assert.equal((await f.app.fetch(f.requests[0])).status, 200);
 });
 
@@ -137,11 +136,11 @@ test("read-only mounts, unmounted paths, directories and invalid paths are refus
   const f = await fixture(t);
   f.mounts[0].mode = "ro";
   await f.volumes.put("alice", f.id, "/source", Buffer.from("allowed"));
-  await f.call("computer_upload", "source", "dest");
-  await assert.rejects(f.call("computer_download", "dest", "copy"), /read-only/);
-  await assert.rejects(f.call("computer_upload", "/another/source", "dest"), /not inside a mount/);
-  await assert.rejects(f.call("computer_upload", "/workspace", "dest"), /source must be a file/);
-  for (const path of ["", "bad\0path"]) await assert.rejects(f.call("computer_download", path, "copy"), /Invalid transfer path/);
+  await f.call("upload", "source", "dest");
+  await assert.rejects(f.call("download", "dest", "copy"), /read-only/);
+  await assert.rejects(f.call("upload", "/another/source", "dest"), /not inside a mount/);
+  await assert.rejects(f.call("upload", "/workspace", "dest"), /source must be a file/);
+  for (const path of ["", "bad\0path"]) await assert.rejects(f.call("download", path, "copy"), /Invalid transfer path/);
   assert.equal(f.calls(), 1);
 });
 
@@ -174,7 +173,7 @@ test("download enforces streaming size cap without content-length and preserves 
     assert.equal(response.status, 413);
     return response;
   });
-  await assert.rejects(f.call("computer_download", "source", "dest"), /size limit/);
+  await assert.rejects(f.call("download", "source", "dest"), /size limit/);
   assert.equal((await f.read("/dest")).toString(), "original");
 });
 
@@ -186,14 +185,14 @@ test("download rejects oversized content-length and quota exhaustion with 507", 
     assert.equal(response.status, 413);
     return response;
   });
-  await assert.rejects(f.call("computer_download", "source", "oversize"), /size limit/);
+  await assert.rejects(f.call("download", "source", "oversize"), /size limit/);
   f.intercept(async request => {
     f.quota({ used: 10, limit: 10 });
     const response = await f.app.fetch(request.clone());
     assert.equal(response.status, 507);
     return response;
   });
-  await assert.rejects(f.call("computer_download", "source", "quota"), (error: any) => error.status === 507);
+  await assert.rejects(f.call("download", "source", "quota"), (error: any) => error.status === 507);
   await assert.rejects(f.read("/quota"), /does not exist/);
 });
 
@@ -205,7 +204,7 @@ test("provider failures cannot leak capability URLs into errors or logs", async 
   console.log = (...args) => { logs.push(args); }; console.error = (...args) => { logs.push(args); };
   try {
     f.fail();
-    await assert.rejects(f.call("computer_upload", "source", "dest"), (error: any) => {
+    await assert.rejects(f.call("upload", "source", "dest"), (error: any) => {
       assert.doesNotMatch(String(error), /runtime\.example|token=/); return true;
     });
     assert.doesNotMatch(JSON.stringify(logs), /runtime\.example|token=/);
@@ -217,9 +216,9 @@ test("empty files and multi-chunk files transfer without exposing bytes", async 
   const f = await fixture(t);
   for (const bytes of [Buffer.alloc(0), Buffer.alloc(2 * 1024 * 1024 + 3, 255)]) {
     await f.volumes.put("alice", f.id, "/source", bytes);
-    const sent = await f.call("computer_upload", "source", "-file");
+    const sent = await f.call("upload", "source", "-file");
     assert.deepEqual(sent, { path: "-file", size: bytes.length, sha256: sha256(bytes) });
-    const received = await f.call("computer_download", "-file", "dest");
+    const received = await f.call("download", "-file", "dest");
     assert.deepEqual(received, { path: "/workspace/dest", size: bytes.length, sha256: sha256(bytes) });
     assert.deepEqual(await f.read("/dest"), bytes);
   }
@@ -232,11 +231,11 @@ test("query paths cannot redirect a bound download and revoked agents cannot use
     const response = await f.app.fetch(new Request(request.url + "?path=/other&volume=other&tenant=bob", { method: "PUT", body: "bound" }));
     assert.equal(response.status, 201);
   });
-  await f.call("computer_download", "source", "dest");
+  await f.call("download", "source", "dest");
   assert.equal((await f.read("/dest")).toString(), "bytes");
   await assert.rejects(f.read("/other"), /does not exist/);
   f.intercept(async () => { await f.db.query("update agents set revoked=true where id='a'"); });
-  await assert.rejects(f.call("computer_upload", "dest", "revoked"), /transfer failed/);
+  await assert.rejects(f.call("upload", "dest", "revoked"), /transfer failed/);
   assert.equal((await f.app.fetch(f.requests.at(-1)!)).status, 403);
 });
 
@@ -244,12 +243,12 @@ test("a remote file with the wrong size or digest fails verification", async t =
   const f = await fixture(t);
   await f.volumes.put("alice", f.id, "/source", Buffer.from("right bytes"));
   f.corrupt();
-  await assert.rejects(f.call("computer_upload", "source", "dest"), /transfer failed/);
+  await assert.rejects(f.call("upload", "source", "dest"), /transfer failed/);
 });
 
 test("download verifies the digest against the remote file, not just the byte count", async t => {
   const f = await fixture(t);
   await writeFile(join(f.directory, "source"), "right bytes");
   f.intercept(async request => f.app.fetch(new Request(request.url, { method: "PUT", body: "wrong bytes" })));
-  await assert.rejects(f.call("computer_download", "source", "dest"), /transfer failed/);
+  await assert.rejects(f.call("download", "source", "dest"), /transfer failed/);
 });

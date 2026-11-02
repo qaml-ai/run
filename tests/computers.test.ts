@@ -55,7 +55,7 @@ test('Browser Use exposes browser actions without host shell tools', async () =>
   await f.service.call('alice','a','browser_evaluate',{expression:'1+1'},'evaluate');
   assert.equal(f.counts().executions,1);
   await assert.rejects(f.service.call('alice','a','computer_exec',{command:'true'},'shell'),/not supported/);
-  await assert.rejects(f.service.call('alice','a','computer_upload',{from:'source',to:'dest'},'upload'),/not supported/);
+  await assert.rejects(f.service.call('alice','a','computer_upload',{from:'source',to:'dest'},'upload'),/Unknown computer tool/);
   await f.service.call('alice','a','computer_stop',{},'stop');
 });
 

@@ -1,8 +1,11 @@
 import { Worker } from "node:worker_threads";
+import { posix } from "node:path";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { createReadTool, createWriteTool, createEditTool } from "@earendil-works/pi-durable/tools";
 import { FileError } from "@earendil-works/pi-durable/env";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
+import type { ComputerMount } from "./computer-env.ts";
+const COMPUTER_VOLUME = "computer-session";
 import { VolumeEnv } from "./volume-env.ts";
 import type { ToolDefinition } from "./protocol.ts";
 import { HttpError } from "./http.ts";
@@ -32,6 +35,7 @@ export type WrittenFile = { path: string; version: number; size: number; content
  * volume); it throws to refuse one.
  */
 export type ToolContext = {
+  computer?: () => Promise<ComputerMount | null | undefined>;
   tenant: string; agent: string; mounts: Mount[]; model?: () => Model<Api>;
   /**
    * The version of each file (`<volume>:<path>`) the agent last read or wrote, kept by its host. A write or edit of a
@@ -48,10 +52,11 @@ const path = (description: string) => ({ type: "string", description });
 /** The file tools. Where the mounts are is in the agent's prompt (system-prompt.ts), so the tools stay the same when they change. */
 export function volumeToolDefinitions(): ToolDefinition[] {
   const tool = (name: string, description: string, properties: Record<string, unknown>, required: string[]): ToolDefinition => ({
-    name, description, exposure: "both", executionMode: name === "write" || name === "edit" ? "sequential" : "parallel",
+    name, description, exposure: "both", executionMode: ["write", "edit", "cp", "mv"].includes(name) ? "sequential" : "parallel",
     parameters: { type: "object", additionalProperties: false, properties, required },
   });
   return [
+    ...["cp", "mv"].map(name => tool(name, `${name === "cp" ? "Copy" : "Move"} a file or directory between mounts. Destination is the exact path; overwrite defaults to false. Directory copies require recursive: true. At most 1000 files.`, { from: path("Source path"), to: path("Destination path"), overwrite: { type: "boolean", default: false }, ...(name === "cp" ? { recursive: { type: "boolean", default: false } } : {}) }, ["from", "to"])),
     tool("read", `Read text in line windows (offset is 1-based, limit is lines), up to ${FILE_TOOL_LIMITS.readBytes} bytes. Images and PDFs are shown when the model can view them; otherwise PDF text uses character offset/length. Binary files use encoding: base64 and byte offset/length. Text output is bounded; continue at the indicated line.`,
       { ...(piTools.read.parameters.properties as Record<string, unknown>), length: { type: "integer", minimum: 1, maximum: FILE_TOOL_LIMITS.maxReadBytes, description: "Byte count for base64, character count for PDF text" }, encoding: { type: "string", enum: ["utf8", "base64"] } }, ["path"]),
     tool("write", "Create or replace a file with text, or bytes with encoding: base64. Parent directories are created implicitly.", {
@@ -111,7 +116,9 @@ const binary = (data: Buffer) => data.subarray(0, 8000).includes(0);
 
 /** Pi needs only env for these tools; keep the host's tool registration and execution boundary. */
 async function runPiTool(volumes: VolumeService, context: ToolContext, name: keyof typeof piTools, args: Record<string, any>, signal: AbortSignal) {
-  const env = new VolumeEnv(volumes, context, name === "edit");
+  const { ComputerEnv } = await import("./computer-env.ts");
+  const mount = resolve(context.mounts, args.path);
+  const env = mount?.mount.volumeId === COMPUTER_VOLUME && context.computer ? new ComputerEnv((await context.computer())!, context, name === "edit", volumes) : new VolumeEnv(volumes, context, name === "edit");
   const tool = piTools[name];
   try {
     const result = await tool.execute(args as any, { env } as unknown as ToolExecutionApi, withAbortSignal(signal, BACKGROUND_CONTEXT));
@@ -136,11 +143,44 @@ async function runPiTool(volumes: VolumeService, context: ToolContext, name: key
 
 export async function runVolumeTool(volumes: VolumeService, context: ToolContext, name: string, args: Record<string, any>, signal: AbortSignal): Promise<unknown> {
   signal.throwIfAborted();
+  const { ComputerFiles, computerScratch } = await import("./computer-env.ts");
+  const storage = volumes;
+  const computer = await context.computer?.();
+  const paths = [args.path, args.from, args.to].filter(value => typeof value === "string") as string[];
+  if (computer === null && paths.some(path => path === "/computer" || path.startsWith("/computer/"))) throw new Error("your computer isn't running; call computer_start");
+  if (computer) context = { ...context, mounts: [...context.mounts, { volumeId: COMPUTER_VOLUME, path: "/computer", mode: "rw" }] };
+  if (name === "cp" || name === "mv") return copyMove(volumes, context, computer, name, args, signal);
   const { tenant, mounts } = context;
   if (name === "fs.list") name = "ls";
   const target = name === "ls" ? resolve(mounts, args.path) : resolve(mounts, args.path ?? (name === "grep" || name === "glob" ? undefined : ""));
   if (name === "ls" && !target) return { path: "/", entries: mounts.map(mount => ({ name: mount.path.slice(1), type: "directory", mode: mount.mode })) };
   if (!target) throw new Error("/ holds only the mounts; name a path inside one");
+  if (target.mount.volumeId === COMPUTER_VOLUME && computer) {
+    const media = essence(guessContentType(target.path));
+    if (name === "read" && args.encoding !== "base64" && (media.startsWith("image/") || media === "application/pdf")) {
+      const scratch = computerScratch(storage, context, target.path);
+      try {
+        await computer.transfer({ ...context, onWrite: undefined }, false, { from: target.path, to: scratch.path });
+        const result = await runVolumeTool(storage, { ...context, computer: undefined, mounts: context.mounts.filter(m => m.volumeId !== COMPUTER_VOLUME) }, name, { ...args, path: scratch.path }, signal) as any;
+        // fileRef pins the chunks, so the transcript reference survives removing this path.
+        return { ...result, path: target.show(target.path) };
+      } finally { await scratch.remove(); }
+    }
+    if (name === "present_file") {
+      const scratch = computerScratch(storage, context, target.path);
+      let presented = false;
+      try {
+        await computer.transfer({ ...context, onWrite: undefined }, false, { from: target.path, to: scratch.path });
+        const result = await runVolumeTool(storage, { ...context, computer: undefined, mounts: context.mounts.filter(m => m.volumeId !== COMPUTER_VOLUME) }, name, { ...args, path: scratch.path }, signal);
+        // Keep the delivered copy at the path returned to the user.
+        presented = true;
+        return result;
+      } finally { if (!presented) await scratch.remove(); }
+    }
+    const files = new ComputerFiles(computer, { volumes: storage, context });
+    if (name === "grep") return files.grep({ ...args, path: target.path }, target.show, signal);
+    volumes = files as unknown as VolumeService;
+  }
   const call = (op: string, extra: Record<string, unknown> = {}) => volumes.call(target.mount.volumeId, tenant, op, { path: target.path, ...extra });
   const shown = target.show(target.path);
   const key = `${target.mount.volumeId}:${target.path}`;
@@ -152,14 +192,14 @@ export async function runVolumeTool(volumes: VolumeService, context: ToolContext
 
   if (name === "edit") {
     writable(target);
-    return runPiTool(volumes, context, "edit", args, signal);
+    return runPiTool(storage, context, "edit", args, signal);
   }
   if (name === "read") {
     const entry = await file();
     const type = essence(entry.contentType ?? guessContentType(target.path));
     if (args.encoding !== "base64" && !type.startsWith("image/") && type !== "application/pdf") {
       const head = await volumes.readRange(tenant, entry, 0, Math.min(8000, entry.size));
-      if (!binary(head)) return runPiTool(volumes, context, "read", args, signal);
+      if (!binary(head)) return runPiTool(storage, context, "read", args, signal);
     }
     const offset = args.offset ?? 0;
     // A file from before types were recorded is labeled by its name here, rather than a chunk read to sniff it.
@@ -195,7 +235,7 @@ export async function runVolumeTool(volumes: VolumeService, context: ToolContext
     return { ...about, offset, content, ...(next < entry.size ? { nextOffset: next } : {}) };
   }
   if (name === "write") {
-    if (args.encoding !== "base64" && args.contentType === undefined) return runPiTool(volumes, context, "write", args, signal);
+    if (args.encoding !== "base64" && args.contentType === undefined) return runPiTool(storage, context, "write", args, signal);
     writable(target);
     const content = args.content;
     const expected = context.seen?.get(key);
@@ -311,4 +351,73 @@ export function searchLines(work: { source: string; flags: string; files: { path
   worker.once("error", error => done.reject(error));
   worker.once("exit", () => done.reject(new Error("grep stopped unexpectedly")));
   return done.promise.finally(() => { clearTimeout(timer); signal.removeEventListener("abort", abort); void worker.terminate(); });
+}
+
+
+async function copyMove(volumes: VolumeService, context: ToolContext, computer: ComputerMount | null | undefined, name: string, args: Record<string, any>, signal: AbortSignal) {
+  const { ComputerFiles, computerPath } = await import("./computer-env.ts");
+  if (typeof args.from !== "string" || typeof args.to !== "string") throw new Error("from and to must be paths");
+  const from = resolve(context.mounts, args.from), to = resolve(context.mounts, args.to);
+  if (!from || !to) throw new Error("Name paths inside mounts");
+  writable(to);
+  if (name === "mv") writable(from);
+  const remote = (target: Resolved) => target.mount.volumeId === COMPUTER_VOLUME;
+  const files = computer ? new ComputerFiles(computer) : undefined;
+  const service = (target: Resolved) => remote(target) ? files! as unknown as VolumeService : volumes;
+  const stat = (target: Resolved) => service(target).call(target.mount.volumeId, context.tenant, "stat", { path: target.path });
+  const source = await stat(from);
+  if (from.mount.volumeId === to.mount.volumeId && (from.path === to.path || to.path.startsWith(`${from.path}/`))) throw new Error("Destination must differ from source and cannot be inside it");
+  const existing = await stat(to).catch(error => { if (error.status === 404) return undefined; throw error; });
+  if (existing && !args.overwrite) throw new Error("Destination exists; set overwrite: true to replace it");
+  if (existing && existing.type !== source.type) throw new Error("Source and destination must have the same type");
+  if (source.type === "directory" && name === "cp" && !args.recursive) throw new Error("Copying a directory requires recursive: true");
+  const entries = source.type === "file" ? [source] : await service(from).call(from.mount.volumeId, context.tenant, "list", { path: from.path, limit: 1001 }).then(listing => {
+    if (listing.next || listing.files.length > 1000) throw new Error("Copy or move is limited to 1000 files");
+    return listing.files;
+  });
+  const bytes = entries.reduce((sum: number, entry: FileEntry) => sum + entry.size, 0);
+  if (remote(from) && remote(to)) {
+    await files!.command(`mkdir -p -- ${computerPath(to.path.substring(0, to.path.lastIndexOf("/")) || "/")} && ${name === "mv" ? "mv -T" : "cp -aT"} ${args.overwrite ? "" : "-n"} -- ${computerPath(from.path)} ${computerPath(to.path)} && echo 'CAMEL_OK '`);
+  } else if (!remote(from) && !remote(to) && from.mount.volumeId === to.mount.volumeId) {
+    const result = await volumes.call(from.mount.volumeId, context.tenant, name === "mv" ? "rename" : "copy", { path: from.path, to: to.path, overwrite: !!args.overwrite, by: context.agent });
+    for (const entry of result.files) { remember(context.seen, `${to.mount.volumeId}:${entry.path}`, entry.version); context.onWrite?.({ path: to.show(entry.path), version: entry.version, size: entry.size, contentType: entry.contentType }); }
+  } else {
+    // Preflight every destination before copying any bytes. Cross-mount moves remove only verified copies.
+    for (const entry of entries) {
+      const destination = to.path + (source.type === "file" ? "" : entry.path.slice(from.path === "/" ? 0 : from.path.length));
+      const found = await service(to).call(to.mount.volumeId, context.tenant, "stat", { path: destination }).catch(error => { if (error.status === 404) return undefined; throw error; });
+      if (found && !args.overwrite) throw new Error("Destination exists; set overwrite: true to replace it");
+      if (found?.type === "directory") throw new Error("Destination is a directory");
+    }
+    if (source.type === "directory" && remote(to)) await files!.command(`mkdir -p -- ${computerPath(to.path)} && echo 'CAMEL_OK '`);
+    for (const entry of entries) {
+      signal.throwIfAborted();
+      const destination = to.path + (source.type === "file" ? "" : entry.path.slice(from.path === "/" ? 0 : from.path.length));
+      if (remote(from) || remote(to)) {
+        // Receive into a unique sibling first. A failed receipt must not replace an existing destination.
+        const temporary = posix.join(posix.dirname(destination), `.camel-${crypto.randomUUID()}${posix.extname(destination).slice(0, 32)}`);
+        if (remote(to)) {
+          try {
+            await computer!.transfer(context, true, { from: from.show(entry.path), to: temporary });
+            await files!.command(`${args.overwrite ? `mv -fT -- ${computerPath(temporary)} ${computerPath(destination)}` : `ln -- ${computerPath(temporary)} ${computerPath(destination)} && rm -- ${computerPath(temporary)}`} && echo 'CAMEL_OK '`);
+          } finally { await files!.command(`rm -f -- ${computerPath(temporary)}; echo 'CAMEL_OK '`).catch(() => {}); }
+        } else {
+          try {
+            await computer!.transfer({ ...context, onWrite: undefined }, false, { from: entry.path, to: to.show(temporary) });
+            const copied = await volumes.call(to.mount.volumeId, context.tenant, "copy", { path: temporary, to: destination, overwrite: !!args.overwrite, by: context.agent });
+            const written = copied.files[0];
+            remember(context.seen, `${to.mount.volumeId}:${destination}`, written.version);
+            context.onWrite?.({ path: to.show(destination), version: written.version, size: written.size, contentType: written.contentType });
+          } finally { await volumes.call(to.mount.volumeId, context.tenant, "remove", { path: temporary, by: context.agent }).catch(() => {}); }
+        }
+      } else {
+        const written = await volumes.put(context.tenant, to.mount.volumeId, destination, volumes.stream(context.tenant, entry), { contentType: entry.contentType, by: context.agent, ifMatch: args.overwrite ? undefined : 0 });
+        remember(context.seen, `${to.mount.volumeId}:${destination}`, written.version);
+        context.onWrite?.({ path: to.show(destination), version: written.version, size: written.size, contentType: written.contentType! });
+      }
+      if (name === "mv") await service(from).call(from.mount.volumeId, context.tenant, "remove", { path: entry.path, ifMatch: entry.version, by: context.agent });
+    }
+    if (name === "mv" && source.type === "directory" && remote(from)) await files!.command(`find ${computerPath(from.path)} -depth -type d -empty -delete; [ ! -e ${computerPath(from.path)} ] && echo 'CAMEL_OK '`);
+  }
+  return { from: from.show(from.path), to: to.show(to.path), files: entries.length, bytes };
 }

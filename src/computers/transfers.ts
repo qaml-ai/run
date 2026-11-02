@@ -3,9 +3,8 @@ import { HttpError } from "../http.ts";
 import type { FileLinks } from "../files.ts";
 import { resolve, writable, type ToolContext } from "../volume-tools.ts";
 import { VOLUME_LIMITS, type FileEntry, type VolumeService } from "../volumes.ts";
-import type { ComputerDriver, Reference } from "./providers.ts";
+import { quote, type ComputerDriver, type Reference } from "./providers.ts";
 
-const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
 const failure = (status: number) => new HttpError(status, status === 507 ? "Workspace storage limit reached" : status === 413 ? "Computer transfer exceeds the file size limit" : "Computer transfer failed");
 
 export class ComputerTransfers {

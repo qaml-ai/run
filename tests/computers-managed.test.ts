@@ -794,20 +794,20 @@ test("pieces add up to the total at any price, and a lower figure never charges 
   g.done();
 });
 
-test("upload and download reach the machine through the transfer code, with the agent's mounts", async () => {
+test("mount transfers reach the managed machine through exec", async () => {
   const f = await fixture();
   const seen: any[] = [];
-  f.service.options.transfers = { run: async (context: any, upload: boolean, args: any, driver: any, ref: any, seconds: number, key: string) => {
-    seen.push([context.tenant, context.agent, context.mounts, upload, args.from, ref.id, seconds, key]);
+  f.service.options.transfers = { run: async (context: any, upload: boolean, args: any, driver: any, ref: any, seconds: number) => {
+    seen.push([context.tenant, context.agent, upload, args.from, seconds]);
     return driver.call(ref, "computer_exec", { command: "curl something", timeoutSeconds: seconds });
   } } as any;
-  await f.connect();
-  await f.start();
-  const mounts = [{ volumeId: "v", path: "/workspace", mode: "rw" }];
-  await f.service.call("payg", "a", "computer_upload", { from: "hello.txt", to: "/tmp/hello.txt" }, "up", { mounts } as any);
-  await f.service.call("payg", "a", "computer_download", { from: "/tmp/out.txt", to: "out.txt" }, "down", { mounts } as any);
-  const { machine } = await f.row();
-  assert.deepEqual(seen, [["payg", "a", mounts, true, "hello.txt", machine, 120, "up"], ["payg", "a", mounts, false, "/tmp/out.txt", machine, 120, "down"]]);
-  assert.deepEqual(f.state.runs.map(run => [run.command, run.timeoutSeconds]), [["curl something", 120], ["curl something", 120]]);
+  await f.connect(); await f.start();
+  const mount = await f.service.filesystem("payg", "a");
+  assert.ok(mount);
+  const context = { tenant: "payg", agent: "a", mounts: [{ volumeId: "v", path: "/workspace", mode: "rw" as const }] };
+  await mount.transfer(context, true, { from: "/workspace/hello.txt", to: "/hello.txt" });
+  await mount.transfer(context, false, { from: "/out.txt", to: "/workspace/out.txt" });
+  assert.deepEqual(seen, [["payg", "a", true, "/workspace/hello.txt", 120], ["payg", "a", false, "./out.txt", 120]]);
+  assert.deepEqual(f.state.runs.map(run => [run.command, run.timeoutSeconds]), [[`cd "$HOME" && curl something`, 120], [`cd "$HOME" && curl something`, 120]]);
   f.done();
 });

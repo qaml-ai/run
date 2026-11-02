@@ -23,11 +23,18 @@ const httpRefused = (error: unknown) => error instanceof ProviderHttpError && (e
 const grpcRefused = (error: any) => error?.name === "ClientError" && (error.code === 16 || error.code === 7);
 // Capture on the remote disk, then return bounded streams. SDK helpers otherwise
 // buffer an arbitrarily large command response in the shared runtime process.
+// 64 KiB accommodates a 32 KiB inline file receipt after base64 encoding.
 export const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
-export const bounded = (run: string, before = "") => `d=$(mktemp -d) || exit 1; ${before}${run} >"$d/out" 2>"$d/err"; r=$?; head -c 24001 "$d/out"; head -c 24001 "$d/err" >&2; rm -rf "$d"; exit "$r"`;
+export const bounded = (run: string, before = "") => `d=$(mktemp -d) || exit 1; ${before}${run} >"$d/out" 2>"$d/err"; r=$?; head -c 65537 "$d/out"; head -c 65537 "$d/err" >&2; rm -rf "$d"; exit "$r"`;
 export function boundedCommand(command: string) { return bounded(`bash -lc ${quote(command)}`); }
 const shell = (args: Record<string, any>) => [boundedCommand(String(args.command)), Number(args.timeoutSeconds ?? 60)] as const;
-export const output = (code: number, stdout: string, stderr = "") => ({ exitCode: code, stdout: stdout.slice(0, 24000), stderr: stderr.slice(0, 24000), truncated: stdout.length > 24000 || stderr.length > 24000 });
+export const output = (code: number, stdout: string, stderr = "") => ({ exitCode: code, stdout: stdout.slice(0, 65536), stderr: stderr.slice(0, 65536), truncated: stdout.length > 65536 || stderr.length > 65536 });
+
+/** Internal file calls retain fixed receipts only; provider stderr can repeat signed URLs. */
+export function fileReceipts(value: any) {
+  const stdout = typeof value?.stdout === "string" ? value.stdout.split("\n").filter((line: string) => /^CAMEL_(?:OK [A-Za-z0-9+/=]*|MISSING|CONFLICT|TRANSFER \d{3}|FILE \d+ [a-f0-9]{64})$/.test(line)).join("\n") : "";
+  return { exitCode: value?.exitCode, stdout, truncated: !!value?.truncated };
+}
 
 async function browserCall(ref: Reference, operation: string, args: Record<string, any>) {
   const { chromium } = await import("playwright-core");

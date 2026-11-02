@@ -565,6 +565,28 @@ export class VolumeService {
 
   private async mutate(volume: Volume, op: string, args: Record<string, any>): Promise<any> {
     const id = volume.header.id;
+    if (op === "copy" || op === "rename") {
+      const from = normalizePath(args.path), to = normalizePath(args.to);
+      if (from === "/" || to === "/" || from === to || to.startsWith(`${from}/`) || from.startsWith(`${to}/`)) throw new HttpError(400, "Invalid copy or rename paths");
+      const source = this.stat(volume.tree, from);
+      const files = [...volume.tree.files].filter(([path]) => path === from || path.startsWith(`${from}/`));
+      if (files.length > 1000) throw new HttpError(413, "Copy or move is limited to 1000 files");
+      const destinations = files.map(([path, entry]) => ({ path: to + path.slice(from.length), entry }));
+      const existing = [...volume.tree.files.keys()].filter(path => path === to || path.startsWith(`${to}/`));
+      if (existing.length && !args.overwrite) throw new HttpError(409, "Destination exists; set overwrite: true to replace it");
+      for (const { path } of destinations) {
+        const conflict = volume.tree.conflict(path);
+        if (conflict) throw new HttpError(409, conflict);
+      }
+      if (volume.tree.files.size + destinations.filter(({ path }) => !volume.tree.files.has(path)).length - (op === "rename" ? files.length : 0) > VOLUME_LIMITS.files) throw new HttpError(507, "Volume file limit reached");
+      await this.touch(volume.header.tenant, destinations.flatMap(({ entry }) => entry.chunks));
+      let seq = volume.seq;
+      const records: TreeRecord[] = destinations.map(({ path, entry }) => ({ t: "put", path, seq: ++seq, entry: { ...entry, version: seq, updatedAt: Date.now(), by: args.by } }));
+      const written = records.map(record => ({ path: (record as any).path, ...(record as any).entry }));
+      if (op === "rename") for (const [path] of files) records.push({ t: "del", path, seq: ++seq, at: Date.now(), by: args.by });
+      await this.commitAll(volume, records);
+      return { files: written };
+    }
     if (op === "commit") {
       const path = normalizePath(args.path);
       if (path === "/") throw new HttpError(400, "A file needs a name");
