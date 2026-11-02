@@ -9,10 +9,10 @@ const PUBLIC = "https://agents.example.test";
 const REDIRECT = "http://127.0.0.1:43210/callback";
 const TOOLS = ["signups_daily", "accounts", "activation", "agents", "usage_daily", "usage_models", "spend", "balances", "storage", "oauth_grants", "trend", "health"];
 
-/** An MCP client of /ops/mcp with `token`, and a call that gives each tool's JSON. */
+/** An MCP client of /v1/ops/mcp with `token`, and a call that gives each tool's JSON. */
 async function connect(t: { after(fn: () => unknown): void }, base: string, token: string) {
   const client = new Client({ name: "ops-test", version: "1" });
-  await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/ops/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
+  await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/v1/ops/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
   t.after(() => client.close());
   return async (name: string, args: Record<string, unknown> = {}) => {
     const result: any = await client.callTool({ name, arguments: args });
@@ -37,9 +37,9 @@ async function session(r: { base: string }, resource: string) {
 
 test("the operations endpoint names its own protected resource, and answers nobody who is not signed in", async t => {
   const r = await runtime(t, body => ({ role: "assistant", content: `echo: ${lastUser(body)}` }));
-  const metadata = await (await fetch(`${r.base}/.well-known/oauth-protected-resource/ops/mcp`)).json() as any;
+  const metadata = await (await fetch(`${r.base}/.well-known/oauth-protected-resource/v1/ops/mcp`)).json() as any;
   assert.deepEqual([metadata.resource, metadata.authorization_servers, metadata.scopes_supported, metadata.resource_name],
-    [`${PUBLIC}/ops/mcp`, [PUBLIC], ["ops"], "camelRun operations"]);
+    [`${PUBLIC}/v1/ops/mcp`, [PUBLIC], ["ops"], "camelRun operations"]);
   assert.equal(metadata.resource_documentation, `${PUBLIC}/docs/operations/ops-mcp.md`);
   const server = await (await fetch(`${r.base}/.well-known/oauth-authorization-server`)).json() as any;
   assert.deepEqual(server.scopes_supported, ["agents", "ops"]);
@@ -48,17 +48,17 @@ test("the operations endpoint names its own protected resource, and answers nobo
   assert.deepEqual([hosted.resource, hosted.scopes_supported, hosted.resource_name], [`${PUBLIC}/mcp`, ["agents"], "camelRun"]);
 
   // Without a token it says where to sign in, for its own resource and scope.
-  const anonymous = await fetch(`${r.base}/ops/mcp`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+  const anonymous = await fetch(`${r.base}/v1/ops/mcp`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
   assert.equal(anonymous.status, 401);
-  assert.match(anonymous.headers.get("www-authenticate")!, new RegExp(`^Bearer resource_metadata="${PUBLIC}/\\.well-known/oauth-protected-resource/ops/mcp".*scope="ops"`));
+  assert.match(anonymous.headers.get("www-authenticate")!, new RegExp(`^Bearer resource_metadata="${PUBLIC}/\\.well-known/oauth-protected-resource/v1/ops/mcp".*scope="ops"`));
   // An API token is no OAuth token: this endpoint takes the team's sign-in only.
-  const api = await fetch(`${r.base}/ops/mcp`, { method: "POST", headers: { Authorization: `Bearer ${OPERATOR}`, "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+  const api = await fetch(`${r.base}/v1/ops/mcp`, { method: "POST", headers: { Authorization: `Bearer ${OPERATOR}`, "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
   assert.equal(api.status, 401);
 });
 
 test("only the tenants on AGENT_OPS_ADMINS connect: anyone else is refused at consent, and /mcp is untouched", async t => {
   const r = await runtime(t, body => ({ role: "assistant", content: `echo: ${lastUser(body)}` }));
-  const { cookie, query, post, client, verifier } = await session(r, `${PUBLIC}/ops/mcp`);
+  const { cookie, query, post, client, verifier } = await session(r, `${PUBLIC}/v1/ops/mcp`);
   // No AGENT_OPS_ADMINS: alice is a tenant like any other, and the team's endpoint says so, without granting a code.
   const consent = await fetch(`${r.base}/oauth/authorize?${query}`, { headers: { Cookie: cookie } });
   assert.equal(consent.status, 403);
@@ -78,14 +78,14 @@ test("only the tenants on AGENT_OPS_ADMINS connect: anyone else is refused at co
   // the endpoint checks the list itself, not only the consent that issued the token.
   await r.db.query("insert into oauth_grants (id, tenant, client_id, client_name, login, scope, resource, created_at) values ('grt_ops', 'alice', 'mcp_x', 'Ops dashboard', 'alice@example.test', 'ops', 'ops', $1)", [Date.now()]);
   await r.db.query("insert into oauth_tokens (sha256, kind, grant_id, expires_at) values ($1, 'access', 'grt_ops', $2)", [createHash("sha256").update("aro_off-list").digest("hex"), Date.now() + 3_600_000]);
-  const offList = await fetch(`${r.base}/ops/mcp`, { method: "POST", headers: { Authorization: "Bearer aro_off-list", "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+  const offList = await fetch(`${r.base}/v1/ops/mcp`, { method: "POST", headers: { Authorization: "Bearer aro_off-list", "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
   assert.equal(offList.status, 403);
   assert.equal((await offList.json() as any).code, "NOT_TEAM");
 });
 
 test("the tools: read-only rows a dashboard charts, and a token that works here works nowhere else", async t => {
   const r = await runtime(t, body => ({ role: "assistant", content: `echo: ${lastUser(body)}` }), { AGENT_OPS_ADMINS: "alice" });
-  const { cookie, query, post, client, verifier } = await session(r, `${PUBLIC}/ops/mcp`);
+  const { cookie, query, post, client, verifier } = await session(r, `${PUBLIC}/v1/ops/mcp`);
   const consent = await fetch(`${r.base}/oauth/authorize?${query}`, { headers: { Cookie: cookie } });
   assert.equal(consent.status, 200);
   assert.match(await consent.text(), /production operations data[\s\S]*read-only/);
@@ -98,13 +98,13 @@ test("the tools: read-only rows a dashboard charts, and a token that works here 
   assert.match(tokens.access_token, /^aro_/);
   assert.equal(tokens.scope, "ops");
 
-  // It reaches /ops/mcp and nothing else that an /mcp token reaches.
+  // It reaches /v1/ops/mcp and nothing else that an /mcp token reaches.
   assert.equal((await r.call("/v1/me", { token: tokens.access_token })).status, 401);
   const crossed = await fetch(`${r.base}/mcp`, { method: "POST", headers: { Authorization: `Bearer ${tokens.access_token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
   assert.equal(crossed.status, 401, "an ops token is no token at /mcp");
 
   const call = await connect(t, r.base, tokens.access_token);
-  const list = await fetch(`${r.base}/ops/mcp`, { method: "POST", headers: { Authorization: `Bearer ${tokens.access_token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+  const list = await fetch(`${r.base}/v1/ops/mcp`, { method: "POST", headers: { Authorization: `Bearer ${tokens.access_token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
   const tools = (await list.json() as any).result.tools as any[];
   assert.deepEqual(tools.map(tool => tool.name), TOOLS);
   for (const tool of tools) {
@@ -147,6 +147,6 @@ test("the tools: read-only rows a dashboard charts, and a token that works here 
   }
 
   // Stateless: only POST answers.
-  assert.equal((await fetch(`${r.base}/ops/mcp`, { headers: { Authorization: `Bearer ${tokens.access_token}` } })).status, 405);
-  assert.equal((await fetch(`${r.base}/ops/mcp`, { method: "DELETE", headers: { Authorization: `Bearer ${tokens.access_token}` } })).status, 405);
+  assert.equal((await fetch(`${r.base}/v1/ops/mcp`, { headers: { Authorization: `Bearer ${tokens.access_token}` } })).status, 405);
+  assert.equal((await fetch(`${r.base}/v1/ops/mcp`, { method: "DELETE", headers: { Authorization: `Bearer ${tokens.access_token}` } })).status, 405);
 });

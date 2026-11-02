@@ -33,14 +33,16 @@ export interface OAuthOptions {
   /** Whether the console signs in with GitHub and with Google (the sign-in page also takes an email and password). */
   github: boolean;
   google?: boolean;
-  /** The tenants (AGENT_OPS_ADMINS) who may connect to the team's read-only operations endpoint, /ops/mcp; nobody without it. */
+  /** The tenants (AGENT_OPS_ADMINS) who may connect to the team's read-only operations endpoint, /v1/ops/mcp; nobody without it. */
   opsAdmins?: ReadonlySet<string>;
 }
 
 export const SCOPE = "agents";
 /** The operations endpoint's scope: a token for it works there alone, as /mcp's works at /mcp (src/ops-mcp.ts). */
 export const OPS_SCOPE = "ops";
-export const OPS_PATH = "/ops/mcp";
+export const OPS_PATH = "/v1/ops/mcp";
+/** Its protected-resource metadata (RFC 9728): the well-known prefix, then the resource's path. */
+export const OPS_METADATA_PATH = `/.well-known/oauth-protected-resource${OPS_PATH}`;
 /** What a grant's tokens act on: the hosted endpoint and agents ('agents'), or the team's operations endpoint ('ops'). */
 export type OAuthResource = "agents" | "ops";
 export const ACCESS_TOKEN_MS = 3600_000;
@@ -92,7 +94,7 @@ export class OAuth {
 
   get issuer() { return this.options.origins.issuer; }
   private get opsAdmins() { return this.options.opsAdmins; }
-  /** Whether `tenant` is one of the team's: who may connect to /ops/mcp, and whose grants there stand. */
+  /** Whether `tenant` is one of the team's: who may connect to /v1/ops/mcp, and whose grants there stand. */
   opsAdmin(tenant: string) { return this.options.opsAdmins?.has(tenant) ?? false; }
   private scopeOf(resource: OAuthResource) { return resource === "ops" ? OPS_SCOPE : SCOPE; }
   private get base() { return this.options.origins.canonical; }
@@ -119,7 +121,7 @@ export class OAuth {
 
   /**
    * The tenant an OAuth access token acts for, while it is unexpired and its grant stands, at `resource`: a token for
-   * /ops/mcp answers nothing at /mcp or /v1, and the other way around (the grant's resource is what binds it).
+   * /v1/ops/mcp answers nothing at /mcp or /v1, and the other way around (the grant's resource is what binds it).
    */
   async authenticate(authorization: string | undefined, resource: OAuthResource = "agents"): Promise<OAuthPrincipal | undefined> {
     if (!authorization?.startsWith(`Bearer ${ACCESS}`)) return undefined;
@@ -307,7 +309,7 @@ export class OAuth {
     const app = new Hono();
     // Clients in browsers (an inspector, a web app) call these directly: they take no cookies.
     const open = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type, MCP-Protocol-Version", "Cache-Control": "no-store" };
-    const publicPaths = ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource/ops/mcp", "/oauth/register", "/oauth/token", "/oauth/revoke"];
+    const publicPaths = ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", OPS_METADATA_PATH, "/oauth/register", "/oauth/token", "/oauth/revoke"];
     for (const path of publicPaths) app.options(path, c => c.body(null, 204, { ...open, "Access-Control-Max-Age": "86400" }));
     const oauthError = (c: Context, error: unknown) => {
       if (!(error instanceof OAuthError)) throw error;
@@ -325,7 +327,7 @@ export class OAuth {
     const reached = (c: Context) => this.options.origins.of(c.req.raw.headers);
     for (const path of publicPaths.slice(0, 2)) app.get(path, c => c.json(this.protectedResource(`${reached(c)}/mcp`), 200, { ...open, "Cache-Control": "public, max-age=300" }));
     // The team's operations endpoint, which only its own scope's tokens reach (src/ops-mcp.ts).
-    app.get("/.well-known/oauth-protected-resource/ops/mcp", c => c.json(this.protectedResource(`${reached(c)}${OPS_PATH}`, "operations/ops-mcp.md", { scope: OPS_SCOPE, name: "camelRun operations" }), 200, { ...open, "Cache-Control": "public, max-age=300" }));
+    app.get(OPS_METADATA_PATH, c => c.json(this.protectedResource(`${reached(c)}${OPS_PATH}`, "operations/ops-mcp.md", { scope: OPS_SCOPE, name: "camelRun operations" }), 200, { ...open, "Cache-Control": "public, max-age=300" }));
     const agentMetadata = "/.well-known/oauth-protected-resource/v1/agents/:id{client_[a-f0-9]{40}}/mcp";
     app.options(agentMetadata, c => c.body(null, 204, { ...open, "Access-Control-Max-Age": "86400" }));
     app.get(agentMetadata, c => c.json(this.protectedResource(`${reached(c)}/v1/agents/${c.req.param("id")}/mcp`, "guides/mcp-server.md"), 200, { ...open, "Cache-Control": "public, max-age=300" }));
@@ -458,7 +460,7 @@ ${about}
   }
 
   /**
-   * The page a consent to /ops/mcp gets when the signed-in account is not on AGENT_OPS_ADMINS: the same answer at the
+   * The page a consent to /v1/ops/mcp gets when the signed-in account is not on AGENT_OPS_ADMINS: the same answer at the
    * consent page and at the endpoint (src/ops-mcp.ts), and recorded, so a team member can see who asked.
    */
   private notTeam(c: Context, principal: { tenant: string; login?: string }) {

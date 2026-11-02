@@ -1,27 +1,27 @@
 # Operations MCP server
 
-`/ops/mcp` is the team's read-only MCP endpoint: the platform's own counts, names, times, dollars and bytes, for a
+`/v1/ops/mcp` is the team's read-only MCP endpoint: the platform's own counts, names, times, dollars and bytes, for a
 connector whose dashboards ask production live (`src/ops-mcp.ts`, and the queries in `src/ops-reports.ts`). It is
 not a tenant's endpoint: it answers across every account, so only the team connects it.
 
 ## Connecting
 
 Add it as a custom connector in claude.ai (Settings, Connectors, Add custom connector, with
-`https://run.camelai.com/ops/mcp` and the client id and secret left empty: the runtime registers the client), or in any
+`https://run.camelai.com/v1/ops/mcp` and the client id and secret left empty: the runtime registers the client), or in any
 MCP client that signs in with OAuth:
 
 ```sh
-claude mcp add --transport http ops https://run.camelai.com/ops/mcp
+claude mcp add --transport http ops https://run.camelai.com/v1/ops/mcp
 # then /mcp in Claude Code to sign in
 ```
 
 Signing in goes through the console's sign-in page, then a consent page that says what the connector reads: sign-ups,
 agents, model usage, spend, storage and OAuth grants, read-only, and never messages, prompts, tokens or secrets.
 
-The endpoint's protected-resource metadata is `/.well-known/oauth-protected-resource/ops/mcp` (RFC 9728): the resource is
+The endpoint's protected-resource metadata is `/.well-known/oauth-protected-resource/v1/ops/mcp` (RFC 9728): the resource is
 the endpoint, the scope is `ops`, and the authorization server is the runtime's own, which is `/mcp`'s too. A token for
 one resource answers nothing at the other: an `ops` token is refused at `/mcp` and `/v1`, and an `agents` token at
-`/ops/mcp`. The grant's `resource` column (`migrations/063_oauth_resource.sql`) is what binds a token to its resource,
+`/v1/ops/mcp`. The grant's `resource` column (`migrations/063_oauth_resource.sql`) is what binds a token to its resource,
 and `/v1/oauth/grants` shows each grant's `resource` beside its client.
 
 ## Who may connect
@@ -34,7 +34,7 @@ The check is made twice and then on every request:
 - at the consent page, for the signed-in tenant: anyone else gets a 403 page saying the endpoint is for the team only,
   and no code is issued (a form posted without that page is refused the same way);
 - when a code is exchanged for tokens, so a consent given before someone was taken off the list grants nothing;
-- at `/ops/mcp` on every request: a token whose tenant is no longer on the list answers 403 `NOT_TEAM`.
+- at `/v1/ops/mcp` on every request: a token whose tenant is no longer on the list answers 403 `NOT_TEAM`.
 
 Taking a tenant off takes effect for new requests at the next deploy or restart (the list is read at startup). Its
 existing grant's next refresh ends the grant, and `POST /oauth/revoke` or `DELETE /v1/oauth/grants/:id` ends it at once.

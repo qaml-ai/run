@@ -192,7 +192,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
       turnModels: env.AGENT_VOICE_TURN_MODELS === "true", turnWorkers: env.AGENT_VOICE_TURN_WORKERS ? Number(env.AGENT_VOICE_TURN_WORKERS) : undefined },
     verifyKeys: env.AGENT_VERIFY_KEYS !== "false",
     billingAdmins: (env.AGENT_BILLING_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean),
-    // Tenants (comma-separated) who may connect the team's read-only operations endpoint, /ops/mcp (src/ops-mcp.ts).
+    // Tenants (comma-separated) who may connect the team's read-only operations endpoint, /v1/ops/mcp (src/ops-mcp.ts).
     opsAdmins: (env.AGENT_OPS_ADMINS ?? "").split(",").map(value => value.trim()).filter(Boolean),
     purgeMs, billingMs, reconcileDays,
     gc: {

@@ -6231,7 +6231,7 @@
               "agents",
               "ops"
             ],
-            "description": "What its tokens act on: agents is /mcp and the API, ops is the team's read-only /ops/mcp endpoint"
+            "description": "What its tokens act on: agents is /mcp and the API, ops is the team's read-only /v1/ops/mcp endpoint"
           },
           "createdAt": {
             "type": "number"

@@ -11,7 +11,7 @@ import { MAX_DAYS } from "./ops-reports.ts";
 import { VERSION } from "../packages/cli/src/version.ts";
 
 /**
- * The team's read-only operations MCP endpoint, /ops/mcp: the platform's own counts, names, times, dollars and bytes
+ * The team's read-only operations MCP endpoint, /v1/ops/mcp: the platform's own counts, names, times, dollars and bytes
  * (src/ops-reports.ts), for a connector whose dashboards ask production live. It signs in with the same OAuth server as
  * /mcp (src/oauth.ts) for the `ops` resource: a /mcp token is refused here and this one there, and only a tenant on
  * AGENT_OPS_ADMINS gets past the 403, checked on every request. Stateless JSON-RPC over POST, as /mcp is.

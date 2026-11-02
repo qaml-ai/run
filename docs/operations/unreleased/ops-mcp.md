@@ -1,6 +1,6 @@
 ### The team's operations MCP server
 
-`/ops/mcp` is a read-only MCP endpoint for the platform's own operations data: sign-ups, activation, agents, model
+`/v1/ops/mcp` is a read-only MCP endpoint for the platform's own operations data: sign-ups, activation, agents, model
 usage, the credit ledger, balances, storage and OAuth grants, as rows a dashboard charts. It signs in with the runtime's
 OAuth server for a scope of its own (`ops`), so a token for it does not work on `/mcp` or the API, and the other way
 round. Only tenants listed in the new `AGENT_OPS_ADMINS` may connect; unset, nobody can. Each request re-checks the

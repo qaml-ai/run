@@ -861,7 +861,7 @@ export const OAuthGrant = z.object({
   id: z.string(), clientName: z.string().openapi({ description: "The name the application registered with" }),
   login: z.string().nullable().openapi({ description: "Who consented, when they signed in with GitHub" }),
   scope: z.string(),
-  resource: z.enum(["agents", "ops"]).openapi({ description: "What its tokens act on: agents is /mcp and the API, ops is the team's read-only /ops/mcp endpoint" }),
+  resource: z.enum(["agents", "ops"]).openapi({ description: "What its tokens act on: agents is /mcp and the API, ops is the team's read-only /v1/ops/mcp endpoint" }),
   createdAt: z.number(), usedAt: z.number().nullable().openapi({ description: "When it last got tokens" }),
 }).openapi("OAuthGrant");
 export const TokenCreated = Token.extend({ token: z.string().openapi({ description: "The secret; shown only once" }) }).openapi("TokenCreated");
