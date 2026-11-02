@@ -6,17 +6,17 @@ import type { Outbound } from "../outbound.ts";
 import type { ToolDefinition } from "../protocol.ts";
 import { Workspaces } from "../workspaces.ts";
 import type { ToolContext } from "../volume-tools.ts";
+import type { ComputerMount } from "../computer-env.ts";
 import type { ComputerTransfers } from "./transfers.ts";
 import { fileCommand, MANAGED, ManagedComputers, managedTools, storable } from "./managed.ts";
-import { driver, isBrowserProvider, PROVIDERS, type Credentials, type DriverFactory, type ComputerDriver, type Provider, type Reference } from "./providers.ts";
+import { fileReceipts, driver, isBrowserProvider, PROVIDERS, type Credentials, type DriverFactory, type ComputerDriver, type Provider, type Reference } from "./providers.ts";
 
 const id = () => `cmp_${randomUUID().replaceAll("-", "")}`;
 const parameters = (properties = {}, required: string[] = []) => ({ type: "object", additionalProperties: false, properties, required });
 const text = { type: "string", minLength: 1, maxLength: 32000 };
 const tool = (name: string, description: string, props = {}, required: string[] = []): ToolDefinition => ({ name, description, timeoutMs: 180000, exposure: "both", parameters: parameters(props, required) });
-const COMMON = [tool("computer_start", "Start your attached computer or return its current session. Files and processes survive across turns until its fixed expiry. A new session after expiry starts empty."), tool("computer_status", "Read your computer's session and fixed expiry; does not start one."), tool("computer_stop", "Stop your attached computer and discard its session files. Call this when the task is finished and no follow-up needs it, after copying results out with computer_download.")];
+const COMMON = [tool("computer_start", "Start your attached computer or return its current session. Files and processes survive across turns until its fixed expiry. A new session after expiry starts empty. A shell computer mounts its home directory at /computer for the file tools; save results to a volume with cp before stopping."), tool("computer_status", "Read your computer's session and fixed expiry; does not start one."), tool("computer_stop", "Stop your attached computer and discard its session files. Call this when the task is finished and no follow-up needs it, after copying results to a volume with cp.")];
 const SHELL = [tool("computer_exec", "Call computer_start first. Run a shell command in your attached remote Linux computer, never on the camelRun host. Inspect exitCode. Redirect output for background processes. Files survive between calls until expiry.", { command: text, timeoutSeconds: { type: "integer", minimum: 1, maximum: 120 } }, ["command"]), tool("computer_write_file", "Write a UTF-8 file in your remote computer. This is separate from camelRun workspace files.", { path: text, content: { type: "string", maxLength: 16000 } }, ["path", "content"]), tool("computer_read_file", "Read up to 24000 characters from a UTF-8 file in your remote computer.", { path: text }, ["path"])];
-SHELL.push(tool("computer_upload", "Copy a workspace file to your remote computer without reading its contents into context. Returns path, size in bytes and sha256.", { from: text, to: text }, ["from", "to"]), tool("computer_download", "Copy a remote computer file to your workspace or a mount without reading its contents into context. Returns path, size in bytes and sha256. Your workspace and mounts are not on the computer, so cp or redirects there do not reach them; only this tool saves there. If it refuses, tell the user where the file is.", { from: text, to: text }, ["from", "to"]));
 const BROWSER = [tool("browser_navigate", "Navigate your attached remote browser to an HTTP(S) URL.", { url: text }, ["url"]), tool("browser_read", "Read the current remote page's title, URL and visible text."), tool("browser_click", "Click a CSS selector in the remote page.", { selector: text }, ["selector"]), tool("browser_fill", "Fill a CSS-selected input in the remote page.", { selector: text, text: { type: "string", maxLength: 16000 } }, ["selector", "text"]), tool("browser_evaluate", "Run JavaScript in the remote web page and return a JSON result. No host shell or filesystem access.", { expression: text }, ["expression"])];
 export const COMPUTER_TOOLS = new Set([...COMMON, ...SHELL, ...BROWSER].map(t => t.name));
 const publicConnection = (r: any) => ({ id: r.id, agent: r.agent, provider: r.provider, managed: !!r.managed, leaseSeconds: r.lease_seconds, dailySeconds: r.daily_seconds, createdAt: r.created_at, billing: r.managed ? "credits" : "provider_account", session: publicLease(r.lease) });
@@ -27,7 +27,7 @@ export class Computers {
   readonly managed: ManagedComputers;
   constructor(options: Computers["options"]) {
     this.options = options;
-    this.managed = new ManagedComputers({ db: options.db, accounts: options.accounts, outbound: options.outbound, enabled: !!options.enabled, runtime: options.runtime ?? "", transfers: () => options.transfers, endUsers: options.endUsers, credit: options.credit, payer: options.payer, machines: options.machines, sleep: options.sleep, now: () => this.now() });
+    this.managed = new ManagedComputers({ db: options.db, accounts: options.accounts, outbound: options.outbound, enabled: !!options.enabled, runtime: options.runtime ?? "", endUsers: options.endUsers, credit: options.credit, payer: options.payer, machines: options.machines, sleep: options.sleep, now: () => this.now() });
   }
   private now() { return this.options.now?.() ?? Date.now(); }
   private async lock<T>(tenant: string, agent: string, fn: (sql: DbClient) => Promise<T>) {
@@ -40,7 +40,10 @@ export class Computers {
       try { await sql.query("select pg_advisory_unlock(hashtextextended($1, 0))", [`computer:${tenant}:${agent}`]); } finally { sql.release(); }
     }
   }
-  async revision(tenant: string, agent: string) { return (await this.options.db.query("select id from computer_connections where tenant=$1 and agent=$2", [tenant, agent])).rows[0]?.id ?? ""; }
+  async revision(tenant: string, agent: string) {
+    const mount = await this.filesystem(tenant, agent);
+    return `${(await this.options.db.query("select id from computer_connections where tenant=$1 and agent=$2", [tenant, agent])).rows[0]?.id ?? ""}:${mount?.id ?? ""}`;
+  }
   async removeTenant(tenant: string) { for (const c of await this.list(tenant)) await this.remove(tenant, c.id); }
   async list(tenant: string) {
     const { rows } = await this.options.db.query("select c.*, row_to_json(l) as lease from computer_connections c left join lateral (select * from computer_leases where connection=c.id order by sequence desc limit 1) l on true where c.tenant = $1 and c.agent not like 'removed:%' order by c.created_at", [tenant]);
@@ -128,14 +131,14 @@ export class Computers {
       return { confirmed: true };
     });
   }
-  async call(tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, files?: Pick<ToolContext, "mounts" | "onWrite">) {
+  async call(tenant: string, agent: string, name: string, args: Record<string, any>, requestKey: string, files?: Pick<ToolContext, "mounts" | "onWrite">, receiptsOnly = false) {
     if (!COMPUTER_TOOLS.has(name)) throw new HttpError(400, "Unknown computer tool");
     const connection = await this.connection(tenant, agent);
     if (connection.managed) {
       if (!SHELL.concat(COMMON).some(t => t.name === name)) throw new HttpError(400, "Tool not supported by this computer");
       const input = JSON.stringify([name, args]);
       if (input.length > 40000) throw new HttpError(400, "Computer tool input too large");
-      return this.managed.call(connection, tenant, agent, name, args, requestKey, createHash("sha256").update(input).digest("hex"), files);
+      return this.managed.call(connection, tenant, agent, name, args, requestKey, createHash("sha256").update(input).digest("hex"), files, receiptsOnly);
     }
     return this.lock(tenant, agent, async sql => {
       const c = await this.connection(tenant, agent, sql);
@@ -178,27 +181,22 @@ export class Computers {
       if (input.length > 40000) throw new HttpError(400, "Computer tool input too large");
       const previous = (await sql.query("select * from computer_commands where lease=$1 and key=$2", [lease.id, requestKey])).rows[0];
       if (previous) { if (previous.input_hash !== hash) throw new HttpError(409, "Retried computer call changed"); if (previous.state !== "completed") throw new HttpError(409, "Previous command outcome unknown; inspect the computer before retrying"); return previous.result; }
-      const transfer = name === "computer_upload" || name === "computer_download";
-      let command = transfer ? "true" : args.command;
+      let command = args.command;
       command = fileCommand(name, args) ?? command;
       if (!isBrowserProvider(c.provider) && (typeof command !== "string" || !command || command.length > 32000)) throw new HttpError(400, "Invalid command");
-      const timeout = transfer ? 120 : args.timeoutSeconds ?? 60;
+      const timeout = args.timeoutSeconds ?? 60;
       if (!Number.isInteger(timeout) || timeout < 1 || timeout > 120) throw new HttpError(400, "Command timeout must be 1–120 seconds");
       await sql.query("insert into computer_commands(lease,key,input_hash,state,created_at,tenant) values($1,$2,$3,'pending',$4,$5)", [lease.id, requestKey, hash, this.now(), tenant]);
       try {
         const ref = JSON.parse(this.options.accounts.unseal(`computer-lease:${lease.id}`, lease.reference));
         const seconds = Math.max(1, Math.min(timeout, Math.floor((lease.expires_at-this.now())/1000)));
         const value = await this.useProvider(c, p => {
-          if (transfer) {
-            if (!this.options.transfers) throw new HttpError(400, "Computer transfers are not enabled");
-            return this.options.transfers.run({ tenant, agent, mounts: files?.mounts ?? [], onWrite: files?.onWrite }, name === "computer_upload", args, p, ref, seconds, requestKey);
-          }
           return p.call(ref, name, { ...args, command, timeoutSeconds: seconds, requestKey, remainingSeconds: Math.max(1, Math.floor((lease.expires_at-this.now())/1000)) });
         });
-        const result = storable(value);
+        const result = storable(receiptsOnly ? fileReceipts(value) : value);
         await sql.query("update computer_commands set state='completed',result=$3 where lease=$1 and key=$2", [lease.id, requestKey, JSON.stringify(result)]);
         return result;
-      } catch (error) { await sql.query("update computer_commands set state='uncertain' where lease=$1 and key=$2", [lease.id, requestKey]); if (transfer && error instanceof HttpError) throw error; throw new HttpError(502, "Computer command failed; outcome may be uncertain"); }
+      } catch (error) { await sql.query("update computer_commands set state='uncertain' where lease=$1 and key=$2", [lease.id, requestKey]); throw new HttpError(502, "Computer command failed; outcome may be uncertain"); }
       };
       try {
         const result = await execute();
@@ -209,6 +207,26 @@ export class Computers {
         throw error;
       }
     });
+  }
+  /** A live filesystem handle. Every command still goes through metering and lease checks. */
+  async filesystem(tenant: string, agent: string): Promise<ComputerMount | null | undefined> {
+    let status;
+    try { status = await this.status(tenant, agent); }
+    catch (error) { if ((error as HttpError).status === 404) return undefined; throw error; }
+    if (isBrowserProvider(status.connection.provider)) return undefined;
+    const session = status.session;
+    if (!session || session.state !== "active" || session.expiresAt <= this.now()) return null;
+    const exec = (command: string, receiptsOnly = false) => this.call(tenant, agent, "computer_exec", { command, timeoutSeconds: 120 }, randomUUID(), undefined, receiptsOnly);
+    return {
+      id: session.id,
+      exec,
+      transfer: async (context, upload, args) => {
+        if (!this.options.transfers) throw new Error("Computer transfers are not enabled");
+        const remote = (value: string) => `.${value.startsWith("/") ? value : `/${value}`}`;
+        return this.options.transfers.run(context, upload, upload ? { ...args, to: remote(args.to) } : { ...args, from: remote(args.from) },
+          { call: (_ref, _name, call) => exec(`cd "$HOME" && ${call.command}`, true) }, { id: session.id }, 120, randomUUID());
+      },
+    };
   }
   async usage(tenant: string) {
     const { rows } = await this.options.db.query("select workspace,provider,count(*)::integer as sessions,sum(greatest(0,least(coalesce(closed_at,$2),expires_at)-created_at))/1000.0 as seconds from computer_leases where tenant=$1 group by workspace,provider", [tenant, this.now()]);

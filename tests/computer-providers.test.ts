@@ -10,12 +10,12 @@ import Browserbase from '@browserbasehq/sdk';
 import { listen } from './runtime-server.ts';
 
 test('shell capture bounds both streams and preserves quoted commands and exit status', () => {
-  const command = boundedCommand(`printf '%s' "quote's value"; printf '%030000d' 1 >&2; exit 7`);
+  const command = boundedCommand(`printf '%s' "quote's value"; printf '%070000d' 1 >&2; exit 7`);
   try { execFileSync('bash',['-lc',command],{encoding:'utf8'}); assert.fail('expected exit 7'); }
   catch (error: any) {
     assert.equal(error.status,7);
     assert.equal(error.stdout,"quote's value");
-    assert.equal(error.stderr.length,24001);
+    assert.equal(error.stderr.length,65537);
   }
 });
 
@@ -84,8 +84,8 @@ test('Sprites uses HTTP create, bounded exec and idempotent deletion', async t =
   const command = `printf '%s' "quote's value ☃"; printf '\\001error\\003' >&2; exit 7`;
   assert.deepEqual(await provider.call(ref, 'computer_exec', {command, timeoutSeconds:12}), {exitCode:7, stdout:"quote's value ☃", stderr:'\x01error\x03', truncated:false});
   assert.equal(calls[1].body, boundedCommand(command));
-  const long: any = await provider.call(ref, 'computer_exec', {command:"printf '%030000d' 1; printf '%030000d' 1 >&2"});
-  assert.deepEqual(long, {exitCode:0, stdout:'0'.repeat(24000), stderr:'0'.repeat(24000), truncated:true});
+  const long: any = await provider.call(ref, 'computer_exec', {command:"printf '%070000d' 1; printf '%070000d' 1 >&2"});
+  assert.deepEqual(long, {exitCode:0, stdout:'0'.repeat(65536), stderr:'0'.repeat(65536), truncated:true});
   const timed: any = await provider.call(ref, 'computer_exec', {command:'sleep 5', timeoutSeconds:1});
   assert.equal(timed.exitCode, 124);
   incomplete = true;

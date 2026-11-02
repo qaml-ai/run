@@ -74,30 +74,55 @@ For a shell computer, a useful instruction is:
 > Use computer_start, then computer_exec to install the packages you need and
 > run the task. Inspect exitCode. Keep files in the computer between turns.
 > Stop the computer with computer_stop when done. Copy any results you need to
-> retain into workspace files with computer_download before stopping.
+> retain into workspace files with `cp` before stopping.
 
 Browser Use Cloud uses its direct browser API; the model loop stays in camelRun.
 Sessions disable recording and the optional proxy by default.
 
-Shell computers offer `computer_exec`, `computer_read_file`, `computer_write_file`,
-`computer_upload` and `computer_download`. Browserbase and Browser Use Cloud offer
+Shell computers offer `computer_exec`, `computer_read_file` and `computer_write_file`.
+The shared file tools also reach the computer through `/computer`. Browserbase and Browser Use Cloud offer
 `browser_navigate`, `browser_read`,
 `browser_click`, `browser_fill` and `browser_evaluate`. Both offer
 `computer_start`, `computer_status` and `computer_stop`.
 
-### Transfer workspace files
+### Computer files and transfers
 
-Use `computer_upload {"from":"/workspace/input.bin","to":"/tmp/input.bin"}` to copy
-a workspace file to the computer. Use
-`computer_download {"from":"/tmp/result.zip","to":"/workspace/result.zip"}` to
-save a computer file in the workspace. The result has `path`, `size` in bytes and
-`sha256`. File contents do not enter the model's context.
+After `computer_start`, `/computer` mounts the computer's home directory (`~`),
+read-write. For example, `/computer/project/main.py` is `~/project/main.py` in
+`computer_exec`. It is not the computer's `/`. `read`, `write`, `edit`, `ls`,
+`glob`, `grep` and the `fs` helpers use the same paths as other mounts. A stopped
+or expired computer has no mount; calls under `/computer` say to call
+`computer_start`. Browser-only connections do not have a filesystem mount.
 
-Transfers support binary files up to 256 MiB (268,435,456 bytes). Workspace paths
-use the same mounts and permissions as `read` and `write`: relative paths start
-at the first mount, and read-only mounts refuse downloads. Downloads create a
-new file version, record the agent as its author and count against storage quotas.
-Remote paths are interpreted by the computer.
+Computer files live only as long as the session and are gone after it expires
+or is stopped. Save results to a volume before then:
+
+```js
+await tools.cp({ from: "/workspace/input.bin", to: "/computer/input.bin" });
+await tools.cp({ from: "/computer/result.zip", to: "/workspace/result.zip" });
+await tools.mv({ from: "/computer/output", to: "/workspace/output" });
+```
+
+`cp` and `mv` take exact source and destination paths in any mounts. They return
+`{from, to, files, bytes}`. Existing destinations require `overwrite: true`;
+directory copies also require `recursive: true`. Each call handles at most
+1,000 files. `mv` removes a source only after its copy verifies; a failed
+cross-mount directory move can leave a partially moved tree, so inspect both
+paths before retrying. Read-only mounts cannot receive files or have files moved
+out of them. Empty directories persist only on computers; volumes hold files.
+
+The old `computer_upload` and `computer_download` tools have been removed. Use
+`cp` or `mv` instead. File contents travel between storage services and the
+computer without entering the model's context. Transfers support binary files
+up to 256 MiB (268,435,456 bytes) per file. Files saved to a volume get new
+versions, record the agent as author, and count against storage quotas.
+Computer text edits and writes are limited to 1 MiB; larger files can be copied
+or read in windows. Reads and writes up to 32 KiB use inline commands; larger
+ones use signed-link transfers through a writable volume. Temporary copies
+live under `.camel/computer/<uuid>/` in that volume and are removed after use.
+Image and PDF references pin their stored content before the temporary copy is
+removed, so they survive the computer session. `present_file` keeps its copy
+there as the delivered file.
 
 The computer needs `curl`, `sha256sum`, CA certificates and outbound access to the runtime's
 public API origin. The runtime supplies a signed file link that expires after

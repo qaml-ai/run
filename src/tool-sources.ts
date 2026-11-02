@@ -521,6 +521,7 @@ export class ToolSources {
     }));
   }
 
+  computerFilesystem(tenant: string, agent: string) { return this.options.computers?.filesystem(tenant, agent); }
   computerRevision(tenant: string, agent: string) { return this.options.computers?.revision(tenant, agent) ?? Promise.resolve(""); }
 
   server(context: SourceContext, sources: Sources | undefined): ToolServer {

@@ -234,7 +234,7 @@ test("fileTools: false leaves the model present_file alone, with the mounts stil
   await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { fileTools: null, apply: "all" } });
   await until(async () => (await r.call(`/v1/definitions/${definition.id}/agents`)).json.every((entry: any) => entry.revision === 2), "the apply");
   await r.prompt(agent, "again");
-  assert.deepEqual(direct(r.model.bodies.at(-1)), ["decide", "edit", "glob", "grep", "js_exec", "ls", "present_file", "read", "write"]);
+  assert.deepEqual(direct(r.model.bodies.at(-1)), ["cp", "decide", "edit", "glob", "grep", "js_exec", "ls", "mv", "present_file", "read", "write"]);
   assert.match(systemText(r.model.bodies.at(-1)) + JSON.stringify(r.model.bodies.at(-1).messages), /The file tools \(read/);
   await r.prompt(own, "hello");
   assert.deepEqual(direct(r.model.bodies.at(-1)), ["decide", "js_exec", "present_file"]);
