@@ -81,33 +81,97 @@ async function callAws({ service, operation, params, region }) {
   const signed = sign({ method: "POST", host: endpoint.host, path: "/", body, headers, credentials, region, service: signingService(service), now: new Date() });
   const response = await fetch(endpoint, { method: "POST", headers: signed, body, signal: AbortSignal.timeout(25_000) });
   const text = await response.text();
-  return { status: response.status, body: clip(text) };
+  // Query answers arrive as XML and are presented as compact JSON; everything else is already JSON.
+  const answer = response.ok && text.trimStart().startsWith("<")
+    ? present(text)
+    : text.length > 18_000 ? `${text.slice(0, 18_000)}\n[clipped: ${text.length} characters from AWS]` : text;
+  return { status: response.status, body: answer };
 }
 
 /**
- * A long answer is clipped, but the page cursor is kept: it sits at the end of the document, so
- * truncating from the end loses it and the model can only re-read the first page. Any token AWS
- * names is lifted out and appended after the clip.
+ * Query protocol answers are XML, and verbose: a DescribeInstances page is ~2 KB of tags per instance,
+ * most of them empty. The model only needs the fields that carry values, so the document is turned
+ * into JSON once, and that JSON is what gets clipped — with any page cursor kept, since it is the one
+ * thing a clipped answer must not lose.
  */
-function clip(text, max = 18_000) {
-  if (text.length <= max) return text;
-  const token = /<(nextToken|NextToken|nextMarker|NextMarker|marker|Marker)>([^<]*)</.exec(text);
-  return text.slice(0, max) + (token
-    ? `\n[clipped: ${text.length} characters from AWS. Continue with ${token[1]}=${token[2]}]`
-    : `\n[clipped: ${text.length} characters from AWS: ask for a smaller page with MaxResults]`);
+function parseXml(xml) {
+  const tokens = xml.replace(/<\?[^>]*\?>|<!--[\s\S]*?-->/g, "").match(/<\/?[^>]+>|[^<]+/g) ?? [];
+  const root = {};
+  const stack = [root];
+  for (const token of tokens) {
+    if (token.startsWith("</")) { stack.pop(); continue; }
+    if (token.startsWith("<")) {
+      const name = token.slice(1).replace(/\/>$/, "").split(/[\s>/]/)[0];
+      const parent = stack[stack.length - 1];
+      const child = {};
+      if (parent[name] === undefined) parent[name] = child;
+      else if (Array.isArray(parent[name])) parent[name].push(child);
+      else parent[name] = [parent[name], child];
+      if (!token.endsWith("/>")) stack.push(child);
+      continue;
+    }
+    const value = token.trim();
+    if (!value) continue;
+    const node = stack[stack.length - 1];
+    node["#text"] = node["#text"] === undefined ? value : node["#text"] + value;
+  }
+  return root;
 }
 
+/** Empty elements, request ids and single-key wrappers dropped; `#text` becomes the value. */
+function compact(node) {
+  if (Array.isArray(node)) return node.map(compact).filter(entry => entry !== undefined);
+  if (node === null || typeof node !== "object") return node;
+  const out = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "ResponseMetadata" || key === "requestId" || key === "RequestId") continue;
+    if (typeof value === "string" && value === "") continue;
+    const compacted = compact(value);
+    if (compacted === undefined || (typeof compacted === "object" && compacted !== null && Object.keys(compacted).length === 0 && !Array.isArray(compacted))) continue;
+    out[key] = compacted;
+  }
+  const keys = Object.keys(out);
+  if (keys.length === 1 && "#text" in out) return out["#text"];
+  if (keys.length === 1 && typeof out[keys[0]] === "object") return out[keys[0]];
+  return out;
+}
 
-/**
- * Query parameters are flat, and the shape differs by service:
- *
- *   CloudWatch, IAM, STS   AlarmNames.member.1=a     (a list is `member.N`)
- *   EC2                    InstanceId.1=i-…          (no `member`)
- *                          Filter.1.Name=…&Filter.1.Value.1=…
- *
- * Getting this wrong is `MalformedInput` for a list and silence (or an empty filter) for the rest,
- * so a structure's fields and a field's own list are encoded too.
- */
+/** The longest array in a tree: a page's items, which is what a clip should shorten. */
+function longestArray(node, best = []) {
+  if (Array.isArray(node)) {
+    if (node.length > best.length) best = node;
+    for (const entry of node) best = longestArray(entry, best);
+  } else if (node !== null && typeof node === "object") {
+    for (const value of Object.values(node)) best = longestArray(value, best);
+  }
+  return best;
+}
+
+/** JSON as the model reads it, shortened by dropping items rather than by cutting the text. */
+function present(xml, max = 16_000) {
+  const parsed = compact(parseXml(xml));
+  const data = parsed === undefined || (typeof parsed === "object" && parsed !== null && Object.keys(parsed).length === 0) ? { empty: "AWS returned no items" } : parsed;
+  const cursor = /<(nextToken|NextToken|nextMarker|NextMarker|marker|Marker)>([^<]*)</.exec(xml);
+  // A document whose root has one repeated child compacts to an array: it has to stay an array, or
+  // spreading it turns the items into {"0": …} keys.
+  const merged = (value, extra) => {
+    const base = Array.isArray(value) ? { items: value } : value;
+    return { ...base, ...(cursor ? { nextToken: cursor[2], continueWith: `call again with params.NextToken = "${cursor[2]}"` } : {}), ...extra };
+  };
+  const withCursor = (value) => merged(value, {});
+  let json = JSON.stringify(withCursor(data));
+  if (json.length > max) {
+    const items = longestArray(data);
+    const total = items.length;
+    while (json.length > max && items.length > 1) {
+      items.splice(Math.ceil(items.length / 2));
+      json = JSON.stringify(merged(data, { clipped: `${items.length} of the ${total} items in this page; ask for a smaller page with MaxResults` }));
+    }
+  }
+  if (json.length <= max) return json;
+  return `${json.slice(0, max)}\n[clipped: ${json.length} characters from AWS${cursor ? `; continue with NextToken=${cursor[2]}` : ""}]`;
+}
+
 function flat(params = {}, service = "") {
   const member = (index) => service === "ec2" ? String(index + 1) : `member.${index + 1}`;
   // EC2 names a list's members in the singular: `Filters` is sent as `Filter.1.Name`, `Values` as

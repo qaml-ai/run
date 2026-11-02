@@ -224,14 +224,23 @@ test("a write needs the digest back, and only allowlisted operations get one", a
 
 test.after(() => jwks.close());
 
-test("a clipped answer keeps the pagination token", async () => {
+test("a query answer comes back as compact JSON, and a long one drops items instead of cutting text", async () => {
   const real = globalThis.fetch;
-  const instances = "<item><instanceId>i-0aeccdd21e8547361</instanceId></item>".repeat(400);
-  globalThis.fetch = async () => new Response(`<DescribeInstancesResponse>${instances}<nextToken>abc123</nextToken></DescribeInstancesResponse>`, { status: 200 });
+  const item = "<item><instanceId>i-0aeccdd21e8547361</instanceId><instanceState><code>16</code><name>running</name></instanceState><privateDnsName></privateDnsName></item>";
+  globalThis.fetch = async () => new Response(
+    `<DescribeInstancesResponse xmlns="x"><requestId>r1</requestId><reservationSet>${item.repeat(400)}</reservationSet><nextToken>abc123</nextToken></DescribeInstancesResponse>`,
+    { status: 200 },
+  );
   try {
     const result = await call({ jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "aws_read", arguments: { service: "ec2", operation: "DescribeInstances" } } });
     const body = result.json.result.content[0].text;
-    assert.ok(body.length < 20_000, "still clipped");
-    assert.match(body, /nextToken=abc123/, "the cursor survives the clip");
+    const json = JSON.parse(body.slice(body.indexOf("\n") + 1));
+    assert.ok(!body.includes("<item>"), "no XML reaches the model");
+    assert.ok(body.length < 20_000, "still inside the clip");
+    assert.equal(json.nextToken, "abc123", "the cursor survives");
+    assert.match(json.continueWith, /NextToken/);
+    assert.match(json.clipped, /of the \d+ items in this page/, "it is shortened by dropping items, not characters");
+    assert.ok(Array.isArray(json.reservationSet) && json.reservationSet.length > 0, "some items remain");
+    assert.ok(!("requestId" in json), "request ids are dropped");
   } finally { globalThis.fetch = real; }
 });
