@@ -157,37 +157,58 @@ test("file tools: mount paths, read-only mounts, subpaths and edit conflicts the
   const call = tools(volumes, mounts);
   assert.deepEqual((await call("ls", { path: "/" })).entries.map((entry: any) => entry.name), ["workspace", "team"]);
   const viaSubpath = await call("read", { path: "/team/plan.md" });
-  assert.equal(viaSubpath.content, "alpha\nbeta\n");
-  assert.equal(viaSubpath.path, "/team/plan.md");
+  assert.equal(viaSubpath.content[0].text, "alpha\nbeta\n");
   await assert.rejects(call("write", { path: "/team/plan.md", content: "x" }), /\/team is mounted read-only/);
-  await assert.rejects(call("edit", { path: "/team/plan.md", old: "alpha", new: "x" }), /read-only/);
+  await assert.rejects(call("edit", { path: "/team/plan.md", edits: [{ oldText: "alpha", newText: "x" }] }), /read-only/);
   await assert.rejects(call("read", { path: "/elsewhere/x" }), /not inside a mount/);
   await assert.rejects(call("read", { path: "/workspace/../../etc/passwd" }), /Invalid path/);
   // Relative paths resolve against the first mount.
   const read = await call("read", { path: "team/plan.md" });
-  assert.equal(read.path, "/workspace/team/plan.md");
+  assert.equal(read.content[0].text, "alpha\nbeta\n");
   // The model never sees versions: the tools remember what it read.
   for (const result of [viaSubpath, read, (await call("ls", { path: "/workspace/team" })).entries[0]]) assert.equal("version" in result, false);
   // Another writer changes the file after this agent read it.
   await write(id, "/team/plan.md", "alpha\nBETA\n");
-  await assert.rejects(call("edit", { path: "/workspace/team/plan.md", old: "beta", new: "gamma" }),
-    /^Error: Edit rejected: \/workspace\/team\/plan.md changed since you last read it\. Read it again, then retry against its current content\.$/);
-  await assert.rejects(call("write", { path: "/workspace/team/plan.md", content: "x" }), /Write rejected: .*changed since you last read it/);
+  await assert.rejects(call("edit", { path: "/workspace/team/plan.md", edits: [{ oldText: "beta", newText: "gamma" }] }),
+    /changed since you last read it; read it again/);
+  await assert.rejects(call("write", { path: "/workspace/team/plan.md", content: "x" }), /changed since you last read it/);
   await call("read", { path: "/workspace/team/plan.md" });
-  const edited = await call("edit", { path: "/workspace/team/plan.md", old: "BETA", new: "gamma" });
-  assert.deepEqual(Object.keys(edited).sort(), ["contentType", "path", "size"]);
+  const edited = await call("edit", { path: "/workspace/team/plan.md", edits: [{ oldText: "BETA", newText: "gamma" }] });
+  assert.match(edited.details.diff, /gamma/);
   // Its own edits are not changes it has to read again.
-  await call("edit", { path: "/workspace/team/plan.md", old: "alpha", new: "ALPHA" });
-  assert.equal((await call("read", { path: "/team/plan.md" })).content, "ALPHA\ngamma\n");
+  await call("edit", { path: "/workspace/team/plan.md", edits: [{ oldText: "alpha", newText: "ALPHA" }] });
+  assert.equal((await call("read", { path: "/team/plan.md" })).content[0].text, "ALPHA\ngamma\n");
   // An agent that never read a file (another agent, or this one on another node) writes it as it is.
-  assert.equal((await tools(volumes, mounts)("write", { path: "/workspace/team/plan.md", content: "fresh" })).size, 5);
-  await assert.rejects(call("edit", { path: "/workspace/team/plan.md", old: "missing", new: "x" }), /changed since you last read it/, "and this agent sees that change");
+  assert.match((await tools(volumes, mounts)("write", { path: "/workspace/team/plan.md", content: "fresh" })).content[0].text, /Successfully wrote/);
+  await assert.rejects(call("edit", { path: "/workspace/team/plan.md", edits: [{ oldText: "missing", newText: "x" }] }), /changed since you last read it/, "and this agent sees that change");
   await call("read", { path: "/workspace/team/plan.md" });
-  await assert.rejects(call("edit", { path: "/workspace/team/plan.md", old: "missing", new: "x" }), /not found/);
+  await assert.rejects(call("edit", { path: "/workspace/team/plan.md", edits: [{ oldText: "missing", newText: "x" }] }), /Could not find/);
   await call("write", { path: "/workspace/dup.txt", content: "a a a" });
-  await assert.rejects(call("edit", { path: "/workspace/dup.txt", old: "a", new: "b" }), /appears 3 times/);
-  assert.equal((await call("edit", { path: "/workspace/dup.txt", old: "a", new: "b", replaceAll: true })).size, 5);
-  assert.equal((await call("write", { path: "/workspace/new.txt", content: "x" })).size, 1);
+  await assert.rejects(call("edit", { path: "/workspace/dup.txt", edits: [{ oldText: "a", newText: "b" }] }), /3 occurrences/);
+  assert.match((await call("edit", { path: "/workspace/dup.txt", edits: [{ oldText: "a a a", newText: "b b b" }] })).details.diff, /b b b/);
+  assert.match((await call("write", { path: "/workspace/new/dir/file.txt", content: "x" })).content[0].text, /Successfully wrote/);
+});
+
+test("Pi edits multiple original spans and refuses a concurrent volume write", async t => {
+  const { volumes, write, read } = await service(t);
+  const { id } = await volumes.create("acme");
+  const call = tools(volumes, [{ volumeId: id, path: "/workspace", mode: "rw" }]);
+  await write(id, "/plan.txt", "first  \nsecond\nthird\n");
+  const edited = await call("edit", { path: "/workspace/plan.txt", edits: [
+    { oldText: "first\n", newText: "FIRST\n" }, { oldText: "third", newText: "THIRD" },
+  ] });
+  assert.equal(await read(id, "/plan.txt"), "FIRST\nsecond\nTHIRD\n");
+  assert.match(edited.details.diff, /FIRST/);
+  const readRange = volumes.readRange.bind(volumes);
+  let raced = false;
+  volumes.readRange = async (...args) => {
+    const bytes = await readRange(...args);
+    if (!raced) { raced = true; await write(id, "/plan.txt", "someone else's work"); }
+    return bytes;
+  };
+  t.after(() => { volumes.readRange = readRange; });
+  await assert.rejects(call("edit", { path: "/workspace/plan.txt", edits: [{ oldText: "second", newText: "SECOND" }] }), /changed since you last read it; read it again/);
+  assert.equal(await read(id, "/plan.txt"), "someone else's work");
 });
 
 test("a read of many files at once is refused past its limits, saying to narrow it", async t => {
@@ -206,12 +227,9 @@ test("a read of many files at once is refused past its limits, saying to narrow 
   assert.equal((await volumes.call(id, "acme", "readAll", { path: "/many", glob: "000*.txt" })).files.length, 10);
 });
 
-test("large files are read in bounded windows that fetch only the chunks they cover", async t => {
+test("large files use bounded line windows and base64 byte windows", async t => {
   const { db } = await testDatabase();
   const storage = memoryStorage(postgresTail(db, { unfenced: true }));
-  const reads: string[] = [];
-  const readBlob = storage.readBlob.bind(storage);
-  storage.readBlob = key => { reads.push(key); return readBlob(key); };
   const { volumes, write } = await service(t, storage, db);
   const { id } = await volumes.create("acme");
   // Three chunks of distinct text, with a multi-byte character straddling the read window's end.
@@ -220,15 +238,15 @@ test("large files are read in bounded windows that fetch only the chunks they co
   await write(id, "/big.log", text);
   const call = tools(volumes, [{ volumeId: id, path: "/workspace", mode: "rw" }]);
   const first = await call("read", { path: "/workspace/big.log" });
-  assert.ok(Buffer.byteLength(first.content) <= 32 * 1024);
-  assert.equal(first.nextOffset, Buffer.byteLength(first.content));
-  assert.ok(text.startsWith(first.content), "the window ends on a character boundary");
-  assert.equal(reads.length, 1, "one chunk fetched for the first window");
-  reads.length = 0;
-  const offset = 2 * CHUNK_BYTES + 10;
-  const tail = await call("read", { path: "/workspace/big.log", offset, length: 1000 });
-  assert.equal(reads.length, 1, "only the chunk holding the window is fetched");
-  assert.equal(tail.offset, offset);
+  assert.ok(Buffer.byteLength(first.content[0].text) <= 32 * 1024);
+  assert.ok(text.startsWith(first.content[0].text), "the window ends on a character boundary");
+  assert.match(first.content.at(-1).text, /offset=/);
+  // Pi scans the snapshot to count lines, then fetches only the selected window.
+  const tail = await call("read", { path: "/workspace/big.log", offset: 50_000, limit: 2 });
+  assert.equal(tail.content[0].text, line(49_999) + line(50_000).trimEnd());
+  const byteOffset = 2 * CHUNK_BYTES + 10;
+  const raw = await call("read", { path: "/workspace/big.log", encoding: "base64", offset: byteOffset, length: 1000 });
+  assert.equal(raw.data, Buffer.from(text).subarray(byteOffset, byteOffset + 1000).toString("base64"));
   const binary = Buffer.alloc(100); binary[3] = 0;
   await write(id, "/blob.bin", binary);
   assert.equal((await call("read", { path: "/workspace/blob.bin" })).binary, true);
@@ -342,7 +360,7 @@ test("file tools work from js_exec, and agents share a volume through mounts", a
   const result = await writer.execute(`
     await tools.write({ path: "/workspace/notes/today.md", content: "ship volumes\\nTODO tests\\n" });
     await tools.read({ path: "/workspace/notes/today.md" });
-    await tools.edit({ path: "/workspace/notes/today.md", old: "TODO tests", new: "DONE tests" });
+    await tools.edit({ path: "/workspace/notes/today.md", edits: [{ oldText: "TODO tests", newText: "DONE tests" }] });
     return {
       found: await tools.search("grep"),
       ls: await tools.ls({ path: "/workspace/notes" }),
@@ -438,7 +456,7 @@ test("mounts changed during a turn apply from the next tool call; the next run's
   const results = (body: any) => body.messages.filter((message: any) => message.role === "tool").map((message: any) => message.content);
   assert.equal((await agent.prompt("go")).error, null);
   assert.match(systemText(bodies[1]), /Files: \/a \(read-write\), \/workspace \(read-write\);/);
-  assert.deepEqual(results(bodies[2]).slice(1).map((text: string) => text.replace(/\{.*\}/, "saved")), ["/a/two.txt is not inside a mount. Mounted: /b, /workspace", "saved", "saved"],
+  assert.deepEqual(results(bodies[2]).slice(1), ["/a/two.txt is not inside a mount. Mounted: /b, /workspace", "Successfully wrote to /b/two.txt", "Successfully wrote to /workspace/two.txt"],
     "from the next call on, the removed mount is gone and the added one is there");
   assert.equal(await exists(f.volumes, a.id, "/two.txt"), false, "nothing is written to a volume once it is unmounted");
   assert.ok(await exists(f.volumes, b.id, "/two.txt"));
@@ -446,9 +464,10 @@ test("mounts changed during a turn apply from the next tool call; the next run's
 
   assert.equal((await agent.prompt("again")).error, null);
   assert.match(systemText(bodies[3]), /Files: \/b \(read-write\), \/workspace \(read-write\);/, "the next run is told of its new mounts");
-  assert.deepEqual(results(bodies[4]).slice(-2).map((text: string) => JSON.parse(text)), [
-    { path: "/b/three.txt", size: 1, contentType: "text/plain" }, { path: "/", entries: [{ name: "b", type: "directory", mode: "rw" }, { name: "workspace", type: "directory", mode: "rw" }] },
-  ]);
+  assert.equal(results(bodies[4]).at(-2), "Successfully wrote to /b/three.txt");
+  assert.deepEqual(JSON.parse(results(bodies[4]).at(-1)),
+    { path: "/", entries: [{ name: "b", type: "directory", mode: "rw" }, { name: "workspace", type: "directory", mode: "rw" }] });
+  assert.ok(await exists(f.volumes, b.id, "/three.txt"));
 
   // An upsert's remount: true is a configure between turns; the next turn has those mounts and is told so.
   await f.sessions.submit(id, "default", { id: "remount-1", method: "configure", params: { mounts: [{ volumeId: c.id, path: "/c", mode: "ro" }, { workspace: false }] } });
@@ -484,7 +503,7 @@ test("a turn swaps the volume at /bot (as camel-bots' open_bot does) and goes on
   assert.match(results(bodies[1])[0], /bot A/);
   const [read, write] = results(bodies[2]).slice(1);
   assert.match(read, /bot B/, "a read of /bot in the same turn sees the swapped-in volume");
-  assert.match(write, /"path":"\/bot\/notes.md"/);
+  assert.match(write, /Successfully wrote to \/bot\/notes.md/);
   assert.ok(await exists(f.volumes, draftB.id, "/notes.md"), "the write lands in the new volume");
   assert.equal(await exists(f.volumes, draftA.id, "/notes.md"), false, "the old one is untouched");
   assert.match(results(bodies[3]).at(-1), /read-only/, "a mount made read-only is read-only from the next call");
@@ -498,10 +517,10 @@ test("an edit based on a stale read is rejected and the model sees why", async t
   const { bodies, model } = await fixtureModel(t, async (body, index) => {
     if (index === 1) return call("read", { path: "/workspace/plan.md" });
     if (index > 2) return { role: "assistant", content: "The plan changed; I will re-read it." };
-    assert.equal("version" in JSON.parse(body.messages.at(-1).content), false, "the model sees no version");
+    assert.equal(body.messages.at(-1).content, "step one\nstep two\n", "the model sees text without versions");
     // Someone else writes the file between the model's read and its edit.
     await f.volumes.call(volume, "default", "commit", { path: "/plan.md", ...await f.volumes.store("default", Buffer.from("step one\nstep TWO\n")) });
-    return call("edit", { path: "/workspace/plan.md", old: "step two", new: "step 2" });
+    return call("edit", { path: "/workspace/plan.md", edits: [{ oldText: "step two", newText: "step 2" }] });
   });
   f.setModel(model);
   const agent = await f.start();
@@ -510,7 +529,7 @@ test("an edit based on a stale read is rejected and the model sees why", async t
   assert.equal((await agent.prompt("Rename step two.")).error, null);
   assert.ok(bodies[0].tools.some((tool: any) => tool.function.name === "edit"), "file tools are direct tools");
   const result = bodies[2].messages.find((message: any) => message.role === "tool" && message.tool_call_id === "call_edit");
-  assert.match(result.content, /Edit rejected: \/workspace\/plan.md changed since you last read it\. Read it again/);
+  assert.match(result.content, /\/workspace\/plan.md changed since you last read it; read it again/);
   assert.ok(!bodies[0].tools.some((tool: any) => /version/.test(JSON.stringify(tool))), "no tool mentions versions");
   const stored = await f.volumes.call(volume, "default", "stat", { path: "/plan.md" });
   assert.equal((await f.volumes.readRange("default", stored, 0, stored.size)).toString(), "step one\nstep TWO\n", "the other writer's change survived");

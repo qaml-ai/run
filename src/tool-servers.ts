@@ -132,7 +132,10 @@ export function fileServer(tools: ToolDefinition[], run: (call: ToolCall) => Pro
   return {
     tools: () => tools, returnsFiles: true,
     call: async call => {
-      const value = await run(call) as { file?: unknown } | undefined;
+      const value = await run(call) as { file?: unknown; content?: any[]; details?: unknown; isError?: boolean } | undefined;
+      if (["read", "write", "edit"].includes(call.name) && Array.isArray(value?.content)) {
+        return { content: value.content, structuredContent: value.details, isError: value.isError };
+      }
       if (!validFileRef(value?.file)) return jsonResult(value);
       const { file, ...rest } = value;
       return { content: [{ type: "text", text: JSON.stringify(rest) }, file], structuredContent: rest };

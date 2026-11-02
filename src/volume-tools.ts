@@ -1,4 +1,9 @@
 import { Worker } from "node:worker_threads";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import { createReadTool, createWriteTool, createEditTool } from "@earendil-works/pi-durable/tools";
+import { FileError } from "@earendil-works/pi-durable/env";
+import type { ToolExecutionApi } from "@earendil-works/pi-durable";
+import { VolumeEnv } from "./volume-env.ts";
 import type { ToolDefinition } from "./protocol.ts";
 import { HttpError } from "./http.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -37,6 +42,8 @@ export type ToolContext = {
   onPresent?(file: FileRef & { caption?: string }, volumePath: string): void;
 };
 
+const piTools = { read: createReadTool(), write: createWriteTool(), edit: createEditTool() };
+
 const path = (description: string) => ({ type: "string", description });
 /** The file tools. Where the mounts are is in the agent's prompt (system-prompt.ts), so the tools stay the same when they change. */
 export function volumeToolDefinitions(): ToolDefinition[] {
@@ -45,15 +52,14 @@ export function volumeToolDefinitions(): ToolDefinition[] {
     parameters: { type: "object", additionalProperties: false, properties, required },
   });
   return [
-    tool("read", `Read a file. Text comes back up to ${FILE_TOOL_LIMITS.readBytes} bytes from offset (at most ${FILE_TOOL_LIMITS.maxReadBytes}); nextOffset is set when more remains. Images and PDFs are shown to you when you can view them; otherwise a PDF's text comes back in windows (offset and length in characters). Other binary files need encoding: base64.`,
-      { path: path("File path"), offset: { type: "integer", minimum: 0 }, length: { type: "integer", minimum: 1, maximum: FILE_TOOL_LIMITS.maxReadBytes }, encoding: { type: "string", enum: ["utf8", "base64"], description: "base64: the raw bytes" } }, ["path"]),
-    tool("write", "Create or replace a file: text, or bytes as base64 with encoding: base64.", {
-      path: path("File path"), content: { type: "string" },
-      encoding: { type: "string", enum: ["utf8", "base64"], description: "base64: content is the file's bytes, base64-encoded" },
-      contentType: { type: "string", description: "e.g. image/png; by default it is sniffed from the bytes and name" },
+    tool("read", `Read text in line windows (offset is 1-based, limit is lines), up to ${FILE_TOOL_LIMITS.readBytes} bytes. Images and PDFs are shown when the model can view them; otherwise PDF text uses character offset/length. Binary files use encoding: base64 and byte offset/length. Text output is bounded; continue at the indicated line.`,
+      { ...(piTools.read.parameters.properties as Record<string, unknown>), length: { type: "integer", minimum: 1, maximum: FILE_TOOL_LIMITS.maxReadBytes, description: "Byte count for base64, character count for PDF text" }, encoding: { type: "string", enum: ["utf8", "base64"] } }, ["path"]),
+    tool("write", "Create or replace a file with text, or bytes with encoding: base64. Parent directories are created implicitly.", {
+      ...(piTools.write.parameters.properties as Record<string, unknown>),
+      encoding: { type: "string", enum: ["utf8", "base64"] },
+      contentType: { type: "string", description: "e.g. image/png; by default sniffed from the bytes and name" },
     }, ["path", "content"]),
-    tool("edit", "Replace an exact text span in a file (old must appear once unless replaceAll).",
-      { path: path("File path"), old: { type: "string", minLength: 1 }, new: { type: "string" }, replaceAll: { type: "boolean" } }, ["path", "old", "new"]),
+    tool("edit", piTools.edit.description, piTools.edit.parameters.properties as Record<string, unknown>, ["path", "edits"]),
     tool("present_file", "Hand a file you made to the user: it goes to them (or their application) with your reply, with a download link. Writing a file does not share it. Write the file first, then call this once per file to share.",
       { path: path("File path"), caption: { type: "string", maxLength: 1000, description: "A line about the file, shown with it" } }, ["path"]),
     tool("ls", "List a directory's entries with their sizes. / lists the mounts.", { path: path("Directory path") }, []),
@@ -93,7 +99,7 @@ function conflict(error: unknown, shown: string, verb: string): never {
 }
 /** At most this many files' versions are remembered per agent; the oldest are forgotten (and so not checked). */
 const SEEN_FILES = 10_000;
-function remember(seen: Map<string, number> | undefined, key: string, version: number) {
+export function remember(seen: Map<string, number> | undefined, key: string, version: number) {
   if (!seen) return;
   seen.delete(key);
   seen.set(key, version);
@@ -102,6 +108,31 @@ function remember(seen: Map<string, number> | undefined, key: string, version: n
 
 const decoder = () => new TextDecoder("utf-8", { fatal: false });
 const binary = (data: Buffer) => data.subarray(0, 8000).includes(0);
+
+/** Pi needs only env for these tools; keep the host's tool registration and execution boundary. */
+async function runPiTool(volumes: VolumeService, context: ToolContext, name: keyof typeof piTools, args: Record<string, any>, signal: AbortSignal) {
+  const env = new VolumeEnv(volumes, context, name === "edit");
+  const tool = piTools[name];
+  try {
+    const result = await tool.execute(args as any, { env } as unknown as ToolExecutionApi, withAbortSignal(signal, BACKGROUND_CONTEXT));
+    const content = [...result.output ?? []];
+    if (name === "read" && content[0]?.type === "text" && Buffer.byteLength(content[0].text) > FILE_TOOL_LIMITS.readBytes) {
+      let text = new TextDecoder().decode(Buffer.from(content[0].text).subarray(0, FILE_TOOL_LIMITS.readBytes), { stream: true });
+      const end = text.lastIndexOf("\n");
+      if (end >= 0) text = text.slice(0, end);
+      content[0] = { type: "text", text };
+      content.push({ type: "text", text: end >= 0 ? `Output limited to ${FILE_TOOL_LIMITS.readBytes} bytes. Continue with offset=${(args.offset || 1) + text.split("\n").length}.` : `Line exceeds ${FILE_TOOL_LIMITS.readBytes} bytes; use encoding: base64 to read byte windows.` });
+      // Pi's continuation refers to its larger default window, not the window above.
+      return { content, details: { content: text, truncated: true } };
+    }
+    for (const diagnostic of result.diagnostics ?? []) content.push({ type: "text", text: diagnostic.message.replace(/Use bash: .*/, "Use encoding: base64 to read byte windows.") });
+    return { content, details: name === "read" ? { content: result.structuredOutput, ...(result.details as Record<string, unknown> | undefined) } : result.details, isError: result.isError };
+  } catch (error) {
+    // Pi's edit wrapper reports only the error code; retain the filesystem's actionable reason.
+    if (error instanceof Error && error.cause instanceof FileError) throw error.cause;
+    throw error;
+  }
+}
 
 export async function runVolumeTool(volumes: VolumeService, context: ToolContext, name: string, args: Record<string, any>, signal: AbortSignal): Promise<unknown> {
   signal.throwIfAborted();
@@ -119,14 +150,23 @@ export async function runVolumeTool(volumes: VolumeService, context: ToolContext
     return stat;
   };
 
+  if (name === "edit") {
+    writable(target);
+    return runPiTool(volumes, context, "edit", args, signal);
+  }
   if (name === "read") {
     const entry = await file();
+    const type = essence(entry.contentType ?? guessContentType(target.path));
+    if (args.encoding !== "base64" && !type.startsWith("image/") && type !== "application/pdf") {
+      const head = await volumes.readRange(tenant, entry, 0, Math.min(8000, entry.size));
+      if (!binary(head)) return runPiTool(volumes, context, "read", args, signal);
+    }
     const offset = args.offset ?? 0;
     // A file from before types were recorded is labeled by its name here, rather than a chunk read to sniff it.
     const contentType = entry.contentType ?? guessContentType(target.path);
     remember(context.seen, key, entry.version);
     const about = { path: shown, size: entry.size, contentType };
-    const type = essence(contentType);
+
     if (args.encoding !== "base64" && (type.startsWith("image/") || type === "application/pdf")) {
       const model = context.model?.();
       // Shown natively: the result carries a reference the agent host turns into the image or document.
@@ -154,32 +194,16 @@ export async function runVolumeTool(volumes: VolumeService, context: ToolContext
     const next = offset + Buffer.byteLength(content);
     return { ...about, offset, content, ...(next < entry.size ? { nextOffset: next } : {}) };
   }
-  if (name === "write" || name === "edit") {
+  if (name === "write") {
+    if (args.encoding !== "base64" && args.contentType === undefined) return runPiTool(volumes, context, "write", args, signal);
     writable(target);
-    let content: string;
-    // A file the agent read or wrote is written only if it is still as it was then.
-    let expected = context.seen?.get(key);
-    let contentType: string | undefined = args.contentType;
-    if (name === "write") content = args.content;
-    else {
-      const entry = await file();
-      if (expected !== undefined && expected !== entry.version) conflict(new HttpError(412, ""), shown, "Edit");
-      if (entry.size > FILE_TOOL_LIMITS.editBytes) throw new Error(`${shown} is larger than ${FILE_TOOL_LIMITS.editBytes} bytes; edit only works on smaller files`);
-      const data = await volumes.readRange(tenant, entry, 0, entry.size);
-      if (binary(data)) throw new Error(`${shown} is a binary file`);
-      const text = decoder().decode(data);
-      const count = text.split(args.old).length - 1;
-      if (!count) throw new Error(`The old text was not found in ${shown}; read the file again and copy the exact text`);
-      if (count > 1 && !args.replaceAll) throw new Error(`The old text appears ${count} times in ${shown}; include more surrounding text, or set replaceAll`);
-      content = args.replaceAll ? text.split(args.old).join(args.new) : text.replace(args.old, () => args.new);
-      // The rewrite is conditional on the version edited, so a write in between is not lost.
-      expected = entry.version;
-      contentType = entry.contentType;
-    }
+    const content = args.content;
+    const expected = context.seen?.get(key);
+    const contentType = args.contentType;
     if (args.encoding === "base64" && !/^[A-Za-z0-9+/]*={0,2}$/.test(content)) throw new Error("content is not base64");
     signal.throwIfAborted();
     const committed = await volumes.put(tenant, target.mount.volumeId, target.path, Buffer.from(content, args.encoding === "base64" ? "base64" : "utf8"), { contentType, ifMatch: expected, by: context.agent })
-      .catch(error => conflict(error, shown, name === "write" ? "Write" : "Edit"));
+      .catch(error => conflict(error, shown, "Write"));
     remember(context.seen, key, committed.version);
     const written = { path: shown, version: committed.version, size: committed.size, contentType: committed.contentType! };
     context.onWrite?.(written);

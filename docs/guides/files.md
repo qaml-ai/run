@@ -65,6 +65,25 @@ never sees version numbers; the files API for applications keeps them. An applic
 handle files can leave these out with `fileTools: false` (in a definition, or when
 the agent is made).
 
+Text tools use Pi's implementations. `read({ path, offset?, limit? })` uses a
+1-based line offset and a maximum number of lines, with bounded output and a
+continuation hint. `write({ path, content })` creates or replaces text, including
+files under new directories. `edit` takes one or more replacements against the
+original file; each old span must be unique and the spans must not overlap:
+
+```js
+await tools.edit({ path: "/workspace/notes.md", edits: [
+  { oldText: "Status: draft", newText: "Status: final" },
+  { oldText: "Owner: TBD", newText: "Owner: Ana" },
+] });
+```
+
+`edit` no longer accepts `old`, `new` or `replaceAll`. It returns edit details,
+including a diff and patch. In `js_exec`, text reads return an object with
+`content` and any truncation details. Images and PDFs still use file references when the model can view them. PDF text windows use character
+`offset` and `length`. Raw bytes use `encoding: "base64"`, with byte `offset` and
+`length` on reads, and base64 `content` on writes. Writes can also set `contentType`.
+
 Code in `js_exec` has `fs` over the same mounts:
 
 ```js

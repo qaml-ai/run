@@ -181,14 +181,14 @@ test("a volume is served by one node: other nodes forward to it, agents anywhere
   t.after(() => agent.close());
   await agent.execute(`
     await tools.read({ path: "/shared/plan.md" });
-    return await tools.edit({ path: "/shared/plan.md", old: "draft", new: "final" });`);
+    return await tools.edit({ path: "/shared/plan.md", edits: [{ oldText: "draft", newText: "final" }] });`);
   const edited = await viaA.volume(id).read("plan.md");
   assert.equal(edited.version, first.version + 1);
   assert.equal(new TextDecoder().decode(edited.data), "final");
   assert.equal(await c.owner(id), a.url, "the volume did not move to the agent's node");
   // Someone else changes it: the agent's next edit, based on what it read, is refused until it reads again.
   await viaA.volume(id).write("plan.md", "final", { version: edited.version });
-  await assert.rejects(agent.execute('return await tools.edit({ path: "/shared/plan.md", old: "final", new: "x" })'), /changed since you last read it/);
+  await assert.rejects(agent.execute('return await tools.edit({ path: "/shared/plan.md", edits: [{ oldText: "final", newText: "x" }] })'), /changed since you last read it/);
 
   // A dies owning the volume. Once its heartbeat expires, B serves it from storage.
   a.child.kill("SIGKILL");
