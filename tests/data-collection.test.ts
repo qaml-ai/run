@@ -9,7 +9,7 @@ const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "
 const NITRO = "deepseek/deepseek-v4.1-flash-1017:nitro";
 /** V4.1 Flash's hosts (pi-catalog.ts OPENROUTER_HOSTS); 1017 has none listed, only hosts it is never served by (OPENROUTER_IGNORED_HOSTS). */
 const HOSTS = ["fireworks", "together", "parasail", "coreweave", "nebius"];
-const IGNORED = ["inference-net", "wafer"];
+const IGNORED = ["inference-net", "wafer", "relace"];
 const FLASH = getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
 const FLASH_1017 = getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!;
 const KIMI = getModel("openrouter", "moonshotai/kimi-k3")!;

@@ -136,9 +136,12 @@ const OPENROUTER_HOSTS: Record<string, string[]> = {
  * - DeepSeek V4.1 Flash 1017 (Miguel, 2026-10-27): InferenceNet and Wafer, which intermittently drop a tool call's
  *   optional arguments (13.6% of camel-builder's bot__preview calls failed on InferenceNet 2026-10-27 evening, 15.6%
  *   on Wafer 2026-10-26, against 1.7% on Together).
+ * - Relace (2026-11-02): it drops a call's `name` argument. Each of the six camel-builder conversations whose
+ *   create_bot looped on "Give either name" overnight started on a Relace response (OpenRouter's generation records),
+ *   and 103 of the 114 such failed calls were Relace's.
  */
 const OPENROUTER_IGNORED_HOSTS: Record<string, string[]> = {
-  "deepseek/deepseek-v4.1-flash-1017": ["inference-net", "wafer"],
+  "deepseek/deepseek-v4.1-flash-1017": ["inference-net", "wafer", "relace"],
 };
 
 /**

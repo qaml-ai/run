@@ -129,7 +129,7 @@ test("an agent naming no model stores the alias; Particle's outage moves that ca
   assert.equal(first.outcome.result.reply, "From 1017.");
   assert.deepEqual(provider.requests.map(request => request.model), [PARTICLE, FLASH], "that one call moved, once");
   const reached = provider.requests[1];
-  assert.deepEqual(reached.body.provider, { ignore: ["inference-net", "wafer"] }, "1017's own routing, reached through the alias");
+  assert.deepEqual(reached.body.provider, { ignore: ["inference-net", "wafer", "relace"] }, "1017's own routing, reached through the alias");
   assert.equal(reached.body.reasoning?.effort, "low", "the agent's reasoning goes with it");
   assert.ok(Array.isArray(reached.body.messages), "1017's Chat Completions, Particle's Responses before it");
   assert.match(provider.requests[0].path, /responses/);
