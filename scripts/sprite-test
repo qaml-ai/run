@@ -219,7 +219,14 @@ prepare() {
   if [ "$(sudo -u postgres psql -Atqc 'SHOW max_connections')" = 1000 ]; then sudo -u postgres psql -qc 'SELECT pg_reload_conf()' >/dev/null; else sudo service postgresql restart >/dev/null; fi
   for db in $(sudo -u postgres psql -Atqc "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres', 'template0', 'template1')"); do sudo -u postgres dropdb --force "$db"; done
   [ "$(cat ~/.lock 2>/dev/null)" = "$lock" ] || { echo '== npm ci (package-lock.json changed)'; npm ci --silent --no-audit --no-fund && sync && echo "$lock" > ~/.lock; } || return 1
-  [ "$(cat ~/.v8 2>/dev/null)" = "$v8" ] || { echo '== building v8-exec (sandbox/v8-exec changed)'; npm run -s build:v8-exec >/dev/null && sync && echo "$v8" > ~/.v8; } || return 1
+  # The v8-exec binary is rebuilt unless target/release/.sources names this tree's sandbox/v8-exec and the binary's own
+  # hash, whatever built it last: a sprite once ran a stale binary while markers said it was current. cargo goes by
+  # mtimes, and rsync gives files their commit times (an older ref's sources look older than the build), so the crate is
+  # cleaned first.
+  bin=sandbox/v8-exec/target/release/v8-exec; built=sandbox/v8-exec/target/release/.sources
+  [ -x "$bin" ] && [ "$(cat "$built" 2>/dev/null)" = "$v8 $(sha256sum < "$bin" | cut -d' ' -f1)" ] || { echo '== building v8-exec (sandbox/v8-exec changed)'
+    (cd sandbox/v8-exec && cargo clean -q --release -p v8-exec) && npm run -s build:v8-exec >/dev/null && sync \
+      && echo "$v8 $(sha256sum < "$bin" | cut -d' ' -f1)" > "$built"; } || return 1
 }
 cd ~/rt && prepare || { echo '== preparing the sprite failed'; finish 1; }
 echo "== $*"
