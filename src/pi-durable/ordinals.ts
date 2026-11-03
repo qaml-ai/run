@@ -1,5 +1,5 @@
 import type { EntryRecord, StorageWrite } from "@earendil-works/pi-durable";
-import { transaction, type Db, type Sql } from "../db.ts";
+import type { Db, Sql } from "../db.ts";
 /** `history.ts`'s MARKER_KIND and `seed.ts`'s SESSION_CONVERSATION_ID: storage.ts imports this module, which imports neither (a cycle). */
 export const MARKER_KIND = "camel.history.marker";
 /**
@@ -278,6 +278,8 @@ async function readShapes(sql: Sql, agent: string, where: string, params: unknow
  */
 export async function fillOrdinals(db: Db, agent: string, options: { dryRun: boolean; maxEntries?: number; statementTimeoutMs?: number }): Promise<FillResult> {
   const maxEntries = Math.min(FILL_MAX_ENTRIES, options.maxEntries ?? FILL_DEFAULT_ENTRIES);
+  // Loaded here: the rest of this module is an agent's host's too, which has no database (pi-durable/storage.ts).
+  const { transaction } = await import("../db.ts");
   return transaction(db, async sql => {
     await sql.query(`set local statement_timeout = ${Math.floor(options.statementTimeoutMs ?? FILL_STATEMENT_TIMEOUT_MS)}`);
     const meta = (await sql.query<{ history_next: number | null; history_last_id: string | null }>(

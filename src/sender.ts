@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { HttpError } from "./http.ts";
+import { HttpError } from "./http-error.ts";
 
 /**
  * Who sent a user message, as the application says: `id` is the application's own, the names are

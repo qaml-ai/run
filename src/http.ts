@@ -1,13 +1,7 @@
 import { databaseRetryable, databaseUnavailable } from "./db.ts";
+import { HttpError } from "./http-error.ts";
 
-export class HttpError extends Error {
-  status: number;
-  /** A machine-readable code for the error body (see `errorCode`); by default one for its status. */
-  code?: string;
-  /** Fields the error body carries beside `error` and `code`, for a caller to act on (a limit and what raises it). */
-  details?: Record<string, unknown>;
-  constructor(status: number, message: string, code?: string, details?: Record<string, unknown>) { super(message); this.status = status; if (code) this.code = code; if (details) this.details = details; }
-}
+export { HttpError };
 
 /** An error's fields beside `error` and `code` in a response body: its details, for a conflicting answer what the input settled as, and for a rate limit's 429 the limit reached. */
 export function errorFields(error: unknown): Record<string, unknown> {

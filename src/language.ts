@@ -1,4 +1,4 @@
-import { HttpError } from "./http.ts";
+import { HttpError } from "./http-error.ts";
 
 /** The longest language tag an agent takes. */
 export const MAX_LANGUAGE_LENGTH = 35;

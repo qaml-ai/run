@@ -1,5 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { HttpError } from "./http.ts";
+import { HttpError } from "./http-error.ts";
 import { safeError } from "./metrics.ts";
 import { network } from "./node-context.ts";
 

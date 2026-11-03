@@ -1,4 +1,4 @@
-import { HttpError } from "../http.ts";
+import { HttpError } from "../http-error.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Cursor, DocumentId, EntryId, EntryRecord, Storage, StorageWrite } from "@earendil-works/pi-durable";
