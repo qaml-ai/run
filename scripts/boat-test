@@ -35,6 +35,9 @@ if [[ $# -eq 0 && $shards -gt 1 && -z ${BOAT_ATTACH:-} && -z ${BOAT_ATTEMPT:-} ]
   [[ $shards =~ ^[0-9]+$ ]] || { echo "BOAT_SHARDS must be a number" >&2; exit 2; }
   pids=() logs=()
   trap 'kill -TERM "${pids[@]}" 2>/dev/null; wait; exit 130' INT TERM HUP
+  # One run first, so a changed lockfile or v8-exec builds the snapshot once: shards that all found it missing would
+  # each try to build it at the same time and fail.
+  BOAT_SHARDS=1 "$0" "$ref" true > /dev/null 2>&1 || { echo "== preparing the snapshot failed: run BOAT_SHARDS=1 $0 $ref true to see why" >&2; exit 1; }
   for (( i = 1; i <= shards; i++ )); do
     logs+=("$(mktemp)")
     BOAT_SHARDS=1 "$0" "$ref" env TEST_DATABASE_PER_FILE=true TEST_CONCURRENCY=$files npm run -s test:shard -- "$i/$shards" > "${logs[i-1]}" 2>&1 &
