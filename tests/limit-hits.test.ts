@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { HttpError } from "../src/http.ts";
-import { limitHit, limitRefused } from "../src/limit-hits.ts";
+import { creditRefused, limitHit, limitRefused } from "../src/limit-hits.ts";
 import { RateLimited } from "../src/rate-limits.ts";
 
 const MINUTE = 60_000;
@@ -50,4 +50,21 @@ test("a refusal is said by the first handler it reaches, by its limit's name or 
   const said = lines().filter(line => line.type === "limit_hit");
   assert.deepEqual(said.map(line => [line.tenant, line.limit, line.status]), [["acme", "TOO_LARGE", 413], [null, "api_requests", 429], ["acme", "END_USER_CREDIT", 402], ["acme", "STORAGE_LIMIT", 507]]);
   assert.ok(!JSON.stringify(said).includes("private-plans"), "what was refused is not logged");
+});
+
+test("an end user's credit refusal says whose, which bucket and why, one line each a minute, with no amounts or words", t => {
+  const lines = logged(t);
+  const at = 4_000 * MINUTE;
+  const refusal = (endUser: string, bucket: string) => new HttpError(402, `This end user is out of credit: the free $1.00 for "${bucket}" today is used up, and their balance is $0.00`, "END_USER_CREDIT", { endUser, bucket, reason: "balance" });
+  limitRefused(refusal("ana", "bot:dice"), 402, "acme", "run_start", at);
+  limitRefused(refusal("ana", "bot:dice"), 402, "acme", "run_start", at + 1);
+  limitRefused(refusal("bo", "bot:dice"), 402, "acme", "run_start", at + 2);
+  creditRefused("acme", { endUser: "ana", bucket: "builder", reason: "daily_limit" }, "model_call");
+  creditRefused("acme", { endUser: "ana", bucket: "builder", reason: "balance" }, "model_stream");
+  const said = lines().filter(line => line.type === "limit_hit");
+  assert.deepEqual(said.map(line => [line.limit, line.route, line.endUser, line.bucket, line.reason]), [
+    ["END_USER_CREDIT", "run_start", "ana", "bot:dice", "balance"], ["END_USER_CREDIT", "run_start", "bo", "bot:dice", "balance"],
+    ["END_USER_CREDIT", "model_call", "ana", "builder", "daily_limit"], ["END_USER_CREDIT", "model_stream", "ana", "builder", "balance"],
+  ]);
+  assert.ok(!JSON.stringify(said).includes("$"), "no amounts or words");
 });
