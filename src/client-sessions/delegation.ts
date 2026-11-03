@@ -1,5 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { errorText } from "../protocol.ts";
+import { AgentGone, errorText } from "../protocol.ts";
 import { outputInput } from "../tool-policy.ts";
 import { type ClientEvent, type RequestRecord } from "../../shared/client-protocol.ts";
 import { HttpError } from "../http.ts";
@@ -127,8 +127,9 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
     return { ...jsonResult(value), ...(status === "completed" ? {} : { isError: true }) };
   } finally {
     untap?.();
-    // A lost owner leaves the child for replay. A script ending stops only this nested call's child.
-    if (call.innerCallId && call.signal.aborted && !(session.leaving || session.fault || ctx.isClosed())) {
+    // A lost owner, or a host that went (its process exited: AgentGone), leaves the child for replay. A script ending
+    // stops only this nested call's child.
+    if (call.innerCallId && call.signal.aborted && !(call.signal.reason instanceof AgentGone) && !(session.leaving || session.fault || ctx.isClosed())) {
       await stopDelegates(ctx, session, { run: run.id, toolCallId, requestId: `delegate_${call.idempotencyKey}` });
     }
     // What the child spent is in `childSpend` by now: its hold goes.

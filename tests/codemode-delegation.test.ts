@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runtime, toolCall, toolResults, until } from "./runtime-server.ts";
+import { createHash } from "node:crypto";
+import { OPERATOR, runtime, toolCall, toolResults, until } from "./runtime-server.ts";
 
 const roleText = (body: any) => body.messages.filter((message: any) => ["system", "developer", "user"].includes(message.role))
   .map((message: any) => typeof message.content === "string" ? message.content : JSON.stringify(message.content)).join("\n");
@@ -55,6 +56,26 @@ test("a script returning without awaiting a delegate stops that child", async t 
   const rows = (await r.db.query("select status from agent_children where parent = $1", [parent])).rows;
   assert.ok(rows.some(row => row.status === "completed"));
   assert.ok(rows.some(row => row.status !== "completed"));
+});
+
+test("scripts waiting on children longer than their deadline, on an account with one code slot, finish: the wait is off their clock and holds no slot", { timeout: 120_000 }, async t => {
+  const tenants = { tenants: { alice: { tokenSha256: createHash("sha256").update(OPERATOR).digest("hex"), apiKeys: { openrouter: "fixture-model-key" }, codeConcurrency: 1, codeMaxTimeoutMs: 1_000 } } };
+  const r = await runtime(t, body => {
+    const child = roleText(body).includes("CHILD");
+    if (toolResults(body).length) return { role: "assistant", content: child ? "child done" : String(toolResults(body).at(-1)) };
+    // Each child thinks longer than its parent's 1 s deadline, then runs code of its own, which needs the one slot.
+    if (child) return { wait: new Promise(resolve => setTimeout(resolve, 1_500)), ...toolCall("codemode", { code: "return 41 + 1" }, "child-code") };
+    return toolCall("codemode", { code: `
+      const answers = await Promise.all(["a", "b"].map(task => tools.delegate({ instructions: "You are CHILD.", task })));
+      return answers.map(answer => answer.text).join(",");
+    ` }, "code");
+  }, {}, tenants);
+  const parents = await Promise.all([0, 1].map(async () => (await r.call("/v1/agents", { body: { builtins: ["delegate"], delegate: { instructions: true } } })).json.id));
+  const records = await Promise.all(parents.map(parent => r.prompt(parent, "go")));
+  for (const record of records) {
+    assert.equal(record.error, undefined, JSON.stringify(record));
+    assert.match(record.outcome.result.reply, /child done,child done/);
+  }
 });
 
 test("workflow input is refused on agents, definitions, runs, upserts and configure; stored settings are ignored", async t => {
