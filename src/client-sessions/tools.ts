@@ -213,7 +213,9 @@ async function answerToolCall(ctx: ToolsContext, session: Session, call: ToolCal
   const server = session.route?.get(call.name);
   if (!server) throw new Error(`Unknown tool ${call.name}`);
   const request = [...session.running.values()].find(r => RUN_METHODS.includes(r.method) && r.began);
-  const plan = call.toolCallId && !call.innerCallId ? session.retries?.get(call.toolCallId) : undefined;
+  const plan = call.toolCallId ? session.retries?.get(humanInput.callKey(call)) : undefined;
+  // A question's answer, a refusal or a closed input: the result of a call from code that starts again with it.
+  if (plan && "result" in plan) return plan.result;
   if (plan && plan.argumentsHash !== argumentsHash(call.name, call.args)) throw new Error("These are not the arguments the user answered for; the call did not run");
   const origin = await ctx.options.hooks?.origin?.({ id: session.header.id, tenant: session.header.tenant, claim: session.claim }, request?.id);
   const lineage = delegation.lineage(ctx.delegationContext, session, request);
@@ -259,7 +261,7 @@ async function answerToolCall(ctx: ToolsContext, session: Session, call: ToolCal
   }
   const content = contentResult(result, server.returnsFiles);
   // The model learns who answered, and how long ago: it should check what may have changed meanwhile.
-  if (plan) content.content.push({ type: "text", text: plan.note });
+  if (plan && !call.innerCallId) content.content.push({ type: "text", text: plan.note });
   // Its background children's progress since it last saw it rides on the model's next result (never a script's).
   const updates = call.innerCallId ? undefined : await childSessions.pendingUpdates(ctx.childrenContext, session).catch(error => {
     console.error(JSON.stringify({ type: "agent_updates_failed", agent: session.header.id, error: safeError(error) }));

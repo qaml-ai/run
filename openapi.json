@@ -4314,7 +4314,7 @@
               }
             },
             "additionalProperties": false,
-            "description": "Which tools the user approves before each call. These tools remain searchable in code, but calls needing a person must be made directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
+            "description": "Which tools the user approves before each call. A call needing a person pauses the turn, whether the model makes it directly or from code; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
           },
           "fileArguments": {
             "type": "string",
@@ -5103,7 +5103,7 @@
               }
             },
             "additionalProperties": false,
-            "description": "Which tools the user approves before each call. These tools remain searchable in code, but calls needing a person must be made directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
+            "description": "Which tools the user approves before each call. A call needing a person pauses the turn, whether the model makes it directly or from code; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
           },
           "fileArguments": {
             "type": "string",
@@ -9611,7 +9611,7 @@
               }
             },
             "additionalProperties": false,
-            "description": "Which operations the user approves before each call. These operations remain searchable in code, but calls needing a person must be made directly; with auth \"runtime\", an approved call's identity token carries an approval claim"
+            "description": "Which operations the user approves before each call. A call needing a person pauses the turn, whether the model makes it directly or from code; with auth \"runtime\", an approved call's identity token carries an approval claim"
           },
           "fileArguments": {
             "type": "string",
@@ -9956,7 +9956,7 @@
               }
             },
             "additionalProperties": false,
-            "description": "Which tools the user approves before each call. These tools remain searchable in code, but calls needing a person must be made directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
+            "description": "Which tools the user approves before each call. A call needing a person pauses the turn, whether the model makes it directly or from code; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
           },
           "fileArguments": {
             "type": "string",
@@ -10135,7 +10135,7 @@
               }
             },
             "additionalProperties": false,
-            "description": "Which operations the user approves before each call. These operations remain searchable in code, but calls needing a person must be made directly; with auth \"runtime\", an approved call's identity token carries an approval claim"
+            "description": "Which operations the user approves before each call. A call needing a person pauses the turn, whether the model makes it directly or from code; with auth \"runtime\", an approved call's identity token carries an approval claim"
           },
           "fileArguments": {
             "type": "string",

@@ -204,8 +204,13 @@ export type Session = {
   activeSince?: number;
   /** What the running run wrote and handed over with present_file, for its outcome. */
   outputs?: { files: Map<string, WrittenFile>; presented: (FileRef & { caption?: string })[] };
-  /** In a `resume` run, how each answered call is run again, by tool call id. */
-  retries?: Map<string, RetryPlan>;
+  /**
+   * In a `resume` run, how each answered call is run again, by tool call id (`<codemode call>/<key>` for a call from
+   * code), or for a call from code that is not run again, the result it gets as its code goes on.
+   */
+  retries?: Map<string, RetryPlan | { result: { content: { type: "text"; text: string }[]; isError?: boolean } }>;
+  /** Whether the agent's host closed for good in the run that just ended, to be stopped once it has (`enqueue`). */
+  unload?: boolean;
   /** A channel's conversation: someone there answers the agent's inputs. */
   channel?: boolean;
   /** Where each of the running agent's tools comes from. */

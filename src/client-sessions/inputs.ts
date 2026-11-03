@@ -19,6 +19,9 @@ export type InputContext = {
   submit(agent: string, tenant: string, body: { id: string; method: string; params: Record<string, unknown> }): Promise<RequestRecord>;
 };
 
+/** A tool call as its inputs and retry name it: the model's call, or for a call from code `<codemode call>/<key>`. */
+export const callKey = (call: { toolCallId?: string; innerCallId?: string }) => call.innerCallId ? `${call.toolCallId}/${call.innerCallId}` : call.toolCallId!;
+
 /** The id of the run that resumes a suspension: one per suspension, so every path that resumes it makes the same request. */
 export const resumeId = (suspension: string) => `resume_${createHash("sha256").update(suspension).digest("hex").slice(0, 40)}`;
 
@@ -49,14 +52,16 @@ export function approver(by: Responder) {
 /**
  * Suspend a tool call on the input its tool asked for: each request becomes an input (approvals
  * shown as the runtime sees the call, never as the model or tool describes it), announced on the
- * agent's stream, and the call returns open for the agent to leave waiting. Code cannot
- * wait for days, so a call from there fails, pointing the model at a direct call.
+ * agent's stream, and the call returns open for the agent to leave waiting. A call from code is
+ * named as Pi names it, `<codemode call>/<key>`: the run ends there, and the call starts again with
+ * its answer when the code mode call goes on.
  */
 export async function suspend(ctx: InputContext, session: Session, call: ToolCall, request: RequestRecord | undefined, result: McpResult) {
   const inputs = ctx.options.inputs;
   let requests = inputRequests(result);
   const approval = requests.every(entry => entry.kind === "approval");
-  if (!call.toolCallId || call.innerCallId || !request || !inputs) throw new Error(`${call.name} needs the user's ${approval ? "approval" : "input"}: call ${call.name} directly, not from code`);
+  if (!call.toolCallId || !request || !inputs) throw new Error(`${call.name} needs the user's ${approval ? "approval" : "input"}, which this request cannot wait for`);
+  const toolCallId = callKey(call);
   const header = session.header;
   const hashed = argumentsHash(call.name, call.args);
   const shown = JSON.stringify(call.args);
@@ -67,7 +72,7 @@ export async function suspend(ctx: InputContext, session: Session, call: ToolCal
       ...shown.length > INPUT_LIMITS.arguments ? { argumentsPreview: `${shown.slice(0, INPUT_LIMITS.arguments)}…` } : { arguments: call.args }, argumentsHash: hashed },
   });
   const rows = await inputs.create({
-    agent: header.id, tenant: header.tenant, requestId: request.id, toolCallId: call.toolCallId,
+    agent: header.id, tenant: header.tenant, requestId: request.id, toolCallId,
     responders: request.actor ? { audience: [request.actor] } : {}, expiresAt: expiresAt(header.sources?.humanInput, header.expiresAt),
     tool: call.name, argumentsHash: hashed, ...(typeof result.requestState === "string" ? { requestState: result.requestState } : {}),
   }, requests, session.claim);

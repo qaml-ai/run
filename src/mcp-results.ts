@@ -71,7 +71,7 @@ export function attachedTools(tools: unknown): ToolDefinition[] {
     if (!tool.inputSchema || typeof tool.inputSchema !== "object" || tool.inputSchema.type !== "object" || !compiles(tool.inputSchema)) throw new Error(`MCP tool ${tool.name}: inputSchema must be a JSON Schema for an object`);
     const meta = tool._meta ?? {};
     const exposure = meta[`${META}exposure`], executionMode = meta[`${META}executionMode`];
-    // A tool that asks the user's approval (the SDKs' needsApproval) is declared directly: code cannot wait for the user.
+    // A tool that asks the user's approval (the SDKs' needsApproval): the turn pauses for it, from a direct call or from code.
     const approval = meta[`${META}needsApproval`] === true;
     const timeoutMs = declaredTimeout(meta);
     return {

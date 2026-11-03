@@ -2018,7 +2018,11 @@ export class ClientSessions {
     for (const toolCallId of new Set(rows.map(row => row.toolCallId))) {
       const resolved = resolution(rows.filter(row => row.toolCallId === toolCallId), row => inputs.requestState(row));
       if ("retry" in resolved) { session.retries.set(toolCallId, resolved.retry); calls.push({ toolCallId, retry: true }); }
-      else calls.push({ toolCallId, result: resolved.result });
+      else {
+        // A call from code starts again as its code goes on, and gets this result then (`answerToolCall`).
+        session.retries.set(toolCallId, { result: resolved.result });
+        calls.push({ toolCallId, result: resolved.result });
+      }
     }
     const close = rows.every(row => row.answer?.by.system && !(row.answer.by.system === "expired" && onExpire === "resume"));
     return { calls, close };
@@ -2070,7 +2074,16 @@ export class ClientSessions {
 
   /** Queue a run behind the agent's earlier runs; a busy agent never rejects work. */
   private enqueue(session: Session, record: RequestRecord, params: unknown) {
-    session.runs = session.runs.then(() => this.run(session, record, params)).catch(() => {});
+    session.runs = session.runs.then(async () => {
+      try { await this.run(session, record, params); }
+      finally {
+        // Its host closed for good (a turn suspended on a call from code): the next run loads the agent again.
+        if (session.unload) {
+          session.unload = false;
+          await this.supervisor.stop(session.header.id).catch(error => console.error(JSON.stringify({ type: "agent_unload_failed", agent: session.header.id, error: safeError(error) })));
+        }
+      }
+    }).catch(() => {});
   }
 
   /**
@@ -2216,6 +2229,12 @@ export class ClientSessions {
       }
       const failed = value.result as { code?: string; error?: string } | undefined;
       if (failed?.code === "model_key_missing" && this.options.modelKeyHint) value = { result: { ...failed, error: `${failed.error} ${this.options.modelKeyHint}` } };
+      // A turn suspended on a call from code closed its agent (agent-host.ts `suspended`): it is unloaded once the run ends.
+      if ((value.result as { unload?: boolean } | undefined)?.unload) {
+        const { unload: _unload, ...result } = value.result as Record<string, unknown>;
+        value = { result };
+        session.unload = true;
+      }
       // A suspended turn's outcome lists what it waits on.
       if ((value.result as { stopped?: string } | undefined)?.stopped === "input_required" && this.options.inputs) {
         const rows = await this.options.inputs.forRequest(session.header.id, record.id);

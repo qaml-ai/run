@@ -7,7 +7,7 @@ import {
   contentText, getCurrentSystemMessage, getCurrentTools, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
   type AssistantMessage, type AssistantMessageEventStream, type Message, type SystemMessage, type Tool, type ToolCall, type ToolResultMessage,
 } from "@earendil-works/pi-ai";
-import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { CODEMODE_TOOL_NAME, createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import type { CodemodeTool } from "@earendil-works/pi-codemode/portable";
 import { PiV8Sandbox, type CodeSandboxes } from "./codemode-pi-launcher.ts";
 import type { Outbound } from "./outbound.ts";
@@ -476,6 +476,8 @@ export function createAgentHost(hostIO: HostIO) {
             try {
               const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await scriptMadeAt(nested) }, signal);
               signal?.throwIfAborted();
+              // It waits on a person (inputs.ts): the run ends, and the call starts again with the answer (`DurableAgent.suspend`).
+              if (value?.inputRequired) return { content: value.content, details: { inputRequired: true }, structuredContent: null };
               data = (tool.resultFormat === "content" ? scriptValue(value) : value) ?? null;
             } catch (error) {
               const message = errorText(error);
@@ -1012,6 +1014,12 @@ export function createAgentHost(hostIO: HostIO) {
         leading: () => leading(agent ? undefined : tools),
         extensions: codemode ? [codemode] : [],
         env: outputFiles,
+        // A call from code waits on a person: the turn ends suspended on its code mode call, which stays open in Pi's run.
+        onSuspend: async parentCallId => {
+          stopped = { stopped: "input_required" };
+          await journal.await([parentCallId]);
+          await journal.setActive(false);
+        },
         onContextRequest: (held, sent) => contextMetrics.request(held, sent),
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own
         // writes fails. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
@@ -1035,7 +1043,8 @@ export function createAgentHost(hostIO: HostIO) {
       await journal.attach(() => agent!.journalSession());
       // A run that does not go on here: what Pi settles for it is not history, as the host closed that turn itself, above.
       await requireContextSize();
-      if (!resume || !("continue" in resume)) {
+      // A turn suspended on a call from code keeps its run, Pi's, for the answer (`resume`).
+      if ((!resume || !("continue" in resume)) && !(await codeWaits()).length) {
         await journal.refresh();
         const latest = journal.history.latest, before = agent.latestCursor;
         const waiting = journal.awaiting;
@@ -1164,7 +1173,20 @@ export function createAgentHost(hostIO: HostIO) {
       // Where the run's messages start in the agent's history, so a client can line up its stream with history pages.
       io.emit({ type: "turn_opened", index: journal.total });
       steerable = true;
-      if (method === "resume") {
+      const waiting = await codeWaits();
+      if (method === "resume" && waiting.length) {
+        // A call from code waited on a person: its code mode call's run goes on, the call starting again with its answer
+        // (`answerToolCall`), or, closed without the model (expired or cancelled inputs), the run is abandoned.
+        await journal.await(waiting, true);
+        if (params.close) {
+          await agent.discardInterruptedRun();
+          await journal.setActive(false);
+          return { messages: journal.total, error: null };
+        }
+        if (active.signal.aborted) return await abortedBeforeLoop();
+        await suspendable(agent.continue());
+        if (agent.suspended) return await suspended();
+      } else if (method === "resume") {
         const settled = await settle(params.calls ?? [], active.signal);
         // Closed without the model (expired or cancelled inputs), still waiting, or nothing left to resume.
         if (params.close || journal.awaiting.length || !settled) {
@@ -1175,10 +1197,16 @@ export function createAgentHost(hostIO: HostIO) {
         await agent.continue();
       } else if (method === "continue") {
         if (active.signal.aborted) return await abortedBeforeLoop();
-        await agent.continue();
+        await suspendable(agent.continue());
+        if (agent.suspended) return await suspended();
       }
       else {
-        // A new message supersedes calls still waiting on input: each is closed first, so the model sees why.
+        // A new message supersedes calls still waiting on input: each is closed first, so the model sees why. A code mode
+        // call's run is abandoned (Pi ends the call as aborted).
+        if (waiting.length) {
+          await agent.discardInterruptedRun();
+          await journal.await(waiting, true);
+        }
         if (journal.awaiting.length) {
           await settle(journal.awaiting.map(toolCallId => ({ toolCallId, result: { content: [{ type: "text", text: "Not answered: the user sent a new message instead (next)." }], isError: true } })), active.signal);
         }
@@ -1200,7 +1228,8 @@ export function createAgentHost(hostIO: HostIO) {
         };
         if (params.landOnly) return await land(params.landOnly as RunStop);
         if (notice && active.signal.aborted) return await land(STOPPED_NOTICE as RunStop);
-        await agent.prompt(messages);
+        await suspendable(agent.prompt(messages));
+        if (agent.suspended) return await suspended();
         if (notice && active.signal.aborted && !(await journal.turnMessages()).some(message => (message as { requestId?: string }).requestId === params.requestId)) return await land(STOPPED_NOTICE as RunStop);
       }
       await remindOfOutput(active.signal);
@@ -1253,6 +1282,30 @@ export function createAgentHost(hostIO: HostIO) {
     if (repairs.length) await journal.append(repairs);
     if (journal.active) await journal.setActive(false);
     return { messages: journal.total, error: "The run was aborted", code: "aborted", ...(stopped ?? {}) };
+  }
+
+  /** A run Pi ends by closing, for a call from code that waits on a person (`DurableAgent.suspend`), ends here, as suspended. */
+  const suspendable = (work: Promise<void>) => work.catch(error => { if (!agent?.suspended) throw error; });
+
+  /**
+   * A run that ended on a call from code waiting on a person: its agent closed with the code mode call open, and is
+   * unloaded (`unload`), so it holds no code slot or memory meanwhile; the answer's run loads it again and goes on.
+   */
+  async function suspended() {
+    await agent!.whenSuspended();
+    const last = agent!.state.messages.findLast(message => message.role === "assistant") as AssistantMessage | undefined;
+    return { messages: journal.total, ...await answer(last), stopped: "input_required", unload: true };
+  }
+
+  /** The calls waiting on a person that are code mode calls: one of their code's calls waits, and their run is Pi's, left open. */
+  async function codeWaits(): Promise<string[]> {
+    const waits: string[] = [];
+    for (const id of journal.awaiting) {
+      const at = journal.callIndex(id);
+      const message = at === undefined ? undefined : (await journal.history.messagesFrom(at, at + 1))?.[0];
+      if (message?.role === "assistant" && message.content.some(part => part.type === "toolCall" && part.id === id && part.name === CODEMODE_TOOL_NAME)) waits.push(id);
+    }
+    return waits;
   }
 
   type Settled = { content: unknown[]; isError?: boolean; details?: unknown };

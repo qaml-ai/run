@@ -193,7 +193,7 @@ test("an MCP server's input_required (form and url, and the older -32042) suspen
   });
   const r = await runtime(t, (body, index) => [toolCall("tools__rename", {}, "call_rename"), { role: "assistant", content: toolResults(body).at(-1) },
     toolCall("tools__connect", {}, "call_connect"), { role: "assistant", content: toolResults(body).at(-1) },
-    toolCall("codemode", { code: "return await tools.tools__rename({})" }), { role: "assistant", content: toolResults(body).at(-1) }][index] ?? { role: "assistant", content: "?" }, LOCAL);
+    toolCall("codemode", { code: "return await tools.tools__rename({})" }, "call_code"), { role: "assistant", content: toolResults(body).at(-1) }][index] ?? { role: "assistant", content: "?" }, LOCAL);
   const definition = (await r.call("/v1/definitions", { body: { name: "Tools", humanInput: {}, mcpServers: [{ name: "tools", url: server.url, exposure: "both" }] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
 
@@ -214,10 +214,14 @@ test("an MCP server's input_required (form and url, and the older -32042) suspen
   assert.match(toolResults(r.model.bodies[3]).at(-1), /connected: accept/);
   assert.equal(server.calls[3].params.requestState, undefined, "no state was given, so none is sent");
 
-  // Code cannot wait for a person: the call from codemode fails and says how to make it.
+  // From code the same: the run waits on the form, and the call starts again with the answer as its code goes on.
   const fromCode = await r.prompt(agent, "Rename from code");
-  assert.match(fromCode.outcome.result.reply, /tools__rename needs the user's input: call tools__rename directly/);
-  assert.equal(fromCode.outcome.result.stopped, undefined);
+  assert.equal(fromCode.outcome.result.stopped, "input_required");
+  const [named] = fromCode.outcome.result.inputs;
+  assert.deepEqual([named.kind, named.toolCallId], ["form", "call_code/c1"]);
+  const renamed = await r.call(`/v1/agents/${agent}/inputs/${named.id}`, { body: { action: "accept", content: { name: "Cy" } } });
+  const resumed = await request(r, agent, renamed.json.request.id);
+  assert.match(resumed.outcome.result.reply, /renamed to Cy \(state opaque-state\)/);
 });
 
 test("an agent with no one to ask does not tell servers it can elicit", async t => {
@@ -327,13 +331,71 @@ test("an input for particular people must be answered naming who answers", async
 });
 
 
-test("approval tools stay searchable in code and refuse before asking or executing", async t => {
-  const server = await rawMcp(t, { wipe: { call: () => ({ content: [{ type: "text", text: "wiped" }] }) } });
-  const r = await runtime(t, (body, index) => index === 0 ? toolCall("codemode", { code: `const found = await searchTools("wipe"); if (!found.some(tool => tool.name === "s__wipe")) throw new Error("not searchable"); return await tools.s__wipe({});` }, "code") : { role: "assistant", content: toolResults(body).at(-1) }, LOCAL);
-  const definition = (await r.call("/v1/definitions", { body: { name: "Code approval", mcpServers: [{ name: "s", url: server.url, exposure: "codemode", approval: { default: "always" } }] } })).json;
+test("code's calls that ask at once are one suspension: an approved one runs, a declined one rejects in the script", async t => {
+  const text = (value: string) => ({ content: [{ type: "text", text: value }] });
+  const server = await rawMcp(t, { remove: { annotations: { destructiveHint: true }, call: args => text(`removed ${args.id}`) } });
+  const script = `const results = await Promise.allSettled([tools.s__remove({ id: "a" }), tools.s__remove({ id: "b" })]);
+return results.map(result => result.status === "fulfilled" ? result.value : "refused: " + result.reason.message);`;
+  const r = await runtime(t, (body, index) => index === 0 ? toolCall("codemode", { code: script }, "code") : { role: "assistant", content: toolResults(body).at(-1) }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Code asks twice", mcpServers: [{ name: "s", url: server.url, exposure: "codemode", approval: { default: "destructive" } }] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
-  const result = await r.prompt(agent, "Wipe from code");
-  assert.match(result.outcome.result.reply, /s__wipe needs the user's approval: call s__wipe directly/);
-  assert.equal(server.calls.length, 0);
-  assert.equal(result.outcome.result.stopped, undefined);
+  const suspended = await r.prompt(agent, "Remove both");
+  const inputs = suspended.outcome.result.inputs;
+  assert.deepEqual(inputs.map((input: any) => input.toolCallId).sort(), ["code/c1", "code/c2"]);
+  const a = inputs.find((input: any) => input.detail.arguments.id === "a"), b = inputs.find((input: any) => input.detail.arguments.id === "b");
+  // Answered together, all or none: the suspension resumes once.
+  const answered = await r.call(`/v1/agents/${agent}/inputs`, { body: { answers: [{ id: a.id, action: "accept" }, { id: b.id, action: "decline", content: { reason: "keep b" } }] } });
+  assert.equal(answered.status, 202, answered.text);
+  const done = await request(r, agent, answered.json.requests[0].id);
+  assert.match(done.outcome.result.reply, /\["removed a","refused: The user declined this call: keep b\. It did not run/);
+  assert.deepEqual(server.calls.map(call => call.params.arguments.id), ["a"], "the declined call never ran");
+});
+
+test("code pauses for people: an approval, a question and an MCP form, a run each, and every finished call runs once", async t => {
+  const text = (value: string) => ({ content: [{ type: "text", text: value }] });
+  const form = { mode: "form", message: "New name?", requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } };
+  const server = await rawMcp(t, {
+    read: { annotations: { readOnlyHint: true }, call: () => text(JSON.stringify({ items: ["a", "b"] })) },
+    remove: { annotations: { destructiveHint: true }, call: args => text(`removed ${args.id}`) },
+    rename: { call: (_args, params) => params.inputResponses ? text(`renamed to ${params.inputResponses.name.content.name}`)
+      : { resultType: "input_required", inputRequests: { name: { method: "elicitation/create", params: form } }, requestState: "s1" } },
+  });
+  const script = `const { items } = await tools.s__read({});
+const removed = await tools.s__remove({ id: items[0] });
+const asked = await tools.ask_user(${JSON.stringify(ASK)});
+const renamed = await tools.s__rename({});
+return { removed, region: asked.answers["Which region?"], renamed };`;
+  const r = await runtime(t, (body, index) => index === 0 ? toolCall("codemode", { code: script }, "code") : { role: "assistant", content: toolResults(body).at(-1) }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Code asks", builtins: ["ask_user"], humanInput: {}, mcpServers: [{ name: "s", url: server.url, exposure: "codemode", approval: { default: "destructive" } }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+  const called = (name: string) => server.calls.filter(call => call.params.name === name).length;
+
+  const first = await r.prompt(agent, "Clean up");
+  assert.equal(first.outcome.result.stopped, "input_required");
+  const [approval] = first.outcome.result.inputs;
+  assert.deepEqual([approval.kind, approval.toolCallId, approval.detail.arguments], ["approval", "code/c2", { id: "a" }]);
+  assert.deepEqual([called("read"), called("remove")], [1, 0], "nothing runs before the approval");
+  // The agent unloads while it waits: no code slot, no memory.
+  await until(async () => !(await r.call("/v1/agents")).json.find((entry: any) => entry.id === agent).running, "the agent to unload");
+
+  const approved = await r.call(`/v1/agents/${agent}/inputs/${approval.id}`, { body: { action: "accept" } });
+  const second = await request(r, agent, approved.json.request.id);
+  assert.equal(second.outcome.result.stopped, "input_required");
+  const [question] = second.outcome.result.inputs;
+  assert.deepEqual([question.kind, question.toolCallId], ["question", "code/c3"]);
+  assert.deepEqual([called("read"), called("remove")], [1, 1]);
+
+  const answered = await r.call(`/v1/agents/${agent}/inputs/${question.id}`, { body: { action: "accept", content: { answers: { "Which region?": "EU" } } } });
+  const third = await request(r, agent, answered.json.request.id);
+  assert.equal(third.outcome.result.stopped, "input_required");
+  const [named] = third.outcome.result.inputs;
+  assert.deepEqual([named.kind, named.toolCallId], ["form", "code/c4"]);
+
+  const filled = await r.call(`/v1/agents/${agent}/inputs/${named.id}`, { body: { action: "accept", content: { name: "Bob" } } });
+  const done = await request(r, agent, filled.json.request.id);
+  assert.equal(done.outcome.error, undefined, JSON.stringify(done.outcome));
+  assert.match(done.outcome.result.reply, /"removed":"removed a"[\s\S]*"region":"EU"[\s\S]*"renamed":"renamed to Bob/);
+  assert.deepEqual([called("read"), called("remove"), called("rename")], [1, 1, 2], "each finished call ran once");
+  assert.equal(r.model.bodies.length, 2, "the model is asked only to start and to answer");
+  assert.equal(server.calls.find(call => call.params.name === "remove")!.params._meta["agent-runtime/approval"].input, approval.id, "the approved call carries its proof");
 });
