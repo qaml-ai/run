@@ -53,7 +53,7 @@ const TENANT_TABLES = [
   "chunk_pins", "chunk_touches", "gc_candidates", "storage_gc",
   "billing_email_outbox", "billing_recipients", "billing_events", "billing_alert_settings", "billing_auto_settings", "help_requests",
   // The tenant's own users' credit: their ids are the tenant's customers' data.
-  "end_user_settings", "end_users", "end_user_ledger", "end_user_days", "end_user_holds",
+  "end_user_settings", "end_users", "end_user_ledger", "end_user_days", "end_user_holds", "end_user_lots",
 ];
 
 export class AccountDeletions {

@@ -852,6 +852,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Human input waits in Postgres; a tool's opaque request state is sealed when the runtime can seal.
   const inputs = new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) });
   const endUsers = new EndUserCredits(db);
+  // End users' credit lots past their time expire as their money next moves, and here for those who do nothing.
+  const lotsTimer = setInterval(() => void endUsers.expireDue().catch(error => console.error(JSON.stringify({ type: "end_user_lot_expiry_failed", error: errorText(error) }))), 60_000);
+  lotsTimer.unref();
   const modelAttempts = new ModelAttempts(db, accounts, undefined, leaseTtlMs, async (tenant, scope) => {
     const entry = await keyScopes.entry(tenant, scope, "openrouter");
     // A gateway credential is not necessarily an OpenRouter key; never send it to another origin.
@@ -1775,6 +1778,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // What else the node started, which a process that exits now would end anyway.
     journey?.stop();
     clearInterval(idempotencyTimer);
+    clearInterval(lotsTimer);
     clearTimeout(firstCharge);
     deps.codeExecutor?.close?.();
     await step("database", () => db.end());

@@ -17,6 +17,8 @@ import { enqueueEvents, webhookEvent } from "./webhooks.ts";
  * cap, never what was spent.
  */
 
+/** The furthest ahead a lot may expire: 400 days. */
+const MAX_LOT_MS = 400 * 86_400_000;
 /** Integer micro-USD: 1 USD = 1,000,000. */
 export const MICROS = 1_000_000;
 /** The bucket of a run or call that names none. */
@@ -29,7 +31,8 @@ const ALLOWANCE_KEY = /^(?:[A-Za-z0-9_.:@/-]{1,100}\*?|\*)$/;
 const END_USER_ID = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && value.length <= 200;
 export const ENTRY_KINDS = ["grant", "refund", "adjustment", "spend"] as const;
 export type EntryKind = typeof ENTRY_KINDS[number];
-export type LedgerKind = EntryKind | "usage";
+/** `expiry`: a lot's unspent part, posted by the runtime as the lot expires. */
+export type LedgerKind = EntryKind | "usage" | "expiry";
 
 /** Allowances per UTC day, in raw micro-USD, by bucket, bucket prefix (`bot:*`) or `*`. */
 export type Allowances = Record<string, number>;
@@ -57,7 +60,7 @@ export const DEFAULT_SETTINGS: Readonly<EndUserSettings> = Object.freeze({ enabl
  * correction of a call's cost, one of the tenant's entries, a call refused (no entry), or a threshold set above the
  * balance (no entry). Stable codes: a receiver may switch on them.
  */
-export const BALANCE_CAUSES = ["usage", "usage_correction", "grant", "refund", "adjustment", "spend", "refusal", "threshold_changed"] as const;
+export const BALANCE_CAUSES = ["usage", "usage_correction", "grant", "refund", "adjustment", "spend", "expiry", "refusal", "threshold_changed"] as const;
 export type BalanceCauseKind = typeof BALANCE_CAUSES[number];
 /**
  * `entryId`: the ledger entry that moved the balance (none for a refusal or a threshold change); a person's entry ids
@@ -79,7 +82,7 @@ export type LedgerEntry = {
  */
 export type BucketDay = { bucket: string; allowance: number; allowanceSpent: number; paidSpent: number; writtenOff: number; held: number; allowanceLeft: number; paidLimit: number | null };
 
-export const LEDGER_KINDS: readonly LedgerKind[] = [...ENTRY_KINDS, "usage"];
+export const LEDGER_KINDS: readonly LedgerKind[] = [...ENTRY_KINDS, "usage", "expiry"];
 /** How a ledger read is narrowed (`EndUserCredits.ledger`): times are epoch ms, `to` exclusive. */
 export type LedgerQuery = { limit?: number; before?: number; kinds?: LedgerKind[]; from?: number; to?: number; bucket?: string; moved?: boolean };
 /** Which days a per-day read covers (`EndUserCredits.days`): UTC days as YYYY-MM-DD, `to` exclusive. */
@@ -88,10 +91,11 @@ export type DaysQuery = { from?: string; to?: string; bucket?: string; limit?: n
  * An end user's UTC day: by bucket, what the allowance paid (`freeRaw`, raw cost) and what the balance paid
  * (`paidCharged`, charged with the markup), and their totals; and what the tenant's own entries moved that day, in balance
  * units: `granted`, `refunded` (positive: what was taken back), `adjusted` (signed), `spent` (positive: credit the person
- * spent on what the tenant sells, apart from metered usage), and how many there were (`entries`).
+ * spent on what the tenant sells, apart from metered usage), `expired` (positive: lots' credit that expired unspent), and
+ * how many there were (`entries`).
  */
 export type EndUserDay = {
-  day: string; freeRaw: number; paidCharged: number; writtenOff: number; granted: number; refunded: number; adjusted: number; spent: number; entries: number;
+  day: string; freeRaw: number; paidCharged: number; writtenOff: number; granted: number; refunded: number; adjusted: number; spent: number; expired: number; entries: number;
   buckets: { bucket: string; freeRaw: number; paidCharged: number; writtenOff: number }[];
 };
 /** The most days one per-day read may span. */
@@ -196,10 +200,65 @@ const entryView = (row: any): LedgerEntry => ({
   metadata: row.metadata ?? {}, balanceAfter: Number(row.balance_after), createdAt: Number(row.created_at),
 });
 
-/** An end user's row, made if it is not there yet, locked for the rest of the transaction. */
+/**
+ * An end user's row, made if it is not there yet, locked for the rest of the transaction; their lots past their time
+ * expired first (`expireLots`), so nothing done under the lock sees credit that has expired.
+ */
 export async function lockEndUser(sql: Sql, tenant: string, id: string, now = Date.now()) {
   await sql.query("insert into end_users (tenant, id, created_at, updated_at) values ($1, $2, $3, $3) on conflict (tenant, id) do nothing", [tenant, id, now]);
-  return (await sql.query("select * from end_users where tenant = $1 and id = $2 for update", [tenant, id])).rows[0];
+  const user = (await sql.query("select * from end_users where tenant = $1 and id = $2 for update", [tenant, id])).rows[0];
+  return await expireLots(sql, tenant, user, now) ? (await sql.query("select * from end_users where tenant = $1 and id = $2", [tenant, id])).rows[0] : user;
+}
+
+/**
+ * A credit lot: the part of a balance that expires (`expiresAt`), what it was (`amount`) and what is left of it. The rest
+ * of the balance never expires: shown as one lot with no key and no `expiresAt`. In the order paid spend takes them.
+ */
+export type Lot = { key: string | null; amount: number; remaining: number; expiresAt: number | null; createdAt: number | null };
+
+/**
+ * Expire a user's lots past their time (their row locked): each lot's unspent part, less what holds made before it
+ * expired reserved of it, is posted as an `expiry` and leaves the balance. Holds take lots in the order spend does (the
+ * soonest expiring first), so a hold open at expiry settles against the lot it reserved; what it leaves of it expires at
+ * the next lock. Whether any expired.
+ */
+async function expireLots(sql: Sql, tenant: string, user: any, now: number): Promise<boolean> {
+  const { rows: due } = await sql.query("select * from end_user_lots where tenant = $1 and end_user = $2 and remaining > 0 and expires_at <= $3 order by expires_at, id", [tenant, user.id, now]);
+  if (!due.length) return false;
+  const { rows: holds } = await sql.query("select paid, created_at from end_user_holds where tenant = $1 and end_user = $2 and expires_at > $3 and paid > 0", [tenant, user.id, now]);
+  let balance = Number(user.balance), any = false;
+  // What holds made before each lot's time reserved: the soonest expiring lots first.
+  let claimed = 0;
+  for (const lot of due) {
+    const reserved = holds.filter(hold => Number(hold.created_at) < Number(lot.expires_at)).reduce((total, hold) => total + Number(hold.paid), 0);
+    const kept = Math.min(Number(lot.remaining), Math.max(0, reserved - claimed));
+    claimed += kept;
+    const lost = Math.min(Number(lot.remaining) - kept, Math.max(0, balance));
+    if (Number(lot.remaining) - kept <= 0) continue;
+    await sql.query("update end_user_lots set remaining = $2 where id = $1", [lot.id, kept]);
+    if (lost <= 0) continue;
+    const entry = await appendEntry(sql, {
+      tenant, endUser: user.id, kind: "expiry", amount: -lost, key: `expiry:${lot.id}:${now}`, reference: lot.key.startsWith("entry:") ? lot.key.slice(6) : lot.key,
+      metadata: { lot: lot.key.startsWith("entry:") ? lot.key.slice(6) : lot.key, expiresAt: Number(lot.expires_at), amount: Number(lot.amount) }, lots: "none",
+    }, balance, now);
+    await enqueueEvents(sql, [webhookEvent("end_user.credit.expired", tenant, {
+      endUser: user.id, entryId: entry.id, kind: "expiry", amount: entry.amount, key: entry.key, reference: entry.reference, description: null, metadata: entry.metadata, balance: entry.balanceAfter, previousBalance: balance,
+    }, `end_user_entry:${tenant}:${entry.id}`)]);
+    balance = entry.balanceAfter;
+    any = true;
+  }
+  return any;
+}
+
+/** A user's lots as they stand (read, no lock): the expiring ones not yet expired, then the rest of the balance. */
+async function lotsOf(sql: Sql | Db, tenant: string, id: string, balance: number, now: number): Promise<Lot[]> {
+  const { rows } = await sql.query("select key, amount, remaining, expires_at, created_at from end_user_lots where tenant = $1 and end_user = $2 and remaining > 0 order by expires_at, id", [tenant, id]);
+  const lots: Lot[] = rows.filter(row => Number(row.expires_at) > now).map(row => ({
+    key: row.key.startsWith("entry:") ? row.key.slice(6) : row.key, amount: Number(row.amount), remaining: Number(row.remaining), expiresAt: Number(row.expires_at), createdAt: Number(row.created_at),
+  }));
+  const rest = balance - rows.reduce((total, row) => total + Number(row.remaining), 0);
+  if (rest > 0) lots.push({ key: null, amount: rest, remaining: rest, expiresAt: null, createdAt: null });
+  return lots;
 }
 
 export class EndUserCredits {
@@ -301,6 +360,10 @@ export class EndUserCredits {
    */
   async get(tenant: string, id: string, buckets: string[] = [], now = Date.now()) {
     endUserInput(id);
+    // A lot past its time is expired before it is shown (it has a lot, so the user is there: nothing is made).
+    if ((await this.db.query("select 1 from end_user_lots where tenant = $1 and end_user = $2 and remaining > 0 and expires_at <= $3 limit 1", [tenant, id, now])).rowCount) {
+      await transaction(this.db, sql => lockEndUser(sql, tenant, id, now));
+    }
     const day = utcDay(now);
     const [settings, user, days, holds] = await Promise.all([
       this.settings(tenant),
@@ -324,8 +387,11 @@ export class EndUserCredits {
     const heldPaid = holds.reduce((total, row) => total + Number(row.paid), 0);
     const balance = Number(user?.balance ?? 0);
     const ownLow = user && user.low_balance !== null ? Number(user.low_balance) : null;
+    const lots = user ? await lotsOf(this.db, tenant, id, balance, now) : [];
     return {
       id, enabled: settings.enabled, balance, held: heldPaid,
+      /** The balance by when it expires, in the order paid spend takes it: lots that expire (the soonest first), then the rest. */
+      lots,
       /** What paid spend may still take today: the balance less holds, within the daily limit. */
       available: Math.max(0, Math.min(balance - heldPaid, dailyLimit === null ? Infinity : dailyLimit - paidSpent - heldPaid)),
       dailyLimit, lowBalance: ownLow ?? settings.lowBalance, markupBps: settings.markupBps,
@@ -408,14 +474,15 @@ export class EndUserCredits {
       ), credited as (
         select (to_timestamp(created_at / 1000.0) at time zone 'UTC')::date as day,
           coalesce(sum(amount) filter (where kind = 'grant'), 0)::bigint as granted, coalesce(-sum(amount) filter (where kind = 'refund'), 0)::bigint as refunded,
-          coalesce(sum(amount) filter (where kind = 'adjustment'), 0)::bigint as adjusted, coalesce(-sum(amount) filter (where kind = 'spend'), 0)::bigint as spent, count(*)::int as entries
+          coalesce(sum(amount) filter (where kind = 'adjustment'), 0)::bigint as adjusted, coalesce(-sum(amount) filter (where kind = 'spend'), 0)::bigint as spent,
+          coalesce(-sum(amount) filter (where kind = 'expiry'), 0)::bigint as expired, count(*)::int as entries
         from end_user_ledger
         where tenant = $1 and end_user = $2 and kind <> 'usage' and $5::text is null and created_at >= $6 and created_at < $7
         group by 1
       ), picked as (
         select day from spent union select day from credited order by day desc limit $8
       )
-      select to_char(p.day, 'YYYY-MM-DD') as day, s.bucket, s.allowance_spent, s.paid_spent, s.written_off, c.granted, c.refunded, c.adjusted, c.spent, c.entries
+      select to_char(p.day, 'YYYY-MM-DD') as day, s.bucket, s.allowance_spent, s.paid_spent, s.written_off, c.granted, c.refunded, c.adjusted, c.spent, c.expired, c.entries
       from picked p left join spent s on s.day = p.day left join credited c on c.day = p.day
       order by p.day desc, s.bucket`,
     [tenant, id, from, to, bucket, Date.parse(`${from}T00:00:00Z`), Date.parse(`${to}T00:00:00Z`), limit + 1]);
@@ -423,7 +490,7 @@ export class EndUserCredits {
     for (const row of rows) {
       let day = days.at(-1);
       if (!day || day.day !== row.day) {
-        day = { day: row.day, freeRaw: 0, paidCharged: 0, writtenOff: 0, granted: Number(row.granted ?? 0), refunded: Number(row.refunded ?? 0), adjusted: Number(row.adjusted ?? 0), spent: Number(row.spent ?? 0), entries: Number(row.entries ?? 0), buckets: [] };
+        day = { day: row.day, freeRaw: 0, paidCharged: 0, writtenOff: 0, granted: Number(row.granted ?? 0), refunded: Number(row.refunded ?? 0), adjusted: Number(row.adjusted ?? 0), spent: Number(row.spent ?? 0), expired: Number(row.expired ?? 0), entries: Number(row.entries ?? 0), buckets: [] };
         days.push(day);
       }
       if (row.bucket === null) continue;
@@ -442,13 +509,15 @@ export class EndUserCredits {
    * back (money returned to the user), a `spend` takes it for something the tenant sells other than metered usage (a
    * month of a feature, an item), an `adjustment` moves the balance by a signed `amount`. A refund or a spend takes at
    * most the balance calls in flight don't hold. `description` is the tenant's words for it, for its person's credit
-   * history. `key` makes it idempotent: the same key again with the same entry returns the first (`replayed`), with
-   * another entry is a 409.
+   * history. A grant with `expiresAt` (epoch ms) is a lot that expires then (a subscription's month of credits): what
+   * is left of it then is posted as an `expiry`; a grant without never expires. A debit with `lot` (a grant's key) takes
+   * that lot first. `key` makes it idempotent: the same key again with the same entry returns the first (`replayed`),
+   * with another entry is a 409.
    */
   async post(tenant: string, id: string, input: Record<string, unknown>): Promise<{ entry: LedgerEntry; replayed: boolean }> {
     endUserInput(id);
-    const unknown = Object.keys(input).find(key => !["kind", "amount", "key", "reference", "description", "metadata"].includes(key));
-    if (unknown) throw new HttpError(400, `Unknown field ${unknown}: an entry is kind, amount, key, reference, description and metadata`);
+    const unknown = Object.keys(input).find(key => !["kind", "amount", "key", "reference", "description", "metadata", "expiresAt", "lot"].includes(key));
+    if (unknown) throw new HttpError(400, `Unknown field ${unknown}: an entry is kind, amount, key, reference, description, metadata, expiresAt and lot`);
     const kind = input.kind as EntryKind;
     if (!ENTRY_KINDS.includes(kind)) throw new HttpError(400, `kind must be one of ${ENTRY_KINDS.join(", ")}`);
     const amount = kind === "adjustment" ? amountInput(input.amount, "amount", { min: -MAX_AMOUNT })! : amountInput(input.amount, "amount", { min: 1 })!;
@@ -460,6 +529,12 @@ export class EndUserCredits {
       throw new HttpError(400, "metadata must be an object of at most 4 KB of JSON");
     }
     const moved = kind === "refund" || kind === "spend" ? -amount : amount;
+    const now = Date.now();
+    if (input.expiresAt !== undefined && (kind !== "grant" || typeof input.expiresAt !== "number" || !Number.isSafeInteger(input.expiresAt) || input.expiresAt <= now || input.expiresAt > now + MAX_LOT_MS)) {
+      throw new HttpError(400, "expiresAt is a grant's: epoch milliseconds, later than now and within 400 days");
+    }
+    if (input.lot !== undefined && (moved > 0 || typeof input.lot !== "string" || !input.lot.trim() || input.lot.length > 255)) throw new HttpError(400, "lot is a debit's: the key of the grant whose lot it takes first");
+    const lots: LotMove | undefined = input.expiresAt !== undefined ? { expiresAt: input.expiresAt as number } : input.lot !== undefined ? { first: input.lot as string } : undefined;
     // Tenant entries' keys never meet the runtime's own (usage: `attempt:…`, `charge:…`).
     const key = `entry:${input.key}`;
     return transaction(this.db, async sql => {
@@ -482,14 +557,51 @@ export class EndUserCredits {
       }
       const entry = await appendEntry(sql, {
         tenant, endUser: id, kind, amount: moved, key, reference: (input.reference as string | undefined) ?? null,
-        description: (input.description as string | undefined)?.trim() ?? null, metadata: (input.metadata as Record<string, unknown> | undefined) ?? {},
-      }, Number(user.balance));
+        description: (input.description as string | undefined)?.trim() ?? null, metadata: (input.metadata as Record<string, unknown> | undefined) ?? {}, ...(lots ? { lots } : {}),
+      }, Number(user.balance), now);
       // Said once per entry (a replayed key posts nothing, so says nothing): for receipts, mirrors, a second service.
       await enqueueEvents(sql, [webhookEvent(ENTRY_EVENTS[kind], tenant, {
         endUser: id, entryId: entry.id, kind, amount: entry.amount, key: entry.key, reference: entry.reference, description: entry.description, metadata: entry.metadata, balance: entry.balanceAfter, previousBalance: Number(user.balance),
       }, `end_user_entry:${tenant}:${entry.id}`)]);
       return { entry, replayed: false };
     });
+  }
+
+  /**
+   * Mark part of what a user has that never expires as a lot that does (`expiresAt`): credit granted before lots, such as
+   * a subscription's month posted as a plain grant. The balance doesn't move and nothing is posted; once per `key` (the
+   * same key again with the same lot returns it, another is a 409). At most the part of the balance no lot holds yet.
+   */
+  async markLot(tenant: string, id: string, input: Record<string, unknown>, now = Date.now()): Promise<{ lot: Lot; replayed: boolean }> {
+    endUserInput(id);
+    const unknown = Object.keys(input).find(key => !["key", "amount", "expiresAt"].includes(key));
+    if (unknown) throw new HttpError(400, `Unknown field ${unknown}: a lot is key, amount and expiresAt`);
+    const amount = amountInput(input.amount, "amount", { min: 1 })!;
+    if (typeof input.key !== "string" || !input.key.trim() || input.key.length > 255) throw new HttpError(400, "key is the lot's idempotency key: a string of 1–255 characters");
+    if (typeof input.expiresAt !== "number" || !Number.isSafeInteger(input.expiresAt) || input.expiresAt <= now || input.expiresAt > now + MAX_LOT_MS) throw new HttpError(400, "expiresAt is epoch milliseconds, later than now and within 400 days");
+    const key = `lot:${input.key}`;
+    return transaction(this.db, async sql => {
+      const user = await lockEndUser(sql, tenant, id, now);
+      const view = (row: any): Lot => ({ key: input.key as string, amount: Number(row.amount), remaining: Number(row.remaining), expiresAt: Number(row.expires_at), createdAt: Number(row.created_at) });
+      const existing = (await sql.query("select * from end_user_lots where tenant = $1 and key = $2", [tenant, key])).rows[0];
+      if (existing) {
+        if (existing.end_user !== id || Number(existing.amount) !== amount || Number(existing.expires_at) !== input.expiresAt) throw new HttpError(409, "This key was used for another lot", "IDEMPOTENCY_CONFLICT");
+        return { lot: view(existing), replayed: true };
+      }
+      const held = Number((await sql.query("select coalesce(sum(remaining), 0)::bigint as held from end_user_lots where tenant = $1 and end_user = $2 and remaining > 0", [tenant, id])).rows[0].held);
+      const free = Math.max(0, Number(user.balance) - held);
+      if (amount > free) throw new HttpError(409, `A lot may be at most the balance no lot holds: ${dollars(free)}`, "INSUFFICIENT_BALANCE", { available: free });
+      const row = (await sql.query("insert into end_user_lots (tenant, end_user, key, amount, remaining, expires_at, created_at) values ($1, $2, $3, $4, $4, $5, $6) returning *",
+        [tenant, id, key, amount, input.expiresAt, now])).rows[0];
+      return { lot: view(row), replayed: false };
+    });
+  }
+
+  /** Expire the lots past their time of up to `limit` users (a node's sweep, so a person who does nothing is told too). */
+  async expireDue(limit = 100, now = Date.now()): Promise<number> {
+    const { rows } = await this.db.query("select distinct tenant, end_user from end_user_lots where remaining > 0 and expires_at <= $1 limit $2", [now, limit]);
+    for (const row of rows) await transaction(this.db, sql => lockEndUser(sql, row.tenant, row.end_user, now));
+    return rows.length;
   }
 
   // Enforcement -------------------------------------------------------------
@@ -799,8 +911,9 @@ export async function settleUsage(sql: Sql, call: { tenant: string; endUser: str
  * Append an entry and move the user's balance by its amount, with the user's row locked (`lockEndUser`) and its balance
  * as it was (`balance`). A key already in the ledger is never appended again: callers look for it first.
  */
-export async function appendEntry(sql: Sql, entry: { tenant: string; endUser: string; kind: LedgerKind; amount: number; raw?: number; allowance?: number; writtenOff?: number; bucket?: string | null; key: string; reference?: string | null; description?: string | null; metadata?: Record<string, unknown>; correction?: boolean }, balance: number, now = Date.now()): Promise<LedgerEntry> {
+export async function appendEntry(sql: Sql, entry: { tenant: string; endUser: string; kind: LedgerKind; amount: number; raw?: number; allowance?: number; writtenOff?: number; bucket?: string | null; key: string; reference?: string | null; description?: string | null; metadata?: Record<string, unknown>; correction?: boolean; lots?: LotMove }, balance: number, now = Date.now()): Promise<LedgerEntry> {
   const after = balance + entry.amount;
+  if (entry.lots !== "none") await moveLots(sql, entry, balance, after, now);
   const row = (await sql.query(`
     insert into end_user_ledger (tenant, end_user, kind, amount, raw, allowance, written_off, bucket, idempotency_key, reference, description, metadata, balance_after, created_at)
     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) on conflict (tenant, idempotency_key) do nothing returning *`,
@@ -816,6 +929,49 @@ export async function appendEntry(sql: Sql, entry: { tenant: string; endUser: st
     });
   }
   return posted;
+}
+
+/**
+ * How an entry moves a user's lots: a credit made a lot that expires (`expiresAt`), a debit taken from one lot first
+ * (`first`: its key), or (`none`) the lots left alone (an expiry, which moves its own).
+ */
+export type LotMove = "none" | { expiresAt: number } | { first: string };
+
+/**
+ * The lots' share of a move of the balance from `before` to `after` (the user's row locked). A credit that expires is a
+ * lot of what it leaves above zero (it repays a debt first); any other credit is the balance's rest, which never
+ * expires. A debit takes the lot it names first; then a refund (money given back) takes what never expires before the
+ * lots, and every other debit (usage, a spend, an adjustment) the soonest expiring lot first, splitting across lots.
+ * What is left of it is the rest's: below zero, a debt.
+ */
+async function moveLots(sql: Sql, entry: { tenant: string; endUser: string; kind: LedgerKind; amount: number; key: string; lots?: LotMove }, before: number, after: number, now: number) {
+  const { tenant, endUser, amount } = entry;
+  if (amount > 0) {
+    if (entry.lots && typeof entry.lots === "object" && "expiresAt" in entry.lots) {
+      const remaining = Math.min(amount, Math.max(0, after));
+      await sql.query("insert into end_user_lots (tenant, end_user, key, amount, remaining, expires_at, created_at) values ($1, $2, $3, $4, $5, $6, $7)",
+        [tenant, endUser, entry.key, amount, remaining, entry.lots.expiresAt, now]);
+    }
+    return;
+  }
+  if (amount === 0) return;
+  const { rows: lots } = await sql.query("select id, key, remaining from end_user_lots where tenant = $1 and end_user = $2 and remaining > 0 order by expires_at, id", [tenant, endUser]);
+  if (!lots.length) return;
+  let owed = -amount;
+  // What never expires: the balance less the lots, before this debit.
+  const rest = Math.max(0, before - lots.reduce((total, lot) => total + Number(lot.remaining), 0));
+  const take = async (lot: any) => {
+    const taken = Math.min(owed, Number(lot.remaining));
+    if (taken <= 0) return;
+    lot.remaining = Number(lot.remaining) - taken;
+    owed -= taken;
+    await sql.query("update end_user_lots set remaining = $2 where id = $1", [lot.id, lot.remaining]);
+  };
+  const first = entry.lots && typeof entry.lots === "object" && "first" in entry.lots ? `entry:${entry.lots.first}` : null;
+  const named = first === null ? undefined : lots.find(lot => lot.key === first);
+  if (named) await take(named);
+  if (entry.kind === "refund") owed -= Math.min(owed, rest);
+  for (const lot of lots) if (owed > 0) await take(lot);
 }
 
 /** The event each kind of the tenant's own entries sends. */

@@ -148,6 +148,26 @@ Any of them may carry `description`, your words for it (up to 200 characters) as
 credit history. Grants, refunds, adjustments and spends are idempotent by `key`: the same key and entry again
 returns the first; the same key for another entry is a 409.
 
+### Credit that expires
+
+A grant with `expiresAt` (epoch ms, within 400 days) is a **lot**: a subscription's month of credits, say. A person
+still has one balance, spent by every bucket once its allowance is used, but paid spend takes the soonest-expiring lot
+first, splitting across lots, and credit without `expiresAt` (packs) last; it never expires. At a lot's time its
+unspent part leaves the balance as an `expiry` entry (`metadata.lot`: the grant's key) and `end_user.credit.expired`
+fires. A call that held some of the lot before its time settles against it; what it leaves expires next.
+
+```ts
+await agents.endUsers.grant(user.id, { amount: 12_500_000, key: `plan:${sub.id}:${periodStart}`, expiresAt: periodEnd });
+const person = await agents.endUsers.get(user.id);
+// person.lots: [{ key: "plan:…", remaining, expiresAt }, { key: null, remaining, expiresAt: null }]
+```
+
+`lots` on an end user lists them in the order they are spent; the last (key `null`) is the credit that never expires.
+A refund takes credit that never expires first; one with `lot` (a grant's key) takes that lot first, as when the
+subscription's month itself is refunded. A grant made while the balance is below zero repays the debt first; only what
+it leaves above zero expires. Credit granted before you used `expiresAt` can be marked: `endUsers.markLot(id, { key,
+amount, expiresAt })` turns that much of what never expires into a lot, moving no balance.
+
 ## When a person runs out
 
 camelRun holds credit for each model call before it is made: its input, and up to
@@ -238,7 +258,7 @@ Subscribe an endpoint (`POST /v1/webhooks`) to:
 | --- | --- |
 | `end_user.balance.low` | a balance is below the person's threshold: their own `lowBalance` (`PATCH /v1/end-users/{id}`), else yours. See [when it fires](#when-balance-events-fire) |
 | `end_user.credit.exhausted` | `reason: "allowance"`: a bucket's allowance for the day is used up (the balance may still pay; once per person, bucket and day); `"balance"`: the balance reached zero, or a call was refused for it (see [when it fires](#when-balance-events-fire)); `"daily_limit"`: the daily limit was reached (once a day); `"bucket_limit"`: a bucket's own limit was reached (once per person, bucket and day) |
-| `end_user.credit.granted`, `.refunded`, `.adjusted`, `.spent` | you posted a grant, refund, adjustment or spend: once per entry (a replayed `key` sends nothing). `{endUser, entryId, kind, amount, key, reference, description, metadata, balance, previousBalance}`, `amount` signed as in the ledger. For receipts, and for a second service or a mirror of balances |
+| `end_user.credit.granted`, `.refunded`, `.adjusted`, `.spent`, `.expired` | you posted a grant, refund, adjustment or spend, or a lot expired: once per entry (a replayed `key` sends nothing). `{endUser, entryId, kind, amount, key, reference, description, metadata, balance, previousBalance}`, `amount` signed as in the ledger. For receipts, and for a second service or a mirror of balances |
 | `end_user.allowance.low` | a person's spend in a bucket passed `allowanceWarningPercent` (1–100, off by default) of its daily allowance: once per person, bucket and day. `{endUser, bucket, day, allowance, allowanceSpent, percent}` |
 
 They are signed and retried like every [webhook](webhooks.md), and written in the
@@ -351,7 +371,8 @@ A bucket's `held` today adds the allowance's part of holds (raw) to the balance'
 | `PATCH /v1/end-users/{id}` | `endUsers.update(id, { allowances, bucketLimits, dailyLimit, lowBalance })`: a person's own allowances and bucket limits (merged; `null` removes one), limit and low-balance threshold (`null`: yours) |
 | `GET /v1/end-users/{id}/ledger?kind=&from=&to=&bucket=&moved=` | `endUsers.ledger(id, { before, limit, kind, from, to, bucket, moved })` / `end_users.ledger(id, before=, limit=, kind=, from_=, to=, bucket=, moved=)` |
 | `GET /v1/end-users/{id}/days?from=&to=&bucket=&limit=` | `endUsers.days(id, { from, to, bucket, limit })` / `end_users.days(id, from_=, to=, bucket=, limit=)` |
-| `POST /v1/end-users/{id}/entries` | `endUsers.grant`, `refund`, `adjust`, `spend` |
+| `POST /v1/end-users/{id}/entries` | `endUsers.grant`, `refund`, `adjust`, `spend` (`expiresAt` on a grant, `lot` on a debit) |
+| `POST /v1/end-users/{id}/lots` | `endUsers.markLot(id, { key, amount, expiresAt })` / `end_users.mark_lot(...)` |
 
 `bucket` is taken by agent upserts and configuration, prompts sent with your API key,
 `POST /v1/runs`, `/v1/transcriptions` and `/v1/images`.

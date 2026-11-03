@@ -1228,26 +1228,32 @@ class EndUsers:
         query = urlencode({key: value for key, value in (("from", _day(from_)), ("to", _day(to)), ("bucket", bucket), ("limit", limit)) if value is not None})
         return self._runtime._rest("GET", self._path(end_user) + "/days" + (f"?{query}" if query else ""))
 
-    def grant(self, end_user, *, amount, key, reference=None, metadata=None, description=None):
+    def grant(self, end_user, *, amount, key, reference=None, metadata=None, description=None, expires_at=None):
         """Add credit (after a payment), once per `key` (the payment's id): {"entry", "replayed"}. `description`: your
-        words for it, as the person may read them in their credit history."""
-        return self._entry(end_user, "grant", amount, key, reference, metadata, description)
+        words for it, as the person may read them in their credit history. `expires_at` (epoch ms or a datetime): a lot
+        that expires then, spent before credit that expires later or never."""
+        return self._entry(end_user, "grant", amount, key, reference, metadata, description, expires_at=expires_at)
 
-    def refund(self, end_user, *, amount, key, reference=None, metadata=None, description=None):
-        """Take credit back (money returned to the person)."""
-        return self._entry(end_user, "refund", amount, key, reference, metadata, description)
+    def refund(self, end_user, *, amount, key, reference=None, metadata=None, description=None, lot=None):
+        """Take credit back (money returned to the person). `lot`: the key of the grant whose lot it takes first."""
+        return self._entry(end_user, "refund", amount, key, reference, metadata, description, lot=lot)
 
     def adjust(self, end_user, *, amount, key, reference=None, metadata=None, description=None):
         """Move the balance by a signed amount."""
         return self._entry(end_user, "adjustment", amount, key, reference, metadata, description)
 
-    def spend(self, end_user, *, amount, key, reference=None, metadata=None, description=None):
+    def spend(self, end_user, *, amount, key, reference=None, metadata=None, description=None, lot=None):
         """Take credit for something you sell other than metered usage (a month of a feature, an item): at most the
         balance calls in flight don't hold, else a 409 INSUFFICIENT_BALANCE."""
-        return self._entry(end_user, "spend", amount, key, reference, metadata, description)
+        return self._entry(end_user, "spend", amount, key, reference, metadata, description, lot=lot)
 
-    def _entry(self, end_user, kind, amount, key, reference, metadata, description=None):
-        body = {"kind": kind, "amount": amount, "key": key, **({"reference": reference} if reference is not None else {}), **({"description": description} if description is not None else {}), **({"metadata": metadata} if metadata is not None else {})}
+    def mark_lot(self, end_user, *, key, amount, expires_at):
+        """Mark part of what a person has that never expires as a lot that expires at `expires_at` (epoch ms or a
+        datetime): the balance doesn't move; once per `key`. {"lot", "replayed"}."""
+        return self._runtime._rest("POST", self._path(end_user) + "/lots", {"key": key, "amount": amount, "expiresAt": _epoch_ms(expires_at)})
+
+    def _entry(self, end_user, kind, amount, key, reference, metadata, description=None, expires_at=None, lot=None):
+        body = {"kind": kind, "amount": amount, "key": key, **({"reference": reference} if reference is not None else {}), **({"description": description} if description is not None else {}), **({"metadata": metadata} if metadata is not None else {}), **({"expiresAt": _epoch_ms(expires_at)} if expires_at is not None else {}), **({"lot": lot} if lot is not None else {})}
         return self._runtime._rest("POST", self._path(end_user) + "/entries", body)
 
 
