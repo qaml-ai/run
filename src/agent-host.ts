@@ -430,7 +430,7 @@ export function createAgentHost(hostIO: HostIO) {
           // The call waits on a person (inputs.ts): it stays open, with no result, and the turn suspends after this step.
           if (value?.inputRequired) {
             await journal.await([toolCallId]);
-            return { content: value.content, details: { inputRequired: true } };
+            return { content: value.content, details: { inputRequired: true }, structuredContent: null };
           }
           if (tool.resultFormat === "content") {
             if (!value || !Array.isArray(value.content) || value.content.some((part: any) => !part || !(part.type === "text" && typeof part.text === "string" || part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string" || validFileRef(part)))) throw new Error("Invalid content tool result");
