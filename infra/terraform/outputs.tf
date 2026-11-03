@@ -53,3 +53,8 @@ output "alerts_topic_arn_regional" {
   description = "us-west-2 alerts topic for the ALB/ECS alarms; subscribe like alerts_topic_arn (with --region us-west-2)."
   value       = aws_sns_topic.alerts_regional.arn
 }
+
+output "customer_export_role_arn" {
+  description = "The ARN a customer adds to their bucket policy for a data export (customer-export.tf); empty while there is no destination."
+  value       = local.customer_export_enabled ? aws_iam_role.customer_export[0].arn : ""
+}

@@ -59,6 +59,21 @@ the session-secret/secrets-key/tenants/github-oauth secrets have
 `prevent_destroy`; Terraform refuses any plan that would delete them. The ALB
 and the RDS instance also have deletion protection in AWS.
 
+### Customer data exports
+
+`customer-export.tf` makes the role that uploads a camelAI customer's one-time data export into their own
+bucket. To give a customer an ARN, add their destination and the operators who will run the upload to
+`prod.auto.tfvars`, apply, and send them `tofu output customer_export_role_arn`:
+
+```hcl
+customer_export_destinations = {
+  example = { bucket = "example-backups", prefix = "camelai-export/" } # add kms_key_arn for SSE-KMS buckets
+}
+customer_export_assumer_arns = ["arn:aws:iam::904534089871:user/<operator>"]
+```
+
+Remove the destination once the export is delivered; the role goes when the last one does.
+
 ## Architecture
 
 ```text
