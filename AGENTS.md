@@ -27,8 +27,11 @@ npm run typecheck
   file in both hosting modes (`process`, the default, and `inline`); PRs use `process`.
 - **Everything**: `npm test` (and `AGENT_HOSTING=inline npm test`), `npm run test:ui`, `npm run test:python`.
   After changing `/v1` routes, `npm run openapi` (tests/openapi.test.ts fails when openapi.json is stale).
-- **Off the laptop**: `scripts/boat-test [ref] [command...]` runs the full suite, or any command, at a commit in a fresh
-  Boat sandbox, with Postgres and the v8-exec build ready. See the `boat-agent-runtime` skill.
+- **Off the laptop**: `scripts/sprite-test [ref] [command...]` is the default. It runs the full suite (5 shards on 5
+  sprites at once) or any command at a commit on the team's Fly.io Sprites pool (`rt-pool-*` in the `camelai` org; needs
+  `sprite login`), where Postgres, node_modules and the v8-exec build are kept warm. `--status` shows who holds which
+  sprite; the script's header explains leases, sync and fallbacks. `scripts/boat-test` (a fresh Boat sandbox per run,
+  see the `boat-agent-runtime` skill) stays available.
 - **CI costs money; spend it once.** Every push to a ready PR runs affected tests on paid runners, and CI has cost
   more than the AI it tests. So:
   - Run the files your change touches locally first (above), plus `npm run typecheck`. Run the full suite before you
