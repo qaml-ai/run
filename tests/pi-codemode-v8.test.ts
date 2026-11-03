@@ -176,7 +176,6 @@ test("Pi start: CPU, heap, output and wall limits still terminate the child", { 
     ["while (true) await null", { cpuMs: 100 }, /CPU limit/],
     ["return /(a+)+$/.test('a'.repeat(40) + '!')", { cpuMs: 100 }, /CPU limit/],
     ["const a = []; for (;;) a.push({ x: Math.random(), y: [1, 2, 3] })", { cpuMs: 30_000 }, /memory limit/],
-    ["for (;;) text('x'.repeat(1000))", {}, /output/],
     ["await tools.echo(1)", { timeoutMs: 100 }, /exceeded/],
   ] as const) {
     const pool = new V8Exec();
@@ -188,6 +187,31 @@ test("Pi start: CPU, heap, output and wall limits still terminate the child", { 
     } finally { await sandbox.close(); pool.close(); }
     assert.equal(pool.running, 0);
   }
+});
+
+test("Pi start: output past its limits is left out with a note, and the script still completes", { skip, timeout: 60_000 }, async t => {
+  const sandbox = new PiV8Sandbox();
+  t.after(() => sandbox.close());
+  // A 200 KB PNG as base64, as Pi's image() takes it: the signature, then filler.
+  const image = `data:image/png;base64,iVBORw0KGgoA${"A".repeat(200 * 1024)}`;
+  const run = (code: string) => sandbox.start(code, { ...defaults, onCall() {} }).result;
+  const lines = await run("for (let i = 0; i < 1100; i++) console.log(`line ${i}`); return 'done'");
+  assert.equal(lines.ok, true, JSON.stringify(lines).slice(0, 300));
+  assert.equal(lines.output.length, 1025);
+  assert.match((lines.output.at(-1) as { text: string }).text, /Output stops here: a script prints at most 1,024 times/);
+  const long = await run("text('x'.repeat(130 * 1024)); text('after'); return 1");
+  assert.equal(long.ok, true);
+  const [cut, note] = long.output as { text: string }[];
+  assert.equal(long.output.length, 2);
+  assert.equal(cut.text.length, 128_000);
+  assert.match(note.text, /Output stops here/);
+  const images = await run(`for (let i = 0; i < 3; i++) image(${JSON.stringify(image)}); text("shown"); return 1`);
+  assert.equal(images.ok, true);
+  assert.deepEqual(images.output.map(item => item.type), ["image", "image", "image", "text"]);
+  const many = await run(`for (let i = 0; i < 50; i++) image(${JSON.stringify(image)}); return 1`);
+  assert.equal(many.ok, true);
+  assert.equal(many.output.filter(item => item.type === "image").length, 16);
+  assert.match((many.output.at(-1) as { text: string }).text, /Images past 16/);
 });
 
 // No executable is needed to test the trusted host's validation and shutdown behavior.

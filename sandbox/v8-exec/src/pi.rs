@@ -12,7 +12,46 @@ struct State {
   outbox: Vec<Value>,
   output: usize,
   events: usize,
+  images: usize,
+  image_bytes: usize,
   error: Option<String>,
+}
+
+// Output past these is left out, with one note where it stopped, rather than failing the script: its tool calls ran.
+// SANDBOX_LIMITS (src/limits.ts) outputImages and outputImageBytes.
+const OUTPUT_IMAGES: usize = 16;
+const IMAGE_BYTES: usize = 8 * 1024 * 1024;
+const TEXT_CUT: &str = "[Output stops here: a script prints at most 1,024 times and 128,000 bytes. Return or write what you need instead.]";
+const IMAGE_CUT: &str = "[Images past 16, or past 8 MiB in all, were left out.]";
+
+/// An output item within the limits: the item itself, cut short, or nothing, and the note to add once when output was left out.
+fn bounded(state: &mut State, mut frame: Value) -> Vec<Value> {
+  let note = |text: &str| json!({ "type": "output", "item": { "type": "text", "text": text } });
+  if frame["item"]["type"] == "image" {
+    let size = frame["item"]["data"].as_str().map_or(0, str::len);
+    if state.images < OUTPUT_IMAGES && state.image_bytes + size <= IMAGE_BYTES {
+      state.images += 1;
+      state.image_bytes += size;
+      return vec![frame];
+    }
+    let first = state.images <= OUTPUT_IMAGES;
+    state.images = OUTPUT_IMAGES + 1;
+    return if first { vec![note(IMAGE_CUT)] } else { vec![] };
+  }
+  if state.events > OUTPUT_EVENTS { return vec![]; }
+  let text = frame["item"]["text"].as_str().unwrap_or("").to_string();
+  let room = (EMIT_CHARS as usize).saturating_sub(state.output);
+  if state.events < OUTPUT_EVENTS && text.len() <= room {
+    state.events += 1;
+    state.output += text.len();
+    return vec![frame];
+  }
+  let mut end = if state.events < OUTPUT_EVENTS { room.min(text.len()) } else { 0 };
+  state.events = OUTPUT_EVENTS + 1;
+  while !text.is_char_boundary(end) { end -= 1; }
+  if end == 0 { return vec![note(TEXT_CUT)]; }
+  frame["item"]["text"] = Value::String(text[..end].to_string());
+  vec![frame, note(TEXT_CUT)]
 }
 thread_local! { static STATE: std::cell::RefCell<State> = Default::default(); }
 
@@ -28,10 +67,11 @@ fn send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::
   if text.length() > MAX_FRAME_BYTES / 2 { return refuse(scope, "Pi bridge frame exceeds limit"); }
   let text = text.to_rust_string_lossy(scope);
   if text.len() > MAX_FRAME_BYTES { return refuse(scope, "Pi bridge frame exceeds limit"); }
-  let Ok(frame) = serde_json::from_str::<Value>(&text) else { return refuse(scope, "Invalid Pi bridge JSON") };
+  let Ok(mut frame) = serde_json::from_str::<Value>(&text) else { return refuse(scope, "Invalid Pi bridge JSON") };
   let error = STATE.with(|state| {
     let mut state = state.borrow_mut();
-    let error = match frame["type"].as_str() {
+    let kind = frame["type"].as_str().map(str::to_owned);
+    let error = match kind.as_deref() {
       Some("call") => {
         let id = frame["id"].as_u64().unwrap_or(0);
         if id != state.issued + 1 || id > TOOL_CALLS as u64 { Some("Pi tool call limit or invalid call id") }
@@ -40,10 +80,9 @@ fn send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::
         else { state.issued = id; state.inflight.insert(id); None }
       }
       Some("output") => {
-        let item = &frame["item"];
-        state.events += 1;
-        state.output += item["text"].as_str().or_else(|| item["data"].as_str()).map_or(0, str::len);
-        if state.events > OUTPUT_EVENTS || state.output > EMIT_CHARS as usize { Some("Pi output exceeds limit") } else { None }
+        let kept = bounded(&mut *state, std::mem::take(&mut frame));
+        state.outbox.extend(kept);
+        return None;
       }
       Some("done") => None,
       _ => Some("Invalid Pi bridge message"),

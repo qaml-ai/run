@@ -25,6 +25,8 @@ export const SANDBOX_LIMITS = Object.freeze({
   resultBytes: 1024 * 1024,
   totalToolBytes: 8 * 1024 * 1024,
   outputEvents: 1024,
+  /** Images one script shows, and their base64 in all: past them, as past outputEvents and 128,000 bytes of text, output is left out with a note. */
+  outputImages: 16, outputImageBytes: 8 * 1024 * 1024,
 });
 
 /**
