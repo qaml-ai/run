@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { HttpError } from "./http.ts";
+import { HttpError } from "./http-error.ts";
 import { FILE_LIMITS } from "./limits.ts";
 import type { FileEntry, VolumeService } from "./volumes.ts";
 

@@ -14,8 +14,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { validKey } from "../../shared/storage.ts";
-import { LostClaim, underClaim, type Claim } from "../ownership.ts";
-import { databaseRetryable, databaseUnavailable, transaction, type Db, type Sql } from "../db.ts";
+import type { Claim } from "../ownership.ts";
+import type { Db, Sql } from "../db.ts";
 import { clock } from "../node-context.ts";
 import { timedStorage } from "../metrics.ts";
 import type { SystemMessage } from "@earendil-works/pi-ai";
@@ -93,6 +93,13 @@ async function commitEffects(writes: readonly StorageWrite[], committing?: PiCom
     for (const write of writes) if (write.type === "entry") await committing(write.value, sql);
 }
 
+/**
+ * db.ts and ownership.ts, which bring the Postgres driver: loaded by the first use of a database (`postgres`), so an
+ * agent's host, which reaches its journal through its supervisor (`remotePiStorage`), never loads them.
+ */
+let pg: typeof import("../db.ts") & typeof import("../ownership.ts");
+const postgres = async () => pg ??= { ...await import("../db.ts"), ...await import("../ownership.ts") };
+
 type PgExecutor = {
     sql: Sql;
     get<T>(query: string, ...params: unknown[]): Promise<T | undefined>;
@@ -114,7 +121,7 @@ async function whileUnavailable<T>(retryMs: number, work: () => Promise<T>, sett
         try { return await work(); }
         catch (error) {
             // Unreachable, or a statement the server gave up on (a timeout, a deadlock): nothing of it was kept.
-            if (!(databaseUnavailable(error) || databaseRetryable(error)) || Date.now() + delay > deadline) throw error;
+            if (!(pg.databaseUnavailable(error) || pg.databaseRetryable(error)) || Date.now() + delay > deadline) throw error;
             await clock().sleep(delay);
             const landed = await whileUnavailable(Math.max(0, deadline - Date.now()), async () => settled?.());
             if (landed) return landed.value;
@@ -146,13 +153,13 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim, retryMs = 0)
         // A read that may outlast the pool's query timeout: the server ends it at `timeoutMs` (statement_timeout), and
         // the client waits a little past that for its answer, so a read we gave up on never keeps scanning. Never run
         // again: a second attempt would only scan as long.
-        slowAll: <T>(timeoutMs: number, text: string, ...params: unknown[]) => timedStorage(() => transaction(db, async sql => {
+        slowAll: <T>(timeoutMs: number, text: string, ...params: unknown[]) => timedStorage(() => pg.transaction(db, async sql => {
             await sql.query(`set local statement_timeout = ${Math.floor(timeoutMs)}`);
             let n = 1;
             const config = { text: text.replace(/\?/g, () => `$${++n}`), values: [sessionId, ...params], query_timeout: timeoutMs + 5_000 };
             return (await (sql as unknown as { query(config: { text: string; values: unknown[]; query_timeout: number }): Promise<{ rows: T[] }> }).query(config)).rows;
         }, { rerun: false })),
-        transaction: (work, advance) => timedStorage(() => transaction(db, async sql => {
+        transaction: (work, advance) => timedStorage(() => pg.transaction(db, async sql => {
             // Serializes mutations by session, including separate handles on this node. One statement checks the
             // claim (its ownership row FOR SHARE, as underClaim does: a takeover waits until this commits, and a claim
             // no longer current writes nothing), locks and reads the metadata row (a commit's also takes its
@@ -171,7 +178,7 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim, retryMs = 0)
                      m as (${lock.replace(" where session_id = $1", " where session_id = $1 and exists (select from owner)")})
                      select exists (select from owner) as held, m.* from (select 1) one left join m on true`,
                     [...params, claim.actor, claim.session, claim.epoch])).rows[0];
-                if (!row.held) throw new LostClaim(claim.actor);
+                if (!row.held) throw new pg.LostClaim(claim.actor);
                 metadata = row.next_id === null ? undefined : row;
             }
             // No row (the session's first open creates it): set_config did not run, so turn synchronous commit on here.
@@ -390,7 +397,7 @@ export async function openPiJournalReader(options: { sessionId: string; director
 }
 
 export async function purgePiStorage(db: Db, sessionId: string, claim?: Claim): Promise<void> {
-    await underClaim(db, claim, sql => deletePiStorage(sql, sessionId));
+    await (await postgres()).underClaim(db, claim, sql => deletePiStorage(sql, sessionId));
 }
 
 /** Delete in the caller's existing fenced transaction, alongside its session tombstone and pins. */
@@ -604,6 +611,7 @@ export class PostgresPiStorage implements Storage {
 	}
 
 	static async open(db: Db, sessionId: string, claim?: Claim, committing?: PiCommitEffect, retryMs = 0): Promise<PostgresPiStorage> {
+        await postgres();
         const database = postgresDatabase(db, sessionId, claim, retryMs);
         await database.transaction(async sql => {
             // A new session's history is placed from its start (ordinals.ts); one from before ordinals waits for its fill.

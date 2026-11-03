@@ -33,6 +33,9 @@ export class Rpc {
     } else if (message.type === "event") {
       this.onEvent?.(message.event);
     } else if (message.type === "request") {
+      // Sent before its end was closed (a stopped or killed host's last messages, still queued): nothing acts for it now,
+      // so a host the supervisor has let go never reaches its storage, tools or files again.
+      if (this.closed) return;
       let response: WireMessage;
       try {
         if (!this.handler) throw new Error("RPC handler unavailable");
