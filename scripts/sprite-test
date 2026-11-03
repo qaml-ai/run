@@ -126,7 +126,9 @@ unlock) ! mine "$1" || rm -rf ~/lease ;;
 clean) # before a tar sync: everything but node_modules and the v8-exec build goes
   cd ~/rt && find . -mindepth 1 -maxdepth 1 ! -name node_modules ! -name sandbox -exec rm -rf {} +
   find sandbox -mindepth 1 -maxdepth 2 ! -path sandbox/v8-exec ! -path sandbox/v8-exec/target -exec rm -rf {} + 2>/dev/null; true ;;
-start) # <id> <fingerprint> <job script, base64>: record the synced tree, start the job detached, wait until it runs
+start) # <id> <fingerprint> <job script, base64>: record the synced tree, start the job detached, wait until it runs.
+  # Started already (a retry whose first answer was lost): say so, rather than start it twice.
+  if [ -s ~/runs/"$1".pid ] && kill -0 "$(cat ~/runs/"$1".pid)" 2>/dev/null; then echo started; exit 0; fi
   rm -f ~/runs/"$1".pid ~/runs/"$1".exit; echo "$3" | base64 -d > ~/runs/"$1".sh
   # A restarted sprite can lose its last writes: flush the tree before ~/.synced vouches for it.
   sync; echo "$2" > ~/.synced; sync
@@ -260,12 +262,14 @@ cleanup() { [[ -z $beat ]] || { pkill -P "$beat" 2>/dev/null; kill "$beat" 2>/de
 trap cleanup EXIT
 # Until the jobs start, this script keeps their sprites' locks fresh; the coordinator leases are renewed throughout.
 (
+  # Its own stderr stays quiet ("Terminated" when the cleanup stops its sleep); notices go to the script's, on fd 3.
+  exec 3>&2 2>/dev/null
   while sleep 60; kill -0 $$ 2>/dev/null; do
     [[ -s $tmp/leases ]] || continue
     if [[ $(cat "$tmp/mode") = coordinator ]] && coord heartbeat $(cat "$tmp/leases") > "$tmp/beat" 2>/dev/null; then
       while read -r verdict name; do
         [[ $verdict = lost && ! -e $tmp/lost.$name ]] || continue
-        touch "$tmp/lost.$name"; echo "== the coordinator lease on $name was lost (not renewed for ${stale_s}s); the job still holds the sprite's lock" >&2
+        touch "$tmp/lost.$name"; echo "== the coordinator lease on $name was lost (not renewed for ${stale_s}s); the job still holds the sprite's lock" >&3
       done < "$tmp/beat"
     fi
     while read -r name lease; do [[ -e $tmp/started.$name ]] || remote "$name" 30 touch "$lease" >/dev/null 2>&1 & done < "$tmp/leases"
@@ -357,15 +361,24 @@ worker() { # <slot index>: sync, start the job, follow it. Writes the exit statu
   echo - > "$tmp/fp.$k"; echo 1 > "$tmp/code.$k"
   while :; do
     attempt=$(( attempt + 1 )); id=$run-$(( k + 1 )); (( attempt == 1 )) || id+=-$attempt; echo "$id" > "$tmp/id.$k"; t1=$SECONDS
-    if limit 600 rsync -a --delete --stats --exclude=node_modules/ --exclude=/sandbox/v8-exec/target/ -e "$ssh_cmd" "$tree/" "sprite@$name:rt/" > "$tmp/rsync.$k" 2>&1; then
-      how=rsync; ! grep -q 'transferred file size: 0 B' "$tmp/rsync.$k" || how="in sync (checked by rsync)"
-    else
-      grep -v 'bind: warning' "$tmp/rsync.$k" | tail -3
+    # Sprites' API answers 429 when many execs start at once: a failed sync or start is tried again, after a pause.
+    how=
+    for try in 1 2 3; do
+      if limit 600 rsync -a --delete --stats --exclude=node_modules/ --exclude=/sandbox/v8-exec/target/ -e "$ssh_cmd" "$tree/" "sprite@$name:rt/" > "$tmp/rsync.$k" 2>&1; then
+        how=rsync; ! grep -q 'transferred file size: 0 B' "$tmp/rsync.$k" || how="in sync (checked by rsync)"; break
+      fi
+      grep -v 'bind: warning' "$tmp/rsync.$k" | tail -2; (( try == 3 )) || sleep $(( try * 10 ))
+    done
+    if [[ -z $how ]]; then
       echo "== rsync to $name failed; sending the tree as a tar stream instead"
       if remote "$name" 120 clean && git archive --format=tar.gz "$sha" | limit 600 sprite exec -o "$org" -s "$name" --stdin -- sh -c 'cd ~/rt && tar xzf -'; then how=tar
       else echo "== could not send the tree to $name"; remote "$name" 30 unlock "$lease" >/dev/null 2>&1 || true; return; fi
     fi
-    if ! out=$(remote "$name" 60 start "$id" "$fp" "$(job_for $(( k + 1 )) "$lease" "$id")" 2>&1); then
+    for try in 1 2 3; do
+      out=$(remote "$name" 60 start "$id" "$fp" "$(job_for $(( k + 1 )) "$lease" "$id")" 2>&1) && break
+      out="failed: $out"; (( try == 3 )) || sleep $(( try * 10 ))
+    done
+    if [[ $out = failed:* ]]; then
       echo "== could not start the job on $name: $out"; remote "$name" 30 unlock "$lease" >/dev/null 2>&1 || true; return
     fi
     touch "$tmp/started.$name"; echo "$fp" > "$tmp/fp.$k"
