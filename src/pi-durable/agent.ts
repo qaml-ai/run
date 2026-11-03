@@ -11,7 +11,8 @@ import {
 } from "@earendil-works/pi-durable";
 
 /** A call a running tool made (code mode's `tools.<name>()`): the model's call that made it, and its key within that call. */
-export type NestedCall = { parentCallId: string; key: string };
+/** A call from code: its code mode call's id (the model's), that call's Pi task, and its key in the script. */
+export type NestedCall = { parentCallId: string; parentTaskId: string; key: string };
 type RuntimeTool = AgentTool & {
   callers?: readonly ("model" | "tools")[]; modelDeclared?: boolean;
   /** As AgentTool's, with `nested` set for a call a running tool made: its result goes to that tool, not to the model. */
@@ -780,7 +781,7 @@ export class DurableAgent {
         // A call from code (Pi names it `<code mode call>/<key>`): its result goes back to the script, so the stream and
         // the round's pending calls never see it.
         const input = id.includes("/") ? (await api.getTask(api.taskId, callContext))?.input : undefined;
-        const nested: NestedCall | undefined = input?.kind === "nested" ? { parentCallId: input.parentCallId, key: input.key } : undefined;
+        const nested: NestedCall | undefined = input?.kind === "nested" ? { parentCallId: input.parentCallId, parentTaskId: String(input.parent), key: input.key } : undefined;
         if (!nested) {
           await this.flushEvents();
           this.pending.add(id);

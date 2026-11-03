@@ -258,3 +258,15 @@ return 1;` }, { id: "code" }), "toolUse");
   assert.equal(whole!.text!.split("\n").filter(line => /^w{99}$/.test(line)).length, 1000);
   assert.ok(output.includes(`[Image saved to ${image!.path}`) && output.includes(`[Full output: ${whole!.path}`), output.slice(0, 500));
 });
+
+test("two turns' code mode calls with the same id each give their calls their own history position", async t => {
+  const fake = await setup(t, [tool("lookup")]);
+  const { host } = await fake.start(() => "found");
+  for (const text of ["one", "two"]) {
+    fake.respond(answer(fauxToolCall("codemode", { code: "return await tools.lookup({});" }, { id: "call_0" }), "toolUse"), answer("done"));
+    assert.equal((await host.handle("prompt", { text })).error, null);
+  }
+  const positions = fake.calls.map(call => call.call?.messageIndex);
+  assert.equal(positions.length, 2);
+  assert.notEqual(positions[0], positions[1], JSON.stringify(positions));
+});

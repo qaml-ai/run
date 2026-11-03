@@ -420,25 +420,28 @@ export function createAgentHost(hostIO: HostIO) {
     return { truncated: true, ...(path ? { path } : {}) };
   }
 
-  /** Bytes of the results each running script got from its calls (`scriptBytes`), by its code mode call. */
+  /**
+   * Bytes of the results each running script got from its calls (`scriptBytes`), by its code mode call's Pi task: unique,
+   * where the model's call ids are not (providers number them per response).
+   */
   const scriptResults = new Map<string, number>();
-  /** Where each running script's code mode call is in the history (`made`), read once for all of its calls. */
+  /** Where each running script's code mode call is in the history (`made`), read once for all of its calls, by its Pi task. */
   const scriptCalls = new Map<string, Promise<{ messageIndex?: number }>>();
-  function scriptMadeAt(parentCallId: string) {
-    let at = scriptCalls.get(parentCallId);
+  function scriptMadeAt(nested: NestedCall) {
+    let at = scriptCalls.get(nested.parentTaskId);
     if (!at) {
-      scriptCalls.set(parentCallId, at = made(parentCallId));
-      at.catch(() => scriptCalls.delete(parentCallId));
+      scriptCalls.set(nested.parentTaskId, at = made(nested.parentCallId));
+      at.catch(() => scriptCalls.delete(nested.parentTaskId));
     }
     return at;
   }
   /** Count a result a script gets toward its limits: SANDBOX_LIMITS.resultBytes each, totalToolBytes in all. */
-  function scriptBytes(parentCallId: string, data: unknown) {
+  function scriptBytes(parentTaskId: string, data: unknown) {
     const bytes = Buffer.byteLength(JSON.stringify(data));
     if (bytes > SANDBOX_LIMITS.resultBytes) throw new Error(`The result is ${bytes.toLocaleString("en-US")} bytes; a script gets at most ${SANDBOX_LIMITS.resultBytes.toLocaleString("en-US")} from one call. Ask the tool for less.`);
-    const total = (scriptResults.get(parentCallId) ?? 0) + bytes;
+    const total = (scriptResults.get(parentTaskId) ?? 0) + bytes;
     if (total > SANDBOX_LIMITS.totalToolBytes) throw new Error(`This script's calls have returned more than ${SANDBOX_LIMITS.totalToolBytes.toLocaleString("en-US")} bytes in all, the most one script gets. Ask for less, or split the work across scripts.`);
-    scriptResults.set(parentCallId, total);
+    scriptResults.set(parentTaskId, total);
   }
 
   /** Register every enabled tool; model advertisement does not change who may call it. */
@@ -459,11 +462,11 @@ export function createAgentHost(hostIO: HostIO) {
           signal?.throwIfAborted();
           if (nested) {
             // A call from code: named by the model's code mode call and its key there, which a replay of the script keeps.
-            const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await scriptMadeAt(nested.parentCallId) });
+            const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await scriptMadeAt(nested) });
             signal?.throwIfAborted();
             // Code gets the data: an MCP tool's structured content, or its text parsed (scriptValue throws its error).
             const data = (tool.resultFormat === "content" ? scriptValue(value) : value) ?? null;
-            scriptBytes(nested.parentCallId, data);
+            scriptBytes(nested.parentTaskId, data);
             return { content: [], structuredContent: data };
           }
           const at = await made(toolCallId);
@@ -547,8 +550,8 @@ export function createAgentHost(hostIO: HostIO) {
           const result = await tool.execute(...args);
           return result.output ? { ...result, output: await capped((args[1] as { callId: string }).callId, [...result.output], SANDBOX_LIMITS.maxOutputCharacters) } : result;
         } finally {
-          scriptResults.delete((args[1] as { callId: string }).callId);
-          scriptCalls.delete((args[1] as { callId: string }).callId);
+          scriptResults.delete(String((args[1] as { taskId: unknown }).taskId));
+          scriptCalls.delete(String((args[1] as { taskId: unknown }).taskId));
           await io.cancelTools();
         }
       } })) };
