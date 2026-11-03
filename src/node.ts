@@ -853,7 +853,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const inputs = new Inputs({ db, ...(accounts.canStoreKeys ? { sealer: accounts } : {}) });
   const endUsers = new EndUserCredits(db);
   // End users' credit lots past their time expire as their money next moves, and here for those who do nothing.
-  const lotsTimer = setInterval(() => void endUsers.expireDue().catch(error => console.error(JSON.stringify({ type: "end_user_lot_expiry_failed", error: errorText(error) }))), 60_000);
+  const lotsTimer = setInterval(() => void endUsers.expireDue().catch(error => console.error(JSON.stringify({ type: "end_user_lot_expiry_failed", error: safeError(error) }))), 60_000);
   lotsTimer.unref();
   const modelAttempts = new ModelAttempts(db, accounts, undefined, leaseTtlMs, async (tenant, scope) => {
     const entry = await keyScopes.entry(tenant, scope, "openrouter");
