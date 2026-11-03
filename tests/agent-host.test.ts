@@ -377,7 +377,8 @@ test("a conversation still under the old instructions key is re-keyed to applica
   await host.handle("prompt", { text: "two" });
   for (const messages of seen) {
     const system = getCurrentSystemMessage(messages as never)!;
-    assert.deepEqual(Object.keys(system.sections ?? {}), ["application", "environment", "codemode"]);
+    // Its content's rules ("Runtime rules.") are not today's: today's follow as their own section, first.
+    assert.deepEqual(Object.keys(system.sections ?? {}), ["runtime", "application", "environment", "codemode"]);
     assert.equal(getSystemMessageText(system).split(instructions).length - 1, 1, "the instructions appear once");
   }
 });
