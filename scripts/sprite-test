@@ -109,7 +109,7 @@ claim) # <lease> <owner> <stale>: take ~/lease. The last line is "claimed <synce
     $api curl -X DELETE /v1/tasks/sprite-test >/dev/null 2>&1
     mv ~/lease ~/lease.dead.$$ 2>/dev/null && rm -rf ~/lease.dead.$$
     mkdir ~/lease 2>/dev/null || { echo "held someone-else 0s"; exit 0; }
-    echo "== took over a stale lease of $holder (idle ${age}s)"
+    echo "== $(hostname): took over a stale lease of $holder (idle ${age}s)"
   fi
   echo "$1 $2" > ~/lease/owner
   echo "claimed $(cat ~/.synced 2>/dev/null || echo -)" ;;
