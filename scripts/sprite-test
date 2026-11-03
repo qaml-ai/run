@@ -112,6 +112,7 @@ claim) # <lease> <owner> <stale>: take ~/lease. The last line is "claimed <synce
     echo "== $(hostname): took over a stale lease of $holder (idle ${age}s)"
   fi
   echo "$1 $2" > ~/lease/owner
+  find ~/runs -type f -mtime +7 -delete 2>/dev/null  # logs a week old go
   echo "claimed $(cat ~/.synced 2>/dev/null || echo -)" ;;
 touch) mine "$1" && touch ~/lease ;;
 unlock) ! mine "$1" || rm -rf ~/lease ;;
@@ -160,6 +161,9 @@ export AGENT_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:5432/postgres
 prepare() {
   [ -f ~/.setup ] || { echo '== setting up this sprite: Postgres'; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql >/dev/null 2>&1 \
     && sudo service postgresql start >/dev/null && sudo -u postgres psql -qc "ALTER USER postgres PASSWORD 'test'" && touch ~/.setup; } || return 1
+  # The base image's ~/.bashrc binds keys even when not interactive, so every `bash -l` warns on stderr (and tests that
+  # read a login shell's stderr fail): bind only in interactive shells.
+  sed -i "s/^bind '/[[ \$- == *i* ]] \&\& bind '/" ~/.bashrc
   sudo service postgresql start >/dev/null 2>&1 || true
   # With fsync off a crash or restart can leave a cluster that won't start. Its data is disposable, so make a new one.
   if ! sudo -u postgres psql -Atqc 'SELECT 1' >/dev/null 2>&1; then
