@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { END_USER_CREDIT, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
 import { mkdir } from "node:fs/promises";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
@@ -31,6 +32,7 @@ import { errorClass, observeContextMetrics, observeTurns, recordCodeExecution, r
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
 import type { Extension, PromptSection, Storage as PiStorage } from "@earendil-works/pi-durable";
+import { FileError, type ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { DurableAgent, piRunning, type DurableAgentOptions, type FailedAttempt, type NestedCall, type RetryDecision } from "./pi-durable/agent.ts";
 import { contextRangeSize } from "./pi-durable/storage.ts";
 import { HostJournal } from "./pi-durable/host-journal.ts";
@@ -529,7 +531,7 @@ export function createAgentHost(hostIO: HostIO) {
     const extension = createCodemodeExtension({ sandbox: codeSandbox(), models: false,
       namespaces: [...new Set(config.tools.map(tool => namespaceOf(tool.name)).filter(Boolean))].map(name => ({ name, prefix: `${name}__` })) });
     codemodeSection = extension.sections?.find(entry => entry.key === CODEMODE);
-    return { ...extension, sections: [], tools: (extension.tools ?? []).map(tool => ({ ...tool, executionMode: "sequential" as const,
+    return { ...extension, sections: [], tools: (extension.tools ?? []).map(tool => ({ ...tool, description: codemodeDescription(tool.description), executionMode: "sequential" as const,
       execute: async (...args: Parameters<typeof tool.execute>) => {
         try {
           const result = await tool.execute(...args);
@@ -539,6 +541,34 @@ export function createAgentHost(hostIO: HostIO) {
           await io.cancelTools();
         }
       } })) };
+  }
+
+  /**
+   * Pi's description of its code mode tool, as it is here: scripts run on V8 (v8-exec), not QuickJS, and the files
+   * `image()` saves are in the workspace (`outputFiles`), or nowhere without one.
+   */
+  function codemodeDescription(text: string): string {
+    const sandbox = " in a QuickJS sandbox:", saved = " `image()` also saves the image to a temp file and the result names its path.";
+    if (!text.includes(sandbox) || !text.includes(saved)) throw new Error("Pi's code mode description changed: review codemodeDescription");
+    return text.replace(sandbox, " in a JavaScript sandbox:")
+      .replace(saved, scratchMount(config.mounts) ? " `image()` also saves the image in your workspace (tool-results/), and the result names its path." : "");
+  }
+
+  /**
+   * Where code mode keeps a script's whole output when it cuts it, and the images it shows: a folder of the agent's
+   * scratch mount (tool-results/), as long tool results are, through the supervisor. Code mode only creates that folder
+   * and writes files in it; without a writable mount there is none, and its result says so.
+   */
+  function outputFiles(): ExecutionEnv | undefined {
+    const mount = scratchMount(config.mounts);
+    if (!mount) return undefined;
+    const failed = (path: string, error: unknown) => ({ ok: false as const, error: new FileError("unknown", errorText(error), path) });
+    const files: Pick<ExecutionEnv, "createTempDir" | "writeFile"> = {
+      createTempDir: async prefix => ({ ok: true, value: `${mount.path}/tool-results/${prefix ?? ""}${randomUUID().slice(0, 8)}` }),
+      writeFile: (path, content) => io.fs("writeFile", typeof content === "string" ? { path, text: content } : { path, base64: Buffer.from(content).toString("base64") })
+        .then(() => ({ ok: true as const, value: undefined }), error => failed(path, error)),
+    };
+    return files as ExecutionEnv;
   }
 
   /** Code mode's section for these tools, as Pi renders it from the tools scripts can call; null without code mode or such tools. */
@@ -944,6 +974,7 @@ export function createAgentHost(hostIO: HostIO) {
         storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: journal.history.latest, written: () => journal.written,
         leading: () => leading(agent ? undefined : tools),
         extensions: codemode ? [codemode] : [],
+        env: outputFiles,
         onContextRequest: (held, sent) => contextMetrics.request(held, sent),
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own
         // writes fails. The run ends with PERSISTENCE_FAILED and the session gives the agent up.

@@ -28,7 +28,7 @@ async function setup(t: Context, tools: ToolDefinition[]) {
   const faux = registerFauxProvider({ tokensPerSecond: 1_000_000 });
   t.after(async () => { faux.unregister(); await rm(directory, { recursive: true, force: true }); });
   const calls: Call[] = [];
-  async function start(answer: (call: Call) => unknown, options: { resume?: boolean; codeMode?: boolean; tools?: ToolDefinition[]; io?: Partial<HostIO> } = {}) {
+  async function start(answer: (call: Call) => unknown, options: { resume?: boolean; codeMode?: boolean; tools?: ToolDefinition[]; io?: Partial<HostIO>; init?: Record<string, unknown> } = {}) {
     const events: any[] = [];
     const storage = await openPiStorage({ sessionId: "agent", directory });
     const io: HostIO = {
@@ -45,7 +45,7 @@ async function setup(t: Context, tools: ToolDefinition[]) {
       ...options.io,
     };
     const host = createAgentHost(io);
-    const init = await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", tools: options.tools ?? tools, ...options.codeMode === false ? { codeMode: false } : {}, ...options.resume ? { resume: true } : {} });
+    const init = await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", tools: options.tools ?? tools, ...options.codeMode === false ? { codeMode: false } : {}, ...options.resume ? { resume: true } : {}, ...options.init });
     let disposed = false;
     const dispose = async () => { if (!disposed) { disposed = true; await host.dispose(); await storage.close(BACKGROUND_CONTEXT); } };
     t.after(dispose);
@@ -232,4 +232,29 @@ test("a script stopped while it waits for the lease, or while it runs, gives bac
   await host.handle("abort", {});
   await running;
   assert.deepEqual({ slots, released, ended: guests.map(guest => guest.ended) }, { slots: 1, released: 1, ended: [1] });
+});
+
+test("a script's cut output and its images are saved in the workspace, and code mode's description says where", async t => {
+  const fake = await setup(t, []);
+  const written: { path: string; text?: string; base64?: string }[] = [];
+  const { host } = await fake.start(() => null, { init: { mounts: [{ path: "/workspace", mode: "rw", workspace: true }] },
+    io: { fs: async (op, args) => { assert.equal(op, "writeFile"); written.push(args as never); return {}; } } });
+  const seen: string[] = [];
+  fake.respond(context => {
+    seen.push(getCurrentTools(context.messages).find(declared => declared.name === "codemode")!.description);
+    return answer(fauxToolCall("codemode", { code: `image("data:image/png;base64,iVBORw0KGgo=");
+for (let i = 0; i < 1000; i++) console.log("${"w".repeat(99)}");
+return 1;` }, { id: "code" }), "toolUse");
+  }, answer("done"));
+  const run = await host.handle("prompt", { text: "go" });
+  assert.equal(run.error, null);
+  assert.match(seen[0], /in a JavaScript sandbox:/);
+  assert.match(seen[0], /saves the image in your workspace \(tool-results\/\)/);
+  assert.doesNotMatch(seen[0], /QuickJS|temp file/);
+  const output = textOf((await fake.history())[2]);
+  const [image, whole] = [written.find(file => file.path.endsWith("/image-1.png")), written.find(file => file.path.endsWith("/output.txt"))];
+  assert.match(image!.path, /^\/workspace\/tool-results\/pi-codemode-[0-9a-f]{8}\/image-1\.png$/);
+  assert.equal(image!.base64, "iVBORw0KGgo=");
+  assert.equal(whole!.text!.split("\n").filter(line => /^w{99}$/.test(line)).length, 1000);
+  assert.ok(output.includes(`[Image saved to ${image!.path}`) && output.includes(`[Full output: ${whole!.path}`), output.slice(0, 500));
 });

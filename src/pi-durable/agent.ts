@@ -64,6 +64,8 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     leading?: () => AgentMessage | undefined;
     /** Pi's own extensions installed beside the host's (code mode's tool): their model tools are offered first. */
     extensions?: Extension[];
+    /** Where Pi's tools keep files (code mode's cut output and images): `HarnessOptions.env`. */
+    env?: HarnessOptions["env"];
     /** Telemetry only: Pi's held context before conversion, and the request sent. */
     onContextRequest?: (held: number, sent: number) => void;
     contextWindow?: number;
@@ -391,6 +393,7 @@ export class DurableAgent {
     let givenUp = false;
     const giveUp = (error: unknown) => { if (!givenUp) { givenUp = true; options.durable.onStorageFailure?.(error); } };
     agent.harness = await Harness.open(options.durable.storage, { registry, models: models as unknown as HarnessOptions["models"],
+      ...options.durable.env ? { env: options.durable.env } : {},
       // Pi 1.4 attributes every request to pi by default (OpenRouter `HTTP-Referer: https://pi.dev` and
       // `X-OpenRouter-Title: pi`, NVIDIA and OpenCode origin headers): requests are the tenant's, so send none.
       identity: { attribution: null },

@@ -248,11 +248,12 @@ export async function runVolumeTool(volumes: VolumeService, context: ToolContext
     context.onWrite?.(written);
     return { path: shown, size: written.size, contentType: written.contentType };
   }
-  // The host's own write of a long tool result (agent-host.ts `saveToolResult`): text, within the same mount rules.
+  // The host's own write of a long tool result (agent-host.ts `saveToolResult`) or of code mode's output (`outputFiles`):
+  // text, or bytes as base64, within the same mount rules.
   if (name === "fs.writeFile") {
     writable(target);
-    if (typeof args.text !== "string") throw new Error("fs.writeFile takes text");
-    const data = Buffer.from(args.text, "utf8");
+    if (typeof args.text !== "string" && typeof args.base64 !== "string") throw new Error("fs.writeFile takes text or base64");
+    const data = typeof args.text === "string" ? Buffer.from(args.text, "utf8") : Buffer.from(args.base64 as string, "base64");
     if (data.length > FILE_LIMITS.scriptFileBytes) throw new Error(`fs.writeFile writes at most ${FILE_LIMITS.scriptFileBytes} bytes at a time`);
     signal.throwIfAborted();
     const { path: _path, chunks: _chunks, by: _by, version, ...entry } = await volumes.put(tenant, target.mount.volumeId, target.path, data, { contentType: args.contentType, by: context.agent });
