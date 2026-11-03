@@ -92,9 +92,12 @@ function bench(id: string, request: Record<string, unknown>): Promise<any> {
       const reply = (typeof message === "string" ? JSON.parse(message) : message) as any;
       if (reply?.type !== "bench-result" || reply.id !== requestId) return;
       emitter.off("message", heard);
+      emitter.off("exit", exited);
       if (reply.error) reject(new Error(reply.error)); else resolve(reply.result);
     };
+    const exited = (code: unknown) => { emitter.off("message", heard); reject(new Error(`host exited (${code})`)); };
     emitter.on("message", heard);
+    emitter.once("exit", exited);
     const message = { type: "bench", id: requestId, ...request };
     if (handle.kind === "thread") handle.worker.postMessage(JSON.stringify(message)); else handle.child.send(message);
   });
