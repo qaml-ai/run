@@ -12,8 +12,9 @@ test("SDK provisions scoped SSE sessions, infers tools, and controls lifecycle w
   const f = await fixture(t);
   const a = await f.start({ echo: echo(() => "A") });
   const b = await f.start({ echo: echo(() => "B") });
-  // Separate processes unless agents are hosted inline.
+  // Separate processes, or threads, unless agents are hosted inline.
   if (f.supervisor.hosting === "process") assert.notEqual((await a.status()).pid, (await b.status()).pid);
+  if (f.supervisor.hosting === "thread") assert.notEqual((await a.status() as { thread?: number }).thread, (await b.status() as { thread?: number }).thread);
   const result = await Promise.all([a, b].map(agent => agent.execute('return await tools.echo({value:"hi"})')));
   assert.deepEqual(result.map(result => result.output), [["A"], ["B"]]);
   const headers = { Authorization: `Bearer ${b.session.token}` };

@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
+import { parentPort, Worker, type ResourceLimits } from "node:worker_threads";
 import { OUTBOUND_ENV } from "./outbound.ts";
 import { fileURLToPath } from "node:url";
 import type { WireMessage } from "./protocol.ts";
 import { errorText } from "./protocol.ts";
 import { childStderr } from "./child-stderr.ts";
+import { safeError } from "./metrics.ts";
 
 // JSON IPC is shared by Node and Bun. Never use stdout as a protocol channel:
 // dependencies and model-generated console output may both write to it.
@@ -33,6 +35,8 @@ export class Rpc {
     } else if (message.type === "event") {
       this.onEvent?.(message.event);
     } else if (message.type === "request") {
+      // Sent before its end was closed (a killed process's, an ended thread's last messages): nothing acts for it now.
+      if (this.closed) return;
       let response: WireMessage;
       try {
         if (!this.handler) throw new Error("RPC handler unavailable");
@@ -88,7 +92,39 @@ export function childProcess(entry: string, cwd: string, runtime = process.execP
   return { child, rpc };
 }
 
+/**
+ * One agent in a worker thread of this process (AGENT_HOSTING=thread), told what `childProcess` tells a process: the same
+ * protocol over the worker's port, each message as JSON (as IPC sends it), so both see the same values. `limits` bound its
+ * heap and stack: past them the thread alone ends. A thread has no cwd of its own; HOME and TMPDIR are still `cwd`.
+ */
+export function agentThread(entry: string, cwd: string, label: string, env: Record<string, string> = agentProcessEnv(process.env), limits: ResourceLimits = {}): { worker: Worker; rpc: Rpc } {
+  const worker = new Worker(new URL(entry, import.meta.url), {
+    env: { ...env, HOME: cwd, TMPDIR: cwd, AGENT_V8_PRESPAWN: "0" }, resourceLimits: limits, stdout: true, stderr: true,
+  });
+  worker.stdout.resume();
+  const stderr = childStderr(label);
+  worker.stderr.setEncoding("utf8");
+  worker.stderr.on("data", stderr.data).on("end", stderr.end);
+  const rpc = new Rpc(message => worker.postMessage(JSON.stringify(message)));
+  worker.on("message", text => { void rpc.receive(JSON.parse(text)); });
+  // An uncaught error or a heap past its limit: the thread ends (an exit follows). Its message can carry what the model or
+  // a user wrote, so the line has its kind only, as childStderr keeps a crash's.
+  worker.on("error", error => {
+    console.error(JSON.stringify({ type: "agent_thread_failed", agent: label, error: safeError(error) }));
+    rpc.close(error.message);
+  });
+  worker.on("exit", code => rpc.close(`Thread exited (${code})`));
+  return { worker, rpc };
+}
+
+/** The supervisor's end of the protocol, from an agent process or an agent thread. */
 export function parentRpc(): Rpc {
+  if (parentPort) {
+    const port = parentPort;
+    const rpc = new Rpc(message => port.postMessage(JSON.stringify(message)));
+    port.on("message", text => { void rpc.receive(JSON.parse(text)); });
+    return rpc;
+  }
   const rpc = new Rpc(message => {
     if (!process.connected) throw new Error("Parent disconnected");
     process.send!(message, error => { if (error) rpc.close(error.message); });

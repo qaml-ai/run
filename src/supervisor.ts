@@ -7,10 +7,11 @@ import { resetContext, type ContextReset } from "./pi-durable/reset.ts";
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
-import { childProcess, type Rpc } from "./rpc.ts";
+import { agentThread, childProcess, type Rpc } from "./rpc.ts";
 import { legacyFormatRefused, type AgentConfig, type CallContext, type ToolBridge } from "./protocol.ts";
 import type { RequestMethod } from "../shared/client-protocol.ts";
 import type { ChildProcess } from "node:child_process";
+import type { ResourceLimits, Worker } from "node:worker_threads";
 import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
 import { searchQuery, searchTools } from "./tool-search.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
@@ -33,15 +34,18 @@ export const transcriptPath = (directory: string) => join(directory, "transcript
 
 /**
  * How agents run. "process": each agent is its own Node process (strong memory
- * isolation, ~50 MB each). "inline": many agents share this process, each
+ * isolation, ~50 MB each). "thread": each agent is a worker thread of this process,
+ * with a heap limit of its own: one that runs out of memory or stops answering ends
+ * alone, as a process would. "inline": many agents share this process, each
  * bounded by its compacted working set. Model-written code runs in v8-exec
- * processes either way (confined by agent-launcher when it started the runtime).
+ * processes in every mode (confined by agent-launcher when it started the runtime).
  */
-export type Hosting = "process" | "inline";
+export type Hosting = "process" | "thread" | "inline";
 type Common = { bridge: ToolBridge; calls: Set<AbortController>; listeners: Set<(event: any) => void>; legacy: AppendLog<unknown>; durable?: PiStorage };
 /** An agent process's js_exec turns (`codeSlot`), by its id for them: waiting (`release` unset) or held. */
 type CodeSlots = Map<string, { controller: AbortController; release?: () => void }>;
-type ProcessHandle = Common & { kind: "process"; child: ChildProcess; rpc: Rpc; slots: CodeSlots; watchdog?: NodeJS.Timeout };
+/** An agent process or thread: the same protocol (rpc.ts); `end` kills it and resolves once it is gone. */
+type ProcessHandle = Common & { rpc: Rpc; end: () => Promise<unknown>; slots: CodeSlots; watchdog?: NodeJS.Timeout } & ({ kind: "process"; child: ChildProcess } | { kind: "thread"; worker: Worker });
 type InlineHandle = Common & { kind: "inline"; host: ReturnType<typeof createAgentHost>; stop: (error: Error) => void; stopped: Promise<never> };
 type Handle = ProcessHandle | InlineHandle;
 type SupervisorOptions = {
@@ -58,8 +62,12 @@ type SupervisorOptions = {
   pingMs?: number; unresponsiveMs?: number;
   /** Where inline agents run js_exec (src/codemode.ts): this process's v8-exec runner unless given. Agent processes always use their own. */
   codeExecutor?: CodeExecutor;
-  /** What agent processes are told of the node's settings (`agentProcessEnv`); this process's own unless given. */
+  /** What agent processes and threads are told of the node's settings (`agentProcessEnv`); this process's own unless given. */
   agentEnv?: Record<string, string>;
+  /** Each agent thread's heap and stack limits (AGENT_THREAD_*_MB). */
+  threadLimits?: ResourceLimits;
+  /** The agent host's entry, relative to src/ (agent-child.ts unless given): tests give one that misbehaves. */
+  entry?: string;
   /** The outbound policy inline agents' model calls go through (agent processes get it in `agentEnv`). */
   modelOutbound?: Outbound;
   /** Shared Pi records use the same database and ownership claim as the session. */
@@ -256,8 +264,18 @@ export class AgentSupervisor {
   }
 
   private async startProcess(id: string, directory: string, init: AgentConfig, bridge: ToolBridge, legacy: AppendLog<unknown>, durable?: PiStorage) {
-    const { child, rpc } = childProcess("./agent-child.ts", directory, this.options.runtime, true, id, this.options.agentEnv);
-    const handle: ProcessHandle = { kind: "process", bridge, child, rpc, calls: new Set(), listeners: new Set(), legacy, durable, slots: new Map() };
+    const entry = this.options.entry ?? "./agent-child.ts";
+    const common = { bridge, calls: new Set<AbortController>(), listeners: new Set<(event: any) => void>(), legacy, durable, slots: new Map() };
+    let handle: ProcessHandle;
+    if (this.hosting === "thread") {
+      const { worker, rpc } = agentThread(entry, directory, id, this.options.agentEnv, this.options.threadLimits);
+      // Ended at once, as a killed process is, wherever its JavaScript is (a loop included).
+      handle = { ...common, kind: "thread", worker, rpc, end: () => worker.terminate() };
+    } else {
+      const { child, rpc } = childProcess(entry, directory, this.options.runtime, true, id, this.options.agentEnv);
+      handle = { ...common, kind: "process", child, rpc, end: () => { const closed = once(child, "close"); child.kill("SIGKILL"); return closed; } };
+    }
+    const { rpc } = handle;
     this.agents.set(id, handle);
     this.starting.delete(id);
     const cleanup = () => {
@@ -269,8 +287,8 @@ export class AgentSupervisor {
       void handle.legacy.close();
       void handle.durable?.close(BACKGROUND_CONTEXT);
     };
-    child.once("exit", cleanup);
-    child.once("error", cleanup);
+    if (handle.kind === "thread") handle.worker.once("exit", cleanup);
+    else { handle.child.once("exit", cleanup); handle.child.once("error", cleanup); }
     rpc.onEvent = event => this.dispatchEvent(handle, event);
     rpc.handler = async (method, params) => {
       if (method === "cancel-tools") return this.cancelTools(handle);
@@ -292,7 +310,7 @@ export class AgentSupervisor {
       if (method !== "tool") throw new Error("Unknown tool");
       return this.dispatchTool(handle, params);
     };
-    const timeout = setTimeout(() => { rpc.close("Agent initialization timed out"); child.kill("SIGKILL"); }, 120_000);
+    const timeout = setTimeout(() => { rpc.close("Agent initialization timed out"); void handle.end(); }, 120_000);
     try {
       const result = await rpc.request("init", init);
       this.watch(id, handle);
@@ -303,7 +321,7 @@ export class AgentSupervisor {
   }
 
   /**
-   * Kill an agent process that stops answering (its thread stuck in something synchronous), so it
+   * Kill an agent process or thread that stops answering (stuck in something synchronous), so it
    * cannot hold its slot or its run forever. Its run fails; the next start closes the interrupted
    * turn from its journal (agent-host.ts), as after a crash.
    */
@@ -421,7 +439,7 @@ export class AgentSupervisor {
   }
 
   private invoke(handle: Handle, method: string, params: any): Promise<any> {
-    if (handle.kind === "process") return handle.rpc.request(method, params);
+    if (handle.kind !== "inline") return handle.rpc.request(method, params);
     return Promise.race([handle.host.handle(method, structuredClone(params)), handle.stopped]).then(result => result === undefined ? result : structuredClone(result));
   }
 
@@ -487,12 +505,10 @@ export class AgentSupervisor {
   }
 
   private async halt(handle: Handle) {
-    if (handle.kind === "process") {
+    if (handle.kind !== "inline") {
       this.cancelTools(handle);
       handle.rpc.close("Agent stopped");
-      const closed = once(handle.child, "close");
-      handle.child.kill("SIGKILL");
-      await closed;
+      await handle.end();
     } else {
       // Callers see the same failure as a killed process; the host writes nothing more. Its tools are cancelled once Pi is
       // closed (`dispose`), so a call in flight is the next owner's Pi's to settle, not a cancellation's error.

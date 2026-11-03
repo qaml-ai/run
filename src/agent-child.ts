@@ -4,7 +4,7 @@ import { createAgentHost } from "./agent-host.ts";
 import { setMetricService, setMetricSink } from "./metrics.ts";
 import { remotePiStorage } from "./pi-durable/storage.ts";
 
-// One agent in its own process: the host's I/O goes over IPC to the supervisor.
+// One agent in its own process or worker thread: the host's I/O goes over IPC (or the thread's port) to the supervisor.
 // Its stdout is not kept: metric lines (metrics.ts) go to stderr, which the node's log keeps.
 setMetricSink(line => process.stderr.write(`${line}\n`));
 // This process's environment is its node's settings for it (agentProcessEnv).

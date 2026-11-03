@@ -31,6 +31,7 @@ test("two real agents compose tools concurrently, with distinct workspaces", asy
   const { root, supervisor, start } = await fixture(t, 2);
   const [a, b] = await Promise.all([start("a"), start("b")]);
   if (supervisor.hosting === "process") assert.notEqual(a.pid, b.pid);
+  if (supervisor.hosting === "thread") { assert.equal(a.pid, process.pid); assert.notEqual(a.thread, b.thread); }
   await assert.rejects(start("c"), /capacity/);
   await assert.rejects(start("a"), /already exists/);
   const outputs = await Promise.all(["a", "b"].map(id => supervisor.request(id, "execute", { code: `
@@ -137,6 +138,7 @@ test("real Pi provider loop calls codemode and persists native messages across p
   await supervisor.stop("pi");
   const restarted = await start("pi", chosen, applicationPrompt);
   if (supervisor.hosting === "process") assert.notEqual(restarted.pid, first.pid);
+  if (supervisor.hosting === "thread") assert.notEqual(restarted.thread, first.thread);
   assert.equal(restarted.messages, 4);
   await supervisor.request("pi", "prompt", { text: "What did you do?" });
   assert.ok(requests[2].messages.some((m: any) => m.content === "File verified."));
@@ -215,6 +217,8 @@ test("stopping an agent also stops its CPU-bound codemode execution", async t =>
     assert.throws(() => process.kill(handle.child.pid!, 0), { code: "ESRCH" });
     return;
   }
+  // The agent's thread is gone; its v8-exec process, like an agent process's, ends at its CPU limit or on its next read.
+  if (handle.kind === "thread") { assert.equal(handle.worker.threadId, -1); return; }
   // Inline, the execution's v8-exec process is killed.
   const pool = v8Exec();
   for (let i = 0; i < 50 && pool.running; i++) await new Promise(resolve => setTimeout(resolve, 20));

@@ -125,7 +125,9 @@
 | `AGENT_BILLING_INTERVAL_MS` | how often a node checks whether today's storage charge has run (default 3600000) |
 | `AGENT_STORAGE_RECONCILE_DAYS` | how often the storage charge first corrects tracked storage by listing Storage (default 7; 0: only the first time; see [Billing](billing.md)) |
 | `AGENT_SERVICE_NAME` | the `ServiceName` dimension on the `node_load` metrics (none when unset) |
-| `AGENT_HOSTING` | `process` (one Node process per awake agent) or `inline` (many agents per process) |
+| `AGENT_HOSTING` | `process` (one Node process per awake agent), `thread` (one worker thread per awake agent, in the server process) or `inline` (many agents per process) |
+| `AGENT_THREAD_HEAP_MB` | each agent thread's heap limit under `thread` hosting (default 512): an agent past it ends alone, as a crashed agent process does |
+| `AGENT_THREAD_YOUNG_MB`, `AGENT_THREAD_STACK_MB` | each agent thread's young generation and stack (default V8's own) |
 | `AGENT_ENGINE`, `AGENT_PI_CANARY_AGENTS`, `AGENT_PI_CANARY_TENANTS`, `AGENT_PI_SWEEP` | ignored: the legacy engine and the sweep that moved its agents were removed, and every agent runs on [Pi durable](pi-durable.md). A node with any of them set logs `settings_ignored` once |
 | `AGENT_HISTORY_BACKLOG_BYTES`, `AGENT_PI_DUAL_WRITE`, `AGENT_PI_DUAL_READ`, `AGENT_PI_HISTORY_SOURCE_TENANTS` | ignored: the host transcript they configured was removed, and every agent's history is its [Pi journal](pi-durable.md). A node with any of them set logs `settings_ignored` once |
 | `AGENT_CODE_WORKERS_MAX` | how many js_exec executions tenants with a concurrency limit (`codeConcurrency`; self-serve ones by default) run at once on a node, together (default 16; each holds about 20 MB while it waits on tools). Executions beyond it, or beyond their tenant's limit, wait their turn within their own timeout. Admin tenants without one are bounded only by `AGENT_V8_MAX` |

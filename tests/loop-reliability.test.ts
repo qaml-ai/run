@@ -207,7 +207,7 @@ test("a steer is acknowledged at once and completes when the running turn takes 
 });
 
 test("a run stopped before its node was lost is not resumed by the node that takes the agent over", { timeout: 90_000 }, async t => {
-  if (process.env.AGENT_HOSTING === "inline") return t.skip("needs the agent in a process of its own, to freeze it");
+  if ((process.env.AGENT_HOSTING ?? "process") !== "process") return t.skip("needs the agent in a process of its own, to freeze it");
   const c = await cluster(t);
   const bodies: any[] = [];
   const server = createServer(async (req, res) => {

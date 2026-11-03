@@ -36,7 +36,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   }
   /** An optional number: undefined unless set, so the component's own default applies. */
   const optional = (name: string) => env[name] ? Number(env[name]) : undefined;
-  // Agents hosted per node (processes with AGENT_HOSTING=process, in-process hosts with inline), and busy per tenant across
+  // Agents hosted per node (processes with AGENT_HOSTING=process, threads with thread, in-process hosts with inline), and busy per tenant across
   // the fleet for a tenant with no maxAgents of its own and no usage tier (one not prepaid).
   const maxAgents = positiveSetting("AGENT_MAX_AGENTS", 8);
   // Resident memory past which a node starts no more agents (supervisor.ts, memoryHighBytes); unset, only the count limits it.
@@ -70,7 +70,14 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   const wakesPerHour = positiveSetting("AGENT_WAKES_PER_HOUR", MULTI_AGENT_LIMITS.wakesPerHour);
   const progressWaitMs = positiveSetting("AGENT_PROGRESS_WAIT_MS", MULTI_AGENT_LIMITS.progressWaitMs);
   const hosting = (env.AGENT_HOSTING ?? "process") as Hosting;
-  if (!["process", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process or inline");
+  if (!["process", "thread", "inline"].includes(hosting)) throw new Error("AGENT_HOSTING must be process, thread or inline");
+  // Each agent thread's old-generation heap (AGENT_HOSTING=thread): past it, that agent's thread ends as a process would
+  // on running out of memory, and the node's other agents go on. Young generation and stack: V8's own unless set.
+  const threadLimits = {
+    maxOldGenerationSizeMb: positiveSetting("AGENT_THREAD_HEAP_MB", 512),
+    ...(env.AGENT_THREAD_YOUNG_MB ? { maxYoungGenerationSizeMb: positiveSetting("AGENT_THREAD_YOUNG_MB", 1) } : {}),
+    ...(env.AGENT_THREAD_STACK_MB ? { stackSizeMb: positiveSetting("AGENT_THREAD_STACK_MB", 1) } : {}),
+  };
   // Settings of the legacy engine and of the sweep that moved its agents to Pi, which are gone: every agent runs on Pi
   // durable. Still accepted, so a deployment that sets them starts; the node says once that it ignores them.
   // Settings of what was removed: the legacy engine, and the host transcript (every agent's history is its Pi journal).
@@ -134,7 +141,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     publicUrlSet: !!env.AGENT_PUBLIC_URL,
     // Where browsers reach the runtime, as browser tokens say: AGENT_PUBLIC_URL unless set; empty for none.
     browserUrl: env.AGENT_BROWSER_URL?.replace(/\/+$/, ""),
-    maxAgents, memoryHighBytes, memoryRetireMs, memoryRetireFallbackMs, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, progressWaitMs, hosting, ignored, toolTimeoutMs, contextRangeMaxBytes, runLimits, adminRunLimits, streamTimeouts, runRetentionSeconds, idleMs,
+    maxAgents, memoryHighBytes, memoryRetireMs, memoryRetireFallbackMs, loadIntervalMs, maxAgentsPerTenant, maxDefinitionsPerTenant, drainMs, retireMaxMs, orphanMs, maxResumes, childSweepMs, wakesPerHour, progressWaitMs, hosting, threadLimits, ignored, toolTimeoutMs, contextRangeMaxBytes, runLimits, adminRunLimits, streamTimeouts, runRetentionSeconds, idleMs,
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,

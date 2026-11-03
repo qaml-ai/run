@@ -1,5 +1,6 @@
 import { END_USER_CREDIT, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
 import { mkdir } from "node:fs/promises";
+import { threadId } from "node:worker_threads";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { COMPACTION_SUMMARY_PREFIX, convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import {
@@ -938,12 +939,12 @@ export function createAgentHost(hostIO: HostIO) {
       // A configuration changed elsewhere (another node, or while this agent was stopped) applies from here.
       await declareConfiguration();
       await journal.refresh();
-      return { pid: process.pid, recovered, messages: journal.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? await endedTurn() : {}) };
+      return { pid: process.pid, ...(threadId ? { thread: threadId } : {}), recovered, messages: journal.total, ...(resume ? { resume } : {}), ...(!recovered && config.resume ? await endedTurn() : {}) };
     }
     if (!agent) throw new Error("Agent is not initialized");
     if (method === "status") {
       await journal.refresh();
-      return { pid: process.pid, busy, messages: journal.total, contextMessages: agent.state.messages.length, compacted: agent.state.messages.some(isSummary) };
+      return { pid: process.pid, ...(threadId ? { thread: threadId } : {}), busy, messages: journal.total, contextMessages: agent.state.messages.length, compacted: agent.state.messages.some(isSummary) };
     }
     if (method === "configure") {
       if (busy) throw new Error("Agent is busy");
