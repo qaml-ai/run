@@ -57,11 +57,17 @@
   // Within send's frame (MAX_FRAME_BYTES / 2 characters, main.rs) with room for the envelope; EMIT_CHARS of text.
   const FRAME_CHARS = 2 * 1024 * 1024 - 64 * 1024, TEXT_CHARS = 128000;
   let current = 0, issued = 0, finished = false;
+  // At most CONCURRENT_TOOLS (main.rs) calls are out at once; the rest wait here, in order, and go as answers come
+  // back, so a script may await any number of calls at once (Promise.all over many delegates) within TOOL_CALLS.
+  const CONCURRENT = 32, waiting = [];
+  let out = 0;
+  const call = frame => { issued++; out++; send(stringify(frame)); };
   const bridge = (kind, a, b, c) => {
     if (finished) return;
     if (kind === "call" || kind === "global") {
-      issued++;
-      send(stringify({ type: "call", id: a, target: kind === "call" ? "tool" : "global", name: b, args: c }));
+      const frame = { type: "call", id: a, target: kind === "call" ? "tool" : "global", name: b, args: c };
+      if (out < CONCURRENT && !waiting.length) call(frame);
+      else waiting.push(frame);
     } else if (kind === "output") {
       // Text is made well formed (a lone surrogate, half an emoji, as U+FFFD): the bridge's JSON refuses one.
       // One message stays within a bridge frame (send's limit, pi.rs): text past what a script prints in all is cut
@@ -88,6 +94,8 @@
       const message = parse(json);
       current = message.seq ?? current;
       now = Math.max(now, message.now ?? now);
+      out--;
+      while (out < CONCURRENT && waiting.length && !finished) call(waiting.shift());
       api.settle(message.id, message.ok, message.payload, message.properties);
     },
     fn => api.run((tools, ...rest) => fn(new Proxy(tools, { get(target, key, receiver) {

@@ -506,12 +506,13 @@ export function createAgentHost(hostIO: HostIO) {
   /**
    * Where the agent's code runs (v8-exec, codemode-pi-launcher.ts) under its tenant's limits: CPU per execution, and a
    * deadline (Pi's code mode has none unless a script asks), each admitted only while the node's lease is fresh and the
-   * tenant has a code slot on the node, and measured (`code_execution`).
+   * tenant has a code slot on the node, and measured (`code_execution`). A script waiting on delegate (another agent's
+   * whole turn) holds no slot meanwhile, and the wait is not on its clock.
    */
   function codeSandbox(tools?: CodemodeTool[]): ReturnType<CodeSandboxes> {
     const timeoutMs = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
     const options: Parameters<CodeSandboxes>[0] = {
-      ...tools ? { tools } : {}, cpuMs: Math.min(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs), timeoutMs,
+      ...tools ? { tools } : {}, awaits: ["delegate"], cpuMs: Math.min(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs), timeoutMs,
       acquireSlot: async signal => { await leased(signal); return io.codeSlot ? io.codeSlot(signal) : () => {}; },
       onEnd: ({ ms, cpuMs, error, errorName }) => recordCodeExecution({ tenant: config.tenant, ms, timeoutMs, cpuMs, ...error === undefined ? {} : { error }, ...errorName === undefined ? {} : { errorName } }),
     };

@@ -13,10 +13,18 @@ type Launcher = ConstructorParameters<typeof CodemodeSandboxBase>[1];
 export interface PiV8Options {
   pool?: V8Exec;
   cpuMs?: number;
-  /** Hard wall limit, including time queued for capacity. Pi's start() otherwise has no deadline. */
+  /**
+   * Wall limit on the script's own time: not time queued for a code slot, nor time waiting on `awaits` calls. Pi's
+   * start() otherwise has no deadline.
+   */
   timeoutMs?: number;
+  /**
+   * Tools a script waits on for as long as they take (delegate: another agent's whole turn): while one is out, the
+   * script holds no code slot and its wall clock stops; it takes a slot again before it gets their answers.
+   */
+  awaits?: readonly string[];
   expectedFingerprint?: string;
-  /** Tenant CodeGate admission. Released on process exit, also on failed or cancelled admission. */
+  /** Tenant CodeGate admission. Released on process exit, also on failed or cancelled admission, and while the script waits on `awaits` calls. */
   acquireSlot?(signal: AbortSignal): Promise<() => void>;
   /** Once per execution, when it stops: how long it ran from launch, the CPU its script used (when it got to the end), and why it failed (the script's error, with its name, a limit, the sandbox), if it did. */
   onEnd?(end: { ms: number; cpuMs?: number; error?: string; errorName?: string }): void;
@@ -67,6 +75,9 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     const output = { items: 0, bytes: 0, images: 0, imageBytes: 0 };
     const launched = performance.now();
     const pending = new Set<number>(), sequences = new Set<number>();
+    const awaits = new Set(options.awaits ?? []), awaited = new Set<number>();
+    // Taking the slot back once the last awaited call answered: answers wait in `queued` until it is held.
+    let reacquiring: Promise<void> | undefined;
     const queued: HostToWorkerMessage[] = [];
     let nextResult = 0;
     const admission = new AbortController();
@@ -75,7 +86,12 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
     const released = () => { release?.(); release = undefined; resolveClosed(); };
     const fail = (message: string) => { if (!stopped) { error ??= message; events.failure({ kind: "sandbox", message }); } };
-    const timer = setTimeout(() => { if (!stopped) { error ??= `Codemode timed out after ${timeoutMs}ms`; events.failure({ kind: "timeout", message: `Pi V8 exceeded ${timeoutMs} ms` }); } }, timeoutMs);
+    // The wall clock runs while the script holds its slot and waits on no `awaits` call.
+    let left = timeoutMs, since: number | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+    const expire = () => { if (!stopped) { error ??= `Codemode timed out after ${timeoutMs}ms`; events.failure({ kind: "timeout", message: `Pi V8 exceeded ${timeoutMs} ms` }); } };
+    const runClock = () => { if (!stopped && since === undefined) { since = performance.now(); timer = setTimeout(expire, left); } };
+    const stopClock = () => { if (since !== undefined) { clearTimeout(timer); left -= performance.now() - since; since = undefined; } };
+    const deliver = (message: HostToWorkerMessage) => guest!.send({ type: "request", id: "pi", method: "pi-result-v1", params: message });
     const post = (message: HostToWorkerMessage) => {
       if (stopped) return;
       message = wellFormed(message);
@@ -88,7 +104,15 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
       if (data.deterministic && (!integer(message.seq) || message.seq === 0 || sequences.has(message.seq) || !Number.isFinite(message.now))) return fail("Malformed Pi result sequence or clock");
       pending.delete(message.id);
       if (message.seq !== undefined) sequences.add(message.seq);
-      if (guest) guest.send({ type: "request", id: "pi", method: "pi-result-v1", params: message });
+      if (awaited.delete(message.id) && !awaited.size) reacquiring = (async () => {
+        try { release = await options.acquireSlot?.(admission.signal); }
+        catch (error) { return fail(error instanceof Error ? error.message : String(error)); }
+        reacquiring = undefined;
+        if (stopped) { release?.(); release = undefined; return; }
+        runClock();
+        for (const held of queued.splice(0)) deliver(held);
+      })();
+      if (guest && !reacquiring) deliver(message);
       else queued.push(message);
     };
     const receive = (message: unknown) => {
@@ -110,6 +134,10 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
           || !(message.target === "tool" ? toolNames.has(message.name) : message.target === "global" && globalNames.has(message.name))) return fail("Malformed Pi call");
         issued++;
         pending.add(message.id);
+        if (message.target === "tool" && awaits.has(message.name) && awaited.add(message.id).size === 1) {
+          stopClock();
+          release?.(); release = undefined;
+        }
       } else if (message.type === "idle" || message.type === "done") {
         const barrier = message.type === "idle" ? message : message.during;
         if (barrier !== undefined && (!record(barrier) || !integer(barrier.seq) || barrier.seq !== idle + 1
@@ -146,16 +174,17 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
       try {
         release = await options.acquireSlot?.(admission.signal);
         if (stopped) return released();
+        runClock();
         guest = pool.open();
         guest.listen(receive, reason => { released(); fail(reason); });
         guest.send({ type: "request", id: "pi", method: "pi-start-v1", params: { ...data, prelude: PRELUDE_SOURCE, preludeSha256, cpuMs, wallMs: timeoutMs } });
-        for (const message of queued.splice(0)) guest.send({ type: "request", id: "pi", method: "pi-result-v1", params: message });
+        if (!reacquiring) for (const message of queued.splice(0)) deliver(message);
       } catch (error) { released(); fail(error instanceof Error ? error.message : String(error)); }
     })();
     return { post, async stop() {
       if (!stopped) {
         stopped = true;
-        clearTimeout(timer);
+        stopClock();
         options.onEnd?.({ ms: Math.round(performance.now() - launched), ...usedCpuMs === undefined ? {} : { cpuMs: usedCpuMs }, ...error === undefined ? {} : { error }, ...errorName === undefined ? {} : { errorName } });
         admission.abort();
         if (guest) { guest.end(); if (!guest.dispatched) released(); } else released();

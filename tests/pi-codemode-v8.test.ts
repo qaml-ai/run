@@ -273,6 +273,52 @@ test("Pi start: a script may declare tools or console of its own, as in js_exec"
   }
 });
 
+/** Runs `code` with a delegate and an echo tool, answering each call after `delayMs(name)`; resolves with its result. */
+function answering(sandbox: PiV8Sandbox, code: string, delayMs: (name: string) => number) {
+  let seq = 0;
+  const run: CodemodeRun = sandbox.start(code, { ...defaults, tools: [...tools, { name: "delegate", jsName: "delegate", description: "Delegate" }],
+    onCall: call => { setTimeout(() => run.deliver(++seq, defaults.startedAt + 1, call.id, success(call.args)), delayMs(call.name)); } });
+  return run.result;
+}
+
+test("Pi start: time waiting on delegate is not on the script's clock, and the script holds no code slot meanwhile", { skip, timeout: 60_000 }, async t => {
+  // One slot for everything: a second script runs while the first waits on its delegate.
+  let holders = 0, most = 0, waiters: (() => void)[] = [];
+  const acquireSlot = async () => {
+    while (holders >= 1) await new Promise<void>(resolve => waiters.push(resolve));
+    most = Math.max(most, ++holders);
+    return () => { holders--; waiters.shift()?.(); };
+  };
+  const ended: string[] = [];
+  const first = new PiV8Sandbox({ timeoutMs: 300, acquireSlot, awaits: ["delegate"] }), second = new PiV8Sandbox({ timeoutMs: 300, acquireSlot, awaits: ["delegate"] });
+  t.after(async () => { await first.close(); await second.close(); });
+  const waiting = answering(first, "return await tools.delegate({ task: 'x' })", () => 800).then(result => { ended.push("first"); return result; });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const other = await answering(second, "return await tools.echo(1)", () => 0);
+  ended.push("second");
+  const result = await waiting;
+  assert.equal(other.ok, true, JSON.stringify(other));
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(ended, ["second", "first"]);
+  assert.equal(most, 1);
+  assert.equal(holders, 0);
+  // Any other tool's wait is on the clock.
+  const slow = await answering(first, "return await tools.echo(1)", () => 800);
+  assert.equal(slow.ok, false);
+  if (!slow.ok) assert.match(slow.error.message, /exceeded 300 ms/);
+});
+
+test("Pi start: a script awaits any number of calls at once, 32 out at a time, and the 257th call says the limit", { skip, timeout: 60_000 }, async t => {
+  const sandbox = new PiV8Sandbox();
+  t.after(() => sandbox.close());
+  const many = await answering(sandbox, "return (await Promise.all(Array.from({ length: 100 }, (_, i) => tools.delegate({ i })))).length", () => 5);
+  assert.equal(many.ok, true, JSON.stringify(many).slice(0, 300));
+  if (many.ok) assert.equal(many.value, 100);
+  const over = await answering(sandbox, "return (await Promise.all(Array.from({ length: 257 }, (_, i) => tools.echo(i)))).length", () => 1);
+  assert.equal(over.ok, false);
+  if (!over.ok) assert.match(over.error.message, /at most 256 tool calls/);
+});
+
 // No executable is needed to test the trusted host's validation and shutdown behavior.
 function fakePool() {
   let receive!: (message: unknown) => void, close!: (reason: string) => void;
