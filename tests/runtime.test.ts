@@ -153,8 +153,8 @@ test("the prompt summarizes the agent's environment from its configuration, and 
   const requests: any[] = [];
   const chosen = await fakeProvider(t, body => { requests.push(body); return { role: "assistant", content: "ok" }; });
   const { supervisor } = await fixture(t);
-  const definition = (name: string, exposure: "both" | "codemode") => ({ name, description: name, parameters: { type: "object" }, exposure });
-  const bridge = { definitions: [definition("lookup", "both"), definition("crm__find", "codemode"), definition("crm__update", "codemode"), definition("misc", "codemode")], async call() { return null; } };
+  const definition = (name: string, exposure: "direct" | "both" | "codemode") => ({ name, description: name, parameters: { type: "object" }, exposure });
+  const bridge = { definitions: [definition("lookup", "both"), definition("preferred", "direct"), definition("crm__find", "codemode"), definition("crm__update", "codemode"), definition("misc", "codemode")], async call() { return null; } };
   await supervisor.start("env", { model: chosen, apiKey: "fixture", mounts: [{ path: "/workspace", mode: "rw" }, { path: "/shared", mode: "ro" }] }, bridge);
   await supervisor.request("env", "prompt", { text: "Hi" });
   const system = (body: any) => body.messages[0].content as string;
@@ -162,7 +162,7 @@ test("the prompt summarizes the agent's environment from its configuration, and 
     "Your environment:",
     "- Files: /workspace (read-write), /shared (read-only); relative paths resolve against /workspace. Attachments are saved under /workspace/uploads/<request>/ and files that tools return under /workspace/tool-outputs/; keep scratch data under /workspace/tmp/. The file tools (read, write, edit, ls, glob, grep, mv, cp) are for looking at and changing files yourself; fs in js_exec is for code that works on their contents.",
     "- You cannot see images or PDFs: read a PDF for its text.",
-    "- Tools declared to you: lookup.",
+    "- Tools declared to you: lookup, preferred.",
     "- Tools only in js_exec: 3, in 1 without a namespace, crm (2); find them with tools.search.",
     "- js_exec limits per execution: 2 s of CPU, 128 MB of memory, 30 s (timeoutMs, up to 120 s), 256 tool calls, 32,000 output characters. Process large data in one pass.",
   ].join("\n"));

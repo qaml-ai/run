@@ -1,3 +1,4 @@
+import { callableFromCode, declaredToModel, normalizeTool } from "../src/protocol.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -120,8 +121,9 @@ test("catalogs of thousands: limits, direct budget, names-only sandbox, host-sid
   const servers = Array.from({ length: 200 }, (_, index) => valueServer(defaultExposure([tool(`s${index}__only`, "One tool")]), async () => null));
   const { tools } = await compose(servers);
   assert.equal(tools.length, 200);
-  assert.equal(tools.filter(entry => entry.exposure === "both").length, CATALOG_LIMITS.direct);
-  assert.equal(tools.at(-1)!.exposure, "codemode");
+  assert.equal(tools.filter(entry => declaredToModel(entry)).length, CATALOG_LIMITS.direct);
+  assert.equal(tools.at(-1)!.exposure, "both");
+  assert.ok(tools.every(callableFromCode));
 
   const calls: unknown[] = [];
   const bridge = { definitions: big, call: async (name: string, args: unknown) => { calls.push([name, args]); return { ok: true }; } };
@@ -342,4 +344,28 @@ test("every tenant pays tool search at cost on the platform's key: each search, 
   await until(async () => (await r.call("/v1/billing", { token: PAYG })).json.balance === 994_000, "the prepaid tenant's credit, debited at cost");
   const entries = (await r.call("/v1/billing/ledger", { token: PAYG })).json.entries.filter((row: any) => row.kind === "usage");
   assert.deepEqual([entries.reduce((sum: number, row: any) => sum + (row.metadata.toolSearch ?? 0), 0), entries.reduce((sum: number, row: any) => sum + (row.metadata.toolSearches ?? 0), 0)], [6_000, 1], "counted apart in the hour's entry");
+});
+
+
+test("callers separate compatibility exposure, approval and model advertisement", async () => {
+  for (const exposure of [undefined, "direct", "both", "codemode"] as const) {
+    const normalized = normalizeTool({ ...tool("lookup", "Lookup"), exposure });
+    assert.deepEqual(normalized.callers, exposure === "codemode" ? ["tools"] : ["model", "tools"]);
+    assert.equal(declaredToModel(normalized), exposure !== "codemode");
+    assert.equal(declaredToModel(normalized, false), true);
+    assert.ok(callableFromCode(normalized));
+    assert.deepEqual(normalizeTool(normalized), normalized, "normalization is idempotent");
+  }
+  for (const metadata of [{ needsApproval: true }, { judged: true }]) {
+    assert.ok(callableFromCode({ ...tool("approve", "Approval"), ...metadata }));
+  }
+  const onlyCode = normalizeTool({ ...tool("code", "Code"), callers: ["tools"] });
+  assert.equal(declaredToModel(onlyCode, false), false, "codeMode:false respects explicit callers");
+  const onlyModel = normalizeTool({ ...tool("control", "Control"), callers: ["model"] });
+  assert.equal(callableFromCode(onlyModel), false);
+  const entries = Array.from({ length: CATALOG_LIMITS.direct + 1 }, (_, i) => ({ ...tool(`t${i}`, "Tool"), exposure: "both" as const }));
+  const { tools } = await compose([valueServer([...entries, { ...tool("preferred", "Preferred"), exposure: "direct" }], async () => null)]);
+  assert.equal(declaredToModel(tools.at(-2)!), false);
+  assert.equal(declaredToModel(tools.at(-1)!), true, "direct is never dropped by the budget");
+  assert.ok(tools.every(callableFromCode));
 });

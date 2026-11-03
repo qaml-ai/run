@@ -2,8 +2,7 @@ import type { ModelAttemptHook } from "./model-attempt.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
-import type { ToolDefinition } from "../shared/client-protocol.ts";
-export type { ToolDefinition };
+import type { ToolDefinition as PublicToolDefinition } from "../shared/client-protocol.ts";
 import type { SearchHit, SearchQuery } from "./tool-search.ts";
 /** Which model tool call a tool call belongs to: its own, or for a call from js_exec, the js_exec call's and the call's id within it. */
 /** A tool call from the model: its id, its place in js_exec's code if made there, and the history index of the assistant message that made it. */
@@ -13,6 +12,29 @@ export type CallContext = {
   delegates?: number;
 };
 import type { CommitEffect } from "../shared/append-log.ts";
+
+export interface ToolDefinition extends PublicToolDefinition {
+  callers?: readonly ("model" | "tools")[];
+  /** Advertisement is separate from permission; the direct-tool budget may turn this off. */
+  modelDeclared?: boolean;
+  modelPreferred?: boolean;
+  /** Legacy exposure allows model calls when code mode is disabled. */
+  modelFallback?: boolean;
+}
+
+export function normalizeTool(tool: ToolDefinition): ToolDefinition {
+  // A tool that asks first (a person, or the judge) is declared to the model, which can always pause for it: code cannot yet.
+  const asks = !!(tool.needsApproval || tool.judged);
+  return { ...tool, callers: tool.callers ?? (tool.exposure === "codemode" && !asks ? ["tools"] : ["model", "tools"]),
+    modelDeclared: tool.modelDeclared ?? (asks || tool.exposure !== "codemode"),
+    modelPreferred: tool.modelPreferred ?? (asks || tool.exposure === "direct"),
+    modelFallback: tool.modelFallback ?? !tool.callers };
+}
+export const callableFromCode = (tool: ToolDefinition) => (tool.callers ?? normalizeTool(tool).callers)!.includes("tools");
+export const declaredToModel = (tool: ToolDefinition, codeMode = true) => {
+  const normalized = normalizeTool(tool);
+  return (!codeMode && normalized.modelFallback) || normalized.callers!.includes("model") && (!codeMode || normalized.modelDeclared === true);
+};
 /** The least `runLimits.contextTokens` may be: below it, a summary and the recent messages it keeps would not fit. */
 export const MIN_CONTEXT_TOKENS = 20_000;
 /**

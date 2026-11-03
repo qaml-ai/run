@@ -1,3 +1,4 @@
+import { compose, describeSources, valueServer } from "../src/tool-servers.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
@@ -416,4 +417,14 @@ test("a tenant's own maxDefinitions in the tenants file overrides the default; a
   assert.equal(tenants.maxDefinitions("bots"), 20_000);
   const bad = new Tenants({ read: async () => JSON.stringify({ tenants: { bots: { tokenSha256: "a".repeat(64), maxDefinitions: 0 } } }) });
   await assert.rejects(bad.reload(), /invalid maxDefinitions/);
+});
+
+
+test("source descriptions keep compatibility exposure without publishing internal callers", async () => {
+  const definition = { ...lookup, exposure: "direct" as const };
+  const { tools } = await compose([valueServer([definition], async () => null)]);
+  assert.deepEqual(tools[0].callers, ["model", "tools"]);
+  const [view] = describeSources([{ kind: "application", name: "application", status: "listed", tools }], true);
+  assert.equal(view.tools[0].exposure, "direct");
+  for (const field of ["callers", "modelDeclared", "modelPreferred", "modelFallback"]) assert.equal(field in view.tools[0], false);
 });

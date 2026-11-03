@@ -31,11 +31,11 @@ setDualWrite(true);
  */
 type Context = { after(fn: () => unknown): void };
 
-async function setup(t: Context) {
+async function setup(t: Context, definitions?: ToolDefinition[]) {
   const directory = await mkdtemp(join(tmpdir(), "agent-host-"));
   const faux = registerFauxProvider({ tokensPerSecond: 1_000_000 });
   t.after(async () => { faux.unregister(); await rm(directory, { recursive: true, force: true }); });
-  const tools: ToolDefinition[] = [
+  const tools: ToolDefinition[] = definitions ?? [
     { name: "lookup", description: "Look something up", parameters: { type: "object" }, exposure: "direct" },
     { name: "approve", description: "Needs a person", parameters: { type: "object" }, exposure: "direct" },
     { name: "delegate", description: "A sub-agent", parameters: { type: "object" }, exposure: "direct" },
@@ -446,4 +446,43 @@ test("two calls of one response that ask for their message index at once read th
   assert.equal(run.error, null);
   assert.equal(run.reply, "Done.");
   assert.equal(run.messages, 5);
+});
+
+
+test("model advertisement is separate from callers, including without code mode", async t => {
+  const definition = (name: string, extra: Partial<ToolDefinition> = {}): ToolDefinition => ({ name, description: name, parameters: { type: "object" }, ...extra });
+  const fake = await setup(t, [definition("preferred", { exposure: "direct" }), definition("hidden", { exposure: "both", modelDeclared: false }),
+    definition("legacy", { exposure: "codemode" }), definition("internal", { callers: ["tools"] }), definition("control", { callers: ["model"] })]);
+  const { host } = await fake.start();
+  const seen: string[][] = [];
+  // Inspect the actual provider contexts instead of the host's full registered catalog.
+  fake.respond(context => { seen.push(getCurrentTools(context.messages).map(tool => tool.name)); return answer("ok"); });
+  await host.handle("prompt", { text: "hi" });
+  assert.deepEqual(seen[0].sort(), ["control", "js_exec", "preferred"]);
+  await host.handle("configure", { codeMode: false });
+  fake.respond(context => { seen.push(getCurrentTools(context.messages).map(tool => tool.name)); return answer("ok"); });
+  await host.handle("prompt", { text: "again" });
+  assert.deepEqual(seen[1].sort(), ["control", "hidden", "legacy", "preferred"]);
+});
+
+test("code calls direct tools but cannot discover or call model-only tools", async t => {
+  const fake = await setup(t, [
+    { name: "lookup", description: "Lookup", parameters: { type: "object" }, exposure: "direct" },
+    { name: "control", description: "Control", parameters: { type: "object" }, callers: ["model"] },
+  ]);
+  const called: string[] = [];
+  const { host } = await fake.start({ call: name => { called.push(name); return "found"; } });
+  fake.respond(answer(fauxToolCall("js_exec", { code: `return { found: await tools.lookup({}), hidden: await tools.describe("control"), names: await tools.search({}) };` }, { id: "code" }), "toolUse"), answer("ok"));
+  await host.handle("prompt", { text: "go" });
+  assert.deepEqual(called, ["lookup"]);
+  const history = (await fake.history()).context;
+  const output = history.find(message => message.role === "toolResult" && message.toolCallId === "code");
+  const value = JSON.parse((output as any).content[0].text);
+  assert.equal(value.found, "found");
+  assert.equal(value.hidden, null);
+  assert.deepEqual(value.names.map((tool: any) => tool.name), ["lookup"]);
+  fake.respond(answer(fauxToolCall("js_exec", { code: `return await tools.control({});` }, { id: "denied" }), "toolUse"), answer("ok"));
+  await host.handle("prompt", { text: "try control" });
+  assert.deepEqual(called, ["lookup"]);
+  assert.match(JSON.stringify((await fake.history()).context.find(message => message.role === "toolResult" && message.toolCallId === "denied")), /not a tool|not a function|Unknown tool/);
 });

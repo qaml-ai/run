@@ -29,12 +29,12 @@ servers of its own, but without credentials (identity tokens or none); see
 [An agent's own MCP servers](tools.md#an-agents-own-mcp-servers). An agent made
 from a definition has only its definition's sources.
 
-Each MCP server and OpenAPI source takes `exposure`: `"direct"` (the model calls
-its tools itself), `"codemode"` (only from code in `js_exec`) or `"both"`. Left
-out, a source of up to 10 tools is `both` and a larger one `codemode`, so by
-default the model can call them from `js_exec`. Set `"direct"` on a source whose
-tools must never be called from code; see
-[Keeping tools out of js_exec](tools.md#keeping-tools-out-of-js_exec).
+Each MCP server and OpenAPI source takes the deprecated `exposure` setting:
+`"codemode"` allows calls only from `js_exec`; `"both"` allows code and direct
+model calls subject to the direct-tool budget; `"direct"` allows both and always
+declares the tools to the model. Left out, a source of up to 10 tools is `both`
+and a larger one `codemode`. A tool's own setting takes precedence over its
+source's. See [Tools in js_exec](tools.md#tools-in-js_exec).
 
 A `description` (1–1,000 characters) says what its agents are for; models see it
 as the description of each agent's [MCP tool](mcp-server.md), and as what it is

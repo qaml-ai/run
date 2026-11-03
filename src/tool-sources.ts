@@ -290,12 +290,9 @@ function approvalFor(policy: ApprovalPolicy | undefined, tool: string, destructi
 }
 /** Whether a source's policy asks someone before a call of `tool`: a person, or the judge. */
 const asksBefore = (mode: Exclude<ApprovalMode, "destructive">) => mode !== "never";
-/**
- * A tool that asks first — a person, or the judge — is declared to the model directly: code in js_exec cannot wait for
- * the user, and a judged call must be able to pause there too.
- */
+/** Approval changes the call policy, not the tool's callers or advertisement. */
 const gated = (tool: ToolDefinition, mode: Exclude<ApprovalMode, "destructive">): ToolDefinition =>
-  mode === "never" ? tool : { ...tool, exposure: "direct", ...(mode === "judged" ? { judged: true } : { needsApproval: true }) };
+  mode === "never" ? tool : { ...tool, ...(mode === "judged" ? { judged: true } : { needsApproval: true }) };
 /** What a gated tool answers before it is approved: the runtime's approval request, as MCP's `input_required`. */
 const APPROVAL_REQUIRED: McpResult = { resultType: "input_required", inputRequests: { approval: { method: "agent-runtime/approval", params: {} } } };
 
@@ -481,7 +478,7 @@ export class ToolSources {
 
   /** An MCP server's tools as the model sees them: those the definition offers, named `<server>__<tool>`. */
   private definitions(spec: McpServerSpec, tools: Tool[]) {
-    // A tool's own exposure (its `_meta`, as attached servers set it) beats the source's; one that asks for approval is direct.
+    // A tool's own exposure (its `_meta`, as attached servers set it) beats the source's.
     const own = (tool: Tool) => { const exposure = tool._meta?.["agent-runtime/exposure"]; return ["direct", "codemode", "both"].includes(exposure as string) ? { exposure: exposure as Exposure } : {}; };
     return defaultExposure(tools.filter(tool => this.offered(spec, tool)).map((tool): ToolDefinition => gated({
       name: mcpToolName(spec.name, tool.name), description: (tool.description || tool.title || tool.name).slice(0, MAX_DESCRIPTION),

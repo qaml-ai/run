@@ -300,7 +300,7 @@ test("an application answers with onInput, from its SDK", async t => {
   assert.deepEqual((await agent.inputs())[0].answer?.by, { via: "agent", actor: "ops" });
 });
 
-test("a remote MCP tool sets its own exposure in _meta, over its source's; an approval still makes it direct", async t => {
+test("a remote MCP tool sets its own exposure in _meta, over its source's; approval keeps its exposure", async t => {
   const plain = { call: () => ({ content: [{ type: "text", text: "ok" }] }) };
   const exposure = (value: string) => ({ ...plain, _meta: { "agent-runtime/exposure": value } });
   const server = await rawMcp(t, { key: exposure("direct"), hidden: exposure("codemode"), gated: exposure("codemode"), plain });
@@ -308,7 +308,7 @@ test("a remote MCP tool sets its own exposure in _meta, over its source's; an ap
   const definition = (await r.call("/v1/definitions", { body: { name: "Exposed", mcpServers: [{ name: "s", url: server.url, exposure: "codemode", approval: { tools: { gated: "always" } } }] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
   const tools = Object.fromEntries((await r.call(`/v1/agents/${agent}`)).json.toolSources.find((source: any) => source.name === "s").tools.map((tool: any) => [tool.name, tool.exposure]));
-  assert.deepEqual(tools, { s__key: "direct", s__hidden: "codemode", s__gated: "direct", s__plain: "codemode" });
+  assert.deepEqual(tools, { s__key: "direct", s__hidden: "codemode", s__gated: "codemode", s__plain: "codemode" });
 });
 
 test("an input for particular people must be answered naming who answers", async t => {
@@ -324,4 +324,16 @@ test("an input for particular people must be answered naming who answers", async
   assert.match(anonymous.json.error, /from or actor/);
   assert.equal((await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { ...answer, from: { id: "u2" } } })).status, 403);
   assert.equal((await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { ...answer, from: { id: "u1" } } })).status, 202);
+});
+
+
+test("approval tools stay searchable in code and refuse before asking or executing", async t => {
+  const server = await rawMcp(t, { wipe: { call: () => ({ content: [{ type: "text", text: "wiped" }] }) } });
+  const r = await runtime(t, (body, index) => index === 0 ? toolCall("js_exec", { code: `const found = await tools.search("wipe"); if (!found.some(tool => tool.name === "s__wipe")) throw new Error("not searchable"); return await tools.s__wipe({});` }, "code") : { role: "assistant", content: toolResults(body).at(-1) }, LOCAL);
+  const definition = (await r.call("/v1/definitions", { body: { name: "Code approval", mcpServers: [{ name: "s", url: server.url, exposure: "codemode", approval: { default: "always" } }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
+  const result = await r.prompt(agent, "Wipe from code");
+  assert.match(result.outcome.result.reply, /s__wipe needs the user's approval: call s__wipe directly/);
+  assert.equal(server.calls.length, 0);
+  assert.equal(result.outcome.result.stopped, undefined);
 });

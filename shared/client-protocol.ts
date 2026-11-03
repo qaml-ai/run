@@ -95,11 +95,12 @@ export interface ToolDefinition {
   description: string;
   parameters: Record<string, unknown>;
   resultFormat?: "json" | "content";
+  /** @deprecated codemode: code only; both: code and model, subject to budget; direct: both, always declared. */
   exposure?: "direct" | "codemode" | "both";
   executionMode?: "sequential" | "parallel";
-  /** The user approves each call before it runs (a source's approval policy, or the tool's own needsApproval); such a tool is declared directly. */
+  /** The user approves each call before it runs (a source's approval policy, or the tool's own needsApproval); code calls that need a person must be retried directly. */
   needsApproval?: boolean;
-  /** The decision model judges each call before it runs (a source's approval policy says `judged`); declared directly, as an approved tool is. */
+  /** The decision model judges each call before it runs (a source's approval policy says `judged`); code calls that need a person must be retried directly. */
   judged?: boolean;
   /** How long a call may go without an answer or progress (ms): the tool's `_meta["agent-runtime/timeoutMs"]`. */
   timeoutMs?: number;

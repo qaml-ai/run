@@ -77,7 +77,7 @@ export function attachedTools(tools: unknown): ToolDefinition[] {
     return {
       name: tool.name, description: tool.description || tool.title || tool.name, parameters: tool.inputSchema,
       ...(exposure !== undefined ? { exposure: exposure as ToolDefinition["exposure"] } : {}), ...(executionMode !== undefined ? { executionMode: executionMode as ToolDefinition["executionMode"] } : {}),
-      ...(approval ? { exposure: "direct" as const, needsApproval: true } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      ...(approval ? { needsApproval: true } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     };
   });
   validateDefinitions(definitions);

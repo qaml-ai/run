@@ -264,9 +264,8 @@ class Tool:
     needs_approval: object = None
     # Seconds one call may go without an answer (1 to 1200; default 15); each context.progress() restarts it.
     timeout: float | None = None
-    # How the model may call it: "direct" (only as a tool of its own, never from code), "codemode" (only from code in
-    # js_exec, as tools.<name>(...)) or "both". Default: both when the agent has up to 10 tools, else codemode, so the
-    # model can call it from js_exec unless it says "direct".
+    # Deprecated: direct allows code and always declares the tool; both allows either, subject to the
+    # direct-tool budget; codemode allows code only. Default: both up to 10 tools, else codemode.
     exposure: str | None = None
 
     def definition(self):
@@ -318,10 +317,10 @@ def tool(function=None, *, name=None, description=None, needs_approval=None, tim
     annotations and its description from the docstring. Return any JSON value (None is fine); raise to tell
     the model the call failed. `timeout`: seconds one call may take (default 15); context.progress() restarts it.
     With needs_approval (True, or a function of the arguments and context), the user approves each call, shown
-    as the runtime sees it, before it runs; such a tool is declared to the model directly.
-    `exposure`: "direct" (the model calls it only as a tool of its own, never from code in js_exec), "codemode" (only
-    from js_exec) or "both". Default: both for an agent with up to 10 tools, else codemode, so the model can call it
-    from js_exec unless it is "direct"."""
+    as the runtime sees it, before it runs. Calls needing a person must be made directly to wait.
+    `exposure` is deprecated: "direct" allows code and always declares the tool to the model;
+    "codemode" allows code only; "both" allows either, subject to the direct-tool budget.
+    Default: both for a source of up to 10 tools, else codemode."""
     if exposure not in (None, "direct", "codemode", "both"):
         raise ValueError('exposure is "direct", "codemode" or "both"')
     def decorate(fn):

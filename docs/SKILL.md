@@ -178,9 +178,9 @@ asyncio.run(main())
 - **Tools and js_exec.** Besides your tools as tools of their own, the model gets `js_exec`, a sandbox where it
   writes code that calls them (`tools.<name>(args)`), and by default it can call any of your tools from there (an
   agent's tools are `exposure: "both"` up to 10 of them, `"codemode"` past that). Mark a tool
-  `exposure: "direct"` (Python `@tool(exposure="direct")`) when it must be called on its own: when the app renders
-  its arguments as they stream in, or must see each call as it happens. See
-  https://run.camelai.com/docs/guides/tools.md#keeping-tools-out-of-js_exec.
+  `exposure: "direct"` (Python `@tool(exposure="direct")`) to always declare its schema to the model. It remains callable from code;
+  `direct` is a deprecated advertisement preference, not a restriction. See
+  https://run.camelai.com/docs/guides/tools.md#tools-in-js_exec.
 - **Limits to design around.** The one that matters is **busy agents**: how many agents may run at once, 20 on
   free credit, 25 once the account has paid $5 for credit, then 100, 250 and 1,000 (usage tiers); past it a run gets
   429 `BUSY_AGENT_LIMIT`, which says what the next tier unlocks. Runs are limited to 240 a minute on free credit (600

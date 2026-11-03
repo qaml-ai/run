@@ -55,9 +55,8 @@ print(run.text)
   only a request can authorize a call, so without one the person decides. A
   judged call is never allowed unjudged. Judged calls are billed as decisions
   are (`kind: "decision"`), an end user's credit holds and settles them the same
-  way, and a denial shows in a run's outcome as `tool_error`. Judged tools are
-  declared to the model directly, like approved ones, since code in `js_exec`
-  cannot wait.
+  way, and a denial shows in a run's outcome as `tool_error`. Judged tools keep their configured exposure and remain searchable in code.
+  A call that needs a person must be made directly until code can pause.
 - **Questions.** The `ask_user` built-in (`"builtins": ["ask_user"]` on the
   agent or its definition) lets the model ask 1 to 4 multiple-choice questions, with free text
   allowed where it says so.
@@ -80,8 +79,9 @@ const deleteApp = tool({
 ```
 
 Code in `js_exec` cannot wait for days: a call from code that would ask fails
-with "needs the user's input: call it directly". Tools that ask are therefore
-always offered to the model directly.
+with "needs the user's input: call it directly". Tools that ask remain listed and searchable in code; approval and human input
+do not change caller access. Set `exposure: "direct"` to always declare such a
+tool to the model as well.
 
 ## Answering
 

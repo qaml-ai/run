@@ -274,11 +274,10 @@ tool({ description, input: schema.Object({...}), execute: (args, context) => res
 def or_async_def(arg: str, context: ToolContext): ...
 ```
 
-`exposure` is how the model may call the tool: `"direct"` (as a tool of its
-own), `"codemode"` (only from code in `js_exec`) or `"both"`. Left out, it is
-`both` for an agent with up to 10 tools and `codemode` past that, so the model
-can call your tools from `js_exec` unless they say `"direct"`; see
-[Keeping tools out of js_exec](../guides/tools.md#keeping-tools-out-of-js_exec).
+`exposure` is deprecated: `"codemode"` allows code only; `"both"` allows code and
+model calls subject to the direct-tool budget; `"direct"` allows both and always
+declares the tool to the model. Left out, it is `both` for a source of up to 10
+tools and `codemode` past that. See [Tools in js_exec](../guides/tools.md#tools-in-js_exec).
 
 `context` (`ToolContext`):
 

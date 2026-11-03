@@ -333,7 +333,7 @@ const ToolDefinition = z.object({
   name: z.string(),
   description: z.string(),
   parameters: z.record(z.string(), z.unknown()).openapi({ description: "JSON Schema of the arguments" }),
-  exposure: z.enum(["direct", "codemode", "both"]).optional(),
+  exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ deprecated: true, description: "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model." }),
   executionMode: z.enum(["sequential", "parallel"]).optional(),
 }).openapi("ToolDefinition");
 
@@ -483,10 +483,10 @@ const mcpServerFields = {
   url: z.string().openapi({ description: "The server's Streamable HTTP (or older SSE) endpoint; https, on a public address" }),
   allowTools: z.array(z.string()).max(512).optional().openapi({ description: "Only these of its tools" }),
   denyTools: z.array(z.string()).max(512).optional().openapi({ description: "None of these of its tools" }),
-  exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls its tools: directly, from js_exec (the default), or both" }),
+  exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ deprecated: true, description: "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model." }),
   timeoutMs: z.number().int().min(1_000).max(1_200_000).optional().openapi({ description: "How long a call may go without an answer; default 60000. Each progress notification the server sends restarts it, up to 1200000 in all" }),
   audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not the server's url (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>" }),
-  approval: z.strictObject(approvalFields).optional().openapi({ description: "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token" }),
+  approval: z.strictObject(approvalFields).optional().openapi({ description: "Which tools the user approves before each call. These tools remain searchable in code, but calls needing a person must be made directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token" }),
   fileArguments: fileArguments.optional(),
 };
 const McpServerInput = z.object({
@@ -724,7 +724,7 @@ export const ToolSource = z.object({
   tools: z.array(z.object({
     name: z.string(),
     description: z.string(),
-    exposure: z.enum(["direct", "codemode", "both"]).optional(),
+    exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ deprecated: true, description: "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model." }),
     executionMode: z.enum(["sequential", "parallel"]).optional(),
     parameters: z.record(z.string(), z.unknown()).optional().openapi({ description: "JSON Schema of the arguments, with schemas=true" }),
     excluded: z.string().optional().openapi({ description: "Why the model does not get this tool (a name taken by an earlier source, or the catalog's limits); absent when it does" }),
@@ -996,11 +996,11 @@ const openApiFields = {
   baseUrl: z.string().optional().openapi({ description: "Where requests go; default the spec's first server. https, on a public address" }),
   allowTools: z.array(z.string()).max(1024).optional().openapi({ description: "Only these operations (by operationId); at most 1024 in all" }),
   denyTools: z.array(z.string()).max(4096).optional().openapi({ description: "None of these operations" }),
-  exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ description: "How the model calls its operations: directly, from js_exec (the default), or both" }),
+  exposure: z.enum(["direct", "codemode", "both"]).optional().openapi({ deprecated: true, description: "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model." }),
   timeoutMs: z.number().int().min(1_000).max(1_200_000).optional().openapi({ description: "Per call; default 30000" }),
   audience: z.string().optional().openapi({ description: "With auth \"runtime\": the tokens' aud, when not baseUrl (behind a proxy, say): a URL on its origin, or a name that stays when the server moves, urn:camelrun:<tenant>:<name>" }),
   approval: z.strictObject({ ...approvalFields, methods: z.array(z.enum(["GET", "PUT", "POST", "DELETE", "PATCH", "HEAD", "OPTIONS"])).optional().openapi({ description: "Operations of these methods, unless named in tools" }) }).optional()
-    .openapi({ description: "Which operations the user approves before each call. They are declared to the model directly; with auth \"runtime\", an approved call's identity token carries an approval claim" }),
+    .openapi({ description: "Which operations the user approves before each call. These operations remain searchable in code, but calls needing a person must be made directly; with auth \"runtime\", an approved call's identity token carries an approval claim" }),
   fileArguments: fileArguments.optional(),
 };
 const OpenApiInput = z.object({
