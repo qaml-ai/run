@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { COMPACTION_SUMMARY_PREFIX, convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import {
-  getCurrentSystemMessage, getCurrentTools, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
+  contentText, getCurrentSystemMessage, getCurrentTools, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
   type AssistantMessage, type AssistantMessageEventStream, type Message, type SystemMessage, type Tool, type ToolCall, type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
@@ -12,7 +12,7 @@ import { PiV8Sandbox, type CodeSandboxes } from "./codemode-pi-launcher.ts";
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
 import { callableFromCode, declaredToModel, errorText, normalizeTool, STOPPED_NOTICE, type ToolDefinition, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, legacyFormatRefused, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop } from "./protocol.ts";
-import { APPLICATION, applicationInstructions, CODEMODE, ENVIRONMENT, environmentSummary, INSTRUCTIONS, LANGUAGE, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
+import { APPLICATION, applicationInstructions, CODEMODE, ENVIRONMENT, environmentSummary, INSTRUCTIONS, LANGUAGE, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL, RUNTIME, runtimeRules } from "./system-prompt.ts";
 import { languageInstructions } from "./language.ts";
 import { AGENT_UPDATES, renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
 import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, step, validateInitialMessages, validateUserMessages } from "./history.ts";
@@ -43,6 +43,8 @@ const modelTools = (tools: HostTool[]) => tools.filter(tool => tool.callers?.inc
 
 /** How long a stopping agent waits to index its settled turns (see `index`). */
 
+/** Heads the runtime's rules where a context still holds older ones as its content (`runtimeSection`). */
+const RULES_CHANGED = "The runtime's rules changed. Where the rules earlier in this prompt differ from these, these hold.";
 /** Model requests of one structured run that may force final_output (see `outputChoice`). */
 const FORCED_OUTPUT_REQUESTS = 3;
 
@@ -224,7 +226,8 @@ export function createAgentHost(hostIO: HostIO) {
       return;
     }
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
-    let current = getCurrentSystemMessage(messages)?.sections ?? {};
+    const system = getCurrentSystemMessage(messages);
+    let current = system?.sections ?? {};
     // Pi reserves `instructions`: sections under that old key are removed and every section declared again in order, as
     // a section declared later is placed after the others, so re-keying one alone would move the application's
     // instructions after the environment.
@@ -234,7 +237,7 @@ export function createAgentHost(hostIO: HostIO) {
       current = {};
     }
     const wanted = {
-      [APPLICATION]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
+      [RUNTIME]: runtimeSection(current, system ? contentText(system.content) : ""), [APPLICATION]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
       [CODEMODE]: codemodeText(agent!.state.tools),
       [LANGUAGE]: config.language ? languageInstructions(config.language) : null,
       [OUTPUT]: tools.some(tool => tool.name === OUTPUT_TOOL) ? OUTPUT_INSTRUCTIONS : null,
@@ -248,6 +251,19 @@ export function createAgentHost(hostIO: HostIO) {
     // Pi takes the change once it is written.
     await journal.commit(() => [...cleared, change].map(message => ({ t: "system" as const, message })));
     await agent!.reload();
+  }
+
+  /**
+   * The runtime's rules as a section, where they changed since the context was written (js_exec and tools.search before
+   * code mode). Held in a section, they change in place. Held in the content (a context from before they were a
+   * section), they cannot: the new ones follow as a section saying they hold, and once a compaction leaves only
+   * sections they are the section alone. Missing (a compaction dropped them), nothing is declared: the agent renders
+   * today's (DurableAgent's `missingRules`).
+   */
+  function runtimeSection(current: Record<string, string | null>, content: string): string | null {
+    const rules = runtimeRules(config);
+    if (content && content !== rules) return `${RULES_CHANGED}\n\n${rules}`;
+    return RUNTIME in current ? rules : null;
   }
 
   /** Whether each model call asks the supervisor for its credentials. */

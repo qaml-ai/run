@@ -136,3 +136,24 @@ test("an agent whose rules a compaction dropped, with Pi's baseline written sinc
   await host.handle("prompt", { text: "again" });
   for (const [index, request] of requests.entries()) assert.equal(systemText(request), expected, `request ${index}`);
 });
+
+test("an agent whose rules section is from an older runtime gets today's, in place", async t => {
+  const { leading } = await fresh(t, {});
+  const expected = getSystemMessageText(leading);
+  const old = { ...leading, sections: { ...leading.sections, [RUNTIME]: "Call js_exec; find tools with tools.search." } } as SystemMessage;
+  const { host, requests } = await setup(t, {}, storage => seedJournal({ storage, sessionId: "agent", model: convertToLlm([old]), messages: history }));
+  await host.handle("prompt", { text: "hello" });
+  assert.equal(systemText(requests[0]), expected);
+  assert.doesNotMatch(systemText(requests[0]), /js_exec/);
+});
+
+test("an agent holding older rules as its content gets today's after them, saying they hold", async t => {
+  const { leading } = await fresh(t, {});
+  const old = { ...asContent(leading), content: "Call js_exec; find tools with tools.search." } as SystemMessage;
+  const { host, requests } = await setup(t, {}, storage => seedJournal({ storage, sessionId: "agent", model: convertToLlm([old]), messages: history }));
+  await host.handle("prompt", { text: "hello" });
+  await host.handle("prompt", { text: "again" });
+  const text = systemText(requests[0]);
+  assert.ok(text.endsWith(`The runtime's rules changed. Where the rules earlier in this prompt differ from these, these hold.\n\n${runtimeRules({ tools: [] })}`), text.slice(-300));
+  assert.equal(systemText(requests[1]), text, "declared once");
+});
