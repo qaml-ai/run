@@ -22,6 +22,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 mod seccomp;
+mod pi;
 
 const BOOTSTRAP: &str = include_str!("bootstrap.js");
 const GLUE: &str = include_str!("glue.js");
@@ -378,7 +379,7 @@ fn main() {
   let Some(request) = read_frame(&mut stdin) else { return };
   let id = request["id"].as_str().unwrap_or("").to_string();
   let _ = EXECUTION.set(id.clone());
-  if request["type"] != "request" || request["method"] != "execute" { answer_and_exit(&id, Err("v8-exec takes one execute request".into())); }
+  if request["type"] != "request" || (request["method"] != "execute" && request["method"] != "pi-start-v1") { answer_and_exit(&id, Err("v8-exec takes one execute request".into())); }
   let params = &request["params"];
   let code = params["code"].as_str().unwrap_or("").to_string();
   let tools = params["tools"].to_string();
@@ -424,6 +425,12 @@ fn main() {
   // And executable memory, which under --jitless must kill it too.
   if args.iter().any(|arg| arg == "--test-exec-memory") { unsafe { libc::mmap(std::ptr::null_mut(), 4096, libc::PROT_READ | libc::PROT_EXEC, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0) }; }
 
+  if request["method"] == "pi-start-v1" {
+    std::env::set_var("TZ", "UTC");
+    let context = v8::Context::new(scope, Default::default());
+    let scope = &mut v8::ContextScope::new(scope, context);
+    pi::execute(scope, &mut stdin, params, jitless, HEAP_BYTES, &args);
+  }
   v8::tc_scope!(let tc, scope);
   let undefined: v8::Local<v8::Value> = v8::undefined(tc).into();
   let tools = v8::String::new(tc, &tools).unwrap();
