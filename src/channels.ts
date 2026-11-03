@@ -198,7 +198,7 @@ export const SEND_MESSAGE: ToolDefinition = {
     text: { type: "string", maxLength: 16_000 },
     files: { type: "array", maxItems: 10, items: { type: "string" }, description: "Paths of files in your mounts to send, e.g. /workspace/report.pdf" },
   }, additionalProperties: false },
-  exposure: "direct",
+  exposure: "direct", callers: ["model"],
 };
 /**
  * Attachments a message brings in, saved to the agent's workspace: at most `files` of them,

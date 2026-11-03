@@ -3,7 +3,7 @@ import { SENDER_INSTRUCTIONS } from "./sender.ts";
 import { supportsDocuments } from "./files.ts";
 import { SANDBOX_LIMITS } from "./limits.ts";
 import { namespaceOf } from "./tool-search.ts";
-import { scratchMount, type AgentConfig } from "./protocol.ts";
+import { callableFromCode, declaredToModel, scratchMount, type AgentConfig } from "./protocol.ts";
 import { languageInstructions } from "./language.ts";
 
 const FILE_RULES = `Files:
@@ -113,10 +113,10 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
   const sight = images && supportsDocuments(config.model) ? "You see images and PDFs: attached ones and ones you read are shown to you, so never decode their bytes in code."
     : images ? "You see images (attached ones and ones you read are shown to you, so never decode their bytes in code), but not PDFs: read a PDF for its text."
     : "You cannot see images or PDFs: read a PDF for its text.";
-  // Without js_exec, every tool is declared.
-  const direct = config.tools.filter(tool => !code || tool.exposure === "direct" || tool.exposure === "both").map(tool => tool.name).sort();
+  // Without js_exec, legacy exposure does not limit model advertisement.
+  const direct = config.tools.filter(tool => declaredToModel(tool, code)).map(tool => tool.name).sort();
   const maxTimeoutMs = config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs;
-  const hidden = config.tools.filter(tool => (tool.exposure ?? "codemode") === "codemode");
+  const hidden = config.tools.filter(tool => callableFromCode(tool) && !declaredToModel(tool, code));
   const counts = new Map<string, number>();
   for (const tool of hidden) counts.set(namespaceOf(tool.name), (counts.get(namespaceOf(tool.name)) ?? 0) + 1);
   const namespaces = [...counts].sort((a, b) => a[0].localeCompare(b[0])).map(([namespace, count]) => namespace ? `${namespace} (${count})` : `${count} without a namespace`);

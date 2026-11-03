@@ -142,7 +142,7 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   },
   // AskUserQuestion's shape, which models already use well. Direct only: code cannot wait for an answer.
   ask_user: {
-    name: "ask_user", exposure: "direct",
+    name: "ask_user", exposure: "direct", callers: ["model"],
     description: "Ask the user 1-4 questions, each with 2-4 options, when you are blocked on a choice only they can make. Your turn pauses until they answer, which may take days; the answers come back as this call's result. Don't ask about what you can find out yourself.",
     parameters: { type: "object", additionalProperties: false, required: ["questions"], properties: {
       questions: { type: "array", minItems: 1, maxItems: 4, items: { type: "object", additionalProperties: false, required: ["question", "header", "options"], properties: {

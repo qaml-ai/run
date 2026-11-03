@@ -108,13 +108,10 @@ export interface Tool<T = any> {
   timeoutMs?: number;
   resultFormat?: "json" | "content";
   /**
-   * How the model may call this tool. `"direct"`: only as a tool of its own, never from code. `"codemode"`: only from
-   * code it runs in `js_exec` (as `tools.<name>(args)`). `"both"`: either way.
-   *
-   * Default: `"both"` when the agent has up to 10 of these tools, else `"codemode"`. So by default the model can call
-   * your tools from js_exec: set `"direct"` on a tool the model must call as itself, e.g. one whose arguments a page
-   * renders as they stream in (`toolcall_delta`), or one whose calls you want to see one by one rather than inside code.
-   * A tool with `needsApproval` is always direct.
+   * @deprecated Compatibility setting: `codemode` allows code only; `both` allows code and model calls,
+   * subject to the direct-tool budget; `direct` allows both and always declares the tool to the model.
+   * Default: `both` for sources of up to 10 tools, else `codemode`.
+   * Tools needing a person's approval or input remain searchable in code, but must be called directly to wait.
    */
   exposure?: "direct" | "codemode" | "both";
   executionMode?: "sequential" | "parallel";
@@ -123,7 +120,7 @@ export interface Tool<T = any> {
   execute: (args: T, context: ToolContext) => unknown | Promise<unknown>;
   /**
    * Ask the user to approve each call before it runs (or only the calls this says need it). The runtime
-   * shows them the real call; the tool is declared to the model directly, as code cannot wait for a person.
+   * shows them the real call. The tool remains searchable in code, but calls needing a person must be made directly.
    */
   needsApproval?: boolean | ((args: T, context: ToolContext) => boolean | Promise<boolean>);
 }
@@ -479,8 +476,9 @@ export interface DelegateSettings { agents?: AgentTarget[]; instructions?: boole
  */
 export type SourceAuth = { type: "bearer"; token: string } | { type: "runtime" } | { type: "exchange"; url: string; audience?: string };
 /**
- * Options every tool source takes. `exposure` (direct: the model calls the tools itself; codemode: only from code in
- * js_exec; both) defaults to both for a source of up to 10 tools, else codemode; `"direct"` keeps them out of js_exec.
+ * Options every tool source takes. Deprecated `exposure`: direct allows both and always declares the tools to the
+ * model; codemode allows code only; both allows either, subject to the direct-tool budget.
+ * Defaults to both for a source of up to 10 tools, else codemode.
  * A tool's own exposure (its `_meta["agent-runtime/exposure"]` in tools/list) beats the source's.
  */
 /**

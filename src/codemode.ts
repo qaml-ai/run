@@ -1,5 +1,5 @@
 import { Rpc } from "./rpc.ts";
-import { errorText, type ToolBridge, type WireMessage } from "./protocol.ts";
+import { callableFromCode, errorText, type ToolBridge, type WireMessage } from "./protocol.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import { namespaces, searchQuery, searchTools } from "./tool-search.ts";
 import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
@@ -208,6 +208,7 @@ export async function executeCode(options: {
   /** A workflow script: use the workflow wall-time, transfer, argument, tool-call and concurrency caps. */
   workflow?: boolean;
 }): Promise<CodeResult> {
+  options = { ...options, bridge: { ...options.bridge, definitions: options.bridge.definitions.filter(callableFromCode) } };
   const ceiling = options.workflow ? SANDBOX_LIMITS.workflowTimeoutMs : SANDBOX_LIMITS.maxTimeoutMs;
   const maxTimeoutMs = Math.min(options.limits?.maxTimeoutMs ?? ceiling, ceiling);
   const cpuMs = Math.min(options.limits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs);

@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "../protocol.ts";
-import { errorText, scratchMount } from "../protocol.ts";
+import { callableFromCode, errorText, scratchMount } from "../protocol.ts";
 import type { ClientEvent } from "../../shared/client-protocol.ts";
 import { HttpError } from "../http.ts";
 import { savedContent, ToolFiles } from "../tool-files.ts";
@@ -128,7 +128,7 @@ export async function toolset(ctx: ToolsContext, session: Session, next: { tools
   const served = new Set((("sources" in next ? next.sources : header.sources)?.mcpServers ?? []).filter(spec => spec.auth?.type === "runtime").map(spec => spec.name));
   session.toolSources = new Map(views.flatMap(view => view.tools.map(tool => [tool.name, view.kind === "application" ? "attached" : view.kind === "mcp" && served.has(view.name) ? "served" : view.kind] as const)));
   session.sourceErrors = views.flatMap(view => view.status === "error" ? [{ kind: view.kind, source: view.name, message: view.error ?? "Could not be listed" }] : []);
-  session.searchable = definitions.filter(tool => tool.exposure !== "direct");
+  session.searchable = definitions.filter(callableFromCode);
   // Rerankers that index the catalog (embeddings) start now, so the first search need not wait; the agent's tenant pays for it at cost.
   if (next.warm !== false) for (const stage of ctx.options.rerankers ?? []) stage.warm?.(session.searchable, usd => toolSearchUsage(ctx, session, usd, 0));
   return definitions;

@@ -9,7 +9,7 @@ import {
 import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { errorText, STOPPED_NOTICE, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, legacyFormatRefused, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
+import { callableFromCode, declaredToModel, errorText, normalizeTool, STOPPED_NOTICE, type ToolDefinition, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, legacyFormatRefused, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
 import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, LANGUAGE, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
 import { languageInstructions } from "./language.ts";
 import { AGENT_UPDATES, renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
@@ -36,6 +36,9 @@ import { HostJournal } from "./pi-durable/host-journal.ts";
 import { JournalHistory } from "./pi-durable/history.ts";
 import { seedJournal, SESSION_CONVERSATION_ID } from "./pi-durable/seed.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+
+type HostTool = AgentTool & Pick<ToolDefinition, "callers" | "modelDeclared">;
+const modelTools = (tools: HostTool[]) => tools.filter(tool => tool.callers?.includes("model") !== false && tool.modelDeclared !== false).map(toToolDeclaration);
 
 /** How long a stopping agent waits to index its settled turns (see `index`). */
 
@@ -179,7 +182,7 @@ export function createAgentHost(hostIO: HostIO) {
    */
   let forcing = { left: 0, reminding: false, last: false };
   /** js_exec, which an agent has unless its codeMode is false; made at init. */
-  let jsExec: AgentTool | undefined;
+  let jsExec: HostTool | undefined;
   /** Model requests wait for the node's lease, and are cut (`interrupt`) when it goes stale. */
   const gate: ModelGate = { wait: signal => leased(signal), open: new Set() };
 
@@ -198,7 +201,7 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /** The leading system message the agent's configuration makes: a new agent's Pi context starts with it. */
-  function leading(tools: Tool[] = agent!.state.tools.map(toToolDeclaration)): SystemMessage {
+  function leading(tools: Tool[] = modelTools(agent!.state.tools)): SystemMessage {
     return leadingSystemMessage(config, tools);
   }
 
@@ -210,7 +213,7 @@ export function createAgentHost(hostIO: HostIO) {
    */
   async function declareConfiguration(durable = false): Promise<void> {
     const messages = agent!.state.messages;
-    const tools = agent!.state.tools.map(toToolDeclaration);
+    const tools = modelTools(agent!.state.tools);
     if (!durable && !journal.total) {
       const rebuilt = leading(tools);
       if (JSON.stringify(convertToLlm([rebuilt])) !== JSON.stringify(convertToLlm(messages.slice(0, 1)))) await agent!.replaceContext([rebuilt, ...messages.filter(message => message.role !== "system")]);
@@ -279,9 +282,9 @@ export function createAgentHost(hostIO: HostIO) {
    * The tool a run that asks for structured output ends with: its parameters are the run's schema, so Pi checks
    * the model's answer against it and hands a call that does not fit back to the model with what is wrong.
    */
-  function outputTool(schema: Tool["parameters"]): AgentTool {
+  function outputTool(schema: Tool["parameters"]): HostTool {
     return {
-      name: OUTPUT_TOOL, label: "Final output", parameters: schema as AgentTool["parameters"], executionMode: "sequential",
+      callers: ["model"], name: OUTPUT_TOOL, label: "Final output", parameters: schema as AgentTool["parameters"], executionMode: "sequential",
       description: "Give your final answer for this request by calling this tool once, with the answer as its arguments: this request asks for its answer in this form. Do the work first; your turn ends when the call is accepted.",
       execute: async (_id, args) => ({ content: [{ type: "text", text: "Accepted." }], details: { output: args } }),
     };
@@ -371,7 +374,7 @@ export function createAgentHost(hostIO: HostIO) {
   function bridge(signal: AbortSignal, toolCallId?: string): ToolBridge {
     let calls = 0;
     return {
-      definitions: config.tools.filter(tool => tool.exposure !== "direct"),
+      definitions: config.tools.filter(callableFromCode),
       call: async (name, args) => {
         signal.throwIfAborted();
         const value = await io.tool(name, args, toolCallId ? { toolCallId, innerCallId: `${toolCallId}:${++calls}`, ...await made(toolCallId) } : undefined);
@@ -426,9 +429,10 @@ export function createAgentHost(hostIO: HostIO) {
     return { truncated: true, ...(path ? { path } : {}) };
   }
 
-  /** The tools the model calls directly: those declared direct, or every one without js_exec (codeMode: false). */
-  function directAgentTools(tools: AgentConfig["tools"]): AgentTool[] {
-    return tools.filter(tool => config.codeMode === false || ["direct", "both"].includes(tool.exposure ?? "codemode")).map(tool => ({
+  /** Register every enabled tool; model advertisement does not change who may call it. */
+  function agentTools(tools: AgentConfig["tools"]): HostTool[] {
+    return tools.map(tool => ({
+        callers: config.codeMode === false && tool.modelFallback ? ["model", "tools"] as const : normalizeTool(tool).callers, modelDeclared: declaredToModel(tool, config.codeMode !== false),
         name: tool.name, label: tool.name, description: tool.description, ...RERUN.includes(tool.name) ? { replay: "safe" as const } : {},
         parameters: tool.parameters as AgentTool["parameters"], executionMode: tool.executionMode,
         // Ahead of Pi's own check, whose complaint about a file named for a tool that takes none reads as a wrong path.
@@ -458,10 +462,10 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /** js_exec, with the agent's code limits. */
-  function codeTool(): AgentTool {
+  function codeTool(): HostTool {
     const maxTimeoutMs = config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs;
     return {
-      name: "js_exec", label: "JavaScript",
+      callers: ["model"], name: "js_exec", label: "JavaScript",
       description: "Run JavaScript or TypeScript in a fresh sandbox. Return what you want to see: it comes back as JSON (a string as its own text), after any console.log lines. In scope: tools (await tools.<name>(args) gives the tool's result as data; tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. An execution gets timeoutMs of wall time (default " + Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) + ", at most " + maxTimeoutMs + "), tool calls included: raise it for slow tools." + " For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"" + (scratchMount(config.mounts)?.path ?? "/workspace") + "/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
       parameters: {
         type: "object", required: ["code"],
@@ -704,7 +708,7 @@ export function createAgentHost(hostIO: HostIO) {
   async function handle(method: string, params: any): Promise<any> {
     if (method === "init") {
       if (agent) throw new Error("Agent already initialized");
-      config = params;
+      config = { ...params, tools: params.tools.map(normalizeTool) };
       await mkdir(config.directory, { recursive: true, mode: 0o700 });
       const piStorage = await io.piStorage?.();
       if (!piStorage) throw new Error("The agent's Pi durable storage is not open");
@@ -726,8 +730,8 @@ export function createAgentHost(hostIO: HostIO) {
       await requireContextSize();
       // Tools first: a new agent's Pi context starts with the leading system message they make.
       jsExec = codeTool();
-      const tools = [...config.codeMode === false ? [] : [jsExec], ...directAgentTools(config.tools)];
-      journal = await open(piStorage, tools.map(toToolDeclaration));
+      const tools = [...config.codeMode === false ? [] : [jsExec], ...agentTools(config.tools)];
+      journal = await open(piStorage, modelTools(tools));
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
       if (journal.active && journal.awaiting.length) {
@@ -878,7 +882,7 @@ export function createAgentHost(hostIO: HostIO) {
       await requireContextSize();
       agent = await DurableAgent.create({ ...agentOptions, durable: {
         storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: journal.history.latest, written: () => journal.written,
-        leading: () => leading(agent ? undefined : tools.map(toToolDeclaration)),
+        leading: () => leading(agent ? undefined : modelTools(tools)),
         onContextRequest: (held, sent) => contextMetrics.request(held, sent),
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own
         // writes fails. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
@@ -961,8 +965,8 @@ export function createAgentHost(hostIO: HostIO) {
       if (params.temperature !== undefined) config.temperature = params.temperature;
       if (params.dataCollection !== undefined) config.dataCollection = params.dataCollection;
       if (params.language !== undefined) config.language = params.language;
-      if (params.tools !== undefined) config.tools = params.tools;
-      if (params.tools !== undefined || params.codeMode !== undefined) agent.state.tools = [...config.codeMode === false ? [] : [jsExec!], ...directAgentTools(config.tools)];
+      if (params.tools !== undefined) config.tools = params.tools.map(normalizeTool);
+      if (params.tools !== undefined || params.codeMode !== undefined) agent.state.tools = [...config.codeMode === false ? [] : [jsExec!], ...agentTools(config.tools)];
       if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.language !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.model !== undefined) await declareConfiguration();
       return { configured: true };
     }

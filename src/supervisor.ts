@@ -8,7 +8,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { childProcess, type Rpc } from "./rpc.ts";
-import { legacyFormatRefused, type AgentConfig, type CallContext, type ToolBridge } from "./protocol.ts";
+import { callableFromCode, legacyFormatRefused, type AgentConfig, type CallContext, type ToolBridge } from "./protocol.ts";
 import type { RequestMethod } from "../shared/client-protocol.ts";
 import type { ChildProcess } from "node:child_process";
 import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
@@ -350,7 +350,7 @@ export class AgentSupervisor {
   private search(handle: Handle, params: unknown) {
     const query = searchQuery(params);
     if (handle.bridge.search) return handle.bridge.search(query);
-    return searchTools(handle.bridge.definitions.filter(tool => tool.exposure !== "direct"), query);
+    return searchTools(handle.bridge.definitions.filter(callableFromCode), query);
   }
 
   /** An agent's js_exec `fs` call: cancelled with its tool calls, and bounded like a tool result. */

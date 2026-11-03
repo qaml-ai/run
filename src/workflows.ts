@@ -93,7 +93,7 @@ export function workflowTool(settings: WorkflowSettings, describe: (target: Agen
   const agents = workflowTargets(settings);
   const cap = Math.min(settings.maxAgents ?? WORKFLOW_LIMITS.agents, WORKFLOW_LIMITS.agentsCeiling);
   return {
-    name: "run_workflow", exposure: "direct", executionMode: "sequential",
+    name: "run_workflow", exposure: "direct", callers: ["model"], executionMode: "sequential",
     description: [
       "Run a JavaScript workflow: a script that coordinates many sub-agents and returns one value. Reach for it when a task needs more agents than you can coordinate turn by turn (a sweep over many files, a migration, research cross-checked across sources), and when the plan can be written as code.",
       "The script body is plain JavaScript with top-level `await`. Its API:",

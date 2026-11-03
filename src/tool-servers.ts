@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ToolDefinition } from "./protocol.ts";
+import { normalizeTool, type ToolDefinition } from "./protocol.ts";
 import type { McpResult } from "./mcp-results.ts";
 import { compiles, validateDefinitions } from "./tool-policy.ts";
 import { CATALOG_LIMITS } from "./limits.ts";
@@ -167,7 +167,7 @@ function select(lists: ToolDefinition[][], visit: (list: number, tool: ToolDefin
   let bytes = 0, direct = 0;
   lists.forEach((list, index) => {
     for (const listed of list) {
-      const tool: ToolDefinition = { ...listed, resultFormat: "content" };
+      const tool: ToolDefinition = { ...normalizeTool(listed), resultFormat: "content" };
       const size = Buffer.byteLength(JSON.stringify(tool)) + 1;
       const excluded = names.has(tool.name) ? "an earlier source has a tool of this name"
         : names.size >= BUDGET.count ? `past the catalog's limit of ${BUDGET.count} tools`
@@ -176,9 +176,9 @@ function select(lists: ToolDefinition[][], visit: (list: number, tool: ToolDefin
       if (!excluded) { names.add(tool.name); bytes += size; }
       // Past the model's budget of direct tools, tools offered both ways are reached from js_exec
       // only, earlier servers keeping theirs: many small sources must not crowd the model's context.
-      if (!excluded && (tool.exposure === "direct" || tool.exposure === "both")) {
-        if (direct < CATALOG_LIMITS.direct || tool.exposure === "direct") direct++;
-        else tool.exposure = "codemode";
+      if (!excluded && (tool.callers!.includes("model") && tool.modelDeclared)) {
+        if (direct < CATALOG_LIMITS.direct || tool.modelPreferred) direct++;
+        else tool.modelDeclared = false;
       }
       visit(index, tool, excluded);
     }
@@ -210,8 +210,8 @@ export async function compose(servers: ToolServer[]): Promise<{ tools: ToolDefin
  * does not, and its input schema left out unless `schemas`.
  */
 export function describeSources(sources: ToolSourceView[], schemas = false) {
-  const views = sources.map(source => ({ ...source, tools: [] as (Omit<ToolDefinition, "parameters" | "resultFormat"> & { parameters?: Record<string, unknown>; excluded?: string })[] }));
-  select(sources.map(source => source.tools), (index, { resultFormat: _format, parameters, ...tool }, excluded) => {
+  const views = sources.map(source => ({ ...source, tools: [] as (Omit<ToolDefinition, "parameters" | "resultFormat" | "callers" | "modelDeclared" | "modelPreferred" | "modelFallback"> & { parameters?: Record<string, unknown>; excluded?: string })[] }));
+  select(sources.map(source => source.tools), (index, { resultFormat: _format, callers: _callers, modelDeclared: _declared, modelPreferred: _preferred, modelFallback: _fallback, parameters, ...tool }, excluded) => {
     views[index].tools.push({ ...tool, ...(schemas ? { parameters } : {}), ...(excluded ? { excluded } : {}) });
   });
   return views;

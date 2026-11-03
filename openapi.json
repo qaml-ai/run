@@ -4098,7 +4098,8 @@
               "codemode",
               "both"
             ],
-            "description": "How the model calls its tools: directly, from js_exec (the default), or both"
+            "deprecated": true,
+            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model."
           },
           "timeoutMs": {
             "type": "integer",
@@ -4137,7 +4138,7 @@
               }
             },
             "additionalProperties": false,
-            "description": "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
+            "description": "Which tools the user approves before each call. These tools remain searchable in code, but calls needing a person must be made directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
           },
           "fileArguments": {
             "type": "string",
@@ -4746,7 +4747,9 @@
               "direct",
               "codemode",
               "both"
-            ]
+            ],
+            "deprecated": true,
+            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model."
           },
           "executionMode": {
             "type": "string",
@@ -4830,7 +4833,9 @@
                     "direct",
                     "codemode",
                     "both"
-                  ]
+                  ],
+                  "deprecated": true,
+                  "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model."
                 },
                 "executionMode": {
                   "type": "string",
@@ -4897,7 +4902,8 @@
               "codemode",
               "both"
             ],
-            "description": "How the model calls its tools: directly, from js_exec (the default), or both"
+            "deprecated": true,
+            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model."
           },
           "timeoutMs": {
             "type": "integer",
@@ -4936,7 +4942,7 @@
               }
             },
             "additionalProperties": false,
-            "description": "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
+            "description": "Which tools the user approves before each call. These tools remain searchable in code, but calls needing a person must be made directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
           },
           "fileArguments": {
             "type": "string",
@@ -9438,7 +9444,8 @@
               "codemode",
               "both"
             ],
-            "description": "How the model calls its operations: directly, from js_exec (the default), or both"
+            "deprecated": true,
+            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model."
           },
           "timeoutMs": {
             "type": "integer",
@@ -9493,7 +9500,7 @@
               }
             },
             "additionalProperties": false,
-            "description": "Which operations the user approves before each call. They are declared to the model directly; with auth \"runtime\", an approved call's identity token carries an approval claim"
+            "description": "Which operations the user approves before each call. These operations remain searchable in code, but calls needing a person must be made directly; with auth \"runtime\", an approved call's identity token carries an approval claim"
           },
           "fileArguments": {
             "type": "string",
@@ -9808,7 +9815,8 @@
               "codemode",
               "both"
             ],
-            "description": "How the model calls its tools: directly, from js_exec (the default), or both"
+            "deprecated": true,
+            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model."
           },
           "timeoutMs": {
             "type": "integer",
@@ -9847,7 +9855,7 @@
               }
             },
             "additionalProperties": false,
-            "description": "Which tools the user approves before each call. Those tools are declared to the model directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
+            "description": "Which tools the user approves before each call. These tools remain searchable in code, but calls needing a person must be made directly; an approved call carries _meta[\"agent-runtime/approval\"] and an approval claim in its identity token"
           },
           "fileArguments": {
             "type": "string",
@@ -9970,7 +9978,8 @@
               "codemode",
               "both"
             ],
-            "description": "How the model calls its operations: directly, from js_exec (the default), or both"
+            "deprecated": true,
+            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model."
           },
           "timeoutMs": {
             "type": "integer",
@@ -10025,7 +10034,7 @@
               }
             },
             "additionalProperties": false,
-            "description": "Which operations the user approves before each call. They are declared to the model directly; with auth \"runtime\", an approved call's identity token carries an approval claim"
+            "description": "Which operations the user approves before each call. These operations remain searchable in code, but calls needing a person must be made directly; with auth \"runtime\", an approved call's identity token carries an approval claim"
           },
           "fileArguments": {
             "type": "string",

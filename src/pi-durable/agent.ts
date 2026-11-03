@@ -10,6 +10,8 @@ import {
   type Conversation, type ConversationId, type EntryId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Report, type Storage, type Tx,
 } from "@earendil-works/pi-durable";
 
+type RuntimeTool = AgentTool & { callers?: readonly ("model" | "tools")[]; modelDeclared?: boolean };
+
 /** Small latest-value document: loading an agent never scans its journal for a limit. */
 export const ContextLimitDoc = defineDoc({
   kind: "camel.context.limit", version: 1, scope: "conversation", history: "latest", fork: "current",
@@ -191,7 +193,7 @@ export class DurableAgent {
   private _messages: AgentMessage[] = [];
   /** The system section keys the native `camel` extension renders, in order: reinstalled when they change. */
   private sectionKeys?: string;
-  private tools: AgentTool[];
+  private tools: RuntimeTool[];
   private controller?: AbortController;
   private running?: Promise<void>;
   private events = Promise.resolve();
@@ -869,8 +871,9 @@ export class DurableAgent {
     // The turn limit a round's end set (`afterTool`) and that round's calls go once the round is over; a round a lost
     // node left open keeps them, so it still ends here.
     const round = !!(await this.harness.snapshot(LiveDoc, this.conversation.id, context))?.tools;
+    const modelTools = new Set(this.tools.filter(tool => tool.modelDeclared !== false).map(tool => tool.name));
     await this.conversation.configure({ model: { provider: this.state.model.provider, modelId: this.state.model.id },
-      thinkingLevel: this.state.thinkingLevel, instructions: null, ...round ? {} : { maxTurns: null } }, context);
+      thinkingLevel: this.state.thinkingLevel, instructions: null, modelTools: this.registry.snapshot().tools().map(entry => entry.tool).filter(tool => modelTools.has(tool.name)), ...round ? {} : { maxTurns: null } }, context);
     if (!round) await this.clearRoundEnd();
     await this.reload();
   }
