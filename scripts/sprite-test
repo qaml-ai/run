@@ -111,6 +111,8 @@ claim) # <lease> <owner> <stale>: take ~/lease. The last line is "claimed <synce
     $api curl -X DELETE /v1/tasks/sprite-test >/dev/null 2>&1
     mv ~/lease ~/lease.dead.$$ 2>/dev/null && rm -rf ~/lease.dead.$$
     mkdir ~/lease 2>/dev/null || { echo "held someone-else 0s"; exit 0; }
+    # Whoever held it may have changed the checkout (an older sprite-test writes it without ~/.synced): sync it again.
+    rm -f ~/.synced
     echo "== $(hostname): took over a stale lease of $holder (idle ${age}s)"
   fi
   echo "$1 $2" > ~/lease/owner
@@ -167,10 +169,13 @@ prepare() {
   # read a login shell's stderr fail): bind only in interactive shells.
   sed -i "s/^bind '/[[ \$- == *i* ]] \&\& bind '/" ~/.bashrc
   sudo service postgresql start >/dev/null 2>&1 || true
-  # With fsync off a crash or restart can leave a cluster that won't start. Its data is disposable, so make a new one.
-  if ! sudo -u postgres psql -Atqc 'SELECT 1' >/dev/null 2>&1; then
-    echo '== rebuilding Postgres (it would not start)'
-    v=$(pg_lsclusters -h | awk 'NR == 1 { print $1 }'); sudo pg_dropcluster "$v" main --stop >/dev/null 2>&1; sudo pg_createcluster "$v" main >/dev/null 2>&1
+  # The cluster lives on /tmp, the sprite's local disk: the root file system syncs about 7x slower, and per-file databases
+  # on it timed tests out (camel-bots). With fsync off a crash or restart can also leave a cluster that won't start. Its
+  # data is disposable, so in either case make a new one.
+  if [ "$(sudo -u postgres psql -Atqc 'SHOW data_directory' 2>/dev/null)" != /tmp/pgdata ]; then
+    echo '== making a Postgres cluster in /tmp/pgdata'
+    v=$(pg_lsclusters -h | awk 'NR == 1 { print $1 }'); sudo pg_dropcluster "$v" main --stop >/dev/null 2>&1; sudo rm -rf /tmp/pgdata
+    sudo pg_createcluster -d /tmp/pgdata --locale=C.UTF-8 "$v" main >/dev/null 2>&1
     sudo service postgresql start >/dev/null 2>&1 || true
     for _ in 1 2 3 4 5 6 7 8 9 10; do sudo -u postgres psql -Atqc 'SELECT 1' >/dev/null 2>&1 && break; sleep 1; done
     sudo -u postgres psql -qc "ALTER USER postgres PASSWORD 'test'" || { echo '== Postgres would not start'; return 1; }
