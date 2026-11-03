@@ -11,7 +11,11 @@ limits. Scripts are now durable: after a node stops, Pi replays its journal
 without repeating completed calls. A call in flight when the node stopped
 rejects with an unknown outcome. `execute` requests and schedules with `code`
 still run outside history without durable replay and return
-`{ output: string[], truncated }`. `run_workflow` keeps its own engine.
+`{ output: string[], truncated }`, now only when the script ends: `execute` no
+longer streams `output` events as it runs. Stored schedule code, and other
+saved code, that uses `fs` or `tools.search`, `tools.describe` or
+`tools.namespaces` fails from this release: rewrite it with the file tools
+and `searchTools`/`describeTool` (below). `run_workflow` keeps its own engine.
 
 Scripts call `await tools.<name>(args)` for the tool's data; a tool error
 rejects with its message. Discovery uses `ALL_TOOLS`, `searchTools`,
@@ -29,10 +33,15 @@ are available.
 The model reads `Script completed` or `Script failed`, wall time and output.
 The returned value follows text items; console lines appear in
 `<console_output>`. Failures include the error and calls made before it.
-The output budget defaults to 10,000 tokens. The runtime limits each script
-to 2 seconds of CPU by default, a 128 MiB heap, 60 seconds of wall time by
-default (at most 120), 256 calls, 32 concurrent calls, 128,000 output bytes,
-1 MiB per tool result and 128 KiB per call's arguments.
+The output budget defaults to 10,000 tokens; past it the model reads the start
+and end, and the whole output is saved in the workspace (`tool-results/`), as
+are the images a script shows. Whatever a script's options ask, the result's
+text is held to 128,000 characters. The runtime limits each script to 2
+seconds of CPU by default, a 128 MiB heap, 60 seconds of wall time by default
+(at most 120), 256 calls, 32 concurrent calls, 1 MiB per tool result and 8 MiB
+of results in all, and 128 KiB per call's arguments. Output past 1,024 prints
+or 128,000 bytes of text, or past 16 images or 8 MiB of them, is left out with
+a note where it stopped; the script still completes (js_exec failed instead).
 
 Calls from code use the model's `codemode` call id as `toolCallId` and Pi's
 keys (`c1`, `c2`, …) as `innerCallId`, replacing keys such as `call_x:1`.

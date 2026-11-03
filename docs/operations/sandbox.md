@@ -48,8 +48,11 @@ still going 60 s past its time limit (`maxRunSeconds`) is aborted, and its agent
 is stopped 60 s after that. Either way the run fails, and the agent's next start
 closes the interrupted turn, as after a crash.
 
-Output is capped at 128,000 bytes and 1,024 items. Pi also cuts the formatted
-result to `max_output_tokens` (10,000 tokens by default).
+Text output is capped at 128,000 bytes and 1,024 items, images at 16 and 8 MiB:
+v8-exec leaves out what is past them with one note (`pi.rs` `bounded`), and the
+launcher fails a guest that sends more. Pi also cuts the formatted result to
+`max_output_tokens` (10,000 tokens by default), and the host to 128,000
+characters.
 Each script permits 256 tool calls with at most 32 in flight; arguments are
 limited to 128 KiB JSON, results to 1 MiB JSON. Tools are allowlisted and their arguments validated against host-owned
 schemas before dispatch. Call results are copied as JSON, never host references.
