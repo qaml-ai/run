@@ -4098,8 +4098,8 @@
               "codemode",
               "both"
             ],
-            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model.",
-            "deprecated": true
+            "deprecated": true,
+            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model."
           },
           "timeoutMs": {
             "type": "integer",
@@ -4902,8 +4902,8 @@
               "codemode",
               "both"
             ],
-            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model.",
-            "deprecated": true
+            "deprecated": true,
+            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model."
           },
           "timeoutMs": {
             "type": "integer",
@@ -9444,8 +9444,8 @@
               "codemode",
               "both"
             ],
-            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model.",
-            "deprecated": true
+            "deprecated": true,
+            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model."
           },
           "timeoutMs": {
             "type": "integer",
@@ -9815,8 +9815,8 @@
               "codemode",
               "both"
             ],
-            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model.",
-            "deprecated": true
+            "deprecated": true,
+            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model."
           },
           "timeoutMs": {
             "type": "integer",
@@ -9978,8 +9978,8 @@
               "codemode",
               "both"
             ],
-            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model.",
-            "deprecated": true
+            "deprecated": true,
+            "description": "Deprecated compatibility setting: codemode allows code only; both allows code and model calls subject to the direct-tool budget; direct allows both and always declares the tool to the model."
           },
           "timeoutMs": {
             "type": "integer",
