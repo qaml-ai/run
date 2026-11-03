@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { resolveModel } from "../src/session-config.ts";
 import { listModels } from "../src/catalog.ts";
 import { Tenants } from "../src/tenants.ts";
+import { nodeConfig } from "../src/node-config.ts";
 
 const tenantsFile = join(mkdtempSync(join(tmpdir(), "agent-config-")), "tenants.json");
 writeFileSync(tenantsFile, JSON.stringify({ tenants: { acme: { tokenSha256: createHash("sha256").update("config-test-operator-token").digest("hex") } } }));
@@ -153,4 +154,24 @@ test("Claude Sonnet 5.5 resolves on Anthropic, OpenRouter and Bedrock (through i
   assert.ok(listModels("openrouter").some(model => model.id === "openrouter/anthropic/claude-sonnet-5.5"));
   assert.ok(listModels("amazon-bedrock").some(model => model.id === "amazon-bedrock/global.anthropic.claude-sonnet-5-5"));
   assert.ok(!listModels("amazon-bedrock").some(model => model.id === "amazon-bedrock/anthropic.claude-sonnet-5-5"), "no base id is listed");
+});
+
+
+test("managed computer configuration rejects unknown providers and idle policies below sixty seconds", () => {
+  assert.match(startupError({ AGENT_COMPUTER_PROVIDER: "unknown" }), /AGENT_COMPUTER_PROVIDER must be lambda or boat/);
+  assert.match(startupError({ AGENT_MICROVM_IDLE_SECONDS: "59" }), /AGENT_MICROVM_IDLE_SECONDS must be an integer of at least 60/);
+});
+
+
+test("managed computers default to Lambda in the runtime region and retain the Boat switch", () => {
+  assert.equal(nodeConfig({ AWS_REGION: "us-west-2" }).computerProvider, "boat", "no MicroVM image yet: Boat");
+  const config = nodeConfig({ AWS_REGION: "us-west-2", AGENT_MICROVM_IMAGE: "arn:aws:lambda:us-west-2:123456789012:microvm-image:x" });
+  assert.equal(config.computerProvider, "lambda");
+  assert.equal(config.microvm.region, "us-west-2");
+  assert.equal(config.microvm.idleSeconds, 300);
+  assert.equal(config.computerAtCost, true);
+  const override = nodeConfig({ AGENT_COMPUTER_PROVIDER: "boat", AGENT_MICROVM_REGION: "us-east-1", AGENT_PRICE_COMPUTER_HOUR_USD: "0.018" });
+  assert.equal(override.computerProvider, "boat");
+  assert.equal(override.microvm.region, "us-east-1");
+  assert.equal(override.computerAtCost, false);
 });

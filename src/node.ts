@@ -484,7 +484,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // Files sent to tools as URLs bound to their call, signed with the identity tokens' key (file-arguments.ts).
   const fileUrls = new FileUrls({ signer, get volumes() { return volumes; }, publicUrl: () => links.publicUrl });
   const creditHolds = new CreditHolds(db, accounts.billing);
-  const computers = new Computers({ db, accounts, outbound: outbound.withoutOrigins(), get transfers() { return transfers; }, enabled: config.managedComputers, runtime: publicUrl, endUsers: () => endUsers, credit: () => creditHolds, payer: agent => clients.payerOf(agent) });
+  const computers = new Computers({ db, accounts, outbound: outbound.withoutOrigins(), get transfers() { return transfers; }, enabled: config.managedComputers, provider: config.computerProvider, microvm: config.microvm, priceAtCost: config.computerAtCost, runtime: publicUrl, endUsers: () => endUsers, credit: () => creditHolds, payer: agent => clients.payerOf(agent) });
   let sweepingComputers = false;
   const computerTimer = setInterval(() => {
     if (sweepingComputers) return;

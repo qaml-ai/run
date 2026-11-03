@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { Computers } from "../src/computers/service.ts";
 import { boatMachines } from "../src/computers/managed.ts";
 import { HttpError } from "../src/http.ts";
 import { micros } from "../src/pricing.ts";
@@ -297,4 +298,47 @@ test("an agent revoked, purged, expired or deleted takes its machine with it at 
   assert.equal(await f.spent(), 5 * cost(60_000));
   assert.equal(f.logged.filter(line => line.type === "computer_agent_gone").length, 4);
   f.done();
+});
+
+test("Lambda uses runtime credentials, inherits into separate subagent sessions and stops at its fixed TTL", async () => {
+  const f = await fixture({ platformKey: false, extraAgents: ["child"] });
+  try {
+    const service = new Computers({ ...f.service.options, provider: "lambda" });
+    await service.create("payg", { agent: "a", provider: "lambda", leaseSeconds: 86400 });
+    await service.call("payg", "a", "computer_start", {}, "start");
+    const parent = await f.row();
+    assert.equal(parent.provider, "lambda");
+    assert.equal(parent.deadline - parent.created_at, 28800000);
+    assert.deepEqual(f.keys, ["aws"]);
+    await service.inherit("payg", "a", "child", f.db);
+    await service.call("payg", "child", "computer_start", {}, "child-start");
+    const child = await f.row("child");
+    assert.equal(child.provider, "lambda");
+    assert.notEqual(child.machine, parent.machine);
+    // Keep the fake provider machine present past TTL: the runtime must terminate it too.
+    for (const machine of f.machines.values()) machine.ttlUntil += HOUR;
+    f.advance(8 * HOUR);
+    await service.managed.pass();
+    assert.ok((await f.row()).ended_at);
+    assert.ok((await f.row("child")).ended_at);
+    assert.ok(f.state.removed.includes(parent.machine));
+    assert.ok(f.state.removed.includes(child.machine));
+  } finally { f.done(); }
+});
+
+test("switching the default to Lambda keeps existing Boat sessions on Boat", async () => {
+  const f = await fixture();
+  try {
+    await f.connect(); await f.start();
+    const before = await f.row();
+    const service = new Computers({ ...f.service.options, provider: "lambda" });
+    const status = await service.call("payg", "a", "computer_status", {}, "status");
+    assert.equal(status.provider, "boat");
+    await service.call("payg", "a", "computer_exec", { command: "true" }, "exec");
+    assert.equal((await f.row()).machine, before.machine);
+    assert.equal(f.keys.at(-1), "platform-key");
+    await service.create("payg", { agent: "b", provider: "boat" });
+    await service.call("payg", "b", "computer_start", {}, "start-b");
+    assert.equal((await f.row("b")).provider, "lambda");
+  } finally { f.done(); }
 });

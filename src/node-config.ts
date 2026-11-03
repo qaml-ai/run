@@ -108,6 +108,12 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
   }
   const managedComputers = env.AGENT_MANAGED_COMPUTERS ?? "off";
   if (managedComputers !== "on" && managedComputers !== "off") throw new Error("AGENT_MANAGED_COMPUTERS must be on or off");
+  // Lambda MicroVMs once an image is configured (infra sets both together), Boat until then.
+  const computerProvider = env.AGENT_COMPUTER_PROVIDER ?? (env.AGENT_MICROVM_IMAGE ? "lambda" : "boat");
+  if (computerProvider !== "lambda" && computerProvider !== "boat") throw new Error("AGENT_COMPUTER_PROVIDER must be lambda or boat");
+  const microvm = { image: env.AGENT_MICROVM_IMAGE ?? "", version: env.AGENT_MICROVM_IMAGE_VERSION,
+    region: env.AGENT_MICROVM_REGION ?? env.AWS_REGION ?? env.AWS_DEFAULT_REGION ?? "us-west-2", idleSeconds: Number(env.AGENT_MICROVM_IDLE_SECONDS ?? 300) };
+  if (!Number.isSafeInteger(microvm.idleSeconds) || microvm.idleSeconds < 60) throw new Error("AGENT_MICROVM_IDLE_SECONDS must be an integer of at least 60");
   const searchTimeoutMs = Number(env.AGENT_WEB_SEARCH_TIMEOUT_MS ?? 5_000);
   if (!Number.isInteger(searchTimeoutMs) || searchTimeoutMs < 100 || searchTimeoutMs > 60_000) throw new Error("AGENT_WEB_SEARCH_TIMEOUT_MS must be an integer between 100 and 60000");
   const purgeMs = Number(env.AGENT_PURGE_INTERVAL_MS ?? 60_000);
@@ -155,7 +161,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     github: { org: env.GITHUB_ORG ?? "qaml-ai", webUrl: env.AGENT_GITHUB_WEB_URL, apiUrl: env.AGENT_GITHUB_API_URL },
     googleIssuer: env.AGENT_GOOGLE_ISSUER || undefined,
     searchTimeoutMs,
-    managedComputers: managedComputers === "on",
+    managedComputers: managedComputers === "on", computerProvider: computerProvider as "lambda" | "boat", microvm, computerAtCost: env.AGENT_PRICE_COMPUTER_HOUR_USD === undefined,
     firecrawlUrl: env.AGENT_FIRECRAWL_SCRAPE_URL,
     usageWebhookRetryMs: optional("AGENT_USAGE_WEBHOOK_RETRY_MS"),
     channelRetryMs: optional("AGENT_CHANNEL_RETRY_MS"),

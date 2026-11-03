@@ -23,11 +23,11 @@ const publicConnection = (r: any) => ({ id: r.id, agent: r.agent, provider: r.pr
 const publicLease = (r: any) => r ? ({ id: r.id, provider: r.provider, workspaceId: r.workspace, state: r.state, recoveryRequired: r.state === "uncertain" || r.state === "closing" && !!r.error, createdAt: r.created_at, expiresAt: r.expires_at, closedAt: r.closed_at, ...(r.error ? { error: r.error } : {}) }) : null;
 
 export class Computers {
-  readonly options: { db: Db; accounts: Pick<Accounts, "seal" | "unseal"> & ManagedComputers["options"]["accounts"]; outbound: Outbound; transfers?: ComputerTransfers; driver?: DriverFactory; now?: () => number } & Partial<Pick<ManagedComputers["options"], "enabled" | "runtime" | "endUsers" | "credit" | "payer" | "machines" | "sleep">>;
+  readonly options: { db: Db; accounts: Pick<Accounts, "seal" | "unseal"> & ManagedComputers["options"]["accounts"]; outbound: Outbound; transfers?: ComputerTransfers; driver?: DriverFactory; now?: () => number } & Partial<Pick<ManagedComputers["options"], "enabled" | "runtime" | "endUsers" | "credit" | "payer" | "machines" | "sleep" | "provider" | "microvm" | "priceAtCost">>;
   readonly managed: ManagedComputers;
   constructor(options: Computers["options"]) {
     this.options = options;
-    this.managed = new ManagedComputers({ db: options.db, accounts: options.accounts, outbound: options.outbound, enabled: !!options.enabled, runtime: options.runtime ?? "", endUsers: options.endUsers, credit: options.credit, payer: options.payer, machines: options.machines, sleep: options.sleep, now: () => this.now() });
+    this.managed = new ManagedComputers({ db: options.db, accounts: options.accounts, outbound: options.outbound, enabled: !!options.enabled, runtime: options.runtime ?? "", endUsers: options.endUsers, credit: options.credit, payer: options.payer, provider: options.provider, microvm: options.microvm, priceAtCost: options.priceAtCost, machines: options.machines, sleep: options.sleep, now: () => this.now() });
   }
   private now() { return this.options.now?.() ?? Date.now(); }
   private async lock<T>(tenant: string, agent: string, fn: (sql: DbClient) => Promise<T>) {
@@ -53,15 +53,16 @@ export class Computers {
   async create(tenant: string, input: { agent: string; provider: Provider; credentials?: Credentials; leaseSeconds?: number; dailySeconds?: number; subagents?: boolean }) {
     if (input.subagents !== undefined && typeof input.subagents !== "boolean") throw new HttpError(400, "subagents must be true or false");
     if (!PROVIDERS.includes(input.provider)) throw new HttpError(400, "Unknown computer provider");
-    if (input.credentials === undefined && input.provider === MANAGED.provider) {
+    if (input.credentials === undefined && (input.provider === "boat" || input.provider === "lambda")) {
       if (!this.options.enabled) throw new HttpError(403, "Managed computers are not available on this runtime");
       const { leaseSeconds = MANAGED.idleSeconds, dailySeconds = MANAGED.dailySeconds } = input;
       if (!Number.isInteger(leaseSeconds) || leaseSeconds < 60 || leaseSeconds > MANAGED.maxSeconds || !Number.isInteger(dailySeconds) || dailySeconds < leaseSeconds || dailySeconds > 86400) throw new HttpError(400, "Invalid computer time limits");
-      return this.insertConnection(tenant, { ...input, credentials: {}, leaseSeconds, dailySeconds, managed: true });
+      return this.insertConnection(tenant, { ...input, provider: this.managed.provider, credentials: {}, leaseSeconds, dailySeconds, managed: true });
     }
     return this.createWithCredentials(tenant, { leaseSeconds: 900, dailySeconds: 3600, ...input, credentials: input.credentials as Credentials });
   }
   private async createWithCredentials(tenant: string, input: { agent: string; provider: Provider; credentials: Credentials; leaseSeconds: number; dailySeconds: number; subagents?: boolean }) {
+    if (input.provider === "lambda") throw new HttpError(400, "Lambda computers use the runtime AWS credentials");
     const expected = input.provider === "modal" ? ["tokenId", "tokenSecret"] : input.provider === "tunnel" ? ["apiKey", "url"] : ["apiKey"];
     if (!input.credentials || expected.some(k => typeof input.credentials[k] !== "string" || !input.credentials[k].trim()) || Object.keys(input.credentials).some(k => ![...expected, ...(input.provider === "browserbase" ? ["projectId"] : [])].includes(k)) || Object.values(input.credentials).some(v => typeof v !== "string" || v.length > 16000)) throw new HttpError(400, `Credentials require ${expected.join(", ")}`);
     if (input.provider === "tunnel") {

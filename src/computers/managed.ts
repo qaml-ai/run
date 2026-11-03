@@ -1,3 +1,4 @@
+import { microvmMachines, MICROVM_HOUR, MICROVM_MAX_SECONDS, type MicrovmSettings } from "./microvm.ts";
 import { fileReceipts } from "./providers.ts";
 import { randomUUID } from "node:crypto";
 import type { Accounts } from "../accounts.ts";
@@ -15,18 +16,16 @@ import { Workspaces } from "../workspaces.ts";
 import { machineSetup, signatures } from "./abuse.ts";
 import { bounded, output, quote } from "./providers.ts";
 
-/**
- * Managed computers: a machine on the platform's Boat account for an agent, billed to credit at Boat's price. Boat keeps
- * most of the state. A create takes the row's id as its idempotency key, so a lost answer finds the same machine, and a
- * machine past its TTL deletes itself, so nothing here expires anything. One row per machine says whose it is and what
- * has been charged; each pass reads what Boat reports and charges the difference.
+/** Managed computers share durable ownership, holds, metering and operator controls.
+ * Boat reports cumulative cost; Lambda records observed state intervals in the same row.
+ * The provider is fixed per session, so changing the default preserves cleanup and billing.
  */
 
 const NAME = "boat" as const;
 /** Boat's list price for a small machine (2 vCPU, 4 GB) per hour: what it reports is at this, and AGENT_PRICE_COMPUTER_HOUR_USD scales it. */
 const BOAT_SMALL_HOUR = toMicros(0.018);
 /** How long a command may run, by default and at most; how long a computer stays after its latest command unless its connection says, and at most. */
-export const MANAGED = { provider: NAME, commandSeconds: 1800, defaultCommandSeconds: 600, idleSeconds: 7200, maxSeconds: 86400, dailySeconds: 86400 };
+export const MANAGED = { provider: "lambda" as const, commandSeconds: 1800, defaultCommandSeconds: 600, idleSeconds: 7200, maxSeconds: 86400, dailySeconds: 86400 };
 /** Waits before trying a provider that made nothing again, by attempt. */
 const START_RETRIES: Record<string, number[]> = { out_of_capacity: [5000, 10000], no_ready_machine: [5000, 10000] };
 /** The most to wait for a start the provider says it will take after this long. */
@@ -45,7 +44,7 @@ const GONE_STATES = ["stopped", "archived", "deleted", "gone"];
 const PAGE = 200;
 
 /** What Boat reports for a machine: its id, the row it was made for, and what it has cost in `since`'s period. */
-export type Machine = { id: string; computer: string; tenant: string; createdAt: number; since: string; seconds: number; dollars: number };
+export type Machine = { id: string; computer: string; tenant: string; createdAt: number; since: string; seconds: number; dollars: number; ended?: boolean };
 export type Refused = { code: string; retryAfterMs?: number };
 export class BoatRefused extends Error {
   readonly refused: Refused;
@@ -57,7 +56,7 @@ export interface ManagedMachines {
   remove(machine: string): Promise<void>;
   /** The machines of this runtime on this account, what they cost as of now; `computer` narrows it to one row's. */
   list(computer?: string): Promise<Machine[]>;
-  run(machine: string, command: string, timeoutSeconds: number): Promise<{ exitCode: number; stdout: string; stderr: string; truncated: boolean }>;
+  run(machine: string, command: string, timeoutSeconds: number, requestKey?: string): Promise<{ exitCode: number; stdout: string; stderr: string; truncated: boolean }>;
 }
 
 /**
@@ -140,7 +139,7 @@ export function boatMachines(apiKey: string, outbound: Outbound, runtime: string
 /** Its tools say what a managed computer is for. */
 export function managedTools(common: ToolDefinition[], shell: ToolDefinition[], tool: (name: string, description: string, props?: object, required?: string[]) => ToolDefinition, text: object): ToolDefinition[] {
   return [
-    ...common.map(t => t.name === "computer_start" ? tool("computer_start", "Start your attached computer or return its current session. Its files stay until it is released: 2 hours after your latest command, or 24 hours after it started. A new session after that starts empty.")
+    ...common.map(t => t.name === "computer_start" ? tool("computer_start", "Start your attached computer or return its current session. Files stay until expiry or release. Lambda sessions last at most 8 hours and suspend when idle; traffic resumes them. Boat sessions expire 2 hours after the latest command or 24 hours after starting. A new session starts empty.")
       : t.name === "computer_status" ? tool("computer_status", "Read your computer's session and when it will be released; does not start one.") : t),
     ...shell.map(t => t.name !== "computer_exec" ? t : { ...tool("computer_exec", `Call computer_start first. Run a shell command in your attached remote Linux computer, never on the camelRun host. Inspect exitCode. This computer is for short-lived work, so a background process doesn't keep running after its command ends. Run work in the foreground and wait for it, with timeoutSeconds long enough for it (default ${MANAGED.defaultCommandSeconds}, at most ${MANAGED.commandSeconds}). Files stay until the computer is released.`, { command: text, timeoutSeconds: { type: "integer", minimum: 1, maximum: MANAGED.commandSeconds } }, ["command"]), timeoutMs: TOOL_DEADLINES.maxTotalMs }),
   ];
@@ -154,7 +153,7 @@ const unavailableMessage = ({ code, retryAfterMs }: Refused) => {
   return `Computers are unavailable right now. ${nothing} Do not retry in this turn. Tell the user computers are unavailable and that the runtime's operator needs to look at it.`;
 };
 
-const publicSession = (row: any) => row ? ({ id: row.id, provider: NAME, workspaceId: row.workspace, state: row.ended_at ? "closed" : row.machine ? "active" : "starting", recoveryRequired: false, createdAt: Number(row.created_at), expiresAt: Number(row.deadline), closedAt: row.ended_at === null ? null : Number(row.ended_at) }) : null;
+const publicSession = (row: any) => row ? ({ id: row.id, provider: row.provider ?? NAME, workspaceId: row.workspace, state: row.ended_at ? "closed" : row.machine && (row.provider !== "lambda" || row.microvm?.ready || !row.microvm) ? "active" : "starting", recoveryRequired: false, createdAt: Number(row.created_at), expiresAt: Number(row.deadline), closedAt: row.ended_at === null ? null : Number(row.ended_at) }) : null;
 const id = () => `cmp_${randomUUID().replaceAll("-", "")}`;
 
 export class ManagedComputers {
@@ -170,14 +169,29 @@ export class ManagedComputers {
     credit?(): Pick<CreditHolds, "available"> | undefined;
     /** Who pays for the agent's current run, where the tenant meters its end users. */
     payer?(agent: string): { id: string; bucket: string } | undefined;
-    machines?(apiKey: string): ManagedMachines;
+    provider?: "lambda" | "boat";
+    priceAtCost?: boolean;
+    microvm?: MicrovmSettings;
+    machines?(apiKey: string, provider?: "lambda" | "boat"): ManagedMachines;
     now(): number;
     sleep?(ms: number): Promise<void>;
   };
   constructor(options: ManagedComputers["options"]) { this.options = options; }
   private get db() { return this.options.db; }
-  private machines(apiKey: string) { return this.options.machines?.(apiKey) ?? boatMachines(apiKey, this.options.outbound, this.options.runtime, machineSetup()); }
-  private async keyFor(row: { tenant: string; platform: boolean }) {
+  get provider() { return this.options.provider ?? MANAGED.provider; }
+  private lambda?: ManagedMachines;
+  private machines(apiKey: string, provider: string = this.provider) {
+    if (this.options.machines) return this.options.machines(apiKey, provider as "lambda" | "boat");
+    if (provider === "boat") return boatMachines(apiKey, this.options.outbound, this.options.runtime, machineSetup());
+    if (!this.options.microvm?.image) throw new Error("AGENT_MICROVM_IMAGE is required for managed computers");
+    return this.lambda ??= microvmMachines({ db: this.db, outbound: this.options.outbound, runtime: this.options.runtime, settings: this.options.microvm, now: this.options.now });
+  }
+  private hour(row?: { provider?: string }) {
+    const price = this.options.accounts.billing.pricing.computerHour;
+    return (row?.provider ?? this.provider) === "lambda" && (this.options.priceAtCost ?? price === BOAT_SMALL_HOUR) ? toMicros(MICROVM_HOUR) : price;
+  }
+  private async keyFor(row: { tenant: string; platform: boolean; provider?: string }) {
+    if (row.provider === "lambda") return "aws";
     const key = row.platform ? this.options.accounts.tenants.platformKey(NAME) : (await this.options.accounts.providerKey(row.tenant, NAME))?.key;
     if (!key) throw new Error("No key for this computer");
     return key;
@@ -187,7 +201,7 @@ export class ManagedComputers {
   /** The latest row of a connection, as the API shows a session. */
   async session(connection: string) { return publicSession((await this.db.query("select * from managed_computers where connection=$1 order by created_at desc limit 1", [connection])).rows[0]); }
   async usage(tenant: string) {
-    return (await this.db.query(`select workspace,'${NAME}' as provider,count(*)::integer as sessions,sum(greatest(0,coalesce(ended_at,least($2,deadline))-created_at))/1000.0 as seconds,(sum(charged_micros)/${MICROS})::float8 as "costUsd" from managed_computers where tenant=$1 group by workspace`, [tenant, this.options.now()])).rows;
+    return (await this.db.query(`select workspace,provider,count(*)::integer as sessions,sum(case when provider='lambda' then usage_seconds else greatest(0,coalesce(ended_at,least($2,deadline))-created_at)/1000.0 end) as seconds,(sum(charged_micros)/${MICROS})::float8 as "costUsd" from managed_computers where tenant=$1 group by workspace,provider`, [tenant, this.options.now()])).rows;
   }
 
   /** A tool call on a managed connection. A call's key is recorded before it runs, so a retry answers from it, or says its outcome is unknown. */
@@ -217,14 +231,14 @@ export class ManagedComputers {
   private async start(connection: any, tenant: string, agent: string) {
     const now = this.options.now();
     let row = await this.open(connection.id);
-    if (row?.machine && Number(row.deadline) > now) return publicSession(row);
-    if (row && Number(row.deadline) <= now) { await this.end(row); row = undefined; }
+    if (row?.machine && (row.provider !== "lambda" || row.microvm?.ready || !row.microvm) && Number(row.deadline) > now) return publicSession(row);
+    if (row && Number(row.deadline) <= now) { if (row.provider === "lambda") await this.stopRow(row); else await this.end(row); row = undefined; }
     if (!this.options.enabled) throw new HttpError(403, "Managed computers are not available on this runtime. Do not retry in this turn; tell the user.");
     row ??= await this.newRow(connection, tenant, agent);
-    const machines = this.machines(await this.keyFor(row)), started = Date.now();
+    const machines = this.machines(await this.keyFor(row), row.provider), started = Date.now();
     for (let attempt = 0; ; attempt++) {
       try {
-        const { id: machine } = await machines.create(row.id, tenant, connection.lease_seconds);
+        const { id: machine } = await machines.create(row.id, tenant, Math.min(connection.lease_seconds, row.provider === "lambda" ? MICROVM_MAX_SECONDS : MANAGED.maxSeconds));
         await this.db.query("update managed_computers set machine=$2 where id=$1", [row.id, machine]);
         // Detach or agent deletion may have finished while the provider was creating the machine.
         const live = await this.db.query(`select 1 from managed_computers m join computer_connections c on c.id=m.connection and c.agent=m.agent
@@ -240,7 +254,7 @@ export class ManagedComputers {
           throw new HttpError(410, "The agent or its computer connection was removed while starting");
         }
         this.log("computer_started", { tenant, agent, computer: row.id, ms: Date.now() - started });
-        return publicSession({ ...row, machine });
+        return publicSession({ ...row, machine, ...(row.provider === "lambda" ? { microvm: { ...row.microvm, ready: true } } : {}) });
       } catch (error) {
         // Anything but a refusal may have made a machine: the row stays, and the next start, or the next pass, finds it by its key.
         if (!(error instanceof BoatRefused)) { this.log("computer_create_failed", { tenant, agent, computer: row.id }); throw new HttpError(502, "The computer did not answer in time. Nothing is charged until it starts. Call computer_start again; if it keeps failing, tell the user computers are unavailable for now."); }
@@ -264,7 +278,7 @@ export class ManagedComputers {
   private async newRow(connection: any, tenant: string, agent: string) {
     const { accounts, payer, endUsers, credit, now } = this.options;
     if ((await this.db.query("select 1 from computer_blocks where tenant=$1", [tenant])).rowCount) throw new HttpError(403, "Computers are turned off for this account. Nothing was created or charged. Do not retry in this turn; tell the user.");
-    const credential = await resolveKey(accounts, tenant, NAME);
+    const credential = this.provider === "lambda" ? { platform: true } : await resolveKey(accounts, tenant, NAME);
     if (!credential) throw new HttpError(503, "Computers are unavailable on this runtime. Do not retry in this turn; tell the user.");
     let held: { id: string; endUser: string; bucket: string } | undefined;
     if (credential.platform) {
@@ -275,15 +289,15 @@ export class ManagedComputers {
       }
       const user = payer?.(agent), users = endUsers?.();
       if (user && users) {
-        const hold = randomUUID(), want = Math.ceil(connection.lease_seconds * accounts.billing.pricing.computerHour / 3600);
+        const hold = randomUUID(), want = Math.ceil(Math.min(connection.lease_seconds, this.provider === "lambda" ? MICROVM_MAX_SECONDS : MANAGED.maxSeconds) * this.hour() / 3600);
         const reserved = await users.reserve(tenant, user.id, user.bucket, { id: hold, want, min: want }, now());
         if (reserved?.refused) throw creditError(reserved.refused);
         if (reserved) held = { id: hold, endUser: user.id, bucket: user.bucket };
       }
     }
     const at = now(), workspace = await new Workspaces(this.db).current(tenant, "agent", agent);
-    const row = (await this.db.query("insert into managed_computers(id,tenant,agent,connection,workspace,platform,hold,end_user,bucket,deadline,created_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) on conflict do nothing returning *",
-      [id(), tenant, agent, connection.id, workspace?.workspace ?? null, credential.platform, held?.id ?? null, held?.endUser ?? null, held?.bucket ?? null, at + connection.lease_seconds * 1000, at])).rows[0];
+    const row = (await this.db.query("insert into managed_computers(id,tenant,agent,connection,workspace,platform,hold,end_user,bucket,deadline,created_at,provider) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) on conflict do nothing returning *",
+      [id(), tenant, agent, connection.id, workspace?.workspace ?? null, credential.platform, held?.id ?? null, held?.endUser ?? null, held?.bucket ?? null, at + Math.min(connection.lease_seconds, this.provider === "lambda" ? MICROVM_MAX_SECONDS : MANAGED.maxSeconds) * 1000, at, this.provider])).rows[0];
     if (row) return row;
     // A start at the same moment made it: this one uses its row, and so its machine.
     if (held) await endUsers?.()?.release(held.id);
@@ -299,19 +313,19 @@ export class ManagedComputers {
     if (!Number.isInteger(timeout) || timeout < 1 || timeout > MANAGED.commandSeconds) throw new HttpError(400, `Command timeout must be 1–${MANAGED.commandSeconds} seconds`);
     const found = signatures([args.command, args.content].filter(part => typeof part === "string").join("\n"));
     if (found.length) this.log("computer_signature", { tenant, agent, computer: row.id, tool: name, signatures: found });
-    const machines = this.machines(await this.keyFor(row));
+    const machines = this.machines(await this.keyFor(row), row.provider);
     const deadline = await this.keep(connection, row, machines);
     const seconds = Math.max(1, Math.min(timeout, Math.floor((deadline - this.options.now()) / 1000)));
     try {
-      const value = await this.runIn(machines, row, command, seconds);
+      const value = await this.runIn(machines, row, command, seconds, requestKey);
       return storable(value);
     } catch (error) {
       throw new HttpError(502, "Computer command failed; outcome may be uncertain");
     }
   }
 
-  private async runIn(machines: ManagedMachines, row: any, command: string, seconds: number) {
-    const done = await machines.run(row.machine, command, seconds);
+  private async runIn(machines: ManagedMachines, row: any, command: string, seconds: number, requestKey?: string) {
+    const done = await machines.run(row.machine, command, seconds, requestKey);
     if (!done.stderr.startsWith(`${NO_UNIT}\n`)) return done;
     // Without its unit a background process outlives its command: counted, with no content.
     this.log("computer_unit_fallback", { tenant: row.tenant, computer: row.id });
@@ -320,6 +334,7 @@ export class ManagedComputers {
 
   /** Keep a computer for its idle time from now, up to its hard stop, when less than half of that is left. A hold or an extension refused leaves it as it is. Answers its deadline. */
   private async keep(connection: any, row: any, machines: ManagedMachines) {
+    if (row.provider === "lambda") return Number(row.deadline);
     const deadline = Number(row.deadline), now = this.options.now(), idle = connection.lease_seconds * 1000;
     const target = Math.min(Number(row.created_at) + MANAGED.maxSeconds * 1000, now + idle);
     if (target - deadline < idle / 2) return deadline;
@@ -346,10 +361,10 @@ export class ManagedComputers {
       const micros = Math.round(machine.dollars * MICROS);
       const counted = fresh ? 0 : Number(current.usage_micros), countedSeconds = fresh ? 0 : Number(current.usage_seconds);
       if (micros <= counted) { if (fresh) await sql.query("update managed_computers set usage_since=$2,usage_micros=0,usage_seconds=0 where id=$1", [row.id, machine.since]); return undefined; }
-      const ratio = accounts.billing.pricing.computerHour / BOAT_SMALL_HOUR;
+      const ratio = this.hour(current) / (current.provider === "lambda" ? toMicros(MICROVM_HOUR) : BOAT_SMALL_HOUR);
       const amount = Math.round(micros * ratio) - Math.round(counted * ratio), total = Number(current.charged_micros) + amount;
       await sql.query("update managed_computers set usage_since=$2,usage_micros=$3,usage_seconds=$4,charged_micros=$5 where id=$1", [row.id, machine.since, micros, machine.seconds, total]);
-      await accounts.recordUsageIn(sql, current.tenant, current.agent, { provider: NAME, model: "computer", kind: "computer", usage: { cost: { total: amount / MICROS } }, platform: true, seconds: Math.max(0, machine.seconds - countedSeconds), timestamp: this.options.now() });
+      await accounts.recordUsageIn(sql, current.tenant, current.agent, { provider: current.provider ?? NAME, model: "computer", kind: "computer", usage: { cost: { total: amount / MICROS } }, platform: true, seconds: Math.max(0, machine.seconds - countedSeconds), timestamp: this.options.now() });
       return current.tenant as string;
     });
     if (tenant) await accounts.usageCommitted(tenant);
@@ -365,7 +380,7 @@ export class ManagedComputers {
     const users = this.options.endUsers?.();
     const row = (await this.db.query("select * from managed_computers where id=$1 and hold is not null and ended_at is not null", [computer])).rows[0];
     if (!row || !users) return;
-    if (Number(row.charged_micros) > 0) await users.settleHold(row.tenant, row.end_user, row.bucket, row.hold, Number(row.charged_micros), `computer:${row.id}`, { call: "computer", agent: row.agent, provider: NAME, computer: row.id }, this.options.now());
+    if (Number(row.charged_micros) > 0) await users.settleHold(row.tenant, row.end_user, row.bucket, row.hold, Number(row.charged_micros), `computer:${row.id}`, { call: "computer", agent: row.agent, provider: row.provider ?? NAME, computer: row.id }, this.options.now());
     else await users.release(row.hold);
     await this.db.query("update managed_computers set hold=null where id=$1", [computer]);
   }
@@ -379,12 +394,23 @@ export class ManagedComputers {
   /** Read what the machine has cost last, then delete it: past that, Boat no longer says. */
   private async stopRow(row: any) {
     try {
-      const machines = this.machines(await this.keyFor(row));
+      const machines = this.machines(await this.keyFor(row), row.provider);
+      if (row.provider === "lambda" && !row.machine && row.microvm?.request) {
+        try { await machines.create(row.id, row.tenant, 1); } catch { /* Read the durable allocation even if health failed. */ }
+        row = (await this.db.query("select * from managed_computers where id=$1", [row.id])).rows[0];
+        if (!row.machine) throw new Error("MicroVM allocation unresolved");
+      }
       if (row.platform) {
         const [machine] = await machines.list(row.id);
         if (machine) await this.charge(row, machine);
       }
-      if (row.machine) await machines.remove(row.machine);
+      if (row.machine) {
+        await machines.remove(row.machine);
+        if (row.provider === "lambda" && row.platform) {
+          const [final] = await machines.list(row.id);
+          if (final) await this.charge(row, final);
+        }
+      }
       else if (row.platform) for (const machine of await machines.list(row.id)) await machines.remove(machine.id);
     } catch { throw new HttpError(502, "Computer cleanup failed; call computer_stop again. It also ends by itself when it is released."); }
     await this.end(row);
@@ -433,18 +459,25 @@ export class ManagedComputers {
       from managed_computers m left join computer_connections c on c.id=m.connection
       left join agents a on a.id=m.agent and a.tenant=m.tenant where m.ended_at is null`, [started]);
     for (const row of rows) if (!row.platform && Number(row.deadline) <= started) await this.end(row);
-    const key = accounts.tenants.platformKey(NAME);
-    if (key) {
-      const machines = this.machines(key), listed = await machines.list();
+    for (const provider of ["boat", "lambda"] as const) {
+      const key = provider === "lambda" ? "aws" : accounts.tenants.platformKey(NAME);
+      if (!key || (provider === "lambda" && !rows.some(row => row.provider === provider))) continue;
+      const machines = this.machines(key, provider);
+      if (provider === "lambda") for (const row of rows.filter(row => row.provider === provider && !row.machine && row.microvm?.request && Number(row.deadline) > started && !row.agent_gone && this.options.enabled)) {
+        try { await machines.create(row.id, row.tenant, Math.ceil((Number(row.deadline) - Number(row.created_at)) / 1000)); }
+        catch { this.log("computer_recover_failed", { computer: row.id }); }
+      }
+      const listed = await machines.list();
       const byRow = new Map(listed.map(machine => [machine.computer, machine]));
       const open = new Set(rows.map(row => row.id));
-      for (const row of rows.filter(row => row.platform)) {
+      for (const row of rows.filter(row => row.platform && (row.provider ?? "boat") === provider)) {
         const machine = byRow.get(row.id);
         try {
           if (machine) {
             if (!row.machine) await this.db.query("update managed_computers set machine=$2 where id=$1 and machine is null", [row.id, machine.id]);
             await this.charge(row, machine);
-          } else if (Number(row.created_at) + (row.machine ? LISTING_GRACE_MS : SETTLE_MS) <= started && !(await machines.list(row.id)).length) await this.end(row);
+            if (machine.ended) await this.end(row);
+          } else if (!(row.provider === "lambda" && !row.machine && row.microvm?.request) && Number(row.created_at) + (row.machine ? LISTING_GRACE_MS : SETTLE_MS) <= started && !(await machines.list(row.id)).length) await this.end(row);
         } catch { this.log("computer_charge_failed", { computer: row.id }); }
       }
       for (const machine of listed) {
@@ -453,7 +486,7 @@ export class ManagedComputers {
       }
       if (listed.length || rows.length) this.log("computer_pass", { machines: listed.length, open: rows.length });
     }
-    for (const row of rows.filter(row => row.agent_gone)) {
+    for (const row of rows.filter(row => row.agent_gone || (row.provider === "lambda" && Number(row.deadline) <= started))) {
       try {
         const current = (await this.db.query("select * from managed_computers where id=$1 and ended_at is null", [row.id])).rows[0];
         if (!current) continue;
