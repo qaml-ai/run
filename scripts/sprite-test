@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # sprite-test [ref] [command...]: run camelRun tests at <ref> on sprites (sprites.dev, Fly.io) leased from a shared pool.
-#   scripts/sprite-test                                   # the full suite at HEAD, as 5 shards on 5 sprites at once (SPRITE_SHARDS)
+#   scripts/sprite-test                                   # the full suite at HEAD, as 8 shards on 8 sprites at once (SPRITE_SHARDS)
 #   scripts/sprite-test origin/fix/x                      # the full suite at a ref
 #   scripts/sprite-test HEAD node --experimental-strip-types --test tests/clients.test.ts   # any command, in the checkout
-#   scripts/sprite-test --warm [ref]                      # prepare every free sprite in the pool at <ref>, ready for runs
+#   scripts/sprite-test --warm [ref]                      # prepare every free sprite in the pool not yet at <ref>, ready for runs
 #   scripts/sprite-test --status                          # the leases, and the commit each sprite has
 #
-# The pool is rt-pool-1..SPRITE_POOL (default 10) in the Fly org SPRITE_ORG (default camelai: `sprite login -o camelai`).
+# The pool is rt-pool-1..SPRITE_POOL (default 40) in the Fly org SPRITE_ORG (default camelai: `sprite login -o camelai`).
 # Each sprite keeps a checkout in ~/rt with node_modules and the v8-exec build, and Postgres 16. A sleeping sprite costs
 # nothing and wakes on the next exec, so a warm pool is free to keep. A pool sprite that does not exist yet is created
 # when every existing one is busy, and sets itself up on its first run.
@@ -39,7 +39,7 @@
 # processes and its last writes: a job gone without an exit status is run again on the same sprite, synced again.
 # Ctrl-C stops the jobs; if this script dies instead, the jobs finish anyway and free their sprites.
 #
-# Settings: SPRITE_SHARDS (default 5; the full suite only), SPRITE_NAME (pin sprites, space separated), SPRITE_POOL,
+# Settings: SPRITE_SHARDS (default 8; the full suite only), SPRITE_NAME (pin sprites, space separated), SPRITE_POOL,
 # SPRITE_ORG, SPRITE_COORDINATOR, SPRITE_LEASE_STALE, SPRITE_WAIT_MINUTES (wait for free sprites, default 30),
 # SPRITE_RUN_HOURS (the job's time limit, default 2), SPRITE_LOST_MINUTES (how long polls may fail before this script
 # gives up and leaves the job running, default 10), SPRITE_RETRIES (runs again after the sprite restarted under the
@@ -48,7 +48,7 @@
 # contact was lost (the job carries on; its log and status stay in ~/runs on the sprite); 137 when the job was killed or
 # died.
 set -euo pipefail
-org=${SPRITE_ORG:-camelai}; pool=${SPRITE_POOL:-10}; stale_s=${SPRITE_LEASE_STALE:-300}; coordinator=${SPRITE_COORDINATOR:-rt-coordinator}
+org=${SPRITE_ORG:-camelai}; pool=${SPRITE_POOL:-40}; stale_s=${SPRITE_LEASE_STALE:-300}; coordinator=${SPRITE_COORDINATOR:-rt-coordinator}
 max_age=$(awk -v hours="${SPRITE_RUN_HOURS:-2}" 'BEGIN { print int(hours * 3600 + 600) }')
 wait_s=$(( ${SPRITE_WAIT_MINUTES:-30} * 60 )); lost_s=$(( ${SPRITE_LOST_MINUTES:-10} * 60 ))
 cd "$(git rev-parse --show-toplevel)"
@@ -63,12 +63,14 @@ now=$(date +%s); op=$1; shift
 field() { awk -v s="$1" -v f="$2" '$1 == s { print $f }' "$d/$3"; }
 put() { { awk -v s="$1" '$1 != s' "$d/leases"; [ -z "$2" ] || echo "$2"; } > "$d/leases.new"; mv "$d/leases.new" "$d/leases"; }
 case $op in
-acquire) # <count|any:count> <stale> <max-age> <fingerprint> <owner> <ref> <sprite...>: count free sprites, or none and exit 75 (any: as many as are free)
+acquire) # <count|any:count> <stale> <max-age> <fingerprint> <owner> <ref> <sprite...>: count free sprites, or none and exit 75
+  # (any: as many as are free and not already synced at the fingerprint, for --warm)
   want=$1 stale=$2 max_age=$3 fp=$4 owner=$5 ref=$6; shift 6; free=
   for s in "$@"; do
     hb=$(field "$s" 7 leases); started=$(field "$s" 6 leases)
     if [ -n "$hb" ] && [ $(( now - hb )) -le "$stale" ] && [ $(( now - started )) -le "$max_age" ]; then echo "busy $s $(field "$s" 3 leases) $(( now - hb ))s"; continue; fi
     syn=$(field "$s" 2 synced); score=0
+    if [ "$want" != "${want#any:}" ] && [ "$syn" = "$fp" ]; then echo "current $s"; continue; fi
     if [ "$syn" = "$fp" ]; then score=3; elif [ "${syn#*:}" = "${fp#*:}" ]; then score=2; elif [ "$(echo "$syn" | cut -d: -f2)" = "$(echo "$fp" | cut -d: -f2)" ]; then score=1; fi
     free="$free$score $s
 "
@@ -195,24 +197,36 @@ prepare() {
   # The base image's ~/.bashrc binds keys even when not interactive, so every `bash -l` warns on stderr (and tests that
   # read a login shell's stderr fail): bind only in interactive shells.
   sed -i "s/^bind '/[[ \$- == *i* ]] \&\& bind '/" ~/.bashrc
-  sudo service postgresql start >/dev/null 2>&1 || true
   # The cluster lives on /tmp, the sprite's local disk: the root file system syncs about 7x slower, and per-file databases
-  # on it timed tests out (camel-bots). With fsync off a crash or restart can also leave a cluster that won't start. Its
-  # data is disposable, so in either case make a new one.
-  if [ "$(sudo -u postgres psql -Atqc 'SHOW data_directory' 2>/dev/null)" != /tmp/pgdata ]; then
+  # on it timed tests out (camel-bots). With fsync off a crash or restart can leave a cluster that won't start, or one
+  # that starts and then hangs (a DROP DATABASE waited 17 minutes on a checkpoint that could not flush). Its data is
+  # disposable, so make a new one whenever the sprite has booted since it was made, without starting the old one.
+  boot=$(cat /proc/sys/kernel/random/boot_id)
+  [ "$(cat /tmp/pgdata.boot 2>/dev/null)" != "$boot" ] || sudo service postgresql start >/dev/null 2>&1 || true
+  if [ "$(cat /tmp/pgdata.boot 2>/dev/null)" != "$boot" ] || [ "$(sudo -u postgres psql -Atqc 'SHOW data_directory' 2>/dev/null)" != /tmp/pgdata ]; then
     echo '== making a Postgres cluster in /tmp/pgdata'
+    # Killed, not stopped: a damaged cluster's shutdown checkpoint can hang too.
+    sudo pkill -9 -x postgres 2>/dev/null; sleep 0.5
     v=$(pg_lsclusters -h | awk 'NR == 1 { print $1 }'); sudo pg_dropcluster "$v" main --stop >/dev/null 2>&1; sudo rm -rf /tmp/pgdata
     sudo pg_createcluster -d /tmp/pgdata --locale=C.UTF-8 "$v" main >/dev/null 2>&1
     sudo service postgresql start >/dev/null 2>&1 || true
     for _ in 1 2 3 4 5 6 7 8 9 10; do sudo -u postgres psql -Atqc 'SELECT 1' >/dev/null 2>&1 && break; sleep 1; done
     sudo -u postgres psql -qc "ALTER USER postgres PASSWORD 'test'" || { echo '== Postgres would not start'; return 1; }
+    echo "$boot" > /tmp/pgdata.boot
   fi
   # As CI runs it (.github/actions/test-postgres): durability off, or per-file databases are slow enough to time tests out.
   sudo -u postgres psql -qc 'ALTER SYSTEM SET fsync=off' -c 'ALTER SYSTEM SET synchronous_commit=off' -c 'ALTER SYSTEM SET full_page_writes=off' -c 'ALTER SYSTEM SET max_connections=1000' >/dev/null
   if [ "$(sudo -u postgres psql -Atqc 'SHOW max_connections')" = 1000 ]; then sudo -u postgres psql -qc 'SELECT pg_reload_conf()' >/dev/null; else sudo service postgresql restart >/dev/null; fi
   for db in $(sudo -u postgres psql -Atqc "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres', 'template0', 'template1')"); do sudo -u postgres dropdb --force "$db"; done
   [ "$(cat ~/.lock 2>/dev/null)" = "$lock" ] || { echo '== npm ci (package-lock.json changed)'; npm ci --silent --no-audit --no-fund && sync && echo "$lock" > ~/.lock; } || return 1
-  [ "$(cat ~/.v8 2>/dev/null)" = "$v8" ] || { echo '== building v8-exec (sandbox/v8-exec changed)'; npm run -s build:v8-exec >/dev/null && sync && echo "$v8" > ~/.v8; } || return 1
+  # The v8-exec binary is rebuilt unless target/release/.sources names this tree's sandbox/v8-exec and the binary's own
+  # hash, whatever built it last: a sprite once ran a stale binary while markers said it was current. cargo goes by
+  # mtimes, and rsync gives files their commit times (an older ref's sources look older than the build), so the crate is
+  # cleaned first.
+  bin=sandbox/v8-exec/target/release/v8-exec; built=sandbox/v8-exec/target/release/.sources
+  [ -x "$bin" ] && [ "$(cat "$built" 2>/dev/null)" = "$v8 $(sha256sum < "$bin" | cut -d' ' -f1)" ] || { echo '== building v8-exec (sandbox/v8-exec changed)'
+    (cd sandbox/v8-exec && cargo clean -q --release -p v8-exec) && npm run -s build:v8-exec >/dev/null && sync \
+      && echo "$v8 $(sha256sum < "$bin" | cut -d' ' -f1)" > "$built"; } || return 1
 }
 cd ~/rt && prepare || { echo '== preparing the sprite failed'; finish 1; }
 echo "== $*"
@@ -249,9 +263,10 @@ ref=${1:-HEAD}; shift || true
 sha=$(git rev-parse --verify "$ref^{commit}"); short=$(git rev-parse --short "$sha")
 lock=$(git rev-parse "$sha:package-lock.json"); v8=$(git rev-parse "$sha:sandbox/v8-exec"); fp=$sha:$lock:$v8
 run=$(date +%Y%m%d-%H%M%S)-$$; owner=$(whoami)@$(hostname -s)/$run
-# One command per slot. The full suite (no command) runs as SPRITE_SHARDS shards at once (default 5, as CI), each on its
-# own sprite, its output prefixed [i/N] as it comes. --warm takes every free sprite and runs `true` on each.
-shards=${SPRITE_SHARDS:-5}; [[ $shards =~ ^[0-9]+$ ]] || { echo "SPRITE_SHARDS must be a number" >&2; exit 2; }
+# One command per slot. The full suite (no command) runs as SPRITE_SHARDS shards at once (default 8), each on its own
+# sprite, its output prefixed [i/N] as it comes.
+# --warm takes every free sprite the coordinator does not record at the commit, and runs `true` on each.
+shards=${SPRITE_SHARDS:-8}; [[ $shards =~ ^[0-9]+$ ]] || { echo "SPRITE_SHARDS must be a number" >&2; exit 2; }
 if (( warm )); then slots=${#candidates[@]}
 elif [[ $# -eq 0 && $shards -gt 1 ]]; then slots=$shards
 else slots=1; fi
@@ -319,7 +334,7 @@ pick=()  # the candidates that exist; a missing pool sprite is created only when
 for name in "${candidates[@]}"; do
   if grep -qx "$name" <<<"$existing"; then pick+=("$name"); elif [[ -n ${SPRITE_NAME:-} ]] && create "$name"; then pick+=("$name"); fi
 done
-waited=0 announced=0
+waited=0 announced=0 current=0
 while (( ${#names[@]} < slots )); do
   missing=$(( slots - ${#names[@]} )); busy=; held=0
   if [[ $(cat "$tmp/mode") = coordinator ]]; then
@@ -333,6 +348,7 @@ while (( ${#names[@]} < slots )); do
       echo fallback > "$tmp/mode"; echo "== the coordinator $coordinator could not be reached; probing the sprites one by one (their ~/lease locks alone)" >&2
       continue
     fi
+    current=$(grep -c '^current ' <<<"$out" || true)
     got=($(awk '$1 == "lease" { print $2 ":" $3 ":" $4 ":" $5 }' <<<"$out")); busy=$(awk '$1 == "busy" { print "   " $2 ": " $3 ", renewed " $4 " ago" }' <<<"$out")
     # Claim them all at once. One whose own lock is someone else's goes back to the coordinator as held.
     pids=()
@@ -371,6 +387,7 @@ while (( ${#names[@]} < slots )); do
   sleep 30; waited=$(( waited + 30 ))
 done
 mode=$(cat "$tmp/mode")
+if (( warm && ! ${#names[@]} && current )); then echo "== the $current free sprites are already at $short"; exit 0; fi
 (( ${#names[@]} )) || { echo "== no free sprite to warm" >&2; exit 75; }
 
 # Every sprite gets the tree from here, or checks its own against it (a fraction of a second to write).
@@ -382,9 +399,11 @@ worker() { # <slot index>: sync, start the job, follow it. Writes the exit statu
   while :; do
     attempt=$(( attempt + 1 )); id=$run-$(( k + 1 )); (( attempt == 1 )) || id+=-$attempt; echo "$id" > "$tmp/id.$k"; t1=$SECONDS
     # Sprites' API answers 429 when many execs start at once: a failed sync or start is tried again, after a pause.
+    # A sync now and then stalls, often before ssh is up, where rsync's --timeout doesn't reach (one hung 10 minutes; the
+    # retry took a second): each try gets 2 minutes, and a whole tree to a new sprite takes under 30 s.
     how=
     for try in 1 2 3; do
-      if limit 600 rsync -a --delete --stats --exclude=node_modules/ --exclude=/sandbox/v8-exec/target/ -e "$ssh_cmd" "$tree/" "sprite@$name:rt/" > "$tmp/rsync.$k" 2>&1; then
+      if limit 120 rsync -a --delete --stats --timeout=20 --exclude=node_modules/ --exclude=/sandbox/v8-exec/target/ -e "$ssh_cmd" "$tree/" "sprite@$name:rt/" > "$tmp/rsync.$k" 2>&1; then
         how=rsync; ! grep -q 'transferred file size: 0 B' "$tmp/rsync.$k" || how="in sync (checked by rsync)"; break
       fi
       grep -v 'bind: warning' "$tmp/rsync.$k" | tail -2; (( try == 3 )) || sleep $(( try * 10 ))
@@ -466,5 +485,5 @@ for k in "${!names[@]}"; do
   if (( code == 0 )); then ready=$(( ready + 1 )); elif (( status == 0 || status == 69 )); then status=$code; fi
 done
 sleep 0.2  # the prefixing seds
-if (( warm )); then echo "== $ready of ${#names[@]} sprites ready at $short (busy ones were left alone)"; exit 0; fi
+if (( warm )); then echo "== $ready of ${#names[@]} sprites ready at $short$( (( ! current )) || echo ", $current were already") (busy ones were left alone)"; exit 0; fi
 exit "$status"
