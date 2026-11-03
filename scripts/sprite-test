@@ -32,21 +32,23 @@
 # resets Postgres (no databases left from earlier runs; durability off, as CI), runs npm ci when package-lock.json changed
 # and builds v8-exec when sandbox/v8-exec changed, then runs the command into ~/runs/<id>.log and writes ~/runs/<id>.exit.
 # Every minute it refreshes ~/lease and renews a Sprites task: a sprite pauses a few seconds after its last exec ends,
-# freezing whatever runs on it, unless a task holds it awake. This script polls the log with short execs. Sprites also
-# restarts a sprite now and then (about once per full-suite run in testing), dropping its processes and its last writes:
-# a job gone without an exit status is run again on the same sprite, synced again. Ctrl-C stops the jobs; if this script
-# dies instead, the jobs finish anyway and free their sprites.
+# freezing whatever runs on it, unless a task holds it awake (or an exec is open). This script follows the log with
+# long polls: each is one exec that waits on the sprite until the log grows or the job ends (up to 50 s), then returns
+# the new output. Sprites also restarts a sprite now and then (about once per full-suite run in testing), dropping its
+# processes and its last writes: a job gone without an exit status is run again on the same sprite, synced again.
+# Ctrl-C stops the jobs; if this script dies instead, the jobs finish anyway and free their sprites.
 #
 # Settings: SPRITE_SHARDS (default 5; the full suite only), SPRITE_NAME (pin sprites, space separated), SPRITE_POOL,
 # SPRITE_ORG, SPRITE_COORDINATOR, SPRITE_LEASE_STALE, SPRITE_WAIT_MINUTES (wait for free sprites, default 30),
-# SPRITE_RUN_HOURS (the job's time limit, default 2), SPRITE_POLL_FAILURES (failed polls in a row before giving up,
-# default 60, about 10 minutes), SPRITE_RETRIES (runs again after the sprite restarted under the job, default 1).
+# SPRITE_RUN_HOURS (the job's time limit, default 2), SPRITE_LOST_MINUTES (how long polls may fail before this script
+# gives up and leaves the job running, default 10), SPRITE_RETRIES (runs again after the sprite restarted under the
+# job, default 1).
 # Exit status: the command's (the worst shard's); 75 when not enough sprites were free for SPRITE_WAIT_MINUTES; 69 when
 # contact was lost (the job carries on; its log and status stay in ~/runs on the sprite); 137 when the job was killed or
 # died.
 set -euo pipefail
 org=${SPRITE_ORG:-camelai}; pool=${SPRITE_POOL:-10}; stale_s=${SPRITE_LEASE_STALE:-300}; coordinator=${SPRITE_COORDINATOR:-rt-coordinator}
-wait_s=$(( ${SPRITE_WAIT_MINUTES:-30} * 60 )); max_misses=${SPRITE_POLL_FAILURES:-60}
+wait_s=$(( ${SPRITE_WAIT_MINUTES:-30} * 60 )); lost_s=$(( ${SPRITE_LOST_MINUTES:-10} * 60 ))
 cd "$(git rev-parse --show-toplevel)"
 
 # The coordinator's side: coord <op> <args...>. leases has a line per lease: sprite id owner ref fingerprint started
@@ -134,7 +136,21 @@ start) # <id> <fingerprint> <job script, base64>: record the synced tree, start 
     sleep 0.1
   done
   echo "the job did not start"; exit 1 ;;
-poll) # <id> <offset>: a status line (the exit status, "-" while it runs, "dead" if it died without one), then the log from offset
+poll) # <id> <offset> <wait>: a status line (the exit status, "-" while it runs, "dead" if it died without one), then the log
+  # from offset. A long poll: it returns once the log has grown past offset (gathering 2 s more of it, so a busy log costs
+  # a poll every few seconds, not one per line), the job has ended, or <wait> seconds have passed.
+  log=~/runs/"$1".log; start=$(date +%s); grew=
+  while :; do
+    now=$(date +%s)
+    [ ! -e ~/runs/"$1".exit ] || break
+    pid=$(cat ~/runs/"$1".pid 2>/dev/null) && kill -0 "$pid" 2>/dev/null || break
+    if [ "$(stat -c %s "$log" 2>/dev/null || echo 0)" -gt "$2" ]; then
+      grew=${grew:-$now}; [ $(( now - grew )) -lt 2 ] || break; sleep 0.5
+    else
+      [ $(( now - start )) -lt "$3" ] || break
+      inotifywait -qq -t 1 -e modify -e create -e moved_to ~/runs >/dev/null 2>&1 || sleep 0.2
+    fi
+  done
   s=$(cat ~/runs/"$1".exit 2>/dev/null) || s=
   if [ -z "$s" ]; then pid=$(cat ~/runs/"$1".pid 2>/dev/null) || pid=; if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then s=$(cat ~/runs/"$1".exit 2>/dev/null) || s=dead; fi; fi
   echo "${s:--}"; tail -c +$(( $2 + 1 )) ~/runs/"$1".log 2>/dev/null | head -c 1000000; true ;;
@@ -354,19 +370,19 @@ worker() { # <slot index>: sync, start the job, follow it. Writes the exit statu
     fi
     touch "$tmp/started.$name"; echo "$fp" > "$tmp/fp.$k"
     echo "== sprite-test $(git log --oneline -1 "$sha" | cut -c1-80) on $name ($id): $how, started in $(( SECONDS - t1 ))s"
-    # Poll: a failed poll is only a blip, the job carries on. After SPRITE_POLL_FAILURES in a row, leave it running.
-    local chunk=$tmp/chunk.$k offset=0 misses=0 polls=0 status=- size
+    # Long polls: each waits on the sprite up to 50 s for new output or the end. A failed poll is only a blip, the job
+    # carries on and the next poll reads from the same offset. After SPRITE_LOST_MINUTES with no answer, leave it running.
+    local chunk=$tmp/chunk.$k offset=0 answered=$SECONDS status=- size
     while :; do
-      if remote "$name" 60 poll "$id" "$offset" > "$chunk" 2>/dev/null; then
-        misses=0; IFS= read -r status < "$chunk" || status=-
+      if remote "$name" 90 poll "$id" "$offset" 50 > "$chunk" 2>/dev/null; then
+        answered=$SECONDS; IFS= read -r status < "$chunk" || status=-
         size=$(( $(wc -c < "$chunk") - ${#status} - 1 )); (( size > 0 )) || size=0
         tail -n +2 "$chunk"; offset=$(( offset + size ))
         (( size >= 1000000 )) && continue
         [[ $status = - ]] || break
-      elif (( ++misses >= max_misses )); then
+      elif (( SECONDS - answered >= lost_s )); then
         echo "== lost contact with $name; the job carries on. Log ~/runs/$id.log, status ~/runs/$id.exit there"; echo 69 > "$tmp/code.$k"; return
-      fi
-      polls=$(( polls + 1 )); sleep $(( polls < 15 ? 2 : 10 ))
+      else sleep 5; fi
     done
     [[ $status = dead ]] || break
     # Sprites now and then restarts a sprite: its processes go, and so can the last writes before it. Claim it again,
