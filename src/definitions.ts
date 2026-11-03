@@ -46,7 +46,7 @@ export interface DefinitionSpec {
   mcpServers?: McpServerSpec[];
   /** OpenAPI specs whose operations the runtime calls; credentials sealed. */
   openApi?: OpenApiSpec[];
-  /** false: agents get no file tools but present_file; their mounts still hold attachments and tool outputs. */
+  /** false: agents' models get no file tools but present_file; their code can still call them. */
   fileTools?: boolean;
   /** false: agents get no code mode, and call every tool directly (AgentConfig.codeMode). */
   codeMode?: boolean;

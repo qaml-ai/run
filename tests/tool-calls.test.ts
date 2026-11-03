@@ -160,11 +160,11 @@ test("an MCP server is listed when its definition is saved: refused credentials 
 test("a direct tool's large result is cut for the model, as codemode's output is, with the whole of it saved to the workspace", async t => {
   const big = "x".repeat(100_000);
   const tool = { name: "dump", description: "Dumps a lot", inputSchema: { type: "object", properties: {} }, _meta: { "agent-runtime/exposure": "direct" } };
+  const read = toolCall("codemode", { code: 'const file = await tools.read({ path: "/workspace/tool-results/1-call_big.txt", encoding: "base64", length: 100000 }); return file.data.length / 4 * 3 - (file.data.endsWith("==") ? 2 : file.data.endsWith("=") ? 1 : 0)' }, "call_read");
   const r = await runtime(t, (_body, index) => [
-    toolCall("dump", {}, "call_big"),
-    toolCall("codemode", { code: 'const file = await tools.read({ path: "/workspace/tool-results/1-call_big.txt", encoding: "base64", length: 100000 }); return file.data.length / 4 * 3 - (file.data.endsWith("==") ? 2 : file.data.endsWith("=") ? 1 : 0)' }, "call_read"),
-    { role: "assistant", content: "done" },
-  ][index] ?? (index % 2 === 1 ? toolCall("dump", {}, "call_big") : { role: "assistant", content: "done" }));
+    toolCall("dump", {}, "call_big"), read, { role: "assistant", content: "done" },
+    toolCall("dump", {}, "call_big"), read, { role: "assistant", content: "done" },
+  ][index]);
   const created = (await r.call("/v1/agents", { body: { mcp: { tools: [tool] } } })).json;
   await attach(t, r.base, created.id, created.token, (_call, { reply }) => void reply({ content: [{ type: "text", text: big }] }));
   await r.prompt(created.id, "go");
@@ -172,13 +172,16 @@ test("a direct tool's large result is cut for the model, as codemode's output is
   assert.ok(seen.length < 33_000, `the model got ${seen.length} characters`);
   assert.match(seen, /cut at 32,000 of 100,000 characters[\s\S]*\/workspace\/tool-results\/1-call_big\.txt[\s\S]*with read/, "named by the message that made the call, and the call; read with the read tool");
 
-  // Without file tools the model must ask the source for a smaller result.
+  assert.match(toolResults(r.model.bodies[2]).at(-1), /100000/, "the whole result is in the file");
+
+  // Without file tools (fileTools: false) the model is not offered them, and reads the file from code.
   const bare = (await r.call("/v1/agents", { body: { mcp: { tools: [tool] }, fileTools: false } })).json;
   await attach(t, r.base, bare.id, bare.token, (_call, { reply }) => void reply({ content: [{ type: "text", text: big }] }));
   const before = r.model.bodies.length;
   await r.prompt(bare.id, "go");
-  assert.match(toolResults(r.model.bodies[before + 1]).at(-1), /Ask the tool for less/);
-  assert.match(toolResults(r.model.bodies[2]).at(-1), /100000/, "the whole result is in the file");
+  assert.ok(!r.model.bodies[before].tools.some((entry: any) => entry.function.name === "read"));
+  assert.match(toolResults(r.model.bodies[before + 1]).at(-1), /\/workspace\/tool-results\/1-call_big\.txt: read it in parts with tools\.read \(offset and length\) in codemode/);
+  assert.match(toolResults(r.model.bodies[before + 2]).at(-1), /100000/, "code reads it");
 });
 
 test("history and forks keep capped tool details and deduplicated prompts without changing model content", async t => {

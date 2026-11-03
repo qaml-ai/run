@@ -43,9 +43,8 @@ async def refund(order_id: str, context: ToolContext) -> dict:
   to tell the model the call failed: it sees your message. A result is at most
   1 MiB of JSON. The model reads at most 32,000 characters of a tool's result;
   a longer one is saved whole (up to 700 KB) to
-  `/workspace/tool-results/<toolCallId>.txt`, where it can read the rest.
-  With `fileTools: false`, it is not saved; the model is told to ask the tool
-  for less.
+  `/workspace/tool-results/<toolCallId>.txt`, where it can read the rest (with
+  `fileTools: false`, from code with `tools.read`).
 - **Python functions** may be `async` or plain; a plain one runs in a thread, so
   it never blocks the connection.
 - **`context.idempotencyKey`** is the same for every attempt of one call: a

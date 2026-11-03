@@ -120,7 +120,7 @@ export interface AgentConfig {
   /** Text after the system prompt, the agent's own: a definition's apply replaces the prompt and keeps this. */
   systemPromptAppend?: string;
   tools: ToolDefinition[];
-  /** false: the model gets no file tools but present_file; its mounts still hold its attachments and tool outputs. */
+  /** false: the model gets no file tools but present_file; code can still call them, for its attachments and tool outputs. */
   fileTools?: boolean;
   /**
    * false: no code mode. The model calls every tool directly, and its prompt carries only the runtime text its tools need

@@ -1081,9 +1081,8 @@ async def refund(order_id: str, context: ToolContext) -> dict:
   to tell the model the call failed: it sees your message. A result is at most
   1 MiB of JSON. The model reads at most 32,000 characters of a tool's result;
   a longer one is saved whole (up to 700 KB) to
-  `/workspace/tool-results/<toolCallId>.txt`, where it can read the rest.
-  With `fileTools: false`, it is not saved; the model is told to ask the tool
-  for less.
+  `/workspace/tool-results/<toolCallId>.txt`, where it can read the rest (with
+  `fileTools: false`, from code with `tools.read`).
 - **Python functions** may be `async` or plain; a plain one runs in a thread, so
   it never blocks the connection.
 - **`context.idempotencyKey`** is the same for every attempt of one call: a
@@ -4261,7 +4260,9 @@ so a `write` or `edit` of a file someone else changed since then fails ("changed
 since you last read it; read it again") and the model reads again. The model
 never sees version numbers; the files API for applications keeps them. An application whose own tools
 handle files can leave these out with `fileTools: false` (in a definition, or when
-the agent is made).
+the agent is made): the model then has only `present_file`, and its code still
+calls the others (`tools.read`, `tools.write`, …) for its attachments and tool
+outputs.
 
 Text tools use Pi's implementations. `read({ path, offset?, limit? })` uses a
 1-based line offset and a maximum number of lines, with bounded output and a
@@ -9512,7 +9513,7 @@ See [Images](https://run.camelai.com/docs/guides/images.md).
 
 | Limit | Value |
 | --- | --- |
-| A tool result the model reads | 32,000 characters; a longer one is saved whole (up to 700 KB) to `/workspace/tool-results/<toolCallId>.txt` if file tools are enabled; otherwise the model is told to ask for less |
+| A tool result the model reads | 32,000 characters; a longer one is saved whole (up to 700 KB) to `/workspace/tool-results/<toolCallId>.txt` (with `fileTools: false`, read from code) |
 | Attached tool call deadline (tools in your process) | 15 s without an answer by default; a tool's own `timeoutMs` from 1 s to 20 minutes |
 | Remote MCP server call deadline | the source's `timeoutMs` (1 s to 20 minutes), default 60 s |
 | OpenAPI operation deadline | the source's `timeoutMs` (1 s to 20 minutes), default 30 s |

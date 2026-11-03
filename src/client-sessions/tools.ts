@@ -76,7 +76,7 @@ async function toolServers(ctx: ToolsContext, session: Session, tools: ToolDefin
   return [
     ...feature ? [view("channel", feature)] : [],
     { tools: () => defaultExposure(tools), call: call => events.callAttached(ctx.eventContext, session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
-    ...volumes && (header.mounts?.length || await ctx.options.sources?.computerFilesystem(tenant, header.id) !== undefined) && !bare ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(toolContext(ctx, session), name, args, signal)))] : [],
+    ...volumes && (header.mounts?.length || await ctx.options.sources?.computerFilesystem(tenant, header.id) !== undefined) && !bare ? [view("files", fileServer(fileToolsFor(volumes.definitions(), fileTools, codeMode), ({ name, args, signal }) => volumes.tool(toolContext(ctx, session), name, args, signal)))] : [],
     ...multiAgent ? [multiAgent] : [],
     ...workflow ? [workflow] : [],
     ...images ? [images] : [],
@@ -115,6 +115,13 @@ export function toolContext(ctx: ToolsContext, session: Session): ToolContext {
  * The agent's tools from its servers (see `toolServers`), or from the ones `next` gives it (a configuration it is about to
  * take). Records the route, and the servers for `toolSources`.
  */
+/**
+ * The file tools an agent has: all of them, or with `fileTools: false` only present_file for the model, the rest left to
+ * its code (its attachments, tool outputs and saved results are files it reads there), none without code mode.
+ */
+const fileToolsFor = (tools: ToolDefinition[], fileTools: boolean | undefined, codeMode: boolean | undefined): ToolDefinition[] =>
+  tools.flatMap(tool => fileTools !== false || tool.name === "present_file" ? [tool] : codeMode !== false ? [{ ...tool, callers: ["tools"] as const }] : []);
+
 export async function toolset(ctx: ToolsContext, session: Session, next: { tools?: ToolDefinition[]; sources?: Sources; fileTools?: boolean; codeMode?: boolean; warm?: boolean } = {}) {
   const { header } = session;
   const servers = await toolServers(ctx, session, next.tools ?? header.definitions, "sources" in next ? next.sources : header.sources, "fileTools" in next ? next.fileTools : header.config.fileTools, "codeMode" in next ? next.codeMode : header.config.codeMode);

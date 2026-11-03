@@ -3993,7 +3993,7 @@
           },
           "fileTools": {
             "type": "boolean",
-            "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts still hold attachments and tool outputs. For applications with file tools of their own"
+            "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; code can still call them (tools.read and so on) for attachments, tool outputs and saved results. For applications with file tools of their own"
           },
           "codeMode": {
             "type": "boolean",
@@ -9454,7 +9454,7 @@
           },
           "fileTools": {
             "type": "boolean",
-            "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts still hold attachments and tool outputs. For applications with file tools of their own"
+            "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; code can still call them (tools.read and so on) for attachments, tool outputs and saved results. For applications with file tools of their own"
           },
           "codeMode": {
             "type": "boolean",
@@ -9858,7 +9858,7 @@
           },
           "fileTools": {
             "type": "boolean",
-            "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts still hold attachments and tool outputs. For applications with file tools of their own"
+            "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; code can still call them (tools.read and so on) for attachments, tool outputs and saved results. For applications with file tools of their own"
           },
           "codeMode": {
             "type": "boolean",
@@ -10390,7 +10390,7 @@
               "boolean",
               "null"
             ],
-            "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; the mounts still hold attachments and tool outputs. For applications with file tools of their own"
+            "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; code can still call them (tools.read and so on) for attachments, tool outputs and saved results. For applications with file tools of their own"
           },
           "codeMode": {
             "type": [

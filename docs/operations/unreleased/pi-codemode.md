@@ -47,7 +47,8 @@ as `tool_execution_update` on the parent call, with `toolName: "codemode"`.
 Approval and judged tools, human input, multi-agent tools and `run_workflow`
 still require direct model calls. `codeMode: false` still removes code mode.
 Deprecated exposure values remain `direct`, `codemode` and `both`;
-`codemode` means only callable from code. With `fileTools: false`, long direct
-tool results are no longer saved to the workspace; the model is told to ask
-for less. See `docs/guides/tools.md`, `docs/reference/limits.md` and
+`codemode` means only callable from code. With `fileTools: false`, where `fs`
+was the way to reach the workspace, scripts call the file tools instead: the
+model is not offered them, but code can call `tools.read`, `tools.write` and
+the rest. See `docs/guides/tools.md`, `docs/reference/limits.md` and
 `docs/reference/events.md`.

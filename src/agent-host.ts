@@ -374,14 +374,16 @@ export function createAgentHost(hostIO: HostIO) {
     if (text.length <= limit) return content;
     const whole = Buffer.from(text, "utf8");
     const path = await saveToolResult(toolCallId, text);
-    const where = path ? ` The whole result${whole.length > FILE_LIMITS.scriptFileBytes ? ` (its first ${FILE_LIMITS.scriptFileBytes.toLocaleString("en-US")} bytes)` : ""} is in ${path}: read it in parts with read (offset and length).` : " Ask the tool for less.";
+    // Read with what the agent has: its file tools, or, without them (fileTools: false), the same tools from code.
+    const how = config.fileTools === false ? "with tools.read (offset and length) in codemode" : "with read (offset and length)";
+    const where = path ? ` The whole result${whole.length > FILE_LIMITS.scriptFileBytes ? ` (its first ${FILE_LIMITS.scriptFileBytes.toLocaleString("en-US")} bytes)` : ""} is in ${path}: read it in parts ${how}.` : " Ask the tool for less.";
     return [...content.filter(part => part.type !== "text"), { type: "text", text: `${text.slice(0, limit)}\n\n[Result cut at ${limit.toLocaleString("en-US")} of ${text.length.toLocaleString("en-US")} characters.${where}]` }];
   }
 
   /** Save large results beside their text, using the same call identity and workspace limits. */
   async function saveToolResult(toolCallId: string, text: string, extension = "txt"): Promise<string | undefined> {
-    // Saved only where the agent can read it back: with its file tools.
-    const mount = config.fileTools !== false ? scratchMount(config.mounts) : undefined;
+    // Saved only where the agent can read it back: with its file tools, or from code.
+    const mount = config.fileTools !== false || config.codeMode !== false ? scratchMount(config.mounts) : undefined;
     // Named by the message that made the call too: providers may give calls in different turns the same id.
     const at = (await made(toolCallId)).messageIndex;
     const path = mount && `${mount.path}/tool-results/${at !== undefined ? `${at}-` : ""}${toolCallId.replace(/[^A-Za-z0-9_.-]/g, "_")}.${extension}`;

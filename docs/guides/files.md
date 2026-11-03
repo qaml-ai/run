@@ -63,7 +63,9 @@ so a `write` or `edit` of a file someone else changed since then fails ("changed
 since you last read it; read it again") and the model reads again. The model
 never sees version numbers; the files API for applications keeps them. An application whose own tools
 handle files can leave these out with `fileTools: false` (in a definition, or when
-the agent is made).
+the agent is made): the model then has only `present_file`, and its code still
+calls the others (`tools.read`, `tools.write`, …) for its attachments and tool
+outputs.
 
 Text tools use Pi's implementations. `read({ path, offset?, limit? })` uses a
 1-based line offset and a maximum number of lines, with bounded output and a

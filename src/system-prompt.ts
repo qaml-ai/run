@@ -107,7 +107,7 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
     : `Files: ${mounts.map(mount => `${mount.path} (${mount.mode === "ro" ? "read-only" : "read-write"})`).join(", ")}; relative paths resolve against ${mounts[0].path}.` +
       (mounts.some(mount => mount.computer) ? " /computer is your computer’s home directory (~); its files live only as long as the computer session and are gone after it expires. Use cp or mv to save them to a volume." : "") +
       (writable ? ` Attachments are saved under ${writable.path}/uploads/<request>/ and files that tools return under ${writable.path}/tool-outputs/; keep scratch data under ${writable.path}/tmp/.` : "") +
-      (config.fileTools === false ? " The application's own tools may reach them."
+      (config.fileTools === false ? (code ? " Scripts read and write them with the file tools (tools.read, tools.write, tools.ls and so on); the application's own tools may reach other files." : " The application's own tools may reach them.")
         : code ? " The file tools (read, write, edit, ls, glob, grep, mv, cp) are for looking at and changing them; a script calls the same tools (tools.read and so on) to work on their contents."
         : " The file tools (read, write, edit, ls, glob, grep, mv, cp) are for looking at and changing them.");
   const images = config.model.input.includes("image");
