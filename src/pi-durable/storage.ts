@@ -109,8 +109,10 @@ type PgExecutor = {
 /**
  * `transaction(work, advance)` locks the session's metadata row by taking the next commit sequence: `metadata.next_seq`
  * is then the transaction's own, and `next_id` is at least `advance.nextId`. Without `advance` it only locks the row.
+ * A commit's `read` (a query, `?` its parameters) runs in the same statement, saving a round trip: `work` gets its rows,
+ * or undefined where they may predate the lock and it must read again.
  */
-type PgDatabase = PgExecutor & { retryMs: number; slowAll<T>(timeoutMs: number, query: string, ...params: unknown[]): Promise<T[]>; transaction<T>(work: (sql: PgExecutor, metadata: MetadataRow | undefined) => Promise<T>, advance?: { nextId: number }): Promise<T>; close(): Promise<void> };
+type PgDatabase = PgExecutor & { retryMs: number; slowAll<T>(timeoutMs: number, query: string, ...params: unknown[]): Promise<T[]>; transaction<T, R = never>(work: (sql: PgExecutor, metadata: MetadataRow | undefined, read?: R[]) => Promise<T>, advance?: { nextId: number }, read?: { text: string; params: unknown[] }): Promise<T>; close(): Promise<void> };
 /**
  * Run `work` again while the database is unreachable (a failover, a network fault), for up to `retryMs`, as the log tail
  * repeats its appends. `settled`, given the failure, says whether the work landed anyway (its answer was lost).
@@ -159,7 +161,7 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim, retryMs = 0)
             const config = { text: text.replace(/\?/g, () => `$${++n}`), values: [sessionId, ...params], query_timeout: timeoutMs + 5_000 };
             return (await (sql as unknown as { query(config: { text: string; values: unknown[]; query_timeout: number }): Promise<{ rows: T[] }> }).query(config)).rows;
         }, { rerun: false })),
-        transaction: (work, advance) => timedStorage(() => pg.transaction(db, async sql => {
+        transaction: (work, advance, read) => timedStorage(() => pg.transaction(db, async sql => {
             // Serializes mutations by session, including separate handles on this node. One statement checks the
             // claim (its ownership row FOR SHARE, as underClaim does: a takeover waits until this commits, and a claim
             // no longer current writes nothing), locks and reads the metadata row (a commit's also takes its
@@ -168,22 +170,32 @@ function postgresDatabase(db: Db, sessionId: string, claim?: Claim, retryMs = 0)
                 ? "select next_id, next_seq, history_next, history_last_id, set_config('synchronous_commit', 'on', true) from pi_durable_metadata where session_id = $1 for update"
                 : "update pi_durable_metadata set next_id = greatest(next_id::bigint, $2::bigint)::text, next_seq = next_seq + 1 where session_id = $1 returning next_id, next_seq - 1 as next_seq, history_next, history_last_id, set_config('synchronous_commit', 'on', true)";
             const params: unknown[] = advance === undefined ? [sessionId] : [sessionId, advance.nextId];
-            let metadata: MetadataRow | undefined;
-            if (!claim) metadata = (await sql.query<MetadataRow>(lock, params)).rows[0];
-            else {
-                const at = params.length;
+            const at = params.length;
+            // The read sees the statement's snapshot, taken before the lock was granted: it holds when no commit landed
+            // in between, that is when the sequence the snapshot shows (`seen_seq`) is the one locked, as every commit
+            // takes one.
+            let n = at + (claim ? 3 : 0);
+            const extra = read ? `, (select next_seq from pi_durable_metadata where session_id = $1) as seen_seq,
+                (select coalesce(json_agg(r), '[]'::json) from (${read.text.replace(/\?/g, () => `$${++n}`)}) r) as read` : "";
+            type Row = MetadataRow & { held?: boolean; next_id: string | null; seen_seq?: number; read?: unknown[] };
+            let row: Row | undefined;
+            if (!claim) {
+                row = read ? (await sql.query<Row>(`with m as (${lock}) select m.*${extra} from (select 1) one left join m on true`, [...params, ...read.params])).rows[0]
+                    : (await sql.query<Row>(lock, params)).rows[0];
+            } else {
                 // The claim's row is locked before the metadata's: `m` runs only when `owner` holds a row.
-                const row = (await sql.query<MetadataRow & { held: boolean; next_id: string | null }>(
+                row = (await sql.query<Row>(
                     `with owner as materialized (select 1 from actor_owners where actor = $${at + 1} and session = $${at + 2} and epoch = $${at + 3} for share),
                      m as (${lock.replace(" where session_id = $1", " where session_id = $1 and exists (select from owner)")})
-                     select exists (select from owner) as held, m.* from (select 1) one left join m on true`,
-                    [...params, claim.actor, claim.session, claim.epoch])).rows[0];
-                if (!row.held) throw new pg.LostClaim(claim.actor);
-                metadata = row.next_id === null ? undefined : row;
+                     select exists (select from owner) as held, m.*${extra} from (select 1) one left join m on true`,
+                    [...params, claim.actor, claim.session, claim.epoch, ...read?.params ?? []])).rows[0];
+                if (!row!.held) throw new pg.LostClaim(claim.actor);
             }
+            const metadata = row?.next_id === null || row === undefined ? undefined : row;
             // No row (the session's first open creates it): set_config did not run, so turn synchronous commit on here.
             if (!metadata) await sql.query("set local synchronous_commit = on");
-            return work(executor(sql), metadata);
+            const fresh = metadata !== undefined && row!.read !== undefined && Number(row!.seen_seq) === Number(metadata.next_seq);
+            return work(executor(sql), metadata, fresh ? row!.read as never[] : undefined);
         })),
         async close() {}, // The supervisor, not an individual Pi session, owns the pool.
     };
@@ -496,6 +508,7 @@ type RevisionRow = {
 };
 type IdRow = { readonly id: number };
 /** `history_next` and `history_last_id`: the session's history ordinals (ordinals.ts), null until placed. */
+type CommitStateRow = { source: "id" | "document"; id: number; record_type: TableName | null; record: string | null; version: number | null };
 type MetadataRow = { readonly next_id: string; readonly next_seq: number; readonly history_next?: number | null; readonly history_last_id?: string | null };
 type DocumentAction = {
 	create?: DocumentCreate;
@@ -649,15 +662,16 @@ export class PostgresPiStorage implements Storage {
 		// The sequence the latest attempt took and the IDs it found unclaimed: a commit whose answer was lost is found by what it wrote (`landed`).
 		let attempted: { seq: Seq; created?: Id<string>[] } | undefined;
 		// Each statement is a round trip to the database, and a turn's every step commits: the metadata lock takes the
-		// sequence, one read checks the batch's IDs and documents, and one statement writes it all.
-		const seq = await whileUnavailable(this.db.retryMs, () => this.db.transaction(async (transaction, metadata) => {
+		// sequence and reads what the batch's IDs and documents are now, and one statement writes it all.
+		const read = this.commitStateQuery(writes, documentActions);
+		const seq = await whileUnavailable(this.db.retryMs, () => this.db.transaction<Seq, CommitStateRow>(async (transaction, metadata, rows) => {
 			if (metadata === undefined) throw new Error("Durable Postgres metadata is missing");
 			const committedSeq = seqFromNumber(Number(metadata.next_seq));
 			attempted = { seq: committedSeq };
 			// Whether a statement of the checks failed: then what they throw is an unknown outcome, not a refusal.
 			const checks = { failed: false };
 			const checked = watchedExecutor(transaction, checks);
-			const stored = await this.readCommitState(transaction, writes, documentActions);
+			const stored = await this.readCommitState(transaction, read, rows);
 			attempted.created = writes.flatMap(write => { const id = writeId(write); return id === undefined || stored.ids.has(id) ? [] : [id]; });
 			let existing: Map<DocumentId, DocumentRecord>;
 			try {
@@ -678,7 +692,7 @@ export class PostgresPiStorage implements Storage {
 			for (const id of after) await transaction.run(`DELETE FROM ${this.schema.tables.documentRevisions} WHERE session_id = $1 AND document_id = ?`, id);
             await commitEffects(writes, this.committing, transaction.sql);
 			return committedSeq;
-		}, { nextId: candidateNextId }), async () => attempted?.created !== undefined && await this.landed(writes, attempted.created, attempted.seq) ? { value: attempted.seq } : undefined);
+		}, { nextId: candidateNextId }, read), async () => attempted?.created !== undefined && await this.landed(writes, attempted.created, attempted.seq) ? { value: attempted.seq } : undefined);
 		this.nextId = Math.max(this.nextId, candidateNextId);
 		return seq;
 	}
@@ -1293,26 +1307,32 @@ export class PostgresPiStorage implements Storage {
 
 	/**
 	 * What a commit checks its batch against, in one read: the record types its IDs already have, and the records and
-	 * latest revision versions of the documents it acts on.
+	 * latest revision versions of the documents it acts on. Its query (`commitStateQuery`) rides on the metadata lock's
+	 * statement.
 	 */
-	private async readCommitState(
-		executor: PgExecutor,
-		writes: readonly StorageWrite[],
-		actions: ReadonlyMap<DocumentId, DocumentAction>,
-	): Promise<{ ids: Map<number, TableName>; documents: (JsonRow & { readonly id: number; readonly version: number | null })[] }> {
+	private commitStateQuery(writes: readonly StorageWrite[], actions: ReadonlyMap<DocumentId, DocumentAction>): { text: string; params: unknown[] } | undefined {
 		const ids = writes.flatMap(write => { const id = writeId(write); return id === undefined ? [] : [id]; });
-		if (!ids.length && !actions.size) return { ids: new Map(), documents: [] };
-		const rows = await executor.all<{ source: "id" | "document"; id: number; record_type: TableName | null; record: string | null; version: number | null }>(
-			`SELECT 'id' AS source, id, record_type, NULL AS record, NULL::integer AS version FROM ${this.schema.tables.recordIds}
+		if (!ids.length && !actions.size) return undefined;
+		return {
+			text: `SELECT 'id' AS source, id, record_type, NULL AS record, NULL::integer AS version FROM ${this.schema.tables.recordIds}
 				WHERE session_id = $1 AND id = ANY(?::bigint[])
 			UNION ALL
 			SELECT 'document', d.id, NULL, d.record, r.version FROM ${this.schema.tables.documents} d
 				LEFT JOIN LATERAL (SELECT version FROM ${this.schema.tables.documentRevisions}
 					WHERE session_id = d.session_id AND document_id = d.id ORDER BY seq DESC LIMIT 1) r ON true
 				WHERE d.session_id = $1 AND d.id = ANY(?::bigint[])`,
-			ids,
-			[...actions.keys()],
-		);
+			params: [ids, [...actions.keys()]],
+		};
+	}
+
+	/** The commit state (`readCommitState`) from its query's rows: read with the metadata lock, else here. */
+	private async readCommitState(
+		executor: PgExecutor,
+		query: { text: string; params: unknown[] } | undefined,
+		read: CommitStateRow[] | undefined,
+	): Promise<{ ids: Map<number, TableName>; documents: (JsonRow & { readonly id: number; readonly version: number | null })[] }> {
+		if (!query) return { ids: new Map(), documents: [] };
+		const rows = read ?? await executor.all<CommitStateRow>(query.text, ...query.params);
 		return {
 			ids: new Map(rows.flatMap(row => row.source === "id" ? [[Number(row.id), row.record_type!] as const] : [])),
 			documents: rows.flatMap(row => row.source === "document" ? [{ id: row.id, record: row.record!, version: row.version }] : []),

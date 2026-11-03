@@ -354,7 +354,31 @@ test("Pi shared journal reads match the SQLite reference through forks, head mar
   }
 });
 
-test("Pi shared storage reads a conversation's journal in one statement and commits a step in five", async () => {
+test("Pi shared commits read their documents again when another commit landed while they waited for the lock", async () => {
+  const { db } = await database;
+  const sessionId = randomUUID();
+  const [first, second] = [await PostgresPiStorage.open(db, sessionId), await PostgresPiStorage.open(db, sessionId)];
+  const id = await first.mintId<any>();
+  await commitWrites(first, [{ type: "document.create", record: { id, kind: "probe", scope: { kind: "session" as const } }, content: { kind: "base", version: 1, value: {} } }], context);
+  const client = await db.connect();
+  let retired: Promise<unknown>, again: Promise<unknown>;
+  try {
+    await client.query("begin");
+    await client.query("select next_id from pi_durable_metadata where session_id = $1 for update", [sessionId]);
+    // Both wait for the lock, their reads taken before it: the first to get it retires the document, so the other's
+    // read is out of date, and it finds the document retired only by reading again.
+    retired = commitWrites(first, [{ type: "document.retire", id }], context);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    again = commitWrites(second, [{ type: "document.retire", id }], context);
+    await new Promise(resolve => setTimeout(resolve, 100));
+  } finally { await client.query("rollback"); client.release(); }
+  await retired!;
+  await assert.rejects(again!, /Document \d+ is retired/);
+  await first.close(context);
+  await second.close(context);
+});
+
+test("Pi shared storage reads a conversation's journal in one statement and commits a step in four", async () => {
   const { db } = await database;
   const sessionId = randomUUID();
   const statements: string[] = [];
@@ -374,7 +398,7 @@ test("Pi shared storage reads a conversation's journal in one statement and comm
     { type: "entry", value: { id: ids[0] as EntryId, conversationId: root, kind: "message" } },
     { type: "task", value: { id: task, conversationId: root, kind: "probe", state: { status: "running" } } as never },
     { type: "document.change", id: document as never, content: { kind: "base", version: 1, value: { n: 1 } } },
-  ], context)), 5, "begin, the metadata lock taking the sequence, one check, one write, commit");
+  ], context)), 4, "begin, the metadata lock taking the sequence with the check's read, one write, commit");
   assert.deepEqual((await storage.document(document as never, "current", context))?.value, { n: 1 }, "the base replaced, its old revision gone");
   assert.equal(Number((await db.query("select count(*) from pi_durable_document_revisions where session_id = $1", [sessionId])).rows[0].count), 1);
   assert.equal(await measure(() => storage.scanEntries({ conversationId: root }, 10, undefined, context)), 1);
