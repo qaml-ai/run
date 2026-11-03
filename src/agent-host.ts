@@ -422,6 +422,16 @@ export function createAgentHost(hostIO: HostIO) {
 
   /** Bytes of the results each running script got from its calls (`scriptBytes`), by its code mode call. */
   const scriptResults = new Map<string, number>();
+  /** Where each running script's code mode call is in the history (`made`), read once for all of its calls. */
+  const scriptCalls = new Map<string, Promise<{ messageIndex?: number }>>();
+  function scriptMadeAt(parentCallId: string) {
+    let at = scriptCalls.get(parentCallId);
+    if (!at) {
+      scriptCalls.set(parentCallId, at = made(parentCallId));
+      at.catch(() => scriptCalls.delete(parentCallId));
+    }
+    return at;
+  }
   /** Count a result a script gets toward its limits: SANDBOX_LIMITS.resultBytes each, totalToolBytes in all. */
   function scriptBytes(parentCallId: string, data: unknown) {
     const bytes = Buffer.byteLength(JSON.stringify(data));
@@ -449,7 +459,7 @@ export function createAgentHost(hostIO: HostIO) {
           signal?.throwIfAborted();
           if (nested) {
             // A call from code: named by the model's code mode call and its key there, which a replay of the script keeps.
-            const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await made(nested.parentCallId) });
+            const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await scriptMadeAt(nested.parentCallId) });
             signal?.throwIfAborted();
             // Code gets the data: an MCP tool's structured content, or its text parsed (scriptValue throws its error).
             const data = (tool.resultFormat === "content" ? scriptValue(value) : value) ?? null;
@@ -538,6 +548,7 @@ export function createAgentHost(hostIO: HostIO) {
           return result.output ? { ...result, output: await capped((args[1] as { callId: string }).callId, [...result.output], SANDBOX_LIMITS.maxOutputCharacters) } : result;
         } finally {
           scriptResults.delete((args[1] as { callId: string }).callId);
+          scriptCalls.delete((args[1] as { callId: string }).callId);
           await io.cancelTools();
         }
       } })) };
