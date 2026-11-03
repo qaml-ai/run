@@ -216,7 +216,7 @@ test("an agent's own model, thinking level and prompt addition survive applying 
 
 test("fileTools: false leaves the model present_file, and the file tools to code", async t => {
   const r = await runtime(t, (_body, index) => [
-    toolCall("codemode", { code: "return await tools.write({ path: '/workspace/notes.md', content: 'hi' });" }),
+    toolCall("codemode", { code: "await tools.write({ path: '/workspace/notes.md', content: 'hi' }); return (await tools.read({ path: '/workspace/notes.md' })).content;" }),
   ][index] ?? { role: "assistant", content: "ok" });
   const direct = (body: any) => body.tools.map((tool: any) => tool.function.name).sort();
   const definition = (await r.call("/v1/definitions", { body: { name: "Own files", fileTools: false } })).json;
@@ -226,7 +226,7 @@ test("fileTools: false leaves the model present_file, and the file tools to code
   assert.equal((await r.call(`/v1/agents/${agent}`)).json.fileTools, false);
   await r.prompt(agent, "take notes");
   assert.deepEqual(direct(r.model.bodies[0]), ["codemode", "decide", "present_file"]);
-  assert.match(toolResults(r.model.bodies[1]).at(-1), /"path":"\/workspace\/notes\.md"/, "code calls the file tools the model is not offered");
+  assert.match(toolResults(r.model.bodies[1]).at(-1), /Script completed[\s\S]*\nhi$/, "code calls the file tools the model is not offered");
   assert.match(systemText(r.model.bodies[0]), /Scripts read and write them with the file tools \(tools\.read, tools\.write, tools\.ls and so on\); the application's own tools may reach other files/);
   assert.doesNotMatch(systemText(r.model.bodies[0]), /The file tools \(read/);
 
