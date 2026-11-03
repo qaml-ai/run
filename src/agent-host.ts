@@ -485,7 +485,7 @@ export function createAgentHost(hostIO: HostIO) {
     const options: Parameters<CodeSandboxes>[0] = {
       ...tools ? { tools } : {}, cpuMs: Math.min(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs), timeoutMs,
       acquireSlot: async signal => { await leased(signal); return io.codeSlot ? io.codeSlot(signal) : () => {}; },
-      onEnd: ({ ms, error }) => recordCodeExecution({ tenant: config.tenant, ms, timeoutMs, ...error === undefined ? {} : { error } }),
+      onEnd: ({ ms, cpuMs, error }) => recordCodeExecution({ tenant: config.tenant, ms, timeoutMs, cpuMs, ...error === undefined ? {} : { error } }),
     };
     return io.codeSandbox ? io.codeSandbox(options) : new PiV8Sandbox(options);
   }

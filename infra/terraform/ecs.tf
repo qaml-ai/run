@@ -57,11 +57,6 @@ locals {
     AGENT_GOOGLE_OAUTH_SECRET_ARN = aws_secretsmanager_secret.runtime["google-oauth"].arn
     # Credit purchases stay off until infra/stripe.sh stores a value in it.
     AGENT_STRIPE_SECRET_ARN = aws_secretsmanager_secret.runtime["stripe"].arn
-    # tools.search: embeddings rank the catalog by meaning, then Jev drops irrelevant tools, with the
-    # platform's OpenRouter key (tenants secret) unless infra/tool-search.sh stores a dedicated one.
-    # A stage that fails is skipped per search.
-    AGENT_TOOL_SEARCH            = "embeddings,jev"
-    AGENT_TOOL_SEARCH_SECRET_ARN = aws_secretsmanager_secret.runtime["tool-search"].arn
     # Images and transcription on the platform's OpenAI key go to the Azure OpenAI deployments once infra/azure-openai.sh
     # stores a value in it (OpenAI otherwise, and as Azure's fallback).
     AGENT_AZURE_OPENAI_SECRET_ARN = aws_secretsmanager_secret.runtime["azure-openai"].arn
@@ -174,7 +169,6 @@ resource "aws_iam_role_policy" "task" {
           aws_secretsmanager_secret.runtime["github-oauth"].arn,
           aws_secretsmanager_secret.runtime["google-oauth"].arn,
           aws_secretsmanager_secret.runtime["stripe"].arn,
-          aws_secretsmanager_secret.runtime["tool-search"].arn,
           aws_secretsmanager_secret.runtime["azure-openai"].arn,
           aws_secretsmanager_secret.runtime["discord-managed"].arn,
           aws_secretsmanager_secret.runtime["journey"].arn,

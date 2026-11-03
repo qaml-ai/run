@@ -100,7 +100,7 @@
         (FILES.includes(bare) ? " Files here are fs.readFile, fs.writeFile and fs.list." : "") +
         (real.length
           ? " The tools code can call: " + listed + ". tools.describe(name) shows one's arguments."
-          : " Code here can call no tools: call yours directly, outside js_exec."));
+          : " Code here can call no tools: call yours directly, outside this script."));
     };
     const frozen = Object.freeze(tools);
     const guarded = new Proxy(frozen, {

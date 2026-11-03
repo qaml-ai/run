@@ -9536,9 +9536,9 @@ See [Images](https://run.camelai.com/docs/guides/images.md).
 | CPU time | 2 s by default (`codeCpuMs`), at most 30 s per tenant. Waiting on tools does not count; the limit is enforced outside the guest |
 | Executions at once | by [usage tier](https://run.camelai.com/docs/reference/limits.md#usage-tiers) per account on each node (4 on Free, 8 on Tier 1, 16 from Tier 2; `codeConcurrency`), within the node's capacity. Excess executions wait their turn within their deadline. Admin tenants are not limited unless their entry sets it or they are prepaid |
 | Memory | a 128 MiB V8 heap (reaching it ends the execution) and 128 MiB of ArrayBuffers (past it, a `RangeError`) |
-| Output | 128,000 bytes, 1,024 items; the model's formatted result is also cut to `max_output_tokens` (10,000 tokens by default) |
+| Output | text: 128,000 bytes and 1,024 prints; images: 16, 8 MiB in all. Past them output is left out with a note, and the script still completes. The model's formatted result is cut to `max_output_tokens` (10,000 tokens by default), its whole output saved in the workspace (`tool-results/`), and its text is never more than 128,000 characters |
 | Tool calls | 256 per script, at most 32 in flight |
-| Tool traffic | arguments at most 128 KiB of JSON per call, results at most 1 MiB per call |
+| Tool traffic | arguments at most 128 KiB of JSON per call, results at most 1 MiB per call and 8 MiB per script (past them the call rejects) |
 
 `codemode` takes only `{ code }`. Set Pi's options on the script's first line:
 `// @options: {"max_output_tokens": 10000, "timeout_ms": 60000}`.

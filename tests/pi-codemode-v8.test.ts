@@ -298,12 +298,15 @@ test("Pi native wire rejects duplicate, missing and malformed delivery metadata"
   }
 });
 
-test("Pi execute convenience API uses the V8 launcher", { skip }, async t => {
-  const sandbox = new PiV8Sandbox({ tools: [{ name: "echo", execute: args => args }] });
+test("Pi execute convenience API uses the V8 launcher, and tells the CPU the script used", { skip }, async t => {
+  const ends: { ms: number; cpuMs?: number }[] = [];
+  const sandbox = new PiV8Sandbox({ tools: [{ name: "echo", execute: args => args }], onEnd: end => ends.push(end) });
   t.after(() => sandbox.close());
-  const result = await sandbox.execute("return await tools.echo(null)");
+  const result = await sandbox.execute("let x = 0; for (let i = 0; i < 3e7; i++) x += i; return await tools.echo(null)");
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.value, null);
+  assert.equal(ends.length, 1);
+  assert.ok(Number.isSafeInteger(ends[0].cpuMs) && ends[0].cpuMs! > 0 && ends[0].cpuMs! <= ends[0].ms + 5, JSON.stringify(ends));
 });
 
 test("Pi start keeps Linux seccomp with and without the JIT", { skip: skip || (process.platform !== "linux" && "seccomp requires Linux") }, async () => {

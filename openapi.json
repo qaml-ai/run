@@ -7880,7 +7880,7 @@
               "transcription",
               "image"
             ],
-            "description": "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs; tools.search's ranking by meaning is charged at cost"
+            "description": "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs"
           }
         },
         "required": [

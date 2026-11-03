@@ -158,6 +158,7 @@ pub(super) fn execute(scope: &mut v8::PinScope, stdin: &mut impl Read, data: &Va
     unsafe { libc::_exit(0) }
   };
   lockdown.call(tc, undefined, &[]);
+  let started = cpu_ms();
   execute.call(tc, undefined, &[function]);
   let mut seq = 0u64;
   let mut early = BTreeMap::<u64, Value>::new();
@@ -170,7 +171,11 @@ pub(super) fn execute(scope: &mut v8::PinScope, stdin: &mut impl Read, data: &Va
     if let Some(error) = STATE.with(|state| state.borrow().error.clone()) { crash(&error); }
     let outbox = STATE.with(|state| std::mem::take(&mut state.borrow_mut().outbox));
     let mut done = false;
-    for message in outbox { done |= message["type"] == "done"; send_frame(&message); }
+    for mut message in outbox {
+      // The CPU the script used, for the runtime's metrics (the launcher takes it off before Pi sees the frame).
+      if message["type"] == "done" { done = true; message["cpuMs"] = ((cpu_ms() - started).round() as u64).into(); }
+      send_frame(&message);
+    }
     if done { unsafe { libc::_exit(0) } }
     send_frame(&json!({ "type": "idle", "seq": seq, "issued": STATE.with(|state| state.borrow().issued) }));
     let next = loop {

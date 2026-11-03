@@ -1337,7 +1337,7 @@ export const Billing = z.object({
     webRender: micros("Per page web_fetch has Firecrawl render on the platform's key"),
     transcription: micros("Per minute of audio transcribed on the platform's OpenAI key (gpt-transcribe), billed per second"),
     image: z.object({ textInput: micros("Per million text tokens in"), imageInput: micros("Per million image tokens in (images to edit)"), output: micros("Per million image tokens out") }).openapi({ description: "Images made on the platform's OpenAI key (gpt-image-2.5-flare), per token as the provider bills" }),
-  }).openapi({ description: "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs; tools.search's ranking by meaning is charged at cost" }),
+  }).openapi({ description: "Model usage on platform keys passes through provider-reported cost (catalog estimate if unavailable) plus provider credit funding costs" }),
 }).openapi("Billing");
 const allowanceMap = (description: string) => z.record(z.string(), z.number().int().nonnegative()).openapi({
   description: `${description}: micro-USD of raw cost per UTC day, keyed by a bucket ("builder"), a prefix of buckets ("bot:*") or every bucket ("*"). A bucket takes its own key, else the longest prefix it starts with, else "*", else none`,

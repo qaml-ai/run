@@ -1,4 +1,4 @@
-// v8-exec: one js_exec execution in a fresh process, on a bare V8 isolate.
+// v8-exec: one script (Pi's code mode, or a workflow) in a fresh process, on a bare V8 isolate.
 //
 // The parent (src/v8-exec.ts) spawns this per execution and speaks length-prefixed JSON frames
 // over stdin/stdout (the runtime's codemode wire messages, src/codemode.ts):
@@ -201,7 +201,7 @@ fn import_cb<'s>(
   _specifier: v8::Local<'s, v8::String>,
   _attributes: v8::Local<'s, v8::FixedArray>,
 ) -> Option<v8::Local<'s, v8::Promise>> {
-  let message = v8::String::new(scope, "Module imports are disabled in js_exec: it runs plain JavaScript, with tools, fs, console and text as globals (no import or require)").unwrap();
+  let message = v8::String::new(scope, "Module imports are disabled in codemode: scripts run plain JavaScript, with tools, console, text and image as globals (no import or require)").unwrap();
   let error = v8::Exception::error(scope, message);
   scope.throw_exception(error);
   None
