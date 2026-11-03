@@ -31,8 +31,10 @@
 # resets Postgres (no databases left from earlier runs; durability off, as CI), runs npm ci when package-lock.json changed
 # and builds v8-exec when sandbox/v8-exec changed, then runs the command into ~/runs/<id>.log and writes ~/runs/<id>.exit.
 # Every minute it refreshes ~/lease and renews a Sprites task: a sprite pauses a few seconds after its last exec ends,
-# freezing whatever runs on it, unless a task holds it awake. This script polls the log with short execs. Ctrl-C stops the
-# jobs; if this script dies instead, the jobs finish anyway and free their sprites.
+# freezing whatever runs on it, unless a task holds it awake. This script polls the log with short execs. Sprites also
+# restarts a sprite now and then (about once per full-suite run in testing), dropping its processes and its last writes:
+# a job gone without an exit status is run again on the same sprite, synced again. Ctrl-C stops the jobs; if this script
+# dies instead, the jobs finish anyway and free their sprites.
 #
 # Settings: SPRITE_SHARDS (default 5; the full suite only), SPRITE_NAME (pin sprites, space separated), SPRITE_POOL,
 # SPRITE_ORG, SPRITE_COORDINATOR, SPRITE_LEASE_STALE, SPRITE_WAIT_MINUTES (wait for free sprites, default 30),
@@ -84,9 +86,9 @@ release) # <sprite> <id> <fingerprint|-> ...: drop each lease; record what the s
   done ;;
 hold) # <sprite> <id> <holder>: the sprite's own lock is someone else's; keep it out of acquire for a stale period
   [ "$(field "$1" 2 leases)" != "$2" ] || put "$1" "$1 held $3 - - $now $now" ;;
-list)
+list) # <stale>
   [ -s "$d/leases" ] || echo "(no leases)"
-  awk -v now="$now" '{ printf "%-14s %-13s %-50s %-10s %6ss old, heartbeat %ss ago\n", $1, $2, $3, $4, now - $6, now - $7 }' "$d/leases" ;;
+  awk -v now="$now" -v stale="$1" '{ printf "%-14s %-13s %-50s %-10s %6ss old, heartbeat %ss ago%s\n", $1, $2, $3, $4, now - $6, now - $7, (now - $7 > stale ? " (lapsed: free)" : "") }' "$d/leases" ;;
 esac
 EOF
 
@@ -196,7 +198,7 @@ candidates=(${SPRITE_NAME:-$(for i in $(seq "$pool"); do echo "rt-pool-$i"; done
 
 if [[ ${1:-} == --status ]]; then
   echo "== leases (coordinator $coordinator)"
-  coord list 2>/dev/null || echo "(the coordinator could not be reached)"
+  coord list "$stale_s" 2>/dev/null || echo "(the coordinator could not be reached)"
   echo "== sprites: synced commit, lock"
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   for i in "${!candidates[@]}"; do remote "${candidates[i]}" 30 status > "$tmp/$i" 2>/dev/null & done
