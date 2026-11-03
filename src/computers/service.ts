@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Accounts } from "../accounts.ts";
-import type { Db, DbClient } from "../db.ts";
+import type { Db, DbClient, Sql } from "../db.ts";
 import { HttpError } from "../http.ts";
 import type { Outbound } from "../outbound.ts";
 import type { ToolDefinition } from "../protocol.ts";
@@ -19,7 +19,7 @@ const COMMON = [tool("computer_start", "Start your attached computer or return i
 const SHELL = [tool("computer_exec", "Call computer_start first. Run a shell command in your attached remote Linux computer, never on the camelRun host. Inspect exitCode. Redirect output for background processes. Files survive between calls until expiry.", { command: text, timeoutSeconds: { type: "integer", minimum: 1, maximum: 120 } }, ["command"]), tool("computer_write_file", "Write a UTF-8 file in your remote computer. This is separate from camelRun workspace files.", { path: text, content: { type: "string", maxLength: 16000 } }, ["path", "content"]), tool("computer_read_file", "Read up to 24000 characters from a UTF-8 file in your remote computer.", { path: text }, ["path"])];
 const BROWSER = [tool("browser_navigate", "Navigate your attached remote browser to an HTTP(S) URL.", { url: text }, ["url"]), tool("browser_read", "Read the current remote page's title, URL and visible text."), tool("browser_click", "Click a CSS selector in the remote page.", { selector: text }, ["selector"]), tool("browser_fill", "Fill a CSS-selected input in the remote page.", { selector: text, text: { type: "string", maxLength: 16000 } }, ["selector", "text"]), tool("browser_evaluate", "Run JavaScript in the remote web page and return a JSON result. No host shell or filesystem access.", { expression: text }, ["expression"])];
 export const COMPUTER_TOOLS = new Set([...COMMON, ...SHELL, ...BROWSER].map(t => t.name));
-const publicConnection = (r: any) => ({ id: r.id, agent: r.agent, provider: r.provider, managed: !!r.managed, leaseSeconds: r.lease_seconds, dailySeconds: r.daily_seconds, createdAt: r.created_at, billing: r.managed ? "credits" : "provider_account", session: publicLease(r.lease) });
+const publicConnection = (r: any) => ({ id: r.id, agent: r.agent, provider: r.provider, managed: !!r.managed, subagents: r.subagents, leaseSeconds: r.lease_seconds, dailySeconds: r.daily_seconds, createdAt: r.created_at, billing: r.managed ? "credits" : "provider_account", session: publicLease(r.lease) });
 const publicLease = (r: any) => r ? ({ id: r.id, provider: r.provider, workspaceId: r.workspace, state: r.state, recoveryRequired: r.state === "uncertain" || r.state === "closing" && !!r.error, createdAt: r.created_at, expiresAt: r.expires_at, closedAt: r.closed_at, ...(r.error ? { error: r.error } : {}) }) : null;
 
 export class Computers {
@@ -50,7 +50,8 @@ export class Computers {
     return Promise.all(rows.map(async r => r.managed ? { ...publicConnection(r), session: await this.managed.session(r.id) } : publicConnection(r)));
   }
   /** Connect an agent to a provider with its credentials, or, with none, to a managed computer. */
-  async create(tenant: string, input: { agent: string; provider: Provider; credentials?: Credentials; leaseSeconds?: number; dailySeconds?: number }) {
+  async create(tenant: string, input: { agent: string; provider: Provider; credentials?: Credentials; leaseSeconds?: number; dailySeconds?: number; subagents?: boolean }) {
+    if (input.subagents !== undefined && typeof input.subagents !== "boolean") throw new HttpError(400, "subagents must be true or false");
     if (!PROVIDERS.includes(input.provider)) throw new HttpError(400, "Unknown computer provider");
     if (input.credentials === undefined && input.provider === MANAGED.provider) {
       if (!this.options.enabled) throw new HttpError(403, "Managed computers are not available on this runtime");
@@ -60,7 +61,7 @@ export class Computers {
     }
     return this.createWithCredentials(tenant, { leaseSeconds: 900, dailySeconds: 3600, ...input, credentials: input.credentials as Credentials });
   }
-  private async createWithCredentials(tenant: string, input: { agent: string; provider: Provider; credentials: Credentials; leaseSeconds: number; dailySeconds: number }) {
+  private async createWithCredentials(tenant: string, input: { agent: string; provider: Provider; credentials: Credentials; leaseSeconds: number; dailySeconds: number; subagents?: boolean }) {
     const expected = input.provider === "modal" ? ["tokenId", "tokenSecret"] : input.provider === "tunnel" ? ["apiKey", "url"] : ["apiKey"];
     if (!input.credentials || expected.some(k => typeof input.credentials[k] !== "string" || !input.credentials[k].trim()) || Object.keys(input.credentials).some(k => ![...expected, ...(input.provider === "browserbase" ? ["projectId"] : [])].includes(k)) || Object.values(input.credentials).some(v => typeof v !== "string" || v.length > 16000)) throw new HttpError(400, `Credentials require ${expected.join(", ")}`);
     if (input.provider === "tunnel") {
@@ -72,14 +73,29 @@ export class Computers {
     if (!Number.isInteger(input.leaseSeconds) || input.leaseSeconds < 60 || input.leaseSeconds > 900 || !Number.isInteger(input.dailySeconds) || input.dailySeconds < input.leaseSeconds || input.dailySeconds > 86400) throw new HttpError(400, "Invalid computer time limits");
     return this.insertConnection(tenant, { ...input, managed: false });
   }
-  private async insertConnection(tenant: string, input: { agent: string; provider: Provider; credentials: Credentials; leaseSeconds: number; dailySeconds: number; managed: boolean }) {
+  private async insertConnection(tenant: string, input: { agent: string; provider: Provider; credentials: Credentials; leaseSeconds: number; dailySeconds: number; managed: boolean; subagents?: boolean }) {
     return this.lock(tenant, input.agent, async sql => {
       if (!(await sql.query("select 1 from agents where tenant=$1 and id=$2 and not revoked and purged_at is null and (expires_at is null or expires_at>$3)", [tenant, input.agent, this.now()])).rowCount) throw new HttpError(404, "Unknown agent");
       if ((await sql.query("select 1 from computer_connections where tenant=$1 and agent=$2", [tenant, input.agent])).rowCount) throw new HttpError(409, "This agent already has a computer connection");
       const connection = id();
-      const row = (await sql.query("insert into computer_connections(id,tenant,agent,provider,credentials,lease_seconds,daily_seconds,created_at,managed) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *", [connection, tenant, input.agent, input.provider, this.options.accounts.seal(`computer:${connection}`, JSON.stringify(input.credentials)), input.leaseSeconds, input.dailySeconds, this.now(), input.managed])).rows[0];
+      const row = (await sql.query("insert into computer_connections(id,tenant,agent,provider,credentials,lease_seconds,daily_seconds,created_at,managed,subagents) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *", [connection, tenant, input.agent, input.provider, this.options.accounts.seal(`computer:${connection}`, JSON.stringify(input.credentials)), input.leaseSeconds, input.dailySeconds, this.now(), input.managed, input.subagents ?? true])).rows[0];
       return publicConnection(row);
     });
+  }
+  /** Snapshot the parent's attachment in the transaction that creates its child. Never copy a session. */
+  async inherit(tenant: string, parent: string, child: string, sql: Sql) {
+    const c = (await sql.query("select * from computer_connections where tenant=$1 and agent=$2 and subagents for share", [tenant, parent])).rows[0];
+    if (!c) return;
+    const connection = id();
+    // Credentials are sealed for each connection; the provider account is the same, the machine is new.
+    const credentials = this.options.accounts.unseal(`computer:${c.id}`, c.credentials);
+    await sql.query("insert into computer_connections(id,tenant,agent,provider,credentials,lease_seconds,daily_seconds,created_at,managed,subagents) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+      [connection, tenant, child, c.provider, this.options.accounts.seal(`computer:${connection}`, credentials), c.lease_seconds, c.daily_seconds, this.now(), c.managed, c.subagents]);
+  }
+  /** Detach on deletion or expiry, keeping the ordinary metering history and cleanup retries. */
+  async removeAgent(tenant: string, agent: string) {
+    const rows = (await this.options.db.query("select id from computer_connections where tenant=$1 and agent=$2", [tenant, agent])).rows;
+    for (const row of rows) await this.remove(tenant, row.id);
   }
   private provider(connection: any) { return (this.options.driver ?? driver)(connection.provider, JSON.parse(this.options.accounts.unseal(`computer:${connection.id}`, connection.credentials)), this.options.outbound); }
   private async useProvider<T>(connection: any, fn: (value: ComputerDriver) => Promise<T>) {
@@ -233,6 +249,10 @@ export class Computers {
     return [...rows.map(row => ({ ...row, costUsd: 0 })), ...await this.managed.usage(tenant)];
   }
   async sweep() {
+    const gone = (await this.options.db.query("select c.tenant,c.agent from computer_connections c left join agents a on a.id=c.agent and a.tenant=c.tenant where c.agent not like 'removed:%' and (a.id is null or a.revoked or a.purged_at is not null or a.expires_at<=$1) limit 100", [this.now()])).rows;
+    for (const c of gone) {
+      try { await this.removeAgent(c.tenant, c.agent); } catch { /* Keep credentials until cleanup succeeds; retry next sweep. */ }
+    }
     await this.managed.pass().catch(() => console.error(JSON.stringify({ type: "computer_pass_failed" })));
     const rows = (await this.options.db.query("select l.*, c.credentials, c.id as connection_id from computer_leases l join computer_connections c on c.id=l.connection left join agents a on a.id=l.agent and a.tenant=l.tenant where (l.state='closing' or (l.state='uncertain' and l.reference is not null) or (l.state='starting' and l.created_at<=$1::bigint-180000) or (l.state='active' and (l.expires_at<=$1 or a.id is null or a.revoked or a.purged_at is not null or a.expires_at<=$1))) order by l.cleanup_at, l.expires_at limit 100", [this.now()])).rows;
     for (const row of rows) {

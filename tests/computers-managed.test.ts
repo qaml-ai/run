@@ -1,4 +1,13 @@
 import { test } from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { memoryStorage } from "../shared/storage.ts";
+import { ClientSessions } from "../src/client-sessions.ts";
+import { makeChild, type DelegationContext } from "../src/client-sessions/delegation.ts";
+import { postgresTail } from "../src/log-tail.ts";
+import { AgentSupervisor } from "../src/supervisor.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { Accounts } from "../src/accounts.ts";
@@ -810,4 +819,90 @@ test("mount transfers reach the managed machine through exec", async () => {
   assert.deepEqual(seen, [["payg", "a", true, "/workspace/hello.txt", 120], ["payg", "a", false, "./out.txt", 120]]);
   assert.deepEqual(f.state.runs.map(run => [run.command, run.timeoutSeconds]), [[`cd "$HOME" && curl something`, 120], [`cd "$HOME" && curl something`, 120]]);
   f.done();
+});
+
+// Exercise the shared child factory used by delegate, spawn_agent and run_workflow.
+async function family(t: { after(fn: () => Promise<void> | void): void }, subagents?: boolean) {
+  const f = await fixture();
+  const root = await mkdtemp(join(tmpdir(), "computer-children-"));
+  const storage = memoryStorage(postgresTail(f.db, { unfenced: true }));
+  const supervisor = new AgentSupervisor(root, { storage });
+  const sessions = new ClientSessions(supervisor, { db: f.db, storage, secret: "computer-children-test-secret-32-chars", computers: f.service });
+  // One teardown, in order: the sessions and their log tail stop before the database they use closes, or the tail keeps
+  // retrying against a closed pool and the file never exits.
+  t.after(async () => { await sessions.close(); await supervisor.close(); await rm(root, { recursive: true, force: true }); await f.done(); });
+  // No model calls are needed: the factory attaches computers before any child is prompted.
+  const model = { id: "fixture", name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: "http://127.0.0.1:9/v1", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 } as Model<Api>;
+  const parent = (await sessions.create([], { model }, "computer-parent", {}, "payg")).id;
+  if (subagents !== undefined) await f.service.create("payg", { agent: parent, provider: "boat", subagents, leaseSeconds: 600, dailySeconds: 1200 });
+  sessions.options.createAgent = (tenant, params, key, parent) => sessions.create([], { model }, key, {}, tenant, undefined, params.mounts, undefined, undefined, { parent });
+  const ctx = (sessions as unknown as { delegationContext: DelegationContext }).delegationContext;
+  const child = (of: string, key: string) => makeChild(ctx, sessions.sessions.get(of)!, { id: "run" } as Parameters<typeof makeChild>[2], undefined, key, key, 1);
+  return { ...f, sessions, parent, child };
+}
+
+test("managed sub-agents get distinct idle connections, inherit through grandchildren and clean up on deletion", async t => {
+  const f = await family(t, true);
+  const first = await f.child(f.parent, "first"), second = await f.child(f.parent, "second");
+  const grandchild = await f.child(first, "grandchild");
+  assert.equal(await f.child(f.parent, "first"), first, "replaying creation keeps the same connection");
+  const connections = await f.service.list("payg");
+  assert.equal(connections.length, 4);
+  assert.equal(new Set(connections.map(c => c.id)).size, 4);
+  assert.ok(connections.every(c => c.managed && c.subagents && c.leaseSeconds === 600 && c.dailySeconds === 1200 && c.session === null));
+  assert.equal(f.state.creates, 0);
+  await f.start("payg", first);
+  assert.equal(f.state.creates, 1);
+  for (const id of [f.parent, second, grandchild]) assert.equal((await f.service.status("payg", id)).session, null);
+  await f.sessions.destroyAgent(first, "payg");
+  assert.equal(f.state.removed.length, 1);
+  assert.ok(!(await f.service.list("payg")).some(c => c.agent === first));
+  assert.ok((await f.row(first)).ended_at);
+  assert.equal((await f.service.status("payg", f.parent)).session, null);
+});
+
+for (const setting of [false, undefined]) test(`children get no computer when parent ${setting === false ? "opts out" : "has none"}`, async t => {
+  const f = await family(t, setting);
+  const child = await f.child(f.parent, "child");
+  await assert.rejects(f.service.status("payg", child), /No computer/);
+  assert.equal((await f.service.list("payg")).length, setting === false ? 1 : 0);
+});
+
+test("expired child connections are detached by the computer sweep, retrying failed managed cleanup", async t => {
+  const f = await family(t, true);
+  const child = await f.child(f.parent, "expired");
+  await f.start("payg", child);
+  await f.db.query("update agents set expires_at=$2 where id=$1", [child, f.now() - 1]);
+  f.state.removeFails = true;
+  await f.service.sweep();
+  assert.ok((await f.service.list("payg")).some(c => c.agent === child));
+  f.state.removeFails = false;
+  await f.service.sweep();
+  assert.ok(!(await f.service.list("payg")).some(c => c.agent === child));
+  assert.ok((await f.row(child)).ended_at);
+});
+
+
+test("a managed start finishing after detach stops its new machine and retries failed cleanup", async t => {
+  const f = await fixture();
+  t.after(f.done);
+  const connection = await f.connect();
+  const boat = f.service.options.machines!("fixture");
+  const create = boat.create.bind(boat);
+  const creating = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+  boat.create = async (...args) => { creating.resolve(); await resume.promise; return create(...args); };
+  const starting = f.start();
+  // Observe the rejection at once, even if the background start finishes before the assertion below.
+  const rejected = assert.rejects(starting);
+  await creating.promise;
+  await f.service.remove("payg", connection.id);
+  f.state.removeFails = true;
+  resume.resolve();
+  await rejected;
+  assert.equal(f.machines.size, 1);
+  f.state.removeFails = false;
+  await pass(f);
+  assert.equal(f.machines.size, 0);
+  assert.ok((await f.row()).ended_at);
+  assert.equal((await f.service.list("payg")).length, 0);
 });

@@ -9,6 +9,40 @@ turns in the same session. Stopping the session or reaching its expiry discards
 that environment; a new session starts empty. These files are separate from
 camelRun workspace files.
 
+## Sub-agents
+
+By default, each sub-agent the runtime creates gets its own computer connection
+when its parent has one. This applies to `spawn_agent`, `delegate` and `run_workflow`, including
+children made from definitions. The
+connection has the same provider, provider credentials, managed setting and
+lease and daily limits. It starts without a session: the child calls
+`computer_start` when it needs a machine. It never uses its parent's session.
+Grandchildren inherit the same way.
+
+Set `"subagents": false` in `POST /v1/computers` to turn this off for that
+connection. The optional field defaults to `true` and appears in connection
+responses. It applies at child creation; attaching later does not change
+existing children. Named targets that run an existing agent keep that agent's
+own connection. Tool spawn directives also target existing agents and keep
+their connections.
+
+Each connection is billed as usual, independently: managed compute uses the
+child's account and end-user bucket, and bring-your-own compute uses the same
+provider account. There is no new shared computer budget or cap.
+
+A child's connection is detached and its session stopped when the child is
+deleted or expires, through the same cleanup as any detach. Cleanup failures
+are retried, and metering history stays. Sub-agents live for a day unless deleted
+earlier; finishing or aborting a turn does not delete the agent or detach its
+computer. Call `computer_stop` when its results are saved and the session is no
+longer needed.
+
+The parent has no mount of a child's computer. Inline children share the
+parent's volume mounts at the same paths, including its workspace when mounted;
+children made from definitions use the definition's mounts. Copy results from
+`/computer` to a shared volume to exchange files. Mounting children's computers
+in the parent is a possible follow-up.
+
 ## Managed computers
 
 Where the runtime offers them, choose **Managed (no key needed)** in the console, or leave out the credentials:

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AttemptAck, ModelAttemptHook } from "../model-attempt.ts";
+import type { Computers } from "../computers/service.ts";
 import type { EndUserCredits } from "../end-user-credits.ts";
 import type { ServerResponse } from "node:http";
 import type { HttpBindings } from "@hono/node-server";
@@ -360,6 +361,8 @@ export interface ClientSessionOptions {
   hooks?: SessionHooks;
   /** Volumes: new agents get mounts (a workspace by default) and file tools over them. */
   volumes?: VolumeService;
+  /** Computer attachments follow child creation and agent deletion or expiry. */
+  computers?: Computers;
   /** Transcribes audio attached to messages (transcription.ts); without it, audio is attached as any file is. */
   transcriber?: Transcriber;
   /** Makes images for the generate_image builtin (images.ts); without it, the builtin has no tool. */

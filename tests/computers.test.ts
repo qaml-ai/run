@@ -180,3 +180,30 @@ test('arbitrary command output remains storable in Postgres and replayable', asy
   assert.deepEqual(value,{stdout:'a\ufffd\ufffdb'});
   assert.deepEqual(await f.restart().call('alice','a','computer_exec',{command:'binary-output'},'exec'),value);
 });
+
+
+test('BYO children use the same sealed credentials and limits but separate sessions', async () => {
+  const f = await fixture();
+  await f.db.query("insert into agents(id,tenant,header,revision,name,type,model) values ('child','alice','{}',1,'Child','test','x')");
+  await f.service.inherit('alice', 'a', 'child', f.db);
+  const child = (await f.service.status('alice', 'child')).connection;
+  assert.notEqual(child.id, f.connection.id);
+  assert.equal(child.provider, f.connection.provider);
+  assert.equal(child.subagents, true);
+  assert.equal(child.leaseSeconds, 60);
+  assert.equal(child.dailySeconds, 120);
+  assert.equal(child.session, null);
+  const credentials = (await f.db.query("select id,credentials from computer_connections order by id")).rows;
+  const plain = credentials.map(c => f.service.options.accounts.unseal(`computer:${c.id}`, c.credentials));
+  assert.equal(plain[0], plain[1]);
+  assert.notDeepEqual(credentials[0].credentials, credentials[1].credentials);
+  await f.service.call('alice', 'child', 'computer_start', {}, 'start-child');
+  assert.equal((await f.service.status('alice', 'a')).session, null);
+  await f.db.query("update agents set revoked=true where id='child'");
+  f.closeFail(true);
+  await f.service.sweep();
+  f.closeFail(false);
+  await f.service.sweep();
+  assert.ok(!(await f.service.list('alice')).some(c => c.agent === 'child'));
+  assert.equal(f.counts().creates, 1);
+});

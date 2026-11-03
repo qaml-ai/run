@@ -87,8 +87,10 @@ A sub-agent the runtime makes is a real agent:
   parent's key scope. It is billed to the same account. Its tool servers'
   [identity tokens](tools.md) also name its parent and its chain's first agent
   (`par` and `root`; `identity.parentAgentId` and `rootAgentId` in the SDKs).
-- It has its **own workspace**. Pass it what it needs in the task, or mount a
-  shared [volume](files.md#volumes) in both definitions.
+- An inline child **shares the parent's volume mounts**, including its mounted
+  workspace, at the same paths. A child made from a definition uses that
+  definition's mounts. Mount a shared [volume](files.md#volumes) in both
+  definitions to exchange files.
 - It **lives a day**, as a scratch agent does. Read its history in the meantime
   with its id, from `run.toolCalls`:
 
@@ -107,6 +109,28 @@ map-reduce: one call per item, and the model combines the answers.
 ```ts
 delegate: { agents: ["researcher"], maxParallel: 8 }
 ```
+
+### Computers
+
+If the parent has a [computer connection](computers.md), each newly created
+child gets a separate connection with the same provider, credentials, managed
+setting, lease and daily limits. This covers inline and definition children,
+`delegate`, `spawn_agent` and `run_workflow`. Existing named agents and
+agents targeted by tool spawn directives keep their own connections.
+
+The child calls `computer_start` to start its own session. No machine or session
+is shared, and grandchildren inherit too. Set `subagents: false` when attaching
+the parent's computer to opt out. Each connection is billed independently under
+the usual rules, using the child's inherited account, subject and bucket.
+
+Deleting or expiring the child stops its session and detaches its connection;
+finishing or aborting a turn leaves the agent alive and its connection attached.
+Delete a child you no longer need, or have it call `computer_stop` after saving
+its results. Deleting the parent also deletes the children the runtime made.
+
+The parent cannot mount a child's computer. Children exchange files through
+shared volumes: copy results from `/computer` to a volume both agents mount.
+Parent mounts of child computers are a possible follow-up.
 
 ### Limits
 

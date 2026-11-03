@@ -912,7 +912,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     runRate: tenant => rateLimits.run(tenant),
     rerankers,
     creditLimit: tenant => accounts.billing.creditLimit(tenant),
-    db, storage, prefix: "client-sessions/", ownership, volumes, links,
+    db, storage, prefix: "client-sessions/", ownership, volumes, links, computers,
     get scheduler() { return scheduler; },
     // Channels' hooks, and where journey events are on, each run's end (src/journey.ts): the day's activity, and an account's first run.
     get hooks() {

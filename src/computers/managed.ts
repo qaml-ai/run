@@ -226,6 +226,19 @@ export class ManagedComputers {
       try {
         const { id: machine } = await machines.create(row.id, tenant, connection.lease_seconds);
         await this.db.query("update managed_computers set machine=$2 where id=$1", [row.id, machine]);
+        // Detach or agent deletion may have finished while the provider was creating the machine.
+        const live = await this.db.query(`select 1 from managed_computers m join computer_connections c on c.id=m.connection and c.agent=m.agent
+          join agents a on a.id=m.agent and a.tenant=m.tenant
+          where m.id=$1 and m.ended_at is null and not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at>$2)`, [row.id, this.options.now()]);
+        if (!live.rowCount) {
+          try { await this.stopRow({ ...row, machine }); }
+          catch (error) {
+            // Keep failed cleanup visible to the normal pass, even if detach ended the pending row.
+            await this.db.query("update managed_computers set ended_at=null where id=$1", [row.id]);
+            throw error;
+          }
+          throw new HttpError(410, "The agent or its computer connection was removed while starting");
+        }
         this.log("computer_started", { tenant, agent, computer: row.id, ms: Date.now() - started });
         return publicSession({ ...row, machine });
       } catch (error) {
@@ -416,8 +429,9 @@ export class ManagedComputers {
    */
   async pass() {
     const { accounts, now } = this.options, started = now();
-    const { rows } = await this.db.query(`select m.*, (a.id is null or a.revoked or a.purged_at is not null or (a.expires_at is not null and a.expires_at<=$1)) as agent_gone
-      from managed_computers m left join agents a on a.id=m.agent and a.tenant=m.tenant where m.ended_at is null`, [started]);
+    const { rows } = await this.db.query(`select m.*, (c.id is null or c.agent<>m.agent or a.id is null or a.revoked or a.purged_at is not null or (a.expires_at is not null and a.expires_at<=$1)) as agent_gone
+      from managed_computers m left join computer_connections c on c.id=m.connection
+      left join agents a on a.id=m.agent and a.tenant=m.tenant where m.ended_at is null`, [started]);
     for (const row of rows) if (!row.platform && Number(row.deadline) <= started) await this.end(row);
     const key = accounts.tenants.platformKey(NAME);
     if (key) {
