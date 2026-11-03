@@ -54,6 +54,17 @@ const ResumableDoc = defineDoc({
   checkpointWhen: () => false,
 });
 
+/**
+ * Pi's own record of a code mode run (pi-durable/codemode's CodemodeRunDoc, which it does not export): its `result` is
+ * set once the script ended, whether it finished or refused to go on (only whether it is set is read here), and its
+ * `start.deadline` is when it times out: absolute, so a script's `timeout_ms` counts a person's wait.
+ */
+const CodemodeRunDoc = defineDoc({
+  kind: "pi.codemode.run", version: 1, scope: "task",
+  initial: (): { result?: { [key: string]: never }; start?: { deadline?: number } } => ({}),
+  checkpointWhen: () => false,
+});
+
 interface DurableCursor { entryId: number; index: number }
 /** A failed model request: one whose response failed (`model_error`), or one a lost node or a close left in flight (`interrupted`). */
 export type FailedAttempt = { reason: "model_error" | "interrupted"; message?: AssistantMessage };
@@ -816,9 +827,23 @@ export class DurableAgent {
         // the round's pending calls never see it.
         const input = id.includes("/") ? (await api.getTask(api.taskId, callContext))?.input : undefined;
         const nested: NestedCall | undefined = input?.kind === "nested" ? { parentCallId: input.parentCallId, parentTaskId: String(input.parent), key: input.key } : undefined;
-        if (!this.firstAttempts.has(id) && tool.replay !== "safe" && !(await api.snapshot(ResumableDoc, api.taskId, callContext))?.resumable) {
-          const message = `Tool ${tool.name} was interrupted and may have partially run`;
-          return { output: [{ type: "text", text: message }], isError: true, diagnostics: [{ severity: "error", code: "interrupted", message }] };
+        if (!this.firstAttempts.has(id)) {
+          // A call from code whose script ended, or will as it resumes (its deadline passed while it waited), is not made:
+          // Pi goes on with the open nested task by itself. A script that refuses to resume for another reason (its sandbox
+          // changed) is found only once it starts, which may be after this call ran.
+          const run = nested ? await api.snapshot(CodemodeRunDoc, input.parent, callContext) : undefined;
+          if (run && (run.result !== undefined || (run.start?.deadline !== undefined && Date.now() >= run.start.deadline))) {
+            const message = `Tool ${tool.name} was not run: its script ended first`;
+            return { output: [{ type: "text", text: message }], isError: true, diagnostics: [{ severity: "error", code: "aborted", message }] };
+          }
+          if (tool.replay !== "safe") {
+            if (!(await api.snapshot(ResumableDoc, api.taskId, callContext))?.resumable) {
+              const message = `Tool ${tool.name} was interrupted and may have partially run`;
+              return { output: [{ type: "text", text: message }], isError: true, diagnostics: [{ severity: "error", code: "interrupted", message }] };
+            }
+            // The mark is used up before the call runs: an attempt cut off from here on may have started its effect.
+            await api.commit(async (tx: Tx) => { (await tx.doc(ResumableDoc, api.taskId)).resumable = false; }, callContext);
+          }
         }
         if (!nested) {
           await this.flushEvents();
@@ -839,7 +864,13 @@ export class DurableAgent {
             held = true;
             void this.suspend(nested.parentCallId);
           }
-          if (held) await api.commit(async (tx: Tx) => { (await tx.doc(ResumableDoc, api.taskId)).resumable = true; }, callContext);
+          if (held) {
+            // Stored before the agent closes (`suspend` waits on codeSettling): else a held call that never ran reads as cut off.
+            const marked = api.commit(async (tx: Tx) => { (await tx.doc(ResumableDoc, api.taskId)).resumable = true; }, callContext);
+            this.codeSettling.add(marked);
+            void marked.finally(() => this.codeSettling.delete(marked)).catch(() => {});
+            await marked;
+          }
         } catch (error) { result = { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], details: undefined, isError: true }; }
         finally {
           if (nested && !held) {

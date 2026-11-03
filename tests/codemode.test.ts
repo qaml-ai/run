@@ -405,3 +405,59 @@ test("a new message instead of an answer, or inputs closed without one, end the 
     await second.dispose();
   }
 });
+
+test("an approved call from code cut off mid-effect after its resume is not made again on the next load", async t => {
+  const fake = await setup(t, [tool("approve", { needsApproval: true })]);
+  let n = 0;
+  // 1st: asks. 2nd (resumed with the answer): starts its effect and its node goes. A 3rd would repeat the effect.
+  const answers = (call: Call) => {
+    if (call.name !== "approve") return "?";
+    n++;
+    if (n === 1) return { inputRequired: true, content: [{ type: "text", text: "Waiting for the user's input." }] };
+    if (n === 2) return new Promise(() => {});
+    return "approve ran";
+  };
+  const first = await fake.start(answers);
+  fake.respond(answer(fauxToolCall("codemode", { code: "return await tools.approve({ id: 1 });" }, { id: "code" }), "toolUse"), answer("done"), answer("done"));
+  assert.equal((await first.host.handle("prompt", { text: "go" })).stopped, "input_required");
+  await first.dispose();
+  const second = await fake.start(answers);
+  void second.host.handle("resume", { calls: [{ toolCallId: "code/c1", retry: true }] }).catch(() => {});
+  while (n < 2) await new Promise(resolve => setTimeout(resolve, 10));
+  await second.dispose();
+  const third = await fake.start(answers, { resume: true });
+  await third.host.handle("continue", {}).catch(() => {});
+  assert.equal(n, 2, "the approved call ran once");
+  const result = (await fake.history()).find(message => message.role === "toolResult");
+  assert.match(textOf(result), /interrupted and may have partially run/);
+});
+
+test("a direct call and a call from code asking in one round both take their answers", async t => {
+  const fake = await setup(t, [tool("direct", { needsApproval: true, exposure: "direct" }), tool("approve", { needsApproval: true })]);
+  const answers = asking(["direct", "approve"]);
+  const first = await fake.start(answers);
+  fake.respond(answer([fauxToolCall("direct", {}, { id: "d1" }), fauxToolCall("codemode", { code: "return await tools.approve({});" }, { id: "code" })], "toolUse"), answer("done"));
+  assert.equal((await first.host.handle("prompt", { text: "go" })).stopped, "input_required");
+  await first.dispose();
+  const second = await fake.start(answers);
+  const resumed = await second.host.handle("resume", { calls: [{ toolCallId: "d1", retry: true }, { toolCallId: "code/c1", retry: true }] });
+  assert.equal(resumed.stopped, undefined, JSON.stringify(resumed));
+  assert.deepEqual(fake.calls.map(call => call.name).sort(), ["approve", "approve", "direct", "direct"]);
+  const results = (await fake.history()).filter(message => message.role === "toolResult").map(textOf);
+  assert.ok(results.some(text => /direct ran/.test(text)) && results.some(text => /approve ran/.test(text)), JSON.stringify(results));
+});
+
+test("a script's timeout_ms counts the person's wait: past it, the approved call is not made", async t => {
+  const fake = await setup(t, [tool("approve", { needsApproval: true })]);
+  const answers = asking(["approve"]);
+  const first = await fake.start(answers);
+  fake.respond(answer(fauxToolCall("codemode", { code: '// @options: {"timeout_ms": 1000}\nreturn await tools.approve({});' }, { id: "code" }), "toolUse"), answer("done"));
+  assert.equal((await first.host.handle("prompt", { text: "go" })).stopped, "input_required");
+  await first.dispose();
+  await new Promise(resolve => setTimeout(resolve, 1_500));
+  const second = await fake.start(answers);
+  await second.host.handle("resume", { calls: [{ toolCallId: "code/c1", retry: true }] });
+  assert.deepEqual(fake.calls.map(call => call.name), ["approve"], "asked once, never made");
+  const result = (await fake.history()).find(message => message.role === "toolResult");
+  assert.doesNotMatch(textOf(result), /approve ran/);
+});

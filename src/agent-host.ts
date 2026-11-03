@@ -1175,6 +1175,14 @@ export function createAgentHost(hostIO: HostIO) {
       steerable = true;
       const waiting = await codeWaits();
       if (method === "resume" && waiting.length) {
+        // The round's direct calls that waited too take their answers first, as a resume without code would settle them;
+        // one still waiting keeps the turn suspended, code's calls with it.
+        const direct = (params.calls ?? []).filter((call: { toolCallId: string }) => !waiting.includes(call.toolCallId.split("/")[0]));
+        if (direct.length) await settle(direct, active.signal);
+        if (!params.close && journal.awaiting.some(id => !waiting.includes(id))) {
+          await journal.setActive(false);
+          return { messages: journal.total, error: null, stopped: "input_required" };
+        }
         // A call from code waited on a person: its code mode call's run goes on, the call starting again with its answer
         // (`answerToolCall`), or, closed without the model (expired or cancelled inputs), the run is abandoned.
         await journal.await(waiting, true);
