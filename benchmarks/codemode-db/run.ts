@@ -19,10 +19,14 @@ import { testDatabase } from "../../tests/database.ts";
 const TOOL = process.env.TOOL ?? "codemode";
 const counts = { statements: 0, transactions: 0, commits: 0, batches: 0 };
 const inTransaction = new WeakSet<object>();
+/** STATEMENTS=1: each statement's start (its first 90 characters), with how many times it ran, for the 50-call case. */
+const statementTexts = new Map<string, number>();
+let tally = false;
 const query = pg.Client.prototype.query;
 pg.Client.prototype.query = function (this: object, ...args: any[]) {
   const text = String(typeof args[0] === "string" ? args[0] : args[0]?.text ?? "").trim().toLowerCase();
   counts.statements++;
+  if (tally) { const key = text.replace(/\s+/g, " ").slice(0, 90); statementTexts.set(key, (statementTexts.get(key) ?? 0) + 1); }
   if (text.startsWith("begin")) { inTransaction.add(this); counts.transactions++; }
   else if (text.startsWith("commit") || text.startsWith("rollback")) inTransaction.delete(this);
   else if (!inTransaction.has(this)) counts.transactions++;
@@ -63,12 +67,15 @@ const rows: Record<string, unknown>[] = [];
 await turn(1, 1); // warm: the first agent's statements prepare and caches fill
 const base = await turn(1, 0);
 for (const calls of [50, 256]) {
+  tally = calls === 50 && process.env.STATEMENTS === "1";
   const measured = await turn(1, calls);
+  tally = false;
   const per = Object.fromEntries(Object.entries(measured).map(([key, value]) => [key, Math.round((value - (base as any)[key]) / calls * 10) / 10]));
   rows.push({ case: `1 script x ${calls} calls`, ...measured, perCall: per });
 }
 rows.unshift({ case: "1 script x 0 calls", ...base });
 rows.push({ case: "3 scripts x 10 calls (one turn)", ...await turn(3, 10) });
 console.log(JSON.stringify({ tool: TOOL, rows }, null, 2));
+if (statementTexts.size) console.log([...statementTexts].sort((a, b) => b[1] - a[1]).map(([text, n]) => `${String(n).padStart(6)}  ${text}`).join("\n"));
 faux.unregister();
 process.exit(0);
