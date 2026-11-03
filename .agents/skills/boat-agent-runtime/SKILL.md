@@ -1,6 +1,6 @@
 ---
 name: boat-agent-runtime
-description: Run agent-runtime tests in a fresh Boat (boat.dev) sandbox instead of the laptop. For people with the team's Boat API key. Use when running test files or the full suite off the machine.
+description: Run agent-runtime tests in a fresh Boat (boat.dev) sandbox instead of the laptop. For people with the team's Boat API key. The default off the machine is scripts/sprite-test (AGENTS.md); use this when a fresh sandbox is wanted or the Sprites pool can't be used.
 ---
 
 # agent-runtime on Boat
