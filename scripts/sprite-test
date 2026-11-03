@@ -24,8 +24,9 @@
 # Each run gets the committed tree at <ref> (git archive into a temporary directory: never the working directory, so .env
 # and ignored files stay here), sent with rsync over ssh through `sprite proxy --ssh` (the Sprites CLI's own ssh, so no
 # sshd or keys on the sprite). node_modules and sandbox/v8-exec/target stay; --delete removes whatever else a previous run
-# left. When ~/.synced on the sprite already names the commit, the sync is skipped. If rsync fails, the tree goes over an
-# exec as a tar stream instead.
+# left. rsync runs every time, even when ~/.synced on the sprite already names the commit (about half a second then): it
+# checks the tree, so a checkout that changed behind the marker (an older sprite-test writes it without one, a test may
+# write into it) is put right. If rsync fails, the tree goes over an exec as a tar stream instead.
 #
 # The job starts detached (nohup setsid) from one short exec, so neither that exec ending nor a dropped poll ends it. It
 # resets Postgres (no databases left from earlier runs; durability off, as CI), runs npm ci when package-lock.json changed
@@ -256,14 +257,20 @@ trap cleanup EXIT
   done
 ) & beat=$!
 
-claim() { # <name> <lease>: prints "ok <synced>" or "no <why>"
-  local out; out=$(remote "$1" 60 claim "$2" "$owner" "$stale_s" 2>/dev/null) || true
+claim() { # <name> <lease>: prints "ok <synced>" or "no <why>". A sprite that doesn't answer gets a second try: waking a
+  # stopped one can take a while, and several runs' execs at once have timed out.
+  local out try err=$tmp/claim-err.$1
+  for try in 1 2; do
+    out=$(remote "$1" 90 claim "$2" "$owner" "$stale_s" 2> "$err") || true
+    case ${out##*$'\n'} in claimed*|held*) break ;; esac
+  done
   grep '^== ' <<<"$out" || true
   case ${out##*$'\n'} in
     claimed*) echo "ok ${out##*claimed }" ;;
     held*) echo "no ${out##*held }" ;;
-    *) echo "no unreachable" ;;
+    *) echo "no unreachable: $(grep -v '^ *$' "$err" | tail -1 | tr ' ' _ | cut -c1-120)" ;;
   esac
+  rm -f "$err"
 }
 add() { names+=("$1"); leases+=("$2"); synced+=("$3"); echo "$1 $2" >> "$tmp/leases"; }
 existing=$(sprite list -o "$org" 2>/dev/null || true)
@@ -326,7 +333,7 @@ done
 mode=$(cat "$tmp/mode")
 (( ${#names[@]} )) || { echo "== no free sprite to warm" >&2; exit 75; }
 
-# Every sprite not already synced at the commit gets the tree from here (a fraction of a second to write).
+# Every sprite gets the tree from here, or checks its own against it (a fraction of a second to write).
 tree=$tmp/tree; mkdir "$tree"; git archive "$sha" | tar x -C "$tree"
 
 worker() { # <slot index>: sync, start the job, follow it. Writes the exit status to tmp/code.<slot>, the synced fingerprint to tmp/fp.<slot>.
@@ -334,8 +341,8 @@ worker() { # <slot index>: sync, start the job, follow it. Writes the exit statu
   echo - > "$tmp/fp.$k"; echo 1 > "$tmp/code.$k"
   while :; do
     attempt=$(( attempt + 1 )); id=$run-$(( k + 1 )); (( attempt == 1 )) || id+=-$attempt; echo "$id" > "$tmp/id.$k"; t1=$SECONDS
-    if [[ ${synced[k]} = "$fp" ]]; then how="already synced"
-    elif limit 600 rsync -a --delete --exclude=node_modules/ --exclude=/sandbox/v8-exec/target/ -e "$ssh_cmd" "$tree/" "sprite@$name:rt/" 2> "$tmp/rsync.$k"; then how=rsync
+    if limit 600 rsync -a --delete --stats --exclude=node_modules/ --exclude=/sandbox/v8-exec/target/ -e "$ssh_cmd" "$tree/" "sprite@$name:rt/" > "$tmp/rsync.$k" 2>&1; then
+      how=rsync; ! grep -q 'transferred file size: 0 B' "$tmp/rsync.$k" || how="in sync (checked by rsync)"
     else
       grep -v 'bind: warning' "$tmp/rsync.$k" | tail -3
       echo "== rsync to $name failed; sending the tree as a tar stream instead"
