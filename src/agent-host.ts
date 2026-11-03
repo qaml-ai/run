@@ -418,6 +418,17 @@ export function createAgentHost(hostIO: HostIO) {
     return { truncated: true, ...(path ? { path } : {}) };
   }
 
+  /** Bytes of the results each running script got from its calls (`scriptBytes`), by its code mode call. */
+  const scriptResults = new Map<string, number>();
+  /** Count a result a script gets toward its limits: SANDBOX_LIMITS.resultBytes each, totalToolBytes in all. */
+  function scriptBytes(parentCallId: string, data: unknown) {
+    const bytes = Buffer.byteLength(JSON.stringify(data));
+    if (bytes > SANDBOX_LIMITS.resultBytes) throw new Error(`The result is ${bytes.toLocaleString("en-US")} bytes; a script gets at most ${SANDBOX_LIMITS.resultBytes.toLocaleString("en-US")} from one call. Ask the tool for less.`);
+    const total = (scriptResults.get(parentCallId) ?? 0) + bytes;
+    if (total > SANDBOX_LIMITS.totalToolBytes) throw new Error(`This script's calls have returned more than ${SANDBOX_LIMITS.totalToolBytes.toLocaleString("en-US")} bytes in all, the most one script gets. Ask for less, or split the work across scripts.`);
+    scriptResults.set(parentCallId, total);
+  }
+
   /** Register every enabled tool; model advertisement does not change who may call it. */
   function agentTools(tools: AgentConfig["tools"]): HostTool[] {
     return tools.map(tool => ({
@@ -439,7 +450,9 @@ export function createAgentHost(hostIO: HostIO) {
             const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await made(nested.parentCallId) });
             signal?.throwIfAborted();
             // Code gets the data: an MCP tool's structured content, or its text parsed (scriptValue throws its error).
-            return { content: [], structuredContent: (tool.resultFormat === "content" ? scriptValue(value) : value) ?? null };
+            const data = (tool.resultFormat === "content" ? scriptValue(value) : value) ?? null;
+            scriptBytes(nested.parentCallId, data);
+            return { content: [], structuredContent: data };
           }
           const at = await made(toolCallId);
           const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId, ...at, ...tool.name === "delegate" && at.messageIndex !== undefined ? { delegates: await delegatesIn(at.messageIndex) } : {} });
@@ -521,7 +534,10 @@ export function createAgentHost(hostIO: HostIO) {
         try {
           const result = await tool.execute(...args);
           return result.output ? { ...result, output: await capped((args[1] as { callId: string }).callId, [...result.output], SANDBOX_LIMITS.maxOutputCharacters) } : result;
-        } finally { await io.cancelTools(); }
+        } finally {
+          scriptResults.delete((args[1] as { callId: string }).callId);
+          await io.cancelTools();
+        }
       } })) };
   }
 

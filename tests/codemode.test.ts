@@ -177,3 +177,21 @@ return 1;` }, { id: "code" }), "toolUse"), answer("done"));
   assert.ok(output.length < 130_000, `${output.length} characters`);
   assert.match(output, /\[Result cut at 128,000 of 2\d\d,\d\d\d characters\./);
 });
+
+test("a script gets at most resultBytes from one call and totalToolBytes from all of them", async t => {
+  const fake = await setup(t, [tool("blob")]);
+  const { host } = await fake.start(call => "z".repeat(Number(call.args.size)));
+  fake.respond(answer(fauxToolCall("codemode", { code: `const errors = [];
+let got = 0;
+try { await tools.blob({ size: 1100000 }); } catch (error) { errors.push(error.message); }
+for (let i = 0; i < 20; i++) {
+  try { got += (await tools.blob({ size: 900000 })).length; } catch (error) { errors.push(error.message); break; }
+}
+return { got, errors };` }, { id: "code" }), "toolUse"), answer("done"));
+  const run = await host.handle("prompt", { text: "go" });
+  assert.equal(run.error, null);
+  const output = textOf((await fake.history())[2]);
+  assert.match(output, /a script gets at most 1,048,576 from one call/);
+  assert.match(output, /more than 8,388,608 bytes in all/);
+  assert.match(output, /"got":8100000/);
+});
