@@ -164,3 +164,16 @@ test("codeMode false declares no codemode tool; turning it on later does", async
   await host.handle("prompt", { text: "two" });
   assert.deepEqual(seen, [["lookup"], ["codemode"]]);
 });
+
+test("a script's result text is held to maxOutputCharacters, even when its options ask for more", async t => {
+  const fake = await setup(t, []);
+  const { host } = await fake.start(() => null);
+  fake.respond(answer(fauxToolCall("codemode", { code: `// @options: {"max_output_tokens": 1000000}
+for (let i = 0; i < 100; i++) text("${"y".repeat(99)}\\n".repeat(20));
+return 1;` }, { id: "code" }), "toolUse"), answer("done"));
+  const run = await host.handle("prompt", { text: "go" });
+  assert.equal(run.error, null);
+  const output = textOf((await fake.history())[2]);
+  assert.ok(output.length < 130_000, `${output.length} characters`);
+  assert.match(output, /\[Result cut at 128,000 of 2\d\d,\d\d\d characters\./);
+});

@@ -381,12 +381,11 @@ export function createAgentHost(hostIO: HostIO) {
    * A direct tool call's content as the model gets it: text past SANDBOX_LIMITS.outputCharacters is cut, and the whole
    * text saved to the agent's workspace (tool-results/<call>.txt), which the model is told to read in parts.
    */
-  async function capped(toolCallId: string, content: any[]): Promise<any[]> {
+  async function capped(toolCallId: string, content: any[], limit: number = SANDBOX_LIMITS.outputCharacters): Promise<any[]> {
     // The runtime's <agent_updates> part (sender.ts AGENT_UPDATES) is not the tool's: it is never cut, and stays its own part.
     const updates = content.filter(part => part.type === "text" && part[AGENT_UPDATES] === true);
-    if (updates.length) return [...await capped(toolCallId, content.filter(part => !updates.includes(part))), ...updates];
+    if (updates.length) return [...await capped(toolCallId, content.filter(part => !updates.includes(part)), limit), ...updates];
     const text = content.filter(part => part.type === "text").map(part => part.text as string).join("\n");
-    const limit = SANDBOX_LIMITS.outputCharacters;
     if (text.length <= limit) return content;
     const whole = Buffer.from(text, "utf8");
     const path = await saveToolResult(toolCallId, text);
@@ -506,7 +505,8 @@ export function createAgentHost(hostIO: HostIO) {
    * Pi's code mode as it ships, on the agent's sandbox, its tools grouped by source (what precedes `__` in their names);
    * none when codeMode is false. Its section (the tools scripts can call) is declared with the host's own
    * (`codemodeText`), so it changes with them, in their place, rather than after the next prompt. Its tool runs alone in
-   * its round, as js_exec did, and the calls its script leaves running are cancelled when it ends.
+   * its round, and the calls its script leaves running are cancelled when it ends. Its result's text is held to
+   * SANDBOX_LIMITS.maxOutputCharacters, which a script's own maxOutputTokens cannot raise.
    */
   function codeMode(): Extension | undefined {
     if (config.codeMode === false) {
@@ -517,7 +517,12 @@ export function createAgentHost(hostIO: HostIO) {
       namespaces: [...new Set(config.tools.map(tool => namespaceOf(tool.name)).filter(Boolean))].map(name => ({ name, prefix: `${name}__` })) });
     codemodeSection = extension.sections?.find(entry => entry.key === CODEMODE);
     return { ...extension, sections: [], tools: (extension.tools ?? []).map(tool => ({ ...tool, executionMode: "sequential" as const,
-      execute: async (...args: Parameters<typeof tool.execute>) => { try { return await tool.execute(...args); } finally { await io.cancelTools(); } } })) };
+      execute: async (...args: Parameters<typeof tool.execute>) => {
+        try {
+          const result = await tool.execute(...args);
+          return result.output ? { ...result, output: await capped((args[1] as { callId: string }).callId, [...result.output], SANDBOX_LIMITS.maxOutputCharacters) } : result;
+        } finally { await io.cancelTools(); }
+      } })) };
   }
 
   /** Code mode's section for these tools, as Pi renders it from the tools scripts can call; null without code mode or such tools. */

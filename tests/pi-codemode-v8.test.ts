@@ -170,7 +170,7 @@ test("Pi start: fingerprint refusal runs no user code; JIT and limits have disti
   if (!result.ok) assert.match(result.error.message, /fingerprint mismatch/);
 });
 
-test("Pi start: CPU, heap, output and wall limits still terminate the child", { skip, timeout: 60_000 }, async () => {
+test("Pi start: CPU, heap and wall limits still terminate the child", { skip, timeout: 60_000 }, async () => {
   for (const [code, options, pattern] of [
     ["while (true) {}", { cpuMs: 100 }, /CPU limit/],
     ["while (true) await null", { cpuMs: 100 }, /CPU limit/],
