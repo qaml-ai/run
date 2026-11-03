@@ -98,7 +98,8 @@ export async function family(t: { after(fn: () => Promise<void> | void): void },
   const f = await fixture();
   const root = await mkdtemp(join(tmpdir(), "computer-children-"));
   const storage = memoryStorage(postgresTail(f.db, { unfenced: true }));
-  const supervisor = new AgentSupervisor(root, { storage });
+  // Inline: these agents never call a model, and agent processes outliving the test kept CI's runner waiting on the file.
+  const supervisor = new AgentSupervisor(root, { storage, hosting: "inline" });
   const sessions = new ClientSessions(supervisor, { db: f.db, storage, secret: "computer-children-test-secret-32-chars", computers: f.service });
   // One teardown, in order: the sessions and their log tail stop before the database they use closes, or the tail keeps
   // retrying against a closed pool and the file never exits.
