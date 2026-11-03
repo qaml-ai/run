@@ -1293,7 +1293,11 @@ export function createAgentHost(hostIO: HostIO) {
   }
 
   /** A run Pi ends by closing, for a call from code that waits on a person (`DurableAgent.suspend`), ends here, as suspended. */
-  const suspendable = (work: Promise<void>) => work.catch(error => { if (!agent?.suspended) throw error; });
+  const suspendable = (work: Promise<void>) => work.catch(error => {
+    if (!agent?.suspended) throw error;
+    // The close that suspends the run ends it ("Harness is closed"); any other error is kept in the log.
+    if (errorText(error) !== "Harness is closed") console.error(JSON.stringify({ type: "suspended_run_error", agent: config.id, error: safeError(error) }));
+  });
 
   /**
    * A run that ended on a call from code waiting on a person: its agent closed with the code mode call open, and is

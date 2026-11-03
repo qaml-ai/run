@@ -882,6 +882,8 @@ export class DurableAgent {
             this.codeDone.add(id);
             void this.quiet();
           }
+          // A call that settled here is not attempted again in this process: its first attempt is over.
+          if (!held) this.firstAttempts.delete(id);
         }
         if (held) return this.untilClosed(callContext);
         if (!result) throw new Error("No tool result");
@@ -942,6 +944,8 @@ export class DurableAgent {
       const signal: AbortSignal | undefined = callContext.abortSignal;
       if (!signal || signal.aborted) return resolve();
       signal.addEventListener("abort", () => resolve(), { once: true });
+      // A suspension that failed to close (logged as code_suspend_failed) releases its held calls too.
+      this.suspension?.closed.then(() => {}, () => resolve());
     });
     throw new Error("The agent closed while this call waited");
   }
