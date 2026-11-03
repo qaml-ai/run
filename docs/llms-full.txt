@@ -796,6 +796,40 @@ turns in the same session. Stopping the session or reaching its expiry discards
 that environment; a new session starts empty. These files are separate from
 camelRun workspace files.
 
+## Sub-agents
+
+By default, each sub-agent the runtime creates gets its own computer connection
+when its parent has one. This applies to `spawn_agent`, `delegate` and `run_workflow`, including
+children made from definitions. The
+connection has the same provider, provider credentials, managed setting and
+lease and daily limits. It starts without a session: the child calls
+`computer_start` when it needs a machine. It never uses its parent's session.
+Grandchildren inherit the same way.
+
+Set `"subagents": false` in `POST /v1/computers` to turn this off for that
+connection. The optional field defaults to `true` and appears in connection
+responses. It applies at child creation; attaching later does not change
+existing children. Named targets that run an existing agent keep that agent's
+own connection. Tool spawn directives also target existing agents and keep
+their connections.
+
+Each connection is billed as usual, independently: managed compute uses the
+child's account and end-user bucket, and bring-your-own compute uses the same
+provider account. There is no new shared computer budget or cap.
+
+A child's connection is detached and its session stopped when the child is
+deleted or expires, through the same cleanup as any detach. Cleanup failures
+are retried, and metering history stays. Sub-agents live for a day unless deleted
+earlier; finishing or aborting a turn does not delete the agent or detach its
+computer. Call `computer_stop` when its results are saved and the session is no
+longer needed.
+
+The parent has no mount of a child's computer. Inline children share the
+parent's volume mounts at the same paths, including its workspace when mounted;
+children made from definitions use the definition's mounts. Copy results from
+`/computer` to a shared volume to exchange files. Mounting children's computers
+in the parent is a possible follow-up.
+
 ## Managed computers
 
 Where the runtime offers them, choose **Managed (no key needed)** in the console, or leave out the credentials:
@@ -5970,8 +6004,10 @@ A sub-agent the runtime makes is a real agent:
   parent's key scope. It is billed to the same account. Its tool servers'
   [identity tokens](https://run.camelai.com/docs/guides/tools.md) also name its parent and its chain's first agent
   (`par` and `root`; `identity.parentAgentId` and `rootAgentId` in the SDKs).
-- It has its **own workspace**. Pass it what it needs in the task, or mount a
-  shared [volume](https://run.camelai.com/docs/guides/files.md#volumes) in both definitions.
+- An inline child **shares the parent's volume mounts**, including its mounted
+  workspace, at the same paths. A child made from a definition uses that
+  definition's mounts. Mount a shared [volume](https://run.camelai.com/docs/guides/files.md#volumes) in both
+  definitions to exchange files.
 - It **lives a day**, as a scratch agent does. Read its history in the meantime
   with its id, from `run.toolCalls`:
 
@@ -5990,6 +6026,28 @@ map-reduce: one call per item, and the model combines the answers.
 ```ts
 delegate: { agents: ["researcher"], maxParallel: 8 }
 ```
+
+### Computers
+
+If the parent has a [computer connection](https://run.camelai.com/docs/guides/computers.md), each newly created
+child gets a separate connection with the same provider, credentials, managed
+setting, lease and daily limits. This covers inline and definition children,
+`delegate`, `spawn_agent` and `run_workflow`. Existing named agents and
+agents targeted by tool spawn directives keep their own connections.
+
+The child calls `computer_start` to start its own session. No machine or session
+is shared, and grandchildren inherit too. Set `subagents: false` when attaching
+the parent's computer to opt out. Each connection is billed independently under
+the usual rules, using the child's inherited account, subject and bucket.
+
+Deleting or expiring the child stops its session and detaches its connection;
+finishing or aborting a turn leaves the agent alive and its connection attached.
+Delete a child you no longer need, or have it call `computer_stop` after saving
+its results. Deleting the parent also deletes the children the runtime made.
+
+The parent cannot mount a child's computer. Children exchange files through
+shared volumes: copy results from `/computer` to a volume both agents mount.
+Parent mounts of child computers are a possible follow-up.
 
 ### Limits
 

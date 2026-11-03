@@ -20771,6 +20771,9 @@
                       "managed": {
                         "type": "boolean"
                       },
+                      "subagents": {
+                        "type": "boolean"
+                      },
                       "leaseSeconds": {
                         "type": "number"
                       },
@@ -20861,6 +20864,7 @@
                       "agent",
                       "provider",
                       "managed",
+                      "subagents",
                       "leaseSeconds",
                       "dailySeconds",
                       "createdAt",
@@ -20921,6 +20925,10 @@
                       "tunnel"
                     ]
                   },
+                  "subagents": {
+                    "type": "boolean",
+                    "description": "Give newly created sub-agents their own connection with the same settings. Default true; inherited by their children too"
+                  },
                   "credentials": {
                     "type": "object",
                     "additionalProperties": {
@@ -20978,6 +20986,9 @@
                       ]
                     },
                     "managed": {
+                      "type": "boolean"
+                    },
+                    "subagents": {
                       "type": "boolean"
                     },
                     "leaseSeconds": {
@@ -21070,6 +21081,7 @@
                     "agent",
                     "provider",
                     "managed",
+                    "subagents",
                     "leaseSeconds",
                     "dailySeconds",
                     "createdAt",
@@ -21256,6 +21268,9 @@
                         "managed": {
                           "type": "boolean"
                         },
+                        "subagents": {
+                          "type": "boolean"
+                        },
                         "leaseSeconds": {
                           "type": "number"
                         },
@@ -21346,6 +21361,7 @@
                         "agent",
                         "provider",
                         "managed",
+                        "subagents",
                         "leaseSeconds",
                         "dailySeconds",
                         "createdAt",

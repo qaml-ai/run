@@ -42,3 +42,31 @@ test('a computer connected during eager startup is available on the first turn',
   const result = r.model.bodies[1].messages.find((message: any) => message.role === 'tool');
   assert.doesNotMatch(JSON.stringify(result), /unavailable|not available|error/);
 });
+
+
+for (const builtin of ['delegate', 'agents']) for (const subagents of [true, false]) test(`${builtin} child creation inherits computer attachments: ${subagents}`, async t => {
+  const r = await runtime(t, body => {
+    const system = body.messages.filter((m: any) => m.role === 'system' || m.role === 'developer').map((m: any) => JSON.stringify(m.content)).join(' ');
+    if (!system.includes('COMPUTER_PARENT') || body.messages.some((m: any) => m.role === 'tool')) return { role: 'assistant', content: 'done' };
+    return toolCall(builtin === 'agents' ? 'spawn_agent' : 'delegate', { agent: 'worker', task: 'child task' }, 'child');
+  });
+  await r.call('/v1/definitions', { headers: { 'Idempotency-Key': 'worker' }, body: { name: 'Worker', systemPrompt: 'COMPUTER_CHILD' } });
+  const parent = (await r.call('/v1/agents', { body: { systemPrompt: 'COMPUTER_PARENT', builtins: [builtin], delegate: { agents: ['worker'] } } })).json.id;
+  const attached = await r.call('/v1/computers', { body: { agent: parent, provider: 'e2b', credentials: { apiKey: 'fixture-only' }, subagents } });
+  assert.equal(attached.status, 201, attached.text);
+  assert.equal(attached.json.subagents, subagents);
+  const run = await r.prompt(parent, 'start');
+  const child = run.outcome.result.toolCalls.find((c: any) => c.agentId)?.agentId;
+  assert.ok(child);
+  const status = await r.call(`/v1/agents/${child}/computer`);
+  assert.equal(status.status, subagents ? 200 : 404, status.text);
+  if (subagents) {
+    assert.notEqual(status.json.connection.id, attached.json.id);
+    assert.equal(status.json.connection.provider, 'e2b');
+    assert.equal(status.json.connection.subagents, true);
+    assert.equal(status.json.session, null);
+    assert.equal((await r.call(`/v1/agents/${parent}/computer`)).json.session, null);
+  }
+  await r.call(`/v1/agents/${child}`, { method: 'DELETE' });
+  assert.ok(!(await r.call('/v1/computers')).json.some((c: any) => c.agent === child));
+});

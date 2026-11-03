@@ -27,7 +27,7 @@ import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readJson 
 import { limitRefused } from "./limit-hits.ts";
 import { rateLimitHeaders, type RateLimitState } from "./rate-limits.ts";
 import { VolumeService } from "./volumes.ts";
-import { databaseRetryable, databaseUnavailable, type Db, type Sql } from "./db.ts";
+import { transaction, databaseRetryable, databaseUnavailable, type Db, type Sql } from "./db.ts";
 import { NotOwner, LostClaim, underClaim, type Claim } from "./ownership.ts";
 import { deleteTail } from "./log-tail.ts";
 import type { DefinitionRef } from "./definitions.ts";
@@ -273,9 +273,13 @@ export class ClientSessions {
       modelReference(header.config.model), header.expiresAt, header.revoked];
     try {
       const { rows } = session.revision === undefined
-        ? await this.db.query(`
-            insert into agents (id, tenant, header, name, type, model, expires_at, revoked, revision, reserved_cursor) values ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9)
-            on conflict (id) do nothing returning revision`, [...columns, session.reserved])
+        ? await transaction(this.db, async sql => {
+            const result = await sql.query(`
+              insert into agents (id, tenant, header, name, type, model, expires_at, revoked, revision, reserved_cursor) values ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9)
+              on conflict (id) do nothing returning revision`, [...columns, session.reserved]);
+            if (result.rows.length && header.parent) await this.options.computers?.inherit(header.tenant, header.parent.agentId, header.id, sql);
+            return result;
+          })
         // The ownership row is locked (FOR SHARE) as in a journal append, so a takeover waits for this write instead of racing it.
         : await this.db.query(`
             with owner as (select from actor_owners where actor = $1 and session = $10 and epoch = $11 for share)
@@ -1126,6 +1130,7 @@ export class ClientSessions {
         if (rowCount) await this.purgeData(id, sql);
         return !!rowCount;
       });
+      if (deleted) await this.options.computers?.removeAgent(session.header.tenant, id);
       if (deleted && session.header.mounts?.length) await this.options.volumes?.watch(id, session.header.tenant, session.header.mounts, [], session.claim);
     } catch (error) {
       console.error(JSON.stringify({ type: "agent_discard_failed", agent: id, error: errorText(error) }));
@@ -2468,6 +2473,7 @@ export class ClientSessions {
     } finally { clearTimeout(timer); }
     await this.interrupt(session, "Session revoked");
     events.endStreams(session);
+    await this.options.computers?.removeAgent(session.header.tenant, id);
     await this.releaseVolumes(session.header, session.claim);
   }
 
@@ -2562,6 +2568,7 @@ export class ClientSessions {
       claim = acquired.claim;
     }
     try {
+      await this.options.computers?.removeAgent(header.tenant, id);
       // Revoking released the agent's volumes; one that expired unrevoked still holds them.
       if (!header.revoked) await this.releaseVolumes(header, claim);
       // Under the claim: a node that stalled past its lease finds the claim gone and leaves the purge to whoever took it.
