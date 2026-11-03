@@ -18,7 +18,7 @@ scripts/sprite-test --status          # who holds which sprite, and the commit e
 
 The pool is `rt-pool-1..10`. Each sprite keeps Postgres (durability off, as CI), node_modules and the v8-exec build
 between runs; a sleeping sprite costs nothing. A run leases its sprites through the `rt-coordinator` sprite, sends only
-the committed tree at the ref (never `.env` or ignored files) with rsync, skipped when the sprite already has the commit,
+the committed tree at the ref (never `.env` or ignored files) with rsync (a check of half a second when the sprite already has it),
 and runs the command detached while the script polls its log. A full suite takes 8 to 10 minutes; a single file about
 20 seconds plus the test. How it works, the settings and the exit codes: the header of `scripts/sprite-test`.
 
