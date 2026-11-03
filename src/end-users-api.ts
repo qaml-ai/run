@@ -1,7 +1,7 @@
 import { createRoute, z, type RouteConfig } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { LEDGER_KINDS, type EndUserCredits, type LedgerKind } from "./end-user-credits.ts";
+import { dayInput, LEDGER_KINDS, type EndUserCredits, type LedgerKind } from "./end-user-credits.ts";
 import { HttpError, readJson } from "./http.ts";
 import * as schema from "./api-schemas.ts";
 
@@ -26,6 +26,7 @@ const kinds = (value: string) => {
 /** A time as a query gives it: epoch ms, a UTC day (YYYY-MM-DD) or an ISO 8601 time. */
 const time = (value: string | undefined, what: string) => {
   if (value === undefined) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(value)) dayInput(value.slice(0, 10), what);
   const at = /^\d+$/.test(value) ? Number(value) : /^\d{4}-\d{2}-\d{2}(?:T.+)?$/.test(value) ? Date.parse(/T/.test(value) ? value : `${value}T00:00:00Z`) : NaN;
   if (!Number.isSafeInteger(at)) throw new HttpError(400, `${what} must be epoch milliseconds, a UTC day (YYYY-MM-DD) or an ISO 8601 time`);
   return at;
@@ -93,6 +94,19 @@ export function endUserRoutes(route: Route, context: () => EndUserCredits | unde
       ...(c.req.query("bucket") !== undefined ? { bucket: c.req.query("bucket") } : {}), moved: moved === "true",
     }));
   });
+  route(createRoute({
+    method: "get", path: "/v1/end-users/{id}/usage",
+    request: { params: endUserId, query: z.object({
+      from: z.string().optional().openapi({ description: "Posting time, inclusive: epoch ms, UTC day or ISO time. Default: to less 24 hours (hour) or 30 days (day)" }),
+      to: z.string().optional().openapi({ description: "Posting time, exclusive, as from. Default: now" }),
+      step: z.enum(["hour", "day"]).optional().openapi({ description: "Default hour; at most 7 days for hour, 366 days for day" }),
+      bucket: z.string().optional().openapi({ description: "Exact bucket or prefix ending in *, e.g. bot:*" }),
+    }) },
+    responses: { 200: reply("Usage summed by posting hour or UTC day, bucket, call and agent, oldest first", schema.EndUserUsage) },
+  }), async c => json(c, 200, await service().usage(c.var.principal.tenant, c.req.param("id")!, {
+    from: time(c.req.query("from"), "from"), to: time(c.req.query("to"), "to"),
+    step: c.req.query("step") as "hour" | "day" | undefined, bucket: c.req.query("bucket"),
+  })));
   route(createRoute({
     method: "get", path: "/v1/end-users/{id}/days",
     request: {

@@ -1272,6 +1272,14 @@ export interface EndUserDay {
   day: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros; granted: Micros; refunded: Micros; adjusted: Micros; spent: Micros; expired: Micros; entries: number;
   buckets: { bucket: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros }[];
 }
+/** Usage by posting hour or UTC day; amounts are micro-USD (`paid` charged, the rest raw). */
+export interface EndUserUsage {
+  step: "hour" | "day"; from: number; to: number;
+  rows: { at: number; bucket: string | null; call: string | null; agent: string | null; calls: number; raw: Micros; allowance: Micros; paid: Micros; writtenOff: Micros }[];
+}
+export interface EndUserUsageQuery {
+  from?: number | Date | string; to?: number | Date | string; step?: "hour" | "day"; bucket?: string;
+}
 const queryOf = (values: Record<string, unknown>) => new URLSearchParams(Object.entries(values).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
 const timeOf = (value: number | Date | undefined) => value instanceof Date ? value.getTime() : value;
 /**
@@ -1338,6 +1346,12 @@ export class EndUsers {
   days(id: string, options: { from?: string; to?: string; bucket?: string; limit?: number } = {}): Promise<{ days: EndUserDay[]; next?: string }> {
     const query = queryOf(options);
     return this.transport.json(`${this.path(id)}/days${query.size ? `?${query}` : ""}`, this.key());
+  }
+  /** Usage grouped in Postgres, oldest first. `bucket` is exact or a prefix ending in `*`; `to` is exclusive. */
+  usage(id: string, options: EndUserUsageQuery = {}): Promise<EndUserUsage> {
+    const { from, to, ...rest } = options;
+    const query = queryOf({ ...rest, from: from instanceof Date ? from.getTime() : from, to: to instanceof Date ? to.getTime() : to });
+    return this.transport.json(`${this.path(id)}/usage${query.size ? `?${query}` : ""}`, this.key());
   }
   /** Add credit (after a payment): once per `key`; the same key again returns the first entry. With `expiresAt`, a lot that expires then. */
   grant(id: string, input: EndUserEntryInput) { return this.entry(id, "grant", input); }

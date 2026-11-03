@@ -85,6 +85,12 @@ export type BucketDay = { bucket: string; allowance: number; allowanceSpent: num
 export const LEDGER_KINDS: readonly LedgerKind[] = [...ENTRY_KINDS, "usage", "expiry"];
 /** How a ledger read is narrowed (`EndUserCredits.ledger`): times are epoch ms, `to` exclusive. */
 export type LedgerQuery = { limit?: number; before?: number; kinds?: LedgerKind[]; from?: number; to?: number; bucket?: string; moved?: boolean };
+/** A usage read on posting time (epoch ms, `to` exclusive), by hour or UTC day. */
+export type UsageQuery = { from?: number; to?: number; step?: "hour" | "day"; bucket?: string };
+export type EndUserUsage = {
+  step: "hour" | "day"; from: number; to: number;
+  rows: { at: number; bucket: string | null; call: string | null; agent: string | null; calls: number; raw: number; allowance: number; paid: number; writtenOff: number }[];
+};
 /** Which days a per-day read covers (`EndUserCredits.days`): UTC days as YYYY-MM-DD, `to` exclusive. */
 export type DaysQuery = { from?: string; to?: string; bucket?: string; limit?: number };
 /**
@@ -453,6 +459,44 @@ export class EndUserCredits {
     const { rows } = await this.db.query(`select * from end_user_ledger where ${where.join(" and ")} order by id desc limit $${params.length}`, params);
     const entries = rows.slice(0, limit).map(entryView);
     return { entries, ...(rows.length > limit ? { next: entries.at(-1)!.id } : {}) };
+  }
+
+  /**
+   * Usage by posting hour or UTC day, bucket, call and agent, oldest first. Corrections count as entries too; their
+   * signed amounts reduce the totals when posted. One statement sums the user's usage within the requested time range.
+   */
+  async usage(tenant: string, id: string, query: UsageQuery = {}, now = Date.now()): Promise<EndUserUsage> {
+    endUserInput(id);
+    const step = query.step ?? "hour";
+    if (step !== "hour" && step !== "day") throw new HttpError(400, "step must be hour or day");
+    const width = step === "hour" ? 3_600_000 : 86_400_000;
+    const to = query.to === undefined ? now : query.to;
+    const from = query.from === undefined ? to - (step === "hour" ? 24 * width : 30 * width) : query.from;
+    for (const [name, value] of [["from", from], ["to", to]] as const) {
+      if (!Number.isSafeInteger(value) || Math.abs(value) > 8_640_000_000_000_000) throw new HttpError(400, `${name} must be epoch milliseconds`);
+    }
+    if (from >= to) throw new HttpError(400, "from must be before to (to is exclusive)");
+    const maxDays = step === "hour" ? 7 : 366;
+    if (to - from > maxDays * 86_400_000) throw new HttpError(400, `Ask for at most ${maxDays} days at a time`);
+    const params: unknown[] = [tenant, id, from, to, width];
+    let bucket = "";
+    if (query.bucket !== undefined) {
+      if (typeof query.bucket !== "string" || !ALLOWANCE_KEY.test(query.bucket)) throw new HttpError(400, 'bucket must be a bucket or a prefix ending in *');
+      const prefix = query.bucket.endsWith("*");
+      // starts_with treats underscores literally, unlike LIKE.
+      params.push(prefix ? query.bucket.slice(0, -1) : query.bucket);
+      bucket = prefix ? " and starts_with(bucket, $6)" : " and bucket = $6";
+    }
+    const { rows } = await this.db.query(`
+      select floor(created_at::numeric / $5) * $5 as at, bucket, metadata->>'call' as call, metadata->>'agent' as agent,
+        count(*) as calls, sum(raw) as raw, sum(allowance) as allowance, -sum(amount) as paid, sum(written_off) as written_off
+      from end_user_ledger
+      where tenant = $1 and end_user = $2 and kind = 'usage' and created_at >= $3 and created_at < $4${bucket}
+      group by 1, 2, 3, 4 order by 1, 2, 3, 4`, params);
+    return { step, from, to, rows: rows.map(row => ({
+      at: Number(row.at), bucket: row.bucket, call: row.call, agent: row.agent, calls: Number(row.calls),
+      raw: Number(row.raw), allowance: Number(row.allowance), paid: Number(row.paid), writtenOff: Number(row.written_off),
+    })) };
   }
 
   /**

@@ -1218,6 +1218,13 @@ class EndUsers:
             ("bucket", bucket), ("moved", "true" if moved else None)) if value is not None})
         return self._runtime._rest("GET", self._path(end_user) + "/ledger" + (f"?{query}" if query else ""))
 
+    def usage(self, end_user, *, from_=None, to=None, step=None, bucket=None):
+        """Usage by posting hour or UTC day, oldest first. Times are epoch ms, datetime, UTC day or ISO time;
+        to is exclusive. Bucket is exact or a prefix ending in *. Paid is charged micro-USD; other amounts are raw."""
+        query = urlencode({key: value for key, value in (
+            ("from", _epoch_ms(from_)), ("to", _epoch_ms(to)), ("step", step), ("bucket", bucket)) if value is not None})
+        return self._runtime._rest("GET", self._path(end_user) + "/usage" + (f"?{query}" if query else ""))
+
     def days(self, end_user, *, from_=None, to=None, bucket=None, limit=None):
         """Their spend and credit per UTC day, newest first: {"days": [{"day", "freeRaw", "paidCharged", "writtenOff", "granted",
         "refunded", "adjusted", "entries", "buckets": [{"bucket", "freeRaw", "paidCharged", "writtenOff"}]}], "next"?}; pass next
