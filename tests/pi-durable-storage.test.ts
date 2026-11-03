@@ -437,7 +437,7 @@ test("Pi shared commits check the claim in their lock statement: a takeover wait
   const [first, second, third] = await node.mintIds(3);
   statements.length = 0;
   await commitWrites(node, [{ type: "entry", value: { id: first as EntryId, conversationId: root, kind: "message" } }], context);
-  assert.equal(statements.length, 5, "begin, the claim and metadata lock in one statement, one check, one write, commit");
+  assert.equal(statements.length, 4, "begin, the claim and metadata lock with the check's read in one statement, one write, commit");
 
   hold = Promise.withResolvers(); entered = Promise.withResolvers();
   const inFlight = commitWrites(node, [{ type: "entry", value: { id: second as EntryId, conversationId: root, kind: "message" } }], context);
