@@ -100,6 +100,8 @@ export function childProcess(entry: string, cwd: string, runtime = process.execP
 export function agentThread(entry: string, cwd: string, label: string, env: Record<string, string> = agentProcessEnv(process.env), limits: ResourceLimits = {}): { worker: Worker; rpc: Rpc } {
   const worker = new Worker(new URL(entry, import.meta.url), {
     env: { ...env, HOME: cwd, TMPDIR: cwd, AGENT_V8_PRESPAWN: "0" }, resourceLimits: limits, stdout: true, stderr: true,
+    // Not this process's flags (a preload, an inspector): an agent process starts with none of them either.
+    execArgv: ["--experimental-strip-types", "--disable-warning=ExperimentalWarning"],
   });
   worker.stdout.resume();
   const stderr = childStderr(label);
