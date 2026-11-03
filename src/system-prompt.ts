@@ -2,7 +2,6 @@ import type { SystemMessage, Tool } from "@earendil-works/pi-ai";
 import { SENDER_INSTRUCTIONS } from "./sender.ts";
 import { supportsDocuments } from "./files.ts";
 import { SANDBOX_LIMITS } from "./limits.ts";
-import { namespaceOf } from "./tool-search.ts";
 import { callableFromCode, declaredToModel, scratchMount, type AgentConfig } from "./protocol.ts";
 import { languageInstructions } from "./language.ts";
 
@@ -20,11 +19,11 @@ const APPLICATION_FOLLOWS = "Application instructions follow. They define your r
 const runtimeInstructions = `You work through an application's agent runtime. After these rules come the application's instructions and a summary of your environment.
 
 Tools:
-- Call a declared tool directly for a single action whose result you want to read. Use js_exec for the rest: tools reachable only there, several calls, loops, computing, and working on file contents. Plan one execution to do a whole task (fetch, compute, write files, return a short summary) rather than one small step per execution.
-- Fetch data you will process in code within that code: a direct call's result lands in your context, where code cannot reach it.
-- Return or log only what you need to read (counts, totals, a few rows), not whole datasets or files.
-- Executions start fresh: variables are gone afterwards, files are not. Carry data to a later execution in a file.
-- Finding tools in js_exec: tools.search("refund an invoice") returns the best matches as { name, description, input }, input being the arguments' signature; tools.search(query, { namespace, limit }) narrows or widens it, tools.namespaces() lists namespaces (what precedes "__" in a tool's name) and tools.describe(name) gives a full schema. When a match is clear, search and call in one execution. If nothing fits, search again in other words; never invent tools.
+- Call a declared tool directly for a single action whose result you want to read. Use codemode for the rest: tools reachable only there, several calls, loops, computing, and working on file contents. Plan one script to do a whole task (fetch, compute, write files, return a short summary) rather than one small step per script.
+- Fetch data you will process in code within that script: a direct call's result lands in your context, where code cannot reach it.
+- Return or print only what you need to read (counts, totals, a few rows), not whole datasets or files.
+- Each script starts fresh: keep a value for a later script with store(key, value) and load(key), or in a file.
+- Finding tools: the codemode section lists the tools scripts can call, as far as space allows. searchTools("refund an invoice") finds others and describeTool(name) gives one's declaration; when a match is clear, search and call in one script. If nothing fits, search again in other words; never invent tools.
 
 ${FILE_RULES}
 
@@ -34,7 +33,7 @@ ${SENDER_INSTRUCTIONS}
 
 ${APPLICATION_FOLLOWS}`;
 
-/** The runtime's text for an agent without js_exec (codeMode: false) that has tools: how to use them, nothing about code. */
+/** The runtime's text for an agent without code mode (codeMode: false) that has tools: how to use them, nothing about code. */
 const directInstructions = `You work through an application's agent runtime. After these rules come the application's instructions and a summary of your environment.
 
 Tools:
@@ -53,7 +52,7 @@ const bareInstructions = `${SENDER_INSTRUCTIONS}
 
 ${APPLICATION_FOLLOWS}`;
 
-/** Whether an agent has no tools at all: no js_exec (codeMode: false) and none of any source, so its prompt carries no runtime rules for them. */
+/** Whether an agent has no tools at all: no code mode (codeMode: false) and none of any source, so its prompt carries no runtime rules for them. */
 export const bare = (config: Pick<AgentConfig, "codeMode" | "tools">) => config.codeMode === false && !config.tools.length;
 
 /** The application's instructions' old section key: Pi reserves it for a conversation's own instructions. */
@@ -72,6 +71,8 @@ export const APPLICATION = "application";
 export const RUNTIME = "runtime";
 /** The section summarizing the agent's environment, generated from its configuration. */
 export const ENVIRONMENT = "environment";
+/** Pi's code mode section: the tools scripts can call, as Pi renders it (agent-host.ts `codemodeText`). */
+export const CODEMODE = "codemode";
 /**
  * The section asking for replies in the agent's `language`, after the environment: one fixed sentence per language, so
  * the prompt is the same on every turn. A language set later is declared as a change, keeping the cached prefix.
@@ -94,7 +95,7 @@ export function applicationInstructions(applicationPrompt?: string, append?: str
 
 /**
  * What the agent works with, from its configuration alone: its mounts, what its model can see, its
- * tools and js_exec's limits. Nothing per turn, so it changes only with the configuration and the
+ * tools and code mode's limits. Nothing per turn, so it changes only with the configuration and the
  * cached prompt prefix holds. Null for an agent with no tools at all (`bare`): there is nothing to summarize.
  */
 export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" | "tools" | "fileTools" | "codeMode" | "codeLimits">): string | null {
@@ -102,38 +103,35 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
   const code = config.codeMode !== false;
   const mounts = config.mounts ?? [];
   const writable = scratchMount(mounts.filter(mount => !mount.computer));
-  const files = !mounts.length ? "Files: none are mounted, so fs and the file tools are unavailable."
+  const files = !mounts.length ? "Files: none are mounted, so the file tools are unavailable."
     : `Files: ${mounts.map(mount => `${mount.path} (${mount.mode === "ro" ? "read-only" : "read-write"})`).join(", ")}; relative paths resolve against ${mounts[0].path}.` +
       (mounts.some(mount => mount.computer) ? " /computer is your computer’s home directory (~); its files live only as long as the computer session and are gone after it expires. Use cp or mv to save them to a volume." : "") +
       (writable ? ` Attachments are saved under ${writable.path}/uploads/<request>/ and files that tools return under ${writable.path}/tool-outputs/; keep scratch data under ${writable.path}/tmp/.` : "") +
-      (config.fileTools === false ? (code ? " Work on them with fs in js_exec; the application's own tools may reach other files." : " The application's own tools may reach them.")
-        : code ? " The file tools (read, write, edit, ls, glob, grep, mv, cp) are for looking at and changing files yourself; fs in js_exec is for code that works on their contents."
+      (config.fileTools === false ? " The application's own tools may reach them."
+        : code ? " The file tools (read, write, edit, ls, glob, grep, mv, cp) are for looking at and changing them; a script calls the same tools (tools.read and so on) to work on their contents."
         : " The file tools (read, write, edit, ls, glob, grep, mv, cp) are for looking at and changing them.");
   const images = config.model.input.includes("image");
   const sight = images && supportsDocuments(config.model) ? "You see images and PDFs: attached ones and ones you read are shown to you, so never decode their bytes in code."
     : images ? "You see images (attached ones and ones you read are shown to you, so never decode their bytes in code), but not PDFs: read a PDF for its text."
     : "You cannot see images or PDFs: read a PDF for its text.";
-  // Without js_exec, legacy exposure does not limit model advertisement.
+  // Without code mode, legacy exposure does not limit model advertisement.
   const direct = config.tools.filter(tool => declaredToModel(tool, code)).map(tool => tool.name).sort();
-  const maxTimeoutMs = config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs;
-  const hidden = config.tools.filter(tool => callableFromCode(tool) && !declaredToModel(tool, code));
-  const counts = new Map<string, number>();
-  for (const tool of hidden) counts.set(namespaceOf(tool.name), (counts.get(namespaceOf(tool.name)) ?? 0) + 1);
-  const namespaces = [...counts].sort((a, b) => a[0].localeCompare(b[0])).map(([namespace, count]) => namespace ? `${namespace} (${count})` : `${count} without a namespace`);
+  const timeoutMs = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
+  const hidden = config.tools.filter(tool => callableFromCode(tool) && !declaredToModel(tool, code)).length;
   return [
     "Your environment:",
     `- ${files}`,
     `- ${sight}`,
     `- Tools declared to you: ${direct.length ? direct.join(", ") : "none"}.`,
-    ...code ? [`- Tools only in js_exec: ${hidden.length ? `${hidden.length}, in ${namespaces.join(", ")}; find them with tools.search` : "none"}.`] : [],
+    ...code ? [`- Tools only scripts can call: ${hidden || "none"}.`] : [],
     ...config.tools.some(tool => tool.needsApproval) ? [`- The user approves each call of these tools before it runs, which pauses your turn until they answer: ${config.tools.filter(tool => tool.needsApproval).map(tool => tool.name).sort().join(", ")}.`] : [],
     ...config.tools.some(tool => tool.judged) ? [`- Each call of these tools is checked before it runs: an ordinary call runs, a risky one is refused (its result says so), and one that may be irreversible, or that the check is unsure about, pauses your turn for the user: ${config.tools.filter(tool => tool.judged).map(tool => tool.name).sort().join(", ")}.`] : [],
     ...config.tools.some(tool => tool.name === "ask_user") ? ["- When you are blocked on a choice only the user can make, ask them with ask_user; your turn pauses until they answer. Don't ask what you can find out yourself."] : [],
-    ...code ? [`- js_exec limits per execution: ${(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs) / 1000} s of CPU, ${SANDBOX_LIMITS.heapBytes / 1024 / 1024} MB of memory, ${Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) / 1000} s (timeoutMs, up to ${maxTimeoutMs / 1000} s), ${SANDBOX_LIMITS.toolCalls} tool calls, ${SANDBOX_LIMITS.outputCharacters.toLocaleString("en-US")} output characters. Process large data in one pass.`] : [],
+    ...code ? [`- codemode limits per script: ${Math.min(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs) / 1000} s of CPU, ${SANDBOX_LIMITS.heapBytes / 1024 / 1024} MB of memory, ${timeoutMs / 1000} s in all (tool calls included), ${SANDBOX_LIMITS.toolCalls} tool calls. Process large data in one pass.`] : [],
   ].join("\n");
 }
 
-/** The runtime's instructions: without js_exec (codeMode: false) they cover only the tools the agent has, if any. */
+/** The runtime's instructions: without code mode (codeMode: false) they cover only the tools the agent has, if any. */
 export function runtimeRules(config: Pick<AgentConfig, "codeMode" | "tools">): string {
   return config.codeMode !== false ? runtimeInstructions : bare(config) ? bareInstructions : directInstructions;
 }
@@ -142,12 +140,13 @@ export function runtimeRules(config: Pick<AgentConfig, "codeMode" | "tools">): s
  * The context's first system message: the runtime's instructions, the application's and a summary of the environment,
  * each a named section. Rendered, they are joined by blank lines.
  */
-export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "language" | "mounts" | "model" | "tools" | "fileTools" | "codeMode" | "codeLimits">, tools: Tool[]): SystemMessage {
+export function leadingSystemMessage(config: Pick<AgentConfig, "systemPrompt" | "systemPromptAppend" | "language" | "mounts" | "model" | "tools" | "fileTools" | "codeMode" | "codeLimits">, tools: Tool[], codemode: string | null = null): SystemMessage {
   const environment = environmentSummary(config);
   return {
     role: "system", content: "", timestamp: 0,
     sections: {
       [RUNTIME]: runtimeRules(config), [APPLICATION]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), ...environment !== null ? { [ENVIRONMENT]: environment } : {},
+      ...codemode !== null ? { [CODEMODE]: codemode } : {},
       ...(config.language ? { [LANGUAGE]: languageInstructions(config.language) } : {}),
       ...(tools.some(tool => tool.name === OUTPUT_TOOL) ? { [OUTPUT]: OUTPUT_INSTRUCTIONS } : {}),
     },

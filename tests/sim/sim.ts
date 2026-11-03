@@ -10,7 +10,7 @@ import type { VoiceTransport } from "../../src/voice-sessions.ts";
 import { runtimeSecrets } from "../../src/secrets.ts";
 import { tenantsFromEnvironment } from "../../src/tenants.ts";
 import { memoryStorage } from "../../shared/storage.ts";
-import { fakeExecutor } from "../fake-executor.ts";
+import { inlineSandboxes } from "../inline-sandbox.ts";
 import { SimDb, type WorldDb } from "./db.ts";
 import { PostgresDb } from "./postgres.ts";
 import { simStorage, type StorageFaults } from "./storage.ts";
@@ -205,7 +205,7 @@ export class Sim {
       network: this.net.networkFor(host),
       clock,
       random: prng(`${this.seed}:${name}:${incarnation}`),
-      codeExecutor: fakeExecutor(),
+      codeSandbox: inlineSandboxes(),
       ...(this.voice ? { voiceTransports: { discord: this.voice.transport(name, () => dead) } } : {}),
       storage: (tail, meter) => this.faultyStorage
         ? simStorage(tail, meter, this.objects, () => dead, () => this.storageFaults, prng(`${this.seed}:storage:${name}#${incarnation}`), this.storageInjected)

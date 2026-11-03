@@ -73,15 +73,15 @@ wait out `Retry-After` and retry. `GET /v1/billing` has the account's run limit
 | `subject` | a string; `context`: at most 4 KB |
 | Mounts | at most 16 per agent |
 | Agents busy at once per account | by [usage tier](#usage-tiers), across the whole runtime (not per node). An agent is busy while it has a run open, running or queued; a busy agent queues more runs without another slot. A run past the limit gets 429 `BUSY_AGENT_LIMIT` (below) |
-| Tools in an agent's catalog | 4,096 tools, 16 MiB of schemas; at most 64 declared directly to the model (the rest are reached from js_exec) |
+| Tools in an agent's catalog | 4,096 tools, 16 MiB of schemas; at most 64 declared directly to the model (the rest are reached from codemode) |
 
 ### Usage tiers
 
 An account's tier sets its per-account limits. The tier comes from what it has paid for credit in
 total, net of refunds. Starting credit and other grants do not count. A payment moves the account up
-as soon as it lands: the next run, create, js_exec execution or decision has the new limits.
+as soon as it lands: the next run, create, script or decision has the new limits.
 
-| Tier | Paid in total | Agents busy at once | Runs a minute | Agent creates a minute | js_exec at once, per node | Decision calls at once, per node |
+| Tier | Paid in total | Agents busy at once | Runs a minute | Agent creates a minute | codemode at once, per node | Decision calls at once, per node |
 | --- | --- | --- | --- | --- | --- | --- |
 | Free | nothing yet | 50 | 300 | 600 | 4 | 16 |
 | Tier 1 | $5 | 250 | 1,500 | 1,200 | 8 | 32 |
@@ -89,8 +89,8 @@ as soon as it lands: the next run, create, js_exec execution or decision has the
 | Tier 3 | $250 | 4,000 | 20,000 | 6,000 | 16 | 64 |
 | Tier 4 | $1,000 | 10,000 | 60,000 | 12,000 | 16 | 64 |
 
-- Busy agents, runs and creates count across the whole runtime. js_exec executions and decision calls
-  count on each runtime node, which has caps of its own for everyone together (16 js_exec workers and
+- Busy agents, runs and creates count across the whole runtime. Scripts and decision calls
+  count on each runtime node, which has caps of its own for everyone together (16 scripts and
   64 decision calls by default): above them a higher limit adds nothing on one node, only across nodes.
 - Your spend limits, and free credit's hourly spending limit, are separate from the tiers.
 - **What you have now:** `GET /v1/limits` has your tier and the next one (`tier: {name, paid, next}`),
@@ -196,7 +196,7 @@ See [Images](../guides/images.md).
 
 | Limit | Value |
 | --- | --- |
-| A tool result the model reads | 32,000 characters; a longer one is saved whole (up to 700 KB) to `/workspace/tool-results/<toolCallId>.txt` |
+| A tool result the model reads | 32,000 characters; a longer one is saved whole (up to 700 KB) to `/workspace/tool-results/<toolCallId>.txt` if file tools are enabled; otherwise the model is told to ask for less |
 | Attached tool call deadline (tools in your process) | 15 s without an answer by default; a tool's own `timeoutMs` from 1 s to 20 minutes |
 | Remote MCP server call deadline | the source's `timeoutMs` (1 s to 20 minutes), default 60 s |
 | OpenAPI operation deadline | the source's `timeoutMs` (1 s to 20 minutes), default 30 s |
@@ -211,18 +211,24 @@ See [Images](../guides/images.md).
 | A binary tool response saved to the workspace | 64 MiB; 64 MiB per call and 256 MiB per run saved in all |
 | An MCP text resource shown inline | 64 KiB (longer ones are saved as files) |
 
-### js_exec (code the model writes) and `execute`
+### codemode (code the model writes) and `execute`
 
 | Limit | Value |
 | --- | --- |
-| Wall time | 30 s by default, at most 60 s (`timeoutMs`; a longer one is cut to it). Admin tenants may ask for 120 s; an operator can set a tenant's maximum up to 120 s (`codeMaxTimeoutMs`) |
-| CPU time | 2 s of keeping its thread busy, TypeScript stripping included (time waiting on tools does not count). Enforced from outside the guest: an execution past it is stopped whatever it is doing, with `Codemode CPU limit exceeded`. An operator can set a tenant's up to 30 s (`codeCpuMs`) |
-| Executions at once | by [usage tier](#usage-tiers) per account on each node (4 on Free, 8 on Tier 1, 16 from Tier 2; `codeConcurrency`), all such tenants together within what the node's memory affords (6 on a 2 GB node). Executions past it wait their turn, tenants in rotation, within their own `timeoutMs`. Admin tenants are not limited unless their entry sets it or they are prepaid |
+| Wall time | the tenant's `codeMaxTimeoutMs`: 60 s by default (120 s for admin tenants without one), at most 120 s, tool calls and waiting for capacity included. A script's first-line `timeout_ms` can only shorten it |
+| CPU time | 2 s by default (`codeCpuMs`), at most 30 s per tenant. Waiting on tools does not count; the limit is enforced outside the guest |
+| Executions at once | by [usage tier](#usage-tiers) per account on each node (4 on Free, 8 on Tier 1, 16 from Tier 2; `codeConcurrency`), within the node's capacity. Excess executions wait their turn within their deadline. Admin tenants are not limited unless their entry sets it or they are prepaid |
 | Memory | a 128 MiB V8 heap (reaching it ends the execution) and 128 MiB of ArrayBuffers (past it, a `RangeError`) |
-| Output | 32,000 characters by default, at most 128,000 (`maxOutputCharacters`); 1,024 chunks |
+| Output | 128,000 bytes, 1,024 items; the model's formatted result is also cut to `max_output_tokens` (10,000 tokens by default) |
 | Tool calls | 256 per script, at most 32 in flight |
-| Tool traffic | arguments at most 128 KiB of JSON a call, results at most 1 MiB, 8 MiB in all |
-| One `fs.readFile` / `fs.writeFile` | 700 KiB |
+| Tool traffic | arguments at most 128 KiB of JSON per call, results at most 1 MiB per call |
+
+`codemode` takes only `{ code }`. Set Pi's options on the script's first line:
+`// @options: {"max_output_tokens": 10000, "timeout_ms": 60000}`.
+There is no per-call `timeoutMs` or `maxOutputCharacters` argument. File access
+uses the file tools; there is no `fs` global. An `execute` request still takes
+`timeoutMs` (within the wall time above) and `maxOutputCharacters` (32,000 by
+default, at most 128,000).
 
 ## People
 
@@ -300,5 +306,5 @@ spend limits like any other.
 | Items in one `parallel()` or `pipeline()` | 16,384 |
 | A workflow script | 128,000 characters; its `args` 256 KB; its return value 256 KB; a task 100,000 characters (a text answer is cut at 128 KB) |
 | `phase()` titles and `log()` lines | 512 and 1,000 (500-character titles, 2,000-character lines) |
-| A workflow's sandbox | 60 minutes of wall clock, 128 MB of transfer; 8,192 tool calls, 64 at once; `js_exec`'s CPU and heap caps |
+| A workflow's sandbox | 60 minutes of wall clock, 128 MB of transfer; 8,192 tool calls, 64 at once; `codemode`'s CPU and heap caps |
 | Top-level workflows running at once | 16 per node, 8 per tenant; nested workflows bypass this gate and remain bounded by agent capacity, depth and spend |

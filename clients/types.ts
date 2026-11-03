@@ -99,8 +99,6 @@ export type AgentEvent =
   | { type: "input_resolved"; id: string; state: string; by?: Record<string, unknown> }
   /** A file the agent presented (present_file), with a signed link to it where the runtime made one. */
   | { type: "file_presented"; file: PresentedFile; url?: string; expiresAt?: number }
-  /** What js_exec code logged, as it ran within the model's tool call `toolCallId`. */
-  | { type: "codemode"; toolCallId: string; event: { type: "output"; text: string } | { type: string; [key: string]: unknown } }
   /** What code run by `execute` logged, as it ran. */
   | { type: "output"; text: string }
   | { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string; failure?: ModelFailure }

@@ -152,7 +152,7 @@ response each may finish past its own.
 
 An agent cannot delegate to an agent already working on its chain (it would
 wait on itself), and an agent's own key cannot change any of these settings.
-The model calls `delegate` directly, never from `js_exec`.
+The model calls `delegate` directly, never from `codemode`.
 
 ### Cancelling
 

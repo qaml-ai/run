@@ -138,7 +138,7 @@ export function nodeConfig(env: NodeJS.ProcessEnv) {
     leaseTtlMs: Number(env.AGENT_LEASE_TTL_MS ?? 90_000),
     runtime: env.AGENT_RUNTIME,
     serviceName: env.AGENT_SERVICE_NAME,
-    // js_exec: the node's v8-exec runner, its executions at once for tenants with a limit, and whether startup requires
+    // Code: the node's v8-exec runner, its executions at once for tenants with a limit, and whether startup requires
     // agent-launcher's confinement (AGENT_SANDBOX_REQUIRED=1; the image sets it).
     v8: v8Settings(env),
     codeCapacity: codeCapacity(env),

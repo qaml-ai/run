@@ -1,9 +1,8 @@
 import { Compile, type Validator } from "typebox/compile";
 import type { ToolDefinition } from "./protocol.ts";
 import { CATALOG_LIMITS, jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
-import { inputSignature } from "./tool-search.ts";
 
-/** Catalogs already checked: one is checked again at every js_exec, and large ones are not free to check. */
+/** Catalogs already checked: one is checked again at every agent start, and large ones are not free to check. */
 const validated = new WeakSet<ToolDefinition[]>();
 
 export function validateDefinitions(definitions: ToolDefinition[]) {
@@ -18,7 +17,7 @@ export function validateDefinitions(definitions: ToolDefinition[]) {
       throw new Error("Invalid tool definition");
     }
     if (!/^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(tool.name) ||
-      ["js_exec", "then", "constructor", "prototype", "search", "describe", "namespaces"].includes(tool.name) || names.has(tool.name)) {
+      ["codemode", "then", "constructor", "prototype"].includes(tool.name) || names.has(tool.name)) {
       throw new Error(`Invalid, duplicate, or reserved tool name: ${tool.name}`);
     }
     if (tool.exposure !== undefined && !["direct", "codemode", "both"].includes(tool.exposure)) throw new Error("Invalid tool exposure");
@@ -132,4 +131,34 @@ export function validateToolCall(definitions: ToolDefinition[], name: unknown, a
     throw new Error(`Invalid arguments for tool: ${tool.name}: ${problems.join("; ")}. It takes ${inputSignature(tool.parameters)}`);
   }
   return { tool, args: args as Record<string, unknown>, bytes: Buffer.byteLength(json) };
+}
+
+/** The source a tool comes from: what precedes `__` in its name (an MCP server or OpenAPI source). */
+export const namespaceOf = (name: string) => name.includes("__") ? name.slice(0, name.indexOf("__")) : "";
+
+const clip = (text: string, length: number) => text.length > length ? `${text.slice(0, length - 1)}…` : text;
+
+/** A tool's arguments as `signature` gives them, cut to a length that suits an error. */
+export const inputSignature = (schema: object) => clip(signature(schema), 400);
+
+/** A JSON schema as a short TypeScript-like type: `{ id: string, limit?: number, tags: string[] }`. Nesting past two levels is `{…}`. */
+export function signature(schema: any, depth = 0): string {
+  if (!schema || typeof schema !== "object") return "any";
+  if (Array.isArray(schema.enum)) return schema.enum.map((value: unknown) => JSON.stringify(value)).join(" | ");
+  if ("const" in schema) return JSON.stringify(schema.const);
+  const union = schema.anyOf ?? schema.oneOf;
+  if (Array.isArray(union)) return union.map((option: unknown) => signature(option, depth)).join(" | ");
+  if (Array.isArray(schema.type)) return schema.type.map((type: unknown) => signature({ ...schema, type }, depth)).join(" | ");
+  if (schema.type === "array") {
+    const items = signature(schema.items, depth);
+    return items.includes(" | ") ? `(${items})[]` : `${items}[]`;
+  }
+  if (schema.type === "object" || schema.properties) {
+    const entries = Object.entries(schema.properties ?? {});
+    if (!entries.length) return schema.additionalProperties === false ? "{}" : "object";
+    if (depth > 1) return "{…}";
+    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+    return `{ ${entries.map(([key, value]) => `${key}${required.has(key) ? "" : "?"}: ${signature(value, depth + 1)}`).join(", ")} }`;
+  }
+  return schema.type === "integer" ? "number" : typeof schema.type === "string" ? schema.type : "any";
 }

@@ -39,11 +39,13 @@ async def refund(order_id: str, context: ToolContext) -> dict:
   `list`, `dict`) and the description from the docstring. Arguments are checked
   against the schema before your function runs.
 - **Result.** Return any JSON value; `undefined`/`None` is sent as `null`. The
-  model reads it as JSON text, and code in `js_exec` gets the value. Throw (raise)
+  model reads it as JSON text, and code in `codemode` gets the value. Throw (raise)
   to tell the model the call failed: it sees your message. A result is at most
   1 MiB of JSON. The model reads at most 32,000 characters of a tool's result;
   a longer one is saved whole (up to 700 KB) to
   `/workspace/tool-results/<toolCallId>.txt`, where it can read the rest.
+  With `fileTools: false`, it is not saved; the model is told to ask the tool
+  for less.
 - **Python functions** may be `async` or plain; a plain one runs in a thread, so
   it never blocks the connection.
 - **`context.idempotencyKey`** is the same for every attempt of one call: a
@@ -62,12 +64,12 @@ async def refund(order_id: str, context: ToolContext) -> dict:
   call first, and `context.confirm/ask/requireUrl` ask from inside the tool; see
   [Human input](human-input.md).
 - **`exposure`** (`@tool(exposure=...)` in Python) is a deprecated compatibility
-  setting. `"codemode"` allows calls only from `js_exec`; `"both"` allows code
+  setting. `"codemode"` allows calls only from `codemode`; `"both"` allows code
   and direct model calls, subject to the model's direct-tool budget; `"direct"`
   also allows both, and always declares the tool to the model. By default a
   source of up to 10 tools is `both` and a larger one `codemode`.
 
-### Tools in js_exec
+### Tools in codemode
 
 Code can call your tools with `tools.<name>(args)`, including tools marked
 `direct`. This means arguments inside a script do not stream as individual
@@ -78,7 +80,7 @@ Tools needing approval or human input remain listed and searchable in code.
 Until code can pause for a person, a call that needs their answer fails with a
 message to call the tool directly. Approval policies do not change caller access.
 
-Runtime control tools (`js_exec`, `final_output`, the delegation and multi-agent
+Runtime control tools (`codemode`, `final_output`, the delegation and multi-agent
 tools, `run_workflow`, the channel's `send_message`, and `ask_user`) can only be
 called directly by the model. Workflow scripts keep their own `workflow_agent`
 host tool.
@@ -446,7 +448,7 @@ own](#an-agents-own-mcp-servers), without credentials.
   `_meta["agent-runtime/timeoutMs"]`.
 - Each call has a deadline (`timeoutMs`, default 60 s, at most 20 minutes). It
   limits silence: each progress notification restarts it, up to 20 minutes in
-  all. A call from `js_exec` also ends with its execution (60 s at most), so
+  all. A call from `codemode` also ends with its execution (60 s by default, at most 120 s), so
   expose long tools directly.
 - Text reaches the model as it is; images, audio, blobs and text resources over
   64 KiB are saved to the agent's workspace and reach it as files. `isError`
@@ -734,8 +736,7 @@ it is made from (whose builtins it then has):
   `fromDate` is inclusive and `toDate` exclusive. Treat posts as claims to
   corroborate, not verified facts.
   Each call uses `grok-4.7`, with at most two model turns and 1,800 output tokens.
-  When calling from `js_exec`, set its `timeoutMs` to `150000` to allow for
-  the search deadline. The result includes `text`, `citations: [{url, title?}]`, `incomplete`, and
+  Call it directly if the search needs more time than the code-mode deadline. The result includes `text`, `citations: [{url, title?}]`, `incomplete`, and
   `usage: {inputTokens, cachedInputTokens, outputTokens, searchCalls,
   postsFetched, profilesFetched, costUsd}`. An incomplete answer is marked;
   a failed or empty answer raises an error. Provider-reported usage is counted
@@ -761,8 +762,8 @@ it is made from (whose builtins it then has):
 - `decide` (`{state, questions}` or `{items}`) answers typed questions about a
   state (yes/no, a choice, a score) with probabilities, through a decision model
   (TypeSafe's Jev on OpenRouter). It is on by default and needs no listing here:
-  every agent has it but one with no `js_exec` and no tools of its own; opt out
-  with `decide: false` on the agent, run or definition. From `js_exec`,
+  every agent has it but one with no `codemode` and no tools of its own; opt out
+  with `decide: false` on the agent, run or definition. From `codemode`,
   `tools.decide({items})` takes up to 100 states a call, for classifying or
   scoring a dataset. Each call is billed (on the platform's key, to prepaid
   credit) and counts against the agent's and the run's spend limits. See
@@ -782,20 +783,64 @@ does not (an earlier source has its name, or the catalog is full).
 which is how to check one before the agent runs. The console shows the same on
 an agent's Configuration tab.
 
-## Tools from code: `js_exec`
+## Tools from code: `codemode`
 
-The model can write JavaScript that calls any of its tools, in a sandbox
-(a bare V8 isolate in a process of its own) that can reach nothing else: `await
-tools.shop__getOrder({ id })`, `Promise.all` for parallel calls, `fs` over its
-files, `tools.search(query)` to find tools in a large catalog, `tools.describe(name)`
-for a schema. Code runs for at most 60 seconds, 2 s of CPU and 256 tool calls; see
-[Limits](../reference/limits.md). `agent.client.execute(code)` runs code
-yourself, outside the model's history, which is handy for testing tools.
+The model gets Pi's code mode: a `codemode` tool whose input is `{ code }`, a
+JavaScript script that calls the agent's tools. It runs on v8-exec, a V8
+isolate in a process of its own with seccomp, CPU and memory limits, and reaches
+nothing but those tools. The name `codemode` is reserved.
+
+```js
+// @options: {"max_output_tokens": 10000, "timeout_ms": 60000}
+const tickets = [];
+for (let page = 1; page; ) {
+  const result = await tools.helpdesk__list_tickets({ status: "open", page });
+  tickets.push(...result.tickets);
+  page = result.nextPage;
+}
+await tools.write({ path: "/workspace/tmp/tickets.json", content: JSON.stringify(tickets) });
+return { open: tickets.length, oldest: tickets[0]?.createdAt };
+```
+
+The optional first line sets Pi's output budget and timeout. `timeout_ms` can
+only shorten the runtime's deadline. The tool takes no `timeoutMs`,
+`maxOutputCharacters` or `description` arguments.
+
+`await tools.<name>(args)` returns the tool's data: a JSON tool's value, or an
+MCP tool's structured content or single text block parsed as JSON. A failed
+call rejects with the tool's error message. Use `Promise.all` for parallel
+calls, up to 32 at once.
+
+Scripts can use `console.log`, `text(value)`, `image(...)`, top-level `return`
+and `exit()`. `store(key, value)` and `load(key)` keep JSON values across code
+calls in the agent's conversation. There is no `fs` global. Call the file tools:
+`tools.read`, `tools.write`, `tools.ls`, `tools.glob`, `tools.grep`, `tools.edit`,
+`tools.mv` and `tools.cp`.
+
+The model reads Pi's result format: `Script completed` or `Script failed`,
+the wall time, then the output. Text items come first, with the returned value
+last; console lines appear in a `<console_output>` block. A failure also shows
+the error and calls made before it. Output is cut to `max_output_tokens`,
+10,000 tokens by default. See [Limits](../reference/limits.md).
+
+Scripts are durable. If a node stops mid-script, the next node replays Pi's
+journal without making completed calls again. A call that was in flight when
+the node stopped rejects with an unknown outcome.
+
+Calls from a script use the model's `codemode` call id as `toolCallId` and Pi's
+key (`c1`, `c2`, …) as `innerCallId`. Idempotency keys hash those identities.
+Approval and judged tools, `ask_user`, multi-agent tools and `run_workflow`
+must still be called directly. Scripts cannot pause for a person in this release.
+`run_workflow` keeps its own script engine.
+
+`agent.client.execute(code)` and schedules with `code` use the same sandbox
+outside the model's history, without durable replay. Their result remains
+`{ output: string[], truncated }`: text output items, then the returned value.
 
 ### Without code: `codeMode: false`
 
 An agent made with `codeMode: false` (Python `code_mode=False`, in a definition
-too) has no `js_exec`. The model calls every tool directly, whatever its
+too) has no `codemode`. The model calls every tool directly, whatever its
 `exposure`, and the runtime's part of the system prompt covers only the tools
 it has, with nothing about code. With `fileTools: false` as well and no tools of
 any source, it has no tools at all (not even `present_file`), and the system
@@ -813,13 +858,18 @@ it began with (its prompt's cached prefix).
 
 ## Tool search
 
-Code finds tools with `tools.search(query)` (or `tools.search(query, { namespace,
-limit })`): the best matches as `{name, description, input}`, most relevant
-first (20 by default, at most 128). `tools.namespaces()` lists the sources with
-their tool counts. Only tool names enter the sandbox, so a catalog of thousands
-of tools costs a script nothing until it asks. Ranking is by keywords, and, on
-the hosted runtime, also by meaning (embeddings, then a model that drops tools
-that cannot do what is asked); searches ranked by meaning are billed at cost.
+The system prompt's `codemode` section lists callable tools by namespace, up
+to about 3,000 tokens. Use `ALL_TOOLS` for the catalog, or
+`await searchTools(query, { limit?, namespace? })` to find matches. Inspect a
+schema with `await describeTool(name)` or a namespace with
+`await describeNamespace(name)`.
+
+```js
+const matches = await searchTools("refund an invoice", { limit: 5 });
+text(matches);
+text(await describeTool("shop__refund"));
+```
+
 
 ## Files in tool calls
 

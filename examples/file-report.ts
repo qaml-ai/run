@@ -5,7 +5,7 @@ import { pdf, png } from "./fixtures.ts";
 
 // An app hands an agent a CSV, a PDF and an image, and gets back a report and a chart.
 // It exercises the file layer end to end: attachments, native image and PDF input, `fs` in
-// js_exec, present_file, the run's file lists, downloads and signed links.
+// codemode, present_file, the run's file lists, downloads and signed links.
 //
 //   CAMELAI_API_KEY=art_… node --experimental-strip-types examples/file-report.ts
 
@@ -24,7 +24,7 @@ const agents = new Agents();
 const agent = await agents.upsert("file-report", {
   name: "File report example",
   ...(process.env.AGENT_MODEL ? { model: process.env.AGENT_MODEL } : {}),
-  instructions: "You are an analyst. Do arithmetic in js_exec with fs, never in your head. Keep replies short.",
+  instructions: "You are an analyst. Do arithmetic in codemode with tools.read and tools.write, never in your head. Keep replies short.",
   onEvent(event) {
     if (event.type === "file_presented") console.log(`presented ${event.file.path} (${event.file.contentType}, ${event.file.size} B): ${event.url?.slice(0, 60)}…`);
     if (event.type === "tool_execution_start") console.log(`tool ${event.toolName}`);
@@ -32,7 +32,7 @@ const agent = await agents.upsert("file-report", {
 });
 try {
   const run = await agent.run(
-    "Attached are sales.csv, policy.pdf and logo.png. In js_exec, read the CSV with fs and total revenue per region. " +
+    "Attached are sales.csv, policy.pdf and logo.png. In codemode, read the CSV with tools.read and total revenue per region. " +
     "Check each total against the annual target stated in the PDF. Tell me the logo's main colour. " +
     "Write /workspace/out/report.md (a table of totals, which regions meet the target, the colour) and " +
     "/workspace/out/chart.svg (a bar chart of the totals), then present both with present_file.",

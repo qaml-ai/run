@@ -98,7 +98,7 @@ export interface OpenApiSpec {
 /** `webSearch.providers`: the order web_search tries providers in for this agent, instead of the runtime's. */
 /** `humanInput`: how long inputs wait, what happens when they expire, and who else may answer them (inputs.ts). */
 /**
- * `decide`: false, no decide tool; true, the tool even for an agent with no js_exec and no other tools; left out, the
+ * `decide`: false, no decide tool; true, the tool even for an agent with no code mode and no other tools; left out, the
  * default: every agent's but those (decisions.ts).
  */
 export interface Sources { builtins?: string[]; webSearch?: { providers: string[] }; mcpServers?: McpServerSpec[]; openApi?: OpenApiSpec[]; humanInput?: HumanInputSettings; delegate?: DelegateSettings; workflow?: WorkflowSettings; decide?: boolean }
@@ -590,7 +590,7 @@ export class ToolSources {
       call: async ({ name, args, signal, origin, actor, intent, run: runId, toolCallId, innerCallId, idempotencyKey, onProgress, approval, inputResponses, requestState, elicit, lineage }) => {
         // An approved call proves it to the tool: in its identity token and its `_meta`.
         const turn = { ...(actor ? { actor } : {}), ...(origin ? { origin } : {}), ...(approval ? { approval } : {}), ...(runId ? { request: runId } : {}), ...(toolCallId ? { toolCall: toolCallId } : {}), ...(lineage ?? {}) };
-        // What a file URL is bound to: the call's stable key, else its tool call (and its place in a js_exec run).
+        // What a file URL is bound to: the call's stable key, else its tool call (and its key within a codemode call).
         const call = idempotencyKey ?? (toolCallId && (innerCallId ? `${toolCallId}:${innerCallId}` : toolCallId)) ?? randomUUID();
         if (COMPUTER_TOOLS.has(name) && this.options.computers) return jsonResult(await this.options.computers.call(context.tenant, context.agent, name, args, call, { mounts: context.mounts?.() ?? [], onWrite: context.onWrite }));
         if (builtins.includes(name)) {

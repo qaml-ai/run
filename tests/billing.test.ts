@@ -423,7 +423,7 @@ test("tracked storage: concurrent nodes add up, dedup holds across nodes, purged
 test("a prepaid tenant pays the catalog fallback plus funding when actual cost is absent; spent credit stops runs", async t => {
   const { call, prompt, model } = await runtime(t, (_body, index) => ({
     // Each response costs $0.15: 5000 input tokens of openai/gpt-5.5-pro.
-    ...(index < 2 ? toolCall("js_exec", { code: `return ${index}` }, `call_${index}`) : { role: "assistant", content: "finished" }),
+    ...(index < 2 ? toolCall("codemode", { code: `return ${index}` }, `call_${index}`) : { role: "assistant", content: "finished" }),
     usage: { prompt_tokens: 5000, completion_tokens: 0 },
   }), { AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0" }, tenantsFile);
   const agent = (await call("/v1/agents", { body: {}, token: PAYG })).json;
@@ -496,7 +496,7 @@ test("streamed OpenRouter actual cost reaches the credit ledger instead of the c
 
 test("responses on the tenant's own key cost no credit for tokens, but time in turns is charged", async t => {
   const { call, prompt, model } = await runtime(t, (_body, index) => ({
-    ...(index === 0 ? toolCall("js_exec", { code: "return 1" }) : { role: "assistant", content: "done" }),
+    ...(index === 0 ? toolCall("codemode", { code: "return 1" }) : { role: "assistant", content: "done" }),
     usage: { prompt_tokens: 5000, completion_tokens: 0 }, delayMs: 150,
   }), { AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "3600", AGENT_VERIFY_KEYS: "false" }, tenantsFile);
   assert.equal((await call("/v1/billing/adjustments", { body: { tenant: "payg", amount: micros(10), reason: "test" }, token: OPS })).status, 201);
@@ -751,7 +751,7 @@ test("only a billing-admin operator can issue the one-time support grant", async
 test("free credit brings fewer busy agents (its usage tier) and an hourly spend limit, both lifted by the first purchase", async t => {
   const github = await fakeGithub(t);
   const { call, base, model } = await runtime(t, (_body, index) => ({
-    ...(index < 2 ? toolCall("js_exec", { code: `return ${index}` }, `call_${index}`) : { role: "assistant", content: "finished" }),
+    ...(index < 2 ? toolCall("codemode", { code: `return ${index}` }, `call_${index}`) : { role: "assistant", content: "finished" }),
     usage: { prompt_tokens: 5000, completion_tokens: 0 },
   }), {
     ...githubEnv(github.url), AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_PRICE_AGENT_HOUR_USD: "0",

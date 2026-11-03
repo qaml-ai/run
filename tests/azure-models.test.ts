@@ -91,7 +91,7 @@ test("a tenant on the platform's keys runs azure models the platform deploys, th
   const { r, azure } = await start(t, (body, index) => body.tool_choice
     ? responses([{ type: "function_call", id: "fc_2", call_id: "call_out", name: body.tool_choice.name, arguments: JSON.stringify({ yes: true }), status: "completed" }], usage)
     : index === 0
-    ? responses([{ type: "function_call", id: "fc_1", call_id: "call_1", name: "js_exec", arguments: JSON.stringify({ code: "return 6 * 7;" }), status: "completed" }], usage)
+    ? responses([{ type: "custom_tool_call", id: "ctc_1", call_id: "call_1", name: "codemode", input: "return 6 * 7;", status: "completed" }], usage)
     : responses([message(`Azure says ${body.model}.`)], usage));
 
   // Listed with the catalog's facts; available only where deployed, and only to a tenant on the platform's keys.
@@ -115,7 +115,9 @@ test("a tenant on the platform's keys runs azure models the platform deploys, th
   for (const request of azure.requests) {
     assert.deepEqual([request.path, request.apiKey, request.authorization, request.body.model, request.body.stream], ["/openai/v1/responses?api-version=v1", KEY, undefined, "sol-eastus2", true]);
   }
-  assert.ok(azure.requests[1].body.input.some((item: any) => item.type === "function_call_output" && item.call_id === "call_1"), "the tool's result went back");
+  // Code mode's tool is a grammar tool there: the model writes the script as raw text.
+  assert.ok(azure.requests[0].body.tools.some((tool: any) => tool.type === "custom" && tool.name === "codemode"), JSON.stringify(azure.requests[0].body.tools));
+  assert.ok(azure.requests[1].body.input.some((item: any) => item.type === "custom_tool_call_output" && item.call_id === "call_1"), "the tool's result went back");
   assert.ok(azure.requests[0].body.prompt_cache_key, "prompt caching keyed by the agent");
 
   // Structured output: final_output forced by name, as on OpenAI's Responses API.
@@ -209,7 +211,7 @@ function flashReply(tool: boolean): Reply {
   const chunk = (delta: object, finish_reason: string | null = null) => ({ id: "chatcmpl_flash", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }] });
   return { events: [
     chunk({ role: "assistant", reasoning_content: "I should calculate." }),
-    chunk(tool ? { tool_calls: [{ index: 0, id: "call_flash", type: "function", function: { name: "js_exec", arguments: '{"code":"return 6 * 7;"}' } }] } : { content: "42" }),
+    chunk(tool ? { tool_calls: [{ index: 0, id: "call_flash", type: "function", function: { name: "codemode", arguments: '{"code":"return 6 * 7;"}' } }] } : { content: "42" }),
     chunk({}, tool ? "tool_calls" : "stop"),
     { id: "chatcmpl_flash", object: "chat.completion.chunk", choices: [], usage: flashUsage },
   ] };
@@ -221,12 +223,12 @@ test("Azure Flash streams reasoning, a tool call and cached usage through Chat C
   const config = azureOpenAIConfig({ endpoint: azure.base, apiKey: KEY, models: "deepseek-v4.1-flash=DeepSeek-V4.1-Flash" }, "test")!;
   const stream = await explicitKeyStream(() => Promise.resolve(azureChatCredentials(config)))(model, normalizeContext({
     messages: [{ role: "user", content: "Calculate.", timestamp: 0 }],
-    tools: [{ name: "js_exec", description: "Run code", parameters: { type: "object", properties: { code: { type: "string" } } } }],
+    tools: [{ name: "codemode", description: "Run code", parameters: { type: "object", properties: { code: { type: "string" } } } }],
   }), { apiKey: "per-call", reasoning: "high" });
   const reply = await stream.result();
   assert.equal(reply.stopReason, "toolUse", reply.errorMessage);
   assert.ok(reply.content.some(block => block.type === "thinking" && block.thinking === "I should calculate."));
-  assert.ok(reply.content.some(block => block.type === "toolCall" && block.name === "js_exec" && block.arguments.code === "return 6 * 7;"));
+  assert.ok(reply.content.some(block => block.type === "toolCall" && block.name === "codemode" && block.arguments.code === "return 6 * 7;"));
   assert.deepEqual([reply.usage.input, reply.usage.output, reply.usage.cacheRead], [800, 300, 1_200]);
   assert.ok(Math.abs(reply.usage.cost.total - flashCost) < 1e-12);
   const request = azure.requests[0];

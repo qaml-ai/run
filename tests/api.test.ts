@@ -662,7 +662,7 @@ test("a tenant's monthly spend cap ends a turn after the response that crosses i
     const body = JSON.parse(text);
     bodies.push(body);
     const index = bodies.length - 1;
-    const delta = index < 2 ? { role: "assistant", tool_calls: [{ index: 0, id: `call_${index}`, type: "function", function: { name: "js_exec", arguments: JSON.stringify({ code: `return ${index}` }) } }] } : { role: "assistant", content: "finished" };
+    const delta = index < 2 ? { role: "assistant", tool_calls: [{ index: 0, id: `call_${index}`, type: "function", function: { name: "codemode", arguments: JSON.stringify({ code: `return ${index}` }) } }] } : { role: "assistant", content: "finished" };
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
     res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: index < 2 ? "tool_calls" : "stop" }], usage: { prompt_tokens: 5000, completion_tokens: 0 } })}\n\n`);

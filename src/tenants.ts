@@ -42,7 +42,7 @@ export interface Tenant {
   maxRunResponses?: number;
   maxRunSeconds?: number;
   /**
-   * js_exec: CPU milliseconds per execution, the longest timeoutMs it may ask for, and executions at once on
+   * code mode: CPU milliseconds per script, the longest wall time a script gets, and scripts at once on
    * one node (src/limits.ts CODE_LIMITS). Absent: the default CPU, and no limit on the others below the runtime's own.
    */
   codeCpuMs?: number;
@@ -55,11 +55,11 @@ export interface Tenant {
   decisionConcurrency?: number;
   /**
    * "internal": the operator's own applications, with no tenant-level limit (busy agents, runs and creates a minute,
-   * js_exec and decisions at once) unless a field of the entry sets one. A node's own caps still apply, and spend
+   * scripts and decisions at once) unless a field of the entry sets one. A node's own caps still apply, and spend
    * limits are untouched.
    */
   tier?: "internal";
-  /** Removed with QuickJS: js_exec runs on V8 only. "v8" is ignored; anything else is an error. */
+  /** Removed with QuickJS: code runs on V8 only. "v8" is ignored; anything else is an error. */
   codeEngine?: unknown;
   /** Model spend (USD, list prices) this tenant may reach per UTC month; absent means unlimited. */
   maxMonthlyCost?: number;
@@ -142,7 +142,7 @@ export class Tenants {
       for (const [field, most] of [["codeCpuMs", SANDBOX_LIMITS.maxCpuMs], ["codeMaxTimeoutMs", SANDBOX_LIMITS.maxTimeoutMs]] as const) {
         if (tenant[field] !== undefined && (!Number.isSafeInteger(tenant[field]) || tenant[field]! < 1 || tenant[field]! > most)) throw new Error(`Tenant ${tenant.id} has an invalid ${field}: an integer from 1 to ${most}, or absent for the default`);
       }
-      if (tenant.codeEngine !== undefined && tenant.codeEngine !== "v8") throw new Error(`Tenant ${tenant.id} has codeEngine ${JSON.stringify(tenant.codeEngine)}, but QuickJS was removed and js_exec runs on V8 only: remove codeEngine from its entry (infra/tenant.sh clear-engine ${tenant.id})`);
+      if (tenant.codeEngine !== undefined && tenant.codeEngine !== "v8") throw new Error(`Tenant ${tenant.id} has codeEngine ${JSON.stringify(tenant.codeEngine)}, but QuickJS was removed and code runs on V8 only: remove codeEngine from its entry (infra/tenant.sh clear-engine ${tenant.id})`);
       if (tenant.maxMonthlyCost !== undefined && (typeof tenant.maxMonthlyCost !== "number" || !Number.isFinite(tenant.maxMonthlyCost) || tenant.maxMonthlyCost < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxMonthlyCost: a non-negative number of USD, or absent for no limit`);
       if (tenant.maxStorageGb !== undefined && (typeof tenant.maxStorageGb !== "number" || !Number.isFinite(tenant.maxStorageGb) || tenant.maxStorageGb < 0)) throw new Error(`Tenant ${tenant.id} has an invalid maxStorageGb: a non-negative number of GB, or absent for the default`);
       if (tenant.billing !== undefined && tenant.billing !== "prepaid" && tenant.billing !== "none") throw new Error(`Tenant ${tenant.id} has an invalid billing: "prepaid", "none", or absent for none`);
@@ -206,7 +206,7 @@ export class Tenants {
   /** The most one run of an admin tenant's agents may take, as its entry sets it (absent: no limit). */
   runLimits(id: string) { const tenant = this.byId.get(id); return { maxResponses: tenant?.maxRunResponses, maxSeconds: tenant?.maxRunSeconds }; }
 
-  /** An admin tenant's js_exec limits, as its entry sets them. */
+  /** An admin tenant's code limits, as its entry sets them. */
   codeLimits(id: string) { const tenant = this.byId.get(id); return { cpuMs: tenant?.codeCpuMs, maxTimeoutMs: tenant?.codeMaxTimeoutMs, concurrent: tenant?.codeConcurrency }; }
 
   /** An admin tenant's decision calls at once on a node, as its entry sets it. */

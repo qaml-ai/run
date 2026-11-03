@@ -68,7 +68,7 @@ whatever the timing.
 
 **Fresh leases.** A node cut off from its peers and the database at once looks
 dead to them, yet may still reach model providers and tools. So model requests,
-tool calls, js_exec and channel sends go ahead only while the node's last
+tool calls, codemode and channel sends go ahead only while the node's last
 successful renewal began less than two renewals ago (6 s in production), a
 renewal before any peer could suspect it. Past that, new effects wait, and model
 requests in flight are cut (`lease_interrupt` in the log) half a renewal later and
@@ -265,7 +265,7 @@ dimension sets listed:
 | `tool_result_size` | each committed tool result | `tool_result_details_bytes`, `tool_result_inline_image_bytes` | |
 | `webhook_delivered` / `webhook_failed` | a delivery succeeds / fails | `WebhooksDelivered`, `WebhookDeliveryLagMs`, `WebhookAttempts` / `WebhooksFailed` | `Kind` (endpoint, usage) |
 | `webhook_backlog` | every minute, from each node (read with Maximum) | `WebhookBacklog`, `WebhookOldestPendingMs` | |
-| `code_execution` | a js_exec execution (or `execute`) ends; properties `tenant`, `timeoutMs` (what it got) and `requestedTimeoutMs` | `CodeExecutions`, `CodeDurationMs`, `CodeCpuMs` (guest CPU, when it finished) | `ErrorClass` (none, cpu_limit, guest_limit, timeout_tool, timeout_waiting_worker, timeout, aborted, worker_exited, memory, tool_limit, syntax, guest_error) |
+| `code_execution` | a codemode execution (or `execute`) ends; properties `tenant` and `timeoutMs` (the runtime deadline) | `CodeExecutions`, `CodeDurationMs`, `CodeCpuMs` (guest CPU, when it finished) | `ErrorClass` (none, cpu_limit, guest_limit, timeout_tool, timeout_waiting_worker, timeout, aborted, worker_exited, memory, tool_limit, syntax, guest_error) |
 | `watch_refused` | an event stream subscriber is refused (429) at a limit | `WatchersRefused` | `Scope` (agent, tenant, node), `Tenant` |
 | `tool_credential_exchange` | a tool server's credential is fetched from a tenant's exchange (auth `exchange`), or the server refuses one (`rejected`); never the credential | `CredentialExchanges`, `CredentialExchangeMs` | `Outcome` (fetched, unreachable, blocked, timeout, unavailable, refused, invalid_response, expired, rejected), `Tenant` |
 
@@ -287,7 +287,7 @@ stream_stalled, provider_5xx, network, runtime_restart, image_limit (a provider 
 content, e.g. OpenRouter's 413 past 30 MB), exception, other (none for a success). A run's
 `error.errorClass` is the same classification in the API's fewer classes (`src/model-errors.ts`). A failed
 tool call also logs `tool_failed` with the tool's name, the tenant and the error's class
-(js_exec's as for `code_execution`), never its text (not a metric). Run events exist
+(codemode's as for `code_execution`), never its text (not a metric). Run events exist
 only for tenants with an endpoint for them. An agent in its own process
 (`AGENT_HOSTING=process`) writes its lines to stderr. Alarms and the launch dashboard
 on them are in `infra/terraform/observability.tf`.
@@ -324,7 +324,7 @@ everything it started when it drains. What a node is given rather than finds for
   cannot reach (`timers/promises`, `performance` imported from `node:perf_hooks`), and `random()` for
   what is not cryptographic. Everything else reads `Date.now`, timers and `node:crypto`, which a
   simulator fakes for the whole process.
-- `codeExecutor` (`src/codemode.ts`): where inline agents run js_exec; v8-exec unless given.
+- `codeSandboxes` (`src/codemode-pi-launcher.ts`): where agents run Pi code mode; v8-exec unless given.
 - `buggify(site)` (`src/buggify.ts`) marks points where a simulator may make something unusual but legal
   happen. Examples: a failed heartbeat renewal, a tail append whose answer is lost, a reap probe that
   times out, a compaction now, a stalled model stream, a tool call that fails, a drain that stops

@@ -51,7 +51,7 @@ with the [Quickstart](../quickstart.md) and [Concepts](../concepts.md) instead.
 ## Develop
 
 Requires Node 22.21+, npm, Postgres 14+ and Rust (rustup: `sandbox/v8-exec/rust-toolchain.toml`
-pins the toolchain) for the js_exec engine, `v8-exec`, which every js_exec runs on: build it once,
+pins the toolchain) for the codemode engine, `v8-exec`, which every codemode runs on: build it once,
 and again after changing `sandbox/v8-exec`. The tests expect a disposable
 database at `postgres://postgres:test@127.0.0.1:55432/postgres` (override with
 `AGENT_TEST_DATABASE_URL`); each test gets its own schema, dropped afterwards:
@@ -62,7 +62,7 @@ docker run -d --name agent-runtime-pg -e POSTGRES_PASSWORD=test -p 127.0.0.1:554
 
 ```sh
 npm ci
-npm run build:v8-exec            # js_exec's engine; the runtime and the js_exec tests need it
+npm run build:v8-exec            # codemode's engine; the runtime-server tests need it
 npm run typecheck
 npm test                         # agents in their own processes
 AGENT_HOSTING=inline npm test    # agents inline in the server process

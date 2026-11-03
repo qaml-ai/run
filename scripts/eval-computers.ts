@@ -3,7 +3,7 @@
 // hosting), with a fake computer driver behind the real Computers service, so the refusals, errors and transfers the
 // model reads are the real ones. No computer or VM exists, no command the model writes is executed, and "public" URLs
 // and MCP servers are fixtures on the node's network seam. Cases score the tool calls that reached the runtime (direct
-// or from js_exec), the files that resulted, and fixed patterns in the reply; no model grades anything.
+// or from codemode), the files that resulted, and fixed patterns in the reply; no model grades anything.
 //
 //   OPENROUTER_API_KEY=… AGENT_V8_EXEC=<v8-exec binary, if this checkout has no build> \
 //     node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/eval-computers.ts \
@@ -245,7 +245,7 @@ class Run {
   worked(name: RegExp | string, turn?: number) { return this.tried(name, turn).filter(call => this.calls.includes(call) && !call.error); }
   index(name: string) { return this.calls.findIndex(call => call.name === name); }
   lastIndex(name: string) { return this.calls.findLastIndex(call => call.name === name); }
-  code() { return this.events.filter(call => call.name === "js_exec").map(call => String(call.args?.code ?? "")).join("\n"); }
+  code() { return this.events.filter(call => call.name === "codemode").map(call => String(call.args?.code ?? "")).join("\n"); }
   /** Bytes of a workspace or mounted file, or undefined. */
   async file(path: string) { try { return Buffer.from((await this.agent.files.download(path)).data); } catch { return undefined; } }
   async write(path: string, data: Buffer | string) { const bytes = Buffer.from(data); this.bytes[path] = bytes; await this.agent.files.upload(path, bytes); return bytes; }
@@ -309,7 +309,7 @@ async function transfer(run: Run, command: string): Promise<Output> {
   return { exitCode: 0, stdout: `CAMEL_TRANSFER ${response.status}\nCAMEL_FILE ${data.length} ${sha256(data)}\n`, stderr: "" };
 }
 
-// Every call that reaches a tool source, direct or from js_exec (events show only direct ones).
+// Every call that reaches a tool source, direct or from codemode (events show only direct ones).
 const server = ToolSources.prototype.server;
 ToolSources.prototype.server = function (this: ToolSources, context: any, sources: any) {
   const made = server.call(this, context, sources);
@@ -388,7 +388,7 @@ const check = (condition: unknown, what: string) => condition ? [] : [what];
 // Saying it could not do it, in the ways the models say so.
 const CANNOT = /\b(can(?:'|’)?t|cannot|can not|unable|not able|don(?:'|’)t have|do not have|no (?:access|shell|way|computer|tool|ability|remote)|(?:isn|wasn|aren|weren|couldn|didn|won|doesn)(?:'|’)t|not (?:available|connected|possible|attached|reachable)|failed|failure|blocked|refused|disconnected|unavailable)\b/i;
 const GONE = /\b(gone|missing|(?:isn(?:'|’)t|not) (?:present|there|found)|lost|no longer|expired|not found|doesn(?:'|’)t exist|does not exist|no such|empty|new session|fresh|reset|wiped|discarded|removed|deleted|isn(?:'|’)t there|not there)\b/i;
-const noComputer = (run: Run) => check(!run.tried(/^computer_/).length && !/tools\.computer_/.test(run.code()), `tried computer tools that are not offered: ${run.tried(/^computer_/).map(call => call.name).join(", ") || "from js_exec"}`);
+const noComputer = (run: Run) => check(!run.tried(/^computer_/).length && !/tools\.computer_/.test(run.code()), `tried computer tools that are not offered: ${run.tried(/^computer_/).map(call => call.name).join(", ") || "from codemode"}`);
 const noComputerUse = (run: Run) => check(!run.tried(/^computer_/).length && !/computer_/.test(run.code()), `started or used the computer: ${run.tried(/^computer_/).map(call => call.name).join(", ")}`);
 const attempts = (run: Run, pattern: RegExp, most: number) => check(run.tried(pattern).length <= most, `looped: ${run.tried(pattern).length} calls (at most ${most})`);
 // Moved through the transfer tool, not through its own context.
@@ -478,8 +478,8 @@ const CASES: Record<string, Case> = {
   "none-python": {
     group: "not-connected",
     turns: ["Run this script and give me the output:\n```python\nprint(sum(i*i for i in range(1, 101)))\n```"],
-    score: run => [...noComputer(run), ...check(run.reply.replace(/[, ]/g, "").includes("338350"), "gave the result (js_exec can compute it)"), ...check(!/\bI (?:ran|executed) (?:the|your|this)? ?(?:python|script)/i.test(run.reply), "claimed to have run the Python")],
-    observe: run => ({ usedJs: !!run.tried("js_exec").length, disclosed: /javascript|js_exec|python (?:is|isn)|no python|can(?:'|’)?t run python|cannot run python|equivalent/i.test(run.reply) }),
+    score: run => [...noComputer(run), ...check(run.reply.replace(/[, ]/g, "").includes("338350"), "gave the result (codemode can compute it)"), ...check(!/\bI (?:ran|executed) (?:the|your|this)? ?(?:python|script)/i.test(run.reply), "claimed to have run the Python")],
+    observe: run => ({ usedJs: !!run.tried("codemode").length, disclosed: /javascript|codemode|python (?:is|isn)|no python|can(?:'|’)?t run python|cannot run python|equivalent/i.test(run.reply) }),
   },
   "none-after-disconnect": {
     group: "not-connected", provider: { rules: [{ match: /uname/, run: () => ok("6.1.99-eval-7731\n") }, { match: /hostname/, run: () => ok("eval-host-4412\n") }] },
@@ -539,12 +539,12 @@ const CASES: Record<string, Case> = {
   "plain-arithmetic": { group: "right-moment", provider: {}, turns: ["what's 2+2"], score: run => [...noComputerUse(run), ...check(/\b4\b/.test(run.reply), "answered")] },
   "plain-poem": { group: "right-moment", provider: {}, turns: ["write me a four-line poem about the sea"], score: run => noComputerUse(run) },
   "plain-from-context": { group: "right-moment", provider: {}, turns: ["Our project is on Postgres 16 and we deploy on Fridays. Which day do we deploy?"], score: run => [...noComputerUse(run), ...check(/friday/i.test(run.reply), "answered")] },
-  // The runtime's prompt says computing goes to js_exec; nothing names the computer. Scored on that rule, and reported.
+  // The runtime's prompt says computing goes to codemode; nothing names the computer. Scored on that rule, and reported.
   "js-calculation": {
     group: "right-moment", provider: {},
     turns: ["What is the exact sum of the squares of the integers from 1 to 1000?"],
     score: run => [...noComputerUse(run), ...check(run.reply.replace(/[, ]/g, "").includes("333833500"), "right answer")],
-    observe: run => ({ usedJs: !!run.tried("js_exec").length }),
+    observe: run => ({ usedJs: !!run.tried("codemode").length }),
   },
   "js-workspace-csv": {
     group: "right-moment", provider: {},

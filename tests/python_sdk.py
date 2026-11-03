@@ -418,7 +418,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
 
         @tool(exposure="direct")
         def render(text: str) -> dict:
-            """Kept out of js_exec: the model calls it as a tool of its own"""
+            """Kept out of codemode: the model calls it as a tool of its own"""
             return {}
 
         self.assertEqual(render.mcp_tool()["_meta"], {"agent-runtime/exposure": "direct"})
@@ -494,7 +494,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((resumed.status, resumed.text, done), ("completed", "seen", ["d1"]))
 
     async def test_code_mode_false_history_none_and_config_hash(self):
-        # A tool-less agent: no js_exec, no file tools; the same upsert again is the same configuration.
+        # A tool-less agent: no codemode, no file tools; the same upsert again is the same configuration.
         agent = await self.agents.upsert("yes-no", instructions="Answer yes or no.", code_mode=False, file_tools=False)
         again = await self.agents.upsert("yes-no", instructions="Answer yes or no.", code_mode=False, file_tools=False)
         self.assertRegex(agent.config_hash, r"^[0-9a-f]{64}$")
@@ -514,7 +514,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Second question", json.dumps(users[1]))
         self.assertEqual([item["function"]["name"] for item in body["tools"]], ["final_output"])
         self.assertEqual(body["tool_choice"], {"type": "function", "function": {"name": "final_output"}})
-        self.assertNotIn("js_exec", json.dumps(body))
+        self.assertNotIn("codemode", json.dumps(body))
 
     async def test_max_output_tokens_and_temperature_go_on_model_calls_and_configure_removes_them(self):
         agent = await self.agents.upsert("py-settings", instructions="Be brief.", max_output_tokens=300, temperature=0.3)
@@ -596,7 +596,7 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
         first = await self.agents.runs.create("Ship on Monday?", idempotency_key="k1", wait=True)
         self.assertEqual((await self.agents.runs.create("Ship on Monday?", idempotency_key="k1", wait=True))["id"], first["id"])
 
-        self.call("js_exec", {"code": "return 1 + 1"})
+        self.call("codemode", {"code": "return 1 + 1"})
         self.script.append({"role": "assistant", "content": "two"})
         stream = await self.agents.runs.stream("add", code_mode=True)
         parts = [part async for part in stream]
@@ -873,12 +873,13 @@ class PythonSDKTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(token, repr(agent) + repr(agent.session) + repr(agent.client))
 
                 # A stream: the tool call, its result, the text, then the run.
-                self.call("js_exec", {"code": "return 1 + 1"})
+                self.call("codemode", {"code": "return 1 + 1"})
                 self.script.append({"role": "assistant", "content": "two"})
                 stream = agent.stream("add")
                 parts = list(stream)
                 self.assertEqual([part.type for part in parts], ["tool_call", "tool_result", "text", "done"])
-                self.assertEqual((parts[0].tool, parts[1].output, parts[-1].run.text, stream.result().text), ("js_exec", "2", "two", "two"))
+                self.assertEqual((parts[0].tool, parts[-1].run.text, stream.result().text), ("codemode", "two", "two"))
+                self.assertRegex(parts[1].output, r"Script completed[\s\S]*Output:\n+2")
                 self.assertEqual(agent.stream("again").result().text, "seen")
 
                 # Human input: the run waits on a question, and an answer resumes it.

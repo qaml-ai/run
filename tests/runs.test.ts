@@ -193,7 +193,7 @@ test("runs count against busy agents and runs per minute, as agent runs do, and 
 });
 
 test("a run's event stream follows it to its end, and picks up after Last-Event-ID without a gap or a repeat", async t => {
-  const r = await runtime(t, (_body, index) => index === 0 ? { ...toolCall("js_exec", { code: "return 6 * 7" }), delayMs: 300 } : { role: "assistant", content: "it is 42", delayMs: 800 });
+  const r = await runtime(t, (_body, index) => index === 0 ? { ...toolCall("codemode", { code: "return 6 * 7" }), delayMs: 300 } : { role: "assistant", content: "it is 42", delayMs: 800 });
   const created = (await r.call("/v1/runs", { body: { input: "compute", codeMode: true } })).json;
   // Read until the first tool call ends, then drop the connection.
   const head = await frames(r.base, created.id, { stop: frame => frame.data.event?.type === "tool_execution_end" });
@@ -253,7 +253,7 @@ test("a run's configuration is checked before anything is made", async t => {
 
 test("the TypeScript SDK: agents.run in one call, runs.stream as it happens, runs.get, abort and messages", async t => {
   const r = await runtime(t, body => /slow/.test(JSON.stringify(body.messages)) ? { role: "assistant", content: "never", delayMs: 8_000 }
-    : /vote/.test(JSON.stringify(body.messages)) ? toolCall("final_output", { vote: "yes" }) : body.messages.some((message: any) => message.role === "tool") ? { role: "assistant", content: "two" } : toolCall("js_exec", { code: "return 1 + 1" }));
+    : /vote/.test(JSON.stringify(body.messages)) ? toolCall("final_output", { vote: "yes" }) : body.messages.some((message: any) => message.role === "tool") ? { role: "assistant", content: "two" } : toolCall("codemode", { code: "return 1 + 1" }));
   const agents = new Agents({ url: r.base, apiKey: OPERATOR });
   const voted = await agents.run({ instructions: "Vote.", input: "vote: ship it?", output: z.object({ vote: z.enum(["yes", "no"]) }), metadata: { voter: "1" } });
   assert.equal(voted.status, "completed");
@@ -287,19 +287,19 @@ test("the TypeScript SDK: agents.run in one call, runs.stream as it happens, run
   assert.deepEqual(await agents.runtime.listAgents(), [], "no agents were made");
 });
 
-test("a run with no tools gets none: no js_exec and no file tools, only its instructions; one with tools, or that asks, has js_exec", async t => {
+test("a run with no tools gets none: no codemode and no file tools, only its instructions; one with tools, or that asks, has codemode", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const names = (body: any) => (body.tools ?? []).map((tool: any) => tool.function.name);
   const system = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer").map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
   await r.call("/v1/runs", { body: { input: "bare", systemPrompt: "Answer yes or no.", wait: true } });
   assert.deepEqual(names(r.model.bodies[0]), []);
-  assert.doesNotMatch(system(r.model.bodies[0]), /js_exec/);
+  assert.doesNotMatch(system(r.model.bodies[0]), /codemode/);
   assert.match(system(r.model.bodies[0]), /Answer yes or no\./);
   // Asked for: what the run sets wins.
   await r.call("/v1/runs", { body: { input: "with code", codeMode: true, wait: true } });
-  assert.ok(names(r.model.bodies[1]).includes("js_exec"));
-  // A run with a tool of the runtime's keeps js_exec by default.
+  assert.ok(names(r.model.bodies[1]).includes("codemode"));
+  // A run with a tool of the runtime's keeps codemode by default.
   await r.call("/v1/runs", { body: { input: "with a builtin", builtins: ["web_fetch"], wait: true } });
-  assert.ok(names(r.model.bodies[2]).includes("js_exec"));
+  assert.ok(names(r.model.bodies[2]).includes("codemode"));
   assert.ok(names(r.model.bodies[2]).includes("web_fetch") || JSON.stringify(r.model.bodies[2]).includes("web_fetch"));
 });

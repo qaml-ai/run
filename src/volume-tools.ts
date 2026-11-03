@@ -16,7 +16,7 @@ import { fileRef, inspectFile } from "./inspect.ts";
 
 /**
  * File tools over an agent's mounts: read, write, edit, ls, glob and grep. They
- * run in the runtime (never the sandbox), as direct tools and from js_exec. Paths
+ * run in the runtime (never the sandbox), as direct tools and from code. Paths
  * are mount paths (`/workspace/notes.md`); results stay small, so large files are
  * read in windows and searched without entering the model's context. `read` shows
  * an image or PDF to a model that can view it as a file reference (files.ts), which
@@ -151,7 +151,6 @@ export async function runVolumeTool(volumes: VolumeService, context: ToolContext
   if (computer) context = { ...context, mounts: [...context.mounts, { volumeId: COMPUTER_VOLUME, path: "/computer", mode: "rw" }] };
   if (name === "cp" || name === "mv") return copyMove(volumes, context, computer, name, args, signal);
   const { tenant, mounts } = context;
-  if (name === "fs.list") name = "ls";
   const target = name === "ls" ? resolve(mounts, args.path) : resolve(mounts, args.path ?? (name === "grep" || name === "glob" ? undefined : ""));
   if (name === "ls" && !target) return { path: "/", entries: mounts.map(mount => ({ name: mount.path.slice(1), type: "directory", mode: mount.mode })) };
   if (!target) throw new Error("/ holds only the mounts; name a path inside one");
@@ -249,34 +248,17 @@ export async function runVolumeTool(volumes: VolumeService, context: ToolContext
     context.onWrite?.(written);
     return { path: shown, size: written.size, contentType: written.contentType };
   }
-  // js_exec's fs: whole files as bytes (base64 across the sandbox boundary) or text, within the same mount rules.
-  if (name === "fs.readFile") {
-    const entry = await file();
-    if (entry.size > FILE_LIMITS.scriptFileBytes) throw new Error(`${shown} is larger than ${FILE_LIMITS.scriptFileBytes} bytes; read it in windows with tools.read and offset`);
-    const data = await volumes.readRange(tenant, entry, 0, entry.size);
-    remember(context.seen, key, entry.version);
-    return ["utf8", "utf-8"].includes(args.encoding) ? { text: decoder().decode(data) } : { data: data.toString("base64") };
-  }
+  // The host's own write of a long tool result (agent-host.ts `saveToolResult`): text, within the same mount rules.
   if (name === "fs.writeFile") {
     writable(target);
-    const data = typeof args.text === "string" ? Buffer.from(args.text, "utf8") : typeof args.data === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(args.data) ? Buffer.from(args.data, "base64") : undefined;
-    if (!data) throw new Error("fs.writeFile takes a string or a Uint8Array");
+    if (typeof args.text !== "string") throw new Error("fs.writeFile takes text");
+    const data = Buffer.from(args.text, "utf8");
     if (data.length > FILE_LIMITS.scriptFileBytes) throw new Error(`fs.writeFile writes at most ${FILE_LIMITS.scriptFileBytes} bytes at a time`);
     signal.throwIfAborted();
     const { path: _path, chunks: _chunks, by: _by, version, ...entry } = await volumes.put(tenant, target.mount.volumeId, target.path, data, { contentType: args.contentType, by: context.agent });
     remember(context.seen, key, version);
     context.onWrite?.({ path: shown, version, size: entry.size, contentType: entry.contentType! });
     return { path: shown, ...entry };
-  }
-  if (name === "fs.stat") {
-    const stat = await call("stat").catch(error => { throw (error as HttpError).status === 404 ? new Error(`${shown} does not exist`) : error; });
-    if (stat.type !== "file") return { path: shown, type: "directory" };
-    return { path: shown, type: "file", size: stat.size, updatedAt: stat.updatedAt, contentType: await volumes.contentType(tenant, target.path, stat) };
-  }
-  if (name === "fs.remove") {
-    writable(target);
-    const removed = await call("remove", { by: context.agent }).catch(error => { throw (error as HttpError).status === 404 ? new Error(`${shown} does not exist`) : error; });
-    return { path: shown, deleted: true, seq: removed.seq };
   }
   if (name === "present_file") {
     const entry = await file();

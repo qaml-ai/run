@@ -48,7 +48,7 @@ curl -s https://run.camelai.com/v1/runs -H "Authorization: Bearer $CAMELAI_API_K
 | --- | --- | --- |
 | History | None: each run starts empty | Kept: each run continues the conversation |
 | Lifetime | Its result is kept for a retention window (a day by default), then deleted | Until you delete it (keyed) |
-| Tools | Built-ins (`web_fetch`, `web_search`, `x_search`, `delegate`), its own MCP servers, a definition's MCP servers and OpenAPI specs, `js_exec` | Also tools served by your process (`tools`), schedules and human input |
+| Tools | Built-ins (`web_fetch`, `web_search`, `x_search`, `delegate`), its own MCP servers, a definition's MCP servers and OpenAPI specs, `codemode` | Also tools served by your process (`tools`), schedules and human input |
 | Listed in `GET /v1/agents` | No | Yes |
 | Use it for | Classify, extract, vote, judge, summarize: one answer per input | Chats, assistants, anything that remembers |
 
@@ -76,10 +76,10 @@ The fields an agent takes, plus the input:
 - `spendLimit`: the run's budget in USD.
 - `fileTools: true`: a workspace and file tools. Without files or this, a run has
   no volume at all.
-- `codeMode`: whether the model gets `js_exec`. A run with no tools at all (no
-  definition, `builtins`, `delegate`, `mcpServers`, files or mounts) gets neither `js_exec` nor
+- `codeMode`: whether the model gets `codemode`. A run with no tools at all (no
+  definition, `builtins`, `delegate`, `mcpServers`, files or mounts) gets neither `codemode` nor
   file tools, so its model sees only your instructions and the input: right for a
-  classifier or a vote. A run with tools keeps `js_exec`. Set `codeMode` (or
+  classifier or a vote. A run with tools keeps `codemode`. Set `codeMode` (or
   `fileTools`) to have it otherwise; what you set wins.
 - `actor`, `from`, `metadata`: who sent it, and your own data, kept on the run.
 - `retentionSeconds`: how long its result, events and messages are kept once it

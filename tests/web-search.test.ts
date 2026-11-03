@@ -365,10 +365,10 @@ test("an operator's tenant without a key of its own searches on the platform's, 
   assert.ok(!(await r.call("/v1/providers", { token: OWN })).json.some((provider: any) => provider.key?.source === "platform"));
 });
 
-test("js_exec's searches on the platform's key stop once the tenant's credit is spent, without waiting for the next model request", async t => {
+test("codemode's searches on the platform's key stop once the tenant's credit is spent, without waiting for the next model request", async t => {
   const brave = await fakeBrave(t);
   const code = `const out = []; for (let i = 0; i < 4; i++) { try { out.push((await tools.web_search({ query: "q" + i })).provider); } catch (error) { out.push(String(error.message ?? error)); } } return JSON.stringify(out);`;
-  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("js_exec", { code }) : { role: "assistant", content: "done" }, {
+  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("codemode", { code }) : { role: "assistant", content: "done" }, {
     AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_BRAVE_SEARCH_URL: brave.url, AGENT_WEB_SEARCH_PROVIDERS: "brave",
     AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0", AGENT_PRICE_WEB_SEARCH_USD: "0.6", AGENT_FREE_HOURLY_SPEND_USD: "100",
   }, tenantsFile);

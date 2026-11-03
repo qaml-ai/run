@@ -48,7 +48,7 @@ export interface Pricing {
 /**
  * A usage tier: a tenant that has paid at least `paid` in total (net of refunds) may have `busyAgents` agents busy at once
  * across the runtime, start `runsPerMinute` runs and create `agentCreatesPerMinute` agents a minute, and run
- * `codeConcurrency` js_exec executions and `decisionConcurrency` decision calls at once on one node. A field left out
+ * `codeConcurrency` scripts and `decisionConcurrency` decision calls at once on one node. A field left out
  * (in AGENT_USAGE_TIERS) is the deployment's default for it.
  */
 export interface UsageTier { name: string; paid: number; busyAgents: number; runsPerMinute?: number; agentCreatesPerMinute?: number; codeConcurrency?: number; decisionConcurrency?: number }
@@ -79,7 +79,7 @@ export const DEFAULT_PRICING: Pricing = Object.freeze({
   maxStorageBytes: 100e9,
   free: Object.freeze({ hourlySpend: micros(1), maxStorageBytes: 1e9 }),
   tiers: Object.freeze([
-    // Busy agents, runs and creates count across the runtime; js_exec and decisions per node, where the node's own caps
+    // Busy agents, runs and creates count across the runtime; scripts and decisions per node, where the node's own caps
     // (AGENT_CODE_WORKERS_MAX, 16; AGENT_DECISION_NODE_CONCURRENCY, 64) bound them, so the top tiers stop there.
     { name: "Free", paid: 0, busyAgents: 50, runsPerMinute: 300, agentCreatesPerMinute: 600, codeConcurrency: 4, decisionConcurrency: 16 },
     { name: "Tier 1", paid: micros(5), busyAgents: 250, runsPerMinute: 1_500, agentCreatesPerMinute: 1_200, codeConcurrency: 8, decisionConcurrency: 32 },

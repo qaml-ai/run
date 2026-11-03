@@ -7,7 +7,7 @@ async def main():
         agent = await agents.upsert(
             "data-analyst-py",
             model="openrouter/openai/gpt-6-luna",
-            instructions="You are a data analyst. Analyse attached files with js_exec (fs.readFile), never by eye. "
+            instructions="You are a data analyst. Analyse attached files with codemode (tools.read), never by eye. "
             "Write your findings as a short Markdown report to /workspace/out/report.md and present_file it; "
             "summarise it in your reply without linking to it.",
         )

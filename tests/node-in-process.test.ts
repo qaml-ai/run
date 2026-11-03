@@ -14,7 +14,7 @@ import { REAL_NETWORK, type Network } from "../src/node-context.ts";
 import { onFreePort, sha, token } from "./cluster-helpers.ts";
 import { testDatabase } from "./database.ts";
 import { fakeModel, lastUser, toolCall, toolResults, until } from "./runtime-server.ts";
-import { fakeExecutor } from "./fake-executor.ts";
+import { inlineSandboxes } from "./inline-sandbox.ts";
 
 // Two runtime nodes in one process (createNode, src/node.ts), each with its own configuration, sharing a database and
 // storage as a cluster does: what a simulation runs many of.
@@ -25,13 +25,13 @@ test("two nodes run in one process, each serving its own agents and forwarding t
     init(id, type, _trigger, resource) { if (type === "Timeout" && (resource as { _repeat?: unknown })._repeat) intervals.set(id, new Error().stack!.split("\n").filter(line => line.includes("file://")).slice(0, 3).join("\n")); },
     destroy(id) { intervals.delete(id); },
   });
-  // "code: <script>" asks for js_exec once; its result is the answer.
+  // "code: <script>" asks for codemode once; its result is the answer.
   const model = await fakeModel(t, body => {
     const asked = lastUser(body), results = toolResults(body);
-    if (asked.startsWith("code: ") && !results.length) return toolCall("js_exec", { code: asked.slice(6) });
+    if (asked.startsWith("code: ") && !results.length) return toolCall("codemode", { code: asked.slice(6) });
     return { role: "assistant", content: results.length ? `ran: ${results.join(" ")}` : `answered: ${asked}` };
   });
-  const executor = fakeExecutor();
+  const sandboxes = inlineSandboxes();
   const root = await mkdtemp(join(tmpdir(), "agent-in-process-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key" } } } }));
@@ -50,7 +50,7 @@ test("two nodes run in one process, each serving its own agents and forwarding t
     });
     // Node b's database is not a pg.Pool: anything with Db's methods will do. Its network is its own too.
     const deps = await nodeDeps(config);
-    const node = await createNode(config, name === "b" ? { ...deps, db: counted.wrap(deps.db), network: recorded.network, codeExecutor: executor } : deps);
+    const node = await createNode(config, name === "b" ? { ...deps, db: counted.wrap(deps.db), network: recorded.network, codeSandbox: sandboxes } : deps);
     try { assert.equal((await node.start()).port, port); } catch (error) { await node.close().catch(() => {}); throw error; }
     nodes.push(node);
   });
@@ -91,10 +91,10 @@ test("two nodes run in one process, each serving its own agents and forwarding t
   const toModel = recorded.calls.filter(call => call.startsWith(`fetch ${model.url}`));
   assert.equal(toModel.length, 1, recorded.calls.join("\n"));
   assert.ok(recorded.calls.includes(`request ${a}/v1/agents/${agents[0]}/prompt`), recorded.calls.join("\n"));
-  // Node b's agents run js_exec on the executor it was given.
-  const ran = await prompt(b, agents[1], "code: print hi\nreturn 42");
-  assert.equal(executor.opened, 1);
-  assert.match(ran.outcome.result.reply, /^ran: .*hi.*42/s);
+  // Node b's agents run code on the sandbox it was given.
+  const ran = await prompt(b, agents[1], "code: console.log('hi'); return 42");
+  assert.equal(sandboxes.opened, 1);
+  assert.match(ran.outcome.result.reply, /^ran: Script completed[\s\S]*42[\s\S]*<console_output>\nhi\n<\/console_output>/);
 
   // Both leave: the database shows neither, and neither leaves an interval running.
   for (const node of nodes.splice(0)) await node.close();
@@ -204,7 +204,7 @@ test("SIGTERM during a memory drain hands the running turn to a peer, which goes
   writeFileSync(join(root, "tenants.json"), JSON.stringify({ tenants: { alice: { tokenSha256: sha(token), apiKeys: { openrouter: "fixture-key" } } } }));
   const release = Promise.withResolvers<void>();
   const model = await fakeModel(t, (_body, index) => index === 0
-    ? { ...toolCall("js_exec", { code: "return 42" }), wait: release.promise }
+    ? { ...toolCall("codemode", { code: "return 42" }), wait: release.promise }
     : { role: "assistant", content: "finished on the peer" });
   let high = false;
   t.mock.method(process.memoryUsage, "rss", () => high ? 2 : 0);

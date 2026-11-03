@@ -404,7 +404,7 @@ export interface CreateAgentOptions extends AgentOptions {
   systemPromptAppend?: string;
   /** false: no file tools (read, write, edit, ls, glob, grep) for an application with file tools of its own. */
   fileTools?: boolean;
-  /** false: no js_exec; the model calls every tool directly, and a tool-less agent's prompt is little more than its instructions. */
+  /** false: no codemode; the model calls every tool directly, and a tool-less agent's prompt is little more than its instructions. */
   codeMode?: boolean;
   name?: string;
   type?: string;
@@ -512,7 +512,7 @@ export interface DefinitionInput {
   language?: string;
   /** false: its agents get no file tools but present_file. */
   fileTools?: boolean;
-  /** false: its agents get no js_exec, and call every tool directly. */
+  /** false: its agents get no codemode, and call every tool directly. */
   codeMode?: boolean;
   limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; mounts?: unknown[]; builtins?: Builtin[];
   /** false: its agents get no decide tool, which every agent has by default. */
@@ -853,7 +853,7 @@ export interface RunResult {
   output?: unknown;
   /** Tool calls that did not complete (the model was told): timed out, lost, with no application connected, and so on. */
   toolErrors?: ToolError[];
-  /** The tool calls it made (the first 100), those from js_exec's code included: ids and how each went, not arguments or results. */
+  /** The tool calls it made (the first 100), those from codemode's code included: ids and how each went, not arguments or results. */
   toolCalls?: RunToolCall[];
   /** Tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools. */
   sourceErrors?: { kind: string; source: string; message: string }[];
@@ -864,7 +864,7 @@ export interface RunResult {
  */
 export interface ToolError { tool: string; toolCallId?: string; innerCallId?: string; code: "timeout" | "connection_lost" | "not_connected" | "source_unavailable" | "failed"; outcomeUnknown?: true; message: string }
 /**
- * A tool call a run made: the tool, the model's call id (js_exec's, for a call from its code, with `innerCallId`), and
+ * A tool call a run made: the tool, the model's call id (codemode's, for a call from its code, with `innerCallId` such as `c1`), and
  * whether it answered (`ok`), else why not (`code`): a `ToolError` code, tool_error (it answered with an error),
  * input_required (it waits on a person) or aborted. Its arguments and result are in the agent's history.
  */
@@ -1877,7 +1877,7 @@ export interface RunRequest {
   mcpServers?: InlineMcpServer[];
   /** true: a workspace volume and file tools. Default: none, unless the input has files. */
   fileTools?: boolean; mounts?: MountInput[];
-  /** js_exec. Default: on for a run with tools, off for a tool-less one. */
+  /** codemode. Default: on for a run with tools, off for a tool-less one. */
   codeMode?: boolean;
   output?: { schema: Record<string, unknown> };
   workspaceId?: string | null;

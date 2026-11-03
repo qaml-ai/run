@@ -19,6 +19,7 @@ import { journalForkCut } from "../src/pi-durable/fork.ts";
 import { hostTranscriptSession, setDualWrite, type TranscriptRecord } from "./fixtures/host-transcript.ts";
 import { journalMessages } from "./fixtures/journal-history.ts";
 import { journalForkHistory } from "./fixtures/journal-messages.ts";
+import { inlineSandboxes } from "./inline-sandbox.ts";
 
 // Sessions a release before the host transcript's removal left (a node lost mid-turn), as nodes ran it then
 // (AGENT_PI_DUAL_WRITE=1): their first load retires the host transcript.
@@ -56,7 +57,7 @@ async function setup(t: Context, definitions?: ToolDefinition[]) {
       file: async () => { throw new Error("no files"); },
       modelAuth: async () => { throw new Error("no per-call credentials"); },
       fs: async () => { throw new Error("no files"); },
-
+      codeSandbox: inlineSandboxes(),
     };
     const host = createAgentHost(io);
     const init = await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", tools, ...(options.tenant ? { tenant: options.tenant } : {}), ...(options.resume ? { resume: true } : {}), ...(options.initialMessages ? { initialMessages: options.initialMessages } : {}) });
@@ -376,7 +377,7 @@ test("a conversation still under the old instructions key is re-keyed to applica
   await host.handle("prompt", { text: "two" });
   for (const messages of seen) {
     const system = getCurrentSystemMessage(messages as never)!;
-    assert.deepEqual(Object.keys(system.sections ?? {}), ["application", "environment"]);
+    assert.deepEqual(Object.keys(system.sections ?? {}), ["application", "environment", "codemode"]);
     assert.equal(getSystemMessageText(system).split(instructions).length - 1, 1, "the instructions appear once");
   }
 });
@@ -458,7 +459,7 @@ test("model advertisement is separate from callers, including without code mode"
   // Inspect the actual provider contexts instead of the host's full registered catalog.
   fake.respond(context => { seen.push(getCurrentTools(context.messages).map(tool => tool.name)); return answer("ok"); });
   await host.handle("prompt", { text: "hi" });
-  assert.deepEqual(seen[0].sort(), ["control", "js_exec", "preferred"]);
+  assert.deepEqual(seen[0].sort(), ["codemode", "control", "preferred"]);
   await host.handle("configure", { codeMode: false });
   fake.respond(context => { seen.push(getCurrentTools(context.messages).map(tool => tool.name)); return answer("ok"); });
   await host.handle("prompt", { text: "again" });
@@ -472,17 +473,17 @@ test("code calls direct tools but cannot discover or call model-only tools", asy
   ]);
   const called: string[] = [];
   const { host } = await fake.start({ call: name => { called.push(name); return "found"; } });
-  fake.respond(answer(fauxToolCall("js_exec", { code: `return { found: await tools.lookup({}), hidden: await tools.describe("control"), names: await tools.search({}) };` }, { id: "code" }), "toolUse"), answer("ok"));
+  fake.respond(answer(fauxToolCall("codemode", { code: `return { found: await tools.lookup({}), hidden: await describeTool("control") ?? null, names: (await searchTools("lookup control")).map(hit => hit.name) };` }, { id: "code" }), "toolUse"), answer("ok"));
   await host.handle("prompt", { text: "go" });
   assert.deepEqual(called, ["lookup"]);
   const history = (await fake.history()).context;
-  const output = history.find(message => message.role === "toolResult" && message.toolCallId === "code");
-  const value = JSON.parse((output as any).content[0].text);
+  const output = (history.find(message => message.role === "toolResult" && message.toolCallId === "code") as any).content.map((part: any) => part.text).join("\n");
+  const value = JSON.parse(output.slice(output.indexOf("{")));
   assert.equal(value.found, "found");
   assert.equal(value.hidden, null);
-  assert.deepEqual(value.names.map((tool: any) => tool.name), ["lookup"]);
-  fake.respond(answer(fauxToolCall("js_exec", { code: `return await tools.control({});` }, { id: "denied" }), "toolUse"), answer("ok"));
+  assert.deepEqual(value.names, ["lookup"]);
+  fake.respond(answer(fauxToolCall("codemode", { code: `return await tools.control({});` }, { id: "denied" }), "toolUse"), answer("ok"));
   await host.handle("prompt", { text: "try control" });
   assert.deepEqual(called, ["lookup"]);
-  assert.match(JSON.stringify((await fake.history()).context.find(message => message.role === "toolResult" && message.toolCallId === "denied")), /not a tool|not a function|Unknown tool/);
+  assert.match(JSON.stringify((await fake.history()).context.find(message => message.role === "toolResult" && message.toolCallId === "denied")), /tools\.control does not exist/);
 });

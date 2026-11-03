@@ -56,15 +56,15 @@ test("a Responses-era DeepSeek history replays as DeepSeek's own API takes it: e
   const item = (text: string) => JSON.stringify({ id: "rs_1", type: "reasoning", status: "completed", content: [{ type: "reasoning_text", text }], summary: [] });
   const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
   const turn = (content: any[], model = OLD.id) => ({ role: "assistant" as const, content, api: "openai-responses" as Api, provider: "openrouter", model, usage, stopReason: "toolUse" as const, timestamp: 1 });
-  const result = (toolCallId: string) => ({ role: "toolResult" as const, toolCallId, toolName: "js_exec", content: [{ type: "text" as const, text: "2" }], isError: false, timestamp: 1 });
+  const result = (toolCallId: string) => ({ role: "toolResult" as const, toolCallId, toolName: "codemode", content: [{ type: "text" as const, text: "2" }], isError: false, timestamp: 1 });
   const context: Context = {
     systemPrompt: "You add.",
     messages: [
       { role: "user", content: "1 + 1, twice?", timestamp: 1 },
-      turn([{ type: "thinking", thinking: "First sum.", thinkingSignature: item("First sum.") }, { type: "toolCall", id: "call_a|fc_1", name: "js_exec", arguments: { code: "1+1" } }]),
+      turn([{ type: "thinking", thinking: "First sum.", thinkingSignature: item("First sum.") }, { type: "toolCall", id: "call_a|fc_1", name: "codemode", arguments: { code: "1+1" } }]),
       result("call_a|fc_1"),
       // Another host's turn: no reasoning item.
-      turn([{ type: "toolCall", id: "call_b|fc_2", name: "js_exec", arguments: { code: "1+1" } }], FLASH.id),
+      turn([{ type: "toolCall", id: "call_b|fc_2", name: "codemode", arguments: { code: "1+1" } }], FLASH.id),
       result("call_b|fc_2"),
     ],
   };
@@ -86,8 +86,8 @@ test("a multi-turn tool conversation, then a turn on DeepSeek's own endpoint: ne
   // 1: a tool call from a host that sent no reasoning; 2: reasoning and another tool call; 3: the answer. DeepSeek's
   // endpoint checks every request; it refuses none.
   const host = await fakeModel(t, (body, index) => deepseekRefusal(body) ?? [
-    toolCall("js_exec", { code: "return 1 + 1;" }, "call_1"),
-    { ...toolCall("js_exec", { code: "return 2 + 2;" }, "call_2"), reasoning_content: "Now the second." },
+    toolCall("codemode", { code: "return 1 + 1;" }, "call_1"),
+    { ...toolCall("codemode", { code: "return 2 + 2;" }, "call_2"), reasoning_content: "Now the second." },
     { role: "assistant", content: "2 and 4." },
   ][index] ?? { role: "assistant", content: "Again." });
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);

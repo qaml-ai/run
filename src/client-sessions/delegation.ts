@@ -57,7 +57,7 @@ export async function delegate(ctx: DelegationContext, session: Session, setting
   const run = runningRun(session);
   const { createAgent, submit } = ctx.options;
   if (!createAgent || !submit) throw new Error("Delegation is not enabled on this runtime");
-  if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("delegate is called directly, not from js_exec");
+  if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("delegate is called directly, not from code");
   const toolCallId = call.toolCallId;
   const { target, task, output } = childTarget(settings, call.args, "delegate to");
   const { depth, maxDepth, chain } = childPlace(ctx, session, run, settings, "Delegation");

@@ -242,7 +242,7 @@ type Step = { calls: { id: string; name: string }[]; answered: number; order: nu
  * with some calls answered and others not, or right after a user message.
  */
 const transcript = fc.array(fc.record({
-  steps: fc.array(fc.array(fc.constantFrom("js_exec", "delegate", "search", "write_file"), { minLength: 0, maxLength: 3 }), { maxLength: 3 }),
+  steps: fc.array(fc.array(fc.constantFrom("codemode", "delegate", "search", "write_file"), { minLength: 0, maxLength: 3 }), { maxLength: 3 }),
   finished: fc.boolean(),
 }), { minLength: 1, maxLength: 4 }).chain(turns => fc.tuple(fc.constant(turns), fc.nat(), fc.array(fc.nat(), { maxLength: 12 }))).map(([turns, cutSeed, orderSeeds]) => {
   const messages: AgentMessage[] = [];

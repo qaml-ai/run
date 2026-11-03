@@ -17,7 +17,7 @@ const tenantsWith = (baseUrl: string, models?: object) => ({ tenants: {
 
 test("an Anthropic model on a tenant's endpoint gets Anthropic's own request, signatures included, with identity tokens and at no token cost", async t => {
   const endpoint = await gateway(t, (_body, index) => [
-    anthropic([{ type: "thinking", thinking: "Adding in code.", signature: "sig-from-anthropic" }, { type: "tool_use", id: "toolu_1", name: "js_exec", input: { code: "return 1 + 1;" } }], "tool_use"),
+    anthropic([{ type: "thinking", thinking: "Adding in code.", signature: "sig-from-anthropic" }, { type: "tool_use", id: "toolu_1", name: "codemode", input: { code: "return 1 + 1;" } }], "tool_use"),
     anthropic([{ type: "text", text: "It is 2." }], "end_turn", { input_tokens: 1000, output_tokens: 10 }),
   ][index]);
   const r = await runtime(t, () => ({ role: "assistant", content: "platform model" }), {}, tenantsWith(endpoint.url));
@@ -61,7 +61,7 @@ test("an Anthropic model on a tenant's endpoint gets Anthropic's own request, si
 test("OpenRouter models on a tenant's endpoint use its Responses API, reasoning carried back, and compact through it", async t => {
   const reasoning = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Let me compute." }], encrypted_content: "opaque-reasoning" };
   const endpoint = await gateway(t, (_body, index) => [
-    responses([reasoning, { type: "function_call", id: "fc_1", call_id: "call_calc", name: "js_exec", arguments: JSON.stringify({ code: "return 6 * 7;" }), status: "completed" }]),
+    responses([reasoning, { type: "function_call", id: "fc_1", call_id: "call_calc", name: "codemode", arguments: JSON.stringify({ code: "return 6 * 7;" }), status: "completed" }]),
     responses([message("42.")], { input_tokens: 3_500, output_tokens: 10 }),
   ][index] ?? responses([message("Summary: the user asked for sums.")]));
   const r = await runtime(t, () => ({ role: "assistant", content: "platform model" }), {}, tenantsWith(endpoint.url, { "openrouter/free/tiny": { contextWindow: 4_000, maxTokens: 1_000, reasoning: true } }));
@@ -93,7 +93,7 @@ test("a Bedrock model on a tenant's endpoint gets Converse's own request at its 
       ["contentBlockDelta", { contentBlockIndex: 0, delta: { reasoningContent: { text: "Adding in code." } } }],
       ["contentBlockDelta", { contentBlockIndex: 0, delta: { reasoningContent: { signature: "sig-from-bedrock" } } }],
       ["contentBlockStop", { contentBlockIndex: 0 }],
-      ["contentBlockStart", { contentBlockIndex: 1, start: { toolUse: { toolUseId: "tooluse_1", name: "js_exec" } } }],
+      ["contentBlockStart", { contentBlockIndex: 1, start: { toolUse: { toolUseId: "tooluse_1", name: "codemode" } } }],
       ["contentBlockDelta", { contentBlockIndex: 1, delta: { toolUse: { input: JSON.stringify({ code: "return 1 + 1;" }) } } }],
       ["contentBlockStop", { contentBlockIndex: 1 }],
       ["messageStop", { stopReason: "tool_use" }],
@@ -141,7 +141,7 @@ test("a Codex model on a tenant's endpoint gets the ChatGPT backend's own reques
   const reasoning = { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Let me compute." }], encrypted_content: "opaque-reasoning" };
   let failing = false;
   const endpoint = await gateway(t, (_body, index) => failing ? { status: 503, error: { message: "Upstream provider failed" } } : [
-    responses([reasoning, { type: "function_call", id: "fc_1", call_id: "call_calc", name: "js_exec", arguments: JSON.stringify({ code: "return 6 * 7;" }), status: "completed" }]),
+    responses([reasoning, { type: "function_call", id: "fc_1", call_id: "call_calc", name: "codemode", arguments: JSON.stringify({ code: "return 6 * 7;" }), status: "completed" }]),
     responses([message("42.")], { input_tokens: 265_000, output_tokens: 10 }),
   ][index] ?? responses([message("Summary: the user asked for products.")]));
   const r = await runtime(t, () => ({ role: "assistant", content: "platform model" }), {}, tenantsWith(endpoint.url));

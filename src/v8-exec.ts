@@ -6,7 +6,7 @@ import { recordV8Exec } from "./metrics.ts";
 import { Confined } from "./sandbox.ts";
 
 /**
- * js_exec on V8, a process per execution: sandbox/v8-exec, a bare V8 isolate (no Node), started for
+ * Code on V8, a process per execution: sandbox/v8-exec, a bare V8 isolate (no Node), started for
  * one execution and killed when it ends. Nothing is reused, so there is no pool to keep clean and
  * no watchdog here. In the image agent-launcher starts it (`Confined`): a uid of its own,
  * no environment, no_new_privs and the launcher's seccomp filter. It confines itself further: its
@@ -81,7 +81,7 @@ export class V8Exec {
       }, ({ code, signal, error }) => {
         if (pid) this.pids.delete(pid);
         release();
-        // A binary that is not installed (ENOENT) is not a failure to count: the "listening" line reports js_exec as not running.
+        // A binary that is not installed (ENOENT) is not a failure to count: the "listening" line reports code as not running.
         if (error) {
           if (error !== "ENOENT") recordV8Exec({ event: "spawn_failed", code: error });
           return close(`Codemode sandbox process could not start (${error})`);

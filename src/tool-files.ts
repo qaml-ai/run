@@ -22,7 +22,7 @@ import { TEMPORARY_SNAPSHOT, VOLUME_LIMITS, VolumeService, type FileEntry, type 
  * named like a URL. A marked field may take it inline (`data:`), and with `x-camelrun-directory` takes a
  * directory, sent as a manifest of its files. An OpenAPI multipart or binary body streams the file
  * instead (openapi.ts). The marker is explicit, so nothing is guessed from a plain string, and it reads
- * the same from a direct call and from js_exec. Only sources whose `fileArguments` is on are sent files.
+ * the same from a direct call and from code. Only sources whose `fileArguments` is on are sent files.
  *
  * Out: MCP images, audio, blobs and long text resources, and binary HTTP responses, are saved under
  * tool-outputs/<tool>/<call>, and the model gets a file reference.

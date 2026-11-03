@@ -6,7 +6,7 @@ const USD = 1_000_000;
 /** Calls charged at the provider's price: funding OpenRouter credit (what a tenant pays on top) is end-user-holds.test.ts's. */
 const AT_COST = { AGENT_OPENROUTER_CREDIT_MULTIPLIER: "1" };
 /** Each response reports what OpenRouter charged for it: $0.10. The model keeps calling tools. */
-const looping = (_body: any, index: number) => ({ ...toolCall("js_exec", { code: `return ${index}` }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.1 } });
+const looping = (_body: any, index: number) => ({ ...toolCall("codemode", { code: `return ${index}` }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.1 } });
 const settings = (r: Awaited<ReturnType<typeof runtime>>, body: Record<string, unknown>) => r.call("/v1/end-user-settings", { method: "PUT", body: { enabled: true, ...body } });
 const grant = (r: Awaited<ReturnType<typeof runtime>>, user: string, amount: number, key: string) =>
   r.call(`/v1/end-users/${encodeURIComponent(user)}/entries`, { body: { kind: amount > 0 ? "grant" : "adjustment", amount, key } });

@@ -180,7 +180,7 @@ test("a steer is acknowledged at once and completes when the running turn takes 
   // The turn calls a tool at every step until a message says to stop, so it runs as long as messages keep coming.
   const model = await provider(t, (body, index) => userTexts(body).at(-1) === "stop now"
     ? { role: "assistant", content: `done after ${userTexts(body).length} messages` }
-    : { ...toolCall("js_exec", { code: "return 1" }, `call_${index}`), delayMs: 50 });
+    : { ...toolCall("codemode", { code: "return 1" }, `call_${index}`), delayMs: 50 });
   const r = await runtime(t, () => ({}), { AGENT_BASE_URL: model.url });
   const { id } = (await r.call("/v1/agents", { body: {} })).json;
   const watcher = await watchEvents(t, `${r.base}/v1/agents/${id}/events`, auth);

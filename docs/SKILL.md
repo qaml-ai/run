@@ -175,12 +175,12 @@ asyncio.run(main())
   every process upserts the agent from that definition with no `tools`. Served tools also keep working through your
   deploys and restarts, which tools attached to a process don't. See
   https://run.camelai.com/docs/guides/tools.md#several-processes-workers-and-deploys.
-- **Tools and js_exec.** Besides your tools as tools of their own, the model gets `js_exec`, a sandbox where it
+- **Tools and codemode.** Besides your tools as tools of their own, the model gets `codemode`, a sandbox where it
   writes code that calls them (`tools.<name>(args)`), and by default it can call any of your tools from there (an
   agent's tools are `exposure: "both"` up to 10 of them, `"codemode"` past that). Mark a tool
   `exposure: "direct"` (Python `@tool(exposure="direct")`) to always declare its schema to the model. It remains callable from code;
   `direct` is a deprecated advertisement preference, not a restriction. See
-  https://run.camelai.com/docs/guides/tools.md#tools-in-js_exec.
+  https://run.camelai.com/docs/guides/tools.md#tools-in-codemode.
 - **Limits to design around.** The one that matters is **busy agents**: how many agents may run at once, 20 on
   free credit, 25 once the account has paid $5 for credit, then 100, 250 and 1,000 (usage tiers); past it a run gets
   429 `BUSY_AGENT_LIMIT`, which says what the next tier unlocks. Runs are limited to 240 a minute on free credit (600
@@ -190,7 +190,7 @@ asyncio.run(main())
   https://run.camelai.com/docs/guides/stateless-runs.md), which keep no agent. See
   https://run.camelai.com/docs/reference/limits.md#rate-limits.
 - **Tool-less agents.** An agent that only answers (a classifier, a judge, a one-line reply) needs no runtime tools:
-  `upsert(key, { instructions, codeMode: false, fileTools: false })` drops `js_exec` and the runtime's tool rules, so
+  `upsert(key, { instructions, codeMode: false, fileTools: false })` drops `codemode` and the runtime's tool rules, so
   each request is your instructions and the message, a few hundred tokens instead of about 2,000.
 - **Data back, not prose.** When the code needs an object (classification, extraction, a triage decision), pass a
   schema: `agent.run(text, { output: zodSchema })` gives a typed `run.output`; Python `output=PydanticModel`. Don't

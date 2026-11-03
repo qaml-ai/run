@@ -4,12 +4,12 @@ import { mkdtemp, rm, symlink, readFile, writeFile, link } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { executeCode, presentResult } from "../src/codemode.ts";
+import { executeCode } from "../src/codemode.ts";
 import { localTools } from "./local-tools.ts";
 import { SANDBOX_LIMITS, codeRequest } from "../src/limits.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 
-// js_exec end to end on v8-exec, this process's own (tests/v8-exec.test.ts has v8-exec's own workings).
+// Workflow execution end to end on v8-exec, this process's own (tests/v8-exec.test.ts has v8-exec's own workings).
 // Needs the binary: npm run build:v8-exec.
 type RunOptions = { timeoutMs?: number; maxOutputCharacters?: number; signal?: AbortSignal; onEvent?: (event: unknown) => void };
 async function fixture(t: { after: (fn: () => Promise<void>) => void }, bridge?: ToolBridge) {
@@ -107,9 +107,8 @@ test("a tool name code gets wrong says which tool it may have meant", async t =>
   // More than one server has it: each is named.
   await assert.rejects(run("return await tools.read({});"), /Did you mean tools\.camel__read or tools\.helpdesk__read\?/);
   // Meaning none: the tools there are, by name (models called bash, ls and their direct tools here).
-  await assert.rejects(run("return await tools.nothing_like_it({});"), /tools\.nothing_like_it is not a tool\. The tools code can call: tools\.camel__list_commits, tools\.camel__read, tools\.helpdesk__read\. tools\.describe/);
+  await assert.rejects(run("return await tools.nothing_like_it({});"), /tools\.nothing_like_it is not a tool\. The tools code can call: tools\.camel__list_commits, tools\.camel__read, tools\.helpdesk__read\. /);
   await assert.rejects(run("return await tools.bash({ command: 'ls' });"), /tools\.bash is not a tool\. There is no shell: this runs JavaScript\. The tools code can call: tools\.camel__list_commits/);
-  await assert.rejects(run("return await tools.write({});"), /tools\.write is not a tool\. Files here are fs\.readFile, fs\.writeFile and fs\.list\./);
   // What code may look up without calling still works: the tools object itself, its names, and real tools.
   assert.deepEqual(JSON.parse((await run("return { keys: Object.keys(tools).length, then: typeof tools.then, json: JSON.stringify(tools) !== undefined, fn: typeof tools.camel__read };")).output.at(-1)!),
     { keys: 6, then: "undefined", json: true, fn: "function" });
@@ -124,18 +123,6 @@ test("an import says what js_exec has instead", async t => {
 test("with no tools for code, a tool name says to call tools directly", async t => {
   const { run } = await fixture(t, { definitions: [], call: async () => ({}) });
   await assert.rejects(run("return await tools.bot__save({});"), /tools\.bot__save is not a tool\. Code here can call no tools: call yours directly, outside js_exec\./);
-});
-
-test("the model reads what code returned as it is, after what it logged, with cuts marked", async t => {
-  const { run } = await fixture(t);
-  const read = async (code: string, maxOutputCharacters?: number) => presentResult(await run(code, { maxOutputCharacters }), maxOutputCharacters);
-  assert.equal(await read('return { total: 2, apps: ["a", "b"] };'), '{"total":2,"apps":["a","b"]}', "a returned value is its JSON, not a string inside an envelope");
-  assert.equal(await read('return "done";'), "done", "a string is its own text");
-  assert.equal(await read('console.log("step", { n: 1 }); return [1];'), 'Logged:\nstep\n{"n":1}\n\nReturned:\n[1]');
-  assert.equal(await read('console.log("only");'), "only");
-  assert.equal(await read("const x = 1;"), "No output: nothing was returned or logged.");
-  assert.equal(await read('return { a: "z".repeat(40) };', 20), '{"a":"zzzzzzzzzzzzzz\n\n[Output cut at 20 characters, so the returned JSON is incomplete. Return only what you need (counts, chosen fields, a summary), or write the data to a file and read it in parts.]');
-  assert.match(await read('text("y".repeat(30)); return 1;', 20), /^Logged:\ny{20}\n\nReturned:\n\(cut\)\n\n\[Output cut at 20 characters, leaving no room for the return value\./);
 });
 
 test("tool call count, concurrency and result transfer quotas hold outside the guest", async t => {

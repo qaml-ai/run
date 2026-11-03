@@ -49,14 +49,14 @@ export function approver(by: Responder) {
 /**
  * Suspend a tool call on the input its tool asked for: each request becomes an input (approvals
  * shown as the runtime sees the call, never as the model or tool describes it), announced on the
- * agent's stream, and the call returns open for the agent to leave waiting. Code in js_exec cannot
+ * agent's stream, and the call returns open for the agent to leave waiting. Code cannot
  * wait for days, so a call from there fails, pointing the model at a direct call.
  */
 export async function suspend(ctx: InputContext, session: Session, call: ToolCall, request: RequestRecord | undefined, result: McpResult) {
   const inputs = ctx.options.inputs;
   let requests = inputRequests(result);
   const approval = requests.every(entry => entry.kind === "approval");
-  if (!call.toolCallId || call.innerCallId || !request || !inputs) throw new Error(`${call.name} needs the user's ${approval ? "approval" : "input"}: call ${call.name} directly, not from js_exec`);
+  if (!call.toolCallId || call.innerCallId || !request || !inputs) throw new Error(`${call.name} needs the user's ${approval ? "approval" : "input"}: call ${call.name} directly, not from code`);
   const header = session.header;
   const hashed = argumentsHash(call.name, call.args);
   const shown = JSON.stringify(call.args);

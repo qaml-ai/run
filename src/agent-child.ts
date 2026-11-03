@@ -15,7 +15,6 @@ const host = createAgentHost({
   tool: (name, args, call) => rpc.request("tool", { name, args, ...call }),
   cancelTools: () => rpc.request("cancel-tools"),
   runLimit: async () => (await rpc.request("run-limit")) ?? undefined,
-  search: query => rpc.request("search", query),
   file: ref => rpc.request("file", ref),
   modelAuth: provider => rpc.request("model-auth", provider === undefined ? undefined : { provider }),
   modelAttempt: event => rpc.request("model-attempt", event),
@@ -28,7 +27,7 @@ const host = createAgentHost({
   // This process's environment is the node's settings for it (agentProcessEnv).
 });
 
-/** A turn to run js_exec, held by the supervisor (which counts the tenant's across the node) until given back. */
+/** A turn to run code, held by the supervisor (which counts the tenant's across the node) until given back. */
 async function codeSlot(rpc: Rpc, signal: AbortSignal): Promise<() => void> {
   const id = randomUUID();
   const release = () => { void rpc.request("code-release", { id }).catch(() => {}); };

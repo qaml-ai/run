@@ -214,9 +214,9 @@ test("an agent's own model, thinking level and prompt addition survive applying 
   assert.deepEqual([await thinking(agent), await thinking(other)], ["off", "high"]);
 });
 
-test("fileTools: false leaves the model present_file alone, with the mounts still open to fs in js_exec", async t => {
+test("fileTools: false leaves present_file but removes file access from code", async t => {
   const r = await runtime(t, (_body, index) => [
-    toolCall("js_exec", { code: "await fs.writeFile('/workspace/notes.md', 'hi'); return await fs.readFile('/workspace/notes.md', { encoding: 'utf8' });" }),
+    toolCall("codemode", { code: "return await tools.write({ path: '/workspace/notes.md', content: 'hi' });" }),
   ][index] ?? { role: "assistant", content: "ok" });
   const direct = (body: any) => body.tools.map((tool: any) => tool.function.name).sort();
   const definition = (await r.call("/v1/definitions", { body: { name: "Own files", fileTools: false } })).json;
@@ -225,9 +225,9 @@ test("fileTools: false leaves the model present_file alone, with the mounts stil
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
   assert.equal((await r.call(`/v1/agents/${agent}`)).json.fileTools, false);
   await r.prompt(agent, "take notes");
-  assert.deepEqual(direct(r.model.bodies[0]), ["decide", "js_exec", "present_file"]);
-  assert.match(toolResults(r.model.bodies[1]).at(-1), /hi/, "fs still reaches the workspace");
-  assert.match(systemText(r.model.bodies[0]), /Work on them with fs in js_exec/);
+  assert.deepEqual(direct(r.model.bodies[0]), ["codemode", "decide", "present_file"]);
+  assert.match(toolResults(r.model.bodies[1]).at(-1), /tools\.write does not exist/, "code cannot call disabled file tools");
+  assert.match(systemText(r.model.bodies[0]), /The application's own tools may reach them/);
   assert.doesNotMatch(systemText(r.model.bodies[0]), /The file tools \(read/);
 
   // Applying the definition without it brings the file tools back, but not to an agent that chose to go without.
@@ -235,10 +235,10 @@ test("fileTools: false leaves the model present_file alone, with the mounts stil
   await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { fileTools: null, apply: "all" } });
   await until(async () => (await r.call(`/v1/definitions/${definition.id}/agents`)).json.every((entry: any) => entry.revision === 2), "the apply");
   await r.prompt(agent, "again");
-  assert.deepEqual(direct(r.model.bodies.at(-1)), ["cp", "decide", "edit", "glob", "grep", "js_exec", "ls", "mv", "present_file", "read", "write"]);
+  assert.deepEqual(direct(r.model.bodies.at(-1)), ["codemode", "cp", "decide", "edit", "glob", "grep", "ls", "mv", "present_file", "read", "write"]);
   assert.match(systemText(r.model.bodies.at(-1)) + JSON.stringify(r.model.bodies.at(-1).messages), /The file tools \(read/);
   await r.prompt(own, "hello");
-  assert.deepEqual(direct(r.model.bodies.at(-1)), ["decide", "js_exec", "present_file"]);
+  assert.deepEqual(direct(r.model.bodies.at(-1)), ["codemode", "decide", "present_file"]);
 });
 
 test("the SDK makes an agent from a definition with its attached server's tools, which survive an apply", async t => {

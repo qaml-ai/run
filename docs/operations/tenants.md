@@ -89,13 +89,13 @@ in [Configuration](configuration.md), with their defaults in [Limits](../referen
 - `decisionConcurrency`: decision calls at once on a node (default 16, or the tier's), at most
   `AGENT_DECISION_NODE_CONCURRENCY` (64). The tenant's queue (1,000) and in-flight characters (8 million) scale
   up with it in proportion, the characters at most the node's 32 million;
-- `tier: "internal"`: the operator's own applications. No busy-agent, per-minute, js_exec or decision limit of
-  the tenant's own, unless a field of its entry sets one. A node's caps (agents hosted, js_exec workers, decision
+- `tier: "internal"`: the operator's own applications. No busy-agent, per-minute, codemode or decision limit of
+  the tenant's own, unless a field of its entry sets one. A node's caps (agents hosted, codemode workers, decision
   calls, in-flight characters, memory, request bodies) and spend limits still apply.
 
 A limit is the first of: the entry's field (or a self-serve tenant's `limits`), none on the internal tier, the
 [usage tier](../reference/limits.md#usage-tiers)'s for a prepaid tenant, else the deployment's default. An unbilled
-admin tenant keeps the defaults it had: no rate or js_exec limit, `AGENT_MAX_AGENTS_PER_TENANT` busy agents, 16
+admin tenant keeps the defaults it had: no rate or codemode limit, `AGENT_MAX_AGENTS_PER_TENANT` busy agents, 16
 decision calls. `GET /v1/limits` shows a tenant every limit and where it comes from.
 
 `tenant.sh` sets `maxAgents`, `maxMonthlyCost`, `decisionConcurrency` (`set-decision-concurrency`) and `tier`

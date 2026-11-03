@@ -193,7 +193,7 @@ test("an MCP server's input_required (form and url, and the older -32042) suspen
   });
   const r = await runtime(t, (body, index) => [toolCall("tools__rename", {}, "call_rename"), { role: "assistant", content: toolResults(body).at(-1) },
     toolCall("tools__connect", {}, "call_connect"), { role: "assistant", content: toolResults(body).at(-1) },
-    toolCall("js_exec", { code: "return await tools.tools__rename({})" }), { role: "assistant", content: toolResults(body).at(-1) }][index] ?? { role: "assistant", content: "?" }, LOCAL);
+    toolCall("codemode", { code: "return await tools.tools__rename({})" }), { role: "assistant", content: toolResults(body).at(-1) }][index] ?? { role: "assistant", content: "?" }, LOCAL);
   const definition = (await r.call("/v1/definitions", { body: { name: "Tools", humanInput: {}, mcpServers: [{ name: "tools", url: server.url, exposure: "both" }] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
 
@@ -214,7 +214,7 @@ test("an MCP server's input_required (form and url, and the older -32042) suspen
   assert.match(toolResults(r.model.bodies[3]).at(-1), /connected: accept/);
   assert.equal(server.calls[3].params.requestState, undefined, "no state was given, so none is sent");
 
-  // Code cannot wait for a person: the call from js_exec fails and says how to make it.
+  // Code cannot wait for a person: the call from codemode fails and says how to make it.
   const fromCode = await r.prompt(agent, "Rename from code");
   assert.match(fromCode.outcome.result.reply, /tools__rename needs the user's input: call tools__rename directly/);
   assert.equal(fromCode.outcome.result.stopped, undefined);
@@ -329,7 +329,7 @@ test("an input for particular people must be answered naming who answers", async
 
 test("approval tools stay searchable in code and refuse before asking or executing", async t => {
   const server = await rawMcp(t, { wipe: { call: () => ({ content: [{ type: "text", text: "wiped" }] }) } });
-  const r = await runtime(t, (body, index) => index === 0 ? toolCall("js_exec", { code: `const found = await tools.search("wipe"); if (!found.some(tool => tool.name === "s__wipe")) throw new Error("not searchable"); return await tools.s__wipe({});` }, "code") : { role: "assistant", content: toolResults(body).at(-1) }, LOCAL);
+  const r = await runtime(t, (body, index) => index === 0 ? toolCall("codemode", { code: `const found = await searchTools("wipe"); if (!found.some(tool => tool.name === "s__wipe")) throw new Error("not searchable"); return await tools.s__wipe({});` }, "code") : { role: "assistant", content: toolResults(body).at(-1) }, LOCAL);
   const definition = (await r.call("/v1/definitions", { body: { name: "Code approval", mcpServers: [{ name: "s", url: server.url, exposure: "codemode", approval: { default: "always" } }] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
   const result = await r.prompt(agent, "Wipe from code");

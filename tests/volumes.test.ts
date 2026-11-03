@@ -353,7 +353,7 @@ async function agents(t: Context) {
   };
 }
 
-test("file tools work from js_exec, and agents share a volume through mounts", async t => {
+test("file tools work from codemode, and agents share a volume through mounts", async t => {
   const f = await agents(t);
   const writer = await f.start();
   const workspace = VolumeService.workspaceOf(writer.session.id);
@@ -362,7 +362,7 @@ test("file tools work from js_exec, and agents share a volume through mounts", a
     await tools.read({ path: "/workspace/notes/today.md" });
     await tools.edit({ path: "/workspace/notes/today.md", edits: [{ oldText: "TODO tests", newText: "DONE tests" }] });
     return {
-      found: await tools.search("grep"),
+      found: ALL_TOOLS.filter(tool => tool.name === "grep"),
       ls: await tools.ls({ path: "/workspace/notes" }),
       glob: await tools.glob({ pattern: "**/*.md" }),
       grep: await tools.grep({ pattern: "DONE" }),
@@ -390,7 +390,7 @@ test("file tools work from js_exec, and agents share a volume through mounts", a
   // Mounts change through the owner of the agent; an idle agent restarts without the file tools.
   await reader.waitForRequest(wake.id);
   await f.sessions.setMounts(reader.session.id, "default", [{ workspace: false }]);
-  await assert.rejects(reader.execute('return await tools.read({ path: "/shared/today.md" })'), /tools\.read is not a tool/);
+  await assert.rejects(reader.execute('return await tools.read({ path: "/shared/today.md" })'), /tools\.read does not exist/);
   await assert.rejects(f.sessions.setMounts(reader.session.id, "default", [{ volumeId: workspace, path: "/a", mode: "ro" }, { volumeId: workspace, path: "/a/b", mode: "ro" }]), /overlaps/);
 });
 
@@ -410,7 +410,7 @@ test("the agent's own workspace at /scratch beside a project at /workspace: atta
   assert.equal((await agent.prompt("Read it", { files: [{ name: "q3.csv", data: new TextEncoder().encode("a,b") }] })).error, null);
   const system = systemText(bodies[0]);
   assert.match(system, /Files: \/workspace \(read-write\), \/scratch \(read-write\); relative paths resolve against \/workspace\. Attachments are saved under \/scratch\/uploads\/<request>\/ and files that tools return under \/scratch\/tool-outputs\/; keep scratch data under \/scratch\/tmp\//);
-  assert.ok(bodies[0].tools.find((tool: any) => tool.function.name === "js_exec").function.description.includes("/scratch/tmp/tickets.json"));
+  assert.ok(bodies[0].tools.some((tool: any) => tool.function.name === "codemode"));
   const named = JSON.stringify(bodies[0].messages).match(/\[File (\/scratch\/uploads\/[^ ]+\/q3\.csv) /);
   assert.ok(named, "the attachment is saved in the scratch volume");
   assert.ok(await exists(f.volumes, own, named[1].slice("/scratch".length)));
@@ -719,46 +719,32 @@ test("read shows an image or PDF natively when the model can view it, else a PDF
   assert.ok(!textOnly.parts.some((part: any) => part.type === "image_url" || part.type === "file"));
 });
 
-test("js_exec's fs reads and writes bytes and text within the mounts, and write takes base64", async t => {
+test("code reads and writes bytes and text within its mounts through file tools", async t => {
   const f = await agents(t);
   const writer = await f.start();
   const workspace = VolumeService.workspaceOf(writer.session.id);
+  const data = Buffer.alloc(64 * 1024);
+  for (let i = 0; i < data.length; i++) data[i] = i % 251;
   const value = JSON.parse((await writer.execute(`
-    // Bytes near fs's limit cross as base64 and come back as a Uint8Array.
-    const bytes = new Uint8Array(${700 * 1024});
-    for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
-    const written = await fs.writeFile("/workspace/bin/data.bin", bytes, { contentType: "application/x-test" });
-    const back = await fs.readFile("/workspace/bin/data.bin");
-    let same = back instanceof Uint8Array && back.length === bytes.length;
-    for (let i = 0; same && i < bytes.length; i++) same = back[i] === bytes[i];
-    await fs.writeFile("notes/a.txt", "héllo");
-    const text = await fs.readFile("/workspace/notes/a.txt", { encoding: "utf8" });
-    const odd = await fs.readFile("/workspace/notes/a.txt");
-    const nodeStyle = await fs.readFile("/workspace/notes/a.txt", "utf8");
+    const written = await tools.write({ path: "/workspace/bin/data.bin", content: "${data.toString("base64")}", encoding: "base64", contentType: "application/x-test" });
+    const back = await tools.read({ path: "/workspace/bin/data.bin", encoding: "base64", length: ${data.length} });
+    await tools.write({ path: "notes/a.txt", content: "héllo" });
+    const text = await tools.read({ path: "/workspace/notes/a.txt" });
     await tools.write({ path: "/workspace/pic.png", content: "${PNG.toString("base64")}", encoding: "base64" });
     const pic = await tools.read({ path: "/workspace/pic.png", encoding: "base64" });
-    const removed = await fs.remove("/workspace/notes/a.txt");
-    return { written, same, text, nodeStyle, odd: odd.length, stat: await fs.stat("/workspace/bin/data.bin"), dir: await fs.stat("/workspace/bin"), list: await fs.list("/workspace"), pic, removed };`)).output[0]);
-  assert.deepEqual([value.written.path, value.written.size, value.written.contentType], ["/workspace/bin/data.bin", 700 * 1024, "application/x-test"]);
-  assert.equal(value.same, true);
-  assert.equal(value.text, "héllo");
-  assert.equal(value.nodeStyle, "héllo", "Node's readFile(path, \"utf8\") form");
-  assert.equal(value.odd, 6, "bytes by default");
-  assert.deepEqual([value.stat.type, value.stat.size, value.stat.contentType], ["file", 700 * 1024, "application/x-test"]);
-  assert.deepEqual(value.dir, { path: "/workspace/bin", type: "directory" });
-  assert.deepEqual(value.list.entries.map((entry: any) => entry.name), ["bin", "pic.png"]);
+    return { written, same: back.data === "${data.toString("base64")}", text, list: await tools.ls({ path: "/workspace" }), pic };`)).output[0]);
+  assert.deepEqual([value.written.path, value.written.size, value.written.contentType], ["/workspace/bin/data.bin", data.length, "application/x-test"]);
+  assert.equal(value.same, true, "the bytes read back are the bytes written");
+  assert.equal(value.text.content, "héllo");
+  assert.deepEqual(value.list.entries.map((entry: any) => entry.name), ["bin", "notes", "pic.png"]);
   assert.deepEqual([value.pic.contentType, Buffer.from(value.pic.data, "base64").equals(PNG)], ["image/png", true]);
-  assert.equal(value.removed.deleted, true);
-  const stored = await f.volumes.call(workspace, "default", "stat", { path: "/bin/data.bin" });
-  assert.equal(stored.by, writer.session.id);
+  assert.equal((await f.volumes.call(workspace, "default", "stat", { path: "/bin/data.bin" })).by, writer.session.id);
 
-  // The same mount rules as the file tools: read-only mounts, nothing outside them, no way up.
   const reader = await f.start([{ volumeId: workspace, path: "/shared", mode: "ro" }]);
-  assert.equal(JSON.parse((await reader.execute('return (await fs.readFile("/shared/bin/data.bin")).length')).output[0]), 700 * 1024);
-  for (const code of ['await fs.writeFile("/shared/x", "x")', 'await fs.remove("/shared/bin/data.bin")']) await assert.rejects(reader.execute(code), /mounted read-only/);
-  for (const path of ["/etc/passwd", "/shared/../../etc/passwd", "../outside", "/shared/bin/../../x"]) await assert.rejects(reader.execute(`return await fs.readFile(${JSON.stringify(path)})`), /not inside a mount|Invalid path/, path);
-  await assert.rejects(writer.execute(`await fs.writeFile("/workspace/big", new Uint8Array(${700 * 1024 + 1}))`), /at most/);
-  await assert.rejects(writer.execute('await fs.writeFile("/workspace/x", 42)'), /Uint8Array/);
+  assert.equal(JSON.parse((await reader.execute('return (await tools.read({ path: "/shared/bin/data.bin", encoding: "base64", length: 65536 })).size')).output[0]), data.length);
+  await assert.rejects(reader.execute('await tools.write({ path: "/shared/x", content: "x" })'), /mounted read-only/);
+  for (const path of ["/etc/passwd", "/shared/../../etc/passwd", "../outside", "/shared/bin/../../x"]) await assert.rejects(reader.execute(`return await tools.read({ path: ${JSON.stringify(path)} })`), /not inside a mount|Invalid path/, path);
+  await assert.rejects(writer.execute('await tools.write({ path: "/workspace/x", content: 42 })'), /string|Invalid/);
 });
 
 test("copy and rename commit shared chunks, preserve types and publish versions together", async t => {

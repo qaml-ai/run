@@ -1,9 +1,9 @@
 # Sandbox boundary and remaining production work
 
-js_exec runs on V8: a bare V8 isolate in a process of its own per execution, `v8-exec`
+Code runs on V8: a bare V8 isolate in a process of its own per execution, `v8-exec`
 (`sandbox/v8-exec`, `src/v8-exec.ts`), started for one execution and killed when it ends, as a
 [confined process](#layers) of its own. See [The V8 engine](#the-v8-engine-v8-exec). Each
-`code_execution` metric line carries `Engine: v8`, and the runtime does not start if js_exec does
+`code_execution` metric line carries `Engine: v8`, and the runtime does not start if code does
 not run (the `listening` log line's `sandbox` field says where it runs).
 
 Until October 2026 a second engine, QuickJS compiled to WebAssembly on pooled worker threads, was
@@ -14,9 +14,10 @@ entry with `"codeEngine": "quickjs"` stops the runtime loading the file (remove 
 
 ## Limits of an execution
 
-Scripts default to a 30-second external deadline. A tenant may ask for at most
-60 seconds (`timeoutMs`; admin tenants 120 s), unless its operator set another
-(`codeMaxTimeoutMs`, at most 120 s); a longer `timeoutMs` is cut to it.
+Scripts get the tenant's `codeMaxTimeoutMs` of wall time: 60 seconds by default
+(120 for admin tenants without one), at most 120 seconds, tool calls and waiting
+for capacity included. Pi's optional
+first-line `timeout_ms` can shorten this deadline, never extend it.
 
 Each execution may use 2 seconds of CPU (`codeCpuMs` per tenant, at most 30 s).
 Time waiting on tools does not count. v8-exec enforces it from a watchdog thread,
@@ -30,13 +31,13 @@ v8-exec strips TypeScript (oxc, in linear time) and compiles the code, under the
 CPU budget. On the host, tool-argument checks skip the tenant's `pattern` and
 `patternProperties` regular expressions, which could backtrack for hours; the
 tool checks those itself. A failed check of arguments over 16 KiB names no
-fields. `tools.search` reads at most 500 characters and 32 words of a query.
+fields.
 
 **Fairness.** An execution keeps its v8-exec process while it waits on tools,
 about 20 MB resident. Tenants with a concurrency limit therefore share 16
 executions at once on a node (`AGENT_CODE_WORKERS_MAX` sets another number).
 Each such tenant may run its usage tier's number at once (4 on Free, 8 on Tier 1, 16 from Tier 2; `codeConcurrency` per tenant). Executions beyond that wait
-for a turn, tenant by tenant in rotation, within their own `timeoutMs`, so a busy
+for a turn, tenant by tenant in rotation, within their own deadline, so a busy
 tenant delays only its own. Admin tenants have no limit unless their entry sets
 one: they are admitted at once and bounded only by the v8-exec processes a node
 runs at once (`AGENT_V8_MAX`, 64). Their memory is the operator's to plan for.
@@ -47,10 +48,10 @@ still going 60 s past its time limit (`maxRunSeconds`) is aborted, and its agent
 is stopped 60 s after that. Either way the run fails, and the agent's next start
 closes the interrupted turn, as after a crash.
 
-Output defaults to 32,000 characters, capped at 128,000 and 1,024 emitted chunks.
+Output is capped at 128,000 bytes and 1,024 items. Pi also cuts the formatted
+result to `max_output_tokens` (10,000 tokens by default).
 Each script permits 256 tool calls with at most 32 in flight; arguments are
-limited to 128 KiB JSON, results to 1 MiB JSON and aggregate tool traffic to
-8 MiB. Tools are allowlisted and their arguments validated against host-owned
+limited to 128 KiB JSON, results to 1 MiB JSON. Tools are allowlisted and their arguments validated against host-owned
 schemas before dispatch. Call results are copied as JSON, never host references.
 All tool calls must be awaited; unfinished calls on return are rejected and
 pending calls are cancelled. Cancellation cannot undo effects already dispatched.
@@ -62,8 +63,8 @@ Adapters must honor cancellation and must implement idempotency for writes.
 
 ## Layers
 
-The guest has ECMAScript built-ins plus `tools`, `fs` (the file tools over its
-mounts, answered by the runtime), `text` and captured `console` methods. There is
+The guest has ECMAScript built-ins plus Pi's `tools`, discovery globals,
+`store`, `load`, `text`, `image`, `exit` and captured `console` methods. There is
 no `process`, `Bun`, `require`, host filesystem, `fetch`, sockets,
 workers, timers, shared memory or WebAssembly. Every module import is
 denied, including `node:`, `file:`, `data:` and HTTP URLs. `eval` and function
@@ -109,7 +110,7 @@ stdout. It carries length-prefixed JSON frames (at most 4 MiB each; the runtime
 drops the connection on anything bigger or malformed). Closing it kills the
 process; when the process ends, the launcher sends how (its exit code or
 signal) as a last frame and closes it. The runtime starts 2 v8-exec processes
-ahead (`AGENT_V8_PRESPAWN`), and at startup checks that js_exec runs and a file
+ahead (`AGENT_V8_PRESPAWN`), and at startup checks that code runs and a file
 parses. A process that dies, or that something kills, fails its execution with
 "Codemode sandbox process exited"; the next execution gets a new one.
 
@@ -164,8 +165,9 @@ with no environment and no descriptors but its stdin and stdout, over which the 
 codemode frames to it. Nothing is reused between executions, and a cancelled or timed-out
 execution's process is killed (SIGKILL).
 
-**What code sees.** One V8 context holding the ECMAScript built-ins and `tools`, `fs`, `text` and
-`console` from the bootstrap (`sandbox/v8-exec/src/bootstrap.js`). There is no
+**What code sees.** One V8 context holding the ECMAScript built-ins and Pi's
+code-mode prelude, loaded by `src/codemode-pi-launcher.ts`. File access uses
+`tools.read`, `tools.write` and the other file tools; there is no `fs` global. There is no
 `SharedArrayBuffer`, `Atomics` or `WebAssembly`; every `import()` is refused. `Intl` works: ICU
 data is compiled in (any locale; `en-US` and UTC by default). TypeScript is stripped in the process
 by [oxc](https://oxc.rs) (types removed, enums and parameter properties compiled), in linear time.

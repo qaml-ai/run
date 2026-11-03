@@ -30,7 +30,7 @@ export function httpAttempt(provider: string, status: number, what: { one: strin
 /**
  * The key a tenant's calls to `provider` use: Accounts.providerKey's chain (the tenant's own, else an admin's, else the
  * platform's). Only the platform's own key is the platform's: an admin's key for the tenant (its apiKeys) is the
- * tenant's to account for. Spent or rate-limited credit throws here, at each call, as js_exec can make many calls
+ * tenant's to account for. Spent or rate-limited credit throws here, at each call, as code can make many calls
  * between two model requests.
  */
 export async function resolveKey(accounts: Pick<Accounts, "providerKey" | "billing">, tenant: string, provider: string): Promise<KeyedCredential | undefined> {

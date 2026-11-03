@@ -17,6 +17,8 @@ export interface PiV8Options {
   expectedFingerprint?: string;
   /** Tenant CodeGate admission. Released on process exit, also on failed or cancelled admission. */
   acquireSlot?(signal: AbortSignal): Promise<() => void>;
+  /** Once per execution, when it stops: how long it ran from launch, and why it failed (the script's error, a limit, the sandbox), if it did. */
+  onEnd?(end: { ms: number; error?: string }): void;
 }
 
 const record = (value: unknown): value is Record<string, any> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -24,7 +26,7 @@ const integer = (value: unknown): value is number => Number.isSafeInteger(value)
 const optionalString = (value: unknown) => value === undefined || typeof value === "string";
 const json = (value: string) => { try { JSON.parse(value); return true; } catch { return false; } };
 
-/** Unused by production. Pi owns calls and replay; this launcher only owns transport and capacity. */
+/** Pi's code mode on v8-exec: Pi owns calls and replay; this launcher only owns transport and capacity. */
 export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
   const pool = options.pool ?? v8Exec();
   const cpuMs = options.cpuMs ?? 2_000, timeoutMs = options.timeoutMs ?? 300_000;
@@ -45,7 +47,8 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     const reserved = new Set(["Object", "Function", "Array", "Number", "String", "Boolean", "BigInt", "Symbol", "Math", "Date", "Intl", "JSON", "Reflect", "Proxy", "Promise", "RegExp", "Error", "Map", "Set", "WeakMap", "WeakSet", "WeakRef", "FinalizationRegistry", "performance", "eval", "undefined", "NaN", "Infinity", "WebAssembly", "SharedArrayBuffer", "Atomics"]);
     if (data.globals.some(global => reserved.has(global.name.split(".")[0]))) throw new Error("Pi global shadows a built-in");
     // V8 uses its fixed HEAP_BYTES cap; Pi's per-request memoryLimitBytes is not applied.
-    let guest: Guest | undefined, stopped = false, started = false, issued = 0, idle = -1, output = 0, items = 0;
+    let guest: Guest | undefined, stopped = false, started = false, issued = 0, idle = -1, output = 0, items = 0, error: string | undefined;
+    const launched = performance.now();
     const pending = new Set<number>(), sequences = new Set<number>();
     const queued: HostToWorkerMessage[] = [];
     let nextResult = 0;
@@ -54,8 +57,8 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     let resolveClosed!: () => void;
     const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
     const released = () => { release?.(); release = undefined; resolveClosed(); };
-    const fail = (message: string) => { if (!stopped) events.failure({ kind: "sandbox", message }); };
-    const timer = setTimeout(() => { if (!stopped) events.failure({ kind: "timeout", message: `Pi V8 exceeded ${timeoutMs} ms` }); }, timeoutMs);
+    const fail = (message: string) => { if (!stopped) { error ??= message; events.failure({ kind: "sandbox", message }); } };
+    const timer = setTimeout(() => { if (!stopped) { error ??= `Codemode timed out after ${timeoutMs}ms`; events.failure({ kind: "timeout", message: `Pi V8 exceeded ${timeoutMs} ms` }); } }, timeoutMs);
     const post = (message: HostToWorkerMessage) => {
       if (stopped) return;
       if (!data.deterministic) message = { ...message, seq: ++nextResult, now: Date.now() };
@@ -99,6 +102,7 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
         } else if (typeof message.ok !== "boolean" || (message.ok
           ? !optionalString(message.value) || (message.value !== undefined && !json(message.value)) || typeof message.writes !== "string" || !json(message.writes)
           : typeof message.error !== "string" || !json(message.error))) return fail("Malformed Pi completion");
+        if (message.type === "done" && !message.ok) error ??= String(JSON.parse(message.error)?.message ?? "Script error");
       } else if (message.type === "output") {
         const item = message.item;
         if (!record(item) || !(item.type === "text" ? typeof item.text === "string" && (item.console === undefined || item.console === true)
@@ -122,6 +126,7 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
       if (!stopped) {
         stopped = true;
         clearTimeout(timer);
+        options.onEnd?.({ ms: Math.round(performance.now() - launched), ...error === undefined ? {} : { error } });
         admission.abort();
         if (guest) { guest.end(); if (!guest.dispatched) released(); } else released();
       }
@@ -129,6 +134,9 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     } };
   };
 }
+
+/** Where an agent's code runs: v8-exec in production; a test or the simulation may give Pi's in-process sandbox. */
+export type CodeSandboxes = (options: CodemodeSandboxBaseOptions & PiV8Options) => CodemodeSandboxBase;
 
 export class PiV8Sandbox extends CodemodeSandboxBase {
   constructor(options: CodemodeSandboxBaseOptions & PiV8Options = {}) {

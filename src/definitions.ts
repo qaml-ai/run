@@ -46,9 +46,9 @@ export interface DefinitionSpec {
   mcpServers?: McpServerSpec[];
   /** OpenAPI specs whose operations the runtime calls; credentials sealed. */
   openApi?: OpenApiSpec[];
-  /** false: agents get no file tools but present_file; their mounts stay open to fs in js_exec. */
+  /** false: agents get no file tools but present_file; their mounts still hold attachments and tool outputs. */
   fileTools?: boolean;
-  /** false: agents get no js_exec, and call every tool directly (AgentConfig.codeMode). */
+  /** false: agents get no code mode, and call every tool directly (AgentConfig.codeMode). */
   codeMode?: boolean;
   /** Built-in tools to enable: web_fetch, web_search, x_search, schedule, ask_user, delegate, agents. */
   builtins?: string[];
@@ -60,7 +60,7 @@ export interface DefinitionSpec {
   delegate?: DelegateSettings;
   /** With the workflow builtin: who its agents' workflow scripts may coordinate, and how wide and deep (workflows.ts). */
   workflow?: WorkflowSettings;
-  /** false: its agents get no decide tool; true: they get it even with no js_exec and no other tools (decisions.ts). */
+  /** false: its agents get no decide tool; true: they get it even with no code mode and no other tools (decisions.ts). */
   decide?: boolean;
   /** Made for this channel, and deleted with it. */
   channel?: string;

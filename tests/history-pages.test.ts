@@ -267,7 +267,7 @@ test("history comes in pages of whole turns, newest first, from Pi storage where
   const r = await runtime(t, body => {
     const last = body.messages.at(-1);
     if (last.role === "tool") return { content: `done ${lastUser(body)}` };
-    return lastUser(body).startsWith("tool") ? toolCall("js_exec", { code: "return 1" }, `call_${body.messages.length}`) : { content: `reply ${lastUser(body)}` };
+    return lastUser(body).startsWith("tool") ? toolCall("codemode", { code: "return 1" }, `call_${body.messages.length}`) : { content: `reply ${lastUser(body)}` };
   }, { AGENT_IDLE_MS: "1000" });
   const session = (await r.call("/v1/agents", { body: {} })).json;
   const agent = session.id as string;
@@ -400,7 +400,7 @@ test("history after pages forward on the API and through the SDK; after with bef
 test("the newest page has the running turn's finished messages, at their indexes; purging removes the agent's history", async t => {
   const r = await runtime(t, body => {
     if (body.messages.at(-1).role === "tool") return { content: "finished", delayMs: lastUser(body) === "slow" ? 1500 : 0 };
-    return lastUser(body) === "slow" ? toolCall("js_exec", { code: "return 2" }) : { content: `reply ${lastUser(body)}` };
+    return lastUser(body) === "slow" ? toolCall("codemode", { code: "return 2" }) : { content: `reply ${lastUser(body)}` };
   }, { AGENT_IDLE_MS: "1000" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   await r.prompt(agent, "first");

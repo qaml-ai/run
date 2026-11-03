@@ -10,7 +10,7 @@ import { frames } from "./sandbox-wire.ts";
  */
 export const sandboxDir = () => process.env.AGENT_SANDBOX_DIR || undefined;
 
-/** The programs that parse what tenants and models supply: v8-exec for js_exec, parse-job.ts for files. */
+/** The programs that parse what tenants and models supply: v8-exec for code, parse-job.ts for files. */
 export type SandboxKind = "v8" | "parse";
 
 /** How a process ended: its exit code or signal when known, or why it could not be started. */

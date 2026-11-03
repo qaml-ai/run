@@ -9,13 +9,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { codeCapacity, CodeGate, executeCode } from "../src/codemode.ts";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { checkable, validateToolCall } from "../src/tool-policy.ts";
-import { keywordScores } from "../src/tool-search.ts";
 import { codeErrorClass, recordCodeExecution, recordV8Exec, setMetricSink } from "../src/metrics.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { supervisorMessages } from "./fixtures/journal-messages.ts";
 
-// Hard limits on js_exec: nothing a tenant supplies runs on the runtime's thread, every execution's CPU is
+// Hard limits on workflow execution: nothing a tenant supplies runs on the runtime's thread, every execution's CPU is
 // bounded from outside its guest, and one tenant cannot take every sandbox worker on a node. The executions
 // run on v8-exec (npm run build:v8-exec); tests/v8-exec.test.ts has its own workings.
 
@@ -114,10 +113,7 @@ test("host-side checks of guest input stay linear: tenant regexes are not run, a
   assert.ok(performance.now() - started < 1_000, `${Math.round(performance.now() - started)} ms`);
   assert.deepEqual(checkable({ type: "object", properties: { pattern: { type: "string", pattern: "x" } }, const: { pattern: "kept" } }), { type: "object", properties: { pattern: { type: "string" } }, const: { pattern: "kept" } });
 
-  started = performance.now();
-  const tools = Array.from({ length: 4096 }, (_, i) => ({ name: `ns__tool_${i}`, description: `Tool number ${i} does things with records and files` }));
-  keywordScores(tools, Array.from({ length: 20_000 }, (_, i) => `word${i}`).join(" "));
-  assert.ok(performance.now() - started < 2_000, `search: ${Math.round(performance.now() - started)} ms`);
+
 });
 
 test("an agent process that stops answering is killed, and its turn is closed on restart", { timeout: 60_000, skip: (process.env.AGENT_HOSTING ?? "process") !== "process" && "agent processes only" }, async t => {

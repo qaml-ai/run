@@ -108,7 +108,7 @@ test("a tenant's own OpenRouter key answers its decisions, and is not charged", 
   assert.equal(openrouter.requests.at(-1)!.key, "Bearer own-openrouter-key");
 });
 
-/** A model that runs a batch through js_exec, then a decision directly, then says what came back. */
+/** A model that runs a batch through codemode, then a decision directly, then says what came back. */
 function decider(body: any) {
   const results = toolResults(body);
   if (/too dear/.test(lastUser(body) ?? "")) return body.messages.at(-1).role === "tool" ? { role: "assistant", content: `failed: ${results.at(-1)}` } : toolCall("decide", { state: "x", questions: QUESTIONS, maxUsd: 1e-9 }, "call_dear");
@@ -121,13 +121,13 @@ for (let start = 0; start < states.length; start += 100) {
   for (const result of results) result.error ? failed++ : result.answers.is_support.noul > 0.9 && flagged++;
 }
 return { flagged, failed };`;
-    return toolCall("js_exec", { code }, "call_bulk");
+    return toolCall("codemode", { code }, "call_bulk");
   }
   if (results.length === 1) return toolCall("decide", { state: "my login is broken", questions: QUESTIONS }, "call_one");
   return { role: "assistant", content: `bulk: ${results[0]} one: ${results[1]}` };
 }
 
-test("the decide builtin answers from js_exec in batches and directly, billed to the run and the agent", async t => {
+test("the decide builtin answers from codemode in batches and directly, billed to the run and the agent", async t => {
   const { r, openrouter } = await start(t, decider, 0.001);
   assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 10_000_000, reason: "test" }, token: OPS })).status, 201);
   // No builtins: decide is every agent's.
@@ -189,7 +189,7 @@ test("decide is every agent's by default, and opts out with decide: false on the
   await r.prompt(made, "hi", PAYG);
   assert.ok(!offered(r).includes("decide"));
   assert.equal((await r.call("/v1/agents", { body: { definition: definition.json.id, decide: true }, token: PAYG })).status, 400);
-  // An agent with no js_exec and no tools of its own has none unless it asks.
+  // An agent with no codemode and no tools of its own has none unless it asks.
   const bare = (await r.call("/v1/agents", { body: { codeMode: false }, token: PAYG })).json.id;
   await r.prompt(bare, "hi", PAYG);
   assert.ok(!offered(r).includes("decide"));

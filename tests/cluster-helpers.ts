@@ -194,7 +194,7 @@ export async function fakeModel(t: { after(fn: () => Promise<void>): void }, res
   const env = { AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` };
   return { bodies, env };
 }
-export const jsExec = (code: string) => ({ role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "js_exec", arguments: JSON.stringify({ code }) } }] });
+export const jsExec = (code: string) => ({ role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "codemode", arguments: JSON.stringify({ code }) } }] });
 export const toolMessages = (body: any) => body.messages.filter((message: any) => message.role === "tool").map((message: any) => typeof message.content === "string" ? message.content : JSON.stringify(message.content));
 export async function until(check: () => boolean | Promise<boolean>, what: string, ms = 20_000) {
   for (const started = Date.now(); !await check(); await sleep(50)) assert.ok(Date.now() - started < ms, what);

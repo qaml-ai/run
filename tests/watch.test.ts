@@ -99,12 +99,12 @@ async function scriptedModel(t: { after(fn: () => Promise<void> | void): void },
 }
 const code = "return 6 * 7";
 const argumentPieces = ['{"co', 'de": "ret', 'urn 6 ', '* 7"}'];
-const toolDeltas = [{ role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "js_exec", arguments: "" } }] },
+const toolDeltas = [{ role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "codemode", arguments: "" } }] },
   ...argumentPieces.map(piece => ({ tool_calls: [{ index: 0, function: { arguments: piece } }] }))];
 const words = ["The ", "answer ", "is ", "42."];
 
 async function setup(t: Parameters<typeof runtime>[0], transport: "sse" | "poll") {
-  // The first answer calls js_exec, its arguments held half way; the second streams its text.
+  // The first answer calls codemode, its arguments held half way; the second streams its text.
   const model = await scriptedModel(t, index => index === 0 ? { deltas: toolDeltas, hold: 3 } : index === 1 ? { deltas: words.map(word => ({ content: word })) } : { deltas: [{ content: "ok" }] });
   const r = await runtime(t, () => ({}), { AGENT_BASE_URL: model.url });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
@@ -126,7 +126,7 @@ for (const transport of ["sse", "poll"] as const) {
     const accepted = await s.r.call(`/v1/agents/${s.agent}/prompt`, { body: { text: "compute" } });
     // Half way through the tool call's arguments: the call is named, and its code parsed as far as it goes.
     const call = await until(() => (state.partial?.content ?? []).find((part: any) => part.type === "toolCall" && part.arguments.code) as any, "the tool call to stream");
-    assert.equal(call.name, "js_exec");
+    assert.equal(call.name, "codemode");
     assert.equal(call.id, "call_1");
     assert.ok(code.startsWith(call.arguments.code) && call.arguments.code.length < code.length, `partial code: ${call.arguments.code}`);
     assert.ok(state.running);

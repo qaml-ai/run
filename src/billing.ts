@@ -208,7 +208,7 @@ export class Billing {
   }
 
   /**
-   * The js_exec limits set for the tenant: an admin tenant's entry (absent: the default CPU, and no other limit below the
+   * The code limits set for the tenant: an admin tenant's entry (absent: the default CPU, and no other limit below the
    * runtime's), else a self-serve tenant's `tenants.limits`, else `CODE_LIMITS` (on free credit, `freeConcurrent` at once).
    */
   async codeLimits(tenant: string): Promise<{ cpuMs: number; maxTimeoutMs: number; concurrent: number }> {
@@ -250,7 +250,7 @@ export class Billing {
   }
 
   /**
-   * js_exec executions the tenant may run at once on a node: an admin tenant's entry, a self-serve tenant's
+   * Scripts the tenant may run at once on a node: an admin tenant's entry, a self-serve tenant's
    * `tenants.limits`, none on the internal tier, its tier's, else for an admin tenant none and for a self-serve one
    * `CODE_LIMITS` (on free credit, `freeConcurrent`).
    */
@@ -274,7 +274,7 @@ export class Billing {
 
   /**
    * What GET /v1/limits shows, but the per-minute limits (rate-limits.ts has those): the tenant's tier (`internal`,
-   * else a prepaid tenant's by what it has paid, else null), its busy agents, js_exec and decision limits with where
+   * else a prepaid tenant's by what it has paid, else null), its busy agents, code and decision limits with where
    * each comes from (null: no limit), and every tier.
    */
   async limits(tenant: string) {

@@ -201,14 +201,14 @@ const CODE_CLASSES: [string, RegExp][] = [
   ["syntax", /SyntaxError/],
 ];
 
-/** A js_exec error, sorted by which limit stopped it (else `guest_error`, the code's own), for a metric dimension. */
+/** A script's error, sorted by which limit stopped it (else `guest_error`, the code's own), for a metric dimension. */
 export function codeErrorClass(message: string | null | undefined): string {
   if (!message) return "none";
   return CODE_CLASSES.find(([, pattern]) => pattern.test(message))?.[0] ?? "guest_error";
 }
 
 /**
- * One js_exec execution: how long it took, the CPU its guest used (when it finished), the timeoutMs
+ * One script: how long it took, the CPU its guest used (when it finished), the timeoutMs
  * it asked for and got, and how it ended, so its limits can be tuned from what executions need.
  */
 export function recordCodeExecution(execution: { tenant?: string; ms: number; requestedTimeoutMs?: number; timeoutMs: number; cpuMs?: number; error?: unknown }) {
@@ -328,7 +328,7 @@ export function observeTurns(model: () => { provider: string; id: string } | und
         // The error's class only, never its text: a tool's error can echo what a user wrote. The host whose response made
         // the call: one that drops a call's arguments shows as its failures (Relace, 2026-11-02).
         const text = String(event.result?.content?.find?.((part: any) => part?.type === "text")?.text ?? "");
-        sink(JSON.stringify({ type: "tool_failed", toolName: event.toolName ?? "", tenant: tenant(), errorClass: event.toolName === "js_exec" ? codeErrorClass(text) : errorClass(text || "error"), provider: model()?.provider, model: model()?.id , ...(host ? { host } : {}) }));
+        sink(JSON.stringify({ type: "tool_failed", toolName: event.toolName ?? "", tenant: tenant(), errorClass: event.toolName === "codemode" ? codeErrorClass(text) : errorClass(text || "error"), provider: model()?.provider, model: model()?.id , ...(host ? { host } : {}) }));
       }
     }
   }

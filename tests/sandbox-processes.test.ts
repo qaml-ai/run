@@ -1,4 +1,4 @@
-// The processes untrusted code and files run in (src/sandbox.ts): v8-exec for js_exec, parse-job.ts for
+// The processes untrusted code and files run in (src/sandbox.ts): v8-exec for codemode, parse-job.ts for
 // files, started by this process without agent-launcher, or through the launcher's sockets with it
 // (tests/fake-launcher.ts stands in for it here; tests/image-isolation.ts runs the real one, confined).
 import { test } from "node:test";
@@ -76,7 +76,7 @@ test("frames survive arbitrary chunking and refuse oversized or malformed input"
   sender.destroy();
 });
 
-test("through the launcher's socket: js_exec end to end, cancelled, killed and reported, pre-spawned processes used once", { skip, timeout: 60_000 }, async t => {
+test("through the launcher's socket: codemode end to end, cancelled, killed and reported, pre-spawned processes used once", { skip, timeout: 60_000 }, async t => {
   const launcher = await fakeLauncher(t);
   const pool = new V8Exec({ prespawn: 2 });
   t.after(() => pool.close());
@@ -182,7 +182,7 @@ test("a launcher that cannot be reached fails the execution and the parse clearl
   await assert.rejects(parse(PNG, false), /the parser could not start \(ENOENT\)/);
 });
 
-test("without the launcher js_exec and parsing run in processes of this one's own, unless isolation is required", { skip }, async () => {
+test("without the launcher codemode and parsing run in processes of this one's own, unless isolation is required", { skip }, async () => {
   assert.equal(process.env.AGENT_SANDBOX_DIR, undefined);
   assert.equal((await checkSandbox()).mode, "in-process");
   await assert.rejects(checkSandbox({ required: true }), /AGENT_SANDBOX_REQUIRED=1, but no agent-launcher/);

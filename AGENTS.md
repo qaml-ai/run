@@ -1,7 +1,7 @@
 # Working in camelRun (for coding agents)
 
 camelRun (qaml-ai/run) is the agent runtime behind https://run.camelai.com: a Node.js server that runs each agent's
-model loop, keeps its history and files in Postgres and object storage, and runs js_exec on v8-exec (`sandbox/`).
+model loop, keeps its history and files in Postgres and object storage, and runs codemode on v8-exec (`sandbox/`).
 Main deploys to production by itself once CI passes, so main is production: test before merging.
 
 ## Build and test

@@ -107,7 +107,7 @@ see [Several processes, workers and deploys](tools.md#several-processes-workers-
 | Tool approval (`needs_approval`), interruptions | `@tool(needs_approval=True)`; the run ends `input_required` and `run.inputs[0].answer(True)` resumes it, from any process, days later if need be. See [Human input](human-input.md) |
 | `RunContextWrapper` (context for tools) | `context` and `subject` on the agent, plus `user` on each run. Tools get them in `context.identity`, set by your code and never by the model. See [Identity](tools.md#identity-who-a-call-is-for) |
 | Hosted tools: `WebSearchTool` | `builtins=["web_search"]` |
-| `CodeInterpreterTool` | `js_exec`, always on: JavaScript in a sandbox that can call the agent's tools. It has no Python |
+| `CodeInterpreterTool` | `codemode`, always on: JavaScript in a sandbox that can call the agent's tools. It has no Python |
 | `FileSearchTool` (vector stores) | No equivalent. Agents have files and file tools, not vector search |
 | `MCPServerStreamableHttp` | `mcpServers` in a [definition](definitions.md): the runtime calls the server itself. A local MCP server object can be attached with `fromMcpServer` (TypeScript) |
 | Tracing (`trace()`, the traces dashboard) | No trace export. The event stream (`on_event`, `stream()`), `run.completed` and `usage.recorded` [webhooks](webhooks.md), and `GET /v1/agents/:id/history` |
@@ -182,7 +182,7 @@ conversations](multi-user.md#bringing-in-existing-conversations).
   nodes being replaced. A run waiting on a person waits for days at no cost.
 - **Tools anywhere.** Tools run in your process (attached) or behind an HTTPS
   endpoint (served, for serverless and many workers), and the model can call
-  many of them from code in `js_exec`. See [Tools](tools.md).
+  many of them from code in `codemode`. See [Tools](tools.md).
 - **Channels and schedules.** Slack, Telegram, Discord, GitHub and email can
   reach an agent directly, and agents can wake themselves. See
   [Channels](channels.md).

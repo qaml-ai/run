@@ -1,16 +1,11 @@
 import { Rpc } from "./rpc.ts";
 import { callableFromCode, errorText, type ToolBridge, type WireMessage } from "./protocol.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
-import { namespaces, searchQuery, searchTools } from "./tool-search.ts";
 import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
 import { v8Exec } from "./v8-exec.ts";
 import { sandboxDir } from "./sandbox.ts";
 import { parse } from "./inspect.ts";
-
-/** Calls answered by the host rather than a tool, as the bootstrap (sandbox/v8-exec/src/bootstrap.js) makes them: no tool name contains a dot. */
-export const HOST_CALLS = Object.freeze({ search: "tools.search", describe: "tools.describe", namespaces: "tools.namespaces" });
-/** The bootstrap's `fs` calls: the runtime's file tools over the agent's mounts, whoever else has tools of those names. */
-export const FS_CALLS = Object.freeze(["fs.readFile", "fs.writeFile", "fs.stat", "fs.list", "fs.remove"]);
+import { PiV8Sandbox, type CodeSandboxes } from "./codemode-pi-launcher.ts";
 
 /** One execution's link to its guest: its v8-exec process (v8-exec.ts). */
 export interface Guest {
@@ -24,7 +19,7 @@ export interface Guest {
 }
 
 /**
- * Where js_exec runs: each execution opens a guest and talks to it over its wire. In production, this process's v8-exec
+ * Where workflow scripts run: each execution opens a guest and talks to it over its wire. In production, this process's v8-exec
  * runner (`v8Exec`, src/v8-exec.ts); a simulation passes one that runs in-process, with the latency and failures it chooses.
  */
 export interface CodeExecutor {
@@ -34,7 +29,7 @@ export interface CodeExecutor {
 }
 
 /**
- * How many js_exec executions tenants with a concurrency limit may run together on this node (`CodeGate`):
+ * How many scripts tenants with a concurrency limit may run together on this node (`CodeGate`):
  * AGENT_CODE_WORKERS_MAX, or 16. An execution waiting on tools holds its v8-exec process, about 20 MB
  * resident; 16 at once is about 320 MB, or a sixth of a 2 GB task.
  */
@@ -85,41 +80,11 @@ function guestResult(value: any, maxOutputCharacters: number): CodeResult {
   return { output, truncated: value.truncated, ...(returned ? { returned: { ...(returned.index !== undefined ? { index: returned.index } : {}), json: returned.json, truncated: returned.truncated } } : {}), ...(cpuMs !== undefined ? { cpuMs } : {}) };
 }
 
-/**
- * js_exec's result as the model reads it: what the code returned, as it is (JSON, or a
- * string's own text), after anything it logged. Nothing wraps the value, so it reads as
- * the data tools gave the code rather than as an envelope to unpack.
- */
-export function presentResult(result: CodeResult, maxOutputCharacters: number = SANDBOX_LIMITS.outputCharacters): string {
-  const { output, returned } = result;
-  // An empty string sends nothing; a value the limit left no room for is only noted.
-  const value = returned ? (returned.index !== undefined ? output[returned.index] : returned.truncated ? undefined : "\"\"") : undefined;
-  const logs = output.filter((_, index) => index !== returned?.index).join("\n");
-  const text = !returned ? logs || "No output: nothing was returned or logged."
-    : logs ? `Logged:\n${logs}\n\nReturned:\n${value ?? "(cut)"}` : value ?? "";
-  if (!result.truncated) return text;
-  const cut = !returned?.truncated ? "" : value === undefined ? ", leaving no room for the return value" : returned.json ? ", so the returned JSON is incomplete" : "";
-  return `${text}\n\n[Output cut at ${maxOutputCharacters.toLocaleString("en-US")} characters${cut}. Return only what you need (counts, chosen fields, a summary), or write the data to a file and read it in parts.]`;
-}
-
-/** `tools.search`, `tools.describe` and `tools.namespaces`: answered from the catalog, which stays out of the sandbox. */
-async function hostCall(bridge: ToolBridge, name: string, args: unknown) {
-  if (name === HOST_CALLS.describe) {
-    const tool = typeof args === "string" ? bridge.definitions.find(entry => entry.name === args) : undefined;
-    if (!tool) return null;
-    const { resultFormat: _format, ...described } = tool;
-    return described;
-  }
-  if (name === HOST_CALLS.namespaces) return namespaces(bridge.definitions);
-  const query = searchQuery(args);
-  return bridge.search ? bridge.search(query) : searchTools(bridge.definitions, query);
-}
-
-/** A tenant's js_exec limits (client-sessions' `codeLimits`): CPU per execution, the longest timeoutMs, and executions at once on a node. */
+/** A tenant's code limits (client-sessions' `codeLimits`): CPU per script, the longest timeoutMs, and executions at once on a node. */
 export type CodeLimits = { cpuMs: number; maxTimeoutMs: number; concurrent: number };
 
 /**
- * Admits js_exec executions on a node: at most `capacity` at once (`codeCapacity`), and
+ * Admits scripts on a node: at most `capacity` at once (`codeCapacity`), and
  * at most `limit` of them for any one tenant. Executions waiting are admitted a tenant at a time,
  * in turn, so a tenant that keeps every slot it may have busy cannot hold back another's. A tenant
  * without a limit (an admin tenant's, Infinity) is admitted at once and not counted: only the
@@ -246,7 +211,7 @@ export async function executeCode(options: {
   if (options.signal?.aborted) abort();
   try {
     validateDefinitions(options.bridge.definitions);
-    // Code gets the tools' names; their schemas and search are answered here (hostCall).
+    // Code gets the tools' names; their schemas stay here.
     const names = options.bridge.definitions.map(tool => tool.name);
     if (options.admit) release = await options.admit(controller.signal);
     controller.signal.throwIfAborted();
@@ -280,26 +245,17 @@ export async function executeCode(options: {
     const transferCap = options.workflow ? SANDBOX_LIMITS.workflowToolBytes : SANDBOX_LIMITS.totalToolBytes;
     channel.handler = async (method, params) => {
       if (method !== "tool") throw new Error("Unknown tool");
-      if (Object.values(HOST_CALLS).includes(params.name)) {
-        if (++calls > toolCallCap) throw new Error("Codemode tool call limit exceeded");
-        return JSON.stringify(await hostCall(options.bridge, params.name, params.args));
-      }
-      // fs calls go to the runtime's file tools, whatever other tools are named; their arguments are checked there.
-      const fs = FS_CALLS.includes(params.name);
-      if (fs && !options.bridge.fs) throw new Error("fs is not available: this agent has no files");
-      if (fs && (!params.args || typeof params.args !== "object" || Array.isArray(params.args))) throw new Error("Invalid fs arguments");
-      const checked = fs ? { tool: { name: params.name }, args: params.args as Record<string, unknown>, bytes: Buffer.byteLength(jsonWithinLimit(params.args, SANDBOX_LIMITS.resultBytes, "fs arguments")) }
-        : validateToolCall(options.bridge.definitions, params.name, params.args, argumentCap);
+      const checked = validateToolCall(options.bridge.definitions, params.name, params.args, argumentCap);
       if (++calls > toolCallCap) throw new Error("Codemode tool call limit exceeded");
       if (inflight >= concurrentCap) throw new Error("Too many concurrent tool calls");
       transferred += checked.bytes;
       if (transferred > transferCap) throw new Error("Codemode transfer limit exceeded");
       controller.signal.throwIfAborted();
       inflight++;
-      const name = fs ? params.name : checked.tool.name;
+      const name = checked.tool.name;
       pending.set(name, (pending.get(name) ?? 0) + 1);
       try {
-        const result = fs ? await options.bridge.fs!(params.name.slice(3), checked.args, controller.signal) : await options.bridge.call(checked.tool.name, checked.args, controller.signal);
+        const result = await options.bridge.call(checked.tool.name, checked.args, controller.signal);
         controller.signal.throwIfAborted();
         const json = jsonWithinLimit(result, SANDBOX_LIMITS.resultBytes, "Tool result");
         transferred += Buffer.byteLength(json);
@@ -331,19 +287,18 @@ export async function executeCode(options: {
 }
 
 /**
- * Where untrusted code and files run, for the startup log: js_exec must answer `return 1`, and a parse
+ * Where untrusted code and files run, for the startup log: code must answer `return 1`, and a parse
  * job must read an image's header, or the runtime does not start. Under agent-launcher they are
  * confined ("isolated"); without it, this process's own children ("in-process"), which
  * AGENT_SANDBOX_REQUIRED=1 (the image sets it) refuses.
  */
-export async function checkSandbox(options: { executor?: CodeExecutor; required?: boolean } = {}): Promise<Record<string, unknown>> {
+export async function checkSandbox(options: { sandboxes?: CodeSandboxes; required?: boolean } = {}): Promise<Record<string, unknown>> {
   const isolated = sandboxDir() !== undefined;
-  const reason = "no agent-launcher: it confines js_exec and file parsing when the image runs as root on Linux";
+  const reason = "no agent-launcher: it confines code and file parsing when the image runs as root on Linux";
   if (!isolated && options.required) throw new Error(`AGENT_SANDBOX_REQUIRED=1, but ${reason}`);
   const started = performance.now();
-  const bridge: ToolBridge = { definitions: [], call: async () => null };
-  try { await executeCode({ code: "return 1", bridge, timeoutMs: 60_000, ...(options.executor ? { pool: options.executor } : {}) }); }
-  catch (error) { throw new Error(`js_exec does not run: ${errorText(error)}`); }
+  const ran = await (options.sandboxes ?? (limits => new PiV8Sandbox(limits)))({ timeoutMs: 60_000 }).execute("return 1").catch(error => ({ ok: false as const, error: { message: errorText(error) } }));
+  if (!ran.ok || ran.value !== 1) throw new Error(`Code does not run: ${ran.ok ? `it returned ${JSON.stringify(ran.value)}` : ran.error.message}`);
   // A 1×1 PNG.
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
   const parsed = await parse(png, false).catch(error => errorText(error));

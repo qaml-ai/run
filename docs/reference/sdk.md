@@ -87,7 +87,7 @@ brought to `config` if it differs. Returns a connected `Agent`. See
 | `subject`, `context` | `subject=`, `context=` | whom it acts for, and claims for its tools; fixed at creation |
 | `keyScope`, `spendLimit`, `runLimits`, `modelHeaders` | `key_scope=`, `spend_limit=`, `run_limits=`, `model_headers=` | see [Models and keys](../guides/models-and-keys.md) |
 | `mounts`, `fileTools` | `mounts=`, `file_tools=` | its volumes (fixed at creation), and whether it has file tools |
-| `codeMode` | `code_mode=` | `false`: no `js_exec`; every tool is called directly, and an agent with no tools at all gets little more than its instructions as its system prompt. See [Tools](../guides/tools.md#without-code-codemode-false) |
+| `codeMode` | `code_mode=` | `false`: no `codemode`; every tool is called directly, and an agent with no tools at all gets little more than its instructions as its system prompt. See [Tools](../guides/tools.md#without-code-codemode-false) |
 | `name` | `name=` | a label, shown in the console |
 | `builtins` | `builtins=` | tools the runtime answers itself, without a definition: `web_fetch`, `web_search`, `x_search`, `schedule`, `ask_user`, `delegate`, `agents`, `workflow` |
 | `delegate` | `delegate=` | sub-agents it may hand tasks to (`{ agents, instructions?, maxDepth?, maxParallel? }`); brings its builtin. See [Multi-agent](../guides/multi-agent.md) |
@@ -277,7 +277,7 @@ def or_async_def(arg: str, context: ToolContext): ...
 `exposure` is deprecated: `"codemode"` allows code only; `"both"` allows code and
 model calls subject to the direct-tool budget; `"direct"` allows both and always
 declares the tool to the model. Left out, it is `both` for a source of up to 10
-tools and `codemode` past that. See [Tools in js_exec](../guides/tools.md#tools-in-js_exec).
+tools and `codemode` past that. See [Tools in codemode](../guides/tools.md#tools-in-codemode).
 
 `context` (`ToolContext`):
 
@@ -774,7 +774,7 @@ Needs runtime 0.5.0 or later (run.camelai.com has it).
   first run rather than there.
 - `run`, `stream` and `client.prompt` take `history: "none"`: the run sees the agent's instructions and its own
   message only, for many independent questions to one agent without an agent create each. `upsert` and definitions
-  take `codeMode: false` (definitions also `fileTools: false`): no `js_exec`, and a tool-less agent's system prompt
+  take `codeMode: false` (definitions also `fileTools: false`): no `codemode`, and a tool-less agent's system prompt
   shrinks to its instructions and a sender note.
 - `agent.configHash` from `upsert` and `get`, and `configHash` on `listAgents()`: an upsert of the configuration an
   agent has is not counted as an agent create.

@@ -18,7 +18,7 @@ const project = (messages: any[], extra: Partial<ProjectInput> = {}, memo?: Proj
 test("a turn is one assistant message; tool results fold into their calls; a user message keeps the id it was sent with", () => {
   const messages = [
     user("hi", 1, { requestId: "cm_1", from: { id: "alice", name: "Alice" }, metadata: { page: "/x" } }),
-    assistant([{ type: "thinking", thinking: "hmm" }, { type: "toolCall", id: "c1", name: "js_exec", arguments: { code: "return 1" } }], 2, { stopReason: "toolUse" }),
+    assistant([{ type: "thinking", thinking: "hmm" }, { type: "toolCall", id: "c1", name: "codemode", arguments: { code: "return 1" } }], 2, { stopReason: "toolUse" }),
     toolResult("c1", '{"n":1}', 3),
     assistant([{ type: "text", text: "Done." }], 4),
   ];
@@ -30,7 +30,7 @@ test("a turn is one assistant message; tool results fold into their calls; a use
   const parts = (turn as AssistantChatMessage).parts;
   assert.deepEqual(parts.map(part => part.type), ["reasoning", "tool", "text"]);
   const call = parts[1] as ToolPart;
-  assert.deepEqual([call.id, call.name, call.state, call.result?.data, call.args.code], ["c1", "js_exec", "done", { n: 1 }, "return 1"]);
+  assert.deepEqual([call.id, call.name, call.state, call.result?.data, call.args.code], ["c1", "codemode", "done", { n: 1 }, "return 1"]);
   assert.equal((turn as AssistantChatMessage).stopReason, "stop");
   // Without a requestId, a user message is known by its index.
   assert.equal(project([user("x", 1)])[0].id, "m:0");
@@ -100,7 +100,7 @@ test("while a message is on its way, the running turn does not take the last ans
 
 test("messages and parts that did not change are the same objects; a streamed delta rebuilds only what it changed", () => {
   const memo: ProjectMemo = new Map();
-  const call = { type: "toolCall", id: "c1", name: "js_exec", arguments: { code: "1" } };
+  const call = { type: "toolCall", id: "c1", name: "codemode", arguments: { code: "1" } };
   const settled = [user("q", 1, { requestId: "cm_1" }), assistant([{ type: "text", text: "a" }], 2), user("q2", 3, { requestId: "cm_2" }), assistant([call], 4, { stopReason: "toolUse" })];
   const a = project(settled, {}, memo);
   const b = project(settled, {}, memo);
@@ -191,7 +191,7 @@ async function setup(t: Parameters<typeof runtime>[0], script: (index: number, b
 }
 
 test("a sent message shows at once, keeps its id when it arrives, and the reply streams into one message", async t => {
-  const { chat, snapshots } = await setup(t, index => index === 0 ? toolCallDeltas("call_1", "js_exec", { code: "return 6 * 7" }) : words("The answer is 42."));
+  const { chat, snapshots } = await setup(t, index => index === 0 ? toolCallDeltas("call_1", "codemode", { code: "return 6 * 7" }) : words("The answer is 42."));
   assert.equal(chat.getSnapshot().status, "ready");
   const sending = chat.send("What is 6 * 7?");
   const shown = chat.getSnapshot();
@@ -208,7 +208,7 @@ test("a sent message shows at once, keeps its id when it arrives, and the reply 
   const turn = final.messages[1] as AssistantChatMessage;
   assert.deepEqual(turn.parts.map(part => part.type), ["tool", "text"]);
   assert.equal((turn.parts[0] as ToolPart).state, "done");
-  assert.equal((turn.parts[0] as ToolPart).result?.data, 42);
+  assert.match(String((turn.parts[0] as ToolPart).result?.text), /Script completed[\s\S]*Output:\n+42/);
   assert.equal(turn.parts[1].type === "text" && turn.parts[1].text, "The answer is 42.");
   assert.equal(turn.streaming, false);
 

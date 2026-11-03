@@ -181,8 +181,8 @@ export function DefinitionDialog({ definition, onClose, onSaved, forChannel = fa
             <Label htmlFor="definition-servers">MCP servers <span className="text-muted-foreground font-normal">(JSON: [{"{"}name, url, auth?: {"{"}type: "bearer", token{"}"}, headers?, allowTools?, exposure?{"}"}], called by the runtime)</span></Label>
             <Textarea id="definition-servers" rows={4} className="font-mono text-xs" placeholder='[{"name": "kb", "url": "https://…/mcp", "auth": {"type": "bearer", "token": "…"}}]' value={servers} onChange={event => setServers(event.target.value)} />
             <p className="text-muted-foreground text-xs">
-              <span className="font-mono">exposure</span>: <span className="font-mono">"direct"</span> (the model calls the tools itself, never from js_exec), <span className="font-mono">"codemode"</span> (only from code in js_exec) or <span className="font-mono">"both"</span>.
-              Left out, a server with up to 10 tools is both and a larger one codemode, so the model can call them from js_exec.
+              <span className="font-mono">exposure</span>: <span className="font-mono">"direct"</span> (always declared to the model, also callable from code), <span className="font-mono">"codemode"</span> (only from code in codemode) or <span className="font-mono">"both"</span>.
+              Left out, a server with up to 10 tools is both and a larger one codemode, so the model can call them from codemode.
             </p>
           </div>
           <div className="flex flex-col gap-2">

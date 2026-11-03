@@ -117,7 +117,7 @@ test("X search works in agents and stateless runs, uses tenant keys first and bi
   const own = "own-operator-token-at-least-24-chars", payg = "payg-operator-token-at-least-24-chars", ops = "ops-operator-token-at-least-24-chars";
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");
   const r = await runtime(t, free(body => toolResults(body).length ? { role: "assistant", content: "Research complete." }
-    : lastUser(body) === "Code research" ? toolCall("js_exec", { timeoutMs: 150000, code: 'return await tools.x_search({ query: "AI chips" });' })
+    : lastUser(body) === "Code research" ? toolCall("codemode", { code: '// @options: {"timeout_ms": 150000}\nreturn await tools.x_search({ query: "AI chips" });' })
     : toolCall("x_search", { query: "AI chips", allowedHandles: ["example"] })), {
     AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32", AGENT_XAI_RESPONSES_URL: f.endpoint,
     AGENT_BILLING_ADMINS: "ops", AGENT_PRICE_AGENT_HOUR_USD: "0",
@@ -149,7 +149,7 @@ test("X search works in agents and stateless runs, uses tenant keys first and bi
   assert.equal(f.calls.length, calls + 1);
   const codeAgent = await r.call("/v1/agents", { token: own, body: { builtins: ["x_search"] } });
   await r.prompt(codeAgent.json.id, "Code research", own);
-  assert.equal(f.calls.length, calls + 2, "js_exec can call the built-in X search without an external tool server");
+  assert.equal(f.calls.length, calls + 2, "codemode can call the built-in X search without an external tool server");
   assert.equal(f.calls.at(-1)?.key, "Bearer own-xai-key");
   // A zero balance stops the next platform-backed request before it reaches xAI.
   await r.call("/v1/billing/adjustments", { token: ops, body: { tenant: "payg", amount: -750_000, reason: "test" } });

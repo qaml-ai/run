@@ -2347,7 +2347,7 @@ class Run:
     # Tool calls that did not complete (the model was told, and carried on): {"tool", "code", "message", "outcomeUnknown"?}.
     # code "not_connected": no process served the agent's tools, so the call did not run.
     tool_errors: list = field(default_factory=list)
-    # The tool calls it made (the first 100), those from js_exec's code included: {"tool", "toolCallId"?, "innerCallId"?,
+    # The tool calls it made (the first 100), those from codemode's code included: {"tool", "toolCallId"?, "innerCallId"?,
     # "ok", "code"?, "agentId"?}. code: a tool error's, "tool_error", "input_required" or "aborted"; agentId: a delegate
     # call's child agent. Arguments and results are in history.
     tool_calls: list = field(default_factory=list)
@@ -2944,7 +2944,7 @@ class Agents:
         progress as events. `mcp_servers` ([{"name", "url", "auth"?: {"type": "runtime"}, ...}]) are remote MCP servers of its
         own, without a definition and without credentials: the runtime's identity tokens or none (a token or headers go in a definition).
         attach=False declares the tools without serving them (another process does); takeover=True replaces the process serving them now.
-        code_mode=False gives the agent no js_exec: the model calls every tool directly, and with file_tools=False and no tools its
+        code_mode=False gives the agent no codemode: the model calls every tool directly, and with file_tools=False and no tools its
         prompt is little more than your instructions (for a tool-less agent). An upsert of the configuration the agent has
         already is not counted as an agent create; agent.config_hash says which configuration it asked for.
         `initial_messages` (Pi messages: user, assistant, toolResult, compactionSummary) is the history the agent begins

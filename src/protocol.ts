@@ -3,9 +3,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
 import type { ToolDefinition as PublicToolDefinition } from "../shared/client-protocol.ts";
-import type { SearchHit, SearchQuery } from "./tool-search.ts";
-/** Which model tool call a tool call belongs to: its own, or for a call from js_exec, the js_exec call's and the call's id within it. */
-/** A tool call from the model: its id, its place in js_exec's code if made there, and the history index of the assistant message that made it. */
+/** A tool call from the model: its id, its key within the codemode call if code made it, and the history index of the assistant message that made it. */
 export type CallContext = {
   toolCallId: string; innerCallId?: string; messageIndex?: number;
   /** For a delegate call: how many the same response makes, so they share the run's budget whenever each gets its turn. */
@@ -62,8 +60,6 @@ export interface ToolBridge {
   call(name: string, args: Record<string, unknown>, signal: AbortSignal, context?: CallContext): Promise<unknown>;
   /** Why the running turn must end before its next model request: a spend limit reached, the run's own limits, or its node leaving (`RunStop`). */
   runLimit?(): Promise<RunStop | undefined> | RunStop | undefined;
-  /** Answer a `tools.search` query over the agent's code-mode tools, with the operator's rerankers. */
-  search?(query: SearchQuery): Promise<SearchHit[]>;
   /** A file reference's bytes (base64), for a model request that shows the file. */
   file?(ref: unknown): Promise<string>;
   /**
@@ -73,13 +69,13 @@ export interface ToolBridge {
   modelAuth?(provider?: string): Promise<Credentials>;
   /** Durable provider-call identity and usage, acknowledged before dispatch/completion. */
   modelAttempt?: ModelAttemptHook;
-  /** js_exec's `fs` (`op` is readFile, writeFile, stat, list or remove), answered by the runtime's file tools over the agent's mounts. */
+  /** The host's write of a long tool result (`op` writeFile), answered by the runtime's file tools over the agent's mounts. */
   fs?(op: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   /** Events of work the agent does apart from any run (`background: true`: a background compaction's), which reach no run's stream. */
   background?(event: any): void;
-  /** Wait for the tenant's turn to run js_exec on this node (codemode.ts `CodeGate`), until `signal` aborts; resolves with the function that gives it back. */
+  /** Wait for the tenant's turn to run code on this node (codemode.ts `CodeGate`), until `signal` aborts; resolves with the function that gives it back. */
   codeSlot?(signal: AbortSignal): Promise<() => void>;
-  /** Wait until this node may act for the agent (`Ownership.whenFresh`), before a model request or js_exec; rejects once it lost the agent. */
+  /** Wait until this node may act for the agent (`Ownership.whenFresh`), before a model request or script; rejects once it lost the agent. */
   lease?(): Promise<void>;
   /** What commits with a journal entry, in the transaction that writes it (a model response's spend): called as it is committed. */
   committing?(entry: import("@earendil-works/pi-durable").EntryRecord): CommitEffect | undefined;
@@ -124,10 +120,10 @@ export interface AgentConfig {
   /** Text after the system prompt, the agent's own: a definition's apply replaces the prompt and keeps this. */
   systemPromptAppend?: string;
   tools: ToolDefinition[];
-  /** false: the model gets no file tools but present_file; its mounts stay open to fs in js_exec. */
+  /** false: the model gets no file tools but present_file; its mounts still hold its attachments and tool outputs. */
   fileTools?: boolean;
   /**
-   * false: no js_exec. The model calls every tool directly, and its prompt carries only the runtime text its tools need
+   * false: no code mode. The model calls every tool directly, and its prompt carries only the runtime text its tools need
    * (none for an agent without tools): for a tool-less agent, or one with a few tools of its own.
    */
   codeMode?: boolean;
@@ -163,7 +159,7 @@ export interface AgentConfig {
   resume?: boolean;
   /** The agent's tenant, set by the runtime, for its metric lines. */
   tenant?: string;
-  /** The tenant's js_exec limits, set by the runtime (never the agent's configuration): CPU per execution, the longest timeoutMs, and the engine. */
+  /** The tenant's code limits, set by the runtime (never the agent's configuration): CPU per execution, the longest timeoutMs, and the engine. */
   codeLimits?: { cpuMs: number; maxTimeoutMs: number };
 }
 export type WireMessage =

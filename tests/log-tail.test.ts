@@ -358,7 +358,7 @@ test("a multi-step turn writes nothing to Storage; unloading writes one segment 
     for await (const _ of req);
     calls++;
     const delta = calls <= 2
-      ? { role: "assistant", tool_calls: [{ index: 0, id: `call_${calls}`, type: "function", function: { name: "js_exec", arguments: JSON.stringify({ code: `return await tools.echo({ value: "step ${calls}" })` }) } }] }
+      ? { role: "assistant", tool_calls: [{ index: 0, id: `call_${calls}`, type: "function", function: { name: "codemode", arguments: JSON.stringify({ code: `return await tools.echo({ value: "step ${calls}" })` }) } }] }
       : { role: "assistant", content: "Done." };
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     for (const [content, finish] of [[delta, null], [{}, calls <= 2 ? "tool_calls" : "stop"]]) res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta: content, finish_reason: finish }] })}\n\n`);
