@@ -167,9 +167,9 @@ async function load(options: { turns?: number; seconds?: number; during?: () => 
 result.load = await load({ turns });
 
 if (fault) {
-  // The busy agents keep taking turns for 15 s; 2 s in, an idle agent misbehaves.
+  // The busy agents keep taking turns for --fault-seconds (45: the watchdog's 30 s and some); 2 s in, an idle agent misbehaves.
   const victim = ids[agents - 1];
-  result.fault = await load({ seconds: 15, during: async () => {
+  result.fault = await load({ seconds: Number(flag("fault-seconds", "45")), during: async () => {
     await sleep(2_000);
     const started = performance.now();
     if (hosting === "inline") {
