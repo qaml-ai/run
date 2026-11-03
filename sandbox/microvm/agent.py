@@ -111,8 +111,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return self.send(413, {"error": "Request too large"})
             data = self.rfile.read(length)
-            if self.path in {"/aws/lambda-microvms/runtime/v1/" + hook
-                             for hook in ["run", "resume", "suspend", "terminate"]}:
+            # Lambda's lifecycle and image hooks (run, resume, suspend, terminate, ready): nothing to do but answer.
+            if self.path.startswith("/aws/lambda-microvms/"):
                 return self.send(200, {"ok": True})
             if self.path != "/exec":
                 return self.send(404, {"error": "Unknown route"})
@@ -126,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/health":
+        if parsed.path == "/health" or parsed.path.startswith("/aws/lambda-microvms/"):
             return self.send(200, {"ok": True})
         if not parsed.path.startswith("/exec/"):
             return self.send(404, {"error": "Unknown route"})

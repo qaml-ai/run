@@ -27,7 +27,7 @@ request = {
     "logging": {"cloudWatch": {"logGroup": os.environ["MICROVM_BUILD_LOG_GROUP"]}},
     "cpuConfigurations": [{"architecture": "ARM_64"}],
     "resources": [{"minimumMemoryInMiB": 2048}],
-    "hooks": {"port": 8080, "microvmHooks": {name: "ENABLED" for name in ["run", "resume", "suspend", "terminate"]}},
+    "hooks": {"port": 8080, "microvmImageHooks": {"ready": "ENABLED", "readyTimeoutInSeconds": 60}, "microvmHooks": {name: "ENABLED" for name in ["run", "resume", "suspend", "terminate"]}},
 }
 if os.environ.get("MICROVM_IMAGE_ARN"):
     request["imageIdentifier"] = os.environ["MICROVM_IMAGE_ARN"]
