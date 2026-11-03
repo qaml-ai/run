@@ -300,3 +300,29 @@ variable "admin_access_aud" {
   default     = "041fd04d6d1fb5bc79df2e24d35bde86085109e322819cdc0964501ba5bd3478"
 }
 
+variable "customer_export_destinations" {
+  description = "Customer S3 destinations the customer-export role may write to (customer-export.tf), by name: bucket, key prefix (ending in /), and the bucket's KMS key ARN when it requires SSE-KMS. Set in prod.auto.tfvars."
+  type = map(object({
+    bucket      = string
+    prefix      = string
+    kms_key_arn = optional(string)
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for destination in values(var.customer_export_destinations) : endswith(destination.prefix, "/") && !startswith(destination.prefix, "/")])
+    error_message = "Each customer export prefix must end in / and must not start with /."
+  }
+}
+
+variable "customer_export_assumer_arns" {
+  description = "IAM principals (the team's operator users or roles) allowed to assume the customer-export role. Set in prod.auto.tfvars."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = length(var.customer_export_destinations) == 0 || length(var.customer_export_assumer_arns) > 0
+    error_message = "customer_export_assumer_arns must name at least one principal when there is a customer export destination."
+  }
+}
+
