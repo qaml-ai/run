@@ -238,8 +238,8 @@ async function expireLots(sql: Sql, tenant: string, user: any, now: number): Pro
     await sql.query("update end_user_lots set remaining = $2 where id = $1", [lot.id, kept]);
     if (lost <= 0) continue;
     const entry = await appendEntry(sql, {
-      tenant, endUser: user.id, kind: "expiry", amount: -lost, key: `expiry:${lot.id}:${now}`, reference: lot.key.startsWith("entry:") ? lot.key.slice(6) : lot.key,
-      metadata: { lot: lot.key.startsWith("entry:") ? lot.key.slice(6) : lot.key, expiresAt: Number(lot.expires_at), amount: Number(lot.amount) }, lots: "none",
+      tenant, endUser: user.id, kind: "expiry", amount: -lost, key: `expiry:${lot.id}:${now}`, reference: lotKey(lot.key),
+      metadata: { lot: lotKey(lot.key), expiresAt: Number(lot.expires_at), amount: Number(lot.amount) }, lots: "none",
     }, balance, now);
     await enqueueEvents(sql, [webhookEvent("end_user.credit.expired", tenant, {
       endUser: user.id, entryId: entry.id, kind: "expiry", amount: entry.amount, key: entry.key, reference: entry.reference, description: null, metadata: entry.metadata, balance: entry.balanceAfter, previousBalance: balance,
@@ -250,11 +250,14 @@ async function expireLots(sql: Sql, tenant: string, user: any, now: number): Pro
   return any;
 }
 
+/** A lot's key as the tenant gave it: a grant's (`entry:…`) or one it marked (`lot:…`). */
+const lotKey = (key: string) => key.replace(/^(?:entry|lot):/, "");
+
 /** A user's lots as they stand (read, no lock): the expiring ones not yet expired, then the rest of the balance. */
 async function lotsOf(sql: Sql | Db, tenant: string, id: string, balance: number, now: number): Promise<Lot[]> {
   const { rows } = await sql.query("select key, amount, remaining, expires_at, created_at from end_user_lots where tenant = $1 and end_user = $2 and remaining > 0 order by expires_at, id", [tenant, id]);
   const lots: Lot[] = rows.filter(row => Number(row.expires_at) > now).map(row => ({
-    key: row.key.startsWith("entry:") ? row.key.slice(6) : row.key, amount: Number(row.amount), remaining: Number(row.remaining), expiresAt: Number(row.expires_at), createdAt: Number(row.created_at),
+    key: lotKey(row.key), amount: Number(row.amount), remaining: Number(row.remaining), expiresAt: Number(row.expires_at), createdAt: Number(row.created_at),
   }));
   const rest = balance - rows.reduce((total, row) => total + Number(row.remaining), 0);
   if (rest > 0) lots.push({ key: null, amount: rest, remaining: rest, expiresAt: null, createdAt: null });
@@ -967,8 +970,8 @@ async function moveLots(sql: Sql, entry: { tenant: string; endUser: string; kind
     owed -= taken;
     await sql.query("update end_user_lots set remaining = $2 where id = $1", [lot.id, lot.remaining]);
   };
-  const first = entry.lots && typeof entry.lots === "object" && "first" in entry.lots ? `entry:${entry.lots.first}` : null;
-  const named = first === null ? undefined : lots.find(lot => lot.key === first);
+  const first = entry.lots && typeof entry.lots === "object" && "first" in entry.lots ? entry.lots.first : null;
+  const named = first === null ? undefined : lots.find(lot => lotKey(lot.key) === first);
   if (named) await take(named);
   if (entry.kind === "refund") owed -= Math.min(owed, rest);
   for (const lot of lots) if (owed > 0) await take(lot);

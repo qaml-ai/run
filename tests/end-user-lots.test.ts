@@ -150,6 +150,12 @@ test("credit granted before lots can be marked to expire, once per key; a sweep 
   assert.equal(Number((await db.query("select balance from end_users where tenant = 't' and id = 'u'")).rows[0].balance), 5 * USD);
   assert.equal(await credits.expireDue(100, end + 2), 0);
   await holds(db);
+  // A marked lot reads, and is refunded by name, by the key it was marked with.
+  await credits.post("t", "u", { kind: "grant", amount: USD, key: "plan:2" });
+  await credits.markLot("t", "u", { key: "plan:2", amount: USD, expiresAt: end + DAY });
+  assert.deepEqual((await credits.get("t", "u", [], end + 3)).lots.map(lot => lot.key), ["plan:2", null]);
+  await credits.post("t", "u", { kind: "refund", amount: 400_000, key: "re-2", lot: "plan:2" });
+  assert.deepEqual((await credits.get("t", "u", [], end + 4)).lots.map(lot => [lot.key, lot.remaining]), [["plan:2", 600_000], [null, 5 * USD]]);
 });
 
 test("the lots API and the TypeScript SDK: expiring grants, lots on the end user, marking, refunds by lot, for the tenant only", async t => {
