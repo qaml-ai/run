@@ -123,15 +123,15 @@ app.post("/stripe/webhook", async (req, res) => {
 // 4. Their credit page: where they stand, what they bought, and what their credit went to each day.
 const person = await agents.endUsers.get(user.id, { buckets: ["builder"] });
 // person.balance, person.available, person.today.buckets[0].allowanceLeft
-const purchases = await agents.endUsers.ledger(user.id, { kind: ["grant", "refund", "adjustment"], limit: 20 });
+const purchases = await agents.endUsers.ledger(user.id, { kind: ["grant", "refund", "adjustment", "spend"], limit: 20 });
 const { days, next } = await agents.endUsers.days(user.id, { limit: 7 });
-// days[0]: { day: "…", freeRaw, paidCharged, writtenOff, granted, refunded, adjusted, entries, buckets: [{ bucket: "bot:42", freeRaw, paidCharged, writtenOff }] }
+// days[0]: { day: "…", freeRaw, paidCharged, writtenOff, granted, refunded, adjusted, spent, entries, buckets: [{ bucket: "bot:42", freeRaw, paidCharged, writtenOff }] }
 ```
 
 ```python
 await agents.end_users.grant(user_id, amount=amount_cents * 10_000, key=payment_id, reference=f"Stripe {payment_id}")
 person = await agents.end_users.get(user_id, buckets=["builder"])
-purchases = await agents.end_users.ledger(user_id, kind=["grant", "refund", "adjustment"], limit=20)
+purchases = await agents.end_users.ledger(user_id, kind=["grant", "refund", "adjustment", "spend"], limit=20)
 days = await agents.end_users.days(user_id, limit=7)
 ```
 
@@ -140,8 +140,12 @@ A credit page reads no usage rows: the ledger's `kind` filter leaves them out, a
 
 A refund you make in Stripe: `endUsers.refund(id, { amount, key })` takes the credit
 back: at most the balance that calls in flight do not hold, else a 409
-`INSUFFICIENT_BALANCE` (with `refundable`). Anything else: `endUsers.adjust(id, { amount, key })` with a signed amount.
-Grants, refunds and adjustments are idempotent by `key`: the same key and entry again
+`INSUFFICIENT_BALANCE` (with `refundable`). Credit a person spends on something you sell other than metered usage
+(a month of a feature, an item): `endUsers.spend(id, { amount, key })`, held to the same line as a refund (a 409
+`INSUFFICIENT_BALANCE` with `available` when short), fires `end_user.credit.spent`, and is a debit for the balance
+events below. Anything else: `endUsers.adjust(id, { amount, key })` with a signed amount.
+Any of them may carry `description`, your words for it (up to 200 characters) as the person reads them in their
+credit history. Grants, refunds, adjustments and spends are idempotent by `key`: the same key and entry again
 returns the first; the same key for another entry is a 409.
 
 ## When a person runs out
@@ -234,7 +238,7 @@ Subscribe an endpoint (`POST /v1/webhooks`) to:
 | --- | --- |
 | `end_user.balance.low` | a balance is below the person's threshold: their own `lowBalance` (`PATCH /v1/end-users/{id}`), else yours. See [when it fires](#when-balance-events-fire) |
 | `end_user.credit.exhausted` | `reason: "allowance"`: a bucket's allowance for the day is used up (the balance may still pay; once per person, bucket and day); `"balance"`: the balance reached zero, or a call was refused for it (see [when it fires](#when-balance-events-fire)); `"daily_limit"`: the daily limit was reached (once a day); `"bucket_limit"`: a bucket's own limit was reached (once per person, bucket and day) |
-| `end_user.credit.granted`, `.refunded`, `.adjusted` | you posted a grant, refund or adjustment: once per entry (a replayed `key` sends nothing). `{endUser, entryId, kind, amount, key, reference, metadata, balance, previousBalance}`, `amount` signed as in the ledger. For receipts, and for a second service or a mirror of balances |
+| `end_user.credit.granted`, `.refunded`, `.adjusted`, `.spent` | you posted a grant, refund, adjustment or spend: once per entry (a replayed `key` sends nothing). `{endUser, entryId, kind, amount, key, reference, description, metadata, balance, previousBalance}`, `amount` signed as in the ledger. For receipts, and for a second service or a mirror of balances |
 | `end_user.allowance.low` | a person's spend in a bucket passed `allowanceWarningPercent` (1–100, off by default) of its daily allowance: once per person, bucket and day. `{endUser, bucket, day, allowance, allowanceSpent, percent}` |
 
 They are signed and retried like every [webhook](webhooks.md), and written in the
@@ -247,9 +251,9 @@ carry a `cause`: what moved the balance.
 
 ```jsonc
 "cause": {
-  "kind": "usage",       // usage | usage_correction | grant | refund | adjustment | refusal | threshold_changed
+  "kind": "usage",       // usage | usage_correction | grant | refund | adjustment | spend | refusal | threshold_changed
   "entryId": 1234,       // the ledger entry; none for refusal and threshold_changed
-  "entryKey": "dp_123",  // your key, for grant, refund and adjustment
+  "entryKey": "dp_123",  // your key, for grant, refund, adjustment and spend
   "requestId": "…",      // usage: the run's request, when there is one
   "bucket": "bot:42"
 }
@@ -263,7 +267,7 @@ carry a `cause`: what moved the balance.
 
 The rules:
 
-- **`balance.low` fires on a debit** (usage or a negative adjustment) that takes the
+- **`balance.low` fires on a debit** (usage, a spend or a negative adjustment) that takes the
   balance below the threshold from at or above it. Staying below fires nothing more,
   until one of the next rules applies.
 - **`credit.exhausted` (`balance`) fires on a debit** that takes the balance from above
@@ -295,13 +299,13 @@ Every movement of a person's money is an entry, newest first:
 
 | `kind` | `amount` | Also |
 | --- | --- | --- |
-| `grant`, `refund`, `adjustment` | what you posted | your `key`, `reference` and `metadata` |
+| `grant`, `refund`, `adjustment`, `spend` | what you posted (a refund's and a spend's negative) | your `key`, `reference`, `description` and `metadata` |
 | `usage` | what the balance paid (negative), 0 when the allowance covered it all | `raw` (the call's cost), `allowance` (what the allowance covered), `writtenOff` (the cost past what was left for it, not charged), `bucket`, and `metadata` naming the call (`response`, `compaction`, `transcription`, `image`, `web_search`…), its agent and run |
 
 A call whose cost is corrected later (a provider's final figure) has another usage
 entry for the difference. `balanceAfter` is the balance after each entry.
 
-Narrow it with `kind` (any of `grant`, `refund`, `adjustment`, `usage`, comma-separated
+Narrow it with `kind` (any of `grant`, `refund`, `adjustment`, `spend`, `usage`, comma-separated
 in the API), `from` and `to` (a time range on `createdAt`, `to` exclusive: epoch
 milliseconds, a UTC day or an ISO 8601 time), `bucket`, and `moved=true` (only entries
 that moved the balance, so usage the allowance paid for in full is left out). They
@@ -332,7 +336,7 @@ charged, in the balance's units (raw cost with your markup).
 | `balance`, `held`, `available`, `dailyLimit`, `bucketLimits`, `paidLimit`, `lowBalance` | charged |
 | `paidSpent`, any entry's `amount` and `balanceAfter` | charged |
 | a day's `freeRaw` (what allowances paid) | raw |
-| a day's `paidCharged` (what the balance paid), `granted`, `refunded`, `adjusted` | charged |
+| a day's `paidCharged` (what the balance paid), `granted`, `refunded`, `adjusted`, `spent` | charged |
 
 A bucket's `held` today adds the allowance's part of holds (raw) to the balance's
 (charged): read `available` and `allowanceLeft` for what is left.
@@ -347,7 +351,7 @@ A bucket's `held` today adds the allowance's part of holds (raw) to the balance'
 | `PATCH /v1/end-users/{id}` | `endUsers.update(id, { allowances, bucketLimits, dailyLimit, lowBalance })`: a person's own allowances and bucket limits (merged; `null` removes one), limit and low-balance threshold (`null`: yours) |
 | `GET /v1/end-users/{id}/ledger?kind=&from=&to=&bucket=&moved=` | `endUsers.ledger(id, { before, limit, kind, from, to, bucket, moved })` / `end_users.ledger(id, before=, limit=, kind=, from_=, to=, bucket=, moved=)` |
 | `GET /v1/end-users/{id}/days?from=&to=&bucket=&limit=` | `endUsers.days(id, { from, to, bucket, limit })` / `end_users.days(id, from_=, to=, bucket=, limit=)` |
-| `POST /v1/end-users/{id}/entries` | `endUsers.grant`, `refund`, `adjust` |
+| `POST /v1/end-users/{id}/entries` | `endUsers.grant`, `refund`, `adjust`, `spend` |
 
 `bucket` is taken by agent upserts and configuration, prompts sent with your API key,
 `POST /v1/runs`, `/v1/transcriptions` and `/v1/images`.

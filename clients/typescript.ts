@@ -651,7 +651,7 @@ export type WebhookEvent = { id: string; created: number } & (
       /** With reason balance: what moved it. */
       cause?: EndUserBalanceCause;
     } }
-  | { type: "end_user.credit.granted" | "end_user.credit.refunded" | "end_user.credit.adjusted"; data: EndUserEntryEvent }
+  | { type: "end_user.credit.granted" | "end_user.credit.refunded" | "end_user.credit.adjusted" | "end_user.credit.spent"; data: EndUserEntryEvent }
   | { type: "end_user.allowance.low"; data: { endUser: string; bucket: string; day: string; allowance: number; allowanceSpent: number; percent: number } }
   | { type: "run.started"; data: RunFacts & { resumes?: number } }
   | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; servedModel?: string; stopped?: "input_required" | "spend_limit" | "turn_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string } }
@@ -1219,12 +1219,12 @@ export interface EndUserSettings {
  * ledger entry (none for refusal or threshold_changed); a person's entry ids grow, so order their events by it.
  */
 export interface EndUserBalanceCause {
-  kind: "usage" | "usage_correction" | "grant" | "refund" | "adjustment" | "refusal" | "threshold_changed";
+  kind: "usage" | "usage_correction" | "grant" | "refund" | "adjustment" | "spend" | "refusal" | "threshold_changed";
   entryId?: number; entryKey?: string; requestId?: string; bucket: string | null;
 }
-/** end_user.credit.granted, .refunded, .adjusted: an entry the tenant posted (`amount` signed as in the ledger). */
+/** end_user.credit.granted, .refunded, .adjusted, .spent: an entry the tenant posted (`amount` signed as in the ledger). */
 export interface EndUserEntryEvent {
-  endUser: string; entryId: number; kind: "grant" | "refund" | "adjustment"; amount: Micros; key: string; reference: string | null;
+  endUser: string; entryId: number; kind: "grant" | "refund" | "adjustment" | "spend"; amount: Micros; key: string; reference: string | null; description: string | null;
   metadata: Record<string, unknown>; balance: Micros; previousBalance: Micros;
 }
 /**
@@ -1247,8 +1247,9 @@ export interface EndUser {
  * covered, and `writtenOff` the part past what was left for it (the balance, the daily limit, the bucket's limit), not charged.
  */
 export interface EndUserLedgerEntry {
-  id: number; kind: "grant" | "refund" | "adjustment" | "usage"; amount: Micros; raw: Micros; allowance: Micros; writtenOff: Micros; bucket: string | null; key: string;
-  reference: string | null; metadata: Record<string, unknown>; balanceAfter: Micros; createdAt: number;
+  id: number; kind: "grant" | "refund" | "adjustment" | "spend" | "usage"; amount: Micros; raw: Micros; allowance: Micros; writtenOff: Micros; bucket: string | null; key: string;
+  /** Your words for one of your entries (`description`); null for usage and entries posted without. */
+  reference: string | null; description: string | null; metadata: Record<string, unknown>; balanceAfter: Micros; createdAt: number;
 }
 /** How `endUsers.ledger` narrows a ledger: kinds, a time range on `createdAt` (epoch ms or a Date; `to` exclusive), a bucket, only entries that moved the balance. */
 export interface EndUserLedgerQuery {
@@ -1258,16 +1259,19 @@ export interface EndUserLedgerQuery {
  * An end user's UTC day (`endUsers.days`): by bucket, what the allowance paid (`freeRaw`, raw cost: never charged) and
  * what the balance paid (`paidCharged`, with the markup), what was written off (`writtenOff`, raw: cost past what was
  * left, never charged), and their totals; and what your entries moved that day, in
- * balance units (`granted`, `refunded` as a positive amount, `adjusted` signed; `entries`: how many).
+ * balance units (`granted`, `refunded` and `spent` as positive amounts, `adjusted` signed; `entries`: how many).
  */
 export interface EndUserDay {
-  day: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros; granted: Micros; refunded: Micros; adjusted: Micros; entries: number;
+  day: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros; granted: Micros; refunded: Micros; adjusted: Micros; spent: Micros; entries: number;
   buckets: { bucket: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros }[];
 }
 const queryOf = (values: Record<string, unknown>) => new URLSearchParams(Object.entries(values).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
 const timeOf = (value: number | Date | undefined) => value instanceof Date ? value.getTime() : value;
-/** An entry of yours: `key` is its idempotency key (a payment's id), `reference` shown in the ledger. */
-export interface EndUserEntryInput { amount: Micros; key: string; reference?: string; metadata?: Record<string, unknown> }
+/**
+ * An entry of yours: `key` is its idempotency key (a payment's id), `reference` shown in the ledger, `description` your
+ * words for it as the person may read them in their credit history.
+ */
+export interface EndUserEntryInput { amount: Micros; key: string; reference?: string; description?: string; metadata?: Record<string, unknown> }
 
 /**
  * Your users' credit (`runtime.endUsers`, `agents.endUsers`): turn it on, credit a person after they pay, read their
@@ -1304,7 +1308,7 @@ export class EndUsers {
   update(id: string, overrides: { allowances?: Record<string, Micros | null>; bucketLimits?: Record<string, Micros | null>; dailyLimit?: Micros | null; lowBalance?: Micros | null }): Promise<EndUser> { return this.transport.json(this.path(id), this.key(), "PATCH", overrides); }
   /**
    * Their ledger, newest first, a page at a time: pass `next` as `before`. Narrow it by `kind` (a credit history without
-   * usage: `["grant", "refund", "adjustment"]`), a time range on `createdAt` (`to` exclusive), `bucket`, and `moved` (only
+   * usage: `["grant", "refund", "adjustment", "spend"]`), a time range on `createdAt` (`to` exclusive), `bucket`, and `moved` (only
    * entries that moved the balance).
    */
   ledger(id: string, options: EndUserLedgerQuery = {}): Promise<{ entries: EndUserLedgerEntry[]; next?: number }> {
@@ -1315,7 +1319,7 @@ export class EndUsers {
   /**
    * Their spend and credit per UTC day, newest first, a page of `limit` days (default 31) at a time: pass `next` as `to`.
    * Each day has what allowances paid (`freeRaw`, raw cost) and what the balance paid (`paidCharged`, with the markup),
-   * by bucket, and what your grants, refunds and adjustments moved. `from`/`to` are UTC days (YYYY-MM-DD, `to` exclusive),
+   * by bucket, and what your grants, refunds, adjustments and spends moved. `from`/`to` are UTC days (YYYY-MM-DD, `to` exclusive),
    * at most 366 apart; `bucket` keeps that bucket's spend alone, without entries.
    */
   days(id: string, options: { from?: string; to?: string; bucket?: string; limit?: number } = {}): Promise<{ days: EndUserDay[]; next?: string }> {
@@ -1328,7 +1332,12 @@ export class EndUsers {
   refund(id: string, input: EndUserEntryInput) { return this.entry(id, "refund", input); }
   /** Move the balance by a signed amount. */
   adjust(id: string, input: EndUserEntryInput) { return this.entry(id, "adjustment", input); }
-  private entry(id: string, kind: "grant" | "refund" | "adjustment", input: EndUserEntryInput): Promise<{ entry: EndUserLedgerEntry; replayed: boolean }> {
+  /**
+   * Take credit for something you sell other than metered usage (a month of a feature, an item): at most the balance
+   * calls in flight don't hold, else an AgentError 409 INSUFFICIENT_BALANCE (read the person's `balance` less `held` for what may be taken now).
+   */
+  spend(id: string, input: EndUserEntryInput) { return this.entry(id, "spend", input); }
+  private entry(id: string, kind: "grant" | "refund" | "adjustment" | "spend", input: EndUserEntryInput): Promise<{ entry: EndUserLedgerEntry; replayed: boolean }> {
     return this.transport.json(`${this.path(id)}/entries`, this.key(), "POST", { kind, ...input }, true);
   }
 }

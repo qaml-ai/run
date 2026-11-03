@@ -92,6 +92,32 @@ test("grants, refunds and adjustments move the balance once per key, and the led
   assert.equal((await credits.ledger("b", "user-1")).entries.length, 0, "another tenant's user is another user");
 });
 
+test("a spend takes credit for what the tenant sells, at most the balance calls in flight don't hold; descriptions are kept", async () => {
+  const { db } = await testDatabase();
+  const credits = new EndUserCredits(db);
+  await credits.setSettings("a", { enabled: true, allowances: { "*": 0 } });
+  await credits.post("a", "u", { kind: "grant", amount: 2 * USD, key: "pack-1", description: "500 credits" });
+  const spent = await credits.post("a", "u", { kind: "spend", amount: USD, key: "footer:b1:2026-11", reference: "b1", description: "A month without the footer" });
+  assert.deepEqual([spent.entry.kind, spent.entry.amount, spent.entry.balanceAfter, spent.entry.description], ["spend", -USD, USD, "A month without the footer"]);
+  assert.equal((await credits.post("a", "u", { kind: "spend", amount: USD, key: "footer:b1:2026-11", reference: "b1", description: "A month without the footer" })).replayed, true);
+  // A call in flight holds $0.60 of the $1 left: a spend may take $0.40, no more; nothing is taken when it is short.
+  const call = await credits.reserve("a", "u", "bot:b1", { id: "00000000-0000-4000-8000-000000000001", want: 600_000, min: 1 });
+  assert.equal(call?.hold?.paid, 600_000);
+  await assert.rejects(credits.post("a", "u", { kind: "spend", amount: 500_000, key: "item-1" }),
+    (error: any) => error.status === 409 && error.code === "INSUFFICIENT_BALANCE" && error.details?.available === 400_000);
+  assert.equal((await credits.get("a", "u")).balance, USD);
+  await credits.post("a", "u", { kind: "spend", amount: 400_000, key: "item-2" });
+  assert.equal((await credits.get("a", "u")).balance, 600_000);
+  for (const bad of [{ kind: "spend", amount: -1, key: "k" }, { kind: "spend", amount: 0, key: "k" }, { kind: "grant", amount: 1, key: "k", description: "" }, { kind: "grant", amount: 1, key: "k", description: "x".repeat(201) }, { kind: "grant", amount: 1, key: "k", description: 5 }]) {
+    await assert.rejects(credits.post("a", "u", bad), (error: any) => error.status === 400, JSON.stringify(bad));
+  }
+  // The credit history: a spend is one of the tenant's entries, with its words; usage has none. A day counts what spends took.
+  const history = await credits.ledger("a", "u", { kinds: ["grant", "refund", "adjustment", "spend"] });
+  assert.deepEqual(history.entries.map(entry => [entry.kind, entry.amount, entry.description]), [["spend", -400_000, null], ["spend", -USD, "A month without the footer"], ["grant", 2 * USD, "500 credits"]]);
+  const [day] = (await credits.days("a", "u")).days;
+  assert.deepEqual([day.granted, day.spent, day.refunded, day.entries], [2 * USD, 1_400_000, 0, 3]);
+});
+
 test("a user's overrides merge key by key and never touch what they spent", async () => {
   const { db } = await testDatabase();
   const credits = new EndUserCredits(db);
