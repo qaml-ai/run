@@ -26,7 +26,7 @@ export const ERROR_CODES = {
   BUSY_AGENT_LIMIT: "429: the tenant has as many agents busy as it may (the body's busyAgents, a BusyAgents, says the limit, its usage tier and the next); retry after Retry-After",
   SPEND_LIMIT: "402: a spend limit (the agent's, or the tenant's monthly cap) is reached", INSUFFICIENT_CREDIT: "402: the tenant's prepaid credit is spent",
   END_USER_CREDIT: "402: the end user's credit refused the work; the body has endUser, bucket and reason (balance, daily_limit or bucket_limit)",
-  INSUFFICIENT_BALANCE: "409: a refund would return more than the end user's balance not held by calls in flight; the body has refundable (micro-USD)", STORAGE_LIMIT: "507: the tenant's storage limit would be passed; the body has limit and used, in bytes",
+  INSUFFICIENT_BALANCE: "409: a refund or spend would take more than the end user's balance not held by calls in flight; the body has refundable and available (micro-USD, the same amount)", STORAGE_LIMIT: "507: the tenant's storage limit would be passed; the body has limit and used, in bytes",
   IDEMPOTENCY_CONFLICT: "409: the Idempotency-Key or request id was used for another request", IDEMPOTENCY_IN_PROGRESS: "409: the first request with this Idempotency-Key is still running; retry",
   APPLICATION_CONNECTED: "409: another connection serves this agent's tools; connect with ?takeover=true to replace it",
   APPLICATION_NOT_CONNECTED: "409: this agent's tools need its application, and none is connected; connect it, or send allowDisconnected: true",
@@ -46,6 +46,7 @@ export const ApiError = z.object({
   bucket: creditBucket.optional().openapi({ description: "With END_USER_CREDIT: the bucket refused" }),
   reason: creditReason.optional(),
   refundable: z.number().int().optional().openapi({ description: "With INSUFFICIENT_BALANCE: the most a refund may return now (micro-USD)" }),
+  available: z.number().int().optional().openapi({ description: "With INSUFFICIENT_BALANCE: the most a refund or spend may take now (micro-USD)" }),
 }).openapi("Error");
 export const Deleted = z.object({ deleted: z.literal(true) });
 export const SignedOut = z.object({ signedOut: z.number().int().openapi({ description: "How many console sessions ended" }) }).openapi("SignedOut");
@@ -167,16 +168,16 @@ const servedModel = z.string().optional().openapi({ description: "The model that
 const runUsage = z.object({ responses: z.number(), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), costUsd: z.number() }).nullable()
   .openapi({ description: "The run's model responses on the node that ended it; null when it made none there" });
 const balanceCause = z.object({
-  kind: z.enum(["usage", "usage_correction", "grant", "refund", "adjustment", "refusal", "threshold_changed"]).openapi({ description: "What moved the balance: usage (a call's cost), usage_correction (a call's cost posted again, corrected, maybe long after the call), grant, refund or adjustment (the tenant's entries), refusal (a call refused; no entry), threshold_changed (a threshold set above the balance; no entry). Stable codes" }),
+  kind: z.enum(["usage", "usage_correction", "grant", "refund", "adjustment", "spend", "refusal", "threshold_changed"]).openapi({ description: "What moved the balance: usage (a call's cost), usage_correction (a call's cost posted again, corrected, maybe long after the call), grant, refund, adjustment or spend (the tenant's entries), refusal (a call refused; no entry), threshold_changed (a threshold set above the balance; no entry). Stable codes" }),
   entryId: z.number().int().optional().openapi({ description: "The ledger entry that moved the balance. A person's entry ids grow: order their events by it" }),
-  entryKey: z.string().optional().openapi({ description: "For a grant, refund or adjustment: your key" }),
+  entryKey: z.string().optional().openapi({ description: "For a grant, refund, adjustment or spend: your key" }),
   requestId: z.string().optional().openapi({ description: "For usage: the run's request, when there is one" }),
   bucket: z.string().nullable(),
 }).openapi("EndUserBalanceCause");
 const endUserEntryEvent = z.object({
-  endUser: z.string(), entryId: z.number().int(), kind: z.enum(["grant", "refund", "adjustment"]),
-  amount: z.number().int().openapi({ description: "As in the ledger: what moved the balance (a refund's is negative)" }),
-  key: z.string(), reference: z.string().nullable(), metadata: z.record(z.string(), z.unknown()),
+  endUser: z.string(), entryId: z.number().int(), kind: z.enum(["grant", "refund", "adjustment", "spend"]),
+  amount: z.number().int().openapi({ description: "As in the ledger: what moved the balance (a refund's or a spend's is negative)" }),
+  key: z.string(), reference: z.string().nullable(), description: z.string().nullable(), metadata: z.record(z.string(), z.unknown()),
   balance: z.number().int(), previousBalance: z.number().int(),
 });
 const voiceFacts = {
@@ -307,6 +308,7 @@ export const WebhookEvents = {
   "end_user.credit.granted": envelope("end_user.credit.granted", endUserEntryEvent, "The tenant posted a grant to an end user's ledger (once per entry; a replayed key sends nothing)"),
   "end_user.credit.refunded": envelope("end_user.credit.refunded", endUserEntryEvent, "The tenant posted a refund (amount negative, as in the ledger)"),
   "end_user.credit.adjusted": envelope("end_user.credit.adjusted", endUserEntryEvent, "The tenant posted an adjustment (amount signed)"),
+  "end_user.credit.spent": envelope("end_user.credit.spent", endUserEntryEvent, "The tenant posted a spend: credit spent on something it sells other than metered usage (amount negative, as in the ledger)"),
   "end_user.allowance.low": envelope("end_user.allowance.low", z.object({
     endUser: z.string(), bucket: z.string(), day: z.string(), allowance: z.number().int().openapi({ description: "The bucket's daily allowance (raw micro-USD)" }),
     allowanceSpent: z.number().int().openapi({ description: "Spent from it today, with the call that passed the warning" }), percent: z.number().int().openapi({ description: "The tenant's allowanceWarningPercent" }),
@@ -1397,19 +1399,21 @@ export const EndUserUpdate = z.object({
   lowBalance: z.number().int().nonnegative().nullable().optional().openapi({ description: "The user's own low-balance threshold (end_user.balance.low); null: the tenant's. Set above their balance, it fires once with cause threshold_changed" }),
 }).openapi("EndUserUpdate");
 export const EndUserEntryInput = z.object({
-  kind: z.enum(["grant", "refund", "adjustment"]).openapi({ description: "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user), at most the balance calls in flight do not hold (else 409 INSUFFICIENT_BALANCE); adjustment: moves the balance by a signed amount" }),
-  amount: z.number().int().openapi({ description: "micro-USD: positive for a grant or refund, signed for an adjustment" }),
+  kind: z.enum(["grant", "refund", "adjustment", "spend"]).openapi({ description: "grant: adds amount (a payment, a gift); refund: takes amount back (money returned to the user); spend: takes amount for something you sell other than metered usage (a month of a feature, an item); a refund or a spend takes at most the balance calls in flight do not hold (else 409 INSUFFICIENT_BALANCE); adjustment: moves the balance by a signed amount" }),
+  amount: z.number().int().openapi({ description: "micro-USD: positive for a grant, refund or spend, signed for an adjustment" }),
   key: z.string().min(1).max(255).openapi({ description: "Idempotency key, e.g. the payment's id: the same key and entry again returns the first; with another entry it is a 409" }),
   reference: z.string().max(500).optional().openapi({ description: "Your reference, shown in the ledger" }),
+  description: z.string().min(1).max(200).optional().openapi({ description: "Your words for the entry, as its person may read them in their credit history (\"500 credits\", \"A month without the footer\")" }),
   metadata: z.record(z.string(), z.unknown()).optional(),
 }).openapi("EndUserEntryInput");
 export const EndUserLedgerEntry = z.object({
   id: z.number().int(),
-  kind: z.enum(["grant", "refund", "adjustment", "usage"]),
+  kind: z.enum(["grant", "refund", "adjustment", "spend", "usage"]),
   amount: micros("What moved the balance: positive adds credit, negative spends it"),
   raw: micros("usage: the call's raw cost"), allowance: micros("usage: the part of the raw cost the bucket's allowance covered"),
   writtenOff: micros("usage: the part of the raw cost past what was left for the call (the balance, the daily limit, the bucket's limit), not charged to the user; the tenant bears it"),
   bucket: z.string().nullable(), key: z.string(), reference: z.string().nullable(),
+  description: z.string().nullable().openapi({ description: "Your words for one of your entries; null for usage and for entries posted without" }),
   metadata: z.record(z.string(), z.unknown()).openapi({ description: "usage: the call (kind, provider, model, agent, requestId, markupBps)" }),
   balanceAfter: micros("The balance after this entry"), createdAt: z.number(),
 }).openapi("EndUserLedgerEntry");
@@ -1430,7 +1434,8 @@ export const EndUserDay = z.object({
   writtenOff: micros("What was written off that day, every bucket (raw cost)"),
   granted: micros("Credit the tenant granted that day (balance units)"), refunded: micros("Credit the tenant refunded that day, as a positive amount (balance units)"),
   adjusted: micros("What the tenant's adjustments moved the balance that day, signed (balance units)"),
-  entries: z.number().int().openapi({ description: "How many grants, refunds and adjustments were posted that day" }),
+  spent: micros("What the tenant's spends took that day, as a positive amount (balance units)"),
+  entries: z.number().int().openapi({ description: "How many grants, refunds, adjustments and spends were posted that day" }),
   buckets: z.array(DayBucket).openapi({ description: "Spend by bucket, by name; buckets that spent nothing that day are left out" }),
 }).openapi("EndUserDay");
 export const EndUserDays = z.object({

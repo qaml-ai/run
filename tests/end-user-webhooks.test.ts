@@ -54,6 +54,21 @@ test("a refund to zero is silent: no balance.low, no credit.exhausted (nothing t
   assert.deepEqual((await events(db)).slice(before).map(event => [event.type, event.reason ?? null]).sort(), [["end_user.balance.low", null], ["end_user.credit.exhausted", "balance"]], "re-armed by the grant");
 });
 
+test("a spend is a debit: it fires balance.low and credit.exhausted as usage does, and end_user.credit.spent with its words", async () => {
+  const { db, credits } = await fixture({ lowBalance: 2 * USD });
+  await db.query("update webhook_endpoints set events = events || ARRAY['end_user.credit.spent'] where id = 'we_1'");
+  await credits.post("t", "u", { kind: "grant", amount: 3 * USD, key: "pay-1" });
+  await credits.post("t", "u", { kind: "spend", amount: 2 * USD, key: "item-1", description: "A month without the footer" });
+  await credits.post("t", "u", { kind: "spend", amount: USD, key: "item-2" });
+  // Each with the spend that moved the balance (in its transaction: their order within it is not kept).
+  assert.deepEqual((await events(db)).map(event => [event.type, event.balance, event.cause?.kind ?? event.kind, event.description ?? null]).sort(), [
+    ["end_user.balance.low", USD, "spend", null],
+    ["end_user.credit.exhausted", 0, "spend", null],
+    ["end_user.credit.spent", 0, "spend", null],
+    ["end_user.credit.spent", USD, "spend", "A month without the footer"],
+  ]);
+});
+
 test("credit.exhausted says why: a bucket's allowance used up (once a day), the balance at zero (once until credited), the daily limit (once a day)", async () => {
   const { db, credits } = await fixture({ allowances: { "bot:*": 100_000 } });
   await credits.post("t", "u", { kind: "grant", amount: 300_000, key: "pay" });

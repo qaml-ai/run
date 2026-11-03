@@ -1228,20 +1228,26 @@ class EndUsers:
         query = urlencode({key: value for key, value in (("from", _day(from_)), ("to", _day(to)), ("bucket", bucket), ("limit", limit)) if value is not None})
         return self._runtime._rest("GET", self._path(end_user) + "/days" + (f"?{query}" if query else ""))
 
-    def grant(self, end_user, *, amount, key, reference=None, metadata=None):
-        """Add credit (after a payment), once per `key` (the payment's id): {"entry", "replayed"}."""
-        return self._entry(end_user, "grant", amount, key, reference, metadata)
+    def grant(self, end_user, *, amount, key, reference=None, metadata=None, description=None):
+        """Add credit (after a payment), once per `key` (the payment's id): {"entry", "replayed"}. `description`: your
+        words for it, as the person may read them in their credit history."""
+        return self._entry(end_user, "grant", amount, key, reference, metadata, description)
 
-    def refund(self, end_user, *, amount, key, reference=None, metadata=None):
+    def refund(self, end_user, *, amount, key, reference=None, metadata=None, description=None):
         """Take credit back (money returned to the person)."""
-        return self._entry(end_user, "refund", amount, key, reference, metadata)
+        return self._entry(end_user, "refund", amount, key, reference, metadata, description)
 
-    def adjust(self, end_user, *, amount, key, reference=None, metadata=None):
+    def adjust(self, end_user, *, amount, key, reference=None, metadata=None, description=None):
         """Move the balance by a signed amount."""
-        return self._entry(end_user, "adjustment", amount, key, reference, metadata)
+        return self._entry(end_user, "adjustment", amount, key, reference, metadata, description)
 
-    def _entry(self, end_user, kind, amount, key, reference, metadata):
-        body = {"kind": kind, "amount": amount, "key": key, **({"reference": reference} if reference is not None else {}), **({"metadata": metadata} if metadata is not None else {})}
+    def spend(self, end_user, *, amount, key, reference=None, metadata=None, description=None):
+        """Take credit for something you sell other than metered usage (a month of a feature, an item): at most the
+        balance calls in flight don't hold, else a 409 INSUFFICIENT_BALANCE."""
+        return self._entry(end_user, "spend", amount, key, reference, metadata, description)
+
+    def _entry(self, end_user, kind, amount, key, reference, metadata, description=None):
+        body = {"kind": kind, "amount": amount, "key": key, **({"reference": reference} if reference is not None else {}), **({"description": description} if description is not None else {}), **({"metadata": metadata} if metadata is not None else {})}
         return self._runtime._rest("POST", self._path(end_user) + "/entries", body)
 
 

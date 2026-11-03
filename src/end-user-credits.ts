@@ -27,7 +27,7 @@ const BUCKET_NAME = /^[A-Za-z0-9_.:@/-]{1,100}$/;
 /** An allowance's key: a bucket, a prefix of buckets (`bot:*`), or every bucket (`*`). */
 const ALLOWANCE_KEY = /^(?:[A-Za-z0-9_.:@/-]{1,100}\*?|\*)$/;
 const END_USER_ID = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && value.length <= 200;
-export const ENTRY_KINDS = ["grant", "refund", "adjustment"] as const;
+export const ENTRY_KINDS = ["grant", "refund", "adjustment", "spend"] as const;
 export type EntryKind = typeof ENTRY_KINDS[number];
 export type LedgerKind = EntryKind | "usage";
 
@@ -57,7 +57,7 @@ export const DEFAULT_SETTINGS: Readonly<EndUserSettings> = Object.freeze({ enabl
  * correction of a call's cost, one of the tenant's entries, a call refused (no entry), or a threshold set above the
  * balance (no entry). Stable codes: a receiver may switch on them.
  */
-export const BALANCE_CAUSES = ["usage", "usage_correction", "grant", "refund", "adjustment", "refusal", "threshold_changed"] as const;
+export const BALANCE_CAUSES = ["usage", "usage_correction", "grant", "refund", "adjustment", "spend", "refusal", "threshold_changed"] as const;
 export type BalanceCauseKind = typeof BALANCE_CAUSES[number];
 /**
  * `entryId`: the ledger entry that moved the balance (none for a refusal or a threshold change); a person's entry ids
@@ -67,7 +67,10 @@ export type BalanceCauseKind = typeof BALANCE_CAUSES[number];
 export type BalanceCause = { kind: BalanceCauseKind; entryId?: number; entryKey?: string; requestId?: string; bucket: string | null };
 export type LedgerEntry = {
   id: number; kind: LedgerKind; amount: number; raw: number; allowance: number; writtenOff: number; bucket: string | null; key: string;
-  reference: string | null; metadata: Record<string, unknown>; balanceAfter: number; createdAt: number;
+  reference: string | null;
+  /** The tenant's words for the entry, as its person may read them ("500 credits", "A month without the footer"); null: none given. */
+  description: string | null;
+  metadata: Record<string, unknown>; balanceAfter: number; createdAt: number;
 };
 /**
  * One bucket's day: its allowance, what was spent from it and from the balance, what calls in flight hold, what is left
@@ -84,10 +87,11 @@ export type DaysQuery = { from?: string; to?: string; bucket?: string; limit?: n
 /**
  * An end user's UTC day: by bucket, what the allowance paid (`freeRaw`, raw cost) and what the balance paid
  * (`paidCharged`, charged with the markup), and their totals; and what the tenant's own entries moved that day, in balance
- * units: `granted`, `refunded` (positive: what was taken back), `adjusted` (signed), and how many there were (`entries`).
+ * units: `granted`, `refunded` (positive: what was taken back), `adjusted` (signed), `spent` (positive: credit the person
+ * spent on what the tenant sells, apart from metered usage), and how many there were (`entries`).
  */
 export type EndUserDay = {
-  day: string; freeRaw: number; paidCharged: number; writtenOff: number; granted: number; refunded: number; adjusted: number; entries: number;
+  day: string; freeRaw: number; paidCharged: number; writtenOff: number; granted: number; refunded: number; adjusted: number; spent: number; entries: number;
   buckets: { bucket: string; freeRaw: number; paidCharged: number; writtenOff: number }[];
 };
 /** The most days one per-day read may span. */
@@ -188,7 +192,8 @@ const settingsView = (row: any): EndUserSettings => row ? {
 const entryView = (row: any): LedgerEntry => ({
   id: Number(row.id), kind: row.kind, amount: Number(row.amount), raw: Number(row.raw), allowance: Number(row.allowance), writtenOff: Number(row.written_off ?? 0), bucket: row.bucket,
   // A tenant's entry shows its own key; the runtime's usage keys (`attempt:…`, `charge:…`) show as they are.
-  key: row.idempotency_key.startsWith("entry:") ? row.idempotency_key.slice(6) : row.idempotency_key, reference: row.reference, metadata: row.metadata ?? {}, balanceAfter: Number(row.balance_after), createdAt: Number(row.created_at),
+  key: row.idempotency_key.startsWith("entry:") ? row.idempotency_key.slice(6) : row.idempotency_key, reference: row.reference, description: row.description ?? null,
+  metadata: row.metadata ?? {}, balanceAfter: Number(row.balance_after), createdAt: Number(row.created_at),
 });
 
 /** An end user's row, made if it is not there yet, locked for the rest of the transaction. */
@@ -403,14 +408,14 @@ export class EndUserCredits {
       ), credited as (
         select (to_timestamp(created_at / 1000.0) at time zone 'UTC')::date as day,
           coalesce(sum(amount) filter (where kind = 'grant'), 0)::bigint as granted, coalesce(-sum(amount) filter (where kind = 'refund'), 0)::bigint as refunded,
-          coalesce(sum(amount) filter (where kind = 'adjustment'), 0)::bigint as adjusted, count(*)::int as entries
+          coalesce(sum(amount) filter (where kind = 'adjustment'), 0)::bigint as adjusted, coalesce(-sum(amount) filter (where kind = 'spend'), 0)::bigint as spent, count(*)::int as entries
         from end_user_ledger
         where tenant = $1 and end_user = $2 and kind <> 'usage' and $5::text is null and created_at >= $6 and created_at < $7
         group by 1
       ), picked as (
         select day from spent union select day from credited order by day desc limit $8
       )
-      select to_char(p.day, 'YYYY-MM-DD') as day, s.bucket, s.allowance_spent, s.paid_spent, s.written_off, c.granted, c.refunded, c.adjusted, c.entries
+      select to_char(p.day, 'YYYY-MM-DD') as day, s.bucket, s.allowance_spent, s.paid_spent, s.written_off, c.granted, c.refunded, c.adjusted, c.spent, c.entries
       from picked p left join spent s on s.day = p.day left join credited c on c.day = p.day
       order by p.day desc, s.bucket`,
     [tenant, id, from, to, bucket, Date.parse(`${from}T00:00:00Z`), Date.parse(`${to}T00:00:00Z`), limit + 1]);
@@ -418,7 +423,7 @@ export class EndUserCredits {
     for (const row of rows) {
       let day = days.at(-1);
       if (!day || day.day !== row.day) {
-        day = { day: row.day, freeRaw: 0, paidCharged: 0, writtenOff: 0, granted: Number(row.granted ?? 0), refunded: Number(row.refunded ?? 0), adjusted: Number(row.adjusted ?? 0), entries: Number(row.entries ?? 0), buckets: [] };
+        day = { day: row.day, freeRaw: 0, paidCharged: 0, writtenOff: 0, granted: Number(row.granted ?? 0), refunded: Number(row.refunded ?? 0), adjusted: Number(row.adjusted ?? 0), spent: Number(row.spent ?? 0), entries: Number(row.entries ?? 0), buckets: [] };
         days.push(day);
       }
       if (row.bucket === null) continue;
@@ -434,23 +439,27 @@ export class EndUserCredits {
 
   /**
    * Post the tenant's own entry to a user's ledger: a `grant` adds `amount` (a payment, a gift), a `refund` takes it
-   * back (money returned to the user), an `adjustment` moves the balance by a signed `amount`. `key` makes it
-   * idempotent: the same key again with the same entry returns the first (`replayed`), with another entry is a 409.
+   * back (money returned to the user), a `spend` takes it for something the tenant sells other than metered usage (a
+   * month of a feature, an item), an `adjustment` moves the balance by a signed `amount`. A refund or a spend takes at
+   * most the balance calls in flight don't hold. `description` is the tenant's words for it, for its person's credit
+   * history. `key` makes it idempotent: the same key again with the same entry returns the first (`replayed`), with
+   * another entry is a 409.
    */
   async post(tenant: string, id: string, input: Record<string, unknown>): Promise<{ entry: LedgerEntry; replayed: boolean }> {
     endUserInput(id);
-    const unknown = Object.keys(input).find(key => !["kind", "amount", "key", "reference", "metadata"].includes(key));
-    if (unknown) throw new HttpError(400, `Unknown field ${unknown}: an entry is kind, amount, key, reference and metadata`);
+    const unknown = Object.keys(input).find(key => !["kind", "amount", "key", "reference", "description", "metadata"].includes(key));
+    if (unknown) throw new HttpError(400, `Unknown field ${unknown}: an entry is kind, amount, key, reference, description and metadata`);
     const kind = input.kind as EntryKind;
     if (!ENTRY_KINDS.includes(kind)) throw new HttpError(400, `kind must be one of ${ENTRY_KINDS.join(", ")}`);
     const amount = kind === "adjustment" ? amountInput(input.amount, "amount", { min: -MAX_AMOUNT })! : amountInput(input.amount, "amount", { min: 1 })!;
     if (amount === 0) throw new HttpError(400, "amount must not be 0");
     if (typeof input.key !== "string" || !input.key.trim() || input.key.length > 255) throw new HttpError(400, "key is the entry's idempotency key (a payment's id, say): a string of 1–255 characters");
     if (input.reference !== undefined && (typeof input.reference !== "string" || input.reference.length > 500)) throw new HttpError(400, "reference must be a string of at most 500 characters");
+    if (input.description !== undefined && (typeof input.description !== "string" || !input.description.trim() || input.description.length > 200)) throw new HttpError(400, "description must be a string of 1–200 characters");
     if (input.metadata !== undefined && (!input.metadata || typeof input.metadata !== "object" || Array.isArray(input.metadata) || Buffer.byteLength(JSON.stringify(input.metadata)) > 4096)) {
       throw new HttpError(400, "metadata must be an object of at most 4 KB of JSON");
     }
-    const moved = kind === "refund" ? -amount : amount;
+    const moved = kind === "refund" || kind === "spend" ? -amount : amount;
     // Tenant entries' keys never meet the runtime's own (usage: `attempt:…`, `charge:…`).
     const key = `entry:${input.key}`;
     return transaction(this.db, async sql => {
@@ -461,18 +470,23 @@ export class EndUserCredits {
         if (!same) throw new HttpError(409, "This key was used for another entry", "IDEMPOTENCY_CONFLICT");
         return { entry: entryView(existing), replayed: true };
       }
-      // A refund returns credit the user has: at most their balance, less what calls in flight hold of it.
-      if (kind === "refund") {
+      // A refund returns credit the user has, and a spend takes it: at most their balance, less what calls in flight hold of it.
+      if (kind === "refund" || kind === "spend") {
         const held = Number((await sql.query("select coalesce(sum(paid), 0)::bigint as paid from end_user_holds where tenant = $1 and end_user = $2 and expires_at > $3", [tenant, id, Date.now()])).rows[0].paid);
         const refundable = Math.max(0, Number(user.balance) - held);
         if (amount > refundable) {
-          throw new HttpError(409, `A refund may return at most the balance not held by calls in flight: ${dollars(refundable)} (balance ${dollars(Number(user.balance))}); post an adjustment to correct a balance`, "INSUFFICIENT_BALANCE", { refundable });
+          throw new HttpError(409, kind === "refund"
+            ? `A refund may return at most the balance not held by calls in flight: ${dollars(refundable)} (balance ${dollars(Number(user.balance))}); post an adjustment to correct a balance`
+            : `A spend may take at most the balance not held by calls in flight: ${dollars(refundable)} (balance ${dollars(Number(user.balance))})`, "INSUFFICIENT_BALANCE", { refundable, available: refundable });
         }
       }
-      const entry = await appendEntry(sql, { tenant, endUser: id, kind, amount: moved, key, reference: (input.reference as string | undefined) ?? null, metadata: (input.metadata as Record<string, unknown> | undefined) ?? {} }, Number(user.balance));
+      const entry = await appendEntry(sql, {
+        tenant, endUser: id, kind, amount: moved, key, reference: (input.reference as string | undefined) ?? null,
+        description: (input.description as string | undefined)?.trim() ?? null, metadata: (input.metadata as Record<string, unknown> | undefined) ?? {},
+      }, Number(user.balance));
       // Said once per entry (a replayed key posts nothing, so says nothing): for receipts, mirrors, a second service.
       await enqueueEvents(sql, [webhookEvent(ENTRY_EVENTS[kind], tenant, {
-        endUser: id, entryId: entry.id, kind, amount: entry.amount, key: entry.key, reference: entry.reference, metadata: entry.metadata, balance: entry.balanceAfter, previousBalance: Number(user.balance),
+        endUser: id, entryId: entry.id, kind, amount: entry.amount, key: entry.key, reference: entry.reference, description: entry.description, metadata: entry.metadata, balance: entry.balanceAfter, previousBalance: Number(user.balance),
       }, `end_user_entry:${tenant}:${entry.id}`)]);
       return { entry, replayed: false };
     });
@@ -785,12 +799,12 @@ export async function settleUsage(sql: Sql, call: { tenant: string; endUser: str
  * Append an entry and move the user's balance by its amount, with the user's row locked (`lockEndUser`) and its balance
  * as it was (`balance`). A key already in the ledger is never appended again: callers look for it first.
  */
-export async function appendEntry(sql: Sql, entry: { tenant: string; endUser: string; kind: LedgerKind; amount: number; raw?: number; allowance?: number; writtenOff?: number; bucket?: string | null; key: string; reference?: string | null; metadata?: Record<string, unknown>; correction?: boolean }, balance: number, now = Date.now()): Promise<LedgerEntry> {
+export async function appendEntry(sql: Sql, entry: { tenant: string; endUser: string; kind: LedgerKind; amount: number; raw?: number; allowance?: number; writtenOff?: number; bucket?: string | null; key: string; reference?: string | null; description?: string | null; metadata?: Record<string, unknown>; correction?: boolean }, balance: number, now = Date.now()): Promise<LedgerEntry> {
   const after = balance + entry.amount;
   const row = (await sql.query(`
-    insert into end_user_ledger (tenant, end_user, kind, amount, raw, allowance, written_off, bucket, idempotency_key, reference, metadata, balance_after, created_at)
-    values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) on conflict (tenant, idempotency_key) do nothing returning *`,
-  [entry.tenant, entry.endUser, entry.kind, entry.amount, entry.raw ?? 0, entry.allowance ?? 0, entry.writtenOff ?? 0, entry.bucket ?? null, entry.key, entry.reference ?? null, JSON.stringify(entry.metadata ?? {}), after, now])).rows[0];
+    insert into end_user_ledger (tenant, end_user, kind, amount, raw, allowance, written_off, bucket, idempotency_key, reference, description, metadata, balance_after, created_at)
+    values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) on conflict (tenant, idempotency_key) do nothing returning *`,
+  [entry.tenant, entry.endUser, entry.kind, entry.amount, entry.raw ?? 0, entry.allowance ?? 0, entry.writtenOff ?? 0, entry.bucket ?? null, entry.key, entry.reference ?? null, entry.description ?? null, JSON.stringify(entry.metadata ?? {}), after, now])).rows[0];
   if (!row) throw new Error(`Ledger key ${entry.key} was posted already`);
   const posted = entryView(row);
   if (entry.amount) {
@@ -805,7 +819,7 @@ export async function appendEntry(sql: Sql, entry: { tenant: string; endUser: st
 }
 
 /** The event each kind of the tenant's own entries sends. */
-const ENTRY_EVENTS = { grant: "end_user.credit.granted", refund: "end_user.credit.refunded", adjustment: "end_user.credit.adjusted" } as const;
+const ENTRY_EVENTS = { grant: "end_user.credit.granted", refund: "end_user.credit.refunded", adjustment: "end_user.credit.adjusted", spend: "end_user.credit.spent" } as const;
 
 /** The low-balance threshold that applies to a user (their row): their own, else the tenant's (`settings`' row); null: none. */
 const thresholdOf = (user: any, settings: any): number | null =>
