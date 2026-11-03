@@ -11,6 +11,9 @@ import type { CallContext, ToolDefinition } from "../src/protocol.ts";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { journalMessages } from "./fixtures/journal-history.ts";
 import { inlineSandboxes } from "./inline-sandbox.ts";
+import { PiV8Sandbox } from "../src/codemode-pi-launcher.ts";
+import type { Guest } from "../src/codemode.ts";
+import type { V8Exec } from "../src/v8-exec.ts";
 
 /**
  * Pi's code mode in the agent host: the model's `codemode` call runs a script whose `tools.<name>()` calls are Pi nested
@@ -25,7 +28,7 @@ async function setup(t: Context, tools: ToolDefinition[]) {
   const faux = registerFauxProvider({ tokensPerSecond: 1_000_000 });
   t.after(async () => { faux.unregister(); await rm(directory, { recursive: true, force: true }); });
   const calls: Call[] = [];
-  async function start(answer: (call: Call) => unknown, options: { resume?: boolean; codeMode?: boolean; tools?: ToolDefinition[] } = {}) {
+  async function start(answer: (call: Call) => unknown, options: { resume?: boolean; codeMode?: boolean; tools?: ToolDefinition[]; io?: Partial<HostIO> } = {}) {
     const events: any[] = [];
     const storage = await openPiStorage({ sessionId: "agent", directory });
     const io: HostIO = {
@@ -39,6 +42,7 @@ async function setup(t: Context, tools: ToolDefinition[]) {
       modelAuth: async () => { throw new Error("no per-call credentials"); },
       fs: async () => { throw new Error("no files"); },
       codeSandbox: inlineSandboxes(),
+      ...options.io,
     };
     const host = createAgentHost(io);
     const init = await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", tools: options.tools ?? tools, ...options.codeMode === false ? { codeMode: false } : {}, ...options.resume ? { resume: true } : {} });
@@ -194,4 +198,38 @@ return { got, errors };` }, { id: "code" }), "toolUse"), answer("done"));
   assert.match(output, /a script gets at most 1,048,576 from one call/);
   assert.match(output, /more than 8,388,608 bytes in all/);
   assert.match(output, /"got":8100000/);
+});
+
+test("a script stopped while it waits for the lease, or while it runs, gives back its code slot and ends its process", async t => {
+  const fake = await setup(t, []);
+  // The launcher as production runs it, on a process that starts and never answers.
+  const guests: { ended: number }[] = [];
+  const pool = { open: () => {
+    const guest = { ended: 0 };
+    guests.push(guest);
+    let close!: (reason: string) => void;
+    return { dispatched: true, send: () => {}, listen: (_message, closed) => { close = closed; }, end: () => { guest.ended++; close("ended"); } } satisfies Guest;
+  } } as unknown as V8Exec;
+  let lease = Promise.withResolvers<void>(), slots = 0, released = 0;
+  const { host } = await fake.start(() => null, { io: {
+    lease: () => lease.promise,
+    codeSlot: async () => { slots++; return () => { released++; }; },
+    codeSandbox: options => new PiV8Sandbox({ ...options, pool }),
+  } });
+  const script = () => answer(fauxToolCall("codemode", { code: "return 1" }, { id: `code-${Math.random()}` }), "toolUse");
+  // The model's request waits for the lease too: it is fresh for that, and stale again before the script is admitted.
+  fake.respond(() => { lease = Promise.withResolvers<void>(); return script(); }, answer("done"));
+  lease.resolve();
+  const waiting = host.handle("prompt", { text: "go" });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  await host.handle("abort", {});
+  await waiting;
+  assert.deepEqual({ slots, released, guests: guests.length }, { slots: 0, released: 0, guests: 0 });
+  lease.resolve();
+  fake.respond(script(), answer("done"));
+  const running = host.handle("prompt", { text: "again" });
+  while (!guests.length) await new Promise(resolve => setTimeout(resolve, 5));
+  await host.handle("abort", {});
+  await running;
+  assert.deepEqual({ slots, released, ended: guests.map(guest => guest.ended) }, { slots: 1, released: 1, ended: [1] });
 });
