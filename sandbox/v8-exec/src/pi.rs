@@ -1,4 +1,4 @@
-// Versioned Pi start protocol, independent of the legacy execute bridge.
+// Versioned Pi start protocol.
 use super::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
@@ -146,7 +146,7 @@ pub(super) fn execute(scope: &mut v8::PinScope, stdin: &mut impl Read, data: &Va
   let stalled = helper(tc, api, 2);
   let lockdown = helper(tc, api, 3);
   let code = strip_typescript(data["code"].as_str().unwrap_or(""));
-  // As Pi's vm.js: an async function body, without legacy last-expression return insertion, on the prefix's line.
+  // As Pi's vm.js: an async function body on the prefix's line.
   // The script in a block of its own, inside the function: it may declare `tools` or `console` itself, as it could in
   // js_exec, where they were globals (a parameter's name, declared again in the function's own body, is a SyntaxError).
   let source = v8::String::new(tc, &format!("(async (tools, console) => {{ {{{code}\n}} }})")).unwrap();

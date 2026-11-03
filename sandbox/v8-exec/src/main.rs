@@ -1,13 +1,9 @@
-// v8-exec: one script (Pi's code mode, or a workflow) in a fresh process, on a bare V8 isolate.
+// v8-exec: one code mode script in a fresh process, on a bare V8 isolate.
 //
-// The parent (src/v8-exec.ts) spawns this per execution and speaks length-prefixed JSON frames
-// over stdin/stdout (the runtime's codemode wire messages, src/codemode.ts):
-//   in:  {type:"request", id, method:"execute", params:{code, tools, timeoutMs, maxOutputCharacters, cpuMs}}
-//        then {type:"response", id, result|error} for each tool call
-//   out: {type:"request", id, method:"tool", params:{name, args}}, {type:"event", event:{type:"output", text}},
-//        and one {type:"response", id, result:{output, truncated, returned, cpuMs}} or {..., error}
-// There is no Node here: the guest's realm is a bare V8 context holding the ECMAScript built-ins,
-// `tools`, `fs`, `console` and `text` (bootstrap.js), and nothing else.
+// The parent (src/codemode-pi-launcher.ts, through src/v8-exec.ts) spawns this per execution and speaks
+// length-prefixed JSON frames over stdin/stdout: pi-start-v1 installs Pi's prelude and reports the fingerprint,
+// pi-run-v1 runs the script once the parent accepts it, pi-result-v1 delivers each call's result (pi.rs). There is
+// no Node here: the guest's realm is a bare V8 context holding the ECMAScript built-ins and Pi's prelude.
 //
 // Limits, from the inside out: V8's heap limit (a near-heap-limit callback terminates), a
 // counting ArrayBuffer allocator, a watchdog thread that terminates at the CPU budget and exits
@@ -24,16 +20,11 @@ use std::time::Duration;
 mod seccomp;
 mod pi;
 
-const BOOTSTRAP: &str = include_str!("bootstrap.js");
-const GLUE: &str = include_str!("glue.js");
 
 // SANDBOX_LIMITS (src/limits.ts).
 const OUTPUT_EVENTS: usize = 1024;
 const TOOL_CALLS: usize = 256;
 const CONCURRENT_TOOLS: usize = 32;
-const WORKFLOW_TOOL_CALLS: usize = 8192;
-const WORKFLOW_CONCURRENT_TOOLS: usize = 64;
-const WORKFLOW_ARGUMENT_BYTES: i32 = 1024 * 1024;
 const ARGUMENT_BYTES: i32 = 128 * 1024;
 const RESULT_BYTES: i32 = 1024 * 1024;
 const EMIT_CHARS: i32 = 128_000;
@@ -54,26 +45,6 @@ static ARRAY_BUFFERS: AtomicUsize = AtomicUsize::new(0);
 static REFUSED: AtomicBool = AtomicBool::new(false);
 /// The execution's request id, once it has arrived: what V8's out-of-memory handler answers.
 static EXECUTION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-struct Exec {
-  workflow: bool,
-  remaining: usize,
-  events: usize,
-  output: Vec<String>,
-  truncated: bool,
-  returned: Option<serde_json::Value>,
-  calls: usize,
-  inflight: std::collections::HashSet<u64>,
-  /// Tool calls made but not sent yet: they go out only once the guest is left waiting, so a call
-  /// its code never awaited (it returned first) never reaches a tool.
-  outbox: Vec<String>,
-}
-
-thread_local! {
-  static EXEC: std::cell::RefCell<Exec> = std::cell::RefCell::new(Exec {
-    workflow: false, remaining: 0, events: 0, output: vec![], truncated: false, returned: None, calls: 0, inflight: Default::default(), outbox: vec![],
-  });
-}
 
 fn cpu_ms() -> f64 {
   let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
@@ -136,64 +107,6 @@ fn throw(scope: &mut v8::PinScope, message: &str, type_error: bool) {
   scope.throw_exception(error);
 }
 
-/// `send(id, name, json)`: a tool call, checked here, then sent to the parent.
-fn send_cb(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue<v8::Value>) {
-  let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-  let (name, json) = (args.get(1), args.get(2));
-  if !name.is_string() || !json.is_string() { return throw(scope, "Sandbox bridge expects a string", true); }
-  let name = name.to_string(scope).unwrap();
-  let json = json.to_string(scope).unwrap();
-  if name.length() > 80 { return throw(scope, "Sandbox bridge string exceeds size limit", false); }
-  let name = name.to_rust_string_lossy(scope);
-  // fs.writeFile carries a file's bytes: up to a tool result's size, not a tool call's.
-  let workflow = EXEC.with(|exec| exec.borrow().workflow);
-  let limit = if name == "fs.writeFile" { RESULT_BYTES } else if workflow { WORKFLOW_ARGUMENT_BYTES } else { ARGUMENT_BYTES };
-  if json.length() > limit as usize { return throw(scope, "Sandbox bridge string exceeds size limit", false); }
-  let refused = EXEC.with(|exec| {
-    let mut exec = exec.borrow_mut();
-    exec.calls += 1;
-    if exec.calls > (if workflow { WORKFLOW_TOOL_CALLS } else { TOOL_CALLS }) { return Some("Codemode tool call limit exceeded"); }
-    if exec.inflight.len() >= (if workflow { WORKFLOW_CONCURRENT_TOOLS } else { CONCURRENT_TOOLS }) { return Some("Too many concurrent tool calls"); }
-    exec.inflight.insert(id);
-    None
-  });
-  if let Some(message) = refused { return throw(scope, message, false); }
-  let json = json.to_rust_string_lossy(scope);
-  // The guest's JSON goes as it is: the bootstrap made it with the real JSON.stringify, and the parent parses every frame.
-  let frame = format!(r#"{{"type":"request","id":"{id}","method":"tool","params":{{"name":{},"args":{json}}}}}"#, serde_json::Value::String(name));
-  EXEC.with(|exec| exec.borrow_mut().outbox.push(frame));
-}
-
-/// `emit(text, flags)`: output, bounded here. Flags: 1, cut at
-/// 128,000 characters; 2, the value code returned; 4, rendered as JSON.
-fn emit_cb(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue<v8::Value>) {
-  let text = args.get(0);
-  if !text.is_string() { return throw(scope, "Sandbox bridge expects a string", true); }
-  let text = text.to_string(scope).unwrap();
-  if text.length() > EMIT_CHARS as usize { return throw(scope, "Sandbox bridge string exceeds size limit", false); }
-  let flags = args.get(1).int32_value(scope).unwrap_or(0);
-  let length = text.length();
-  let units: Vec<u16> = text.to_rust_string_lossy(scope).encode_utf16().collect();
-  let event = EXEC.with(|exec| {
-    let mut exec = exec.borrow_mut();
-    let take = if exec.events < OUTPUT_EVENTS { exec.remaining.min(units.len()) } else { 0 };
-    let part = String::from_utf16_lossy(&units[..take]);
-    let cut = length > take || flags & 1 == 1;
-    exec.truncated |= cut;
-    if flags & 2 != 0 {
-      let mut returned = serde_json::json!({ "json": flags & 4 == 4, "truncated": cut });
-      if take > 0 { returned["index"] = exec.output.len().into(); }
-      exec.returned = Some(returned);
-    }
-    if take == 0 { return None; }
-    exec.events += 1;
-    exec.remaining -= take;
-    exec.output.push(part.clone());
-    Some(part)
-  });
-  if let Some(text) = event { send_frame(&serde_json::json!({ "type": "event", "event": { "type": "output", "text": text } })); }
-}
-
 fn import_cb<'s>(
   scope: &mut v8::PinScope<'s, '_>,
   _options: v8::Local<'s, v8::Data>,
@@ -247,18 +160,6 @@ static AB_VTABLE: v8::RustAllocatorVtable<AtomicUsize> = v8::RustAllocatorVtable
   allocate: ab_allocate, allocate_uninitialized: ab_allocate_uninitialized, free: ab_free, drop: ab_drop,
 };
 
-/// Compile the bootstrap and glue in the current context: `[deliver, install, formatError, finish]`.
-fn setup<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Array> {
-  let send = v8::Function::new(scope, send_cb).unwrap();
-  let emit = v8::Function::new(scope, emit_cb).unwrap();
-  let bootstrap = run(scope, BOOTSTRAP, "sandbox-bootstrap.js");
-  let glue = run(scope, GLUE, "glue.js");
-  let glue = v8::Local::<v8::Function>::try_from(glue).unwrap();
-  let undefined = v8::undefined(scope).into();
-  let helpers = glue.call(scope, undefined, &[send.into(), emit.into(), bootstrap]).expect("glue failed");
-  v8::Local::<v8::Array>::try_from(helpers).unwrap()
-}
-
 fn run<'s>(scope: &mut v8::PinScope<'s, '_>, source: &str, name: &str) -> v8::Local<'s, v8::Value> {
   let source = v8::String::new(scope, source).unwrap();
   let name = v8::String::new(scope, name).unwrap();
@@ -292,35 +193,6 @@ fn strip_typescript(code: &str) -> String {
   }
 }
 
-fn is_word(c: char) -> bool { c.is_ascii_alphanumeric() || c == '_' }
-
-/// `\bword\b` somewhere in `text`.
-fn has_word(text: &str, word: &str) -> bool {
-  text.match_indices(word).any(|(at, _)| {
-    let before = text[..at].chars().next_back().map_or(true, |c| !is_word(c));
-    let after = text[at + word.len()..].chars().next().map_or(true, |c| !is_word(c));
-    before && after
-  })
-}
-
-/// Code without a `return` returns its last expression.
-fn prepare(code: &str) -> String {
-  if code.trim().is_empty() || has_word(code, "return") { return code.to_string(); }
-  let body = code.trim_end();
-  let trailing = &code[body.len()..];
-  let mut lines: Vec<String> = body.split('\n').map(String::from).collect();
-  let Some(index) = lines.iter().rposition(|line| { let t = line.trim(); !t.is_empty() && !t.starts_with("//") }) else { return code.to_string() };
-  let last = lines[index].clone();
-  let trimmed = last.trim();
-  let expression = trimmed.strip_suffix(';').unwrap_or(trimmed).trim();
-  const KEYWORDS: [&str; 22] = ["break", "case", "catch", "class", "const", "continue", "debugger", "default", "do", "else", "export", "finally", "for", "function", "if", "import", "let", "return", "switch", "throw", "try", "var"];
-  let keyword = KEYWORDS.iter().chain(["while", "with"].iter()).any(|kw| expression.starts_with(kw) && expression[kw.len()..].chars().next().map_or(true, |c| !is_word(c)));
-  if expression.is_empty() || expression.ends_with('}') || keyword { return code.to_string(); }
-  let indent: String = last.chars().take_while(|c| c.is_whitespace()).collect();
-  lines[index] = format!("{indent}return {expression};");
-  format!("{}{}", lines.join("\n"), trailing)
-}
-
 fn set_rlimit(resource: libc::c_int, soft: u64, hard: u64) {
   let limit = libc::rlimit { rlim_cur: soft as libc::rlim_t, rlim_max: hard as libc::rlim_t };
   #[allow(clippy::useless_conversion)]
@@ -345,7 +217,7 @@ fn main() {
     set_rlimit(libc::RLIMIT_DATA as _, mb << 20, mb << 20);
   }
 
-  // One thread for V8: no compiler or GC helper threads. (WebAssembly is deleted from the global in glue.js.)
+  // One thread for V8: no compiler or GC helper threads. (WebAssembly is deleted from the global in pi-glue.js.)
   // One malloc arena: glibc makes one per thread otherwise, reading /sys (openat) to size them, which
   // the seccomp filter would kill when the watchdog thread first allocates.
   #[cfg(target_os = "linux")]
@@ -370,27 +242,16 @@ fn main() {
   v8::scope!(let scope, isolate);
   let context = v8::Context::new(scope, Default::default());
   let scope = &mut v8::ContextScope::new(scope, context);
-  let helpers = setup(scope);
-  let (deliver, install, format_error, finish) = (helper(scope, helpers, 0), helper(scope, helpers, 1), helper(scope, helpers, 2), helper(scope, helpers, 3));
-  let lockdown = helper(scope, helpers, 4);
 
   // Ready: everything above can happen before the execution arrives (a pre-spawned process waits here).
   let mut stdin = std::io::stdin().lock();
   let Some(request) = read_frame(&mut stdin) else { return };
   let id = request["id"].as_str().unwrap_or("").to_string();
   let _ = EXECUTION.set(id.clone());
-  if request["type"] != "request" || (request["method"] != "execute" && request["method"] != "pi-start-v1") { answer_and_exit(&id, Err("v8-exec takes one execute request".into())); }
+  if request["type"] != "request" || request["method"] != "pi-start-v1" { answer_and_exit(&id, Err("v8-exec takes one pi-start-v1 request".into())); }
   let params = &request["params"];
-  let code = params["code"].as_str().unwrap_or("").to_string();
-  let tools = params["tools"].to_string();
   let budget = params["cpuMs"].as_u64().unwrap_or(2_000).clamp(1, 30_000) as usize;
   CPU_MS.store(budget, Ordering::SeqCst);
-  EXEC.with(|exec| {
-    let mut exec = exec.borrow_mut();
-    exec.remaining = params["maxOutputCharacters"].as_u64().unwrap_or(32_000) as usize;
-    // Only the trusted host's execution request selects this profile; guest code cannot change it.
-    exec.workflow = params["workflow"].as_bool().unwrap_or(false);
-  });
 
   // The CPU budget: the watchdog terminates V8 at it, and exits if V8 has not stopped 250 ms later;
   // RLIMIT_CPU (whole seconds, past both) kills a process that got around the watchdog.
@@ -425,102 +286,8 @@ fn main() {
   // And executable memory, which under --jitless must kill it too.
   if args.iter().any(|arg| arg == "--test-exec-memory") { unsafe { libc::mmap(std::ptr::null_mut(), 4096, libc::PROT_READ | libc::PROT_EXEC, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0) }; }
 
-  if request["method"] == "pi-start-v1" {
-    std::env::set_var("TZ", "UTC");
-    let context = v8::Context::new(scope, Default::default());
-    let scope = &mut v8::ContextScope::new(scope, context);
-    pi::execute(scope, &mut stdin, params, jitless, HEAP_BYTES, &args);
-  }
-  v8::tc_scope!(let tc, scope);
-  let undefined: v8::Local<v8::Value> = v8::undefined(tc).into();
-  let tools = v8::String::new(tc, &tools).unwrap();
-  install.call(tc, undefined, &[tools.into()]).expect("install");
-
-  // Code without a "<" is compiled as it is, and stripped only if that
-  // fails; a "<" may be a generic call, which JavaScript reads as comparisons, so it is stripped first.
-  let generic = code.contains('<');
-  let mut promise = compile(tc, lockdown, &if generic { strip_typescript(&code) } else { code.clone() });
-  if promise.is_none() && !generic && !tc.has_terminated() {
-    let syntax = tc.exception().and_then(|exception| exception.to_object(tc)).and_then(|error| {
-      let key = v8::String::new(tc, "name").unwrap();
-      error.get(tc, key.into())
-    }).map(|name| name.to_rust_string_lossy(tc) == "SyntaxError").unwrap_or(false);
-    if syntax {
-      tc.reset();
-      promise = compile(tc, lockdown, &strip_typescript(&code));
-    }
-  }
-
-  let guest_error = |tc: &mut v8::PinnedRef<'_, v8::TryCatch<v8::HandleScope>>, exception: Option<v8::Local<v8::Value>>| -> String {
-    if tc.has_terminated() || REASON.load(Ordering::SeqCst) != 0 { return limit_message(); }
-    let Some(exception) = exception else { return "Sandbox execution failed (memory or execution limit)".into() };
-    tc.reset();
-    let undefined = v8::undefined(tc).into();
-    match format_error.call(tc, undefined, &[exception]) {
-      Some(text) if text.is_string() => text.to_rust_string_lossy(tc).chars().take(2048).collect(),
-      _ if tc.has_terminated() || REASON.load(Ordering::SeqCst) != 0 => limit_message(),
-      _ => "Sandbox execution failed (memory or execution limit)".into(),
-    }
-  };
-
-  let Some(promise) = promise else {
-    let exception = tc.exception();
-    let message = guest_error(tc, exception);
-    answer_and_exit(&id, Err(message));
-  };
-  let Some(result) = finish.call(tc, undefined, &[promise]) else {
-    let exception = tc.exception();
-    let message = guest_error(tc, exception);
-    answer_and_exit(&id, Err(message));
-  };
-  let result = v8::Local::<v8::Promise>::try_from(result).unwrap();
-  tc.perform_microtask_checkpoint();
-
-  loop {
-    if tc.has_terminated() || REASON.load(Ordering::SeqCst) != 0 { answer_and_exit(&id, Err(limit_message())); }
-    match result.state() {
-      v8::PromiseState::Fulfilled => {
-        if EXEC.with(|exec| !exec.borrow().inflight.is_empty()) {
-          answer_and_exit(&id, Err("Unawaited tool calls: await all tool promises before returning".into()));
-        }
-        break;
-      }
-      v8::PromiseState::Rejected => {
-        let reason = result.result(tc);
-        let message = guest_error(tc, Some(reason));
-        answer_and_exit(&id, Err(message));
-      }
-      v8::PromiseState::Pending => {}
-    }
-    for frame in EXEC.with(|exec| std::mem::take(&mut exec.borrow_mut().outbox)) {
-      let _guard = OUT.lock().unwrap();
-      if !DONE.load(Ordering::SeqCst) { write_frame(frame.as_bytes()); }
-    }
-    // Nothing in flight can settle it: wait for the parent's timeout to end the process.
-    let Some(frame) = read_frame(&mut stdin) else { unsafe { libc::_exit(0) } };
-    if frame["type"] != "response" { continue; }
-    let Some(call) = frame["id"].as_str().and_then(|id| id.parse::<u64>().ok()) else { continue };
-    if !EXEC.with(|exec| exec.borrow_mut().inflight.remove(&call)) { continue; }
-    let (ok, text) = match frame.get("error") {
-      Some(error) => (false, error.as_str().unwrap_or("Tool call failed").chars().take(2048).collect::<String>()),
-      None => (true, frame["result"].as_str().map(String::from).unwrap_or_else(|| frame["result"].to_string())),
-    };
-    let call = v8::Number::new(tc, call as f64);
-    let ok = v8::Boolean::new(tc, ok);
-    let text = v8::String::new(tc, &text).unwrap();
-    deliver.call(tc, undefined, &[call.into(), ok.into(), text.into()]);
-    tc.perform_microtask_checkpoint();
-  }
-
-  let cpu = (cpu_ms() - started).round() as u64;
-  let result = EXEC.with(|exec| {
-    let exec = exec.borrow();
-    // processCpuMs: the whole process's CPU, V8's startup included (the parent ignores it; benchmarks read it).
-    let mut result = serde_json::json!({ "output": exec.output, "truncated": exec.truncated, "cpuMs": cpu, "processCpuMs": (cpu_ms() * 1000.0).round() / 1000.0 });
-    if let Some(returned) = &exec.returned { result["returned"] = returned.clone(); }
-    result
-  });
-  answer_and_exit(&id, Ok(result));
+  std::env::set_var("TZ", "UTC");
+  pi::execute(scope, &mut stdin, params, jitless, HEAP_BYTES, &args);
 }
 
 /// --seccomp-trap: print the number of the call the filter refused ("seccomp: syscall <n>") to stderr, and exit 99.
@@ -548,16 +315,4 @@ fn trap_sigsys() {
 
 fn helper<'s>(scope: &mut v8::PinScope<'s, '_>, helpers: v8::Local<'s, v8::Array>, index: u32) -> v8::Local<'s, v8::Function> {
   v8::Local::<v8::Function>::try_from(helpers.get_index(scope, index).unwrap()).unwrap()
-}
-
-fn compile<'s>(scope: &mut v8::PinScope<'s, '_>, lockdown: v8::Local<'s, v8::Function>, code: &str) -> Option<v8::Local<'s, v8::Value>> {
-  let wrapped = format!("(async function() {{ \"use strict\";\n{}\n}})()", prepare(code));
-  let source = v8::String::new(scope, &wrapped)?;
-  let name = v8::String::new(scope, "codemode.js").unwrap();
-  let origin = v8::ScriptOrigin::new(scope, name.into(), 0, 0, false, 0, None, false, false, false, None);
-  let script = v8::Script::compile(scope, source, Some(&origin))?;
-  // After compiling, just before guest code runs: V8 installs SharedArrayBuffer on a context's first compile.
-  let undefined = v8::undefined(scope).into();
-  lockdown.call(scope, undefined, &[])?;
-  script.run(scope)
 }

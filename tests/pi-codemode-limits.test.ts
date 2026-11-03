@@ -1,3 +1,4 @@
+import { runPi } from "./pi-sandbox.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -6,7 +7,7 @@ import { join } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
-import { codeCapacity, CodeGate, executeCode } from "../src/codemode.ts";
+import { codeCapacity, CodeGate } from "../src/codemode.ts";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { checkable, validateToolCall } from "../src/tool-policy.ts";
 import { codeErrorClass, recordCodeExecution, recordV8Exec, setMetricSink } from "../src/metrics.ts";
@@ -14,7 +15,7 @@ import type { ToolBridge } from "../src/protocol.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { supervisorMessages } from "./fixtures/journal-messages.ts";
 
-// Hard limits on workflow execution: nothing a tenant supplies runs on the runtime's thread, every execution's CPU is
+// Hard limits on Pi execution: nothing a tenant supplies runs on the runtime's thread, every execution's CPU is
 // bounded from outside its guest, and one tenant cannot take every sandbox worker on a node. The executions
 // run on v8-exec (npm run build:v8-exec); tests/v8-exec.test.ts has its own workings.
 
@@ -22,21 +23,11 @@ const none: ToolBridge = { definitions: [], call: async () => null };
 
 test("a hot loop is stopped at the CPU budget, which time spent waiting on tools does not count against", { timeout: 60_000 }, async t => {
   const started = performance.now();
-  await assert.rejects(executeCode({ code: "while (true) {}", bridge: none, timeoutMs: 60_000, limits: { cpuMs: 300 } }), /CPU (or wall-clock )?limit exceeded/);
+  await assert.rejects(runPi({ code: "while (true) {}", bridge: none, timeoutMs: 60_000, cpuMs: 300 }), /CPU (or wall-clock )?limit exceeded/);
   assert.ok(performance.now() - started < 1_500);
   // Two seconds of waiting on a tool, a moment of CPU: well within 300 ms of CPU.
   const slow: ToolBridge = { definitions: [{ name: "slow", description: "Waits", parameters: { type: "object" } }], call: () => sleep(2_000).then(() => "done") };
-  assert.deepEqual((await executeCode({ code: "return await tools.slow({})", bridge: slow, limits: { cpuMs: 300 } })).output, ["done"]);
-});
-
-test("a tenant's longest timeoutMs cuts a longer one, and its timeout says so", async t => {
-  const hang: ToolBridge = { definitions: [{ name: "hang", description: "Never answers", parameters: { type: "object" } }], call: (_name, _args, signal) => new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")))) };
-  // Warm first, so a slow machine's worker start does not take the whole deadline before the tool is called.
-  await executeCode({ code: "return 1", bridge: hang });
-  const started = performance.now();
-  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, timeoutMs: 120_000, limits: { maxTimeoutMs: 1_500 } }), /timed out after 1500ms while tools\.hang was still running; external side effects may have completed$/);
-  assert.ok(performance.now() - started < 4_000);
-  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, timeoutMs: 1_000, limits: { maxTimeoutMs: 1_500 } }), /Pass a larger timeoutMs \(at most 1500\)/);
+  assert.equal(await runPi({ code: "return await tools.slow({})", bridge: slow, cpuMs: 300 }), "done");
 });
 
 test("the gate admits each tenant up to its own limit, and waiting tenants in turn", async () => {
@@ -81,15 +72,16 @@ test("the gate admits each tenant up to its own limit, and waiting tenants in tu
 test("one tenant saturating its executions on a node does not stop another's", { timeout: 30_000 }, async t => {
   const gate = new CodeGate(4);
   const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
   const hang: ToolBridge = { definitions: [{ name: "hang", description: "Blocks until released", parameters: { type: "object" } }], call: () => release.promise.then(() => "released") };
-  const run = (tenant: string, code: string, timeoutMs = 10_000) => executeCode({ code, bridge: hang, timeoutMs, admit: signal => gate.acquire(tenant, 2, signal) });
+  const run = (tenant: string, code: string, timeoutMs = 10_000) => runPi({ code, bridge: hang, timeoutMs, acquireSlot: signal => gate.acquire(tenant, 2, signal) });
   const held = [run("a", "return await tools.hang({})"), run("a", "return await tools.hang({})")];
   await sleep(200);
   // Tenant a's third waits for its turn (and times out waiting); tenant b runs at once.
-  await assert.rejects(run("a", "return 1", 500), /timed out after 500ms waiting for a sandbox worker/);
-  assert.deepEqual((await run("b", "return 2")).output, ["2"]);
+  await assert.rejects(run("a", "return 1", 500), /(?:exceeded|timed out after) 500 ms/);
+  assert.equal(await run("b", "return 2"), 2);
   release.resolve();
-  assert.deepEqual((await Promise.all(held)).map(result => result.output), [["released"], ["released"]]);
+  assert.deepEqual(await Promise.all(held), ["released", "released"]);
   assert.equal(gate.running, 0);
 });
 
@@ -207,13 +199,14 @@ test("a script's error goes into its line as its name and shape: the first line,
 test("an admin tenant's executions waiting on slow tools are not held to the node's memory-sized capacity", { timeout: 30_000 }, async t => {
   const gate = new CodeGate(2);
   const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
   let waiting = 0;
   const all = Promise.withResolvers<void>();
   const slow: ToolBridge = { definitions: [{ name: "analysis", description: "Slow", parameters: { type: "object" } }], call: () => { if (++waiting === 12) all.resolve(); return release.promise.then(() => "done"); } };
-  const runs = Array.from({ length: 12 }, () => executeCode({ code: "return await tools.analysis({})", bridge: slow, timeoutMs: 20_000, admit: signal => gate.acquire("chiridion-prod", Infinity, signal) }));
+  const runs = Array.from({ length: 12 }, () => runPi({ code: "return await tools.analysis({})", bridge: slow, timeoutMs: 20_000, acquireSlot: signal => gate.acquire("chiridion-prod", Infinity, signal) }));
   // All twelve wait on their tool at once, each holding a worker; a capped tenant still gets the gate's slots.
   await all.promise;
-  assert.deepEqual((await executeCode({ code: "return 3", bridge: slow, admit: signal => gate.acquire("acme", 4, signal) })).output, ["3"]);
+  assert.equal(await runPi({ code: "return 3", bridge: slow, acquireSlot: signal => gate.acquire("acme", 4, signal) }), 3);
   release.resolve();
   assert.equal((await Promise.all(runs)).length, 12);
 });

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { CodemodeSandboxBase, type CodemodeSandboxBaseOptions, type HostToWorkerMessage } from "@earendil-works/pi-codemode/portable";
-import type { Guest } from "./codemode.ts";
+import type { Guest } from "./v8-exec.ts";
 import { SANDBOX_LIMITS } from "./limits.ts";
 import { MAX_FRAME_BYTES } from "./sandbox-wire.ts";
 import { V8Exec, v8Exec } from "./v8-exec.ts";

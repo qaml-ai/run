@@ -11,10 +11,8 @@ The `agents` built-in starts sub-agents in the **background** instead: the
 model goes on at once, and each one's answer arrives as a message of its own
 when it ends. See [Background sub-agents](#background-sub-agents).
 
-For a plan with many sub-agents — a sweep, a migration, research cross-checked
-across sources — the **`workflow`** built-in has the model write a script that
-coordinates them, and only the script's result comes back. See
-[Workflows](workflows.md).
+For a plan with many sub-agents, a code mode script coordinates delegate calls.
+See [Workflows in code](#workflows-in-code).
 
 camelRun has no handoffs: an agent cannot pass its conversation to another
 agent. See [Coming from the OpenAI Agents SDK](#coming-from-the-openai-agents-sdk).
@@ -110,12 +108,37 @@ map-reduce: one call per item, and the model combines the answers.
 delegate: { agents: ["researcher"], maxParallel: 8 }
 ```
 
+### Workflows in code
+
+A workflow is an ordinary code mode script. Enable the `delegate` builtin and
+its targets as above. The model can fan out tasks with `Promise.all`, or use
+loops to pass one child's answer to the next:
+
+```js
+const tasks = ["Compare battery life", "Compare repairability", "Compare prices"];
+const output = {
+  type: "object",
+  properties: { summary: { type: "string" } },
+  required: ["summary"],
+  additionalProperties: false,
+};
+const answers = await Promise.all(tasks.map(task => tools.delegate({
+  agent: "researcher", task, output,
+})));
+return answers.map((answer, index) => ({ task: tasks[index], ...answer.output }));
+```
+
+`output` gives each child a schema for its structured answer. The script's
+return value is what the model reads. Scripts survive a node restart: Pi
+replays the script and finished delegate calls are not made again. Await every
+delegate call; unfinished children are stopped when their script ends.
+
 ### Computers
 
 If the parent has a [computer connection](computers.md), each newly created
 child gets a separate connection with the same provider, credentials, managed
 setting, lease and daily limits. This covers inline and definition children,
-`delegate`, `spawn_agent` and `run_workflow`. Existing named agents and
+`delegate` and `spawn_agent`. Existing named agents and
 agents targeted by tool spawn directives keep their own connections.
 
 The child calls `computer_start` to start its own session. No machine or session

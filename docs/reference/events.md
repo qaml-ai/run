@@ -344,16 +344,7 @@ dedupe by `id`. See [Webhooks](../guides/webhooks.md).
 cost posted again, corrected), `grant`, `refund`, `adjustment`, `refusal` (a call refused; no entry) and
 `threshold_changed` (a threshold set above the balance; no entry). `entryId` is the ledger entry, and grows per end user.
 
-### Workflows
-
-A `run_workflow` call sends these, with the sub-agent events of each `agent()`
-the script makes. See [Workflows](../guides/workflows.md).
-
-| Event | Fields | |
-| --- | --- | --- |
-| `workflow_start` | `toolCallId` | the script began |
-| `workflow_progress` | `toolCallId`, `phase?`, `log?` | a `phase(title)` began, or a `log(message)` line |
-| `workflow_end` | `toolCallId`, `status` (`completed`, `failed`, `canceled`), `agents`, `error?` | the script ended, with how many agent calls it made |
+### Code mode
 
 A `codemode` call emits ordinary `tool_execution_start` and `tool_execution_end`
 events. Calls made inside its script emit no separate tool execution events.

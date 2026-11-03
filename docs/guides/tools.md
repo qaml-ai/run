@@ -79,10 +79,9 @@ Tools needing approval or human input remain listed and searchable in code.
 Until code can pause for a person, a call that needs their answer fails with a
 message to call the tool directly. Approval policies do not change caller access.
 
-Runtime control tools (`codemode`, `final_output`, the delegation and multi-agent
-tools, `run_workflow`, the channel's `send_message`, and `ask_user`) can only be
-called directly by the model. Workflow scripts keep their own `workflow_agent`
-host tool.
+Runtime control tools (`codemode`, `final_output`, the background multi-agent
+tools, the channel's `send_message`, and `ask_user`) can only be called directly
+by the model. `delegate` is always declared to the model and scripts can call it too.
 
 The console's agent page shows each tool's exposure (**Tools the model gets**),
 and `GET /v1/agents/:id` its `toolSources`. There is no network in the sandbox:
@@ -703,7 +702,7 @@ Tools the runtime answers itself, given to an agent as `builtins` when it is
 made or upserted (`agents.upsert("researcher", { builtins: ["web_search",
 "web_fetch"] })`, or `PATCH /v1/agents/:id/configuration`), or by the definition
 it is made from (whose builtins it then has):
-`"builtins": ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide", "workflow"]`.
+`"builtins": ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "delegate", "generate_image", "agents", "decide"]`.
 
 - `file_link` (`{path, method, expiresIn?, maxBytes?, contentType?}`) signs a
   GET or PUT URL for another tool to transfer one workspace file. Default
@@ -828,9 +827,9 @@ the node stopped rejects with an unknown outcome.
 
 Calls from a script use the model's `codemode` call id as `toolCallId` and Pi's
 key (`c1`, `c2`, …) as `innerCallId`. Idempotency keys hash those identities.
-Approval and judged tools, `ask_user`, multi-agent tools and `run_workflow`
-must still be called directly. Scripts cannot pause for a person in this release.
-`run_workflow` keeps its own script engine.
+`ask_user` and background multi-agent tools must still be called directly.
+Scripts cannot pause for a person in this release. Use `tools.delegate` to
+coordinate sub-agents from a script.
 
 `agent.client.execute(code)` and schedules with `code` use the same sandbox
 outside the model's history, without durable replay. Their result remains

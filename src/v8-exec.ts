@@ -1,9 +1,16 @@
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { Guest } from "./codemode.ts";
 import type { WireMessage } from "./protocol.ts";
 import { recordV8Exec } from "./metrics.ts";
 import { Confined } from "./sandbox.ts";
+
+/** One execution's link to its v8-exec process. */
+export interface Guest {
+  readonly dispatched: boolean;
+  send(message: WireMessage): void;
+  listen(onMessage: (message: unknown) => void, onClose: (reason: string) => void): void;
+  end(): void;
+}
 
 /**
  * Code on V8, a process per execution: sandbox/v8-exec, a bare V8 isolate (no Node), started for
@@ -11,7 +18,7 @@ import { Confined } from "./sandbox.ts";
  * no watchdog here. In the image agent-launcher starts it (`Confined`): a uid of its own,
  * no environment, no_new_privs and the launcher's seccomp filter. It confines itself further: its
  * own CPU, heap and ArrayBuffer limits, rlimits, and a seccomp allowlist before guest code. The
- * wall clock is executeCode's timer, which kills it.
+ * wall clock is the Pi launcher's timer, which kills it.
  *
  * `prespawn` keeps that many processes started ahead, each past V8's setup and waiting for its
  * one execution; `max` bounds processes running executions at once, further ones waiting for one.
@@ -23,8 +30,6 @@ export class V8Exec {
   readonly max: number;
   prespawn: number;
   running = 0;
-  /** CPU the processes that answered used in all, startup included, as each reported it (scripts/bench-v8-exec.ts). */
-  processCpuMs = 0;
   /** Pids of the processes running executions now, when they are this process's own. */
   readonly pids = new Set<number>();
   private readonly ready: Confined[] = [];
@@ -74,9 +79,8 @@ export class V8Exec {
       const pid = proc.pid;
       if (pid) this.pids.add(pid);
       proc.listen(message => {
-        const reply = message as { type?: string; result?: { processCpuMs?: unknown } };
+        const reply = message as { type?: string };
         if (reply?.type === "response") answered = true;
-        if (typeof reply?.result?.processCpuMs === "number") this.processCpuMs += reply.result.processCpuMs;
         deliver(message);
       }, ({ code, signal, error }) => {
         if (pid) this.pids.delete(pid);
@@ -150,7 +154,7 @@ export function v8Settings(env: NodeJS.ProcessEnv) {
 }
 
 let shared: V8Exec | undefined;
-/** This process's own runner, from its environment: an agent process's, and executeCode's when given none. A node makes its own (nodeDeps). */
+/** This process's own runner, from its environment: an agent process's, and Pi's when given none. A node makes its own (nodeDeps). */
 export function v8Exec() {
   return shared ??= new V8Exec(v8Settings(process.env));
 }

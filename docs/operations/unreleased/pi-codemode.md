@@ -15,7 +15,7 @@ still run outside history without durable replay and return
 longer streams `output` events as it runs. Stored schedule code, and other
 saved code, that uses `fs` or `tools.search`, `tools.describe` or
 `tools.namespaces` fails from this release: rewrite it with the file tools
-and `searchTools`/`describeTool` (below). `run_workflow` keeps its own engine.
+and `searchTools`/`describeTool` (below).
 
 Scripts call `await tools.<name>(args)` for the tool's data; a tool error
 rejects with its message. Discovery uses `ALL_TOOLS`, `searchTools`,
@@ -53,7 +53,7 @@ The model's code call emits ordinary `tool_execution_start` and
 `tool_execution_end` events. Inner calls emit neither; MCP progress arrives
 as `tool_execution_update` on the parent call, with `toolName: "codemode"`.
 
-Approval and judged tools, human input, multi-agent tools and `run_workflow`
+Approval and judged tools, human input, background multi-agent tools
 still require direct model calls. `codeMode: false` still removes code mode.
 Deprecated exposure values remain `direct`, `codemode` and `both`;
 `codemode` means only callable from code. With `fileTools: false`, where `fs`

@@ -10,11 +10,11 @@ import { createAgentHost, type HostIO } from "../src/agent-host.ts";
 import type { CallContext, ToolDefinition } from "../src/protocol.ts";
 import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { journalMessages } from "./fixtures/journal-history.ts";
+import type { CodeLimits } from "../src/codemode.ts";
 import { inlineSandboxes } from "./inline-sandbox.ts";
 import { PiV8Sandbox } from "../src/codemode-pi-launcher.ts";
 import { existsSync } from "node:fs";
-import { v8ExecBinary } from "../src/v8-exec.ts";
-import type { Guest } from "../src/codemode.ts";
+import { v8ExecBinary, type Guest } from "../src/v8-exec.ts";
 import type { V8Exec } from "../src/v8-exec.ts";
 
 /**
@@ -30,7 +30,7 @@ async function setup(t: Context, tools: ToolDefinition[]) {
   const faux = registerFauxProvider({ tokensPerSecond: 1_000_000 });
   t.after(async () => { faux.unregister(); await rm(directory, { recursive: true, force: true }); });
   const calls: Call[] = [];
-  async function start(answer: (call: Call) => unknown, options: { resume?: boolean; codeMode?: boolean; tools?: ToolDefinition[]; io?: Partial<HostIO>; init?: Record<string, unknown> } = {}) {
+  async function start(answer: (call: Call) => unknown, options: { resume?: boolean; codeMode?: boolean; tools?: ToolDefinition[]; io?: Partial<HostIO>; init?: Record<string, unknown>; codeLimits?: CodeLimits } = {}) {
     const events: any[] = [];
     const storage = await openPiStorage({ sessionId: "agent", directory });
     const io: HostIO = {
@@ -47,7 +47,7 @@ async function setup(t: Context, tools: ToolDefinition[]) {
       ...options.io,
     };
     const host = createAgentHost(io);
-    const init = await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", tools: options.tools ?? tools, ...options.codeMode === false ? { codeMode: false } : {}, ...options.resume ? { resume: true } : {}, ...options.init });
+    const init = await host.handle("init", { id: "agent", directory, model: faux.getModel(), apiKey: "fixture", tools: options.tools ?? tools, ...options.codeLimits ? { codeLimits: options.codeLimits } : {}, ...options.codeMode === false ? { codeMode: false } : {}, ...options.resume ? { resume: true } : {}, ...options.init });
     let disposed = false;
     const dispose = async () => { if (!disposed) { disposed = true; await host.dispose(); await storage.close(BACKGROUND_CONTEXT); } };
     t.after(dispose);
@@ -283,4 +283,14 @@ test("a tool error too large for a script rejects only that call, its message cu
   const output = textOf((await fake.history())[2]);
   assert.match(output, /"cut":true/);
   assert.match(output, /^Script completed/);
+});
+
+test("out-of-history code clamps requested timeouts to the agent limit and caps output", async t => {
+  const fake = await setup(t, [tool("hang")]);
+  const pending = Promise.withResolvers<void>();
+  t.after(() => pending.resolve());
+  const { host } = await fake.start(() => pending.promise, { codeLimits: { maxTimeoutMs: 150, cpuMs: 2_000, concurrent: 4 } });
+  await assert.rejects(host.handle("execute", { code: "await tools.hang({});", timeoutMs: 120_000 }), /150/);
+  await assert.rejects(host.handle("execute", { code: "await tools.hang({});", timeoutMs: 50 }), /50/);
+  assert.deepEqual(await host.handle("execute", { code: 'return "abcdef";', maxOutputCharacters: 3 }), { output: ["abc"], truncated: true });
 });

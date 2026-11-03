@@ -18,7 +18,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { num, obj } from "@earendil-works/pi-schema";
 import { type CodemodeHostCall, type CodemodeOutcome, type CodemodeRun } from "@earendil-works/pi-codemode";
 import { PiV8Sandbox } from "../src/codemode-pi-launcher.ts";
-import type { Guest } from "../src/codemode.ts";
+import type { Guest } from "../src/v8-exec.ts";
 import { frames } from "../src/sandbox-wire.ts";
 import { V8Exec, v8ExecBinary } from "../src/v8-exec.ts";
 

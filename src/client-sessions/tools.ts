@@ -19,7 +19,6 @@ import * as events from "./events.ts";
 import * as spend from "./spend.ts";
 import * as delegation from "./delegation.ts";
 import * as childSessions from "./children.ts";
-import * as workflows from "./workflows.ts";
 import * as humanInput from "./inputs.ts";
 import { type Session, type ClientSessionOptions, type AgentRef, type UsageRecord, RUN_METHODS, validId } from "./state.ts";
 import type { RequestRecord } from "../../shared/client-protocol.ts";
@@ -63,22 +62,20 @@ async function toolServers(ctx: ToolsContext, session: Session, tools: ToolDefin
   const view = (kind: ToolSourceView["kind"], server: ToolServer, extra: Partial<ToolSourceView> = {}): ToolServer =>
     ({ ...server, sources: async () => [{ kind, name: kind, status: "listed", ...extra, tools: await server.tools() }] });
   const multiAgent = childSessions.multiAgentServer(ctx.childrenContext, session, sources);
-  const workflow = workflows.workflowServer(ctx.childrenContext, session, sources);
   const images = spend.imageServer(ctx.spendContext, session, sources);
   // Sources that give tools (`decide` alone is a setting).
   const sourced = !!sources && Object.keys(sources).some(key => key !== "decide");
   // An agent with no code mode and no tools of its own gets no decide tool unless it asks for it (decide: true).
-  const plain = codeMode === false && !tools.length && !feature && !multiAgent && !workflow && !images && !sourced;
+  const plain = codeMode === false && !tools.length && !feature && !multiAgent && !images && !sourced;
   const decisions = spend.decisionServer(ctx.spendContext, session, sources, plain);
   const definition = header.definition;
   // An agent with no tools at all (no code mode, file tools or tools of any source) has nothing to present a file from: no present_file either.
-  const bare = codeMode === false && fileTools === false && !tools.length && !feature && !multiAgent && !workflow && !images && !sourced;
+  const bare = codeMode === false && fileTools === false && !tools.length && !feature && !multiAgent && !images && !sourced;
   return [
     ...feature ? [view("channel", feature)] : [],
     { tools: () => defaultExposure(tools), call: call => events.callAttached(ctx.eventContext, session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
     ...volumes && (header.mounts?.length || await ctx.options.sources?.computerFilesystem(tenant, header.id) !== undefined) && !bare ? [view("files", fileServer(fileToolsFor(volumes.definitions(), fileTools, codeMode), ({ name, args, signal }) => volumes.tool(toolContext(ctx, session), name, args, signal)))] : [],
     ...multiAgent ? [multiAgent] : [],
-    ...workflow ? [workflow] : [],
     ...images ? [images] : [],
     ...decisions ? [decisions] : [],
     ...ctx.options.sources ? [ctx.options.sources.server({ tenant, agent: header.id, ...(definition ? { definition: definition.id } : {}), claim: session.claim, ...(header.identity ? { identity: header.identity } : {}), mounts: () => session.header.mounts ?? [], onWrite: toolContext(ctx, session).onWrite, judge: spend.judgeFor(ctx.spendContext, session) }, sources)] : [],
@@ -192,7 +189,7 @@ export async function callTool(ctx: ToolsContext, session: Session, call: ToolCa
     // Listed in the run's outcome (`toolCalls`), ids only: its arguments and result are in history.
     const calls = session.toolCalls ??= [];
     // A call that started a child (delegate, spawn_agent, a tool's spawn directive) names it.
-    const child = call.toolCallId && !call.innerCallId ? session.children?.get(call.toolCallId)?.agent : undefined;
+    const child = call.toolCallId ? session.children?.get(call.innerCallId ? `${call.toolCallId}/${call.innerCallId}` : call.toolCallId)?.agent : undefined;
     if (calls.length < OUTPUT_TOOL_CALLS) calls.push({ tool: call.name, ...(call.toolCallId ? { toolCallId: call.toolCallId } : {}), ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), ok: !code, ...(code ? { code } : {}), ...(child ? { agentId: child } : {}) });
   }
 }

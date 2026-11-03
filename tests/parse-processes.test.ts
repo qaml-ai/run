@@ -1,3 +1,4 @@
+import { runPi } from "./pi-sandbox.ts";
 // The processes untrusted code and files run in (src/sandbox.ts): v8-exec for codemode, parse-job.ts for
 // files, started by this process without agent-launcher, or through the launcher's sockets with it
 // (tests/fake-launcher.ts stands in for it here; tests/image-isolation.ts runs the real one, confined).
@@ -11,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import sharp from "sharp";
-import { checkSandbox, executeCode } from "../src/codemode.ts";
+import { checkSandbox } from "../src/codemode.ts";
 import { frames, MAX_FRAME_BYTES } from "../src/sandbox-wire.ts";
 import type { ToolBridge } from "../src/protocol.ts";
 import { fitImage, inspect, inspection, parse } from "../src/inspect.ts";
@@ -25,17 +26,6 @@ const echo: ToolBridge = {
   definitions: [{ name: "echo", description: "Returns its arguments", parameters: { type: "object" } }],
   call: async (_name, args) => args,
 };
-const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-
-/** A v8.sock whose "process" behaves however the test says: the runtime must survive anything it sends. */
-async function fakeGuest(t: { after: (fn: () => unknown) => void }, behave: (message: any, send: (message: unknown) => void, socket: Socket) => void) {
-  await fakeLauncher(t, (kind, socket) => {
-    socket.resume();
-    const send = frames(socket, message => behave(message, send, socket));
-    return true;
-  });
-  return new V8Exec();
-}
 
 test("frames survive arbitrary chunking and refuse oversized or malformed input", async t => {
   const directory = await mkdtemp(join(tmpdir(), "sbx-"));
@@ -76,101 +66,34 @@ test("frames survive arbitrary chunking and refuse oversized or malformed input"
   sender.destroy();
 });
 
-test("through the launcher's socket: codemode end to end, cancelled, killed and reported, pre-spawned processes used once", { skip, timeout: 60_000 }, async t => {
+test("Pi through the launcher's socket: fresh guests, cancellation and process death", { skip, timeout: 30_000 }, async t => {
   const launcher = await fakeLauncher(t);
   const pool = new V8Exec({ prespawn: 2 });
   t.after(() => pool.close());
-  assert.equal(pool.pids.size, 0, "Its processes are the launcher's, not this one's");
-  const events: unknown[] = [];
-  const result = await executeCode({
-    code: 'const value: number = 20; console.log("start"); return (await tools.echo({ n: value })).n + 22;',
-    bridge: echo, pool, onEvent: event => events.push(event),
-  }).then(({ cpuMs: _cpuMs, ...rest }) => rest);
-  assert.deepEqual(result, { output: ["start", "42"], truncated: false, returned: { index: 1, json: true, truncated: false } });
-  assert.deepEqual(events, [{ type: "output", text: "start" }, { type: "output", text: "42" }]);
-  await assert.rejects(executeCode({ code: "return await tools.nope({})", bridge: echo, pool }), /tools\.nope is not a tool/);
-  for (let i = 0; i < 3; i++) assert.deepEqual((await executeCode({ code: "globalThis.n = (globalThis.n ?? 0) + 1; return n", bridge: echo, pool })).output, ["1"], "Nothing carries over");
+  assert.equal(pool.pids.size, 0, "The processes belong to the launcher");
+  const run = (code: string, options: Partial<Parameters<typeof runPi>[0]> = {}) => runPi({ code, bridge: echo, pool, ...options });
+  assert.equal(await run('const n: number = 20; return (await tools.echo({ n })).n + 22;'), 42);
+  for (let i = 0; i < 3; i++) assert.equal(await run("globalThis.n = (globalThis.n ?? 0) + 1; return n;"), 1);
 
+  const controller = new AbortController();
+  const spinning = run("while (true) {}", { signal: controller.signal, cpuMs: 5_000 });
+  await sleep(100);
+  controller.abort();
+  await assert.rejects(spinning, /abort/i);
   let entered = Promise.withResolvers<void>();
   const hang: ToolBridge = {
-    definitions: [{ name: "hang", description: "", parameters: { type: "object" } }],
-    call: (_name, _args, signal) => { entered.resolve(); return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })); },
+    definitions: [{ name: "hang", description: "Waits", parameters: { type: "object" } }],
+    call: (_name, _args, signal) => { entered.resolve(); return new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })); },
   };
-  // Cancelled: closing the connection ends the execution at once.
-  const controller = new AbortController();
-  const spinning = executeCode({ code: "while (true) {}", bridge: hang, pool, signal: controller.signal, timeoutMs: 60_000 });
-  await sleep(200);
-  controller.abort();
-  await assert.rejects(spinning, /aborted/);
-  await assert.rejects(executeCode({ code: "await tools.hang({})", bridge: hang, pool, timeoutMs: 2_000 }), /timed out after 2000ms while tools\.hang was still running/);
+  await assert.rejects(run("await tools.hang({});", { bridge: hang, timeoutMs: 200 }), /200/);
   assert.equal(pool.running, 0);
-
-  // Killed by something else: the launcher's last frame says how.
   entered = Promise.withResolvers<void>();
-  const running = executeCode({ code: "await tools.hang({})", bridge: hang, pool });
+  const running = run("await tools.hang({});", { bridge: hang });
   await entered.promise;
-  // The one running the execution, and the pre-spawned ones waiting for theirs.
-  for (const pid of launcher.pids) if (alive(pid)) process.kill(pid, "SIGKILL");
-  await assert.rejects(running, /Codemode sandbox process exited \(SIGKILL: a resource limit\)/);
-  // The next execution passes the dead pre-spawned ones over.
+  for (const pid of launcher.pids) { try { process.kill(pid, "SIGKILL"); } catch {} }
+  await assert.rejects(running, /SIGKILL/);
   await sleep(100);
-  assert.deepEqual((await executeCode({ code: "return 1", bridge: echo, pool })).output, ["1"]);
-});
-
-test("the runtime treats everything a v8-exec process sends as untrusted", async t => {
-  const run = (pool: V8Exec, bridge = echo) => executeCode({ code: "return 1", bridge, pool, timeoutMs: 5_000, maxOutputCharacters: 10 });
-  const answer = (result: unknown) => (message: any, send: (message: unknown) => void) => {
-    if (message.method === "execute") send({ type: "response", id: message.id, result });
-  };
-
-  await assert.rejects(run(await fakeGuest(t, (message, send) => send({ type: "request", id: "x", method: "shell", params: {} }))), /sent an invalid message/);
-  await assert.rejects(run(await fakeGuest(t, (message, send) => send({ type: "event", event: { type: "exec", command: "id" } }))), /sent an invalid message/);
-  await assert.rejects(run(await fakeGuest(t, (message, send) => send("hello"))), /sent an invalid message/);
-  await assert.rejects(run(await fakeGuest(t, (message, send, socket) => {
-    const header = Buffer.alloc(4);
-    header.writeUInt32BE(MAX_FRAME_BYTES + 1);
-    socket.write(header);
-  })), /sandbox process exited/);
-  await assert.rejects(run(await fakeGuest(t, (message, send, socket) => socket.destroy())), /sandbox process exited \(no status\)/);
-  // A forged exit frame only changes how the end reads.
-  await assert.rejects(run(await fakeGuest(t, (message, send, socket) => socket.end(frame({ type: "exit", signal: "SIGSYS" })))), /SIGSYS: a system call outside its seccomp allowlist/);
-  await assert.rejects(run(await fakeGuest(t, (message, send) => {
-    for (let i = 0; i < 2_000; i++) send({ type: "event", event: { type: "output", text: "" } });
-  })), /sent too many messages/);
-  await assert.rejects(run(await fakeGuest(t, answer({ output: ["x".repeat(11)], truncated: false }))), /returned an invalid result/);
-  await assert.rejects(run(await fakeGuest(t, answer({ output: [{ toString: 1 }], truncated: false }))), /returned an invalid result/);
-  await assert.rejects(run(await fakeGuest(t, answer("owned"))), /returned an invalid result/);
-  assert.deepEqual(await run(await fakeGuest(t, answer({ output: ["ok"], truncated: false, extra: "dropped" }))), { output: ["ok"], truncated: false });
-
-  // Output events are held to the caller's limit on this side too.
-  const events: unknown[] = [];
-  const loud = await fakeGuest(t, (message, send) => {
-    if (message.method !== "execute") return;
-    send({ type: "event", event: { type: "output", text: "0123456789abcdef" } });
-    send({ type: "event", event: { type: "output", text: "more" } });
-    send({ type: "response", id: message.id, result: { output: [], truncated: true } });
-  });
-  await executeCode({ code: "return 1", bridge: echo, pool: loud, maxOutputCharacters: 10, onEvent: event => events.push(event) });
-  assert.deepEqual(events, [{ type: "output", text: "0123456789" }]);
-
-  // Tool calls a guest makes up are held to the same policy and quotas as real ones.
-  let calls = 0;
-  const counted: ToolBridge = { ...echo, call: async args => { calls++; return args; } };
-  const replies: any[] = [];
-  const flooding = await fakeGuest(t, (message, send) => {
-    if (message.method === "execute") {
-      send({ type: "request", id: "unknown", method: "tool", params: { name: "rm", args: {} } });
-      for (let i = 0; i < 300; i++) send({ type: "request", id: `call-${i}`, method: "tool", params: { name: "echo", args: {} } });
-    } else if (message.type === "response") {
-      replies.push(message);
-      if (replies.length === 301) send({ type: "response", id: "late", result: null });
-    }
-  });
-  const flood = executeCode({ code: "return 1", bridge: counted, pool: flooding, timeoutMs: 2_000 });
-  await assert.rejects(flood, /timed out/);
-  assert.equal(replies.find(reply => reply.id === "unknown").error, "Unknown tool");
-  assert.ok(calls <= 256, `${calls} tool calls ran`);
-  assert.ok(replies.some(reply => /tool call limit exceeded|Too many concurrent/.test(reply.error ?? "")));
+  assert.equal(await run("return 1;"), 1);
 });
 
 test("a launcher that cannot be reached fails the execution and the parse clearly", async t => {
@@ -178,7 +101,7 @@ test("a launcher that cannot be reached fails the execution and the parse clearl
   t.after(() => rm(directory, { recursive: true, force: true }));
   process.env.AGENT_SANDBOX_DIR = directory;
   t.after(() => { delete process.env.AGENT_SANDBOX_DIR; });
-  await assert.rejects(executeCode({ code: "return 1", bridge: echo, pool: new V8Exec() }), /Codemode sandbox process could not start \(ENOENT\)/);
+  await assert.rejects(runPi({ code: "return 1", bridge: echo, pool: new V8Exec() }), /Codemode sandbox process could not start \(ENOENT\)/);
   await assert.rejects(parse(PNG, false), /the parser could not start \(ENOENT\)/);
 });
 
@@ -186,7 +109,7 @@ test("without the launcher codemode and parsing run in processes of this one's o
   assert.equal(process.env.AGENT_SANDBOX_DIR, undefined);
   assert.equal((await checkSandbox()).mode, "in-process");
   await assert.rejects(checkSandbox({ required: true }), /AGENT_SANDBOX_REQUIRED=1, but no agent-launcher/);
-  assert.deepEqual((await executeCode({ code: "return 1", bridge: echo })).output, ["1"]);
+  assert.equal(await runPi({ code: "return 1", bridge: echo }), 1);
 });
 
 for (const where of ["in a process of this one's own", "through the launcher's socket"]) {
