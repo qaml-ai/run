@@ -75,7 +75,8 @@ export interface LegacyLog { empty(): Promise<boolean> }
 export interface HostIO {
   emit(event: unknown): void;
   /** Dispatch an application tool through the supervisor, which validates and limits it. */
-  tool(name: string, args: Record<string, unknown>, call?: CallContext): Promise<any>;
+  /** An application tool's call; `signal` cancels this call alone (one a script's Pi task gave up on). */
+  tool(name: string, args: Record<string, unknown>, call?: CallContext, signal?: AbortSignal): Promise<any>;
   /** Abort the application tool calls this agent has in flight. */
   cancelTools(): Promise<unknown>;
   /** Why the running turn must end before its next model request (a reached spend cap, the run's own limits, or its node leaving), if so. */
@@ -473,7 +474,7 @@ export function createAgentHost(hostIO: HostIO) {
             // An error rejects the call in the script with its message, cut to fit what a script gets from a call.
             let data: unknown;
             try {
-              const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await scriptMadeAt(nested) });
+              const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await scriptMadeAt(nested) }, signal);
               signal?.throwIfAborted();
               data = (tool.resultFormat === "content" ? scriptValue(value) : value) ?? null;
             } catch (error) {

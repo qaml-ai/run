@@ -23,7 +23,7 @@ import type { V8Exec } from "../src/v8-exec.ts";
  * the agent is loaded again mid-script. The script runs on Pi's QuickJS here; the runtime suites run it on v8-exec.
  */
 type Context = { after(fn: () => unknown): void };
-type Call = { name: string; args: Record<string, unknown>; call?: CallContext };
+type Call = { name: string; args: Record<string, unknown>; call?: CallContext; signal?: AbortSignal };
 
 async function setup(t: Context, tools: ToolDefinition[]) {
   const directory = await mkdtemp(join(tmpdir(), "codemode-"));
@@ -35,7 +35,7 @@ async function setup(t: Context, tools: ToolDefinition[]) {
     const storage = await openPiStorage({ sessionId: "agent", directory });
     const io: HostIO = {
       emit: event => events.push(event),
-      tool: async (name, args, call) => { const made = { name, args, ...call ? { call } : {} }; calls.push(made); return answer(made); },
+      tool: async (name, args, call, signal) => { const made = { name, args, ...call ? { call } : {}, ...signal ? { signal } : {} }; calls.push(made); return answer(made); },
       cancelTools: async () => null,
       runLimit: async () => undefined,
       legacyLog: { empty: async () => true },
@@ -293,4 +293,17 @@ test("out-of-history code clamps requested timeouts to the agent limit and caps 
   await assert.rejects(host.handle("execute", { code: "await tools.hang({});", timeoutMs: 120_000 }), /150/);
   await assert.rejects(host.handle("execute", { code: "await tools.hang({});", timeoutMs: 50 }), /50/);
   assert.deepEqual(await host.handle("execute", { code: 'return "abcdef";', maxOutputCharacters: 3 }), { output: ["abc"], truncated: true });
+});
+
+test("a call from a script gets its own signal, which Pi aborts when it gives the call up", async t => {
+  const fake = await setup(t, [tool("hang")]);
+  const { host } = await fake.start(call => new Promise((_, reject) => call.signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true })));
+  fake.respond(answer(fauxToolCall("codemode", { code: "await tools.hang({}); return 1;" }, { id: "code" }), "toolUse"), answer("done"));
+  const run = host.handle("prompt", { text: "go" });
+  while (!fake.calls.length) await new Promise(resolve => setTimeout(resolve, 5));
+  const [call] = fake.calls;
+  assert.ok(call.signal && !call.signal.aborted);
+  await host.handle("abort", {});
+  await run;
+  assert.equal(call.signal!.aborted, true);
 });
