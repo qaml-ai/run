@@ -344,6 +344,38 @@ A call counts on the UTC day it began (its usage entry's `metadata.day`), so nea
 midnight its day can differ from the day of its entry's `createdAt`. An entry of yours
 counts on the day it was posted.
 
+### Usage over time
+
+`GET /v1/end-users/{id}/usage` groups usage by posting hour or UTC day, bucket, call
+and agent in Postgres. It returns `{ step, from, to, rows }`, oldest first, without
+paging through ledger entries. Empty periods have no rows.
+
+```ts
+const usage = await agents.endUsers.usage(user.id, { step: "hour", bucket: "bot:*" });
+// rows: [{ at, bucket, call, agent, calls, raw, allowance, paid, writtenOff }]
+```
+
+```python
+usage = await agents.end_users.usage(user_id, step="day", bucket="bot:*")
+```
+
+`from` and `to` accept epoch milliseconds, a UTC day or an ISO time (`Date` in
+TypeScript, `datetime` in Python too). `to` is exclusive and defaults to now.
+`step` defaults to `hour`: the default range is the preceding 24 hours, at most
+7 days. With `day`, it is the preceding 30 days, at most 366 days. `bucket` matches
+an exact name or a prefix ending in `*`.
+
+`at` is the hour's or UTC day's start, in epoch milliseconds. `raw`, `allowance`
+and `writtenOff` sum raw micro-USD; `paid` sums what the balance paid, in charged
+micro-USD including markup. `calls` counts usage entries, including corrections:
+a later correction contributes its signed amounts when posted (`createdAt`),
+which may differ from the call's day in `/days`.
+
+`call` comes from usage metadata: `response`, `compaction`, `image`, `decision`,
+`transcription`, `speech`, `web_search`, `web_fetch`, `tool_search`, `tool`, `voice`,
+`voice_say` or `voice_realtime`. `agent` is the agent ID when recorded. Direct API
+and voice calls may have no agent; absent call or agent metadata is `null`.
+
 ### Units
 
 Amounts are integer micro-USD. Some are raw cost (what a call cost you); others are
@@ -370,6 +402,7 @@ A bucket's `held` today adds the allowance's part of holds (raw) to the balance'
 | `GET /v1/end-users/{id}?buckets=` | `endUsers.get(id, { buckets })` |
 | `PATCH /v1/end-users/{id}` | `endUsers.update(id, { allowances, bucketLimits, dailyLimit, lowBalance })`: a person's own allowances and bucket limits (merged; `null` removes one), limit and low-balance threshold (`null`: yours) |
 | `GET /v1/end-users/{id}/ledger?kind=&from=&to=&bucket=&moved=` | `endUsers.ledger(id, { before, limit, kind, from, to, bucket, moved })` / `end_users.ledger(id, before=, limit=, kind=, from_=, to=, bucket=, moved=)` |
+| `GET /v1/end-users/{id}/usage?from=&to=&step=&bucket=` | `endUsers.usage(id, { from, to, step, bucket })` / `end_users.usage(id, from_=, to=, step=, bucket=)` |
 | `GET /v1/end-users/{id}/days?from=&to=&bucket=&limit=` | `endUsers.days(id, { from, to, bucket, limit })` / `end_users.days(id, from_=, to=, bucket=, limit=)` |
 | `POST /v1/end-users/{id}/entries` | `endUsers.grant`, `refund`, `adjust`, `spend` (`expiresAt` on a grant, `lot` on a debit) |
 | `POST /v1/end-users/{id}/lots` | `endUsers.markLot(id, { key, amount, expiresAt })` / `end_users.mark_lot(...)` |

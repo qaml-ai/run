@@ -1455,6 +1455,15 @@ export const EndUserDay = z.object({
   entries: z.number().int().openapi({ description: "How many grants, refunds, adjustments and spends were posted that day" }),
   buckets: z.array(DayBucket).openapi({ description: "Spend by bucket, by name; buckets that spent nothing that day are left out" }),
 }).openapi("EndUserDay");
+export const EndUserUsage = z.object({
+  step: z.enum(["hour", "day"]), from: z.number(), to: z.number(),
+  rows: z.array(z.object({
+    at: z.number().openapi({ description: "Start of the posting hour or UTC day, epoch ms" }),
+    bucket: z.string().nullable(), call: z.string().nullable(), agent: z.string().nullable(),
+    calls: z.number().int().openapi({ description: "Number of usage entries, including corrections" }),
+    raw: z.number(), allowance: z.number(), paid: z.number().openapi({ description: "Charged micro-USD paid by the balance" }), writtenOff: z.number(),
+  })),
+}).openapi("EndUserUsage");
 export const EndUserDays = z.object({
   days: z.array(EndUserDay).openapi({ description: "Newest first; days with no spend and no entries are left out" }),
   next: z.string().optional().openapi({ description: "More days are in the range: pass as `to` for the next page" }),

@@ -11788,6 +11788,88 @@
           "createdAt"
         ]
       },
+      "EndUserUsage": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "hour",
+              "day"
+            ]
+          },
+          "from": {
+            "type": "number"
+          },
+          "to": {
+            "type": "number"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "at": {
+                  "type": "number",
+                  "description": "Start of the posting hour or UTC day, epoch ms"
+                },
+                "bucket": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "call": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "agent": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "calls": {
+                  "type": "integer",
+                  "description": "Number of usage entries, including corrections"
+                },
+                "raw": {
+                  "type": "number"
+                },
+                "allowance": {
+                  "type": "number"
+                },
+                "paid": {
+                  "type": "number",
+                  "description": "Charged micro-USD paid by the balance"
+                },
+                "writtenOff": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "at",
+                "bucket",
+                "call",
+                "agent",
+                "calls",
+                "raw",
+                "allowance",
+                "paid",
+                "writtenOff"
+              ]
+            }
+          }
+        },
+        "required": [
+          "step",
+          "from",
+          "to",
+          "rows"
+        ]
+      },
       "EndUserDays": {
         "type": "object",
         "properties": {
@@ -22601,6 +22683,88 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EndUserLedger"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/end-users/{id}/usage": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)"
+            },
+            "required": true,
+            "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Posting time, inclusive: epoch ms, UTC day or ISO time. Default: to less 24 hours (hour) or 30 days (day)"
+            },
+            "required": false,
+            "description": "Posting time, inclusive: epoch ms, UTC day or ISO time. Default: to less 24 hours (hour) or 30 days (day)",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Posting time, exclusive, as from. Default: now"
+            },
+            "required": false,
+            "description": "Posting time, exclusive, as from. Default: now",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "hour",
+                "day"
+              ],
+              "description": "Default hour; at most 7 days for hour, 366 days for day"
+            },
+            "required": false,
+            "description": "Default hour; at most 7 days for hour, 366 days for day",
+            "name": "step",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Exact bucket or prefix ending in *, e.g. bot:*"
+            },
+            "required": false,
+            "description": "Exact bucket or prefix ending in *, e.g. bot:*",
+            "name": "bucket",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Usage summed by posting hour or UTC day, bucket, call and agent, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserUsage"
                 }
               }
             }
