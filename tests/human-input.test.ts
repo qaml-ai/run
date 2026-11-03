@@ -399,3 +399,16 @@ return { removed, region: asked.answers["Which region?"], renamed };`;
   assert.equal(r.model.bodies.length, 2, "the model is asked only to start and to answer");
   assert.equal(server.calls.find(call => call.params.name === "remove")!.params._meta["agent-runtime/approval"].input, approval.id, "the approved call carries its proof");
 });
+
+test("recording a call's inputs again (a retry whose answer was lost) returns the pending ones, and asks nothing new", async () => {
+  const { testDatabase } = await import("./database.ts");
+  const { Inputs } = await import("../src/inputs.ts");
+  const { db } = await testDatabase();
+  const inputs = new Inputs({ db });
+  const base = { agent: "a1", tenant: "alice", requestId: "r1", toolCallId: "code/c1", responders: {}, expiresAt: Date.now() + 60_000, tool: "approve", argumentsHash: "h" };
+  const requests = [{ kind: "approval" as const, message: "Run it?", detail: {} }];
+  const first = await inputs.create(base, requests);
+  const again = await inputs.create(base, requests);
+  assert.deepEqual(again.map(input => input.id), first.map(input => input.id));
+  assert.equal(Number((await db.query("select count(*) from agent_inputs where agent = 'a1'")).rows[0].count), 1);
+});
