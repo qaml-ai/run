@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { safeError } from "../metrics.ts";
 import { END_USER_CREDIT } from "../model-attempt.ts";
 import { creditError, DEFAULT_BUCKET, MICROS, type CreditHold } from "../end-user-credits.ts";
+import { limitRefused } from "../limit-hits.ts";
 import { durableEntryMessages } from "../pi-durable/agent.ts";
 import type { RunLimits, RunStop } from "../protocol.ts";
 import { errorText } from "../protocol.ts";
@@ -433,7 +434,11 @@ export async function runLimit(ctx: SpendContext, session: Session, method: stri
     // Its end user has nothing left in the run's bucket.
     const payer = modelPayer(ctx, session, bucket ? { bucket } as RequestRecord : undefined);
     const broke = payer && await ctx.options.endUsers?.refusal(tenant, payer.id, payer.bucket);
-    return broke ? creditError(broke) : undefined;
+    if (!broke) return undefined;
+    // Said here, as the run is refused (its queued start's refusal never reaches an HTTP answer), and once.
+    const error = creditError(broke);
+    limitRefused(error, 402, tenant, "run_start");
+    return error;
   }
   if (RUN_METHODS.includes(method)) return refused(await ctx.options.creditLimit?.(tenant), "INSUFFICIENT_CREDIT");
   return undefined;

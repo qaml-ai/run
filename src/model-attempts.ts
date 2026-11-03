@@ -8,6 +8,7 @@ import { enqueueEvents } from "./webhooks.ts";
 import { clock, network } from "./node-context.ts";
 import type { AttemptAck, AttemptEstimate, CreditStop, ModelAttemptEvent, Superseded } from "./model-attempt.ts";
 import { CreditHolds } from "./credit-holds.ts";
+import { creditRefused } from "./limit-hits.ts";
 import { lastCallMin, lockEndUser, settleUsage, unmarked, utcDay, type EndUserCredits } from "./end-user-credits.ts";
 import { catalogCost, costAt, UNPRICED_COST, unpricedCost } from "./platform-pricing.ts";
 import { usageCost } from "./webhooks.ts";
@@ -163,10 +164,17 @@ export class ModelAttempts {
     const cost = callCost(rates, estimate, funding);
     const reserved = await this.endUsers!.reserve(tenant, endUser!.id, endUser!.bucket, { id: event.id, want: cost.want, min: cost.min });
     if (!reserved) return undefined;
-    if (reserved.refused) return { refused: reserved.refused };
+    if (reserved.refused) {
+      creditRefused(tenant, reserved.refused, "model_call");
+      return { refused: reserved.refused };
+    }
     return {
       input: cost.input, perToken: cost.perToken, maxOutput: cost.maxOutput, held: reserved.hold.raw, most: reserved.most ?? reserved.hold.raw,
-      more: async want => { const more = await this.endUsers!.extend(tenant, endUser!.id, endUser!.bucket, event.id, want); return more.hold ? { raw: more.hold.raw } : { raw: 0, refused: more.refused }; },
+      more: async want => {
+        const more = await this.endUsers!.extend(tenant, endUser!.id, endUser!.bucket, event.id, want);
+        if (more.refused) creditRefused(tenant, more.refused, "model_stream");
+        return more.hold ? { raw: more.hold.raw } : { raw: 0, refused: more.refused };
+      },
       renew: () => this.endUsers!.renew(tenant, endUser!.id, event.id),
     };
   }
