@@ -70,7 +70,7 @@ export async function fixture(options: { billing?: "prepaid" | "none"; flag?: bo
   let now = Date.now();
   const { boat, state, machines, rollover } = fakeBoat(() => now);
   const keys: string[] = [], waits: number[] = [];
-  const make = (flag: boolean) => new Computers({ db, accounts, outbound: options.outbound ?? new Outbound(), now: () => now, enabled: flag, runtime: "https://run.test", endUsers: () => endUsers, credit: () => credit, payer: () => options.payer, machines: options.outbound ? undefined : key => { keys.push(key); return boat; }, sleep: async ms => { waits.push(ms); },
+  const make = (flag: boolean) => new Computers({ provider: "boat", db, accounts, outbound: options.outbound ?? new Outbound(), now: () => now, enabled: flag, runtime: "https://run.test", endUsers: () => endUsers, credit: () => credit, payer: () => options.payer, machines: options.outbound ? undefined : key => { keys.push(key); return boat; }, sleep: async ms => { waits.push(ms); },
     driver: () => ({ async create(id: string) { return { id }; }, async call() { return { exitCode: 0, stdout: "byo" }; }, async close() {} }) });
   const service = make(options.flag !== false);
   const logged: any[] = [], error = console.error;

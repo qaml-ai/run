@@ -48,14 +48,26 @@ in the parent is a possible follow-up.
 Where the runtime offers them, choose **Managed (no key needed)** in the console, or leave out the credentials:
 
 ```json
-{"agent": "YOUR_AGENT_ID", "provider": "boat"}
+{"agent": "YOUR_AGENT_ID", "provider": "lambda"}
 ```
 
-There is no provider account to set up. The computer is a small Linux machine (2 vCPU, 4 GB) for work in the foreground:
-a background process ends when its command does, and a command may run for up to 30 minutes. Its files stay until it is
-released, 2 hours after its latest command or 24 hours after it started. It is charged to your credit at what the machine
-costs while it runs, $0.018 an hour, per second, and an account starts one once it has bought credit.
-`GET /v1/computers/options` says whether the runtime offers them.
+There is no provider account to set up. By default the computer is an ARM64 Linux
+machine on AWS Lambda MicroVMs (1 vCPU, 2 GiB). Commands may run for up to 30 minutes.
+Save results before the fixed session expiry: 2 hours by default, at most 8 hours,
+including suspended time. Idle machines suspend after 5 minutes by default; the
+next command or file operation resumes them with files and processes preserved.
+Command timeouts end the command's process group.
+
+The runtime supplies no AWS execution role or host credentials to the machine.
+Public internet access supports package installation and signed file transfers.
+Use ARM64 binaries; UDP is blocked except for DNS through the VM's resolver.
+
+Compute is charged to your credit from observed running time and snapshot activity,
+at provider cost unless the operator sets a price. An account using prepaid billing
+must have bought credit. The operator can select Boat instead, keeping its 2-hour
+idle lease and 24-hour maximum. Both `lambda` and `boat` without credentials request
+the runtime's configured managed provider; Boat with credentials uses your account.
+`GET /v1/computers/options` says whether managed computers are available.
 
 ## Connect a provider
 

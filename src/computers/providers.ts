@@ -1,6 +1,6 @@
 import type { Outbound } from "../outbound.ts";
 
-export const PROVIDERS = ["modal", "daytona", "boat", "e2b", "sprites", "browserbase", "browser-use", "tunnel"] as const;
+export const PROVIDERS = ["lambda", "modal", "daytona", "boat", "e2b", "sprites", "browserbase", "browser-use", "tunnel"] as const;
 export type Provider = typeof PROVIDERS[number];
 export const isBrowserProvider = (provider: string) => provider === "browserbase" || provider === "browser-use";
 export type Credentials = Record<string, string>;

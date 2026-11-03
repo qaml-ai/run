@@ -20758,6 +20758,7 @@
                       "provider": {
                         "type": "string",
                         "enum": [
+                          "lambda",
                           "modal",
                           "daytona",
                           "boat",
@@ -20802,6 +20803,7 @@
                           "provider": {
                             "type": "string",
                             "enum": [
+                              "lambda",
                               "modal",
                               "daytona",
                               "boat",
@@ -20915,6 +20917,7 @@
                   "provider": {
                     "type": "string",
                     "enum": [
+                      "lambda",
                       "modal",
                       "daytona",
                       "boat",
@@ -20934,13 +20937,13 @@
                     "additionalProperties": {
                       "type": "string"
                     },
-                    "description": "The provider account's credentials. Leave out with provider boat for a managed computer, billed to credit"
+                    "description": "The provider account's credentials. Leave out with provider lambda or boat for the runtime-selected managed computer, billed to credit"
                   },
                   "leaseSeconds": {
                     "type": "integer",
                     "minimum": 60,
                     "maximum": 86400,
-                    "description": "With credentials: how long a session lasts, at most 900 (default 900). Managed: how long it stays after its latest command, at most 24 hours after it started (default 7200)"
+                    "description": "With credentials: how long a session lasts, at most 900 (default 900). Managed Lambda: fixed session duration, at most 28800 (default 7200). Boat: idle lease, at most 24 hours after starting"
                   },
                   "dailySeconds": {
                     "type": "integer",
@@ -20975,6 +20978,7 @@
                     "provider": {
                       "type": "string",
                       "enum": [
+                        "lambda",
                         "modal",
                         "daytona",
                         "boat",
@@ -21019,6 +21023,7 @@
                         "provider": {
                           "type": "string",
                           "enum": [
+                            "lambda",
                             "modal",
                             "daytona",
                             "boat",
@@ -21170,6 +21175,7 @@
                       "provider": {
                         "type": "string",
                         "enum": [
+                          "lambda",
                           "modal",
                           "daytona",
                           "boat",
@@ -21255,6 +21261,7 @@
                         "provider": {
                           "type": "string",
                           "enum": [
+                            "lambda",
                             "modal",
                             "daytona",
                             "boat",
@@ -21299,6 +21306,7 @@
                             "provider": {
                               "type": "string",
                               "enum": [
+                                "lambda",
                                 "modal",
                                 "daytona",
                                 "boat",
@@ -21381,6 +21389,7 @@
                         "provider": {
                           "type": "string",
                           "enum": [
+                            "lambda",
                             "modal",
                             "daytona",
                             "boat",
