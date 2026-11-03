@@ -168,14 +168,14 @@ const servedModel = z.string().optional().openapi({ description: "The model that
 const runUsage = z.object({ responses: z.number(), input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), costUsd: z.number() }).nullable()
   .openapi({ description: "The run's model responses on the node that ended it; null when it made none there" });
 const balanceCause = z.object({
-  kind: z.enum(["usage", "usage_correction", "grant", "refund", "adjustment", "spend", "refusal", "threshold_changed"]).openapi({ description: "What moved the balance: usage (a call's cost), usage_correction (a call's cost posted again, corrected, maybe long after the call), grant, refund, adjustment or spend (the tenant's entries), refusal (a call refused; no entry), threshold_changed (a threshold set above the balance; no entry). Stable codes" }),
+  kind: z.enum(["usage", "usage_correction", "grant", "refund", "adjustment", "spend", "expiry", "refusal", "threshold_changed"]).openapi({ description: "What moved the balance: usage (a call's cost), usage_correction (a call's cost posted again, corrected, maybe long after the call), grant, refund, adjustment or spend (the tenant's entries), expiry (a lot's unspent part, as it expired), refusal (a call refused; no entry), threshold_changed (a threshold set above the balance; no entry). Stable codes" }),
   entryId: z.number().int().optional().openapi({ description: "The ledger entry that moved the balance. A person's entry ids grow: order their events by it" }),
   entryKey: z.string().optional().openapi({ description: "For a grant, refund, adjustment or spend: your key" }),
   requestId: z.string().optional().openapi({ description: "For usage: the run's request, when there is one" }),
   bucket: z.string().nullable(),
 }).openapi("EndUserBalanceCause");
 const endUserEntryEvent = z.object({
-  endUser: z.string(), entryId: z.number().int(), kind: z.enum(["grant", "refund", "adjustment", "spend"]),
+  endUser: z.string(), entryId: z.number().int(), kind: z.enum(["grant", "refund", "adjustment", "spend", "expiry"]),
   amount: z.number().int().openapi({ description: "As in the ledger: what moved the balance (a refund's or a spend's is negative)" }),
   key: z.string(), reference: z.string().nullable(), description: z.string().nullable(), metadata: z.record(z.string(), z.unknown()),
   balance: z.number().int(), previousBalance: z.number().int(),
@@ -308,6 +308,7 @@ export const WebhookEvents = {
   "end_user.credit.granted": envelope("end_user.credit.granted", endUserEntryEvent, "The tenant posted a grant to an end user's ledger (once per entry; a replayed key sends nothing)"),
   "end_user.credit.refunded": envelope("end_user.credit.refunded", endUserEntryEvent, "The tenant posted a refund (amount negative, as in the ledger)"),
   "end_user.credit.adjusted": envelope("end_user.credit.adjusted", endUserEntryEvent, "The tenant posted an adjustment (amount signed)"),
+  "end_user.credit.expired": envelope("end_user.credit.expired", endUserEntryEvent, "A lot of an end user's credit expired: its unspent part left the balance (amount negative; metadata.lot is the grant's key)"),
   "end_user.credit.spent": envelope("end_user.credit.spent", endUserEntryEvent, "The tenant posted a spend: credit spent on something it sells other than metered usage (amount negative, as in the ledger)"),
   "end_user.allowance.low": envelope("end_user.allowance.low", z.object({
     endUser: z.string(), bucket: z.string(), day: z.string(), allowance: z.number().int().openapi({ description: "The bucket's daily allowance (raw micro-USD)" }),
@@ -1377,11 +1378,24 @@ export const EndUserBucketDay = z.object({
   allowanceLeft: micros("Left of the allowance today, after holds"),
   paidLimit: micros("The bucket's own daily limit on paid spend (charged); null: none").nullable(),
 });
+export const EndUserLot = z.object({
+  key: z.string().nullable().openapi({ description: "The grant's key (or the key you marked it with); null: the rest of the balance, which never expires" }),
+  amount: micros("What the lot was"), remaining: micros("What is left of it"),
+  expiresAt: z.number().nullable().openapi({ description: "When it expires (epoch ms); null: never" }),
+  createdAt: z.number().nullable(),
+}).openapi("EndUserLot");
+export const EndUserLotInput = z.object({
+  key: z.string().min(1).max(255).openapi({ description: "Idempotency key: the same key and lot again returns the first; with another lot it is a 409" }),
+  amount: z.number().int().positive().openapi({ description: "micro-USD of the balance that will expire: at most what no lot holds yet (else 409 INSUFFICIENT_BALANCE with available)" }),
+  expiresAt: z.number().int().openapi({ description: "When it expires (epoch ms): later than now, within 400 days" }),
+}).openapi("EndUserLotInput");
+export const EndUserMarkedLot = z.object({ lot: EndUserLot, replayed: z.boolean() }).openapi("EndUserMarkedLot");
 export const EndUser = z.object({
   id: z.string().openapi({ description: "The end user: the subject of the agents and calls that spend for them" }),
   enabled: z.boolean().openapi({ description: "Whether the tenant meters its end users" }),
   balance: micros("Paid credit left (charged units); usage never takes it below zero (a negative adjustment of yours may)"),
   held: micros("Of the balance, what calls in flight hold"),
+  lots: z.array(EndUserLot).openapi({ description: "The balance by when it expires, in the order paid spend takes it: lots that expire, the soonest first, then the rest (key null, never expires). Their remaining sum to the balance when it is above zero" }),
   available: micros("What paid spend may still take today: the balance less holds, within the daily limit"),
   dailyLimit: micros("The daily limit on paid spend that applies (the user's own, else the tenant's); null: none").nullable(),
   lowBalance: micros("The low-balance threshold that applies (the user's own, else the tenant's); null: none").nullable(),
@@ -1404,11 +1418,13 @@ export const EndUserEntryInput = z.object({
   key: z.string().min(1).max(255).openapi({ description: "Idempotency key, e.g. the payment's id: the same key and entry again returns the first; with another entry it is a 409" }),
   reference: z.string().max(500).optional().openapi({ description: "Your reference, shown in the ledger" }),
   description: z.string().min(1).max(200).optional().openapi({ description: "Your words for the entry, as its person may read them in their credit history (\"500 credits\", \"A month without the footer\")" }),
+  expiresAt: z.number().int().optional().openapi({ description: "A grant's: when its credit expires (epoch ms, within 400 days), a lot spent before credit that expires later or never; what is left of it then is posted as an expiry. Without: it never expires" }),
+  lot: z.string().max(255).optional().openapi({ description: "A debit's: the key of the grant whose lot it takes first (refunding a subscription's month). Otherwise a refund takes what never expires first, and other debits the soonest expiring lot first" }),
   metadata: z.record(z.string(), z.unknown()).optional(),
 }).openapi("EndUserEntryInput");
 export const EndUserLedgerEntry = z.object({
   id: z.number().int(),
-  kind: z.enum(["grant", "refund", "adjustment", "spend", "usage"]),
+  kind: z.enum(["grant", "refund", "adjustment", "spend", "usage", "expiry"]),
   amount: micros("What moved the balance: positive adds credit, negative spends it"),
   raw: micros("usage: the call's raw cost"), allowance: micros("usage: the part of the raw cost the bucket's allowance covered"),
   writtenOff: micros("usage: the part of the raw cost past what was left for the call (the balance, the daily limit, the bucket's limit), not charged to the user; the tenant bears it"),
@@ -1435,6 +1451,7 @@ export const EndUserDay = z.object({
   granted: micros("Credit the tenant granted that day (balance units)"), refunded: micros("Credit the tenant refunded that day, as a positive amount (balance units)"),
   adjusted: micros("What the tenant's adjustments moved the balance that day, signed (balance units)"),
   spent: micros("What the tenant's spends took that day, as a positive amount (balance units)"),
+  expired: micros("What lots' credit expired unspent that day, as a positive amount (balance units)"),
   entries: z.number().int().openapi({ description: "How many grants, refunds, adjustments and spends were posted that day" }),
   buckets: z.array(DayBucket).openapi({ description: "Spend by bucket, by name; buckets that spent nothing that day are left out" }),
 }).openapi("EndUserDay");

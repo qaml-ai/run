@@ -1892,10 +1892,11 @@
               "refund",
               "adjustment",
               "spend",
+              "expiry",
               "refusal",
               "threshold_changed"
             ],
-            "description": "What moved the balance: usage (a call's cost), usage_correction (a call's cost posted again, corrected, maybe long after the call), grant, refund, adjustment or spend (the tenant's entries), refusal (a call refused; no entry), threshold_changed (a threshold set above the balance; no entry). Stable codes"
+            "description": "What moved the balance: usage (a call's cost), usage_correction (a call's cost posted again, corrected, maybe long after the call), grant, refund, adjustment or spend (the tenant's entries), expiry (a lot's unspent part, as it expired), refusal (a call refused; no entry), threshold_changed (a threshold set above the balance; no entry). Stable codes"
           },
           "entryId": {
             "type": "integer",
@@ -2043,7 +2044,8 @@
                   "grant",
                   "refund",
                   "adjustment",
-                  "spend"
+                  "spend",
+                  "expiry"
                 ]
               },
               "amount": {
@@ -2131,7 +2133,8 @@
                   "grant",
                   "refund",
                   "adjustment",
-                  "spend"
+                  "spend",
+                  "expiry"
                 ]
               },
               "amount": {
@@ -2219,7 +2222,8 @@
                   "grant",
                   "refund",
                   "adjustment",
-                  "spend"
+                  "spend",
+                  "expiry"
                 ]
               },
               "amount": {
@@ -2274,6 +2278,95 @@
         ],
         "description": "The tenant posted an adjustment (amount signed)"
       },
+      "Event_end_user_credit.expired": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "evt_…: the same each time the event is sent; dedupe by it",
+            "example": "evt_3f9c0a1b2c3d4e5f60718293"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "end_user.credit.expired"
+            ]
+          },
+          "created": {
+            "type": "number",
+            "description": "When it happened, in Unix seconds"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "endUser": {
+                "type": "string"
+              },
+              "entryId": {
+                "type": "integer"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "grant",
+                  "refund",
+                  "adjustment",
+                  "spend",
+                  "expiry"
+                ]
+              },
+              "amount": {
+                "type": "integer",
+                "description": "As in the ledger: what moved the balance (a refund's or a spend's is negative)"
+              },
+              "key": {
+                "type": "string"
+              },
+              "reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "balance": {
+                "type": "integer"
+              },
+              "previousBalance": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "endUser",
+              "entryId",
+              "kind",
+              "amount",
+              "key",
+              "reference",
+              "description",
+              "metadata",
+              "balance",
+              "previousBalance"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created",
+          "data"
+        ],
+        "description": "A lot of an end user's credit expired: its unspent part left the balance (amount negative; metadata.lot is the grant's key)"
+      },
       "Event_end_user_credit.spent": {
         "type": "object",
         "properties": {
@@ -2307,7 +2400,8 @@
                   "grant",
                   "refund",
                   "adjustment",
-                  "spend"
+                  "spend",
+                  "expiry"
                 ]
               },
               "amount": {
@@ -3140,6 +3234,7 @@
                 "end_user.credit.refunded",
                 "end_user.credit.adjusted",
                 "end_user.credit.spent",
+                "end_user.credit.expired",
                 "end_user.allowance.low",
                 "voice.session.started",
                 "voice.session.ended",
@@ -3209,6 +3304,7 @@
                 "end_user.credit.refunded",
                 "end_user.credit.adjusted",
                 "end_user.credit.spent",
+                "end_user.credit.expired",
                 "end_user.allowance.low",
                 "voice.session.started",
                 "voice.session.ended",
@@ -3267,6 +3363,7 @@
                 "end_user.credit.refunded",
                 "end_user.credit.adjusted",
                 "end_user.credit.spent",
+                "end_user.credit.expired",
                 "end_user.allowance.low",
                 "voice.session.started",
                 "voice.session.ended",
@@ -11342,6 +11439,13 @@
             "type": "integer",
             "description": "Of the balance, what calls in flight hold, in micro-USD (1 USD = 1000000)"
           },
+          "lots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EndUserLot"
+            },
+            "description": "The balance by when it expires, in the order paid spend takes it: lots that expire, the soonest first, then the rest (key null, never expires). Their remaining sum to the balance when it is above zero"
+          },
           "available": {
             "type": "integer",
             "description": "What paid spend may still take today: the balance less holds, within the daily limit, in micro-USD (1 USD = 1000000)"
@@ -11487,6 +11591,7 @@
           "enabled",
           "balance",
           "held",
+          "lots",
           "available",
           "dailyLimit",
           "lowBalance",
@@ -11495,6 +11600,46 @@
           "today",
           "createdAt",
           "updatedAt"
+        ]
+      },
+      "EndUserLot": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The grant's key (or the key you marked it with); null: the rest of the balance, which never expires"
+          },
+          "amount": {
+            "type": "integer",
+            "description": "What the lot was, in micro-USD (1 USD = 1000000)"
+          },
+          "remaining": {
+            "type": "integer",
+            "description": "What is left of it, in micro-USD (1 USD = 1000000)"
+          },
+          "expiresAt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "When it expires (epoch ms); null: never"
+          },
+          "createdAt": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "amount",
+          "remaining",
+          "expiresAt",
+          "createdAt"
         ]
       },
       "EndUserUpdate": {
@@ -11572,7 +11717,8 @@
               "refund",
               "adjustment",
               "spend",
-              "usage"
+              "usage",
+              "expiry"
             ]
           },
           "amount": {
@@ -11696,6 +11842,10 @@
             "type": "integer",
             "description": "What the tenant's spends took that day, as a positive amount (balance units), in micro-USD (1 USD = 1000000)"
           },
+          "expired": {
+            "type": "integer",
+            "description": "What lots' credit expired unspent that day, as a positive amount (balance units), in micro-USD (1 USD = 1000000)"
+          },
           "entries": {
             "type": "integer",
             "description": "How many grants, refunds, adjustments and spends were posted that day"
@@ -11740,8 +11890,49 @@
           "refunded",
           "adjusted",
           "spent",
+          "expired",
           "entries",
           "buckets"
+        ]
+      },
+      "EndUserMarkedLot": {
+        "type": "object",
+        "properties": {
+          "lot": {
+            "$ref": "#/components/schemas/EndUserLot"
+          },
+          "replayed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "lot",
+          "replayed"
+        ]
+      },
+      "EndUserLotInput": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "description": "Idempotency key: the same key and lot again returns the first; with another lot it is a 409"
+          },
+          "amount": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "micro-USD of the balance that will expire: at most what no lot holds yet (else 409 INSUFFICIENT_BALANCE with available)"
+          },
+          "expiresAt": {
+            "type": "integer",
+            "description": "When it expires (epoch ms): later than now, within 400 days"
+          }
+        },
+        "required": [
+          "key",
+          "amount",
+          "expiresAt"
         ]
       },
       "EndUserEntry": {
@@ -11793,6 +11984,15 @@
             "minLength": 1,
             "maxLength": 200,
             "description": "Your words for the entry, as its person may read them in their credit history (\"500 credits\", \"A month without the footer\")"
+          },
+          "expiresAt": {
+            "type": "integer",
+            "description": "A grant's: when its credit expires (epoch ms, within 400 days), a lot spent before credit that expires later or never; what is left of it then is posted as an expiry. Without: it never expires"
+          },
+          "lot": {
+            "type": "string",
+            "maxLength": 255,
+            "description": "A debit's: the key of the grant whose lot it takes first (refunding a subscription's month). Otherwise a refund takes what never expires first, and other debits the soonest expiring lot first"
           },
           "metadata": {
             "type": "object",
@@ -22341,11 +22541,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Comma-separated kinds to include: grant, refund, adjustment, spend, usage. `grant,refund,adjustment,spend` is the person's credit history without usage",
+              "description": "Comma-separated kinds to include: grant, refund, adjustment, spend, usage, expiry. `grant,refund,adjustment,spend` is the person's credit history without usage",
               "example": "grant,refund,adjustment,spend"
             },
             "required": false,
-            "description": "Comma-separated kinds to include: grant, refund, adjustment, spend, usage. `grant,refund,adjustment,spend` is the person's credit history without usage",
+            "description": "Comma-separated kinds to include: grant, refund, adjustment, spend, usage, expiry. `grant,refund,adjustment,spend` is the person's credit history without usage",
             "name": "kind",
             "in": "query"
           },
@@ -22479,6 +22679,74 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EndUserDays"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/end-users/{id}/lots": {
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)"
+            },
+            "required": true,
+            "description": "The end user: the subject of the agents and calls that spend for them (URL-encoded)",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 255,
+              "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409"
+            },
+            "required": false,
+            "description": "Retrying with the same key (within a day) replays the first success instead of acting again; the key with another request is a 409",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EndUserLotInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The key was marked already: its lot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserMarkedLot"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Part of the balance marked to expire; the balance is unchanged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndUserMarkedLot"
                 }
               }
             }
@@ -25206,6 +25474,25 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Event_end_user_credit.adjusted"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Any 2xx acknowledges it; anything else, or no answer within 10 seconds, is retried"
+          }
+        }
+      }
+    },
+    "end_user.credit.expired": {
+      "post": {
+        "summary": "end_user.credit.expired",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Event_end_user_credit.expired"
               }
             }
           }

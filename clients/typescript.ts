@@ -651,7 +651,7 @@ export type WebhookEvent = { id: string; created: number } & (
       /** With reason balance: what moved it. */
       cause?: EndUserBalanceCause;
     } }
-  | { type: "end_user.credit.granted" | "end_user.credit.refunded" | "end_user.credit.adjusted" | "end_user.credit.spent"; data: EndUserEntryEvent }
+  | { type: "end_user.credit.granted" | "end_user.credit.refunded" | "end_user.credit.adjusted" | "end_user.credit.spent" | "end_user.credit.expired"; data: EndUserEntryEvent }
   | { type: "end_user.allowance.low"; data: { endUser: string; bucket: string; day: string; allowance: number; allowanceSpent: number; percent: number } }
   | { type: "run.started"; data: RunFacts & { resumes?: number } }
   | { type: "run.completed"; data: RunFacts & { usage: RunUsage | null; servedModel?: string; stopped?: "input_required" | "spend_limit" | "turn_limit"; inputIds?: string[]; replyIndex?: number; messageCount?: number; steeredInto?: string } }
@@ -1219,12 +1219,12 @@ export interface EndUserSettings {
  * ledger entry (none for refusal or threshold_changed); a person's entry ids grow, so order their events by it.
  */
 export interface EndUserBalanceCause {
-  kind: "usage" | "usage_correction" | "grant" | "refund" | "adjustment" | "spend" | "refusal" | "threshold_changed";
+  kind: "usage" | "usage_correction" | "grant" | "refund" | "adjustment" | "spend" | "expiry" | "refusal" | "threshold_changed";
   entryId?: number; entryKey?: string; requestId?: string; bucket: string | null;
 }
-/** end_user.credit.granted, .refunded, .adjusted, .spent: an entry the tenant posted (`amount` signed as in the ledger). */
+/** end_user.credit.granted, .refunded, .adjusted, .spent: an entry the tenant posted; .expired: a lot's unspent part (`amount` signed as in the ledger). */
 export interface EndUserEntryEvent {
-  endUser: string; entryId: number; kind: "grant" | "refund" | "adjustment" | "spend"; amount: Micros; key: string; reference: string | null; description: string | null;
+  endUser: string; entryId: number; kind: "grant" | "refund" | "adjustment" | "spend" | "expiry"; amount: Micros; key: string; reference: string | null; description: string | null;
   metadata: Record<string, unknown>; balance: Micros; previousBalance: Micros;
 }
 /**
@@ -1232,9 +1232,16 @@ export interface EndUserEntryEvent {
  * cost past what was left, which the user is not charged), held, left, and its own limit on paid spend (null: none).
  */
 export interface EndUserBucketDay { bucket: string; allowance: Micros; allowanceSpent: Micros; paidSpent: Micros; writtenOff: Micros; held: Micros; allowanceLeft: Micros; paidLimit: Micros | null }
+/**
+ * Part of an end user's balance by when it expires: a grant made with `expiresAt` (or a part you marked, `markLot`), or
+ * (key null, `expiresAt` null) the rest, which never expires.
+ */
+export interface EndUserLot { key: string | null; amount: Micros; remaining: Micros; expiresAt: number | null; createdAt: number | null }
 /** An end user as they stand: balance, what calls in flight hold, what paid spend may still take today, and today by bucket. */
 export interface EndUser {
   id: string; enabled: boolean; balance: Micros; held: Micros; available: Micros; dailyLimit: Micros | null;
+  /** The balance by when it expires, in the order paid spend takes it: lots that expire (the soonest first), then the rest. */
+  lots: EndUserLot[];
   /** The low-balance threshold that applies: their own, else the tenant's; null: none. */
   lowBalance: Micros | null;
   markupBps: number;
@@ -1247,7 +1254,7 @@ export interface EndUser {
  * covered, and `writtenOff` the part past what was left for it (the balance, the daily limit, the bucket's limit), not charged.
  */
 export interface EndUserLedgerEntry {
-  id: number; kind: "grant" | "refund" | "adjustment" | "spend" | "usage"; amount: Micros; raw: Micros; allowance: Micros; writtenOff: Micros; bucket: string | null; key: string;
+  id: number; kind: "grant" | "refund" | "adjustment" | "spend" | "usage" | "expiry"; amount: Micros; raw: Micros; allowance: Micros; writtenOff: Micros; bucket: string | null; key: string;
   /** Your words for one of your entries (`description`); null for usage and entries posted without. */
   reference: string | null; description: string | null; metadata: Record<string, unknown>; balanceAfter: Micros; createdAt: number;
 }
@@ -1259,10 +1266,10 @@ export interface EndUserLedgerQuery {
  * An end user's UTC day (`endUsers.days`): by bucket, what the allowance paid (`freeRaw`, raw cost: never charged) and
  * what the balance paid (`paidCharged`, with the markup), what was written off (`writtenOff`, raw: cost past what was
  * left, never charged), and their totals; and what your entries moved that day, in
- * balance units (`granted`, `refunded` and `spent` as positive amounts, `adjusted` signed; `entries`: how many).
+ * balance units (`granted`, `refunded`, `spent` and `expired` as positive amounts, `adjusted` signed; `entries`: how many).
  */
 export interface EndUserDay {
-  day: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros; granted: Micros; refunded: Micros; adjusted: Micros; spent: Micros; entries: number;
+  day: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros; granted: Micros; refunded: Micros; adjusted: Micros; spent: Micros; expired: Micros; entries: number;
   buckets: { bucket: string; freeRaw: Micros; paidCharged: Micros; writtenOff: Micros }[];
 }
 const queryOf = (values: Record<string, unknown>) => new URLSearchParams(Object.entries(values).filter(([, value]) => value !== undefined).map(([name, value]) => [name, String(value)]));
@@ -1271,7 +1278,13 @@ const timeOf = (value: number | Date | undefined) => value instanceof Date ? val
  * An entry of yours: `key` is its idempotency key (a payment's id), `reference` shown in the ledger, `description` your
  * words for it as the person may read them in their credit history.
  */
-export interface EndUserEntryInput { amount: Micros; key: string; reference?: string; description?: string; metadata?: Record<string, unknown> }
+export interface EndUserEntryInput {
+  amount: Micros; key: string; reference?: string; description?: string; metadata?: Record<string, unknown>;
+  /** A grant's: when its credit expires (epoch ms or a Date, within 400 days): spent before credit that expires later or never. */
+  expiresAt?: number | Date;
+  /** A refund's or spend's: the key of the grant whose lot it takes first. */
+  lot?: string;
+}
 
 /**
  * Your users' credit (`runtime.endUsers`, `agents.endUsers`): turn it on, credit a person after they pay, read their
@@ -1326,7 +1339,7 @@ export class EndUsers {
     const query = queryOf(options);
     return this.transport.json(`${this.path(id)}/days${query.size ? `?${query}` : ""}`, this.key());
   }
-  /** Add credit (after a payment): once per `key`; the same key again returns the first entry. */
+  /** Add credit (after a payment): once per `key`; the same key again returns the first entry. With `expiresAt`, a lot that expires then. */
   grant(id: string, input: EndUserEntryInput) { return this.entry(id, "grant", input); }
   /** Take credit back (money returned to the person). */
   refund(id: string, input: EndUserEntryInput) { return this.entry(id, "refund", input); }
@@ -1337,8 +1350,15 @@ export class EndUsers {
    * calls in flight don't hold, else an AgentError 409 INSUFFICIENT_BALANCE (read the person's `balance` less `held` for what may be taken now).
    */
   spend(id: string, input: EndUserEntryInput) { return this.entry(id, "spend", input); }
+  /**
+   * Mark part of what a person has that never expires as a lot that expires (credit granted before you used `expiresAt`):
+   * the balance doesn't move; once per `key`.
+   */
+  markLot(id: string, input: { key: string; amount: Micros; expiresAt: number | Date }): Promise<{ lot: EndUserLot; replayed: boolean }> {
+    return this.transport.json(`${this.path(id)}/lots`, this.key(), "POST", { ...input, expiresAt: timeOf(input.expiresAt) }, true);
+  }
   private entry(id: string, kind: "grant" | "refund" | "adjustment" | "spend", input: EndUserEntryInput): Promise<{ entry: EndUserLedgerEntry; replayed: boolean }> {
-    return this.transport.json(`${this.path(id)}/entries`, this.key(), "POST", { kind, ...input }, true);
+    return this.transport.json(`${this.path(id)}/entries`, this.key(), "POST", { kind, ...input, ...(input.expiresAt !== undefined ? { expiresAt: timeOf(input.expiresAt) } : {}) }, true);
   }
 }
 

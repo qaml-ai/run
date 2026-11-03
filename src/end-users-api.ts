@@ -76,7 +76,7 @@ export function endUserRoutes(route: Route, context: () => EndUserCredits | unde
       params: endUserId,
       query: z.object({
         before: z.string().optional().openapi({ description: "Entries older than this id: the previous page's next" }), limit: z.string().optional().openapi({ description: "1–200, default 50" }),
-        kind: z.string().optional().openapi({ description: "Comma-separated kinds to include: grant, refund, adjustment, spend, usage. `grant,refund,adjustment,spend` is the person's credit history without usage", example: "grant,refund,adjustment,spend" }),
+        kind: z.string().optional().openapi({ description: "Comma-separated kinds to include: grant, refund, adjustment, spend, usage, expiry. `grant,refund,adjustment,spend` is the person's credit history without usage", example: "grant,refund,adjustment,spend" }),
         from: z.string().optional().openapi({ description: "Entries created at or after this time: epoch milliseconds, a UTC day (YYYY-MM-DD) or an ISO 8601 time" }),
         to: z.string().optional().openapi({ description: "Entries created before this time (exclusive), as `from`" }),
         bucket: z.string().optional().openapi({ description: "Only this bucket's usage" }),
@@ -108,6 +108,13 @@ export function endUserRoutes(route: Route, context: () => EndUserCredits | unde
   }), async c => json(c, 200, await service().days(c.var.principal.tenant, c.req.param("id")!, {
     from: c.req.query("from"), to: c.req.query("to"), bucket: c.req.query("bucket"), limit: page(c.req.query("limit"), "limit"),
   })));
+  route(createRoute({
+    method: "post", path: "/v1/end-users/{id}/lots", request: { params: endUserId, body: body(schema.EndUserLotInput) },
+    responses: { 201: reply("Part of the balance marked to expire; the balance is unchanged", schema.EndUserMarkedLot), 200: reply("The key was marked already: its lot", schema.EndUserMarkedLot) },
+  }), async c => {
+    const marked = await service().markLot(c.var.principal.tenant, c.req.param("id")!, await read(c));
+    return json(c, marked.replayed ? 200 : 201, marked);
+  });
   route(createRoute({
     method: "post", path: "/v1/end-users/{id}/entries", request: { params: endUserId, body: body(schema.EndUserEntryInput) },
     responses: { 201: reply("The entry, posted", schema.EndUserEntry), 200: reply("The key was posted already: its entry", schema.EndUserEntry) },
