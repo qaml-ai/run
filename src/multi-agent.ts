@@ -170,7 +170,7 @@ export function delegateTool(settings: DelegateSettings, describe: (target: Agen
   return {
     name: "delegate", exposure: "direct", callers: ["model", "tools"], executionMode: "parallel",
     description: [
-      "Hand a task to a sub-agent and wait for its answer: its final text, or with `output`, an object in that schema. The sub-agent works on its own (its own tools and history), sees only the task you give it, and its answer comes back as this call's result. Call delegate several times in one response to run tasks in parallel. Scripts can also fan out with await Promise.all(tasks.map(task => tools.delegate({ task }))).",
+      "Hand a task to a sub-agent and wait for its answer: its final text, or with `output`, an object in that schema. The sub-agent works on its own (its own tools and history), sees only the task you give it, and its answer comes back as this call's result. Call delegate several times in one response to run tasks in parallel. Scripts can also fan out with await Promise.all(tasks.map(task => tools.delegate({ task }))): a script makes at most 256 calls, 32 out at once (the rest wait their turn), and its time limit does not count the wait.",
       agents.length ? `Agents you can delegate to:\n${listed(agents, describe)}` : "",
       settings.instructions ? `${agents.length ? "Or give" : "Give"} instructions to start a sub-agent of your own design, with your model.` : "",
     ].filter(Boolean).join("\n\n"),

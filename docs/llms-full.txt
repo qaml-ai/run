@@ -6160,6 +6160,13 @@ return value is what the model reads. Scripts survive a node restart: Pi
 replays the script and finished delegate calls are not made again. Await every
 delegate call; unfinished children are stopped when their script ends.
 
+A script makes at most 256 tool calls, delegate calls included. At most 32 are
+out at once: a `Promise.all` over more starts the rest as earlier ones answer.
+Waiting on delegate is not on the script's clock (its wall time counts only its
+own work and other tools' calls), and a waiting script holds none of its
+account's code slots, so its children can run code. `delegate`'s
+`maxParallel` still bounds how many children run at once.
+
 ### Computers
 
 If the parent has a [computer connection](https://run.camelai.com/docs/guides/computers.md), each newly created
