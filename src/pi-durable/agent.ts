@@ -980,11 +980,11 @@ export class DurableAgent {
   }
 
   /** Code mode scripts running in this process, by their start (`startedAt` and seed): their sandbox and the calls they made. */
-  private scripts = new Map<string, { fingerprint?: string; calls: Map<number, { name: string; args: unknown }>; changed: Set<() => void> }>();
+  private scripts = new Map<string, { running: boolean; fingerprint?: string; calls: Map<number, { name: string; args: unknown }>; changed: Set<() => void> }>();
   private script(startedAt: number, seed: number) {
     const key = `${startedAt}:${seed}`;
     let script = this.scripts.get(key);
-    if (!script) this.scripts.set(key, script = { calls: new Map(), changed: new Set() });
+    if (!script) this.scripts.set(key, script = { running: false, calls: new Map(), changed: new Set() });
     return script;
   }
 
@@ -994,11 +994,13 @@ export class DurableAgent {
    */
   scriptRun(startedAt: number, seed: number) {
     const script = this.script(startedAt, seed);
+    // Taken: the entry stays until the run ends, also before it reports anything (`remade` leaves it alone).
+    script.running = true;
     const changed = () => { for (const notify of script.changed) notify(); };
     return {
       started: (fingerprint: string) => { script.fingerprint = fingerprint; changed(); },
       called: (call: { id: number; name: string; args?: unknown }) => { script.calls.set(call.id, { name: call.name, args: call.args }); changed(); },
-      ended: () => { this.scripts.delete(`${startedAt}:${seed}`); },
+      ended: () => { if (this.scripts.get(`${startedAt}:${seed}`) === script) this.scripts.delete(`${startedAt}:${seed}`); },
     };
   }
 
@@ -1021,15 +1023,20 @@ export class DurableAgent {
         this.harness.waitForTask(input.parent as never, context).then(() => false, () => false),
         ...start.deadline !== undefined ? [new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(0, start.deadline! - Date.now())); })] : [],
         // Given up (the agent closing, the run aborted): the call ends as Pi ends an aborted call, not as one not made.
-        ...signal ? [new Promise<never>((_, reject) => { if (signal.aborted) reject(signal.reason); signal.addEventListener("abort", () => reject(signal.reason), { once: true }); })] : [],
+        ...signal ? [new Promise<never>((_, reject) => {
+          const giveUp = () => reject(signal.reason instanceof Error ? signal.reason : new Error(`The call was given up while its script started again${signal.reason === undefined ? "" : `: ${String(signal.reason)}`}`));
+          if (signal.aborted) giveUp(); else signal.addEventListener("abort", giveUp, { once: true });
+        })] : [],
       ]);
       const call = script.calls.get(id);
       return made && script.fingerprint === start.fingerprint && call?.name === input.call.name && JSON.stringify(call.args ?? {}) === JSON.stringify(input.call.arguments ?? {});
     } finally {
       clearTimeout(timer);
       if (notify) script.changed.delete(notify);
-      // One its script never started here leaves no entry behind (a started one goes when its run ends: `scriptRun`).
-      if (!script.changed.size && script.fingerprint === undefined && !script.calls.size) this.scripts.delete(`${start.startedAt}:${start.seed}`);
+      // One its script never started here leaves no entry behind; a started one (`running`, also before it reports
+      // anything) goes when its run ends (`scriptRun`).
+      const key = `${start.startedAt}:${start.seed}`;
+      if (!script.running && !script.changed.size && this.scripts.get(key) === script) this.scripts.delete(key);
     }
   }
 
