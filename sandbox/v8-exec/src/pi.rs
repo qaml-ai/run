@@ -159,7 +159,7 @@ pub(super) fn execute(scope: &mut v8::PinScope, stdin: &mut impl Read, data: &Va
     let mut message = tc.exception().map(|error| error.to_rust_string_lossy(tc)).unwrap_or_else(|| "Script compilation failed".into());
     // A static import, as code written for Node or for js_exec's fs: say what there is instead.
     if message.contains("import statement") {
-      message.push_str(". codemode runs plain JavaScript with no modules: files are the agent's file tools, called as await tools.read({ path }) and await tools.write({ path, content })");
+      message.push_str(". codemode runs plain JavaScript with no modules: for files, use the fs global (await fs.readFile(path), await fs.writeFile(path, text)) or the file tools (await tools.read({ path }))");
     }
     send_frame(&json!({ "type": "done", "ok": false, "error": json!({ "name": "SyntaxError", "message": message }).to_string(), "during": { "seq": 0, "issued": 0 } }));
     unsafe { libc::_exit(0) }

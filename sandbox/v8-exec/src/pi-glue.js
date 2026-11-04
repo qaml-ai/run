@@ -8,13 +8,66 @@
   let state = data.deterministic?.seed ?? 0;
   // V8 has a console of its own; the prelude defines its own (QuickJS has none).
   for (const name of ["SharedArrayBuffer", "Atomics", "WebAssembly", "WeakRef", "FinalizationRegistry", "Temporal", "console"]) delete globalThis[name];
-  // Gone with js_exec, which had them: a script that reaches for one learns, as a catchable error, what to use instead.
   const FILES = "files are the agent's file tools, called as await tools.read({ path }), await tools.write({ path, content }) and await tools.ls({ path })";
   // js_exec's tool finders, which are Pi's globals now: a script calling one is told which.
   const FINDERS = { search: "searchTools(query)", describe: "describeTool(name)", namespaces: "describeNamespace(name)" };
-  for (const [name, instead] of [["fs", FILES], ["require", `there are no modules: ${FILES}`]]) {
-    Object.defineProperty(globalThis, name, { configurable: false, get() { throw new ReferenceError(`${name} is not defined in codemode: ${instead}`); } });
+  // js_exec's `fs`, the calls scripts still make, on the agent's file tools (the running script's `tools`), asynchronous as
+  // they are: text in and out (bytes written as base64). Without the file tools in code, it says what there is instead.
+  let scriptTools;
+  const fileTool = (name, args) => {
+    if (!scriptTools || !Reflect.has(scriptTools, name)) throw new ReferenceError(`fs is not defined in codemode: ${FILES}`);
+    return scriptTools[name](args);
+  };
+  const readText = async path => {
+    let text = "", offset = 1;
+    for (;;) {
+      const read = await fileTool("read", offset > 1 ? { path: String(path), offset } : { path: String(path) });
+      const chunk = typeof read?.content === "string" ? read.content : String(read?.content ?? "");
+      if (read?.truncated !== true && read?.truncation?.truncated !== true) return text + chunk;
+      text += `${chunk}\n`;
+      offset += chunk.split("\n").length;
+    }
+  };
+  const bytes = data => data instanceof Uint8Array || data instanceof ArrayBuffer;
+  // No btoa in a bare isolate.
+  const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const base64 = data => {
+    const view = new Uint8Array(data);
+    let out = "";
+    for (let i = 0; i < view.length; i += 3) {
+      const n = (view[i] << 16) | ((view[i + 1] ?? 0) << 8) | (view[i + 2] ?? 0);
+      out += ALPHABET[n >> 18 & 63] + ALPHABET[n >> 12 & 63] + (i + 1 < view.length ? ALPHABET[n >> 6 & 63] : "=") + (i + 2 < view.length ? ALPHABET[n & 63] : "=");
+    }
+    return out;
+  };
+  const writeData = (path, data) => fileTool("write", bytes(data) ? { path: String(path), content: base64(data), encoding: "base64" } : { path: String(path), content: String(data) });
+  const entries = async path => (await fileTool("ls", { path: String(path) }))?.entries ?? [];
+  const fs = {
+    readFile: path => readText(path),
+    writeFile: async (path, data) => { await writeData(path, data); },
+    appendFile: async (path, data) => { const before = await fs.exists(path) ? await readText(path) : ""; await writeData(path, before + String(data)); },
+    readdir: async path => (await entries(path)).map(entry => entry.name),
+    exists: async path => {
+      const at = String(path).replace(/\/+$/, ""), slash = at.lastIndexOf("/");
+      try { return (await entries(slash > 0 ? at.slice(0, slash) : "/")).some(entry => entry.name === at.slice(slash + 1)); } catch { return false; }
+    },
+    // The file tools make a file's directories as they write it.
+    mkdir: async () => {}, mkdirSync: () => {},
+  };
+  for (const name of ["readFile", "writeFile", "appendFile", "readdir", "exists"]) {
+    fs[`${name}Sync`] = () => { throw new TypeError(`fs.${name}Sync is not in codemode, where the file tools are asynchronous: use await fs.${name}(…)`); };
   }
+  fs.existsSync = () => { throw new TypeError("fs.existsSync is not in codemode, where the file tools are asynchronous: use await fs.exists(path)"); };
+  fs.promises = fs;
+  Object.freeze(fs);
+  const shim = () => { if (!scriptTools || !Reflect.has(scriptTools, "read")) throw new ReferenceError(`fs is not defined in codemode: ${FILES}`); return fs; };
+  Object.defineProperty(globalThis, "fs", { configurable: false, get: shim });
+  Object.defineProperty(globalThis, "require", { configurable: false, get() {
+    return name => {
+      if (["fs", "node:fs", "fs/promises", "node:fs/promises"].includes(name)) return shim();
+      throw new ReferenceError(`require is not defined in codemode: there are no modules, and ${FILES}`);
+    };
+  } });
   if (data.deterministic) {
     const NativeDate = Date;
     function VirtualDate(...args) {
@@ -98,7 +151,7 @@
       while (out < CONCURRENT && waiting.length && !finished) call(waiting.shift());
       api.settle(message.id, message.ok, message.payload, message.properties);
     },
-    fn => api.run((tools, ...rest) => fn(new Proxy(tools, { get(target, key, receiver) {
+    fn => api.run((tools, ...rest) => fn(scriptTools = new Proxy(tools, { get(target, key, receiver) {
       if (typeof key === "string" && Object.hasOwn(FINDERS, key) && !Reflect.has(target, key)) {
         throw new TypeError(`tools.${key} is not in codemode: call ${FINDERS[key]}, a global, as in await ${FINDERS[key].replace(/\(.*\)/, '("…")')}`);
       }

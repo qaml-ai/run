@@ -25,12 +25,12 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, bridge?:
 test("guest globals, function constructors, eval and callback prototypes cannot reach the host", async t => {
   const { run } = await fixture(t);
   const result = await run(`
-    const denied = ["process", "Bun", "require", "module", "fetch", "XMLHttpRequest", "WebSocket", "Worker", "WebAssembly", "SharedArrayBuffer", "Atomics", "setTimeout", "setInterval", "__call", "__emit"];
-    // fs and require throw on any use, saying what replaced them: not there to reach either.
-    const globals = denied.map(name => {
-      try { return typeof globalThis[name]; }
-      catch (error) { return ["fs", "require"].includes(name) && /is not defined in codemode/.test(error.message) ? "undefined" : String(error); }
-    });
+    const denied = ["process", "Bun", "module", "fetch", "XMLHttpRequest", "WebSocket", "Worker", "WebAssembly", "SharedArrayBuffer", "Atomics", "setTimeout", "setInterval", "__call", "__emit"];
+    const globals = denied.map(name => typeof globalThis[name]);
+    // require is the fs shim's alone (the file tools): any other module is not there to reach.
+    for (const name of ["child_process", "node:net", "module"]) {
+      try { require(name); return "require(" + name + ") reached something"; } catch (error) { if (!/require is not defined in codemode/.test(error.message)) return String(error); }
+    }
     const constructorProbes = [
       Function("return typeof process")(),
       ({}).constructor.constructor("return typeof process")(),

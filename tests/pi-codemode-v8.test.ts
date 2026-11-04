@@ -259,6 +259,33 @@ test("Pi start: a script reaching for fs, require, an import or js_exec's tool f
   }
 });
 
+test("Pi start: js_exec's fs works on the file tools: text in pages, bytes as base64, readdir, exists, require and promises", { skip }, async t => {
+  const sandbox = new PiV8Sandbox();
+  t.after(() => sandbox.close());
+  const files = [{ name: "read", jsName: "read", description: "Read" }, { name: "write", jsName: "write", description: "Write" }, { name: "ls", jsName: "ls", description: "List" }];
+  const calls: { name: string; args: any }[] = [];
+  const answer = (name: string, args: any) => {
+    if (name === "read") return args.path === "/w/big.txt" ? (args.offset ? { content: "c" } : { content: "a\nb", truncation: { truncated: true } }) : { content: "hi" };
+    if (name === "ls") return { path: args.path, entries: args.path === "/w" ? [{ name: "a.txt" }, { name: "big.txt" }] : [] };
+    return { path: args.path };
+  };
+  let seq = 0;
+  const run: CodemodeRun = sandbox.start(`
+    await fs.writeFile("/w/a.txt", "hi");
+    await fs.writeFile("/w/b.bin", new Uint8Array([104, 105, 33]));
+    let sync;
+    try { fs.readFileSync("/w/a.txt", "utf8"); } catch (error) { sync = error.message; }
+    await fs.mkdir("/w/sub", { recursive: true });
+    return { big: await fs.readFile("/w/big.txt", "utf8"), names: await fs.readdir("/w"), exists: [await fs.exists("/w/a.txt"), await fs.exists("/w/none")],
+      same: require("fs") === fs && require("node:fs/promises") === fs.promises, sync };`, { ...defaults, tools: files,
+    onCall: call => { calls.push({ name: call.name, args: call.args }); run.deliver(++seq, defaults.startedAt + 1, call.id, success(answer(call.name, call.args))); } });
+  const result = await run.result;
+  assert.equal(result.ok, true, JSON.stringify(result));
+  if (result.ok) assert.deepEqual(result.value, { big: "a\nb\nc", names: ["a.txt", "big.txt"], exists: [true, false], same: true, sync: "fs.readFileSync is not in codemode, where the file tools are asynchronous: use await fs.readFile(…)" });
+  assert.deepEqual(calls.filter(call => call.name === "write").map(call => call.args), [{ path: "/w/a.txt", content: "hi" }, { path: "/w/b.bin", content: "aGkh", encoding: "base64" }]);
+  assert.deepEqual(calls.filter(call => call.name === "read" && call.args.path === "/w/big.txt").map(call => call.args.offset), [undefined, 3]);
+});
+
 test("Pi start: a script may declare tools or console of its own, as in js_exec", { skip }, async t => {
   const sandbox = new PiV8Sandbox();
   t.after(() => sandbox.close());
