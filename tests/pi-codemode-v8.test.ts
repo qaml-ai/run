@@ -240,13 +240,18 @@ test("Pi start: half an emoji in output, a return value or a call's arguments do
   assert.deepEqual(result.output.map(item => (item as { text: string }).text), ["hi \ufffd", "hi \ufffd"]);
 });
 
-test("Pi start: a script reaching for fs, require or an import is told about the file tools", { skip }, async t => {
+test("Pi start: a script reaching for fs, require, an import or js_exec's tool finders is told what replaced them", { skip }, async t => {
   const sandbox = new PiV8Sandbox();
   t.after(() => sandbox.close());
   const run = (code: string) => sandbox.start(code, { ...defaults, onCall() {} }).result;
   const caught = await run("try { await fs.readFile('/bot/bot.ts', 'utf8'); } catch (error) { return error.message; }");
   assert.equal(caught.ok, true);
   if (caught.ok) assert.match(String(caught.value), /^fs is not defined in codemode: files are the agent's file tools, called as await tools\.read/);
+  for (const [finder, global] of [["search", "searchTools"], ["describe", "describeTool"], ["namespaces", "describeNamespace"]]) {
+    const result = await run(`try { await tools.${finder}("x"); } catch (error) { return error.message; }`);
+    assert.equal(result.ok, true);
+    if (result.ok) assert.match(String(result.value), new RegExp(`^tools\\.${finder} is not in codemode: call ${global}\\(`));
+  }
   for (const code of ["return require('fs')", "import { readFileSync } from 'fs';\nreturn 1;"]) {
     const result = await run(code);
     assert.equal(result.ok, false, code);
