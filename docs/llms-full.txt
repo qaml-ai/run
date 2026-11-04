@@ -1890,8 +1890,7 @@ const voice = await agents.upsert("voice-12", { instructions, codeMode: false, f
 ```
 
 Set it when the agent is made. Changed later by an upsert, the agent's tools
-change at once, while a conversation already under way keeps the runtime text
-it began with (its prompt's cached prefix).
+and the runtime's rules in its prompt change at once, from its next turn.
 
 ## Tool search
 

@@ -39,7 +39,7 @@ are the images a script shows. Whatever a script's options ask, the result's
 text is held to 128,000 characters. The runtime limits each script to 2
 seconds of CPU by default, a 128 MiB heap, 60 seconds of wall time by default
 (at most 120), 256 calls, 32 concurrent calls, 1 MiB per tool result and 8 MiB
-of results in all, and 128 KiB per call's arguments. Output past 1,024 prints
+of results in all (counted afresh when a script resumes after a restart), and 128 KiB per call's arguments. Output past 1,024 prints
 or 128,000 bytes of text, or past 16 images or 8 MiB of them, is left out with
 a note where it stopped; the script still completes (js_exec failed instead).
 

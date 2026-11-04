@@ -214,6 +214,21 @@ test("Pi start: output past its limits is left out with a note, and the script s
   assert.match((many.output.at(-1) as { text: string }).text, /Images past 16/);
 });
 
+test("Pi start: one message too large for a frame is cut or noted, and a return value too large fails the script, saying so", { skip, timeout: 60_000 }, async t => {
+  const sandbox = new PiV8Sandbox();
+  t.after(() => sandbox.close());
+  const run = (code: string) => sandbox.start(code, { ...defaults, onCall() {} }).result;
+  const huge = await run("console.log('x'.repeat(2_500_000)); return 1");
+  assert.equal(huge.ok, true, JSON.stringify(huge).slice(0, 300));
+  assert.equal((huge.output[0] as { text: string }).text.length, 128_000);
+  const image = await run(`image("data:image/png;base64,iVBORw0KGgoA" + "A".repeat(2_200_000)); return 1`);
+  assert.equal(image.ok, true, JSON.stringify(image).slice(0, 300));
+  assert.match((image.output[0] as { text: string }).text, /image of \d+ base64 characters was left out/);
+  const returned = await run("return 'y'.repeat(3_000_000)");
+  assert.equal(returned.ok, false);
+  if (!returned.ok) { assert.equal(returned.error.kind, "script"); assert.match(returned.error.message, /return value is too large to return/); }
+});
+
 // No executable is needed to test the trusted host's validation and shutdown behavior.
 function fakePool() {
   let receive!: (message: unknown) => void, close!: (reason: string) => void;

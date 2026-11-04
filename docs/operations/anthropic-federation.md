@@ -92,4 +92,4 @@ beta headers without adding Claude Code identity or subscription beta headers.
 
 The models-list key check only validates tenant-supplied API keys; it never receives the platform token.
 Voice, transcription and images use their existing OpenAI, Azure, Google or speech-provider credentials.
-Tool search uses OpenRouter. None of those callers exchanges or sends an Anthropic token.
+None of those callers exchanges or sends an Anthropic token.

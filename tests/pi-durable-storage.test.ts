@@ -367,10 +367,18 @@ test("Pi shared commits read their documents again when another commit landed wh
     await client.query("select next_id from pi_durable_metadata where session_id = $1 for update", [sessionId]);
     // Both wait for the lock, their reads taken before it: the first to get it retires the document, so the other's
     // read is out of date, and it finds the document retired only by reading again.
+    // Each is seen waiting on the lock before the next starts, so the order is theirs, not the scheduler's.
+    const waiting = async (count: number) => {
+      for (;;) {
+        const { rows } = await db.query("select count(*) as n from pg_stat_activity where wait_event_type = 'Lock' and query like '%pi_durable_metadata%'");
+        if (Number(rows[0].n) >= count) return;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    };
     retired = commitWrites(first, [{ type: "document.retire", id }], context);
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await waiting(1);
     again = commitWrites(second, [{ type: "document.retire", id }], context);
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await waiting(2);
   } finally { await client.query("rollback"); client.release(); }
   await retired!;
   await assert.rejects(again!, /Document \d+ is retired/);

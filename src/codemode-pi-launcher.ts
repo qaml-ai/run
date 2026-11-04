@@ -25,11 +25,6 @@ export interface PiV8Options {
 const record = (value: unknown): value is Record<string, any> => typeof value === "object" && value !== null && !Array.isArray(value);
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
 const optionalString = (value: unknown) => value === undefined || typeof value === "string";
-/**
- * A call's result as it goes to the guest: the host holds results to SANDBOX_LIMITS.resultBytes, and their JSON (escapes,
- * the structured copy beside the content) runs larger, so the bound is v8-exec's frame, with room for the envelope.
- */
-const RESULT_FRAME_BYTES = MAX_FRAME_BYTES - 1024;
 /** Text one script prints: v8-exec's EMIT_CHARS, in bytes. */
 const OUTPUT_TEXT_BYTES = 128_000;
 const json = (value: string) => { try { JSON.parse(value); return true; } catch { return false; } };
@@ -74,7 +69,8 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
       if (!integer(message.id) || !pending.has(message.id) || message.type !== "result" || typeof message.ok !== "boolean"
         || !optionalString(message.payload) || (message.ok && message.payload !== undefined && !json(message.payload))
         || !optionalString(message.properties) || (message.properties !== undefined && (!json(message.properties) || !record(JSON.parse(message.properties))))
-        || Buffer.byteLength(JSON.stringify(message)) > RESULT_FRAME_BYTES) return fail("Malformed Pi result");
+        // v8-exec takes each at most SANDBOX_LIMITS.resultBytes (pi.rs); the host keeps a script's results under it (`scriptBytes`).
+        || Buffer.byteLength(message.payload ?? "") > SANDBOX_LIMITS.resultBytes || Buffer.byteLength(message.properties ?? "") > SANDBOX_LIMITS.resultBytes) return fail("Malformed Pi result");
       if (data.deterministic && (!integer(message.seq) || message.seq === 0 || sequences.has(message.seq) || !Number.isFinite(message.now))) return fail("Malformed Pi result sequence or clock");
       pending.delete(message.id);
       if (message.seq !== undefined) sequences.add(message.seq);

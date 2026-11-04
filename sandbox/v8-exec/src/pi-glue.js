@@ -47,6 +47,8 @@
     DateTimeFormat.supportedLocalesOf = NativeFormat.supportedLocalesOf;
     Intl.DateTimeFormat = DateTimeFormat;
   }
+  // Within send's frame (MAX_FRAME_BYTES / 2 characters, main.rs) with room for the envelope; EMIT_CHARS of text.
+  const FRAME_CHARS = 2 * 1024 * 1024 - 64 * 1024, TEXT_CHARS = 128000;
   let current = 0, issued = 0, finished = false;
   const bridge = (kind, a, b, c) => {
     if (finished) return;
@@ -54,11 +56,20 @@
       issued++;
       send(stringify({ type: "call", id: a, target: kind === "call" ? "tool" : "global", name: b, args: c }));
     } else if (kind === "output") {
-      const item = a === "image" ? { type: "image", data: b, mimeType: c }
-        : { type: "text", text: b, ...(a === "console" ? { console: true } : {}) };
+      // One message stays within a bridge frame (send's limit, pi.rs): text past what a script prints in all is cut
+      // here (pi.rs `bounded` cuts the rest), and an image too large to send is noted instead.
+      const item = a === "image"
+        ? b.length > FRAME_CHARS ? { type: "text", text: `[An image of ${b.length} base64 characters was left out: too large to show]` } : { type: "image", data: b, mimeType: c }
+        : { type: "text", text: b.length > TEXT_CHARS ? b.slice(0, TEXT_CHARS) : b, ...(a === "console" ? { console: true } : {}) };
       send(stringify({ type: "output", item }));
     } else if (kind === "done") {
       finished = true;
+      // A return value (or an error) too large for a frame fails the script, saying so, rather than the sandbox.
+      if ((b?.length ?? 0) + (a ? c?.length ?? 0 : 0) > FRAME_CHARS) {
+        const what = a ? "return value" : "error";
+        a = false;
+        b = stringify({ name: "RangeError", message: `The script's ${what} is too large to return (over ${FRAME_CHARS} characters): return less, or write it to a file` });
+      }
       send(stringify({ type: "done", ok: a, ...(a ? { value: b, writes: c } : { error: b }),
         ...(data.deterministic ? { during: { seq: current, issued } } : {}) }));
     }

@@ -435,10 +435,15 @@ export function createAgentHost(hostIO: HostIO) {
     }
     return at;
   }
-  /** Count a result a script gets toward its limits: SANDBOX_LIMITS.resultBytes each, totalToolBytes in all. */
+  /**
+   * Count a result a script gets toward its limits: SANDBOX_LIMITS.resultBytes each, totalToolBytes in all. The total is
+   * this process's: a script resumed elsewhere (after a restart, at most Pi's restartLimit times) counts afresh.
+   */
   function scriptBytes(parentTaskId: string, data: unknown) {
     const bytes = Buffer.byteLength(JSON.stringify(data));
-    if (bytes > SANDBOX_LIMITS.resultBytes) throw new Error(`The result is ${bytes.toLocaleString("en-US")} bytes; a script gets at most ${SANDBOX_LIMITS.resultBytes.toLocaleString("en-US")} from one call. Ask the tool for less.`);
+    // Under v8-exec's own bound on a result (pi.rs RESULT_BYTES), with room for how Pi frames it.
+    const most = SANDBOX_LIMITS.resultBytes - 1024;
+    if (bytes > most) throw new Error(`The result is ${bytes.toLocaleString("en-US")} bytes; a script gets at most ${most.toLocaleString("en-US")} from one call. Ask the tool for less.`);
     const total = (scriptResults.get(parentTaskId) ?? 0) + bytes;
     if (total > SANDBOX_LIMITS.totalToolBytes) throw new Error(`This script's calls have returned more than ${SANDBOX_LIMITS.totalToolBytes.toLocaleString("en-US")} bytes in all, the most one script gets. Ask for less, or split the work across scripts.`);
     scriptResults.set(parentTaskId, total);
@@ -548,7 +553,10 @@ export function createAgentHost(hostIO: HostIO) {
       execute: async (...args: Parameters<typeof tool.execute>) => {
         try {
           const result = await tool.execute(...args);
-          return result.output ? { ...result, output: await capped((args[1] as { callId: string }).callId, [...result.output], SANDBOX_LIMITS.maxOutputCharacters) } : result;
+          if (!result.output) return result;
+          // Its images go into history as requests carry them (scaled down once, as attachments are), its text capped.
+          const [fitted] = await fittedImages([{ content: [...result.output] }]);
+          return { ...result, output: await capped((args[1] as { callId: string }).callId, fitted.content, SANDBOX_LIMITS.maxOutputCharacters) };
         } finally {
           scriptResults.delete(String((args[1] as { taskId: unknown }).taskId));
           scriptCalls.delete(String((args[1] as { taskId: unknown }).taskId));

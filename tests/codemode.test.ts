@@ -195,7 +195,7 @@ return { got, errors };` }, { id: "code" }), "toolUse"), answer("done"));
   const run = await host.handle("prompt", { text: "go" });
   assert.equal(run.error, null);
   const output = textOf((await fake.history())[2]);
-  assert.match(output, /a script gets at most 1,048,576 from one call/);
+  assert.match(output, /a script gets at most 1,047,552 from one call/);
   assert.match(output, /more than 8,388,608 bytes in all/);
   assert.match(output, /"got":8100000/);
 });
