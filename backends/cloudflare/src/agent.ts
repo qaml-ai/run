@@ -6,6 +6,7 @@ import { type Message, type AssistantMessage } from "@earendil-works/pi-ai";
 import { Harness, createRegistry, type ToolRegistration, type ConversationView, type LiveState } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
+import { isolatedSandboxRemote } from "../codemode/routing.ts";
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { PiHarness } from "agents/harness/pi";
@@ -56,7 +57,8 @@ export class CamelAgent extends DurableObject<Env> {
       registry.install({ name: "camel.linux", tools: [computerTool(this.env, this.ctx.id.toString())] });
       registry.install(createCodemodeExtension({
         sandbox: new RemoteCodemodeSandbox({
-          remote: () => this.env.CODEMODE_SANDBOX.getByName(this.ctx.id.toString()),
+          remote: isolatedSandboxRemote({ agentKey: this.ctx.id.toString(),
+            getByName: key => this.env.CODEMODE_SANDBOX.getByName(key), maxConcurrent: 4 }),
         }),
         // Keep provider calls outside the script's capability set.
         models: false,
@@ -170,12 +172,14 @@ export class CamelAgent extends DurableObject<Env> {
       if (current?.state === "completed") return current;
       const outcome = result.status === "done" ? { result: { reply: result.text ?? "" } }
         : { error: result.reason ?? "Model operation failed" };
-      const completed: RequestRecord = { ...record, state: "completed", endedAt: Date.now(), outcome,
-        status: result.status === "done" ? "completed" : "failed", ...(result.status !== "done" ? { error: result.reason ?? "Model operation failed" } : {}) };
       let changed = false;
       const terminal = await this.ctx.storage.transaction(async tx => {
         const latest = await tx.get<RequestRecord>(reqKey(id));
         if (latest?.state === "completed") return latest;
+        // Observation and acceptance can update this record while wait() is
+        // pending. Merge under the transaction so their latest fields survive.
+        const completed: RequestRecord = { ...(latest ?? current ?? record), state: "completed", endedAt: Date.now(), outcome,
+          status: result.status === "done" ? "completed" : "failed", ...(result.status !== "done" ? { error: result.reason ?? "Model operation failed" } : {}) };
         await tx.put(reqKey(id), completed); changed = true; return completed;
       });
       if (changed) await this.emit({ type: "response", id, outcome });

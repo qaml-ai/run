@@ -73,11 +73,20 @@ test("existing TypeScript SDK on local Workers/Durable Objects", { timeout: 180_
     try {
       const first = await watched.send("slow:500:queued first", { idempotencyKey: "queued-first" });
       const second = await watched.send("queued second", { idempotencyKey: "queued-second" });
+      let observedStart: number | undefined;
+      for (let attempt = 0; attempt < 40 && !observedStart; attempt++) {
+        const pending = await (await raw(`/clients/${alpha.id}/requests/${first.id}`, alpha.session.token)).json() as { began?: number };
+        observedStart = pending.began;
+        if (!observedStart) await delay(10);
+      }
+      assert.ok(observedStart, "the running request must expose its observed start");
       const [a, b] = await Promise.all([
         watched.wait(first.id, { timeoutMs: 15_000 }), watched.wait(second.id, { timeoutMs: 15_000 }),
       ]);
       assert.equal(a.text, "Echo: queued first");
       assert.equal(b.text, "Echo: queued second");
+      const completed = await (await raw(`/clients/${alpha.id}/requests/${first.id}`, alpha.session.token)).json() as { began?: number };
+      assert.equal(completed.began, observedStart, "settlement must preserve the start recorded while it waited");
       if (!text.size) t.diagnostic(`Observed events: ${observed.join(",")}`);
       assert.equal(text.get(first.id), a.text);
       assert.equal(text.get(second.id), b.text);
