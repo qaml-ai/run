@@ -13,8 +13,10 @@ The legacy script engine and its V8 execute protocol are gone. V8 accepts only
 Pi code mode; process isolation, CPU and memory limits, seccomp and fingerprint
 checks remain.
 
-Waiting on `delegate` is not on a script's clock, and a waiting script holds
-none of its account's code slots: a child may take longer than the script's
+Waiting on `delegate` is not on a script's clock, and a script waiting on it
+alone holds none of its account's code slots, its process kept outside
+`AGENT_V8_MAX` (`AGENT_V8_PARKED_MAX`, 32 a node, `AGENT_V8_PARKED_PER_TENANT`,
+8 a tenant; past them it keeps its process and slot): a child may take longer than the script's
 time limit, and children can run code while their parents wait. A script makes
 at most 256 tool calls; at most 32 are out at once, and a `Promise.all` over
 more starts the rest as earlier ones answer (the 257th call fails the script,

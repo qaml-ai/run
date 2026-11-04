@@ -61,8 +61,8 @@ export class V8Exec {
       "--max-data-mb", String(options.maxDataMb ?? 512),
     ];
     this.max = options.max ?? 64;
-    this.parkedMax = options.parkedMax ?? 256;
-    this.parkedPerTenant = options.parkedPerTenant ?? 32;
+    this.parkedMax = options.parkedMax ?? 32;
+    this.parkedPerTenant = options.parkedPerTenant ?? 8;
     this.prespawn = options.prespawn ?? 0;
     if (!Number.isInteger(this.max) || this.max < 1 || !Number.isInteger(this.prespawn) || this.prespawn < 0
       || !Number.isInteger(this.parkedMax) || this.parkedMax < 0 || !Number.isInteger(this.parkedPerTenant) || this.parkedPerTenant < 0) throw new Error("Invalid v8-exec process limits");
@@ -189,13 +189,14 @@ export function v8ExecBinary(env: NodeJS.ProcessEnv = process.env) {
 /**
  * A runner's settings from `env`: AGENT_V8_EXEC, AGENT_V8_JITLESS and AGENT_V8_SECCOMP (both on by default),
  * AGENT_V8_PRESPAWN processes started ahead (2 under agent-launcher, else none), AGENT_V8_MAX at once (64), and
- * AGENT_V8_PARKED_MAX (256) and AGENT_V8_PARKED_PER_TENANT (32) whose scripts only wait on delegate, beside those.
+ * AGENT_V8_PARKED_MAX (32) and AGENT_V8_PARKED_PER_TENANT (8) whose scripts only wait on delegate, beside those: a
+ * parked process holds 23 MB (an idle script) to 42 MB (one holding 100,000 small objects), measured on Linux x86_64.
  */
 export function v8Settings(env: NodeJS.ProcessEnv) {
   return {
     binary: v8ExecBinary(env), jitless: envFlag(env, "AGENT_V8_JITLESS", true), seccomp: envFlag(env, "AGENT_V8_SECCOMP", true),
     prespawn: Number(env.AGENT_V8_PRESPAWN || (env.AGENT_SANDBOX_DIR ? 2 : 0)), max: Number(env.AGENT_V8_MAX || 64),
-    parkedMax: Number(env.AGENT_V8_PARKED_MAX || 256), parkedPerTenant: Number(env.AGENT_V8_PARKED_PER_TENANT || 32),
+    parkedMax: Number(env.AGENT_V8_PARKED_MAX || 32), parkedPerTenant: Number(env.AGENT_V8_PARKED_PER_TENANT || 8),
   };
 }
 
