@@ -11,12 +11,14 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { PiHarness } from "agents/harness/pi";
 import { Lifecycle } from "agents/lifecycle";
 import { BadRequest, boundedText, object, body, workspacePath } from "./validation.ts";
+import { computerTool, computerParameters, type ComputerBindings } from "./computers/tool.ts";
+import { compile } from "@earendil-works/pi-schema";
 import { askHuman, HumanInputs } from "./human.ts";
 import { modelRuntime } from "./model.ts";
 
 type Config = { id: string; revision: number; expiresAt: number | null; config: { model?: string; systemPrompt?: string; name?: string; fileTools?: boolean; codeMode?: boolean; thinkingLevel?: string } };
 type RequestRecord = { id: string; method: string; params?: Record<string, unknown>; metadata?: unknown; fingerprint: string; state: "running" | "completed"; startedAt: number; endedAt?: number; began?: number; accepted?: boolean; outcome?: { result?: unknown; error?: string }; status?: string; error?: string };
-export interface Env { CODEMODE_SANDBOX: DurableObjectNamespace<CodemodeSandboxDurableObject>; AGENTS: DurableObjectNamespace<CamelAgent>; AI: Ai; LOADER: WorkerLoader; MODEL: string; API_TOKEN: string; TEST_MODEL?: string }
+export interface Env extends ComputerBindings { CODEMODE_SANDBOX: DurableObjectNamespace<CodemodeSandboxDurableObject>; AGENTS: DurableObjectNamespace<CamelAgent>; AI: Ai; LOADER: WorkerLoader; MODEL: string; API_TOKEN: string; TEST_MODEL?: string }
 export const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
 const canonical = (value: unknown): string => JSON.stringify(value && typeof value === "object" ? Array.isArray(value) ? value.map(item => JSON.parse(canonical(item))) : Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, JSON.parse(canonical(item))])) : value);
 const reqKey = (id: string) => `request:${id}`;
@@ -51,6 +53,7 @@ export class CamelAgent extends DurableObject<Env> {
       registry.install({ name: "camel.computer", tools, sections: [{ key: "computer", tag: false,
         render: () => "Your private persistent files are in /workspace. JavaScript execution has no network access." }] });
       registry.install({ name: "camel.human", tools: [askHuman] });
+      registry.install({ name: "camel.linux", tools: [computerTool(this.env, this.ctx.id.toString())] });
       registry.install(createCodemodeExtension({
         sandbox: new RemoteCodemodeSandbox({
           remote: () => this.env.CODEMODE_SANDBOX.getByName(this.ctx.id.toString()),
@@ -311,6 +314,14 @@ export class CamelAgent extends DurableObject<Env> {
       }
       if (path === "/abort" && request.method === "POST") { await this.harness.session().abort(); await this.state(); return json({ aborted: true }); }
       if (path === "/events" && request.method === "GET") return this.events();
+      if (path === "/computer" && request.method === "POST") {
+        const inputBody = await body(request, 1100 * 1024);
+        if (!compile(computerParameters).check(inputBody)) throw new BadRequest("Invalid computer request");
+        const {provider, ...input} = inputBody;
+        const namespace = provider === "container" ? this.env.COMPUTER_CONTAINERS : this.env.COMPUTER_SANDBOXES;
+        if (!namespace) return json({ error: "Optional computer is not configured" }, 501);
+        return json(await namespace.getByName(this.ctx.id.toString()).operate(input));
+      }
       if (path === "/exec" && request.method === "POST") {
         const input = object(await body(request), ["source"]);
         const source = boundedText(input.source, "source", 24 * 1024);

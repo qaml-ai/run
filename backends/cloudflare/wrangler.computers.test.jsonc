@@ -1,0 +1,87 @@
+{
+  "name": "camelrun-cloudflare-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-28",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AGENTS",
+        "class_name": "CamelAgent"
+      },
+      {
+        "name": "DIRECTORY",
+        "class_name": "AgentDirectory"
+      },
+      {
+        "name": "CODEMODE_SANDBOX",
+        "class_name": "CodemodeSandbox",
+        "script_name": "camelrun-codemode-prototype"
+      },
+      {
+        "name": "COMPUTER_CONTAINERS",
+        "class_name": "ContainerComputer"
+      },
+      {
+        "name": "COMPUTER_SANDBOXES",
+        "class_name": "SandboxComputer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "CamelAgent",
+        "AgentDirectory"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "ContainerComputer",
+        "SandboxComputer"
+      ]
+    }
+  ],
+  "vars": {
+    "MODEL": "test/echo",
+    "TEST_MODEL": "1",
+    "API_TOKEN": "local-integration-only-token-with-at-least-32-characters"
+  },
+  "containers": [
+    {
+      "class_name": "ContainerComputer",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "workspace": {
+          "dockerfile": "./computers/Dockerfile"
+        }
+      }
+    },
+    {
+      "class_name": "SandboxComputer",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "workspace": {
+          "dockerfile": "./computers/Dockerfile"
+        }
+      }
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "COMPUTER_BACKUPS",
+      "bucket_name": "camelrun-local-computer-backups"
+    }
+  ]
+}

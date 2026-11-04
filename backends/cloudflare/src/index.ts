@@ -2,6 +2,8 @@ import { CamelAgent, json, type Env } from "./agent.ts";
 import { AgentDirectory, ApiError, agentToken, configuration, type DirectoryEntry, type DirectoryFailure } from "./directory.ts";
 import { authorized, agentId, BadRequest, body } from "./validation.ts";
 export { CamelAgent, AgentDirectory };
+export { ContainerComputer, SandboxComputer } from "./computers/objects.ts";
+export { DirectoryBackupGateway } from "@cloudflare/sandbox";
 
 type WorkerEnv = Env & { DIRECTORY: DurableObjectNamespace<AgentDirectory> };
 function result<T>(value: T | DirectoryFailure): T {
@@ -91,7 +93,7 @@ export default {
         throw new ApiError(501, "Change configuration through keyed agent upsert", "UNSUPPORTED_FEATURE");
       }
       if (match[1] === "experimental/agents") {
-        if (!["/exec", "/state", "/events", "/inputs"].includes(path) && !path.startsWith("/files/") && !path.startsWith("/inputs/")) throw new ApiError(404, "Unknown experimental route", "NOT_FOUND");
+        if (!["/exec", "/computer", "/state", "/events", "/inputs"].includes(path) && !path.startsWith("/files/") && !path.startsWith("/inputs/")) throw new ApiError(404, "Unknown experimental route", "NOT_FOUND");
         return await forward(request, env, entry.id, path);
       }
       if (!["/state", "/events", "/requests", "/history", "/configuration", "/abort", "/inputs"].includes(path) && !path.startsWith("/requests/") && !path.startsWith("/files/")) {
