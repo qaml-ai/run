@@ -27,7 +27,10 @@ test("guest globals, function constructors, eval and callback prototypes cannot 
   const result = await run(`
     const denied = ["process", "Bun", "require", "module", "fetch", "XMLHttpRequest", "WebSocket", "Worker", "WebAssembly", "SharedArrayBuffer", "Atomics", "setTimeout", "setInterval", "__call", "__emit"];
     // fs and require throw on any use, saying what replaced them: not there to reach either.
-    const globals = denied.map(name => { try { return typeof globalThis[name]; } catch { return "undefined"; } });
+    const globals = denied.map(name => {
+      try { return typeof globalThis[name]; }
+      catch (error) { return ["fs", "require"].includes(name) && /is not defined in codemode/.test(error.message) ? "undefined" : String(error); }
+    });
     const constructorProbes = [
       Function("return typeof process")(),
       ({}).constructor.constructor("return typeof process")(),
