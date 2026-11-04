@@ -156,7 +156,8 @@ export class V8Exec {
       park: tenant => {
         if (!child || released || parked || resume || this.parked >= this.parkedMax
           || (tenant !== undefined && (this.parkedBy.get(tenant) ?? 0) >= this.parkedPerTenant)
-          || (resident(child.pid) ?? 0) > this.parkedMaxRss) return false;
+          // Its memory unknown (no pid, as from an agent-launcher that does not report it, or no /proc): too large to park.
+          || !((resident(child.pid) ?? Infinity) <= this.parkedMaxRss)) return false;
         parked = { tenant };
         this.parked++;
         if (tenant !== undefined) this.parkedBy.set(tenant, (this.parkedBy.get(tenant) ?? 0) + 1);

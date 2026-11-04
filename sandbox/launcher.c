@@ -9,7 +9,8 @@
 // open another's /proc/<pid>/mem, with the connection as its stdin and stdout, no other
 // descriptors, an empty environment, no_new_privs and the seccomp filter below. The runtime closing
 // the connection kills the process; when the process ends, how it ended goes to the connection as
-// a last frame ({"type":"exit","code":N} or {"type":"exit","signal":"SIGSYS"}) and it is closed.
+// a last frame ({"type":"exit","code":N} or {"type":"exit","signal":"SIGSYS"}) and it is closed. Its first frame, sent
+// before the process could write, is its pid ({"type":"pid","pid":N}): the runtime reads its memory use from /proc.
 // Either way every other process of its uid (anything it forked) is killed before the slot, and so
 // the uid, is given to another.
 // It forwards termination signals to the runtime and exits with its status.
@@ -170,6 +171,12 @@ static void start(enum kind kind, int conn) {
   children[slot].pid = pid;
   children[slot].conn = conn;
   children[slot].hung_up = 0;
+  // The process's pid, first: it reads a request before it writes anything, and the runtime trusts only a first frame.
+  char frame[64];
+  int length = snprintf(frame + 4, sizeof frame - 4, "{\"type\":\"pid\",\"pid\":%d}", (int)pid);
+  uint32_t header = htonl((uint32_t)length);
+  memcpy(frame, &header, 4);
+  (void)!send(conn, frame, 4 + length, MSG_DONTWAIT | MSG_NOSIGNAL);
 }
 
 /**

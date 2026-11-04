@@ -76,7 +76,15 @@ try {
     let data = Buffer.alloc(0);
     socket.on("data", chunk => {
       data = Buffer.concat([data, chunk]);
-      if (data.length >= 4 && data.length >= 4 + data.readUInt32BE(0)) { process.stdout.write(data.subarray(4, 4 + data.readUInt32BE(0))); socket.destroy(); }
+      while (data.length >= 4 && data.length >= 4 + data.readUInt32BE(0)) {
+        const body = data.subarray(4, 4 + data.readUInt32BE(0));
+        data = data.subarray(4 + body.length);
+        // The launcher's first frame is the process's pid; the reply follows.
+        if (JSON.parse(body).type === "pid") continue;
+        process.stdout.write(body);
+        socket.destroy();
+        return;
+      }
     });`;
   const probe = (sibling: number, paths: string[] = []) => {
     const params = { pid: runtimePid, sibling, launcher: "/usr/local/bin/agent-launcher", paths: ["/data", `/proc/${runtimePid}/environ`, "/proc/1/environ", "/run/agent-sandbox", ...paths] };
@@ -103,6 +111,26 @@ try {
   console.log(`parse job: uid ${parseJob.uid}, env ${Object.keys(parseJob.env).join("/")}, seccomp ${parseJob.status.Seccomp}, no_new_privs, ` +
     `TCP ${parseJob.tcp}, socket(AF_INET) ${parseJob.native.runtime.socket_inet}, ptrace ${parseJob.native.runtime.ptrace_attach}, ` +
     `process_vm_readv ${parseJob.native.runtime.process_vm_readv}, runtime environ ${parseJob.files[`/proc/${runtimePid}/environ`]}, /data ${parseJob.files["/data"]}`);
+
+  // agent-launcher's first frame is the process's pid, and the runtime's uid reads its resident memory in /proc (how it
+  // keeps large scripts from waiting outside the pool's limit: V8Exec.park).
+  const pidCheck = JSON.parse(docker("exec", "-u", "node", name, "node", "-e", `
+    const { connect } = require("node:net");
+    const fs = require("node:fs");
+    const socket = connect("/run/agent-sandbox/v8.sock");
+    let data = Buffer.alloc(0);
+    socket.on("data", chunk => {
+      data = Buffer.concat([data, chunk]);
+      if (data.length < 4 || data.length < 4 + data.readUInt32BE(0)) return;
+      const first = JSON.parse(data.subarray(4, 4 + data.readUInt32BE(0)));
+      let rss;
+      try { rss = /^VmRSS:\\s+(\\d+) kB/m.exec(fs.readFileSync("/proc/" + first.pid + "/status", "utf8"))?.[1]; } catch (error) { rss = error.code; }
+      process.stdout.write(JSON.stringify({ first, rss }));
+      socket.destroy();
+    });`));
+  assert.equal(pidCheck.first.type, "pid", JSON.stringify(pidCheck));
+  assert.ok(Number(pidCheck.rss) > 0, `The runtime's uid reads the confined process's VmRSS: ${JSON.stringify(pidCheck)}`);
+  console.log(`v8-exec pid ${pidCheck.first.pid} reported first; its VmRSS (${pidCheck.rss} kB) readable by the runtime's uid`);
 
   // A parse job that forks and exits: what it left behind dies with it, and its uid is swept before it is given out again.
   const orphanClient = probeClient.replace('method: "probe", params: JSON.parse(process.argv[1])', 'method: "orphan", params: {}');
@@ -133,6 +161,7 @@ try {
         while (data.length >= 4 && data.length >= 4 + data.readUInt32BE(0)) {
           const message = JSON.parse(data.subarray(4, 4 + data.readUInt32BE(0)));
           data = data.subarray(4 + data.readUInt32BE(0));
+          if (message.type === "pid") continue;
           if (message.type === "data") { parts.push(Buffer.from(message.data, "base64")); continue; }
           const out = Buffer.concat(parts);
           process.stdout.write(JSON.stringify({ ...message, bytes: out.length, width: out.readUInt32BE(16), height: out.readUInt32BE(20) }));

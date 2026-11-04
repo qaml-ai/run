@@ -25,8 +25,11 @@ export type Ended = { code: number | null; signal: string | null; error?: string
  * environment and only its pipes. Everything it sends is untrusted.
  */
 export class Confined {
-  /** The process's pid, for a process of this one's own. */
-  readonly pid?: number;
+  /**
+   * The process's pid: this process's own child's, or as agent-launcher reports it in its first frame, before the process
+   * could write (one from a launcher that does not report it stays unknown).
+   */
+  pid?: number;
   private ended?: Ended;
   private onMessage: (message: unknown) => void = () => {};
   private onClose?: (ended: Ended) => void;
@@ -42,7 +45,11 @@ export class Confined {
       let connected = false;
       socket.once("connect", () => { connected = true; });
       socket.on("error", error => { failure ??= error; });
+      let first = true;
       this.write = frames(socket, (message: any) => {
+        // The launcher's, before anything of the process's: its pid. Only a first frame is the launcher's.
+        if (first && message?.type === "pid") { first = false; if (Number.isSafeInteger(message.pid) && message.pid > 0) this.pid = message.pid; return; }
+        first = false;
         // The launcher's, after the process's last: how it ended (the process could forge one too, which would only misreport it).
         if (message?.type === "exit") exit = { code: Number.isInteger(message.code) ? message.code : null, signal: typeof message.signal === "string" ? message.signal.slice(0, 16) : null };
         else this.onMessage(message);

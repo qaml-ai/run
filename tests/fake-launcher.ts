@@ -24,7 +24,7 @@ export const frame = (message: unknown) => {
  * its stdin and stdout, and when it ends, how, as a last frame. `intercept` may take a connection
  * instead, returning true. AGENT_SANDBOX_DIR points at it for the rest of the test.
  */
-export async function fakeLauncher(t: Context, intercept?: (kind: SandboxKind, socket: Socket) => boolean | void) {
+export async function fakeLauncher(t: Context, intercept?: (kind: SandboxKind, socket: Socket) => boolean | void, options: { withoutPid?: boolean } = {}) {
   // Short: unix socket paths are limited to about 100 bytes.
   const dir = await mkdtemp(join(tmpdir(), "sbx-"));
   const pids = new Set<number>();
@@ -42,6 +42,8 @@ export async function fakeLauncher(t: Context, intercept?: (kind: SandboxKind, s
         : [process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../src/parse-job.ts", import.meta.url))]];
       const child = spawn(command, args, { stdio: [socket, socket, kind === "v8" ? "ignore" : "inherit"], env: {} });
       if (child.pid) pids.add(child.pid);
+      // As agent-launcher: the process's pid first (`withoutPid` is a launcher from before it did).
+      if (child.pid && !options.withoutPid) socket.write(frame({ type: "pid", pid: child.pid }));
       child.once("exit", (code, signal) => {
         pids.delete(child.pid!);
         socket.end(frame({ type: "exit", ...(signal ? { signal } : { code }) }));
