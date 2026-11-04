@@ -18,9 +18,10 @@
 # already synced at the commit, then ones with the same package-lock.json and sandbox/v8-exec. This script renews its
 # leases every minute and releases them at the end, recording the commit each sprite now has. On each sprite a lock
 # directory ~/lease (mkdir is atomic) backs the lease: a run claims it before using the sprite, and its job refreshes it
-# every minute. A claim that finds it fresh tells the coordinator the sprite is held and takes another; a stale or
-# over-age lease stops whatever was left there and takes it. If the
-# coordinator can't be reached within about 20 s, the run says so and probes the sprites one by one, on ~/lease alone.
+# every minute. A claim that finds it fresh tells the coordinator the sprite is held and takes another; a stale lock, or
+# one under a coordinator lease that is over-age yet still renewed, stops whatever was left there and takes it. A job
+# starts only while ~/lease is the run's own. If the coordinator can't be reached within about 20 s, the run says so and
+# probes the sprites one by one, on ~/lease alone.
 #
 # Each run gets the committed tree at <ref> (git archive into a temporary directory: never the working directory, so .env
 # and ignored files stay here), sent with rsync over ssh through `sprite proxy --ssh` (the Sprites CLI's own ssh, so no
@@ -79,7 +80,9 @@ acquire) # <count|any:count> <stale> <max-age> <fingerprint> <owner> <ref> <spri
   [ "$want" != "$n" ] || [ "$(printf %s "$picked" | grep -c .)" -ge "$n" ] || exit 75
   for s in $picked; do
     age=; holder=; started=$(field "$s" 6 leases)
-    if [ -n "$started" ] && [ $(( now - started )) -gt "$max_age" ]; then age=$(( (now - started) / 60 )); holder=$(field "$s" 3 leases); fi
+    # Over-age (taken over even though the sprite's own lock is fresh) only when still renewed: a lease that lapsed is
+    # merely stale, and the sprite's lock decides, as it may belong to a run that took the sprite without the coordinator.
+    if [ -n "$started" ] && [ $(( now - started )) -gt "$max_age" ] && [ -n "$hb" ] && [ $(( now - hb )) -le "$stale" ]; then age=$(( (now - started) / 60 )); holder=$(field "$s" 3 leases); fi
     id=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n'); put "$s" "$s $id $owner $ref $fp $now $now"; echo "lease $s $id $age $holder"
   done ;;
 heartbeat) # <sprite> <id> ...: renew each, or say it was lost (released, or taken over after going stale)
@@ -128,16 +131,20 @@ claim) # <lease> <owner> <stale> [held-minutes] [holder]: take ~/lease. The last
   echo "$1 $2" > ~/lease/owner
   find ~/runs -type f -mtime +7 -delete 2>/dev/null  # logs a week old go
   echo "claimed $(cat ~/.synced 2>/dev/null || echo -)" ;;
-running) # <id>: an ended or missing job must no longer renew its coordinator lease
-  if [ ! -e ~/runs/"$1".exit ] && pid=$(cat ~/runs/"$1".pid 2>/dev/null) && kill -0 "$pid" 2>/dev/null; then echo running; else echo done; fi ;;
+running) # <id>: "done" once the job wrote its exit status (its coordinator lease can go), "dead" if it went without one
+  # (a restart: the run tries it again on this sprite, so the lease stays), else "running"
+  if [ -e ~/runs/"$1".exit ]; then echo done
+  elif pid=$(cat ~/runs/"$1".pid 2>/dev/null) && kill -0 "$pid" 2>/dev/null; then echo running; else echo dead; fi ;;
 touch) mine "$1" && touch ~/lease ;;
 unlock) ! mine "$1" || rm -rf ~/lease ;;
 clean) # before a tar sync: everything but node_modules and the v8-exec build goes
   cd ~/rt && find . -mindepth 1 -maxdepth 1 ! -name node_modules ! -name sandbox -exec rm -rf {} +
   find sandbox -mindepth 1 -maxdepth 2 ! -path sandbox/v8-exec ! -path sandbox/v8-exec/target -exec rm -rf {} + 2>/dev/null; true ;;
-start) # <id> <fingerprint> <job script, base64>: record the synced tree, start the job detached, wait until it runs.
+start) # <id> <fingerprint> <job script, base64> <lease>: record the synced tree, start the job detached, wait until it runs.
   # Started already (a retry whose first answer was lost): say so, rather than start it twice.
   if [ -s ~/runs/"$1".pid ] && kill -0 "$(cat ~/runs/"$1".pid)" 2>/dev/null; then echo started; exit 0; fi
+  # Never next to another run's job: two once shared a sprite, one's build deleting the other's v8-exec binary.
+  mine "$4" || { echo "the sprite's lock is $(cut -d' ' -f2 ~/lease/owner 2>/dev/null || echo gone), not this run's"; exit 1; }
   rm -f ~/runs/"$1".pid ~/runs/"$1".exit; echo "$3" | base64 -d > ~/runs/"$1".sh
   # A restarted sprite can lose its last writes: flush the tree before ~/.synced vouches for it.
   sync; echo "$2" > ~/.synced; sync
@@ -225,10 +232,11 @@ prepare() {
   # cleaned first.
   bin=sandbox/v8-exec/target/release/v8-exec; built=sandbox/v8-exec/target/release/.sources
   [ -x "$bin" ] && [ "$(cat "$built" 2>/dev/null)" = "$v8 $(sha256sum < "$bin" | cut -d' ' -f1)" ] || { echo '== building v8-exec (sandbox/v8-exec changed)'
-    (cd sandbox/v8-exec && cargo clean -q --release -p v8-exec) && npm run -s build:v8-exec >/dev/null && sync \
-      && echo "$v8 $(sha256sum < "$bin" | cut -d' ' -f1)" > "$built"; } || return 1
+    rm -f "$built"; (cd sandbox/v8-exec && cargo clean -q --release -p v8-exec) && npm run -s build:v8-exec >/dev/null && sync \
+      && [ -x "$bin" ] && echo "$v8 $(sha256sum < "$bin" | cut -d' ' -f1)" > "$built"; } || { echo "== building v8-exec failed"; return 1; }
 }
 cd ~/rt && prepare || { echo '== preparing the sprite failed'; finish 1; }
+[ -x "$bin" ] || { echo "== $bin is missing or not executable"; finish 1; }
 echo "== $*"
 # timeout runs the command in a process group of its own, so a stop reaches it through the trap above.
 timeout "${hours}h" "$@" & cmd=$!
@@ -414,7 +422,8 @@ worker() { # <slot index>: sync, start the job, follow it. Writes the exit statu
       else echo "== could not send the tree to $name"; remote "$name" 30 unlock "$lease" >/dev/null 2>&1 || true; return; fi
     fi
     for try in 1 2 3; do
-      out=$(remote "$name" 60 start "$id" "$fp" "$(job_for $(( k + 1 )) "$lease" "$id")" 2>&1) && break
+      out=$(remote "$name" 60 start "$id" "$fp" "$(job_for $(( k + 1 )) "$lease" "$id")" "$lease" 2>&1) && break
+      [[ $out != *"not this run's"* ]] || { out="failed: $out"; break; }
       out="failed: $out"; (( try == 3 )) || sleep $(( try * 10 ))
     done
     if [[ $out = failed:* ]]; then
