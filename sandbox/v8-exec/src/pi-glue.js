@@ -8,6 +8,11 @@
   let state = data.deterministic?.seed ?? 0;
   // V8 has a console of its own; the prelude defines its own (QuickJS has none).
   for (const name of ["SharedArrayBuffer", "Atomics", "WebAssembly", "WeakRef", "FinalizationRegistry", "Temporal", "console"]) delete globalThis[name];
+  // Gone with js_exec, which had them: a script that reaches for one learns, as a catchable error, what to use instead.
+  const FILES = "files are the agent's file tools, called as await tools.read({ path }) and await tools.write({ path, content })";
+  for (const [name, instead] of [["fs", FILES], ["require", `there are no modules: ${FILES}`]]) {
+    Object.defineProperty(globalThis, name, { configurable: false, get() { throw new ReferenceError(`${name} is not defined in codemode: ${instead}`); } });
+  }
   if (data.deterministic) {
     const NativeDate = Date;
     function VirtualDate(...args) {
