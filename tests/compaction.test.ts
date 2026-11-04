@@ -9,6 +9,7 @@ import { normalizeContext, type Api, type Model } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { AgentSupervisor, type Hosting } from "../src/supervisor.ts";
 import { contextTokens, explicitKeyStream } from "../src/compaction.ts";
+import { runtimeRules } from "../src/system-prompt.ts";
 import { historyOf, hostTranscriptSession, type TranscriptRecord } from "./fixtures/host-transcript.ts";
 import { journalMessages } from "./fixtures/journal-history.ts";
 import { ClientSessions } from "../src/client-sessions.ts";
@@ -521,8 +522,10 @@ test("under runLimits.contextTokens, a context whose fixed part nearly fills the
   const fake = await provider(t);
   const supervisor = await fixture(t);
   const background: any[] = [];
-  // About 9,000 tokens of system prompt: with the summary and recent messages, near the 20,000 limit's background threshold.
-  await supervisor.start("tight", { model: fake.model(1_000_000), apiKey: "fixture", systemPrompt: `Rules ${"r".repeat(36_000)}`, runLimits: { contextTokens: 20_000 } }, { ...bridge, background: (event: any) => background.push(event) } as never);
+  // About 9,000 tokens of system prompt, the runtime's rules included: with the summary and recent messages, near the
+  // 20,000 limit's background threshold. The application's part is what is left of that after the rules.
+  const application = 36_000 - (runtimeRules({ tools: [] }).length - 2_829);
+  await supervisor.start("tight", { model: fake.model(1_000_000), apiKey: "fixture", systemPrompt: `Rules ${"r".repeat(application)}`, runLimits: { contextTokens: 20_000 } }, { ...bridge, background: (event: any) => background.push(event) } as never);
   const turns = 16;
   for (let index = 0; index < turns; index++) {
     // At the limit a turn waits for its summary (its own stream); below it, the summary is made in the background.
