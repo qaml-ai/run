@@ -144,7 +144,7 @@ test("an agent whose rules section is from an older runtime gets today's, in pla
   const { host, requests } = await setup(t, {}, storage => seedJournal({ storage, sessionId: "agent", model: convertToLlm([old]), messages: history }));
   await host.handle("prompt", { text: "hello" });
   assert.equal(systemText(requests[0]), expected);
-  assert.doesNotMatch(systemText(requests[0]), /js_exec/);
+  assert.doesNotMatch(systemText(requests[0]), /Call js_exec/);
 });
 
 test("an agent holding older rules as its content gets today's after them, saying they hold", async t => {
