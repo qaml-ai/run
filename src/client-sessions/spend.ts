@@ -530,8 +530,8 @@ export function endpoint(ctx: SpendContext, session: Session) {
 }
 
 /**
- * Charge the agent's end user for a call it made that held nothing beforehand (a web search, a page rendered, a tool
- * search's ranking), as the call is recorded. Never throws. A charge the database refuses (a failover) is retried
+ * Charge the agent's end user for a call it made that held nothing beforehand (a web search or a page
+ * rendered), as the call is recorded. Never throws. A charge the database refuses (a failover) is retried
  * under the same key, which posts it once, for up to END_USER_CHARGE_RETRY_MS; one that still fails is logged.
  */
 export function endUserCharge(ctx: SpendContext, agent: string, usage: UsageRecord) {
@@ -539,7 +539,7 @@ export function endUserCharge(ctx: SpendContext, agent: string, usage: UsageReco
   const user = session && payer(ctx, session, runningRun(session));
   const usd = Number(usage.usage?.cost?.total ?? 0);
   if (!session || !user || !endUsers || !(usd > 0)) return;
-  const call = usage.searches ? "web_search" : usage.renders ? "web_fetch" : usage.toolSearch ? "tool_search" : "tool";
+  const call = usage.searches ? "web_search" : usage.renders ? "web_fetch" : "tool";
   const tenant = session.header.tenant, raw = Math.round(usd * MICROS), key = `charge:${randomUUID()}`;
   const metadata = { call, agent, ...(usage.provider ? { provider: usage.provider } : {}) };
   void (async () => {
