@@ -1206,6 +1206,8 @@ export function createAgentHost(hostIO: HostIO) {
           return { messages: journal.total, error: null };
         }
         if (active.signal.aborted) return await abortedBeforeLoop();
+        // Its round's calls are answered now: the end the round decided when they asked does not hold.
+        await agent.reopenRound();
         await suspendable(agent.continue());
         if (agent.suspended) return await suspended();
       } else if (method === "resume") {

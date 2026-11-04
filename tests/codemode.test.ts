@@ -442,6 +442,7 @@ test("a direct call and a call from code asking in one round both take their ans
   const second = await fake.start(answers);
   const resumed = await second.host.handle("resume", { calls: [{ toolCallId: "d1", retry: true }, { toolCallId: "code/c1", retry: true }] });
   assert.equal(resumed.stopped, undefined, JSON.stringify(resumed));
+  assert.equal(resumed.reply, "done", "the model is asked again, with both answers");
   assert.deepEqual(fake.calls.map(call => call.name).sort(), ["approve", "approve", "direct", "direct"]);
   const results = (await fake.history()).filter(message => message.role === "toolResult").map(textOf);
   assert.ok(results.some(text => /direct ran/.test(text)) && results.some(text => /approve ran/.test(text)), JSON.stringify(results));
