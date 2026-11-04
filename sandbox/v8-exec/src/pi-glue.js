@@ -9,7 +9,9 @@
   // V8 has a console of its own; the prelude defines its own (QuickJS has none).
   for (const name of ["SharedArrayBuffer", "Atomics", "WebAssembly", "WeakRef", "FinalizationRegistry", "Temporal", "console"]) delete globalThis[name];
   // Gone with js_exec, which had them: a script that reaches for one learns, as a catchable error, what to use instead.
-  const FILES = "files are the agent's file tools, called as await tools.read({ path }) and await tools.write({ path, content })";
+  const FILES = "files are the agent's file tools, called as await tools.read({ path }), await tools.write({ path, content }) and await tools.ls({ path })";
+  // js_exec's tool finders, which are Pi's globals now: a script calling one is told which.
+  const FINDERS = { search: "searchTools(query)", describe: "describeTool(name)", namespaces: "describeNamespace(name)" };
   for (const [name, instead] of [["fs", FILES], ["require", `there are no modules: ${FILES}`]]) {
     Object.defineProperty(globalThis, name, { configurable: false, get() { throw new ReferenceError(`${name} is not defined in codemode: ${instead}`); } });
   }
@@ -88,7 +90,12 @@
       now = Math.max(now, message.now ?? now);
       api.settle(message.id, message.ok, message.payload, message.properties);
     },
-    fn => api.run(fn),
+    fn => api.run((tools, ...rest) => fn(new Proxy(tools, { get(target, key, receiver) {
+      if (typeof key === "string" && Object.hasOwn(FINDERS, key) && !Reflect.has(target, key)) {
+        throw new TypeError(`tools.${key} is not in codemode: call ${FINDERS[key]}, a global, as in await ${FINDERS[key].replace(/\(.*\)/, '("…")')}`);
+      }
+      return Reflect.get(target, key, receiver);
+    } }), ...rest)),
     () => { api.stalled(); return finished; },
     () => { for (const name of ["SharedArrayBuffer", "Atomics", "WebAssembly"]) delete globalThis[name]; },
   ];

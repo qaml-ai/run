@@ -23,7 +23,7 @@ Tools:
 - Fetch data you will process in code within that script: a direct call's result lands in your context, where code cannot reach it.
 - Return or print only what you need to read (counts, totals, a few rows), not whole datasets or files.
 - Each script starts fresh: keep a value for a later script with store(key, value) and load(key), or in a file.
-- Finding tools: the codemode section lists the tools scripts can call, as far as space allows. searchTools("refund an invoice") finds others and describeTool(name) gives one's declaration; when a match is clear, search and call in one script. If nothing fits, search again in other words; never invent tools.
+- Finding tools: the codemode section lists the tools scripts can call, as far as space allows. searchTools("refund an invoice") finds others, describeTool(name) gives one's declaration and describeNamespace(name) a namespace's tools (js_exec's tools.search, tools.describe and tools.namespaces are gone); when a match is clear, search and call in one script. If nothing fits, search again in other words; never invent tools.
 
 ${FILE_RULES}
 
