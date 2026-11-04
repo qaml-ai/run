@@ -50,3 +50,7 @@ Validation: `npm run typecheck`, `npm test` (6 assertions),
 `npm run test:integration` (9 scenarios plus parent), `npm run build`.
 The integration runner resolves the unchanged parent SDK's TypeBox dependency
 from this package so installing parent runtime dependencies is unnecessary.
+
+Follow-up: Sandbox SDK 1.0.3 uses native Container exec/lifecycle plus `Files`
+and `DirectoryBackup`; it no longer exports the old `Sandbox` manager. Zod was
+updated to 4.6.7 to fix GHSA-mrhx-c7xc-m3w5 (oversized collection validation).
