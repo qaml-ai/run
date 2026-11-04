@@ -335,18 +335,18 @@ test("Pi start: a script waiting on delegate leaves the pool's processes to othe
   assert.deepEqual({ running: pool.running, parked: pool.parked }, { running: 0, parked: 0 });
 });
 
-test("Pi start: past its share of parked processes, a tenant's waiting script keeps its slot and process, and others still run", { skip, timeout: 60_000 }, async t => {
+test("Pi start: past its share of parked processes, a tenant's waiting script keeps its process but not its slot, and others still run", { skip, timeout: 60_000 }, async t => {
   const pool = new V8Exec({ max: 2, parkedPerTenant: 1 });
   const gate = slots(1);
-  const sandbox = (tenant: string) => new PiV8Sandbox({ pool, timeoutMs: 500, acquireSlot: gate.acquire(tenant), awaits: ["delegate"], tenant });
+  const sandbox = (tenant: string) => new PiV8Sandbox({ pool, timeoutMs: 5_000, acquireSlot: gate.acquire(tenant), awaits: ["delegate"], tenant });
   const [a1, a2, b] = [sandbox("a"), sandbox("a"), sandbox("b")];
   t.after(async () => { await a1.close(); await a2.close(); await b.close(); pool.close(); });
   const first = answering(a1, "return await tools.delegate({})", () => 2_000);
   await new Promise(resolve => setTimeout(resolve, 300));
   const second = answering(a2, "return await tools.delegate({})", () => 2_000);
   await new Promise(resolve => setTimeout(resolve, 300));
-  // a's first is parked; its second, past a's share, keeps a's one slot and a process; b runs beside them.
-  assert.deepEqual({ parked: pool.parked, running: pool.running, a: gate.held.get("a") }, { parked: 1, running: 1, a: 1 });
+  // a's first is parked; its second, past a's share, keeps a process but gives back a's one slot; b runs beside them.
+  assert.deepEqual({ parked: pool.parked, running: pool.running, a: gate.held.get("a") }, { parked: 1, running: 1, a: 0 });
   assert.equal((await answering(b, "return 1", () => 0)).ok, true);
   assert.deepEqual([(await first).ok, (await second).ok], [true, true]);
 });
