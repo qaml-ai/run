@@ -181,11 +181,3 @@ export function errorText(error: unknown): string {
 
 /** How a sub-agent's notification ends when an abort reaches it before its turn: its message lands, and no turn runs. */
 export const STOPPED_NOTICE = { stopped: "aborted", message: "The agent was stopped: this notification is in its history, but no turn ran" };
-
-/**
- * Why an agent's calls in flight were cancelled when its host went (its process exited, or the node stopped it): not
- * the agent giving them up. A script's delegate children are left running for the agent's replay to find.
- */
-export class AgentGone extends Error {
-  constructor() { super("The agent's host stopped"); this.name = "AgentGone"; }
-}

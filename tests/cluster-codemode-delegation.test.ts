@@ -60,3 +60,42 @@ return [first.text, second.text];` }, "code"]);
     assert.equal(child.requests.filter((request: any) => request.method === "prompt").length, 1);
   }
 });
+
+/** The pid of agent `id`'s own process on this machine (process hosting: its working directory is the agent's). */
+async function agentProcess(id: string): Promise<number | undefined> {
+  const { readdir, readlink, readFile } = await import("node:fs/promises");
+  for (const entry of await readdir("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      if ((await readlink(`/proc/${entry}/cwd`)).endsWith(`/${id}`) && (await readFile(`/proc/${entry}/cmdline`, "utf8")).includes("agent-child")) return Number(entry);
+    } catch { /* gone, or not ours */ }
+  }
+  return undefined;
+}
+
+test("a script waiting on a child when its agent's process dies: the turn ends there, and the child is stopped, not left running unread", { timeout: 120_000, skip: process.platform !== "linux" && "needs /proc" }, async t => {
+  const c = await cluster(t);
+  const blocked = Promise.withResolvers<void>();
+  let child = 0;
+  const model = await fakeModel(t, async body => {
+    if (roleText(body).includes("CHILD")) { child++; blocked.resolve(); return undefined; }
+    return body.messages.at(-1).role === "tool" ? { role: "assistant", content: toolText(body) }
+      : toolCalls(["codemode", { code: `return (await tools.delegate({ instructions: "You are CHILD.", task: "work" })).text;` }, "code"]);
+  });
+  const a = await c.start("a", { ...model.env, AGENT_HOSTING: "process" });
+  const onA = api(a.url);
+  const parent = (await onA("/v1/agents", { builtins: ["delegate"], delegate: { instructions: true } })).json.id;
+  assert.equal((await onA(`/v1/agents/${parent}/prompt`, { text: "go", requestId: "turn" })).status, 202);
+  await blocked.promise;
+  let pid: number | undefined;
+  await until(async () => (pid = await agentProcess(parent)) !== undefined, "the parent's process");
+  process.kill(pid!, "SIGKILL");
+  // A process that dies ends its turn: no replay goes on with the script, so its child is stopped as at a script's end.
+  assert.match((await settled(onA, parent, "turn", 90_000)).error, /Process exited/);
+  const kept = (await c.db.query("select child from agent_children where parent = $1", [parent])).rows[0].child;
+  await until(async () => {
+    const turn = ((await onA(`/v1/agents/${kept}`)).json.requests ?? []).find((request: any) => request.id.startsWith("delegate_"));
+    return turn?.state === "completed" && turn.outcome?.result?.code === "aborted";
+  }, "the child's turn aborted");
+  assert.equal(child, 1, "the child was asked once");
+});

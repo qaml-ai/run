@@ -8,7 +8,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { childProcess, type Rpc } from "./rpc.ts";
-import { AgentGone, callableFromCode, legacyFormatRefused, type AgentConfig, type CallContext, type ToolBridge } from "./protocol.ts";
+import { callableFromCode, legacyFormatRefused, type AgentConfig, type CallContext, type ToolBridge } from "./protocol.ts";
 import type { RequestMethod } from "../shared/client-protocol.ts";
 import type { ChildProcess } from "node:child_process";
 import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
@@ -226,8 +226,7 @@ export class AgentSupervisor {
     if (event?.background === true) { handle.bridge.background?.(copy ? structuredClone(event) : event); return; }
     for (const listener of handle.listeners) listener(copy ? structuredClone(event) : event);
   }
-  /** Cancel the agent's calls in flight; `reason` AgentGone when its host is going (the calls are left for its replay to find). */
-  private cancelTools(handle: Handle, reason?: AgentGone) { for (const call of handle.calls) call.abort(reason); return null; }
+  private cancelTools(handle: Handle) { for (const call of handle.calls) call.abort(); return null; }
 
   /** Start an agent. `claim` is its owner's, which fences its journal's writes. */
   async start(id: string, config: Omit<AgentConfig, "id" | "directory" | "tools">, bridge: ToolBridge, claim?: Claim) {
@@ -274,7 +273,7 @@ export class AgentSupervisor {
     this.starting.delete(id);
     const cleanup = () => {
       clearInterval(handle.watchdog);
-      this.cancelTools(handle, new AgentGone());
+      this.cancelTools(handle);
       // A process that ends holding code turns gives them back.
       for (const slot of handle.slots.keys()) this.releaseSlot(handle, slot);
       if (this.agents.get(id) === handle) this.agents.delete(id);
@@ -495,7 +494,7 @@ export class AgentSupervisor {
 
   private async halt(handle: Handle) {
     if (handle.kind === "process") {
-      this.cancelTools(handle, new AgentGone());
+      this.cancelTools(handle);
       handle.rpc.close("Agent stopped");
       const closed = once(handle.child, "close");
       handle.child.kill("SIGKILL");
@@ -505,7 +504,7 @@ export class AgentSupervisor {
       // closed (`dispose`), so a call in flight is the next owner's Pi's to settle, not a cancellation's error.
       handle.stop(new Error("Agent stopped"));
       await handle.host.dispose();
-      this.cancelTools(handle, new AgentGone());
+      this.cancelTools(handle);
     }
     await handle.legacy.close();
     await handle.durable?.close(BACKGROUND_CONTEXT);
