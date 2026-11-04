@@ -1020,13 +1020,16 @@ export class DurableAgent {
         new Promise<boolean>(resolve => { notify = () => { if (script.calls.has(id) && (start.fingerprint === undefined || script.fingerprint !== undefined)) resolve(true); }; script.changed.add(notify); notify(); }),
         this.harness.waitForTask(input.parent as never, context).then(() => false, () => false),
         ...start.deadline !== undefined ? [new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(0, start.deadline! - Date.now())); })] : [],
-        ...signal ? [new Promise<boolean>(resolve => { if (signal.aborted) resolve(false); signal.addEventListener("abort", () => resolve(false), { once: true }); })] : [],
+        // Given up (the agent closing, the run aborted): the call ends as Pi ends an aborted call, not as one not made.
+        ...signal ? [new Promise<never>((_, reject) => { if (signal.aborted) reject(signal.reason); signal.addEventListener("abort", () => reject(signal.reason), { once: true }); })] : [],
       ]);
       const call = script.calls.get(id);
       return made && script.fingerprint === start.fingerprint && call?.name === input.call.name && JSON.stringify(call.args ?? {}) === JSON.stringify(input.call.arguments ?? {});
     } finally {
       clearTimeout(timer);
       if (notify) script.changed.delete(notify);
+      // One its script never started here leaves no entry behind (a started one goes when its run ends: `scriptRun`).
+      if (!script.changed.size && script.fingerprint === undefined && !script.calls.size) this.scripts.delete(`${start.startedAt}:${start.seed}`);
     }
   }
 
@@ -1044,6 +1047,15 @@ export class DurableAgent {
     this.options.durable.extensions = extensions;
     for (const extension of extensions) this.registry.install(extension);
     this.installTools();
+  }
+
+  /**
+   * The round a suspension ended goes on (its calls answered): the end that round decided for it (`afterTool`: a call
+   * waiting for input), and the turn limit it set, no longer hold.
+   */
+  async reopenRound() {
+    await this.conversation.configure({ maxTurns: null }, context);
+    await this.clearRoundEnd();
   }
 
   private async clearRoundEnd() {
