@@ -1,74 +1,13 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
-import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Agents } from "../../../clients/agents.ts";
 
-const directory = fileURLToPath(new URL("../", import.meta.url));
+import { LocalWorker, unusedPort } from "./local-worker.ts";
 const token = "local-integration-only-token-with-at-least-32-characters";
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-async function unusedPort(): Promise<number> {
-  const server = createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const port = (server.address() as { port: number }).port;
-  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  return port;
-}
-
-class LocalWorker {
-  readonly url: string;
-  private child?: ChildProcess;
-  private output = "";
-  private port: number;
-  private storage: string;
-  constructor(port: number, storage: string) {
-    this.port = port;
-    this.storage = storage;
-    this.url = `http://127.0.0.1:${port}`;
-  }
-  async start() {
-    const env = { ...process.env, CI: "1", WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_PATH: join(this.storage, "logs") };
-    // Model tests must not accidentally fall back to a configured cloud account.
-    for (const key of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID"]) delete env[key];
-    this.child = spawn(process.execPath, [
-      "node_modules/wrangler/bin/wrangler.js", "dev", "--local", "--config", "wrangler.test.jsonc",
-      "--ip", "127.0.0.1", "--port", String(this.port), "--persist-to", this.storage,
-    ], { cwd: directory, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
-    this.output = "";
-    const save = (data: Buffer) => { this.output = (this.output + data.toString()).slice(-16_000); };
-    this.child.stdout!.on("data", save);
-    this.child.stderr!.on("data", save);
-    for (let attempt = 0; attempt < 120; attempt++) {
-      if (this.child.exitCode !== null || this.child.signalCode !== null) throw new Error(`workerd exited: ${this.output}`);
-      try {
-        const response = await fetch(`${this.url}/healthz`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1000) });
-        if (response.ok) return;
-      } catch {}
-      await delay(250);
-    }
-    throw new Error(`workerd never became ready: ${this.output}`);
-  }
-  async stop(hard = false) {
-    const child = this.child;
-    this.child = undefined;
-    if (!child || child.exitCode !== null) return;
-    const done = once(child, "exit");
-    try { process.kill(-child.pid!, hard ? "SIGKILL" : "SIGTERM"); } catch {}
-    await Promise.race([done, delay(3000)]);
-    if (child.exitCode === null) {
-      try { process.kill(-child.pid!, "SIGKILL"); } catch {}
-      await Promise.race([done, delay(1000)]);
-    }
-  }
-  logs() { return this.output; }
-}
 
 test("existing TypeScript SDK on local Workers/Durable Objects", { timeout: 180_000 }, async t => {
   const storage = await mkdtemp(join(tmpdir(), "camelrun-cloudflare-test-"));
@@ -166,6 +105,94 @@ test("existing TypeScript SDK on local Workers/Durable Objects", { timeout: 180_
     assert.equal(isolated.status, 404);
   });
 
+  await t.test("stock codemode calls agent tools and contains hostile scripts", async () => {
+    const cases = [
+      ["loop", "while (true) {}", /timeout|interrupt|budget/i],
+      ["memory", 'const a = []; while (true) a.push("x".repeat(1024 * 1024));', /memory|alloc|sandbox/i],
+      ["pending", "await new Promise(() => {});", /pending|settle|promise|progress/i],
+      ["throw", 'throw new Error("intentional script error");', /intentional script error/],
+      ["tool", 'await tools.read({ path: "/workspace/missing-file" });', /ENOENT|not found|no such/i],
+    ] as const;
+    const success = await alpha.run('code:await tools.write({path:"/workspace/codemode.txt", content:"nested tool"}); text(await tools.read({path:"/workspace/codemode.txt"}));', { timeoutMs: 30_000 });
+    assert.match(success.text!, /nested tool/);
+    assert.equal(new TextDecoder().decode((await alpha.files.download("/workspace/codemode.txt")).data), "nested tool");
+    const initialInstance = (await (await raw(`/clients/${alpha.id}/state`, alpha.session.token)).json() as any).localInstanceId;
+    assert.ok(initialInstance);
+    for (const [name, code, expected] of cases) {
+      const start = performance.now();
+      const sent = await alpha.send(`code:${code}`);
+      await delay(30);
+      const ping = performance.now();
+      const state = await raw(`/clients/${alpha.id}/state`, alpha.session.token);
+      const pingMs = performance.now() - ping;
+      assert.equal(state.status, 200);
+      const result = await alpha.wait(sent.id, { timeoutMs: 30_000 });
+      const toolResults = JSON.parse(result.text!);
+      assert.equal(toolResults.at(-1).isError, true, `${name}: ${result.text}`);
+      assert.match(JSON.stringify(toolResults), expected);
+      const recovered = await alpha.run(`after ${name}`, { timeoutMs: 15_000 });
+      assert.equal(recovered.text, `Echo: after ${name}`);
+      assert.equal((await state.json() as any).localInstanceId, initialInstance, `${name} reconstructed the calling DO`);
+      const after = await (await raw(`/clients/${alpha.id}/state`, alpha.session.token)).json() as any;
+      assert.equal(after.localInstanceId, initialInstance, `${name} reset the calling DO`);
+      t.diagnostic(`${name}: total_ms=${Math.round(performance.now() - start)} agent_state_ms=${Math.round(pingMs)} clean_error=true`);
+    }
+  });
+
+  await t.test("codemode respects disabled files and tools can be re-enabled", async () => {
+    const restricted = await agents.upsert("restricted", { model: "test/echo", fileTools: false });
+    const code = 'code:await tools.write({path:"/workspace/restored.txt",content:"enabled"});';
+    try {
+      await restricted.files.upload("/workspace/keep.txt", "must remain");
+      const denied = await restricted.run(code, { timeoutMs: 15_000 });
+      assert.equal(JSON.parse(denied.text!).at(-1).isError, true);
+      const deletion = await restricted.run('code:await tools.delete({path:"/workspace/keep.txt"});', { timeoutMs: 15_000 });
+      assert.equal(JSON.parse(deletion.text!).at(-1).isError, true);
+      assert.equal(new TextDecoder().decode((await restricted.files.download("/workspace/keep.txt")).data), "must remain");
+      const enabled = await agents.upsert("restricted", { model: "test/echo", fileTools: true });
+      try {
+        const allowed = await enabled.run(code, { timeoutMs: 15_000 });
+        assert.notEqual(JSON.parse(allowed.text!).at(-1).isError, true);
+        assert.equal(new TextDecoder().decode((await enabled.files.download("/workspace/restored.txt")).data), "enabled");
+      } finally { await enabled.close(); }
+    } finally { await restricted.close(); }
+  });
+
+  await t.test("codemode journal and human input survive a hard process restart", async () => {
+    const code = `const marker = JSON.stringify({time: Date.now(), random: Math.random()});
+      await tools.write({path:"/workspace/journal-marker.txt", content:marker});
+      const seen = await tools.read({path:"/workspace/journal-marker.txt"});
+      const answer = await tools.ask_human({question:marker});
+      await tools.write({path:"/workspace/journal-result.txt", content:JSON.stringify({marker, seen, answer})});
+      text(answer);`;
+    const sent = await alpha.send(`code:${code}`);
+    let inputs: {id: string; question: string}[] = [];
+    for (let i = 0; i < 100; i++) {
+      inputs = await (await raw(`/experimental/agents/${alpha.id}/inputs`, alpha.session.token)).json() as typeof inputs;
+      if (inputs.length) break;
+      await delay(50);
+    }
+    assert.equal(inputs.length, 1);
+    const marker = inputs[0].question;
+    await alpha.files.upload("/workspace/journal-marker.txt", "host changed after completed write");
+    await server.stop(true);
+    await server.start();
+    const after = await (await raw(`/experimental/agents/${alpha.id}/inputs`, alpha.session.token)).json() as typeof inputs;
+    assert.deepEqual(after, inputs);
+    const reply = await raw(`/experimental/agents/${alpha.id}/inputs/${inputs[0].id}`, alpha.session.token, {
+      method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify({answer:"approved locally"}),
+    });
+    assert.equal(reply.status, 200, await reply.text());
+    const result = await alpha.wait(sent.id, { timeoutMs: 60_000 });
+    assert.match(result.text!, /approved locally/);
+    assert.equal(new TextDecoder().decode((await alpha.files.download("/workspace/journal-marker.txt")).data), "host changed after completed write", "completed nested write replayed");
+    const output = JSON.parse(new TextDecoder().decode((await alpha.files.download("/workspace/journal-result.txt")).data));
+    assert.equal(output.marker, marker, "clock/random diverged across replay");
+    assert.match(JSON.stringify(output.seen), new RegExp(JSON.parse(marker).random.toString().replaceAll('.', '\\.')));
+    assert.equal(output.answer, "approved locally");
+    assert.deepEqual(await (await raw(`/experimental/agents/${alpha.id}/inputs`, alpha.session.token)).json(), []);
+  });
+
   await t.test("abort ends an in-flight deterministic generation", async () => {
     const sent = await alpha.send("slow:5000:cancel me", { idempotencyKey: "abort-turn" });
     await delay(250);
@@ -192,6 +219,21 @@ test("existing TypeScript SDK on local Workers/Durable Objects", { timeout: 180_
     const history = await restored.history();
     assert.ok(history.some(message => JSON.stringify(message).includes("hello world")));
     await restored.close();
+  });
+
+  await t.test("measure live agent heap with remote codemode loaded", async () => {
+    const before = await server.heap();
+    const counts = [1, 8, 16];
+    let created = 0;
+    for (const count of counts) {
+      while (created < count) {
+        const agent = await agents.upsert(`heap-${++created}`, {model:"test/echo"});
+        assert.match((await agent.run("code:text(1)", {timeoutMs:15000})).text!, /1/);
+        await agent.close();
+      }
+      const heap = await server.heap();
+      t.diagnostic(`agent_heap: agents_added=${count} baseline=${JSON.stringify(before)} current=${JSON.stringify(heap)} used_delta_per_agent=${Math.round((heap.usedSize - before.usedSize) / count)}`);
+    }
   });
 
   await t.test("deletion revokes a scoped token and removes directory visibility", async () => {

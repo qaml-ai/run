@@ -4,26 +4,33 @@ import { WorkerJavaScriptBackend } from "@cloudflare/computer/backends/worker-ja
 import { createPiTools } from "@cloudflare/computer/tools/pi-ai";
 import { type Message, type AssistantMessage } from "@earendil-works/pi-ai";
 import { Harness, createRegistry, type ToolRegistration, type ConversationView, type LiveState } from "@earendil-works/pi-durable";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
+import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { PiHarness } from "agents/harness/pi";
 import { Lifecycle } from "agents/lifecycle";
 import { BadRequest, boundedText, object, body, workspacePath } from "./validation.ts";
+import { askHuman, HumanInputs } from "./human.ts";
 import { modelRuntime } from "./model.ts";
 
 type Config = { id: string; revision: number; expiresAt: number | null; config: { model?: string; systemPrompt?: string; name?: string; fileTools?: boolean; codeMode?: boolean; thinkingLevel?: string } };
 type RequestRecord = { id: string; method: string; params?: Record<string, unknown>; metadata?: unknown; fingerprint: string; state: "running" | "completed"; startedAt: number; endedAt?: number; began?: number; accepted?: boolean; outcome?: { result?: unknown; error?: string }; status?: string; error?: string };
-export interface Env { AGENTS: DurableObjectNamespace<CamelAgent>; AI: Ai; LOADER: WorkerLoader; MODEL: string; API_TOKEN: string; TEST_MODEL?: string }
+export interface Env { CODEMODE_SANDBOX: DurableObjectNamespace<CodemodeSandboxDurableObject>; AGENTS: DurableObjectNamespace<CamelAgent>; AI: Ai; LOADER: WorkerLoader; MODEL: string; API_TOKEN: string; TEST_MODEL?: string }
 export const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
 const canonical = (value: unknown): string => JSON.stringify(value && typeof value === "object" ? Array.isArray(value) ? value.map(item => JSON.parse(canonical(item))) : Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, JSON.parse(canonical(item))])) : value);
 const reqKey = (id: string) => `request:${id}`;
 
 export class CamelAgent extends DurableObject<Env> {
+  private instanceId = crypto.randomUUID();
   private workspace = new Workspace({ storage: this.ctx.storage, backends: [new WorkerJavaScriptBackend({
     loader: this.env.LOADER, root: "/workspace", globalOutbound: null, onInterrupt: "fail",
     defaultTimeoutMs: 15_000, maxTimeoutMs: 30_000, maxCpuMs: 5_000, maxStdioBytes: 64 * 1024,
     maxResultBytes: 64 * 1024, retentionMs: 60_000, maxRetainedExecutions: 10,
   })] });
   private models = modelRuntime(this.env);
+  private availableTools: ToolRegistration[] = [];
+  private workspaceToolNames: string[] = [];
   private harness = new PiHarness({ defaults: { model: this.models.model },
     harness: async ({ storage, context, onWake }) => {
       await this.workspace.fs.mkdir("/workspace", { recursive: true });
@@ -40,8 +47,18 @@ export class CamelAgent extends DurableObject<Env> {
           return { output: result.content, isError: result.isError };
         },
       }));
+      this.workspaceToolNames = tools.filter(tool => tool.name !== "exec").map(tool => tool.name);
       registry.install({ name: "camel.computer", tools, sections: [{ key: "computer", tag: false,
         render: () => "Your private persistent files are in /workspace. JavaScript execution has no network access." }] });
+      registry.install({ name: "camel.human", tools: [askHuman] });
+      registry.install(createCodemodeExtension({
+        sandbox: new RemoteCodemodeSandbox({
+          remote: () => this.env.CODEMODE_SANDBOX.getByName(this.ctx.id.toString()),
+        }),
+        // Keep provider calls outside the script's capability set.
+        models: false,
+      }));
+      this.availableTools = registry.snapshot().tools().map(({ tool }) => tool);
       return Harness.open(storage, { models: this.models.models, registry, onWake,
         settings: { afterFailedRun: "withdraw", retry: { enabled: true, maxRetries: 2, baseDelayMs: 500 } },
       }, context);
@@ -212,7 +229,8 @@ export class CamelAgent extends DurableObject<Env> {
   private async state() {
     const records = await this.records();
     await Promise.all(records.filter(record => record.state === "running").slice(0, 100).map(record => this.settle(record.id, 1)));
-    return { cursor: await this.ctx.storage.get<number>("cursor") ?? 1, requests: await this.records() };
+    return { cursor: await this.ctx.storage.get<number>("cursor") ?? 1, requests: await this.records(),
+      ...(this.env.TEST_MODEL === "1" ? { localInstanceId: this.instanceId } : {}) };
   }
   private async history(url: URL) {
     const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
@@ -239,10 +257,14 @@ export class CamelAgent extends DurableObject<Env> {
         const model = this.models.resolve(incoming.config.model);
         if (old && canonical(old.config) !== canonical(incoming.config) && await this.harness.session().busy()) return json({ error: "Agent is busy" }, 409);
         const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
-        const allTools = (await root.agent(BACKGROUND_CONTEXT)).tools;
+        const disabled = [
+          ...(incoming.config.codeMode === false ? ["exec", "codemode"] : []),
+          ...(incoming.config.fileTools === false ? this.workspaceToolNames : []),
+        ];
+        const enabled = this.availableTools.filter(tool => !disabled.includes(tool.name));
         await root.configure({ model: { provider: model.provider, modelId: model.id }, instructions: incoming.config.systemPrompt ?? "",
           thinkingLevel: incoming.config.thinkingLevel as never,
-          modelTools: allTools.filter(tool => tool.name === "exec" ? incoming.config.codeMode !== false : incoming.config.fileTools !== false),
+          tools: enabled, modelTools: enabled,
         }, BACKGROUND_CONTEXT);
         await this.ctx.storage.put("configuration", incoming);
         await this.observe();
@@ -267,7 +289,26 @@ export class CamelAgent extends DurableObject<Env> {
         return json(await this.settle(decodeURIComponent(path.slice(10)), wait));
       }
       if (path === "/history" && request.method === "GET") return json(await this.history(url));
-      if (path === "/inputs" && request.method === "GET") return json([]);
+      if (path === "/inputs" && request.method === "GET") {
+        const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
+        const doc = await pi.snapshot(HumanInputs, root.id, BACKGROUND_CONTEXT);
+        return json(Object.entries(doc?.requests ?? {}).filter(([, item]) => item.answer === undefined)
+          .map(([id, item]) => ({ id, question: item.question })));
+      }
+      if (path.startsWith("/inputs/") && request.method === "POST") {
+        const id = decodeURIComponent(path.slice(8));
+        const input = object(await body(request), ["answer"]);
+        const answer = boundedText(input.answer, "answer", 4096);
+        const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
+        await root.commit(async tx => {
+          const doc = await tx.doc(HumanInputs, root.id);
+          const pending = doc.requests[id];
+          if (!pending) throw Object.assign(new Error("Unknown input"), { status: 404 });
+          if (pending.answer !== undefined && pending.answer !== answer) throw Object.assign(new Error("Already answered"), { status: 409 });
+          pending.answer = answer;
+        }, BACKGROUND_CONTEXT);
+        return json({ answered: true });
+      }
       if (path === "/abort" && request.method === "POST") { await this.harness.session().abort(); await this.state(); return json({ aborted: true }); }
       if (path === "/events" && request.method === "GET") return this.events();
       if (path === "/exec" && request.method === "POST") {

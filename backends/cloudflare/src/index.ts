@@ -84,17 +84,17 @@ export default {
         return json({ deleted: true });
       }
       if (match[1] === "v1/agents" && path === "/" && request.method === "GET") return json(summary(entry));
-      if (path === "/inputs" && request.method === "GET") return json([]);
+
       if (path === "/mounts" && request.method === "GET") return json([{ path: "/workspace", mode: "rw", workspace: true }]);
       if (path === "/configuration") {
         if (request.method === "GET") return json(entry.config);
         throw new ApiError(501, "Change configuration through keyed agent upsert", "UNSUPPORTED_FEATURE");
       }
       if (match[1] === "experimental/agents") {
-        if (!["/exec", "/state", "/events"].includes(path) && !path.startsWith("/files/")) throw new ApiError(404, "Unknown experimental route", "NOT_FOUND");
+        if (!["/exec", "/state", "/events", "/inputs"].includes(path) && !path.startsWith("/files/") && !path.startsWith("/inputs/")) throw new ApiError(404, "Unknown experimental route", "NOT_FOUND");
         return await forward(request, env, entry.id, path);
       }
-      if (!["/state", "/events", "/requests", "/history", "/configuration", "/abort"].includes(path) && !path.startsWith("/requests/") && !path.startsWith("/files/")) {
+      if (!["/state", "/events", "/requests", "/history", "/configuration", "/abort", "/inputs"].includes(path) && !path.startsWith("/requests/") && !path.startsWith("/files/")) {
         throw new ApiError(501, "This feature is not implemented by the Cloudflare backend", "UNSUPPORTED_FEATURE");
       }
       return await forward(request, env, entry.id, path);

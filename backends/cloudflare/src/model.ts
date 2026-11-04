@@ -1,4 +1,4 @@
-import { createAssistantMessageEventStream, type AssistantMessage, type Model, type TranscriptContext } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type Model, type TranscriptContext, type ToolCall } from "@earendil-works/pi-ai";
 import { createModels, type Provider } from "@earendil-works/pi-ai/models";
 import { createAI } from "agents/models/pi-ai";
 
@@ -41,15 +41,17 @@ export function modelRuntime(env: { AI: Ai; MODEL: string; TEST_MODEL?: string }
           options?.signal?.addEventListener("abort", onAbort, { once: true });
         });
         const tool = /^tool:write:(.*)$/s.exec(text);
+        const code = /^code:(.*)$/s.exec(text);
         const afterLatestUser = latest ? context.messages.slice(context.messages.lastIndexOf(latest) + 1) : [];
-        if (tool && !afterLatestUser.some(item => item.role === "toolResult")) {
-          const call = { type: "toolCall" as const, id: "write-model-file", name: "write", arguments: { path: "/workspace/model.txt", content: tool[1] } };
+        if ((tool || code) && !afterLatestUser.some(item => item.role === "toolResult")) {
+          const call: ToolCall = code ? { type: "toolCall" as const, id: "run-code", name: "codemode", arguments: { code: code[1] } } : { type: "toolCall" as const, id: "write-model-file", name: "write", arguments: { path: "/workspace/model.txt", content: tool![1] } };
           message.content = [call]; message.stopReason = "toolUse";
           output.push({ type: "toolcall_start", contentIndex: 0, partial: structuredClone(message) });
           output.push({ type: "toolcall_end", contentIndex: 0, toolCall: call, partial: structuredClone(message) });
           output.push({ type: "done", reason: "toolUse", message });
         } else {
-          const answer = `Echo: ${slow?.[2] ?? tool?.[1] ?? text}`;
+          const results = afterLatestUser.filter(item => item.role === "toolResult");
+          const answer = code ? JSON.stringify(results) : `Echo: ${slow?.[2] ?? tool?.[1] ?? text}`;
           message.content = [{ type: "text", text: "" }];
           output.push({ type: "text_start", contentIndex: 0, partial: structuredClone(message) });
           message.content = [{ type: "text", text: answer }];

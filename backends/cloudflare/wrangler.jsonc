@@ -2,14 +2,46 @@
   "name": "camelrun-cloudflare-prototype",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-28",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "workers_dev": false,
   "preview_urls": false,
-  "ai": { "binding": "AI" },
-  "worker_loaders": [{ "binding": "LOADER" }],
-  "durable_objects": {
-    "bindings": [{ "name": "AGENTS", "class_name": "CamelAgent" }, { "name": "DIRECTORY", "class_name": "AgentDirectory" }]
+  "ai": {
+    "binding": "AI"
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CamelAgent", "AgentDirectory"] }],
-  "vars": { "MODEL": "@cf/zai-org/glm-5.3-flash" }
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AGENTS",
+        "class_name": "CamelAgent"
+      },
+      {
+        "name": "DIRECTORY",
+        "class_name": "AgentDirectory"
+      },
+      {
+        "name": "CODEMODE_SANDBOX",
+        "class_name": "CodemodeSandbox",
+        "script_name": "camelrun-codemode-prototype"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "CamelAgent",
+        "AgentDirectory"
+      ]
+    }
+  ],
+  "vars": {
+    "MODEL": "@cf/zai-org/glm-5.3-flash"
+  }
 }
