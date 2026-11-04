@@ -229,6 +229,17 @@ test("Pi start: one message too large for a frame is cut or noted, and a return 
   if (!returned.ok) { assert.equal(returned.error.kind, "script"); assert.match(returned.error.message, /return value is too large to return/); }
 });
 
+test("Pi start: half an emoji in output, a return value or a call's arguments does not break the bridge", { skip }, async t => {
+  const sandbox = new PiV8Sandbox();
+  t.after(() => sandbox.close());
+  let seq = 0;
+  const run: CodemodeRun = sandbox.start('const half = "hi \\ud83d"; text(half); console.log(half); const echoed = await tools.echo(half); return [half, echoed];', { ...defaults,
+    onCall: call => { run.deliver(++seq, defaults.startedAt + 1, call.id, success(call.args)); } });
+  const result = await run.result;
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.output.map(item => (item as { text: string }).text), ["hi \ufffd", "hi \ufffd"]);
+});
+
 // No executable is needed to test the trusted host's validation and shutdown behavior.
 function fakePool() {
   let receive!: (message: unknown) => void, close!: (reason: string) => void;

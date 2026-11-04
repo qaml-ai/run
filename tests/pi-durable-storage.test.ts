@@ -370,7 +370,7 @@ test("Pi shared commits read their documents again when another commit landed wh
     // Each is seen waiting on the lock before the next starts, so the order is theirs, not the scheduler's.
     const waiting = async (count: number) => {
       for (;;) {
-        const { rows } = await db.query("select count(*) as n from pg_stat_activity where wait_event_type = 'Lock' and query like '%pi_durable_metadata%' and application_name = current_setting('application_name')");
+        const { rows } = await db.query("select count(*) as n from pg_stat_activity where wait_event_type = 'Lock' and query like '%pi_durable_metadata%' and (current_setting('application_name') = '' or application_name = current_setting('application_name'))");
         if (Number(rows[0].n) >= count) return;
         await new Promise(resolve => setTimeout(resolve, 10));
       }

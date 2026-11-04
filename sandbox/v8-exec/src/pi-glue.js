@@ -56,11 +56,12 @@
       issued++;
       send(stringify({ type: "call", id: a, target: kind === "call" ? "tool" : "global", name: b, args: c }));
     } else if (kind === "output") {
+      // Text is made well formed (a lone surrogate, half an emoji, as U+FFFD): the bridge's JSON refuses one.
       // One message stays within a bridge frame (send's limit, pi.rs): text past what a script prints in all is cut
       // here (pi.rs `bounded` cuts the rest), and an image too large to send is noted instead.
       const item = a === "image"
         ? b.length > FRAME_CHARS ? { type: "text", text: `[An image of ${b.length} base64 characters was left out: too large to show]` } : { type: "image", data: b, mimeType: c }
-        : { type: "text", text: b.length > TEXT_CHARS ? b.slice(0, TEXT_CHARS) : b, ...(a === "console" ? { console: true } : {}) };
+        : { type: "text", text: (b.length > TEXT_CHARS ? b.slice(0, TEXT_CHARS) : b).toWellFormed(), ...(a === "console" ? { console: true } : {}) };
       send(stringify({ type: "output", item }));
     } else if (kind === "done") {
       finished = true;
