@@ -214,7 +214,9 @@ prepare() {
     echo '== making a Postgres cluster in /tmp/pgdata'
     # Killed, not stopped: a damaged cluster's shutdown checkpoint can hang too.
     sudo pkill -9 -x postgres 2>/dev/null; sleep 0.5
-    v=$(pg_lsclusters -h | awk 'NR == 1 { print $1 }'); sudo pg_dropcluster "$v" main --stop >/dev/null 2>&1; sudo rm -rf /tmp/pgdata
+    # The version comes from the installed server, not pg_lsclusters: a job stopped between the drop and the create
+    # leaves no cluster to list, and every later run then failed to make one.
+    v=$(ls /usr/lib/postgresql | sort -V | tail -1); sudo pg_dropcluster "$v" main --stop >/dev/null 2>&1; sudo rm -rf /tmp/pgdata
     sudo pg_createcluster -d /tmp/pgdata --locale=C.UTF-8 "$v" main >/dev/null 2>&1
     sudo service postgresql start >/dev/null 2>&1 || true
     for _ in 1 2 3 4 5 6 7 8 9 10; do sudo -u postgres psql -Atqc 'SELECT 1' >/dev/null 2>&1 && break; sleep 1; done
