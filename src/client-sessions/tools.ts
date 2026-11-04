@@ -133,8 +133,8 @@ const IN_CODE: Record<string, string> = {
   edit: "Call it directly, not from a codemode script: there a failed edit ends the script.",
 };
 const ONLY_IN_CODE: Record<string, string> = {
-  read: "This is how scripts read files: there is no fs.",
-  write: "This is how scripts write files (there is no fs): pass the text as a plain string, as a template literal breaks on backticks and ${ inside it.",
+  read: "This is how scripts read files (or with await fs.readFile(path)).",
+  write: "This is how scripts write files (or with await fs.writeFile(path, text)): pass the text as a plain string, as a template literal breaks on backticks and ${ inside it.",
   edit: "This is how scripts edit files: wrap the call in try/catch, as a failed edit ends the script otherwise.",
 };
 const nudged = (tool: ToolDefinition, sentences: Record<string, string>): ToolDefinition =>

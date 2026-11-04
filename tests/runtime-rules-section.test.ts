@@ -161,7 +161,8 @@ test("an agent holding older rules as its content gets today's after them, sayin
 test("code mode's rules send file writes and edits to the file tools, or, without them, say scripts are the way; rules without code mode say neither", () => {
   const direct = runtimeRules({ tools: [] }), codeOnly = runtimeRules({ tools: [], fileTools: false });
   assert.match(direct, /Write and edit files with the write and edit tools called directly, not from a script/);
-  assert.match(codeOnly, /Scripts have no fs, require or imports: read, write and edit files with tools\.read, tools\.write and tools\.edit/);
+  assert.match(codeOnly, /Scripts read, write and edit files with tools\.read, tools\.write and tools\.edit \(or await fs\.readFile and fs\.writeFile\)/);
+  assert.match(direct, /reading files with tools\.read or await fs\.readFile\(path\); there are no imports/);
   for (const rules of [direct, codeOnly]) {
     assert.match(rules, /wrap one that may fail in try\/catch/);
     assert.match(rules, /all three are globals, not members of tools/);

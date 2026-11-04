@@ -230,8 +230,8 @@ test("fileTools: false leaves the model present_file, and the file tools to code
   assert.match(systemText(r.model.bodies[0]), /Scripts read and write them with the file tools \(tools\.read, tools\.write, tools\.ls and so on\); the application's own tools may reach other files/);
   assert.doesNotMatch(systemText(r.model.bodies[0]), /The file tools \(read/);
   // Scripts are the only way to the files here, and the codemode section's declarations say how.
-  assert.match(systemText(r.model.bodies[0]), /This is how scripts write files \(there is no fs\): pass the text as a plain string/);
-  assert.match(systemText(r.model.bodies[0]), /Scripts have no fs, require or imports: read, write and edit files with tools\.read, tools\.write and tools\.edit/);
+  assert.match(systemText(r.model.bodies[0]), /This is how scripts write files \(or with await fs\.writeFile\(path, text\)\): pass the text as a plain string/);
+  assert.match(systemText(r.model.bodies[0]), /Scripts read, write and edit files with tools\.read, tools\.write and tools\.edit \(or await fs\.readFile and fs\.writeFile\)/);
 
   // Applying the definition without it brings the file tools back, but not to an agent that chose to go without.
   const own = (await r.call("/v1/agents", { body: { definition: definition.id, fileTools: false } })).json.id;
