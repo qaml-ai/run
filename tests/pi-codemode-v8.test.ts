@@ -229,6 +229,31 @@ test("Pi start: one message too large for a frame is cut or noted, and a return 
   if (!returned.ok) { assert.equal(returned.error.kind, "script"); assert.match(returned.error.message, /return value is too large to return/); }
 });
 
+test("Pi start: half an emoji in output, a return value or a call's arguments does not break the bridge", { skip }, async t => {
+  const sandbox = new PiV8Sandbox();
+  t.after(() => sandbox.close());
+  let seq = 0;
+  const run: CodemodeRun = sandbox.start('const half = "hi \\ud83d"; text(half); console.log(half); const echoed = await tools.echo(half); return [half, echoed];', { ...defaults,
+    onCall: call => { run.deliver(++seq, defaults.startedAt + 1, call.id, success(call.args)); } });
+  const result = await run.result;
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.output.map(item => (item as { text: string }).text), ["hi \ufffd", "hi \ufffd"]);
+});
+
+test("Pi start: a script reaching for fs, require or an import is told about the file tools", { skip }, async t => {
+  const sandbox = new PiV8Sandbox();
+  t.after(() => sandbox.close());
+  const run = (code: string) => sandbox.start(code, { ...defaults, onCall() {} }).result;
+  const caught = await run("try { await fs.readFile('/bot/bot.ts', 'utf8'); } catch (error) { return error.message; }");
+  assert.equal(caught.ok, true);
+  if (caught.ok) assert.match(String(caught.value), /^fs is not defined in codemode: files are the agent's file tools, called as await tools\.read/);
+  for (const code of ["return require('fs')", "import { readFileSync } from 'fs';\nreturn 1;"]) {
+    const result = await run(code);
+    assert.equal(result.ok, false, code);
+    if (!result.ok) assert.match(result.error.message, /tools\.read\(\{ path \}\)/, code);
+  }
+});
+
 // No executable is needed to test the trusted host's validation and shutdown behavior.
 function fakePool() {
   let receive!: (message: unknown) => void, close!: (reason: string) => void;

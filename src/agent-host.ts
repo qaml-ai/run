@@ -45,6 +45,8 @@ const modelTools = (tools: HostTool[]) => tools.filter(tool => tool.callers?.inc
 
 /** How long a stopping agent waits to index its settled turns (see `index`). */
 
+/** The most of a tool's error message a script's call rejects with: a result's bound, SANDBOX_LIMITS.resultBytes, with room. */
+const SCRIPT_ERROR_CHARACTERS = 64 * 1024;
 /** Heads the runtime's rules where a context still holds older ones as its content (`runtimeSection`). */
 const RULES_CHANGED = "The runtime's rules changed. Where the rules earlier in this prompt differ from these, these hold.";
 /** Model requests of one structured run that may force final_output (see `outputChoice`). */
@@ -467,10 +469,18 @@ export function createAgentHost(hostIO: HostIO) {
           signal?.throwIfAborted();
           if (nested) {
             // A call from code: named by the model's code mode call and its key there, which a replay of the script keeps.
-            const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await scriptMadeAt(nested) });
-            signal?.throwIfAborted();
             // Code gets the data: an MCP tool's structured content, or its text parsed (scriptValue throws its error).
-            const data = (tool.resultFormat === "content" ? scriptValue(value) : value) ?? null;
+            // An error rejects the call in the script with its message, cut to fit what a script gets from a call.
+            let data: unknown;
+            try {
+              const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await scriptMadeAt(nested) });
+              signal?.throwIfAborted();
+              data = (tool.resultFormat === "content" ? scriptValue(value) : value) ?? null;
+            } catch (error) {
+              const message = errorText(error);
+              if (message.length <= SCRIPT_ERROR_CHARACTERS) throw error;
+              throw new Error(`${message.slice(0, SCRIPT_ERROR_CHARACTERS)}\n\n[Error cut at ${SCRIPT_ERROR_CHARACTERS.toLocaleString("en-US")} of ${message.length.toLocaleString("en-US")} characters.]`);
+            }
             scriptBytes(nested.parentTaskId, data);
             return { content: [], structuredContent: data };
           }

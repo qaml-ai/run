@@ -27,6 +27,19 @@ const integer = (value: unknown): value is number => Number.isSafeInteger(value)
 const optionalString = (value: unknown) => value === undefined || typeof value === "string";
 /** Text one script prints: v8-exec's EMIT_CHARS, in bytes. */
 const OUTPUT_TEXT_BYTES = 128_000;
+/**
+ * A result whose JSON holds a lone surrogate (half an emoji, as `"\ud83d"`), its strings made well formed (U+FFFD): v8-exec's
+ * JSON parser refuses one, as the JSON standard does.
+ */
+function wellFormed(message: HostToWorkerMessage): HostToWorkerMessage {
+  const fix = (text: string | undefined) => {
+    if (text === undefined || !/\\u[dD][89a-fA-F]/.test(text)) return text;
+    try { return JSON.stringify(JSON.parse(text), (_key, value) => typeof value === "string" ? value.toWellFormed() : value); }
+    catch { return text; }
+  };
+  if (message.type !== "result") return message;
+  return { ...message, ...(message.payload !== undefined ? { payload: fix(message.payload) } : {}), ...(message.properties !== undefined ? { properties: fix(message.properties) } : {}) };
+}
 const json = (value: string) => { try { JSON.parse(value); return true; } catch { return false; } };
 
 /** Pi's code mode on v8-exec: Pi owns calls and replay; this launcher only owns transport and capacity. */
@@ -65,6 +78,7 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     const timer = setTimeout(() => { if (!stopped) { error ??= `Codemode timed out after ${timeoutMs}ms`; events.failure({ kind: "timeout", message: `Pi V8 exceeded ${timeoutMs} ms` }); } }, timeoutMs);
     const post = (message: HostToWorkerMessage) => {
       if (stopped) return;
+      message = wellFormed(message);
       if (!data.deterministic) message = { ...message, seq: ++nextResult, now: Date.now() };
       if (!integer(message.id) || !pending.has(message.id) || message.type !== "result" || typeof message.ok !== "boolean"
         || !optionalString(message.payload) || (message.ok && message.payload !== undefined && !json(message.payload))

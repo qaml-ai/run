@@ -153,7 +153,11 @@ pub(super) fn execute(scope: &mut v8::PinScope, stdin: &mut impl Read, data: &Va
   let function = v8::Script::compile(tc, source, Some(&origin)).and_then(|script| script.run(tc));
   let Some(function) = function else {
     if tc.has_terminated() { crash(&limit_message()); }
-    let message = tc.exception().map(|error| error.to_rust_string_lossy(tc)).unwrap_or_else(|| "Script compilation failed".into());
+    let mut message = tc.exception().map(|error| error.to_rust_string_lossy(tc)).unwrap_or_else(|| "Script compilation failed".into());
+    // A static import, as code written for Node or for js_exec's fs: say what there is instead.
+    if message.contains("import statement") {
+      message.push_str(". codemode runs plain JavaScript with no modules: files are the agent's file tools, called as await tools.read({ path }) and await tools.write({ path, content })");
+    }
     send_frame(&json!({ "type": "done", "ok": false, "error": json!({ "name": "SyntaxError", "message": message }).to_string(), "during": { "seq": 0, "issued": 0 } }));
     unsafe { libc::_exit(0) }
   };

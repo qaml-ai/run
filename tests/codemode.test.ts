@@ -12,6 +12,8 @@ import { openPiStorage } from "../src/pi-durable/storage.ts";
 import { journalMessages } from "./fixtures/journal-history.ts";
 import { inlineSandboxes } from "./inline-sandbox.ts";
 import { PiV8Sandbox } from "../src/codemode-pi-launcher.ts";
+import { existsSync } from "node:fs";
+import { v8ExecBinary } from "../src/v8-exec.ts";
 import type { Guest } from "../src/codemode.ts";
 import type { V8Exec } from "../src/v8-exec.ts";
 
@@ -269,4 +271,15 @@ test("two turns' code mode calls with the same id each give their calls their ow
   const positions = fake.calls.map(call => call.call?.messageIndex);
   assert.equal(positions.length, 2);
   assert.notEqual(positions[0], positions[1], JSON.stringify(positions));
+});
+
+test("a tool error too large for a script rejects only that call, its message cut", { skip: !existsSync(v8ExecBinary()) && "v8-exec is not built" }, async t => {
+  const fake = await setup(t, [tool("fails")]);
+  // On v8-exec, whose bridge takes a result of at most SANDBOX_LIMITS.resultBytes.
+  const { host } = await fake.start(() => { throw new Error("e".repeat(2 * 1024 * 1024)); }, { io: { codeSandbox: options => new PiV8Sandbox(options) } });
+  fake.respond(answer(fauxToolCall("codemode", { code: `try { await tools.fails({}); } catch (error) { return { length: error.message.length, cut: /Error cut at 65,536/.test(error.message) }; }` }, { id: "code" }), "toolUse"), answer("done"));
+  assert.equal((await host.handle("prompt", { text: "go" })).error, null);
+  const output = textOf((await fake.history())[2]);
+  assert.match(output, /"cut":true/);
+  assert.match(output, /^Script completed/);
 });
