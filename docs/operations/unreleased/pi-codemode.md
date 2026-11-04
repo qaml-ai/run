@@ -13,9 +13,9 @@ rejects with an unknown outcome. `execute` requests and schedules with `code`
 still run outside history without durable replay and return
 `{ output: string[], truncated }`, now only when the script ends: `execute` no
 longer streams `output` events as it runs. Stored schedule code, and other
-saved code, that uses `fs` or `tools.search`, `tools.describe` or
-`tools.namespaces` fails from this release: rewrite it with the file tools
-and `searchTools`/`describeTool` (below).
+saved code, that uses `tools.search`, `tools.describe` or `tools.namespaces`,
+or `fs`'s synchronous calls, fails from this release: rewrite it with
+`searchTools`/`describeTool` (below) and `await fs.readFile` and the like.
 
 Scripts call `await tools.<name>(args)` for the tool's data; a tool error
 rejects with its message. Discovery uses `ALL_TOOLS`, `searchTools`,
@@ -24,8 +24,8 @@ rejects with its message. Discovery uses `ALL_TOOLS`, `searchTools`,
 namespace up to about 3,000 tokens. The reranked search service is removed;
 `AGENT_TOOL_SEARCH` and its key, secret, URL and model settings are no longer read.
 
-There is no `fs` global. Use the file tools through `tools.read`, `tools.write`,
-`tools.ls`, `tools.glob`, `tools.grep`, `tools.edit`, `tools.mv` and `tools.cp`.
+Use the file tools through `tools.read`, `tools.write`, `tools.ls`,
+`tools.glob`, `tools.grep`, `tools.edit`, `tools.mv` and `tools.cp`. `fs` is js_exec's, kept on the file tools: `await fs.readFile(path)` (UTF-8 text, or base64 with `"base64"`), `fs.writeFile(path, text or a typed array)`, `fs.appendFile`, `fs.readdir`, `fs.exists` and `fs.mkdir`, also as `require("fs")` and `fs.promises`; its synchronous calls are not there.
 `store(key, value)` and `load(key)` keep JSON values across code calls in a
 conversation. `console.log`, `text`, `image`, top-level `return` and `exit`
 are available.

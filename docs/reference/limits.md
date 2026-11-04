@@ -226,7 +226,7 @@ See [Images](../guides/images.md).
 `codemode` takes only `{ code }`. Set Pi's options on the script's first line:
 `// @options: {"max_output_tokens": 10000, "timeout_ms": 60000}`.
 There is no per-call `timeoutMs` or `maxOutputCharacters` argument. File access
-uses the file tools; there is no `fs` global. An `execute` request still takes
+uses the file tools, or `fs` on top of them. An `execute` request still takes
 `timeoutMs` (within the wall time above) and `maxOutputCharacters` (32,000 by
 default, at most 128,000).
 

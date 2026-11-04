@@ -19,8 +19,8 @@ const APPLICATION_FOLLOWS = "Application instructions follow. They define your r
  * Files in code mode. With the file tools declared, writing and editing go through them directly: a file's text inside
  * a script's string breaks on its backticks, ${ and quotes. Without them (fileTools: false), scripts are the only way.
  */
-const FILES_IN_CODE = "- Write and edit files with the write and edit tools called directly, not from a script: a file's text inside a JavaScript string breaks on backticks, ${ and quotes. Scripts have no fs, require or imports; use scripts to batch reads and queries, reading files with tools.read.";
-const FILES_ONLY_IN_CODE = "- Scripts have no fs, require or imports: read, write and edit files with tools.read, tools.write and tools.edit, passing a file's text as a plain string (a template literal breaks on backticks and ${ inside it).";
+const FILES_IN_CODE = "- Write and edit files with the write and edit tools called directly, not from a script: a file's text inside a JavaScript string breaks on backticks, ${ and quotes. Use scripts to batch reads and queries, reading files with tools.read or await fs.readFile(path); there are no imports.";
+const FILES_ONLY_IN_CODE = "- Scripts read, write and edit files with tools.read, tools.write and tools.edit (or await fs.readFile and fs.writeFile), passing a file's text as a plain string (a template literal breaks on backticks and ${ inside it). There are no imports.";
 
 /** Harness mechanics belong to the runtime, not each application's prompt. */
 const codeInstructions = (files: string) => `You work through an application's agent runtime. After these rules come the application's instructions and a summary of your environment.
