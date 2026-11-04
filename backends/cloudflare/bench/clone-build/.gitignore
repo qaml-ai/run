@@ -1,0 +1,5 @@
+.state/
+dist*/
+# Raw runner files are consolidated into the checked-in docs evidence artifact.
+sdk/*.json
+computer/*.json

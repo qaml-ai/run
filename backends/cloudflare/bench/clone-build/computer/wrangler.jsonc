@@ -1,0 +1,27 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "camelrun-proto-bench-computer-worker",
+  "account_id": "85bbd288051330fb51ee1c86031a299b",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-04",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {"enabled": true},
+  "limits": {"cpu_ms": 30000},
+  "ai": {"binding": "AI"},
+  "worker_loaders": [{"binding": "LOADER"}],
+  "vars": {"MODEL": "@cf/zai-org/glm-5.3-flash", "VARIANT": "computer-container"},
+  "durable_objects": {"bindings": [
+    {"name": "AGENTS", "class_name": "camelrun-proto-bench-computer-agent"},
+    {"name": "DIRECTORY", "class_name": "camelrun-proto-bench-computer-directory"},
+    {"name": "MACHINE", "class_name": "camelrun-proto-bench-computer-machine"}
+  ]},
+  "migrations": [{"tag": "camelrun-proto-bench-computer-v1", "new_sqlite_classes": ["camelrun-proto-bench-computer-agent", "camelrun-proto-bench-computer-directory", "camelrun-proto-bench-computer-machine"]}],
+  "containers": [{
+    "name": "camelrun-proto-bench-computer-container",
+    "class_name": "camelrun-proto-bench-computer-machine",
+    "scheduling_policy": "durable_object",
+    "images": {"workspace": {"dockerfile": "Dockerfile", "build_context": "."}}
+  }]
+}

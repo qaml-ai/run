@@ -1,0 +1,11 @@
+Run this real Linux provisioning and public-repository build benchmark using your computer tool. You must actually execute all steps; do not merely describe commands. First call computer with op=start (timeoutMs 120000). Then exec ["/bin/bash","-lc","uname -m; nproc; free -m; df -h ~; node --version; npm --version"] and retain output. The working directory is /workspace. Node is preinstalled; if missing install it and record that separately.
+
+Run each of the following as a SEPARATE computer exec call with timeoutMs 1200000 and argv ["/bin/bash","-lc", SHELL]. Use /usr/bin/time -f 'BENCH_WALL_SECONDS=%e' -o /workspace/STEP.time /bin/bash -lc 'COMMAND' > /workspace/STEP.log 2>&1; rc=$?; cat /workspace/STEP.time; tail -n 14 /workspace/STEP.log; exit $rc. This saves full logs without exceeding output limits. Do not combine steps because each time must remain independent:
+1. STEP=express-clone COMMAND=cd /workspace && git clone --depth 1 https://github.com/expressjs/express
+2. STEP=express-install COMMAND=cd /workspace/express && npm install
+3. STEP=express-test COMMAND=cd /workspace/express && npm test
+4. STEP=rust-install COMMAND=curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+5. STEP=ripgrep-clone COMMAND=cd /workspace && git clone --depth 1 https://github.com/BurntSushi/ripgrep
+6. STEP=ripgrep-build COMMAND=export PATH=/root/.cargo/bin:$PATH; cd /workspace/ripgrep && cargo build --release
+
+Continue after a failed test, recording its exit code and reason. If installation/build fails, inspect the saved log and resource availability; recover only if a straightforward fix is possible, and time retries separately. If a command might exceed the exec timeout, launch it as a background job writing its exit status and poll every 30 seconds in another exec. Do not change npm scripts or source code, skip tests, reduce the requested release build, or claim completion while jobs are running. Finally run /workspace/ripgrep/target/release/rg --version, git -C /workspace/express rev-parse HEAD, git -C /workspace/ripgrep rev-parse HEAD, du -sb /workspace/ripgrep /workspace/ripgrep/target, and df -h /workspace. Leave the machine running and files intact. Report observed times, exit codes and any recovery; do not snapshot or sleep yet because the benchmark harness measures those next.

@@ -10,6 +10,9 @@ This is an experimental implementation of the core agent contract, not a
 production replacement for every camelRun service. No deployment is required
 for its local integration tests.
 
+The [real-agent clone/build benchmark](docs/BENCH-clone-build.md) compares
+Container sizes, Sandbox SDK defaults and the experimental Computer backend.
+
 ## Architecture
 
 ```text

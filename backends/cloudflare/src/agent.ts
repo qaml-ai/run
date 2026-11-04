@@ -24,6 +24,8 @@ const canonical = (value: unknown): string => JSON.stringify(value && typeof val
 const reqKey = (id: string) => `request:${id}`;
 
 export class CamelAgent extends DurableObject<Env> {
+  // Benchmark subclasses can exercise a provider without changing the runtime tools.
+  protected linuxTools(): ToolRegistration[] { return [computerTool(this.env, this.ctx.id.toString())]; }
   private instanceId = crypto.randomUUID();
   private workspace = new Workspace({ storage: this.ctx.storage, backends: [new WorkerJavaScriptBackend({
     loader: this.env.LOADER, root: "/workspace", globalOutbound: null, onInterrupt: "fail",
@@ -53,7 +55,7 @@ export class CamelAgent extends DurableObject<Env> {
       registry.install({ name: "camel.computer", tools, sections: [{ key: "computer", tag: false,
         render: () => "Your private persistent files are in /workspace. JavaScript execution has no network access." }] });
       registry.install({ name: "camel.human", tools: [askHuman] });
-      registry.install({ name: "camel.linux", tools: [computerTool(this.env, this.ctx.id.toString())] });
+      registry.install({ name: "camel.linux", tools: this.linuxTools() });
       registry.install(createCodemodeExtension({
         sandbox: new RemoteCodemodeSandbox({
           remote: () => this.env.CODEMODE_SANDBOX.getByName(this.ctx.id.toString()),
