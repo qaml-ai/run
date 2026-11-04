@@ -20,8 +20,7 @@ alone holds none of its account's code slots, its process kept outside
 time limit, and children can run code while their parents wait. A script makes
 at most 256 tool calls; at most 32 are out at once, and a `Promise.all` over
 more starts the rest as earlier ones answer (the 257th call fails the script,
-saying so). Unfinished children are also left running when the agent's process
-exits, for its resumed script to find.
+saying so).
 
 A script resumes only in the sandbox it started in: one in flight (or waiting
 on a child) across a deploy that changes v8-exec, or the account's code limits,
