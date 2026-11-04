@@ -264,7 +264,10 @@ test("Pi start: js_exec's fs works on the file tools: bytes in windows, text as 
   t.after(() => sandbox.close());
   const files = [{ name: "read", jsName: "read", description: "Read" }, { name: "write", jsName: "write", description: "Write" }, { name: "ls", jsName: "ls", description: "List" }];
   // The file tools' contract, as volume-tools.ts keeps it: a bare path is in the first mount; base64 reads go by bytes.
-  const store = new Map<string, Buffer>([["/w/many.txt", Buffer.from("x")]]);
+  // Larger than a call's arguments take, so read here in several windows; written, they throw.
+  const big = { list: Array.from({ length: 30000 }, (_, i) => `é${i}`) };
+  const lines = `a\n${"😀".repeat(40000)}\nz`;
+  const store = new Map<string, Buffer>([["/w/big.json", Buffer.from(JSON.stringify(big))], ["/w/lines.txt", Buffer.from(lines)]]);
   const at = (path: string) => path.startsWith("/") ? path : `/w/${path}`;
   const answer = (name: string, args: any): CodemodeOutcome => {
     const path = at(args.path);
@@ -277,25 +280,24 @@ test("Pi start: js_exec's fs works on the file tools: bytes in windows, text as 
     return success({ path, offset, data: window.toString("base64"), ...offset + window.length < data.length ? { nextOffset: offset + window.length } : {} });
   };
   let seq = 0;
+  // The text's length and a position-weighted sum of its code units, the same in the script and here.
+  const digest = (text: string) => { let sum = 0; for (let i = 0; i < text.length; i++) sum = (sum + text.charCodeAt(i) * (i % 997 + 1)) % 2147483647; return [text.length, sum]; };
   const run: CodemodeRun = sandbox.start(`
-    const big = { list: Array.from({ length: 30000 }, (_, i) => "é" + i) };
-    await fs.writeFile("/w/big.json", JSON.stringify(big));
-    const lines = "a\\n" + "😀".repeat(40000) + "\\nz";
-    await fs.writeFile("/w/lines.txt", lines);
+    const digest = ${digest.toString()};
     await fs.writeFile("/w/b.bin", new Uint8Array(Array.from({ length: 256 }, (_, i) => i)));
     await fs.writeFile("/w/view.bin", new DataView(new Uint8Array([0, 104, 105, 0]).buffer, 1, 2));
     await fs.writeFile("log.txt", "a\\n");
     await fs.appendFile("log.txt", "b\\n");
     await fs.appendFile("/w/new.txt", "c");
     const errors = [];
-    for (const attempt of [() => fs.writeFile("/w/x", { a: 1 }), () => fs.readdir("/big"), () => fs.readFile("/w/none")]) {
+    for (const attempt of [() => fs.writeFile("/w/x", { a: 1 }), async () => fs.writeFile("/w/x", await fs.readFile("/w/lines.txt")), () => fs.readdir("/big"), () => fs.readFile("/w/none")]) {
       try { await attempt(); errors.push("none"); } catch (error) { errors.push(error.message); }
     }
     let sync;
     try { fs.readFileSync("/w/a.txt", "utf8"); } catch (error) { sync = error.message; }
     await fs.mkdir("/w/sub", { recursive: true });
     return {
-      big: JSON.stringify(JSON.parse(await fs.readFile("/w/big.json", "utf8"))) === JSON.stringify(big), lines: await fs.readFile("/w/lines.txt") === lines,
+      big: digest(JSON.parse(await fs.readFile("/w/big.json", "utf8")).list.join()), lines: digest(await fs.readFile("/w/lines.txt")),
       bin: await fs.readFile("/w/b.bin", "base64"), view: await fs.readFile("/w/view.bin"), log: await fs.readFile("/w/log.txt"), appended: await fs.readFile("new.txt"),
       exists: [await fs.exists("/w/log.txt"), await fs.exists("/w/none"), await fs.exists("/w"), await fs.exists("log.txt")],
       names: (await fs.readdir("/w")).length, same: require("fs") === fs && require("node:fs/promises") === fs.promises, errors, sync };`, { ...defaults, tools: files,
@@ -305,12 +307,12 @@ test("Pi start: js_exec's fs works on the file tools: bytes in windows, text as 
   if (!result.ok) return;
   const value = result.value as any;
   assert.deepEqual(value, {
-    big: true, lines: true, bin: Buffer.from(Array.from({ length: 256 }, (_, i) => i)).toString("base64"), view: "hi", log: "a\nb\n", appended: "c",
+    big: digest(big.list.join()), lines: digest(lines), bin: Buffer.from(Array.from({ length: 256 }, (_, i) => i)).toString("base64"), view: "hi", log: "a\nb\n", appended: "c",
     exists: [true, false, true, true], names: store.size === 0 ? 0 : value.names, same: true,
-    errors: ["fs writes a string, a typed array, a DataView or an ArrayBuffer", "fs.readdir: /big has more entries than one listing holds; use tools.glob", "/w/none does not exist"],
+    errors: ["fs writes a string, a typed array, a DataView or an ArrayBuffer", "fs cannot write /w/x from code: one write takes at most 128 KiB", "fs.readdir: /big has more entries than one listing holds; use tools.glob", "/w/none does not exist"],
     sync: "fs.readFileSync is not in codemode, where the file tools are asynchronous: use await fs.readFile(…)",
   });
-  assert.ok(store.get("/w/big.json")!.length > 3 * 32 * 1024, "read in several windows");
+  assert.ok(store.get("/w/big.json")!.length > 2 * 131072, "read in several windows");
   assert.equal(value.names, [...store.keys()].filter(key => key.startsWith("/w/")).length);
 });
 

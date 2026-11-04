@@ -75,11 +75,14 @@
     return encoding === "base64" ? base64(data) : utf8(data);
   };
   const missing = error => /does not exist/.test(String(error?.message ?? error));
+  // A call's arguments are at most 128 KiB (pi.rs), past which the script fails: here, a larger write throws instead.
+  const utf8Length = text => { let n = 0; for (const ch of text) { const c = ch.codePointAt(0); n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4; } return n; };
   const writeData = (path, data) => {
-    if (typeof data === "string") return fileTool("write", { path: String(path), content: data });
-    const view = data instanceof ArrayBuffer ? new Uint8Array(data) : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : undefined;
-    if (!view) throw new TypeError("fs writes a string, a typed array, a DataView or an ArrayBuffer");
-    return fileTool("write", { path: String(path), content: base64(view), encoding: "base64" });
+    const view = typeof data === "string" ? undefined : data instanceof ArrayBuffer ? new Uint8Array(data) : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : null;
+    if (view === null) throw new TypeError("fs writes a string, a typed array, a DataView or an ArrayBuffer");
+    const args = view ? { path: String(path), content: base64(view), encoding: "base64" } : { path: String(path), content: data };
+    if (utf8Length(stringify(args)) > 131072) throw new RangeError(`fs cannot write ${path} from code: one write takes at most 128 KiB`);
+    return fileTool("write", args);
   };
   const fs = {
     // Text (UTF-8), or base64 with encoding "base64": never a Buffer, which codemode does not have.
