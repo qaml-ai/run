@@ -560,7 +560,7 @@ export function createAgentHost(hostIO: HostIO) {
       codemodeSection = undefined;
       return undefined;
     }
-    const extension = createCodemodeExtension({ sandbox: codeSandbox(), models: false,
+    const extension = createCodemodeExtension({ sandbox: watched(codeSandbox()), models: false,
       namespaces: [...new Set(config.tools.map(tool => namespaceOf(tool.name)).filter(Boolean))].map(name => ({ name, prefix: `${name}__` })) });
     codemodeSection = extension.sections?.find(entry => entry.key === CODEMODE);
     return { ...extension, sections: [], tools: (extension.tools ?? []).map(tool => ({ ...tool, description: codemodeDescription(tool.description), executionMode: "sequential" as const,
@@ -608,6 +608,20 @@ export function createAgentHost(hostIO: HostIO) {
         .then(() => ({ ok: true as const, value: undefined }), error => failed(path, error)),
     };
     return files as ExecutionEnv;
+  }
+
+  /** The sandbox's runs, as the agent follows them (`DurableAgent.scriptRun`): their fingerprint and calls. */
+  function watched(sandbox: ReturnType<CodeSandboxes>): ReturnType<CodeSandboxes> {
+    const start = sandbox.start.bind(sandbox);
+    sandbox.start = (code, run) => {
+      const seen = agent?.scriptRun(run.startedAt, run.seed);
+      const started = start(code, { ...run,
+        onStarted: fingerprint => { seen?.started(fingerprint); run.onStarted?.(fingerprint); },
+        onCall: call => { seen?.called(call); run.onCall(call); } });
+      void started.result.finally(() => seen?.ended()).catch(() => {});
+      return started;
+    };
+    return sandbox;
   }
 
   /** Code mode's section for these tools, as Pi renders it from the tools scripts can call; null without code mode or such tools. */

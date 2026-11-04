@@ -61,7 +61,7 @@ const ResumableDoc = defineDoc({
  */
 const CodemodeRunDoc = defineDoc({
   kind: "pi.codemode.run", version: 1, scope: "task",
-  initial: (): { result?: { [key: string]: never }; start?: { deadline?: number } } => ({}),
+  initial: (): { result?: { [key: string]: never }; start?: { deadline?: number; startedAt: number; seed: number; fingerprint?: string } } => ({}),
   checkpointWhen: () => false,
 });
 
@@ -829,8 +829,14 @@ export class DurableAgent {
         const nested: NestedCall | undefined = input?.kind === "nested" ? { parentCallId: input.parentCallId, parentTaskId: String(input.parent), key: input.key } : undefined;
         if (!this.firstAttempts.has(id)) {
           // A call from code whose script ended, or will as it resumes (its deadline passed while it waited), is not made:
-          // Pi goes on with the open nested task by itself. A script that refuses to resume for another reason (its sandbox
-          // changed) is found only once it starts, which may be after this call ran.
+          // Pi goes on with the open nested task by itself.
+          // A call from code goes on only once its script, started again here, makes it again: the script then passed Pi's
+          // checks to resume (its sandbox, its version, its calls so far). One that ends first, or never gets here by its
+          // deadline, takes the call with it, unmade.
+          if (nested && !(await this.remade(nested, input, api, callContext))) {
+            const message = `Tool ${tool.name} was not run: its script did not go on`;
+            return { output: [{ type: "text", text: message }], isError: true, diagnostics: [{ severity: "error", code: "aborted", message }] };
+          }
           const run = nested ? await api.snapshot(CodemodeRunDoc, input.parent, callContext) : undefined;
           if (run && (run.result !== undefined || (run.start?.deadline !== undefined && Date.now() >= run.start.deadline))) {
             const message = `Tool ${tool.name} was not run: its script ended first`;
@@ -971,6 +977,57 @@ export class DurableAgent {
     this.suspension = { launched, quiet, closed };
     closed.catch(error => console.error(JSON.stringify({ type: "code_suspend_failed", error: error instanceof Error ? error.message : String(error) })));
     return closed;
+  }
+
+  /** Code mode scripts running in this process, by their start (`startedAt` and seed): their sandbox and the calls they made. */
+  private scripts = new Map<string, { fingerprint?: string; calls: Map<number, { name: string; args: unknown }>; changed: Set<() => void> }>();
+  private script(startedAt: number, seed: number) {
+    const key = `${startedAt}:${seed}`;
+    let script = this.scripts.get(key);
+    if (!script) this.scripts.set(key, script = { calls: new Map(), changed: new Set() });
+    return script;
+  }
+
+  /**
+   * A code mode script starting in this process (the host's sandbox, agent-host `codeSandbox`): what it reports as it
+   * runs, so a call Pi resumes on its own waits for its script to make it again (`remade`).
+   */
+  scriptRun(startedAt: number, seed: number) {
+    const script = this.script(startedAt, seed);
+    const changed = () => { for (const notify of script.changed) notify(); };
+    return {
+      started: (fingerprint: string) => { script.fingerprint = fingerprint; changed(); },
+      called: (call: { id: number; name: string; args?: unknown }) => { script.calls.set(call.id, { name: call.name, args: call.args }); changed(); },
+      ended: () => { this.scripts.delete(`${startedAt}:${seed}`); },
+    };
+  }
+
+  /**
+   * Whether a call from code that Pi resumed on its own (its first attempt was another process's) may run: once its
+   * script, started again here, made it again, with the same arguments, in the sandbox it started in. Pi checks the
+   * sandbox only as the script resumes, which may be after this call would have run: a script that cannot resume (its
+   * sandbox changed), ends, or passes its deadline first takes the call with it, unmade.
+   */
+  private async remade(nested: NestedCall, input: { parent: unknown; call: { name: string; arguments?: unknown } }, api: any, callContext: any): Promise<boolean> {
+    const start = (await api.snapshot(CodemodeRunDoc, input.parent, callContext))?.start;
+    if (!start) return false;
+    const script = this.script(start.startedAt, start.seed);
+    const id = Number(nested.key.slice(1));
+    let timer: ReturnType<typeof setTimeout> | undefined, notify: (() => void) | undefined;
+    const signal: AbortSignal | undefined = callContext.abortSignal;
+    try {
+      const made = await Promise.race([
+        new Promise<boolean>(resolve => { notify = () => { if (script.calls.has(id) && (start.fingerprint === undefined || script.fingerprint !== undefined)) resolve(true); }; script.changed.add(notify); notify(); }),
+        this.harness.waitForTask(input.parent as never, context).then(() => false, () => false),
+        ...start.deadline !== undefined ? [new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(0, start.deadline! - Date.now())); })] : [],
+        ...signal ? [new Promise<boolean>(resolve => { if (signal.aborted) resolve(false); signal.addEventListener("abort", () => resolve(false), { once: true }); })] : [],
+      ]);
+      const call = script.calls.get(id);
+      return made && script.fingerprint === start.fingerprint && call?.name === input.call.name && JSON.stringify(call.args ?? {}) === JSON.stringify(input.call.arguments ?? {});
+    } finally {
+      clearTimeout(timer);
+      if (notify) script.changed.delete(notify);
+    }
   }
 
   /** Resolve the suspension's quiet once every call launched before it has ended or is held here. */

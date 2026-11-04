@@ -461,3 +461,28 @@ test("a script's timeout_ms counts the person's wait: past it, the approved call
   const result = (await fake.history()).find(message => message.role === "toolResult");
   assert.doesNotMatch(textOf(result), /approve ran/);
 });
+
+test("an approved call from code whose script cannot resume (its sandbox changed) is never made", async t => {
+  const fake = await setup(t, [tool("approve", { needsApproval: true })]);
+  const answers = asking(["approve"]);
+  // The sandbox reports another fingerprint after the person was asked, as after a deploy that changed v8-exec.
+  let changed = false;
+  const sandboxes = inlineSandboxes();
+  const codeSandbox: HostIO["codeSandbox"] = options => {
+    const sandbox = sandboxes(options);
+    const start = sandbox.start.bind(sandbox);
+    sandbox.start = (code, run) => start(code, { ...run, onStarted: fingerprint => run.onStarted?.(changed ? `${fingerprint}-changed` : fingerprint) });
+    return sandbox;
+  };
+  const first = await fake.start(answers, { io: { codeSandbox } });
+  fake.respond(answer(fauxToolCall("codemode", { code: "return await tools.approve({});" }, { id: "code" }), "toolUse"), answer("done"));
+  assert.equal((await first.host.handle("prompt", { text: "go" })).stopped, "input_required");
+  await first.dispose();
+  changed = true;
+  const second = await fake.start(answers, { io: { codeSandbox } });
+  await second.host.handle("resume", { calls: [{ toolCallId: "code/c1", retry: true }] });
+  assert.deepEqual(fake.calls.map(call => call.name), ["approve"], "asked once, never made");
+  const results = (await fake.history()).filter(message => message.role === "toolResult");
+  assert.equal(results.length, 1);
+  assert.match(textOf(results[0]), /sandbox changed since it started/);
+});
