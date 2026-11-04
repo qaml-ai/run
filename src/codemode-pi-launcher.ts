@@ -18,8 +18,8 @@ export interface PiV8Options {
   expectedFingerprint?: string;
   /** Tenant CodeGate admission. Released on process exit, also on failed or cancelled admission. */
   acquireSlot?(signal: AbortSignal): Promise<() => void>;
-  /** Once per execution, when it stops: how long it ran from launch, the CPU its script used (when it got to the end), and why it failed (the script's error, a limit, the sandbox), if it did. */
-  onEnd?(end: { ms: number; cpuMs?: number; error?: string }): void;
+  /** Once per execution, when it stops: how long it ran from launch, the CPU its script used (when it got to the end), and why it failed (the script's error, with its name, a limit, the sandbox), if it did. */
+  onEnd?(end: { ms: number; cpuMs?: number; error?: string; errorName?: string }): void;
 }
 
 const record = (value: unknown): value is Record<string, any> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -63,7 +63,7 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     const reserved = new Set(["Object", "Function", "Array", "Number", "String", "Boolean", "BigInt", "Symbol", "Math", "Date", "Intl", "JSON", "Reflect", "Proxy", "Promise", "RegExp", "Error", "Map", "Set", "WeakMap", "WeakSet", "WeakRef", "FinalizationRegistry", "performance", "eval", "undefined", "NaN", "Infinity", "WebAssembly", "SharedArrayBuffer", "Atomics"]);
     if (data.globals.some(global => reserved.has(global.name.split(".")[0]))) throw new Error("Pi global shadows a built-in");
     // V8 uses its fixed HEAP_BYTES cap; Pi's per-request memoryLimitBytes is not applied.
-    let guest: Guest | undefined, stopped = false, started = false, issued = 0, idle = -1, error: string | undefined, usedCpuMs: number | undefined;
+    let guest: Guest | undefined, stopped = false, started = false, issued = 0, idle = -1, error: string | undefined, errorName: string | undefined, usedCpuMs: number | undefined;
     const output = { items: 0, bytes: 0, images: 0, imageBytes: 0 };
     const launched = performance.now();
     const pending = new Set<number>(), sequences = new Set<number>();
@@ -124,7 +124,11 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
         if (message.type === "done") {
           if (integer(message.cpuMs)) usedCpuMs = message.cpuMs;
           delete message.cpuMs;
-          if (!message.ok) error ??= String(JSON.parse(message.error)?.message ?? "Script error");
+          if (!message.ok && error === undefined) {
+            const thrown = JSON.parse(message.error);
+            error = String(thrown?.message ?? "Script error");
+            if (typeof thrown?.name === "string") errorName = thrown.name;
+          }
         }
       } else if (message.type === "output") {
         const item = message.item;
@@ -152,7 +156,7 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
       if (!stopped) {
         stopped = true;
         clearTimeout(timer);
-        options.onEnd?.({ ms: Math.round(performance.now() - launched), ...usedCpuMs === undefined ? {} : { cpuMs: usedCpuMs }, ...error === undefined ? {} : { error } });
+        options.onEnd?.({ ms: Math.round(performance.now() - launched), ...usedCpuMs === undefined ? {} : { cpuMs: usedCpuMs }, ...error === undefined ? {} : { error }, ...errorName === undefined ? {} : { errorName } });
         admission.abort();
         if (guest) { guest.end(); if (!guest.dispatched) released(); } else released();
       }

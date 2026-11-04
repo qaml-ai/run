@@ -208,18 +208,33 @@ export function codeErrorClass(message: string | null | undefined): string {
 }
 
 /**
- * One script: how long it took, the CPU its guest used (when it finished), the timeoutMs
- * it asked for and got, and how it ended, so its limits can be tuned from what executions need.
+ * A script's error as a log line carries it, its shape without what it may echo: its first line, what is quoted
+ * emptied to "...", each run of digits as 0, at most 160 characters. Never the code, its output or a tool's result.
  */
-export function recordCodeExecution(execution: { tenant?: string; ms: number; requestedTimeoutMs?: number; timeoutMs: number; cpuMs?: number; error?: unknown }) {
-  // Only the class goes in the line: a guest's error can echo what a user wrote.
-  const failure = execution.error === undefined ? "none" : codeErrorClass(errorText(execution.error));
+export function codeErrorShape(message: string): string {
+  // From a quote to the last of its kind: V8 quotes a value as it is, quotes inside it unescaped (`"{"a":1}" is not valid JSON`).
+  const line = message.split("\n", 1)[0]
+    .replace(/"[^]*"/, '"..."').replace(/'[^]*'/, '"..."').replace(/`[^]*`/, '"..."')
+    .replace(/\d+/g, "0");
+  return line.length > 160 ? `${line.slice(0, 159)}…` : line;
+}
+
+/**
+ * One script: how long it took, the CPU its guest used (when it finished), the timeoutMs
+ * it asked for and got, and how it ended, so its limits can be tuned from what executions need. A failed one's error
+ * goes as its name (SyntaxError, TypeError, …) and its shape (`codeErrorShape`).
+ */
+export function recordCodeExecution(execution: { tenant?: string; ms: number; requestedTimeoutMs?: number; timeoutMs: number; cpuMs?: number; error?: unknown; errorName?: string }) {
+  const message = execution.error === undefined ? undefined : errorText(execution.error);
+  const failure = message === undefined ? "none" : codeErrorClass(message);
   emit("code_execution", {
     // Engine stays a dimension, always v8 since QuickJS was removed, so the metric's series and dashboards carry on.
     dimensions: { ErrorClass: failure, Engine: "v8" },
     rollups: [[], ["ErrorClass"], ["Engine"], ["Engine", "ErrorClass"]],
     metrics: { CodeExecutions: 1, CodeDurationMs: [execution.ms, "Milliseconds"], CodeCpuMs: execution.cpuMs === undefined ? undefined : [execution.cpuMs, "Milliseconds"] },
-    properties: { tenant: execution.tenant, timeoutMs: execution.timeoutMs, ...(execution.requestedTimeoutMs !== undefined ? { requestedTimeoutMs: execution.requestedTimeoutMs } : {}) },
+    properties: { tenant: execution.tenant, timeoutMs: execution.timeoutMs, ...(execution.requestedTimeoutMs !== undefined ? { requestedTimeoutMs: execution.requestedTimeoutMs } : {}),
+      ...(execution.errorName !== undefined && /^\w{1,40}$/.test(execution.errorName) ? { errorName: execution.errorName } : {}),
+      ...(message !== undefined ? { errorShape: codeErrorShape(message) } : {}) },
   });
 }
 
