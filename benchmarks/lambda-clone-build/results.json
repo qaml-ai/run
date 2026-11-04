@@ -1,0 +1,964 @@
+{
+  "startedAt": "2026-11-04T22:10:33.305Z",
+  "image": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+  "imageVersion": "1.0",
+  "region": "us-west-2",
+  "identity": "arn:aws:iam::904534089871:user/macbook",
+  "hourlyRate": 0.12610008,
+  "leaseSeconds": 3600,
+  "created": [
+    {
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "token": "camelrun-bench-bb55210f-09d2-459a-8413-fc7bcebaeda7",
+      "startedAt": "2026-11-04T22:10:34.537Z",
+      "firstExecSeconds": 19.407070667,
+      "terminatedAt": "2026-11-04T22:14:44.847Z"
+    },
+    {
+      "id": "microvm-fe74ce58-d015-37e1-9145-35ec5fa82ae3",
+      "token": "camelrun-bench-7312222e-d078-41a4-a7ee-b4a2e80a7fd9",
+      "startedAt": "2026-11-04T22:10:53.931Z",
+      "firstExecSeconds": 3.2615985419999998,
+      "terminatedAt": "2026-11-04T22:14:45.029Z"
+    },
+    {
+      "id": "microvm-449c9829-a65e-3cb9-9ba0-d44be429da86",
+      "token": "camelrun-bench-b0e3d895-ff8d-44f5-968c-a6d7371a172c",
+      "startedAt": "2026-11-04T22:10:57.370Z",
+      "firstExecSeconds": 9.463111292,
+      "terminatedAt": "2026-11-04T22:14:45.285Z"
+    }
+  ],
+  "steps": [
+    {
+      "label": "first-exec-1",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "true",
+      "at": "2026-11-04T22:10:53.753Z",
+      "clientSeconds": 16.692096416000002,
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "first-exec-2",
+      "id": "microvm-fe74ce58-d015-37e1-9145-35ec5fa82ae3",
+      "command": "true",
+      "at": "2026-11-04T22:10:57.016Z",
+      "clientSeconds": 1.6836269159999975,
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "first-exec-3",
+      "id": "microvm-449c9829-a65e-3cb9-9ba0-d44be429da86",
+      "command": "true",
+      "at": "2026-11-04T22:11:06.681Z",
+      "clientSeconds": 4.926911416000003,
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "system",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "uname -m; nproc; free -m; df -h ~; node --version; npm --version; command -v gcc g++ make time; cat /proc/self/cgroup; cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max 2>/dev/null; cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null; true",
+      "at": "2026-11-04T22:11:31.670Z",
+      "clientSeconds": 24.868321917,
+      "exitCode": 0,
+      "stdout": "aarch64\n4\n               total        used        free      shared  buff/cache   available\nMem:            8016         144        7719           3         152        7674\nSwap:              0           0           0\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/vdc        7.8G  1.2G  6.3G  16% /\nv18.12.1\n8.19.2\ntime\n0::/system.slice/app\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "prerequisites",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "dnf install -y time gcc gcc-c++ make perl pkgconf-pkg-config",
+      "at": "2026-11-04T22:12:14.879Z",
+      "clientSeconds": 43.208607792,
+      "exitCode": 0,
+      "stdout": "Downloading metadata...\nPackage                                                        Repository      Size\nInstalling:                                                                        \n amazon-rpm-config-228-11.amzn2023.0.1.noarch                  amazonlinux  70.7 kB\n annobin-docs-12.69-1.amzn2023.0.1.noarch                      amazonlinux  95.7 kB\n annobin-plugin-gcc-12.69-1.amzn2023.0.1.aarch64               amazonlinux 996.1 kB\n binutils-2.41-50.amzn2023.0.5.aarch64                         amazonlinux   5.8 MB\n cpp-11.5.0-5.amzn2023.0.5.aarch64                             amazonlinux  10.7 MB\n dwz-0.16-2.amzn2023.0.1.aarch64                               amazonlinux 140.0 kB\n efi-srpm-macros-5-4.amzn2023.0.5.noarch                       amazonlinux  23.5 kB\n file-5.39-7.amzn2023.0.4.aarch64                              amazonlinux  51.1 kB\n fonts-srpm-macros-1:2.0.5-12.amzn2023.0.2.noarch              amazonlinux  28.0 kB\n gc-8.0.4-5.amzn2023.0.2.aarch64                               amazonlinux 104.9 kB\n gcc-11.5.0-5.amzn2023.0.5.aarch64                             amazonlinux  32.6 MB\n gcc-c++-11.5.0-5.amzn2023.0.5.aarch64                         amazonlinux  12.9 MB\n gcc-plugin-annobin-11.5.0-5.amzn2023.0.5.aarch64              amazonlinux  38.2 kB\n ghc-srpm-macros-1.5.0-4.amzn2023.0.2.noarch                   amazonlinux   8.7 kB\n glibc-devel-2.34-231.amzn2023.0.5.aarch64                     amazonlinux 456.1 kB\n glibc-gconv-extra-2.34-231.amzn2023.0.5.aarch64               amazonlinux   2.0 MB\n go-srpm-macros-3.8.0-1.amzn2023.0.1.noarch                    amazonlinux  27.7 kB\n guile22-2.2.7-2.amzn2023.0.3.aarch64                          amazonlinux   6.7 MB\n jansson-2.14-0.amzn2023.aarch64                               amazonlinux  48.1 kB\n kernel-srpm-macros-1.0-14.amzn2023.0.3.noarch                 amazonlinux   9.1 kB\n kernel6.18-headers-1:6.18.56-125.164.amzn2023.aarch64         amazonlinux   1.6 MB\n libdatrie-0.2.13-1.amzn2023.0.2.aarch64                       amazonlinux  33.6 kB\n libgomp-14.2.1-7.amzn2023.0.2.aarch64                         amazonlinux 356.6 kB\n libmpc-1.2.1-2.amzn2023.0.2.aarch64                           amazonlinux  64.8 kB\n libpkgconf-1.8.0-4.amzn2023.0.2.aarch64                       amazonlinux  37.9 kB\n libstdc++-devel-11.5.0-5.amzn2023.0.5.aarch64                 amazonlinux   2.9 MB\n libthai-0.1.28-6.amzn2023.0.2.aarch64                         amazonlinux 213.0 kB\n libtool-ltdl-2.4.7-1.amzn2023.0.3.aarch64                     amazonlinux  38.6 kB\n libxcrypt-devel-4.4.33-7.amzn2023.aarch64                     amazonlinux  32.4 kB\n lua-srpm-macros-1-4.amzn2023.0.2.noarch                       amazonlinux   9.4 kB\n make-1:4.3-5.amzn2023.0.2.aarch64                             amazonlinux 542.6 kB\n ocaml-srpm-macros-6-6.amzn2023.0.2.noarch                     amazonlinux   9.0 kB\n openblas-srpm-macros-2-9.amzn2023.0.2.noarch                  amazonlinux   8.4 kB\n package-notes-srpm-macros-0.4-18.amzn2023.0.5.noarch          amazonlinux  13.1 kB\n perl-4:5.32.1-477.amzn2023.0.11.aarch64                       amazonlinux  13.6 kB\n perl-Algorithm-Diff-1.2010-2.amzn2023.0.2.noarch              amazonlinux  48.6 kB\n perl-Archive-Tar-3.04-522.amzn2023.0.3.noarch                 amazonlinux  75.7 kB\n perl-Archive-Zip-1.68-4.amzn2023.0.2.noarch                   amazonlinux 109.0 kB\n perl-Attribute-Handlers-1.01-477.amzn2023.0.11.noarch         amazonlinux  28.7 kB\n perl-AutoSplit-5.74-477.amzn2023.0.11.noarch                  amazonlinux  22.7 kB\n perl-Benchmark-1.23-477.amzn2023.0.11.noarch                  amazonlinux  28.0 kB\n perl-CPAN-2.38-521.amzn2023.0.1.noarch                        amazonlinux 574.6 kB\n perl-CPAN-DistnameInfo-0.12-21.amzn2023.0.2.noarch            amazonlinux  15.4 kB\n perl-CPAN-Meta-2.150013-1.amzn2023.0.1.noarch                 amazonlinux 182.9 kB\n perl-CPAN-Meta-Requirements-2.145-1.amzn2023.0.1.noarch       amazonlinux  37.9 kB\n perl-CPAN-Meta-YAML-0.020-522.amzn2023.0.1.noarch             amazonlinux  28.7 kB\n perl-Compress-Bzip2-2.28-3.amzn2023.0.3.aarch64               amazonlinux  70.9 kB\n perl-Compress-Raw-Bzip2-2.217-1.amzn2023.0.2.aarch64          amazonlinux  37.6 kB\n perl-Compress-Raw-Lzma-2.221-1.amzn2023.0.2.aarch64           amazonlinux  62.2 kB\n perl-Compress-Raw-Zlib-2.221-1.amzn2023.0.2.aarch64           amazonlinux  67.7 kB\n perl-Config-Extensions-0.03-477.amzn2023.0.11.noarch          amazonlinux  13.1 kB\n perl-Config-Perl-V-0.39-1.amzn2023.0.1.noarch                 amazonlinux  23.6 kB\n perl-DBM_Filter-0.06-477.amzn2023.0.11.noarch                 amazonlinux  32.9 kB\n perl-DB_File-1.860-1.amzn2023.0.2.aarch64                     amazonlinux  83.5 kB\n perl-Data-OptList-0.110-15.amzn2023.0.2.noarch                amazonlinux  27.4 kB\n perl-Data-Section-0.200007-12.amzn2023.0.2.noarch             amazonlinux  25.9 kB\n perl-Devel-PPPort-3.73-522.amzn2023.0.2.aarch64               amazonlinux 222.1 kB\n perl-Devel-Peek-1.28-477.amzn2023.0.11.aarch64                amazonlinux  33.2 kB\n perl-Devel-SelfStubber-1.06-477.amzn2023.0.11.noarch          amazonlinux  15.2 kB\n perl-Devel-Size-0.86-1.amzn2023.0.2.aarch64                   amazonlinux  33.1 kB\n perl-Digest-SHA-1:6.04-522.amzn2023.0.2.aarch64               amazonlinux  65.0 kB\n perl-Digest-SHA1-2.13-32.amzn2023.0.3.aarch64                 amazonlinux  54.7 kB\n perl-DirHandle-1.05-477.amzn2023.0.11.noarch                  amazonlinux  13.3 kB\n perl-Dumpvalue-2.27-477.amzn2023.0.11.noarch                  amazonlinux  19.3 kB\n perl-Encode-Locale-1.05-19.amzn2023.0.2.noarch                amazonlinux  19.8 kB\n perl-Encode-devel-4:3.21-520.amzn2023.0.2.aarch64             amazonlinux  43.1 kB\n perl-English-1.11-477.amzn2023.0.11.noarch                    amazonlinux  14.5 kB\n perl-Env-1.04-458.amzn2023.0.2.noarch                         amazonlinux  20.5 kB\n perl-ExtUtils-CBuilder-1:0.280236-2.amzn2023.0.3.noarch       amazonlinux  47.6 kB\n perl-ExtUtils-Command-2:7.62-1.amzn2023.0.2.noarch            amazonlinux  14.8 kB\n perl-ExtUtils-Constant-0.25-477.amzn2023.0.11.noarch          amazonlinux  48.2 kB\n perl-ExtUtils-Embed-1.35-477.amzn2023.0.11.noarch             amazonlinux  18.6 kB\n perl-ExtUtils-Install-2.22-521.amzn2023.0.1.noarch            amazonlinux  46.3 kB\n perl-ExtUtils-MM-Utils-2:7.62-1.amzn2023.0.2.noarch           amazonlinux  12.2 kB\n perl-ExtUtils-MakeMaker-2:7.62-1.amzn2023.0.2.noarch          amazonlinux 295.4 kB\n perl-ExtUtils-Manifest-1:1.75-521.amzn2023.0.1.noarch         amazonlinux  36.2 kB\n perl-ExtUtils-Miniperl-1.09-477.amzn2023.0.11.noarch          amazonlinux  16.1 kB\n perl-ExtUtils-ParseXS-1:3.61-2.amzn2023.0.1.noarch            amazonlinux 299.7 kB\n perl-File-Compare-1.100.600-477.amzn2023.0.11.noarch          amazonlinux  14.1 kB\n perl-File-Copy-2.34-477.amzn2023.0.11.noarch                  amazonlinux  21.1 kB\n perl-File-DosGlob-1.12-477.amzn2023.0.11.aarch64              amazonlinux  20.7 kB\n perl-File-Fetch-1.08-4.amzn2023.0.1.noarch                    amazonlinux  32.8 kB\n perl-File-HomeDir-1.006-2.amzn2023.0.2.noarch                 amazonlinux  59.1 kB\n perl-File-Which-1.27-15.amzn2023.0.1.noarch                   amazonlinux  23.4 kB\n perl-FileCache-1.10-477.amzn2023.0.11.noarch                  amazonlinux  15.6 kB\n perl-Filter-2:1.65-2.amzn2023.0.2.aarch64                     amazonlinux  85.3 kB\n perl-Filter-Simple-0.96-458.amzn2023.0.2.noarch               amazonlinux  28.2 kB\n perl-FindBin-1.51-477.amzn2023.0.11.noarch                    amazonlinux  14.8 kB\n perl-GDBM_File-1.18-477.amzn2023.0.11.aarch64                 amazonlinux  23.4 kB\n perl-Hash-Util-0.23-477.amzn2023.0.11.aarch64                 amazonlinux  35.8 kB\n perl-Hash-Util-FieldHash-1.20-477.amzn2023.0.11.aarch64       amazonlinux  39.6 kB\n perl-I18N-Collate-1.02-477.amzn2023.0.11.noarch               amazonlinux  15.1 kB\n perl-I18N-LangTags-0.44-477.amzn2023.0.11.noarch              amazonlinux  56.2 kB\n perl-I18N-Langinfo-0.19-477.amzn2023.0.11.aarch64             amazonlinux  23.7 kB\n perl-IO-Compress-2.217-1.amzn2023.0.2.noarch                  amazonlinux 308.2 kB\n perl-IO-Compress-Lzma-2.101-2.amzn2023.0.2.noarch             amazonlinux  75.3 kB\n perl-IO-Zlib-1:1.11-2.amzn2023.0.2.noarch                     amazonlinux  20.4 kB\n perl-IPC-Cmd-2:1.04-459.amzn2023.0.2.noarch                   amazonlinux  41.0 kB\n perl-IPC-SysV-2.09-2.amzn2023.0.3.aarch64                     amazonlinux  44.0 kB\n perl-IPC-System-Simple-1.30-4.amzn2023.0.2.noarch             amazonlinux  40.5 kB\n perl-Importer-0.026-2.amzn2023.0.2.noarch                     amazonlinux  40.6 kB\n perl-JSON-PP-1:4.06-2.amzn2023.0.2.noarch                     amazonlinux  67.4 kB\n perl-Locale-Maketext-1.29-459.amzn2023.0.2.noarch             amazonlinux  96.8 kB\n perl-Locale-Maketext-Simple-1:0.21-477.amzn2023.0.11.noarch   amazonlinux  18.6 kB\n perl-MIME-Charset-1.012.2-13.amzn2023.0.2.noarch              amazonlinux  50.1 kB\n perl-MRO-Compat-0.13-13.amzn2023.0.2.noarch                   amazonlinux  20.3 kB\n perl-Math-BigInt-1:1.9998.39-2.amzn2023.0.2.noarch            amazonlinux 206.4 kB\n perl-Math-BigInt-FastCalc-0.501.400-3.amzn2023.0.2.aarch64    amazonlinux  28.9 kB\n perl-Math-BigRat-0.2624-500.amzn2023.0.2.noarch               amazonlinux  42.8 kB\n perl-Math-Complex-1.59-477.amzn2023.0.11.noarch               amazonlinux  48.4 kB\n perl-Memoize-1.03-477.amzn2023.0.11.noarch                    amazonlinux  58.6 kB\n perl-Module-Build-2:0.42.31-7.amzn2023.0.2.noarch             amazonlinux 260.5 kB\n perl-Module-CoreList-1:5.20211020-1.amzn2023.0.2.noarch       amazonlinux  84.3 kB\n perl-Module-CoreList-tools-1:5.20211020-1.amzn2023.0.2.noarch amazonlinux  18.4 kB\n perl-Module-Load-1:0.36-2.amzn2023.0.2.noarch                 amazonlinux  18.3 kB\n perl-Module-Load-Conditional-0.74-2.amzn2023.0.2.noarch       amazonlinux  23.1 kB\n perl-Module-Loaded-1:0.08-477.amzn2023.0.11.noarch            amazonlinux  14.2 kB\n perl-Module-Metadata-1.000037-458.amzn2023.0.2.noarch         amazonlinux  36.7 kB\n perl-Module-Pluggable-2:5.2-16.amzn2023.0.2.noarch            amazonlinux  32.6 kB\n perl-Module-Runtime-0.016-11.amzn2023.0.2.noarch              amazonlinux  24.2 kB\n perl-Module-Signature-0.87-3.amzn2023.0.2.noarch              amazonlinux  83.6 kB\n perl-NEXT-0.67-477.amzn2023.0.11.noarch                       amazonlinux  22.0 kB\n perl-Net-1.02-477.amzn2023.0.11.noarch                        amazonlinux  26.5 kB\n perl-Net-Ping-2.74-3.amzn2023.0.2.noarch                      amazonlinux  51.3 kB\n perl-ODBM_File-1.16-477.amzn2023.0.11.aarch64                 amazonlinux  22.9 kB\n perl-Object-HashBase-0.009-5.amzn2023.0.2.noarch              amazonlinux  26.7 kB\n perl-Opcode-1.48-477.amzn2023.0.11.aarch64                    amazonlinux  38.0 kB\n perl-Package-Generator-1.106-21.amzn2023.0.2.noarch           amazonlinux  23.9 kB\n perl-Params-Check-1:0.38-459.amzn2023.0.2.noarch              amazonlinux  22.8 kB\n perl-Params-Util-1.102-3.amzn2023.0.3.aarch64                 amazonlinux  34.3 kB\n perl-Perl-OSType-1.010-459.amzn2023.0.2.noarch                amazonlinux  23.8 kB\n perl-PerlIO-via-QuotedPrint-0.09-2.amzn2023.0.2.noarch        amazonlinux  22.7 kB\n perl-Pod-Checker-4:1.74-2.amzn2023.0.2.noarch                 amazonlinux  33.0 kB\n perl-Pod-Functions-1.13-477.amzn2023.0.11.noarch              amazonlinux  14.5 kB\n perl-Pod-Html-1.25-477.amzn2023.0.11.noarch                   amazonlinux  27.7 kB\n perl-Safe-2.41-477.amzn2023.0.11.noarch                       amazonlinux  26.2 kB\n perl-Search-Dict-1.07-477.amzn2023.0.11.noarch                amazonlinux  13.9 kB\n perl-SelfLoader-1.26-477.amzn2023.0.11.noarch                 amazonlinux  22.7 kB\n perl-Software-License-0.103014-10.amzn2023.0.2.noarch         amazonlinux 133.4 kB\n perl-Sub-Exporter-0.987-25.amzn2023.0.2.noarch                amazonlinux  68.5 kB\n perl-Sub-Install-0.928-26.amzn2023.0.2.noarch                 amazonlinux  23.3 kB\n perl-Sys-Hostname-1.23-477.amzn2023.0.11.aarch64              amazonlinux  18.2 kB\n perl-Sys-Syslog-0.36-459.amzn2023.0.3.aarch64                 amazonlinux  48.8 kB\n perl-Term-Complete-1.403-477.amzn2023.0.11.noarch             amazonlinux  13.8 kB\n perl-Term-ReadLine-1.17-477.amzn2023.0.11.noarch              amazonlinux  20.0 kB\n perl-Term-Size-Any-0.002-33.amzn2023.0.2.noarch               amazonlinux  14.2 kB\n perl-Term-Size-Perl-0.031-10.amzn2023.0.2.aarch64             amazonlinux  22.3 kB\n perl-Term-Table-0.015-6.amzn2023.0.2.noarch                   amazonlinux  36.3 kB\n perl-Test-1.31-477.amzn2023.0.11.noarch                       amazonlinux  29.8 kB\n perl-Test-Harness-1:3.42-459.amzn2023.0.2.noarch              amazonlinux 273.8 kB\n perl-Test-Simple-3:1.302219-2.amzn2023.0.1.noarch             amazonlinux 878.0 kB\n perl-Text-Abbrev-1.02-477.amzn2023.0.11.noarch                amazonlinux  13.0 kB\n perl-Text-Balanced-2.04-2.amzn2023.0.2.noarch                 amazonlinux  49.3 kB\n perl-Text-Diff-1.45-11.amzn2023.0.2.noarch                    amazonlinux  42.3 kB\n perl-Text-Glob-0.11-13.amzn2023.0.2.noarch                    amazonlinux  14.5 kB\n perl-Text-Template-1.59-3.amzn2023.0.2.noarch                 amazonlinux  61.9 kB\n perl-Thread-3.05-477.amzn2023.0.11.noarch                     amazonlinux  19.0 kB\n perl-Thread-Queue-3.14-458.amzn2023.0.2.noarch                amazonlinux  22.4 kB\n perl-Thread-Semaphore-2.13-477.amzn2023.0.11.noarch           amazonlinux  16.6 kB\n perl-Tie-4.6-477.amzn2023.0.11.noarch                         amazonlinux  32.8 kB\n perl-Tie-File-1.06-477.amzn2023.0.11.noarch                   amazonlinux  44.8 kB\n perl-Tie-Memoize-1.1-477.amzn2023.0.11.noarch                 amazonlinux  15.0 kB\n perl-Tie-RefHash-1.40-2.amzn2023.0.2.noarch                   amazonlinux  24.2 kB\n perl-Time-1.03-477.amzn2023.0.11.noarch                       amazonlinux  19.6 kB\n perl-Time-Piece-1.3401-477.amzn2023.0.11.aarch64              amazonlinux  42.0 kB\n perl-Unicode-Collate-1.29-2.amzn2023.0.3.aarch64              amazonlinux 736.6 kB\n perl-Unicode-LineBreak-2019.001-9.amzn2023.0.4.aarch64        amazonlinux 124.0 kB\n perl-Unicode-Normalize-1.27-459.amzn2023.0.3.aarch64          amazonlinux  89.1 kB\n perl-Unicode-UCD-0.75-477.amzn2023.0.11.noarch                amazonlinux  80.9 kB\n perl-User-pwent-1.03-477.amzn2023.0.11.noarch                 amazonlinux  21.6 kB\n perl-autodie-2.37-522.amzn2023.0.1.noarch                     amazonlinux  97.8 kB\n perl-autouse-1.11-477.amzn2023.0.11.noarch                    amazonlinux  14.6 kB\n perl-bignum-0.67-522.amzn2023.0.1.noarch                      amazonlinux  52.2 kB\n perl-blib-1.07-477.amzn2023.0.11.noarch                       amazonlinux  13.2 kB\n perl-debugger-1.56-477.amzn2023.0.11.noarch                   amazonlinux 137.5 kB\n perl-deprecate-0.04-477.amzn2023.0.11.noarch                  amazonlinux  15.5 kB\n perl-devel-4:5.32.1-477.amzn2023.0.11.aarch64                 amazonlinux 676.5 kB\n perl-diagnostics-1.37-477.amzn2023.0.11.noarch                amazonlinux 216.4 kB\n perl-doc-5.32.1-477.amzn2023.0.11.noarch                      amazonlinux   4.7 MB\n perl-encoding-4:3.00-520.amzn2023.0.2.aarch64                 amazonlinux  65.5 kB\n perl-encoding-warnings-0.13-477.amzn2023.0.11.noarch          amazonlinux  17.5 kB\n perl-experimental-0.036-3.amzn2023.0.1.noarch                 amazonlinux  29.7 kB\n perl-fields-2.27-477.amzn2023.0.11.noarch                     amazonlinux  17.1 kB\n perl-filetest-1.03-477.amzn2023.0.11.noarch                   amazonlinux  15.5 kB\n perl-inc-latest-2:0.500-18.amzn2023.0.2.noarch                amazonlinux  24.9 kB\n perl-less-0.03-477.amzn2023.0.11.noarch                       amazonlinux  14.0 kB\n perl-libnetcfg-4:5.32.1-477.amzn2023.0.11.noarch              amazonlinux  17.2 kB\n perl-local-lib-2.000024-11.amzn2023.0.2.noarch                amazonlinux  69.1 kB\n perl-locale-1.09-477.amzn2023.0.11.noarch                     amazonlinux  14.5 kB\n perl-macros-4:5.32.1-477.amzn2023.0.11.noarch                 amazonlinux  11.6 kB\n perl-meta-notation-5.32.1-477.amzn2023.0.11.noarch            amazonlinux  10.5 kB\n perl-open-1.12-477.amzn2023.0.11.noarch                       amazonlinux  17.3 kB\n perl-perlfaq-5.20210520-1.amzn2023.0.2.noarch                 amazonlinux 382.9 kB\n perl-ph-5.32.1-477.amzn2023.0.11.aarch64                      amazonlinux  38.2 kB\n perl-sigtrap-1.09-477.amzn2023.0.11.noarch                    amazonlinux  16.6 kB\n perl-sort-2.04-477.amzn2023.0.11.noarch                       amazonlinux  14.4 kB\n perl-srpm-macros-1-39.amzn2023.0.2.noarch                     amazonlinux   8.9 kB\n perl-threads-1:2.25-458.amzn2023.0.4.aarch64                  amazonlinux  58.1 kB\n perl-threads-shared-1.61-458.amzn2023.0.3.aarch64             amazonlinux  44.4 kB\n perl-utils-5.32.1-477.amzn2023.0.11.noarch                    amazonlinux  56.8 kB\n perl-version-7:0.99.29-1.amzn2023.0.3.aarch64                 amazonlinux  63.5 kB\n perl-vmsish-1.04-477.amzn2023.0.11.noarch                     amazonlinux  15.0 kB\n pkgconf-1.8.0-4.amzn2023.0.2.aarch64                          amazonlinux  43.9 kB\n pkgconf-m4-1.8.0-4.amzn2023.0.2.noarch                        amazonlinux  15.7 kB\n pkgconf-pkg-config-1.8.0-4.amzn2023.0.2.aarch64               amazonlinux  11.4 kB\n python-srpm-macros-3.9-41.amzn2023.0.6.noarch                 amazonlinux  20.8 kB\n python3-pyparsing-2.4.7-6.amzn2023.0.2.noarch                 amazonlinux 155.8 kB\n rust-toolset-srpm-macros-1.99.0-1.amzn2023.noarch             amazonlinux  13.9 kB\n sombok-2.4.0-14.amzn2023.0.2.aarch64                          amazonlinux  48.6 kB\n systemtap-sdt-devel-5.4-1.amzn2023.0.2.aarch64                amazonlinux  73.2 kB\n systemtap-sdt-dtrace-5.4-1.amzn2023.0.2.aarch64               amazonlinux  74.0 kB\n time-1.9-16.amzn2023.0.2.aarch64                              amazonlinux  48.9 kB\n unzip-6.0-68.amzn2023.0.2.aarch64                             amazonlinux 184.1 kB\n zip-3.0-28.amzn2023.0.4.aarch64                               amazonlinux 265.5 kB\nTransaction Summary:\n Installing:      214 packages\n Reinstalling:      0 packages\n Upgrading:         0 packages\n Obsoleting:        0 packages\n Removing:          0 packages\n Downgrading:       0 packages\nDownloading packages...\nRunning transaction test...\nInstalling: perl-File-Copy;2.34-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-ExtUtils-Manifest;1:1.75-521.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-threads;1:2.25-458.amzn2023.0.4;aarch64;amazonlinux\nInstalling: perl-threads-shared;1.61-458.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-File-Compare;1.100.600-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Compress-Raw-Zlib;2.221-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-meta-notation;5.32.1-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-locale;1.09-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-version;7:0.99.29-1.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-CPAN-Meta-Requirements;2.145-1.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-Module-CoreList;1:5.20211020-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Module-Metadata;1.000037-458.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Unicode-Normalize;1.27-459.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-Tie;4.6-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Term-ReadLine;1.17-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Perl-OSType;1.010-459.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Module-Load;1:0.36-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Math-Complex;1.59-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Math-BigRat;0.2624-500.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Math-BigInt;1:1.9998.39-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-JSON-PP;1:4.06-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Digest-SHA;1:6.04-522.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-Devel-Peek;1.28-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: libmpc;1.2.1-2.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-Dumpvalue;2.27-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Pod-Html;1.25-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-ExtUtils-Command;2:7.62-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-doc;5.32.1-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-deprecate;0.04-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-autouse;1.11-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-User-pwent;1.03-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Tie-RefHash;1.40-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Text-Balanced;2.04-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Sys-Hostname;1.23-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-Sub-Install;0.928-26.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-SelfLoader;1.26-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Params-Util;1.102-3.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-Opcode;1.48-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-Safe;2.41-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Net-Ping;2.74-3.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-I18N-Langinfo;0.19-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-I18N-LangTags;0.44-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Locale-Maketext;1.29-459.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Locale-Maketext-Simple;1:0.21-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Params-Check;1:0.38-459.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Module-Load-Conditional;0.74-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Hash-Util-FieldHash;1.20-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-Hash-Util;0.23-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-fields;2.27-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-ExtUtils-ParseXS;1:3.61-2.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-ExtUtils-MM-Utils;2:7.62-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-IPC-Cmd;2:1.04-459.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-ExtUtils-Constant;0.25-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-DirHandle;1.05-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Devel-PPPort;3.73-522.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-Compress-Raw-Bzip2;2.217-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-IO-Compress;2.217-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-IO-Zlib;1:1.11-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-CPAN-Meta-YAML;0.020-522.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-CPAN-Meta;2.150013-1.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-Benchmark;1.23-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Test-Harness;1:3.42-459.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-AutoSplit;5.74-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-DBM_Filter;0.06-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-File-Fetch;1.08-4.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-Encode-Locale;1.05-19.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Data-OptList;0.110-15.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Devel-SelfStubber;1.06-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: cpp;11.5.0-5.amzn2023.0.5;aarch64;amazonlinux\nInstalling: perl-debugger;1.56-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Math-BigInt-FastCalc;0.501.400-3.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-bignum;0.67-522.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-Env;1.04-458.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Unicode-Collate;1.29-2.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-Unicode-UCD;0.75-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Module-CoreList-tools;1:5.20211020-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-experimental;0.036-3.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-sigtrap;1.09-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Archive-Zip;1.68-4.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Thread;3.05-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Thread-Queue;3.14-458.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Thread-Semaphore;2.13-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: unzip;6.0-68.amzn2023.0.2;aarch64;amazonlinux\nInstalling: zip;3.0-28.amzn2023.0.4;aarch64;amazonlinux\nInstalling: rust-toolset-srpm-macros;1.99.0-1.amzn2023;noarch;amazonlinux\nInstalling: python3-pyparsing;2.4.7-6.amzn2023.0.2;noarch;amazonlinux\nInstalling: systemtap-sdt-dtrace;5.4-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: systemtap-sdt-devel;5.4-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: pkgconf-m4;1.8.0-4.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-vmsish;1.04-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-utils;5.32.1-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-srpm-macros;1-39.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-sort;2.04-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-ph;5.32.1-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-perlfaq;5.20210520-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-macros;4:5.32.1-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-local-lib;2.000024-11.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-less;0.03-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-filetest;1.03-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-encoding-warnings;0.13-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-diagnostics;1.37-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-blib;1.07-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Time-Piece;1.3401-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-Time;1.03-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Tie-Memoize;1.1-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Tie-File;1.06-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Text-Template;1.59-3.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Text-Glob;0.11-13.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Text-Abbrev;1.02-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Test;1.31-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Term-Size-Perl;0.031-10.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-Term-Size-Any;0.002-33.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Term-Complete;1.403-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Sys-Syslog;0.36-459.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-Search-Dict;1.07-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Pod-Functions;1.13-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Pod-Checker;4:1.74-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-PerlIO-via-QuotedPrint;0.09-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Package-Generator;1.106-21.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Sub-Exporter;0.987-25.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Object-HashBase;0.009-5.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-ODBM_File;1.16-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-Net;1.02-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-NEXT;0.67-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Module-Runtime;0.016-11.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Module-Pluggable;2:5.2-16.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Module-Loaded;1:0.08-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Memoize;1.03-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-MRO-Compat;0.13-13.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Data-Section;0.200007-12.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Software-License;0.103014-10.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-MIME-Charset;1.012.2-13.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Importer;0.026-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-IPC-System-Simple;1.30-4.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-autodie;2.37-522.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-IPC-SysV;2.09-2.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-I18N-Collate;1.02-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-GDBM_File;1.18-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-FindBin;1.51-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-FileCache;1.10-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-File-Which;1.27-15.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-File-HomeDir;1.006-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-File-DosGlob;1.12-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-English;1.11-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Digest-SHA1;2.13-32.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-Devel-Size;0.86-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-DB_File;1.860-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-Config-Perl-V;0.39-1.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-Config-Extensions;0.03-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Compress-Raw-Lzma;2.221-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-IO-Compress-Lzma;2.101-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Compress-Bzip2;2.28-3.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-CPAN-DistnameInfo;0.12-21.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Attribute-Handlers;1.01-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Algorithm-Diff;1.2010-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Text-Diff;1.45-11.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Archive-Tar;3.04-522.amzn2023.0.3;noarch;amazonlinux\nInstalling: perl-Module-Signature;0.87-3.amzn2023.0.2;noarch;amazonlinux\nInstalling: package-notes-srpm-macros;0.4-18.amzn2023.0.5;noarch;amazonlinux\nInstalling: openblas-srpm-macros;2-9.amzn2023.0.2;noarch;amazonlinux\nInstalling: ocaml-srpm-macros;6-6.amzn2023.0.2;noarch;amazonlinux\nInstalling: lua-srpm-macros;1-4.amzn2023.0.2;noarch;amazonlinux\nInstalling: libtool-ltdl;2.4.7-1.amzn2023.0.3;aarch64;amazonlinux\nInstalling: libstdc++-devel;11.5.0-5.amzn2023.0.5;aarch64;amazonlinux\nInstalling: libpkgconf;1.8.0-4.amzn2023.0.2;aarch64;amazonlinux\nInstalling: libgomp;14.2.1-7.amzn2023.0.2;aarch64;amazonlinux\nInstalling: libdatrie;0.2.13-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: libthai;0.1.28-6.amzn2023.0.2;aarch64;amazonlinux\nInstalling: sombok;2.4.0-14.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-Unicode-LineBreak;2019.001-9.amzn2023.0.4;aarch64;amazonlinux\nInstalling: perl-Term-Table;0.015-6.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Test-Simple;3:1.302219-2.amzn2023.0.1;noarch;amazonlinux\nInstalling: kernel6.18-headers;1:6.18.56-125.164.amzn2023;aarch64;amazonlinux\nInstalling: kernel-srpm-macros;1.0-14.amzn2023.0.3;noarch;amazonlinux\nInstalling: jansson;2.14-0.amzn2023;aarch64;amazonlinux\nInstalling: binutils;2.41-50.amzn2023.0.5;aarch64;amazonlinux\nInstalling: ghc-srpm-macros;1.5.0-4.amzn2023.0.2;noarch;amazonlinux\nInstalling: gc;8.0.4-5.amzn2023.0.2;aarch64;amazonlinux\nInstalling: guile22;2.2.7-2.amzn2023.0.3;aarch64;amazonlinux\nInstalling: make;1:4.3-5.amzn2023.0.2;aarch64;amazonlinux\nInstalling: file;5.39-7.amzn2023.0.4;aarch64;amazonlinux\nInstalling: efi-srpm-macros;5-4.amzn2023.0.5;noarch;amazonlinux\nInstalling: dwz;0.16-2.amzn2023.0.1;aarch64;amazonlinux\nInstalling: annobin-docs;12.69-1.amzn2023.0.1;noarch;amazonlinux\nInstalling: fonts-srpm-macros;1:2.0.5-12.amzn2023.0.2;noarch;amazonlinux\nInstalling: go-srpm-macros;3.8.0-1.amzn2023.0.1;noarch;amazonlinux\nInstalling: annobin-plugin-gcc;12.69-1.amzn2023.0.1;aarch64;amazonlinux\nInstalling: gcc-plugin-annobin;11.5.0-5.amzn2023.0.5;aarch64;amazonlinux\nInstalling: gcc;11.5.0-5.amzn2023.0.5;aarch64;amazonlinux\nInstalling: glibc-devel;2.34-231.amzn2023.0.5;aarch64;amazonlinux\nInstalling: libxcrypt-devel;4.4.33-7.amzn2023;aarch64;amazonlinux\nInstalling: pkgconf-pkg-config;1.8.0-4.amzn2023.0.2;aarch64;amazonlinux\nInstalling: pkgconf;1.8.0-4.amzn2023.0.2;aarch64;amazonlinux\nInstalling: python-srpm-macros;3.9-41.amzn2023.0.6;noarch;amazonlinux\nInstalling: amazon-rpm-config;228-11.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-ExtUtils-Install;2.22-521.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-devel;4:5.32.1-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-ExtUtils-MakeMaker;2:7.62-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Filter;2:1.65-2.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-encoding;4:3.00-520.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-ExtUtils-Embed;1.35-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-ExtUtils-Miniperl;1.09-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-open;1.12-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Filter-Simple;0.96-458.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-libnetcfg;4:5.32.1-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Encode-devel;4:3.21-520.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-inc-latest;2:0.500-18.amzn2023.0.2;noarch;amazonlinux\nInstalling: gcc-c++;11.5.0-5.amzn2023.0.5;aarch64;amazonlinux\nInstalling: perl-ExtUtils-CBuilder;1:0.280236-2.amzn2023.0.3;noarch;amazonlinux\nInstalling: perl-Module-Build;2:0.42.31-7.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-CPAN;2.38-521.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl;4:5.32.1-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: time;1.9-16.amzn2023.0.2;aarch64;amazonlinux\nInstalling: glibc-gconv-extra;2.34-231.amzn2023.0.5;aarch64;amazonlinux\nComplete.\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "versions",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "node --version; npm --version; gcc --version | head -1; /usr/bin/time --version | head -1",
+      "at": "2026-11-04T22:12:15.568Z",
+      "clientSeconds": 0.6879513750000041,
+      "exitCode": 0,
+      "stdout": "v18.12.1\n8.19.2\ngcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-5)\ntime (GNU Time) 1.9\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "express-clone-1",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "mkdir -p /root/bench-1; cd /root/bench-1; git clone --depth 1 https://github.com/expressjs/express",
+      "at": "2026-11-04T22:12:19.198Z",
+      "clientSeconds": 3.6295306249999992,
+      "exitCode": 0,
+      "stdout": "BENCH wall=3.37 user=0.04 sys=0.00 rss_kb=12000 exit=0\nCloning into 'express'...\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "express-install-1",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cd /root/bench-1/express; npm install --cache /root/bench-1/npm-cache",
+      "at": "2026-11-04T22:12:26.000Z",
+      "clientSeconds": 6.802423542000004,
+      "exitCode": 0,
+      "stdout": "BENCH wall=6.58 user=5.58 sys=0.62 rss_kb=405964 exit=0\nnpm WARN deprecated superagent@8.1.2: Please upgrade to superagent v10.2.2+, see release notes at https://github.com/forwardemail/superagent/releases/tag/v10.2.2 - maintenance is supported by Forward Email @ https://forwardemail.net\nnpm WARN deprecated uuid@8.3.2: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).\nnpm WARN deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me\nnpm WARN deprecated eslint@8.47.0: This version is no longer supported. Please see https://eslint.org/version-support for other options.\n\nadded 403 packages, and audited 404 packages in 6s\n\n93 packages are looking for funding\n  run `npm fund` for details\n\n9 vulnerabilities (1 low, 7 moderate, 1 high)\n\nTo address all issues possible (including breaking changes), run:\n  npm audit fix --force\n\nSome issues need review, and may require choosing\na different dependency.\n\nRun `npm audit` for details.\nnpm notice \nnpm notice New major version of npm available! 8.19.2 -> 12.2.1\nnpm notice Changelog: <https://github.com/npm/cli/releases/tag/v12.2.1>\nnpm notice Run `npm install -g npm@12.2.1` to update!\nnpm notice \n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "express-test-1",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cd /root/bench-1/express; npm test",
+      "at": "2026-11-04T22:12:31.067Z",
+      "clientSeconds": 5.066285917000001,
+      "exitCode": 2,
+      "stdout": "Command exited with non-zero status 2\nBENCH wall=4.77 user=3.33 sys=0.34 rss_kb=181936 exit=2\n       .sendFile(path, fn)\n         should invoke the callback once when a socket error precedes the stream end:\n     Uncaught Error: socket failed\n      at Context.<anonymous> (test/res.sendFile.js:237:25)\n      at process.processImmediate (node:internal/timers:471:21)\n      at process.callbackTrampoline (node:internal/async_hooks:130:17)\n\n  2) res\n       .sendFile(path, fn)\n         should invoke the callback once when a socket error precedes the stream end:\n     Error: done() called multiple times in test <res .sendFile(path, fn) should invoke the callback once when a socket error precedes the stream end> of file /root/bench-1/express/test/res.sendFile.js\n      at Server.proxy (node_modules/after/index.js:23:13)\n      at Object.onceWrapper (node:events:627:28)\n      at Server.emit (node:events:513:28)\n      at emitCloseNT (node:net:1880:8)\n      at process.processTicksAndRejections (node:internal/process/task_queues:81:21)\n\n\n\nnpm notice \nnpm notice New major version of npm available! 8.19.2 -> 12.2.1\nnpm notice Changelog: <https://github.com/npm/cli/releases/tag/v12.2.1>\nnpm notice Run `npm install -g npm@12.2.1` to update!\nnpm notice \n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "express-revision-1",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "git -C /root/bench-1/express rev-parse HEAD",
+      "at": "2026-11-04T22:12:31.304Z",
+      "clientSeconds": 0.2359617089999956,
+      "exitCode": 0,
+      "stdout": "43fca52d28a422c8be48fd489cbd4f2d6152bab6\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "express-clone-2",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "mkdir -p /root/bench-2; cd /root/bench-2; git clone --depth 1 https://github.com/expressjs/express",
+      "at": "2026-11-04T22:12:31.930Z",
+      "clientSeconds": 0.6259985409999935,
+      "exitCode": 0,
+      "stdout": "BENCH wall=0.44 user=0.01 sys=0.02 rss_kb=11972 exit=0\nCloning into 'express'...\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "express-install-2",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cd /root/bench-2/express; npm install --cache /root/bench-2/npm-cache",
+      "at": "2026-11-04T22:12:38.430Z",
+      "clientSeconds": 6.498670417000001,
+      "exitCode": 0,
+      "stdout": "BENCH wall=6.22 user=5.59 sys=0.60 rss_kb=380288 exit=0\nnpm WARN deprecated superagent@8.1.2: Please upgrade to superagent v10.2.2+, see release notes at https://github.com/forwardemail/superagent/releases/tag/v10.2.2 - maintenance is supported by Forward Email @ https://forwardemail.net\nnpm WARN deprecated uuid@8.3.2: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).\nnpm WARN deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me\nnpm WARN deprecated eslint@8.47.0: This version is no longer supported. Please see https://eslint.org/version-support for other options.\n\nadded 403 packages, and audited 404 packages in 6s\n\n93 packages are looking for funding\n  run `npm fund` for details\n\n9 vulnerabilities (1 low, 7 moderate, 1 high)\n\nTo address all issues possible (including breaking changes), run:\n  npm audit fix --force\n\nSome issues need review, and may require choosing\na different dependency.\n\nRun `npm audit` for details.\nnpm notice \nnpm notice New major version of npm available! 8.19.2 -> 12.2.1\nnpm notice Changelog: <https://github.com/npm/cli/releases/tag/v12.2.1>\nnpm notice Run `npm install -g npm@12.2.1` to update!\nnpm notice \n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "express-test-2",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cd /root/bench-2/express; npm test",
+      "at": "2026-11-04T22:12:41.675Z",
+      "clientSeconds": 3.2437945410000104,
+      "exitCode": 2,
+      "stdout": "Command exited with non-zero status 2\nBENCH wall=3.06 user=3.27 sys=0.31 rss_kb=175144 exit=2\n  1284 passing (2s)\n  2 pending\n  2 failing\n\n  1) res\n       .sendFile(path, fn)\n         should invoke the callback once when a socket error precedes the stream end:\n     Uncaught Error: socket failed\n      at Context.<anonymous> (test/res.sendFile.js:237:25)\n      at process.processImmediate (node:internal/timers:471:21)\n      at process.callbackTrampoline (node:internal/async_hooks:130:17)\n\n  2) res\n       .sendFile(path, fn)\n         should invoke the callback once when a socket error precedes the stream end:\n     Error: done() called multiple times in test <res .sendFile(path, fn) should invoke the callback once when a socket error precedes the stream end> of file /root/bench-2/express/test/res.sendFile.js\n      at Server.proxy (node_modules/after/index.js:23:13)\n      at Object.onceWrapper (node:events:627:28)\n      at Server.emit (node:events:513:28)\n      at emitCloseNT (node:net:1880:8)\n      at process.processTicksAndRejections (node:internal/process/task_queues:81:21)\n\n\n\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "express-revision-2",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "git -C /root/bench-2/express rev-parse HEAD",
+      "at": "2026-11-04T22:12:41.906Z",
+      "clientSeconds": 0.23022437500000523,
+      "exitCode": 0,
+      "stdout": "43fca52d28a422c8be48fd489cbd4f2d6152bab6\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "express-clone-3",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "mkdir -p /root/bench-3; cd /root/bench-3; git clone --depth 1 https://github.com/expressjs/express",
+      "at": "2026-11-04T22:12:42.613Z",
+      "clientSeconds": 0.7071394589999982,
+      "exitCode": 0,
+      "stdout": "BENCH wall=0.41 user=0.03 sys=0.01 rss_kb=11884 exit=0\nCloning into 'express'...\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "express-install-3",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cd /root/bench-3/express; npm install --cache /root/bench-3/npm-cache",
+      "at": "2026-11-04T22:12:49.182Z",
+      "clientSeconds": 6.568024666000012,
+      "exitCode": 0,
+      "stdout": "BENCH wall=6.37 user=5.61 sys=0.62 rss_kb=405340 exit=0\nnpm WARN deprecated superagent@8.1.2: Please upgrade to superagent v10.2.2+, see release notes at https://github.com/forwardemail/superagent/releases/tag/v10.2.2 - maintenance is supported by Forward Email @ https://forwardemail.net\nnpm WARN deprecated uuid@8.3.2: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).\nnpm WARN deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me\nnpm WARN deprecated eslint@8.47.0: This version is no longer supported. Please see https://eslint.org/version-support for other options.\n\nadded 403 packages, and audited 404 packages in 6s\n\n93 packages are looking for funding\n  run `npm fund` for details\n\n9 vulnerabilities (1 low, 7 moderate, 1 high)\n\nTo address all issues possible (including breaking changes), run:\n  npm audit fix --force\n\nSome issues need review, and may require choosing\na different dependency.\n\nRun `npm audit` for details.\nnpm notice \nnpm notice New major version of npm available! 8.19.2 -> 12.2.1\nnpm notice Changelog: <https://github.com/npm/cli/releases/tag/v12.2.1>\nnpm notice Run `npm install -g npm@12.2.1` to update!\nnpm notice \n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "express-test-3",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cd /root/bench-3/express; npm test",
+      "at": "2026-11-04T22:12:52.437Z",
+      "clientSeconds": 3.255188458999997,
+      "exitCode": 2,
+      "stdout": "Command exited with non-zero status 2\nBENCH wall=3.04 user=3.41 sys=0.17 rss_kb=175088 exit=2\n  1284 passing (2s)\n  2 pending\n  2 failing\n\n  1) res\n       .sendFile(path, fn)\n         should invoke the callback once when a socket error precedes the stream end:\n     Uncaught Error: socket failed\n      at Context.<anonymous> (test/res.sendFile.js:237:25)\n      at process.processImmediate (node:internal/timers:471:21)\n      at process.callbackTrampoline (node:internal/async_hooks:130:17)\n\n  2) res\n       .sendFile(path, fn)\n         should invoke the callback once when a socket error precedes the stream end:\n     Error: done() called multiple times in test <res .sendFile(path, fn) should invoke the callback once when a socket error precedes the stream end> of file /root/bench-3/express/test/res.sendFile.js\n      at Server.proxy (node_modules/after/index.js:23:13)\n      at Object.onceWrapper (node:events:627:28)\n      at Server.emit (node:events:513:28)\n      at emitCloseNT (node:net:1880:8)\n      at process.processTicksAndRejections (node:internal/process/task_queues:81:21)\n\n\n\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "express-revision-3",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "git -C /root/bench-3/express rev-parse HEAD",
+      "at": "2026-11-04T22:12:52.700Z",
+      "clientSeconds": 0.26178783400001704,
+      "exitCode": 0,
+      "stdout": "43fca52d28a422c8be48fd489cbd4f2d6152bab6\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "rust-install",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "curl --proto \"=https\" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal",
+      "at": "2026-11-04T22:12:59.382Z",
+      "clientSeconds": 6.681906917000015,
+      "exitCode": 0,
+      "stdout": "BENCH wall=6.48 user=4.68 sys=0.69 rss_kb=496340 exit=0\nCC_aarch64_unknown_linux_gnu = None\ncargo:rerun-if-env-changed=HOST_CC\nHOST_CC = None\ncargo:rerun-if-env-changed=CC\nCC = None\ncargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT\ncargo:rerun-if-env-changed=CPATH\ncargo:rerun-if-env-changed=C_INCLUDE_PATH\ncargo:rerun-if-env-changed=CPLUS_INCLUDE_PATH\ncargo:rerun-if-env-changed=OBJC_INCLUDE_PATH\ncargo:rerun-if-env-changed=OBJCPLUS_INCLUDE_PATH\ncargo:rerun-if-env-changed=COMPILER_PATH\ncargo:rerun-if-env-changed=SOURCE_DATE_EPOCH\ncargo:rerun-if-env-changed=GCC_EXEC_PREFIX\ncargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS\nCRATE_CC_NO_DEFAULTS = None\ncargo:rerun-if-env-changed=CFLAGS\nCFLAGS = None\ncargo:rerun-if-env-changed=HOST_CFLAGS\nHOST_CFLAGS = None\ncargo:rerun-if-env-changed=CFLAGS_aarch64_unknown_linux_gnu\nCFLAGS_aarch64_unknown_linux_gnu = None\ncargo:rerun-if-env-changed=CFLAGS_aarch64-unknown-linux-gnu\nCFLAGS_aarch64-unknown-linux-gnu = None\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "rust-versions",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "source /root/.cargo/env; rustc --version; cargo --version",
+      "at": "2026-11-04T22:12:59.618Z",
+      "clientSeconds": 0.23464433400001145,
+      "exitCode": 0,
+      "stdout": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\ncargo 1.99.1 (5f94df478 2026-08-27)\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "ripgrep-clone-1",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cd /root/bench-1; git clone --depth 1 https://github.com/BurntSushi/ripgrep",
+      "at": "2026-11-04T22:13:00.633Z",
+      "clientSeconds": 1.015210167000012,
+      "exitCode": 0,
+      "stdout": "BENCH wall=0.54 user=0.04 sys=0.02 rss_kb=11788 exit=0\nCloning into 'ripgrep'...\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "ripgrep-build-1",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "source /root/.cargo/env; cd /root/bench-1/ripgrep; CARGO_HOME=/root/bench-1/cargo-cache cargo build --release",
+      "at": "2026-11-04T22:13:17.971Z",
+      "clientSeconds": 17.337007249999996,
+      "exitCode": 0,
+      "stdout": "BENCH wall=17.12 user=56.01 sys=2.78 rss_kb=424780 exit=0\n   Compiling grep-matcher v0.1.9 (/root/bench-1/ripgrep/crates/matcher)\n   Compiling serde v1.0.229\n   Compiling crossbeam-epoch v0.9.20\n   Compiling serde_json v1.0.151\n   Compiling encoding_rs_io v0.1.8\n   Compiling memmap2 v0.9.11\n   Compiling crossbeam-deque v0.8.7\n   Compiling bstr v1.13.0\n   Compiling termcolor v1.4.1\n   Compiling globset v0.4.21 (/root/bench-1/ripgrep/crates/globset)\n   Compiling itoa v1.0.18\n   Compiling grep-searcher v0.1.17 (/root/bench-1/ripgrep/crates/searcher)\n   Compiling same-file v1.0.6\n   Compiling anyhow v1.0.104\n   Compiling walkdir v2.5.0\n   Compiling grep-printer v0.3.1 (/root/bench-1/ripgrep/crates/printer)\n   Compiling grep-cli v0.1.12 (/root/bench-1/ripgrep/crates/cli)\n   Compiling grep-regex v0.1.14 (/root/bench-1/ripgrep/crates/regex)\n   Compiling ripgrep v15.2.0 (/root/bench-1/ripgrep)\n   Compiling grep v0.4.1 (/root/bench-1/ripgrep/crates/grep)\n   Compiling ignore v0.4.34 (/root/bench-1/ripgrep/crates/ignore)\n   Compiling textwrap v0.16.2\n   Compiling lexopt v0.3.2\n    Finished `release` profile [optimized + debuginfo] target(s) in 17.09s\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "ripgrep-revision-1",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "git -C /root/bench-1/ripgrep rev-parse HEAD; /root/bench-1/ripgrep/target/release/rg --version; df -h ~; free -m",
+      "at": "2026-11-04T22:13:18.254Z",
+      "clientSeconds": 0.282095083000022,
+      "exitCode": 0,
+      "stdout": "91f5d22ef48bde459d90a8c7dbeab416e97d0f2b\nripgrep 15.2.0 (rev 91f5d22ef4)\n\nfeatures:-pcre2\nsimd(compile):+NEON\nsimd(runtime):+NEON\n\nPCRE2 is not available in this build of ripgrep.\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/vdc        7.8G  2.8G  4.7G  38% /\n               total        used        free      shared  buff/cache   available\nMem:            8016         191        5792           3        2031        7557\nSwap:              0           0           0\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "ripgrep-clone-2",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cd /root/bench-2; git clone --depth 1 https://github.com/BurntSushi/ripgrep",
+      "at": "2026-11-04T22:13:19.089Z",
+      "clientSeconds": 0.8345154169999878,
+      "exitCode": 0,
+      "stdout": "BENCH wall=0.61 user=0.03 sys=0.03 rss_kb=11828 exit=0\nCloning into 'ripgrep'...\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "ripgrep-build-2",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "source /root/.cargo/env; cd /root/bench-2/ripgrep; CARGO_HOME=/root/bench-2/cargo-cache cargo build --release",
+      "at": "2026-11-04T22:13:36.319Z",
+      "clientSeconds": 17.228962832999997,
+      "exitCode": 0,
+      "stdout": "BENCH wall=17.02 user=55.91 sys=2.86 rss_kb=420720 exit=0\n   Compiling grep-matcher v0.1.9 (/root/bench-2/ripgrep/crates/matcher)\n   Compiling crossbeam-epoch v0.9.20\n   Compiling serde_json v1.0.151\n   Compiling serde v1.0.229\n   Compiling encoding_rs_io v0.1.8\n   Compiling bstr v1.13.0\n   Compiling memmap2 v0.9.11\n   Compiling globset v0.4.21 (/root/bench-2/ripgrep/crates/globset)\n   Compiling termcolor v1.4.1\n   Compiling itoa v1.0.18\n   Compiling crossbeam-deque v0.8.7\n   Compiling grep-searcher v0.1.17 (/root/bench-2/ripgrep/crates/searcher)\n   Compiling anyhow v1.0.104\n   Compiling same-file v1.0.6\n   Compiling walkdir v2.5.0\n   Compiling grep-printer v0.3.1 (/root/bench-2/ripgrep/crates/printer)\n   Compiling grep-cli v0.1.12 (/root/bench-2/ripgrep/crates/cli)\n   Compiling grep-regex v0.1.14 (/root/bench-2/ripgrep/crates/regex)\n   Compiling ripgrep v15.2.0 (/root/bench-2/ripgrep)\n   Compiling grep v0.4.1 (/root/bench-2/ripgrep/crates/grep)\n   Compiling ignore v0.4.34 (/root/bench-2/ripgrep/crates/ignore)\n   Compiling textwrap v0.16.2\n   Compiling lexopt v0.3.2\n    Finished `release` profile [optimized + debuginfo] target(s) in 16.99s\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "ripgrep-revision-2",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "git -C /root/bench-2/ripgrep rev-parse HEAD; /root/bench-2/ripgrep/target/release/rg --version; df -h ~; free -m",
+      "at": "2026-11-04T22:13:36.603Z",
+      "clientSeconds": 0.2832381250000035,
+      "exitCode": 0,
+      "stdout": "91f5d22ef48bde459d90a8c7dbeab416e97d0f2b\nripgrep 15.2.0 (rev 91f5d22ef4)\n\nfeatures:-pcre2\nsimd(compile):+NEON\nsimd(runtime):+NEON\n\nPCRE2 is not available in this build of ripgrep.\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/vdc        7.8G  3.0G  4.4G  41% /\n               total        used        free      shared  buff/cache   available\nMem:            8016         197        5549           3        2270        7546\nSwap:              0           0           0\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "ripgrep-clone-3",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cd /root/bench-3; git clone --depth 1 https://github.com/BurntSushi/ripgrep",
+      "at": "2026-11-04T22:13:37.434Z",
+      "clientSeconds": 0.8308220000000147,
+      "exitCode": 0,
+      "stdout": "BENCH wall=0.63 user=0.04 sys=0.02 rss_kb=11980 exit=0\nCloning into 'ripgrep'...\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "ripgrep-build-3",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "source /root/.cargo/env; cd /root/bench-3/ripgrep; CARGO_HOME=/root/bench-3/cargo-cache cargo build --release",
+      "at": "2026-11-04T22:13:54.822Z",
+      "clientSeconds": 17.387502083,
+      "exitCode": 0,
+      "stdout": "BENCH wall=17.17 user=56.18 sys=2.73 rss_kb=425432 exit=0\n   Compiling grep-matcher v0.1.9 (/root/bench-3/ripgrep/crates/matcher)\n   Compiling serde v1.0.229\n   Compiling crossbeam-epoch v0.9.20\n   Compiling serde_json v1.0.151\n   Compiling encoding_rs_io v0.1.8\n   Compiling memmap2 v0.9.11\n   Compiling bstr v1.13.0\n   Compiling crossbeam-deque v0.8.7\n   Compiling termcolor v1.4.1\n   Compiling globset v0.4.21 (/root/bench-3/ripgrep/crates/globset)\n   Compiling itoa v1.0.18\n   Compiling grep-searcher v0.1.17 (/root/bench-3/ripgrep/crates/searcher)\n   Compiling same-file v1.0.6\n   Compiling anyhow v1.0.104\n   Compiling walkdir v2.5.0\n   Compiling grep-printer v0.3.1 (/root/bench-3/ripgrep/crates/printer)\n   Compiling grep-cli v0.1.12 (/root/bench-3/ripgrep/crates/cli)\n   Compiling grep-regex v0.1.14 (/root/bench-3/ripgrep/crates/regex)\n   Compiling ripgrep v15.2.0 (/root/bench-3/ripgrep)\n   Compiling grep v0.4.1 (/root/bench-3/ripgrep/crates/grep)\n   Compiling ignore v0.4.34 (/root/bench-3/ripgrep/crates/ignore)\n   Compiling textwrap v0.16.2\n   Compiling lexopt v0.3.2\n    Finished `release` profile [optimized + debuginfo] target(s) in 17.14s\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "ripgrep-revision-3",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "git -C /root/bench-3/ripgrep rev-parse HEAD; /root/bench-3/ripgrep/target/release/rg --version; df -h ~; free -m",
+      "at": "2026-11-04T22:13:55.101Z",
+      "clientSeconds": 0.27751333300000985,
+      "exitCode": 0,
+      "stdout": "91f5d22ef48bde459d90a8c7dbeab416e97d0f2b\nripgrep 15.2.0 (rev 91f5d22ef4)\n\nfeatures:-pcre2\nsimd(compile):+NEON\nsimd(runtime):+NEON\n\nPCRE2 is not available in this build of ripgrep.\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/vdc        7.8G  3.2G  4.2G  44% /\n               total        used        free      shared  buff/cache   available\nMem:            8016         193        5314           3        2508        7544\nSwap:              0           0           0\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "ripgrep-build-j4",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "source /root/.cargo/env; cd /root/bench-1/ripgrep; nproc; CARGO_HOME=/root/bench-1/cargo-cache CARGO_TARGET_DIR=/root/ripgrep-target-j4 cargo build --release -j 4",
+      "at": "2026-11-04T22:14:11.995Z",
+      "clientSeconds": 16.892294708,
+      "exitCode": 0,
+      "stdout": "BENCH wall=16.68 user=56.00 sys=2.74 rss_kb=417996 exit=0\n   Compiling grep-matcher v0.1.9 (/root/bench-1/ripgrep/crates/matcher)\n   Compiling crossbeam-epoch v0.9.20\n   Compiling serde v1.0.229\n   Compiling serde_json v1.0.151\n   Compiling encoding_rs_io v0.1.8\n   Compiling bstr v1.13.0\n   Compiling memmap2 v0.9.11\n   Compiling globset v0.4.21 (/root/bench-1/ripgrep/crates/globset)\n   Compiling termcolor v1.4.1\n   Compiling crossbeam-deque v0.8.7\n   Compiling itoa v1.0.18\n   Compiling grep-searcher v0.1.17 (/root/bench-1/ripgrep/crates/searcher)\n   Compiling anyhow v1.0.104\n   Compiling same-file v1.0.6\n   Compiling walkdir v2.5.0\n   Compiling grep-printer v0.3.1 (/root/bench-1/ripgrep/crates/printer)\n   Compiling grep-cli v0.1.12 (/root/bench-1/ripgrep/crates/cli)\n   Compiling grep-regex v0.1.14 (/root/bench-1/ripgrep/crates/regex)\n   Compiling ripgrep v15.2.0 (/root/bench-1/ripgrep)\n   Compiling grep v0.4.1 (/root/bench-1/ripgrep/crates/grep)\n   Compiling ignore v0.4.34 (/root/bench-1/ripgrep/crates/ignore)\n   Compiling lexopt v0.3.2\n   Compiling textwrap v0.16.2\n    Finished `release` profile [optimized + debuginfo] target(s) in 16.66s\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "persistence-before",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "setsid sleep 3600 </dev/null >/root/sleeper.log 2>&1 & echo $! >/root/sleeper.pid; sleep 0.1; cat /root/sleeper.pid; ps -p $(cat /root/sleeper.pid) -o pid,lstart,args; sha256sum /root/bench-1/ripgrep/target/release/rg; du -sb /root/bench-1/ripgrep; echo persistent >/root/bench-marker",
+      "at": "2026-11-04T22:14:13.128Z",
+      "clientSeconds": 1.1326110000000045,
+      "exitCode": 0,
+      "stdout": "3974\n    PID                  STARTED COMMAND\n   3974 Wed Nov  4 22:14:12 2026 /usr/bin/coreutils --coreutils-prog-shebang=sleep /usr/bin/sleep 3600\n6e0aba4113650478904e67d4816a135632ca2e56d666cf56f3c5f3a1bc51d2f9  /root/bench-1/ripgrep/target/release/rg\n202179950\t/root/bench-1/ripgrep\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "suspend-1",
+      "seconds": 1.04260954200002
+    },
+    {
+      "label": "resume-1",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cat /root/bench-marker; ps -p $(cat /root/sleeper.pid) -o pid,lstart,args; sha256sum /root/bench-1/ripgrep/target/release/rg; /root/bench-1/ripgrep/target/release/rg --version; du -sb /root/bench-1/ripgrep",
+      "at": "2026-11-04T22:14:15.404Z",
+      "clientSeconds": 1.2321882089999854,
+      "exitCode": 0,
+      "stdout": "persistent\n    PID                  STARTED COMMAND\n   3974 Wed Nov  4 22:14:12 2026 /usr/bin/coreutils --coreutils-prog-shebang=sleep /usr/bin/sleep 3600\n6e0aba4113650478904e67d4816a135632ca2e56d666cf56f3c5f3a1bc51d2f9  /root/bench-1/ripgrep/target/release/rg\nripgrep 15.2.0 (rev 91f5d22ef4)\n\nfeatures:-pcre2\nsimd(compile):+NEON\nsimd(runtime):+NEON\n\nPCRE2 is not available in this build of ripgrep.\n202179950\t/root/bench-1/ripgrep\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "suspend-2",
+      "seconds": 0.6122697909999988
+    },
+    {
+      "label": "resume-2",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cat /root/bench-marker; ps -p $(cat /root/sleeper.pid) -o pid,lstart,args; sha256sum /root/bench-1/ripgrep/target/release/rg; /root/bench-1/ripgrep/target/release/rg --version; du -sb /root/bench-1/ripgrep",
+      "at": "2026-11-04T22:14:20.399Z",
+      "clientSeconds": 4.380758915999992,
+      "exitCode": 0,
+      "stdout": "persistent\n    PID                  STARTED COMMAND\n   3974 Wed Nov  4 22:14:12 2026 /usr/bin/coreutils --coreutils-prog-shebang=sleep /usr/bin/sleep 3600\n6e0aba4113650478904e67d4816a135632ca2e56d666cf56f3c5f3a1bc51d2f9  /root/bench-1/ripgrep/target/release/rg\nripgrep 15.2.0 (rev 91f5d22ef4)\n\nfeatures:-pcre2\nsimd(compile):+NEON\nsimd(runtime):+NEON\n\nPCRE2 is not available in this build of ripgrep.\n202179950\t/root/bench-1/ripgrep\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "suspend-3",
+      "seconds": 0.592545958999981
+    },
+    {
+      "label": "resume-3",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cat /root/bench-marker; ps -p $(cat /root/sleeper.pid) -o pid,lstart,args; sha256sum /root/bench-1/ripgrep/target/release/rg; /root/bench-1/ripgrep/target/release/rg --version; du -sb /root/bench-1/ripgrep",
+      "at": "2026-11-04T22:14:25.461Z",
+      "clientSeconds": 4.468222375000012,
+      "exitCode": 0,
+      "stdout": "persistent\n    PID                  STARTED COMMAND\n   3974 Wed Nov  4 22:14:12 2026 /usr/bin/coreutils --coreutils-prog-shebang=sleep /usr/bin/sleep 3600\n6e0aba4113650478904e67d4816a135632ca2e56d666cf56f3c5f3a1bc51d2f9  /root/bench-1/ripgrep/target/release/rg\nripgrep 15.2.0 (rev 91f5d22ef4)\n\nfeatures:-pcre2\nsimd(compile):+NEON\nsimd(runtime):+NEON\n\nPCRE2 is not available in this build of ripgrep.\n202179950\t/root/bench-1/ripgrep\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "typescript-clone",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cd /root; git clone --depth 1 https://github.com/microsoft/TypeScript",
+      "at": "2026-11-04T22:14:29.032Z",
+      "clientSeconds": 3.570877582999994,
+      "exitCode": 0,
+      "stdout": "BENCH wall=3.31 user=2.30 sys=0.83 rss_kb=96356 exit=0\nCloning into 'TypeScript'...\nUpdating files:  67% (46196/68495)\rUpdating files:  68% (46577/68495)\rUpdating files:  69% (47262/68495)\rUpdating files:  70% (47947/68495)\rUpdating files:  71% (48632/68495)\rUpdating files:  72% (49317/68495)\rUpdating files:  73% (50002/68495)\rUpdating files:  74% (50687/68495)\rUpdating files:  75% (51372/68495)\rUpdating files:  76% (52057/68495)\rUpdating files:  77% (52742/68495)\rUpdating files:  78% (53427/68495)\rUpdating files:  79% (54112/68495)\rUpdating files:  80% (54796/68495)\rUpdating files:  81% (55481/68495)\rUpdating files:  82% (56166/68495)\rUpdating files:  83% (56851/68495)\rUpdating files:  84% (57536/68495)\rUpdating files:  85% (58221/68495)\rUpdating files:  86% (58906/68495)\rUpdating files:  87% (59591/68495)\rUpdating files:  88% (60276/68495)\rUpdating files:  89% (60961/68495)\rUpdating files:  90% (61646/68495)\rUpdating files:  91% (62331/68495)\rUpdating files:  92% (63016/68495)\rUpdating files:  93% (63701/68495)\rUpdating files:  94% (64386/68495)\rUpdating files:  95% (65071/68495)\rUpdating files:  96% (65756/68495)\rUpdating files:  97% (66441/68495)\rUpdating files:  98% (67126/68495)\rUpdating files:  99% (67811/68495)\rUpdating files: 100% (68495/68495)\rUpdating files: 100% (68495/68495), done.\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "typescript-install",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cd /root/TypeScript; npm ci",
+      "at": "2026-11-04T22:14:38.790Z",
+      "clientSeconds": 9.757278749999998,
+      "exitCode": 0,
+      "stdout": "BENCH wall=9.56 user=10.24 sys=1.45 rss_kb=372484 exit=0\nnpm WARN EBADENGINE   package: 'tas-client@0.4.6',\nnpm WARN EBADENGINE   required: { node: '>=22' },\nnpm WARN EBADENGINE   current: { node: 'v18.12.1', npm: '8.19.2' }\nnpm WARN EBADENGINE }\nnpm WARN EBADENGINE Unsupported engine {\nnpm WARN EBADENGINE   package: 'tinybench@6.1.6',\nnpm WARN EBADENGINE   required: { node: '>=20.0.0' },\nnpm WARN EBADENGINE   current: { node: 'v18.12.1', npm: '8.19.2' }\nnpm WARN EBADENGINE }\n\nadded 191 packages, and audited 196 packages in 9s\n\n39 packages are looking for funding\n  run `npm fund` for details\n\n6 vulnerabilities (4 moderate, 2 high)\n\nTo address issues that do not require attention, run:\n  npm audit fix\n\nTo address all issues (including breaking changes), run:\n  npm audit fix --force\n\nRun `npm audit` for details.\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "typescript-build",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "cd /root/TypeScript; npx hereby local",
+      "at": "2026-11-04T22:14:39.573Z",
+      "clientSeconds": 0.7822334580000024,
+      "exitCode": 1,
+      "stdout": "Command exited with non-zero status 1\nBENCH wall=0.57 user=0.53 sys=0.11 rss_kb=171112 exit=1\nTypeError [ERR_UNKNOWN_FILE_EXTENSION]: Unknown file extension \".mts\" for /root/TypeScript/tools/scripts/gen/utils.mts\n    at new NodeError (node:internal/errors:393:5)\n    at Object.getFileProtocolModuleFormat [as file:] (node:internal/modules/esm/get_format:79:11)\n    at defaultGetFormat (node:internal/modules/esm/get_format:121:38)\n    at defaultLoad (node:internal/modules/esm/load:81:20)\n    at nextLoad (node:internal/modules/esm/loader:163:28)\n    at ESMLoader.load (node:internal/modules/esm/loader:605:26)\n    at ESMLoader.moduleProvider (node:internal/modules/esm/loader:457:22)\n    at new ModuleJob (node:internal/modules/esm/module_job:63:26)\n    at #createModuleJob (node:internal/modules/esm/loader:480:17)\n    at ESMLoader.getModuleJob (node:internal/modules/esm/loader:434:34)\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "typescript-diagnostics",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "git -C /root/TypeScript rev-parse HEAD; free -m; df -h ~; du -sh /root/TypeScript; cat /sys/fs/cgroup/memory.events /sys/fs/cgroup/memory.peak /sys/fs/cgroup/cpu.stat 2>/dev/null; dmesg | tail -n 20; true",
+      "at": "2026-11-04T22:14:40.299Z",
+      "clientSeconds": 0.7253721659999864,
+      "exitCode": 0,
+      "stdout": "e1a9b0b84997afa3757edd9d079bb499669ed20d\n               total        used        free      shared  buff/cache   available\nMem:            8016         178        6021           3        1816        7555\nSwap:              0           0           0\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/vdc        7.8G  4.5G  2.9G  61% /\n1.1G\t/root/TypeScript\n[  252.397399] audit: type=1101 audit(1793830454.452:144): pid=4470 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:accounting grantors=pam_succeed_if acct=\"pagent\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[  252.398039] audit: type=1101 audit(1793830454.452:145): pid=4471 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:accounting grantors=pam_succeed_if acct=\"pagent\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[  252.398812] audit: type=1123 audit(1793830454.452:146): pid=4471 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='cwd=\"/opt/aws/platform-agent/var\" cmd=\"/opt/aws/platform-agent/bin/kill-connections.sh\" exe=\"/usr/bin/sudo\" terminal=? res=success'\n[  252.399517] audit: type=1123 audit(1793830454.452:147): pid=4470 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='cwd=\"/opt/aws/platform-agent/var\" cmd=2F6F70742F6177732F706C6174666F726D2D6167656E742F62696E2F706C6174666F726D2D6167656E742D726573756D652D68656C706572202D2D726573756D652D7479706520706175736564 exe=\"/usr/bin/sudo\" terminal=? res=success'\n[  253.479689] sysctl (4534): drop_caches: 3\n[  257.802639] kauditd_printk_skb: 20 callbacks suppressed\n[  257.802642] audit: type=1101 audit(1793830459.860:168): pid=4538 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:accounting grantors=pam_succeed_if acct=\"pagent\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[  257.803416] audit: type=1101 audit(1793830459.860:169): pid=4537 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:accounting grantors=pam_succeed_if acct=\"pagent\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[  257.804468] audit: type=1123 audit(1793830459.860:170): pid=4538 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='cwd=\"/opt/aws/platform-agent/var\" cmd=\"/opt/aws/platform-agent/bin/kill-connections.sh\" exe=\"/usr/bin/sudo\" terminal=? res=success'\n[  257.805120] audit: type=1123 audit(1793830459.860:171): pid=4537 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='cwd=\"/opt/aws/platform-agent/var\" cmd=2F6F70742F6177732F706C6174666F726D2D6167656E742F62696E2F706C6174666F726D2D6167656E742D726573756D652D68656C706572202D2D726573756D652D7479706520706175736564 exe=\"/usr/bin/sudo\" terminal=? res=success'\n[  257.805997] audit: type=1110 audit(1793830459.860:172): pid=4538 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:setcred grantors=pam_env,pam_unix acct=\"root\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[  257.806596] audit: type=1110 audit(1793830459.860:173): pid=4537 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:setcred grantors=pam_env,pam_unix acct=\"root\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[  257.807193] audit: type=1105 audit(1793830459.860:174): pid=4538 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:session_open grantors=pam_succeed_if acct=\"root\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[  257.807797] audit: type=1105 audit(1793830459.860:175): pid=4537 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:session_open grantors=pam_succeed_if acct=\"root\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[  257.825514] audit: type=1106 audit(1793830459.892:176): pid=4537 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:session_close grantors=pam_succeed_if acct=\"root\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[  257.826140] audit: type=1104 audit(1793830459.892:177): pid=4537 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:setcred grantors=pam_env,pam_unix acct=\"root\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[  258.469767] sysctl (4600): drop_caches: 3\n[  262.832484] kauditd_printk_skb: 30 callbacks suppressed\n[  262.832487] audit: type=1106 audit(1793830464.893:208): pid=4613 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:session_close grantors=pam_succeed_if acct=\"root\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[  262.833269] audit: type=1104 audit(1793830464.893:209): pid=4613 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:setcred grantors=pam_env,pam_unix acct=\"root\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "output-limit",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "python3 -c 'import sys; print(\"x\"*70000); print(\"y\"*70000,file=sys.stderr)'",
+      "at": "2026-11-04T22:14:42.917Z",
+      "clientSeconds": 2.617861708000011,
+      "exitCode": 0,
+      "stdout": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "stderr": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "truncated": true,
+      "stdoutBytes": 65536,
+      "stderrBytes": 65536
+    },
+    {
+      "label": "final-resources",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "command": "nproc; free -m; df -h ~; du -sh /root/bench-* /root/.rustup /root/.cargo /root/ripgrep-target-j4 2>/dev/null",
+      "at": "2026-11-04T22:14:43.448Z",
+      "clientSeconds": 0.5295098750000179,
+      "exitCode": 0,
+      "stdout": "4\n               total        used        free      shared  buff/cache   available\nMem:            8016         182        6016           3        1817        7551\nSwap:              0           0           0\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/vdc        7.8G  4.5G  2.9G  61% /\n337M\t/root/bench-1\n337M\t/root/bench-2\n337M\t/root/bench-3\n372K\t/root/bench-logs\n4.0K\t/root/bench-marker\n497M\t/root/.rustup\n20M\t/root/.cargo\n189M\t/root/ripgrep-target-j4\n",
+      "stderr": "",
+      "truncated": false
+    }
+  ],
+  "api": [
+    {
+      "op": "RunMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:10:34.537Z",
+      "seconds": 0.18853324999999996,
+      "state": "PENDING"
+    },
+    {
+      "op": "CreateMicrovmAuthToken",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:10:34.679Z",
+      "seconds": 0.139489458
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:10:37.191Z",
+      "seconds": 0.12955412499999966,
+      "state": "RUNNING"
+    },
+    {
+      "op": "RunMicrovm",
+      "id": "microvm-fe74ce58-d015-37e1-9145-35ec5fa82ae3",
+      "at": "2026-11-04T22:10:53.931Z",
+      "seconds": 0.17521299999999973,
+      "state": "PENDING"
+    },
+    {
+      "op": "CreateMicrovmAuthToken",
+      "id": "microvm-fe74ce58-d015-37e1-9145-35ec5fa82ae3",
+      "at": "2026-11-04T22:10:54.075Z",
+      "seconds": 0.14311954100000002
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-fe74ce58-d015-37e1-9145-35ec5fa82ae3",
+      "at": "2026-11-04T22:10:55.438Z",
+      "seconds": 0.10599195900000268,
+      "state": "RUNNING"
+    },
+    {
+      "op": "TerminateMicrovm",
+      "id": "microvm-fe74ce58-d015-37e1-9145-35ec5fa82ae3",
+      "at": "2026-11-04T22:10:57.218Z",
+      "seconds": 0.20158379200000126
+    },
+    {
+      "op": "RunMicrovm",
+      "id": "microvm-449c9829-a65e-3cb9-9ba0-d44be429da86",
+      "at": "2026-11-04T22:10:57.370Z",
+      "seconds": 0.15012829200000125,
+      "state": "PENDING"
+    },
+    {
+      "op": "CreateMicrovmAuthToken",
+      "id": "microvm-449c9829-a65e-3cb9-9ba0-d44be429da86",
+      "at": "2026-11-04T22:10:57.477Z",
+      "seconds": 0.1063902909999997
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-449c9829-a65e-3cb9-9ba0-d44be429da86",
+      "at": "2026-11-04T22:11:01.939Z",
+      "seconds": 0.18517370899999877,
+      "state": "RUNNING"
+    },
+    {
+      "op": "TerminateMicrovm",
+      "id": "microvm-449c9829-a65e-3cb9-9ba0-d44be429da86",
+      "at": "2026-11-04T22:11:06.802Z",
+      "seconds": 0.11938441700000112
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:11:06.908Z",
+      "seconds": 0.10600654100000247,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:11:31.823Z",
+      "seconds": 0.15201499999999943,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:15.180Z",
+      "seconds": 0.3002341250000027,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:15.695Z",
+      "seconds": 0.12659054200000536,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:19.324Z",
+      "seconds": 0.12639875000000755,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:26.138Z",
+      "seconds": 0.13728612499999873,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:31.166Z",
+      "seconds": 0.09817583300000114,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:31.396Z",
+      "seconds": 0.09159820900000341,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:32.026Z",
+      "seconds": 0.094015333000003,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:38.532Z",
+      "seconds": 0.10001262500000303,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:41.774Z",
+      "seconds": 0.09830566699999327,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:42.078Z",
+      "seconds": 0.17176945900000282,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:42.710Z",
+      "seconds": 0.09573466600000392,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:49.283Z",
+      "seconds": 0.10024049999998533,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:52.566Z",
+      "seconds": 0.1279850419999857,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:52.796Z",
+      "seconds": 0.09590270800000872,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:59.482Z",
+      "seconds": 0.09876816700000199,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:12:59.723Z",
+      "seconds": 0.10533850000001257,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:13:00.741Z",
+      "seconds": 0.10703720799999428,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:13:18.071Z",
+      "seconds": 0.09936962499999208,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:13:18.354Z",
+      "seconds": 0.09891158400001586,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:13:19.184Z",
+      "seconds": 0.09374225000001024,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:13:36.422Z",
+      "seconds": 0.10287858300001244,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:13:36.698Z",
+      "seconds": 0.09489829099999042,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:13:37.533Z",
+      "seconds": 0.09805079200002365,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:13:54.955Z",
+      "seconds": 0.13102308399998583,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:13:55.193Z",
+      "seconds": 0.09086604199997965,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:12.089Z",
+      "seconds": 0.09382120799997938,
+      "state": "RUNNING"
+    },
+    {
+      "op": "SuspendMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:13.308Z",
+      "seconds": 0.17945254099997693
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:13.412Z",
+      "seconds": 0.10265620800000033,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:13.829Z",
+      "seconds": 0.16563420899998163,
+      "state": "SUSPENDING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:14.171Z",
+      "seconds": 0.09021312500000932,
+      "state": "SUSPENDED"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:14.351Z",
+      "seconds": 0.1797178750000021,
+      "state": "SUSPENDED"
+    },
+    {
+      "op": "SuspendMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:15.512Z",
+      "seconds": 0.10645641700000852
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:15.607Z",
+      "seconds": 0.0944151669999992,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:16.017Z",
+      "seconds": 0.15893658300000243,
+      "state": "SUSPENDED"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:16.112Z",
+      "seconds": 0.09378154199998244,
+      "state": "SUSPENDED"
+    },
+    {
+      "op": "SuspendMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:20.496Z",
+      "seconds": 0.09606158399998094
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:20.644Z",
+      "seconds": 0.14801345800000126,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:20.991Z",
+      "seconds": 0.09508445799999754,
+      "state": "SUSPENDED"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:21.171Z",
+      "seconds": 0.17796449999997277,
+      "state": "SUSPENDED"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:25.553Z",
+      "seconds": 0.0914708329999994,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:29.132Z",
+      "seconds": 0.09907045800000196,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:38.885Z",
+      "seconds": 0.09420779099999345,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:39.663Z",
+      "seconds": 0.08966150000001653,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:40.391Z",
+      "seconds": 0.09176949999999488,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:43.010Z",
+      "seconds": 0.09185295900001074,
+      "state": "RUNNING"
+    },
+    {
+      "op": "TerminateMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:43.563Z",
+      "seconds": 0.11448925000001327
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:43.713Z",
+      "seconds": 0.1491952079999901,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "at": "2026-11-04T22:14:44.846Z",
+      "seconds": 0.1321593329999887,
+      "state": "TERMINATED"
+    },
+    {
+      "op": "TerminateMicrovm",
+      "id": "microvm-fe74ce58-d015-37e1-9145-35ec5fa82ae3",
+      "at": "2026-11-04T22:14:44.938Z",
+      "seconds": 0.09082216700000573
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-fe74ce58-d015-37e1-9145-35ec5fa82ae3",
+      "at": "2026-11-04T22:14:45.028Z",
+      "seconds": 0.09057941700000083,
+      "state": "TERMINATED"
+    },
+    {
+      "op": "TerminateMicrovm",
+      "id": "microvm-449c9829-a65e-3cb9-9ba0-d44be429da86",
+      "at": "2026-11-04T22:14:45.119Z",
+      "seconds": 0.08961137500000768
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-449c9829-a65e-3cb9-9ba0-d44be429da86",
+      "at": "2026-11-04T22:14:45.285Z",
+      "seconds": 0.16591970800000128,
+      "state": "TERMINATED"
+    }
+  ],
+  "before": [],
+  "cleanupStartedAt": "2026-11-04T22:14:43.449Z",
+  "after": [
+    {
+      "microvmId": "microvm-9781c897-b1ae-37f1-b84c-048599f4d9fe",
+      "state": "RUNNING",
+      "imageVersion": "1.0",
+      "startedAt": 1793830384.564
+    },
+    {
+      "microvmId": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "state": "TERMINATED",
+      "imageVersion": "1.0",
+      "startedAt": 1793830234.479
+    },
+    {
+      "microvmId": "microvm-449c9829-a65e-3cb9-9ba0-d44be429da86",
+      "state": "TERMINATED",
+      "imageVersion": "1.0",
+      "startedAt": 1793830257.312
+    },
+    {
+      "microvmId": "microvm-fe74ce58-d015-37e1-9145-35ec5fa82ae3",
+      "state": "TERMINATED",
+      "imageVersion": "1.0",
+      "startedAt": 1793830253.866
+    }
+  ],
+  "cleanupVerified": true,
+  "finishedAt": "2026-11-04T22:14:45.375Z"
+}

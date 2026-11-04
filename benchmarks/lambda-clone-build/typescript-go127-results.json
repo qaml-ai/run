@@ -1,0 +1,414 @@
+{
+  "startedAt": "2026-11-04T22:18:48.900Z",
+  "mode": "typescript",
+  "image": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+  "imageVersion": "1.0",
+  "region": "us-west-2",
+  "identity": "arn:aws:iam::904534089871:user/macbook",
+  "hourlyRate": 0.12610008,
+  "leaseSeconds": 3600,
+  "created": [
+    {
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "token": "camelrun-bench-c7972d08-5259-4139-8ed8-7a66a871b13b",
+      "startedAt": "2026-11-04T22:18:50.029Z",
+      "firstExecSeconds": 2.9740749590000006,
+      "terminatedAt": "2026-11-04T22:24:35.257Z"
+    }
+  ],
+  "requests": [
+    {
+      "logging": {
+        "disabled": {}
+      },
+      "idlePolicy": {
+        "autoResumeEnabled": true,
+        "maxIdleDurationSeconds": 300,
+        "suspendedDurationSeconds": 28800
+      },
+      "clientToken": "camelrun-bench-c7972d08-5259-4139-8ed8-7a66a871b13b",
+      "imageVersion": "1.0",
+      "runHookPayload": "{\"runtime\":\"camelrun-bench\",\"computer\":\"camelrun-bench-c7972d08-5259-4139-8ed8-7a66a871b13b\",\"tenant\":\"benchmark\"}",
+      "imageIdentifier": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "maximumDurationInSeconds": 3600
+    }
+  ],
+  "steps": [
+    {
+      "label": "first-exec-1",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "command": "true",
+      "at": "2026-11-04T22:18:52.821Z",
+      "clientSeconds": 0.3224152079999999,
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "system",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "command": "uname -m; nproc; free -m; df -h ~; node --version; npm --version; command -v gcc g++ make time; cat /proc/self/cgroup; cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max 2>/dev/null; cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null; true",
+      "at": "2026-11-04T22:18:54.021Z",
+      "clientSeconds": 1.1979767499999998,
+      "exitCode": 0,
+      "stdout": "aarch64\n4\n               total        used        free      shared  buff/cache   available\nMem:            8016         153        7711           3         152        7666\nSwap:              0           0           0\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/vdc        7.8G  1.2G  6.3G  16% /\nv18.12.1\n8.19.2\ntime\n0::/system.slice/app\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "prerequisites",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "command": "dnf install -y time gcc gcc-c++ make perl pkgconf-pkg-config xz",
+      "at": "2026-11-04T22:19:25.316Z",
+      "clientSeconds": 31.293348041999998,
+      "exitCode": 0,
+      "stdout": "Downloading metadata...\nPackage                                                        Repository      Size\nInstalling:                                                                        \n amazon-rpm-config-228-11.amzn2023.0.1.noarch                  amazonlinux  70.7 kB\n annobin-docs-12.69-1.amzn2023.0.1.noarch                      amazonlinux  95.7 kB\n annobin-plugin-gcc-12.69-1.amzn2023.0.1.aarch64               amazonlinux 996.1 kB\n binutils-2.41-50.amzn2023.0.5.aarch64                         amazonlinux   5.8 MB\n cpp-11.5.0-5.amzn2023.0.5.aarch64                             amazonlinux  10.7 MB\n dwz-0.16-2.amzn2023.0.1.aarch64                               amazonlinux 140.0 kB\n efi-srpm-macros-5-4.amzn2023.0.5.noarch                       amazonlinux  23.5 kB\n file-5.39-7.amzn2023.0.4.aarch64                              amazonlinux  51.1 kB\n fonts-srpm-macros-1:2.0.5-12.amzn2023.0.2.noarch              amazonlinux  28.0 kB\n gc-8.0.4-5.amzn2023.0.2.aarch64                               amazonlinux 104.9 kB\n gcc-11.5.0-5.amzn2023.0.5.aarch64                             amazonlinux  32.6 MB\n gcc-c++-11.5.0-5.amzn2023.0.5.aarch64                         amazonlinux  12.9 MB\n gcc-plugin-annobin-11.5.0-5.amzn2023.0.5.aarch64              amazonlinux  38.2 kB\n ghc-srpm-macros-1.5.0-4.amzn2023.0.2.noarch                   amazonlinux   8.7 kB\n glibc-devel-2.34-231.amzn2023.0.5.aarch64                     amazonlinux 456.1 kB\n glibc-gconv-extra-2.34-231.amzn2023.0.5.aarch64               amazonlinux   2.0 MB\n go-srpm-macros-3.8.0-1.amzn2023.0.1.noarch                    amazonlinux  27.7 kB\n guile22-2.2.7-2.amzn2023.0.3.aarch64                          amazonlinux   6.7 MB\n jansson-2.14-0.amzn2023.aarch64                               amazonlinux  48.1 kB\n kernel-srpm-macros-1.0-14.amzn2023.0.3.noarch                 amazonlinux   9.1 kB\n kernel6.18-headers-1:6.18.56-125.164.amzn2023.aarch64         amazonlinux   1.6 MB\n libdatrie-0.2.13-1.amzn2023.0.2.aarch64                       amazonlinux  33.6 kB\n libgomp-14.2.1-7.amzn2023.0.2.aarch64                         amazonlinux 356.6 kB\n libmpc-1.2.1-2.amzn2023.0.2.aarch64                           amazonlinux  64.8 kB\n libpkgconf-1.8.0-4.amzn2023.0.2.aarch64                       amazonlinux  37.9 kB\n libstdc++-devel-11.5.0-5.amzn2023.0.5.aarch64                 amazonlinux   2.9 MB\n libthai-0.1.28-6.amzn2023.0.2.aarch64                         amazonlinux 213.0 kB\n libtool-ltdl-2.4.7-1.amzn2023.0.3.aarch64                     amazonlinux  38.6 kB\n libxcrypt-devel-4.4.33-7.amzn2023.aarch64                     amazonlinux  32.4 kB\n lua-srpm-macros-1-4.amzn2023.0.2.noarch                       amazonlinux   9.4 kB\n make-1:4.3-5.amzn2023.0.2.aarch64                             amazonlinux 542.6 kB\n ocaml-srpm-macros-6-6.amzn2023.0.2.noarch                     amazonlinux   9.0 kB\n openblas-srpm-macros-2-9.amzn2023.0.2.noarch                  amazonlinux   8.4 kB\n package-notes-srpm-macros-0.4-18.amzn2023.0.5.noarch          amazonlinux  13.1 kB\n perl-4:5.32.1-477.amzn2023.0.11.aarch64                       amazonlinux  13.6 kB\n perl-Algorithm-Diff-1.2010-2.amzn2023.0.2.noarch              amazonlinux  48.6 kB\n perl-Archive-Tar-3.04-522.amzn2023.0.3.noarch                 amazonlinux  75.7 kB\n perl-Archive-Zip-1.68-4.amzn2023.0.2.noarch                   amazonlinux 109.0 kB\n perl-Attribute-Handlers-1.01-477.amzn2023.0.11.noarch         amazonlinux  28.7 kB\n perl-AutoSplit-5.74-477.amzn2023.0.11.noarch                  amazonlinux  22.7 kB\n perl-Benchmark-1.23-477.amzn2023.0.11.noarch                  amazonlinux  28.0 kB\n perl-CPAN-2.38-521.amzn2023.0.1.noarch                        amazonlinux 574.6 kB\n perl-CPAN-DistnameInfo-0.12-21.amzn2023.0.2.noarch            amazonlinux  15.4 kB\n perl-CPAN-Meta-2.150013-1.amzn2023.0.1.noarch                 amazonlinux 182.9 kB\n perl-CPAN-Meta-Requirements-2.145-1.amzn2023.0.1.noarch       amazonlinux  37.9 kB\n perl-CPAN-Meta-YAML-0.020-522.amzn2023.0.1.noarch             amazonlinux  28.7 kB\n perl-Compress-Bzip2-2.28-3.amzn2023.0.3.aarch64               amazonlinux  70.9 kB\n perl-Compress-Raw-Bzip2-2.217-1.amzn2023.0.2.aarch64          amazonlinux  37.6 kB\n perl-Compress-Raw-Lzma-2.221-1.amzn2023.0.2.aarch64           amazonlinux  62.2 kB\n perl-Compress-Raw-Zlib-2.221-1.amzn2023.0.2.aarch64           amazonlinux  67.7 kB\n perl-Config-Extensions-0.03-477.amzn2023.0.11.noarch          amazonlinux  13.1 kB\n perl-Config-Perl-V-0.39-1.amzn2023.0.1.noarch                 amazonlinux  23.6 kB\n perl-DBM_Filter-0.06-477.amzn2023.0.11.noarch                 amazonlinux  32.9 kB\n perl-DB_File-1.860-1.amzn2023.0.2.aarch64                     amazonlinux  83.5 kB\n perl-Data-OptList-0.110-15.amzn2023.0.2.noarch                amazonlinux  27.4 kB\n perl-Data-Section-0.200007-12.amzn2023.0.2.noarch             amazonlinux  25.9 kB\n perl-Devel-PPPort-3.73-522.amzn2023.0.2.aarch64               amazonlinux 222.1 kB\n perl-Devel-Peek-1.28-477.amzn2023.0.11.aarch64                amazonlinux  33.2 kB\n perl-Devel-SelfStubber-1.06-477.amzn2023.0.11.noarch          amazonlinux  15.2 kB\n perl-Devel-Size-0.86-1.amzn2023.0.2.aarch64                   amazonlinux  33.1 kB\n perl-Digest-SHA-1:6.04-522.amzn2023.0.2.aarch64               amazonlinux  65.0 kB\n perl-Digest-SHA1-2.13-32.amzn2023.0.3.aarch64                 amazonlinux  54.7 kB\n perl-DirHandle-1.05-477.amzn2023.0.11.noarch                  amazonlinux  13.3 kB\n perl-Dumpvalue-2.27-477.amzn2023.0.11.noarch                  amazonlinux  19.3 kB\n perl-Encode-Locale-1.05-19.amzn2023.0.2.noarch                amazonlinux  19.8 kB\n perl-Encode-devel-4:3.21-520.amzn2023.0.2.aarch64             amazonlinux  43.1 kB\n perl-English-1.11-477.amzn2023.0.11.noarch                    amazonlinux  14.5 kB\n perl-Env-1.04-458.amzn2023.0.2.noarch                         amazonlinux  20.5 kB\n perl-ExtUtils-CBuilder-1:0.280236-2.amzn2023.0.3.noarch       amazonlinux  47.6 kB\n perl-ExtUtils-Command-2:7.62-1.amzn2023.0.2.noarch            amazonlinux  14.8 kB\n perl-ExtUtils-Constant-0.25-477.amzn2023.0.11.noarch          amazonlinux  48.2 kB\n perl-ExtUtils-Embed-1.35-477.amzn2023.0.11.noarch             amazonlinux  18.6 kB\n perl-ExtUtils-Install-2.22-521.amzn2023.0.1.noarch            amazonlinux  46.3 kB\n perl-ExtUtils-MM-Utils-2:7.62-1.amzn2023.0.2.noarch           amazonlinux  12.2 kB\n perl-ExtUtils-MakeMaker-2:7.62-1.amzn2023.0.2.noarch          amazonlinux 295.4 kB\n perl-ExtUtils-Manifest-1:1.75-521.amzn2023.0.1.noarch         amazonlinux  36.2 kB\n perl-ExtUtils-Miniperl-1.09-477.amzn2023.0.11.noarch          amazonlinux  16.1 kB\n perl-ExtUtils-ParseXS-1:3.61-2.amzn2023.0.1.noarch            amazonlinux 299.7 kB\n perl-File-Compare-1.100.600-477.amzn2023.0.11.noarch          amazonlinux  14.1 kB\n perl-File-Copy-2.34-477.amzn2023.0.11.noarch                  amazonlinux  21.1 kB\n perl-File-DosGlob-1.12-477.amzn2023.0.11.aarch64              amazonlinux  20.7 kB\n perl-File-Fetch-1.08-4.amzn2023.0.1.noarch                    amazonlinux  32.8 kB\n perl-File-HomeDir-1.006-2.amzn2023.0.2.noarch                 amazonlinux  59.1 kB\n perl-File-Which-1.27-15.amzn2023.0.1.noarch                   amazonlinux  23.4 kB\n perl-FileCache-1.10-477.amzn2023.0.11.noarch                  amazonlinux  15.6 kB\n perl-Filter-2:1.65-2.amzn2023.0.2.aarch64                     amazonlinux  85.3 kB\n perl-Filter-Simple-0.96-458.amzn2023.0.2.noarch               amazonlinux  28.2 kB\n perl-FindBin-1.51-477.amzn2023.0.11.noarch                    amazonlinux  14.8 kB\n perl-GDBM_File-1.18-477.amzn2023.0.11.aarch64                 amazonlinux  23.4 kB\n perl-Hash-Util-0.23-477.amzn2023.0.11.aarch64                 amazonlinux  35.8 kB\n perl-Hash-Util-FieldHash-1.20-477.amzn2023.0.11.aarch64       amazonlinux  39.6 kB\n perl-I18N-Collate-1.02-477.amzn2023.0.11.noarch               amazonlinux  15.1 kB\n perl-I18N-LangTags-0.44-477.amzn2023.0.11.noarch              amazonlinux  56.2 kB\n perl-I18N-Langinfo-0.19-477.amzn2023.0.11.aarch64             amazonlinux  23.7 kB\n perl-IO-Compress-2.217-1.amzn2023.0.2.noarch                  amazonlinux 308.2 kB\n perl-IO-Compress-Lzma-2.101-2.amzn2023.0.2.noarch             amazonlinux  75.3 kB\n perl-IO-Zlib-1:1.11-2.amzn2023.0.2.noarch                     amazonlinux  20.4 kB\n perl-IPC-Cmd-2:1.04-459.amzn2023.0.2.noarch                   amazonlinux  41.0 kB\n perl-IPC-SysV-2.09-2.amzn2023.0.3.aarch64                     amazonlinux  44.0 kB\n perl-IPC-System-Simple-1.30-4.amzn2023.0.2.noarch             amazonlinux  40.5 kB\n perl-Importer-0.026-2.amzn2023.0.2.noarch                     amazonlinux  40.6 kB\n perl-JSON-PP-1:4.06-2.amzn2023.0.2.noarch                     amazonlinux  67.4 kB\n perl-Locale-Maketext-1.29-459.amzn2023.0.2.noarch             amazonlinux  96.8 kB\n perl-Locale-Maketext-Simple-1:0.21-477.amzn2023.0.11.noarch   amazonlinux  18.6 kB\n perl-MIME-Charset-1.012.2-13.amzn2023.0.2.noarch              amazonlinux  50.1 kB\n perl-MRO-Compat-0.13-13.amzn2023.0.2.noarch                   amazonlinux  20.3 kB\n perl-Math-BigInt-1:1.9998.39-2.amzn2023.0.2.noarch            amazonlinux 206.4 kB\n perl-Math-BigInt-FastCalc-0.501.400-3.amzn2023.0.2.aarch64    amazonlinux  28.9 kB\n perl-Math-BigRat-0.2624-500.amzn2023.0.2.noarch               amazonlinux  42.8 kB\n perl-Math-Complex-1.59-477.amzn2023.0.11.noarch               amazonlinux  48.4 kB\n perl-Memoize-1.03-477.amzn2023.0.11.noarch                    amazonlinux  58.6 kB\n perl-Module-Build-2:0.42.31-7.amzn2023.0.2.noarch             amazonlinux 260.5 kB\n perl-Module-CoreList-1:5.20211020-1.amzn2023.0.2.noarch       amazonlinux  84.3 kB\n perl-Module-CoreList-tools-1:5.20211020-1.amzn2023.0.2.noarch amazonlinux  18.4 kB\n perl-Module-Load-1:0.36-2.amzn2023.0.2.noarch                 amazonlinux  18.3 kB\n perl-Module-Load-Conditional-0.74-2.amzn2023.0.2.noarch       amazonlinux  23.1 kB\n perl-Module-Loaded-1:0.08-477.amzn2023.0.11.noarch            amazonlinux  14.2 kB\n perl-Module-Metadata-1.000037-458.amzn2023.0.2.noarch         amazonlinux  36.7 kB\n perl-Module-Pluggable-2:5.2-16.amzn2023.0.2.noarch            amazonlinux  32.6 kB\n perl-Module-Runtime-0.016-11.amzn2023.0.2.noarch              amazonlinux  24.2 kB\n perl-Module-Signature-0.87-3.amzn2023.0.2.noarch              amazonlinux  83.6 kB\n perl-NEXT-0.67-477.amzn2023.0.11.noarch                       amazonlinux  22.0 kB\n perl-Net-1.02-477.amzn2023.0.11.noarch                        amazonlinux  26.5 kB\n perl-Net-Ping-2.74-3.amzn2023.0.2.noarch                      amazonlinux  51.3 kB\n perl-ODBM_File-1.16-477.amzn2023.0.11.aarch64                 amazonlinux  22.9 kB\n perl-Object-HashBase-0.009-5.amzn2023.0.2.noarch              amazonlinux  26.7 kB\n perl-Opcode-1.48-477.amzn2023.0.11.aarch64                    amazonlinux  38.0 kB\n perl-Package-Generator-1.106-21.amzn2023.0.2.noarch           amazonlinux  23.9 kB\n perl-Params-Check-1:0.38-459.amzn2023.0.2.noarch              amazonlinux  22.8 kB\n perl-Params-Util-1.102-3.amzn2023.0.3.aarch64                 amazonlinux  34.3 kB\n perl-Perl-OSType-1.010-459.amzn2023.0.2.noarch                amazonlinux  23.8 kB\n perl-PerlIO-via-QuotedPrint-0.09-2.amzn2023.0.2.noarch        amazonlinux  22.7 kB\n perl-Pod-Checker-4:1.74-2.amzn2023.0.2.noarch                 amazonlinux  33.0 kB\n perl-Pod-Functions-1.13-477.amzn2023.0.11.noarch              amazonlinux  14.5 kB\n perl-Pod-Html-1.25-477.amzn2023.0.11.noarch                   amazonlinux  27.7 kB\n perl-Safe-2.41-477.amzn2023.0.11.noarch                       amazonlinux  26.2 kB\n perl-Search-Dict-1.07-477.amzn2023.0.11.noarch                amazonlinux  13.9 kB\n perl-SelfLoader-1.26-477.amzn2023.0.11.noarch                 amazonlinux  22.7 kB\n perl-Software-License-0.103014-10.amzn2023.0.2.noarch         amazonlinux 133.4 kB\n perl-Sub-Exporter-0.987-25.amzn2023.0.2.noarch                amazonlinux  68.5 kB\n perl-Sub-Install-0.928-26.amzn2023.0.2.noarch                 amazonlinux  23.3 kB\n perl-Sys-Hostname-1.23-477.amzn2023.0.11.aarch64              amazonlinux  18.2 kB\n perl-Sys-Syslog-0.36-459.amzn2023.0.3.aarch64                 amazonlinux  48.8 kB\n perl-Term-Complete-1.403-477.amzn2023.0.11.noarch             amazonlinux  13.8 kB\n perl-Term-ReadLine-1.17-477.amzn2023.0.11.noarch              amazonlinux  20.0 kB\n perl-Term-Size-Any-0.002-33.amzn2023.0.2.noarch               amazonlinux  14.2 kB\n perl-Term-Size-Perl-0.031-10.amzn2023.0.2.aarch64             amazonlinux  22.3 kB\n perl-Term-Table-0.015-6.amzn2023.0.2.noarch                   amazonlinux  36.3 kB\n perl-Test-1.31-477.amzn2023.0.11.noarch                       amazonlinux  29.8 kB\n perl-Test-Harness-1:3.42-459.amzn2023.0.2.noarch              amazonlinux 273.8 kB\n perl-Test-Simple-3:1.302219-2.amzn2023.0.1.noarch             amazonlinux 878.0 kB\n perl-Text-Abbrev-1.02-477.amzn2023.0.11.noarch                amazonlinux  13.0 kB\n perl-Text-Balanced-2.04-2.amzn2023.0.2.noarch                 amazonlinux  49.3 kB\n perl-Text-Diff-1.45-11.amzn2023.0.2.noarch                    amazonlinux  42.3 kB\n perl-Text-Glob-0.11-13.amzn2023.0.2.noarch                    amazonlinux  14.5 kB\n perl-Text-Template-1.59-3.amzn2023.0.2.noarch                 amazonlinux  61.9 kB\n perl-Thread-3.05-477.amzn2023.0.11.noarch                     amazonlinux  19.0 kB\n perl-Thread-Queue-3.14-458.amzn2023.0.2.noarch                amazonlinux  22.4 kB\n perl-Thread-Semaphore-2.13-477.amzn2023.0.11.noarch           amazonlinux  16.6 kB\n perl-Tie-4.6-477.amzn2023.0.11.noarch                         amazonlinux  32.8 kB\n perl-Tie-File-1.06-477.amzn2023.0.11.noarch                   amazonlinux  44.8 kB\n perl-Tie-Memoize-1.1-477.amzn2023.0.11.noarch                 amazonlinux  15.0 kB\n perl-Tie-RefHash-1.40-2.amzn2023.0.2.noarch                   amazonlinux  24.2 kB\n perl-Time-1.03-477.amzn2023.0.11.noarch                       amazonlinux  19.6 kB\n perl-Time-Piece-1.3401-477.amzn2023.0.11.aarch64              amazonlinux  42.0 kB\n perl-Unicode-Collate-1.29-2.amzn2023.0.3.aarch64              amazonlinux 736.6 kB\n perl-Unicode-LineBreak-2019.001-9.amzn2023.0.4.aarch64        amazonlinux 124.0 kB\n perl-Unicode-Normalize-1.27-459.amzn2023.0.3.aarch64          amazonlinux  89.1 kB\n perl-Unicode-UCD-0.75-477.amzn2023.0.11.noarch                amazonlinux  80.9 kB\n perl-User-pwent-1.03-477.amzn2023.0.11.noarch                 amazonlinux  21.6 kB\n perl-autodie-2.37-522.amzn2023.0.1.noarch                     amazonlinux  97.8 kB\n perl-autouse-1.11-477.amzn2023.0.11.noarch                    amazonlinux  14.6 kB\n perl-bignum-0.67-522.amzn2023.0.1.noarch                      amazonlinux  52.2 kB\n perl-blib-1.07-477.amzn2023.0.11.noarch                       amazonlinux  13.2 kB\n perl-debugger-1.56-477.amzn2023.0.11.noarch                   amazonlinux 137.5 kB\n perl-deprecate-0.04-477.amzn2023.0.11.noarch                  amazonlinux  15.5 kB\n perl-devel-4:5.32.1-477.amzn2023.0.11.aarch64                 amazonlinux 676.5 kB\n perl-diagnostics-1.37-477.amzn2023.0.11.noarch                amazonlinux 216.4 kB\n perl-doc-5.32.1-477.amzn2023.0.11.noarch                      amazonlinux   4.7 MB\n perl-encoding-4:3.00-520.amzn2023.0.2.aarch64                 amazonlinux  65.5 kB\n perl-encoding-warnings-0.13-477.amzn2023.0.11.noarch          amazonlinux  17.5 kB\n perl-experimental-0.036-3.amzn2023.0.1.noarch                 amazonlinux  29.7 kB\n perl-fields-2.27-477.amzn2023.0.11.noarch                     amazonlinux  17.1 kB\n perl-filetest-1.03-477.amzn2023.0.11.noarch                   amazonlinux  15.5 kB\n perl-inc-latest-2:0.500-18.amzn2023.0.2.noarch                amazonlinux  24.9 kB\n perl-less-0.03-477.amzn2023.0.11.noarch                       amazonlinux  14.0 kB\n perl-libnetcfg-4:5.32.1-477.amzn2023.0.11.noarch              amazonlinux  17.2 kB\n perl-local-lib-2.000024-11.amzn2023.0.2.noarch                amazonlinux  69.1 kB\n perl-locale-1.09-477.amzn2023.0.11.noarch                     amazonlinux  14.5 kB\n perl-macros-4:5.32.1-477.amzn2023.0.11.noarch                 amazonlinux  11.6 kB\n perl-meta-notation-5.32.1-477.amzn2023.0.11.noarch            amazonlinux  10.5 kB\n perl-open-1.12-477.amzn2023.0.11.noarch                       amazonlinux  17.3 kB\n perl-perlfaq-5.20210520-1.amzn2023.0.2.noarch                 amazonlinux 382.9 kB\n perl-ph-5.32.1-477.amzn2023.0.11.aarch64                      amazonlinux  38.2 kB\n perl-sigtrap-1.09-477.amzn2023.0.11.noarch                    amazonlinux  16.6 kB\n perl-sort-2.04-477.amzn2023.0.11.noarch                       amazonlinux  14.4 kB\n perl-srpm-macros-1-39.amzn2023.0.2.noarch                     amazonlinux   8.9 kB\n perl-threads-1:2.25-458.amzn2023.0.4.aarch64                  amazonlinux  58.1 kB\n perl-threads-shared-1.61-458.amzn2023.0.3.aarch64             amazonlinux  44.4 kB\n perl-utils-5.32.1-477.amzn2023.0.11.noarch                    amazonlinux  56.8 kB\n perl-version-7:0.99.29-1.amzn2023.0.3.aarch64                 amazonlinux  63.5 kB\n perl-vmsish-1.04-477.amzn2023.0.11.noarch                     amazonlinux  15.0 kB\n pkgconf-1.8.0-4.amzn2023.0.2.aarch64                          amazonlinux  43.9 kB\n pkgconf-m4-1.8.0-4.amzn2023.0.2.noarch                        amazonlinux  15.7 kB\n pkgconf-pkg-config-1.8.0-4.amzn2023.0.2.aarch64               amazonlinux  11.4 kB\n python-srpm-macros-3.9-41.amzn2023.0.6.noarch                 amazonlinux  20.8 kB\n python3-pyparsing-2.4.7-6.amzn2023.0.2.noarch                 amazonlinux 155.8 kB\n rust-toolset-srpm-macros-1.99.0-1.amzn2023.noarch             amazonlinux  13.9 kB\n sombok-2.4.0-14.amzn2023.0.2.aarch64                          amazonlinux  48.6 kB\n systemtap-sdt-devel-5.4-1.amzn2023.0.2.aarch64                amazonlinux  73.2 kB\n systemtap-sdt-dtrace-5.4-1.amzn2023.0.2.aarch64               amazonlinux  74.0 kB\n time-1.9-16.amzn2023.0.2.aarch64                              amazonlinux  48.9 kB\n unzip-6.0-68.amzn2023.0.2.aarch64                             amazonlinux 184.1 kB\n zip-3.0-28.amzn2023.0.4.aarch64                               amazonlinux 265.5 kB\nTransaction Summary:\n Installing:      214 packages\n Reinstalling:      0 packages\n Upgrading:         0 packages\n Obsoleting:        0 packages\n Removing:          0 packages\n Downgrading:       0 packages\nDownloading packages...\nRunning transaction test...\nInstalling: perl-File-Copy;2.34-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-ExtUtils-Manifest;1:1.75-521.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-threads;1:2.25-458.amzn2023.0.4;aarch64;amazonlinux\nInstalling: perl-threads-shared;1.61-458.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-File-Compare;1.100.600-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Compress-Raw-Zlib;2.221-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-meta-notation;5.32.1-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-locale;1.09-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-version;7:0.99.29-1.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-CPAN-Meta-Requirements;2.145-1.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-Module-CoreList;1:5.20211020-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Module-Metadata;1.000037-458.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Unicode-Normalize;1.27-459.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-Tie;4.6-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Term-ReadLine;1.17-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Perl-OSType;1.010-459.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Module-Load;1:0.36-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Math-Complex;1.59-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Math-BigRat;0.2624-500.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Math-BigInt;1:1.9998.39-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-JSON-PP;1:4.06-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Digest-SHA;1:6.04-522.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-Devel-Peek;1.28-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: libmpc;1.2.1-2.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-Dumpvalue;2.27-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Pod-Html;1.25-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-ExtUtils-Command;2:7.62-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-doc;5.32.1-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-deprecate;0.04-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-autouse;1.11-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-User-pwent;1.03-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Tie-RefHash;1.40-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Text-Balanced;2.04-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Sys-Hostname;1.23-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-Sub-Install;0.928-26.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-SelfLoader;1.26-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Params-Util;1.102-3.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-Opcode;1.48-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-Safe;2.41-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Net-Ping;2.74-3.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-I18N-Langinfo;0.19-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-I18N-LangTags;0.44-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Locale-Maketext;1.29-459.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Locale-Maketext-Simple;1:0.21-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Params-Check;1:0.38-459.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Module-Load-Conditional;0.74-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Hash-Util-FieldHash;1.20-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-Hash-Util;0.23-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-fields;2.27-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-ExtUtils-ParseXS;1:3.61-2.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-ExtUtils-MM-Utils;2:7.62-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-IPC-Cmd;2:1.04-459.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-ExtUtils-Constant;0.25-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-DirHandle;1.05-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Devel-PPPort;3.73-522.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-Compress-Raw-Bzip2;2.217-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-IO-Compress;2.217-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-IO-Zlib;1:1.11-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-CPAN-Meta-YAML;0.020-522.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-CPAN-Meta;2.150013-1.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-Benchmark;1.23-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Test-Harness;1:3.42-459.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-AutoSplit;5.74-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-DBM_Filter;0.06-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-File-Fetch;1.08-4.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-Encode-Locale;1.05-19.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Data-OptList;0.110-15.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Devel-SelfStubber;1.06-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: cpp;11.5.0-5.amzn2023.0.5;aarch64;amazonlinux\nInstalling: perl-debugger;1.56-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Math-BigInt-FastCalc;0.501.400-3.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-bignum;0.67-522.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-Env;1.04-458.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Unicode-Collate;1.29-2.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-Unicode-UCD;0.75-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Module-CoreList-tools;1:5.20211020-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-experimental;0.036-3.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-sigtrap;1.09-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Archive-Zip;1.68-4.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Thread;3.05-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Thread-Queue;3.14-458.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Thread-Semaphore;2.13-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: unzip;6.0-68.amzn2023.0.2;aarch64;amazonlinux\nInstalling: zip;3.0-28.amzn2023.0.4;aarch64;amazonlinux\nInstalling: rust-toolset-srpm-macros;1.99.0-1.amzn2023;noarch;amazonlinux\nInstalling: python3-pyparsing;2.4.7-6.amzn2023.0.2;noarch;amazonlinux\nInstalling: systemtap-sdt-dtrace;5.4-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: systemtap-sdt-devel;5.4-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: pkgconf-m4;1.8.0-4.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-vmsish;1.04-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-utils;5.32.1-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-srpm-macros;1-39.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-sort;2.04-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-ph;5.32.1-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-perlfaq;5.20210520-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-macros;4:5.32.1-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-local-lib;2.000024-11.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-less;0.03-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-filetest;1.03-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-encoding-warnings;0.13-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-diagnostics;1.37-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-blib;1.07-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Time-Piece;1.3401-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-Time;1.03-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Tie-Memoize;1.1-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Tie-File;1.06-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Text-Template;1.59-3.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Text-Glob;0.11-13.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Text-Abbrev;1.02-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Test;1.31-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Term-Size-Perl;0.031-10.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-Term-Size-Any;0.002-33.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Term-Complete;1.403-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Sys-Syslog;0.36-459.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-Search-Dict;1.07-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Pod-Functions;1.13-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Pod-Checker;4:1.74-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-PerlIO-via-QuotedPrint;0.09-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Package-Generator;1.106-21.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Sub-Exporter;0.987-25.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Object-HashBase;0.009-5.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-ODBM_File;1.16-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-Net;1.02-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-NEXT;0.67-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Module-Runtime;0.016-11.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Module-Pluggable;2:5.2-16.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Module-Loaded;1:0.08-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Memoize;1.03-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-MRO-Compat;0.13-13.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Data-Section;0.200007-12.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Software-License;0.103014-10.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-MIME-Charset;1.012.2-13.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Importer;0.026-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-IPC-System-Simple;1.30-4.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-autodie;2.37-522.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-IPC-SysV;2.09-2.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-I18N-Collate;1.02-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-GDBM_File;1.18-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-FindBin;1.51-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-FileCache;1.10-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-File-Which;1.27-15.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-File-HomeDir;1.006-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-File-DosGlob;1.12-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-English;1.11-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Digest-SHA1;2.13-32.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-Devel-Size;0.86-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-DB_File;1.860-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-Config-Perl-V;0.39-1.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-Config-Extensions;0.03-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Compress-Raw-Lzma;2.221-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-IO-Compress-Lzma;2.101-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Compress-Bzip2;2.28-3.amzn2023.0.3;aarch64;amazonlinux\nInstalling: perl-CPAN-DistnameInfo;0.12-21.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Attribute-Handlers;1.01-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Algorithm-Diff;1.2010-2.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Text-Diff;1.45-11.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Archive-Tar;3.04-522.amzn2023.0.3;noarch;amazonlinux\nInstalling: perl-Module-Signature;0.87-3.amzn2023.0.2;noarch;amazonlinux\nInstalling: package-notes-srpm-macros;0.4-18.amzn2023.0.5;noarch;amazonlinux\nInstalling: openblas-srpm-macros;2-9.amzn2023.0.2;noarch;amazonlinux\nInstalling: ocaml-srpm-macros;6-6.amzn2023.0.2;noarch;amazonlinux\nInstalling: lua-srpm-macros;1-4.amzn2023.0.2;noarch;amazonlinux\nInstalling: libtool-ltdl;2.4.7-1.amzn2023.0.3;aarch64;amazonlinux\nInstalling: libstdc++-devel;11.5.0-5.amzn2023.0.5;aarch64;amazonlinux\nInstalling: libpkgconf;1.8.0-4.amzn2023.0.2;aarch64;amazonlinux\nInstalling: libgomp;14.2.1-7.amzn2023.0.2;aarch64;amazonlinux\nInstalling: libdatrie;0.2.13-1.amzn2023.0.2;aarch64;amazonlinux\nInstalling: libthai;0.1.28-6.amzn2023.0.2;aarch64;amazonlinux\nInstalling: sombok;2.4.0-14.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-Unicode-LineBreak;2019.001-9.amzn2023.0.4;aarch64;amazonlinux\nInstalling: perl-Term-Table;0.015-6.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Test-Simple;3:1.302219-2.amzn2023.0.1;noarch;amazonlinux\nInstalling: kernel6.18-headers;1:6.18.56-125.164.amzn2023;aarch64;amazonlinux\nInstalling: kernel-srpm-macros;1.0-14.amzn2023.0.3;noarch;amazonlinux\nInstalling: jansson;2.14-0.amzn2023;aarch64;amazonlinux\nInstalling: binutils;2.41-50.amzn2023.0.5;aarch64;amazonlinux\nInstalling: ghc-srpm-macros;1.5.0-4.amzn2023.0.2;noarch;amazonlinux\nInstalling: gc;8.0.4-5.amzn2023.0.2;aarch64;amazonlinux\nInstalling: guile22;2.2.7-2.amzn2023.0.3;aarch64;amazonlinux\nInstalling: make;1:4.3-5.amzn2023.0.2;aarch64;amazonlinux\nInstalling: file;5.39-7.amzn2023.0.4;aarch64;amazonlinux\nInstalling: efi-srpm-macros;5-4.amzn2023.0.5;noarch;amazonlinux\nInstalling: dwz;0.16-2.amzn2023.0.1;aarch64;amazonlinux\nInstalling: annobin-docs;12.69-1.amzn2023.0.1;noarch;amazonlinux\nInstalling: fonts-srpm-macros;1:2.0.5-12.amzn2023.0.2;noarch;amazonlinux\nInstalling: go-srpm-macros;3.8.0-1.amzn2023.0.1;noarch;amazonlinux\nInstalling: annobin-plugin-gcc;12.69-1.amzn2023.0.1;aarch64;amazonlinux\nInstalling: gcc-plugin-annobin;11.5.0-5.amzn2023.0.5;aarch64;amazonlinux\nInstalling: gcc;11.5.0-5.amzn2023.0.5;aarch64;amazonlinux\nInstalling: glibc-devel;2.34-231.amzn2023.0.5;aarch64;amazonlinux\nInstalling: libxcrypt-devel;4.4.33-7.amzn2023;aarch64;amazonlinux\nInstalling: pkgconf-pkg-config;1.8.0-4.amzn2023.0.2;aarch64;amazonlinux\nInstalling: pkgconf;1.8.0-4.amzn2023.0.2;aarch64;amazonlinux\nInstalling: python-srpm-macros;3.9-41.amzn2023.0.6;noarch;amazonlinux\nInstalling: amazon-rpm-config;228-11.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-ExtUtils-Install;2.22-521.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl-devel;4:5.32.1-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: perl-ExtUtils-MakeMaker;2:7.62-1.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-Filter;2:1.65-2.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-encoding;4:3.00-520.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-ExtUtils-Embed;1.35-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-ExtUtils-Miniperl;1.09-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-open;1.12-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Filter-Simple;0.96-458.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-libnetcfg;4:5.32.1-477.amzn2023.0.11;noarch;amazonlinux\nInstalling: perl-Encode-devel;4:3.21-520.amzn2023.0.2;aarch64;amazonlinux\nInstalling: perl-inc-latest;2:0.500-18.amzn2023.0.2;noarch;amazonlinux\nInstalling: gcc-c++;11.5.0-5.amzn2023.0.5;aarch64;amazonlinux\nInstalling: perl-ExtUtils-CBuilder;1:0.280236-2.amzn2023.0.3;noarch;amazonlinux\nInstalling: perl-Module-Build;2:0.42.31-7.amzn2023.0.2;noarch;amazonlinux\nInstalling: perl-CPAN;2.38-521.amzn2023.0.1;noarch;amazonlinux\nInstalling: perl;4:5.32.1-477.amzn2023.0.11;aarch64;amazonlinux\nInstalling: time;1.9-16.amzn2023.0.2;aarch64;amazonlinux\nInstalling: glibc-gconv-extra;2.34-231.amzn2023.0.5;aarch64;amazonlinux\nComplete.\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "versions",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "command": "node --version; npm --version; gcc --version | head -1; /usr/bin/time --version | head -1",
+      "at": "2026-11-04T22:19:26.086Z",
+      "clientSeconds": 0.7681526250000025,
+      "exitCode": 0,
+      "stdout": "v18.12.1\n8.19.2\ngcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-5)\ntime (GNU Time) 1.9\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "node22-install",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "command": "curl -fsSLo /tmp/node22.tar.xz https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-arm64.tar.xz && mkdir -p /opt/node22 && tar -xJf /tmp/node22.tar.xz -C /opt/node22 --strip-components=1 && mkdir -p /usr/local/bin && ln -sf /opt/node22/bin/node /opt/node22/bin/npm /opt/node22/bin/npx /usr/local/bin/",
+      "at": "2026-11-04T22:19:29.009Z",
+      "clientSeconds": 2.920372749999995,
+      "exitCode": 0,
+      "stdout": "BENCH wall=2.60 user=1.76 sys=0.37 rss_kb=67280 exit=0\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "node22-versions",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "command": "node --version; npm --version",
+      "at": "2026-11-04T22:19:29.983Z",
+      "clientSeconds": 0.9725245839999989,
+      "exitCode": 0,
+      "stdout": "v22.23.3\n10.9.9\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "go-install",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "command": "curl -fsSLo /tmp/go127.tar.gz https://go.dev/dl/go1.27.3.linux-arm64.tar.gz && echo 'a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49  /tmp/go127.tar.gz' | sha256sum -c - && mkdir -p /opt/go127 && tar -C /opt/go127 -xzf /tmp/go127.tar.gz && ln -sf /opt/go127/go/bin/go /opt/go127/go/bin/gofmt /usr/local/bin/ && go version",
+      "at": "2026-11-04T22:19:37.562Z",
+      "clientSeconds": 7.578381332999998,
+      "exitCode": 0,
+      "stdout": "BENCH wall=7.34 user=1.67 sys=0.47 rss_kb=11492 exit=0\n/tmp/go127.tar.gz: OK\ngo version go1.27.3 linux/arm64\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "typescript-clone",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "command": "cd /root; git clone --depth 1 https://github.com/microsoft/TypeScript",
+      "at": "2026-11-04T22:19:44.271Z",
+      "clientSeconds": 6.705074332999997,
+      "exitCode": 0,
+      "stdout": "BENCH wall=6.49 user=2.60 sys=1.26 rss_kb=96560 exit=0\nCloning into 'TypeScript'...\nUpdating files:  52% (35652/68495)\rUpdating files:  53% (36303/68495)\rUpdating files:  54% (36988/68495)\rUpdating files:  55% (37673/68495)\rUpdating files:  56% (38358/68495)\rUpdating files:  57% (39043/68495)\rUpdating files:  58% (39728/68495)\rUpdating files:  59% (40413/68495)\rUpdating files:  60% (41097/68495)\rUpdating files:  61% (41782/68495)\rUpdating files:  62% (42467/68495)\rUpdating files:  63% (43152/68495)\rUpdating files:  64% (43837/68495)\rUpdating files:  65% (44522/68495)\rUpdating files:  66% (45207/68495)\rUpdating files:  67% (45892/68495)\rUpdating files:  68% (46577/68495)\rUpdating files:  69% (47262/68495)\rUpdating files:  70% (47947/68495)\rUpdating files:  71% (48632/68495)\rUpdating files:  72% (49317/68495)\rUpdating files:  73% (50002/68495)\rUpdating files:  74% (50687/68495)\rUpdating files:  75% (51372/68495)\rUpdating files:  76% (52057/68495)\rUpdating files:  77% (52742/68495)\rUpdating files:  78% (53427/68495)\rUpdating files:  79% (54112/68495)\rUpdating files:  80% (54796/68495)\rUpdating files:  81% (55481/68495)\rUpdating files:  82% (56166/68495)\rUpdating files:  83% (56851/68495)\rUpdating files:  84% (57536/68495)\rUpdating files:  85% (58221/68495)\rUpdating files:  86% (58906/68495)\rUpdating files:  87% (59591/68495)\rUpdating files:  88% (60276/68495)\rUpdating files:  89% (60961/68495)\rUpdating files:  90% (61646/68495)\rUpdating files:  91% (62331/68495)\rUpdating files:  92% (63016/68495)\rUpdating files:  93% (63701/68495)\rUpdating files:  94% (64386/68495)\rUpdating files:  95% (65071/68495)\rUpdating files:  96% (65756/68495)\rUpdating files:  97% (66441/68495)\rUpdating files:  98% (67126/68495)\rUpdating files:  99% (67811/68495)\rUpdating files: 100% (68495/68495)\rUpdating files: 100% (68495/68495), done.\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "typescript-install",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "command": "cd /root/TypeScript; npm ci",
+      "at": "2026-11-04T22:19:49.899Z",
+      "clientSeconds": 5.627141875000001,
+      "exitCode": 0,
+      "stdout": "BENCH wall=5.39 user=5.55 sys=2.21 rss_kb=373860 exit=0\n\nadded 189 packages, and audited 194 packages in 5s\n\n39 packages are looking for funding\n  run `npm fund` for details\n\n6 vulnerabilities (4 moderate, 2 high)\n\nTo address issues that do not require attention, run:\n  npm audit fix\n\nTo address all issues (including breaking changes), run:\n  npm audit fix --force\n\nRun `npm audit` for details.\nnpm notice\nnpm notice New major version of npm available! 10.9.9 -> 12.2.1\nnpm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.1\nnpm notice To update run: npm install -g npm@12.2.1\nnpm notice\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "typescript-build",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "command": "cd /root/TypeScript; npx hereby local",
+      "at": "2026-11-04T22:24:29.118Z",
+      "clientSeconds": 279.216544834,
+      "exitCode": 1,
+      "stdout": "Command exited with non-zero status 1\nBENCH wall=279.03 user=743.15 sys=37.63 rss_kb=2681612 exit=1\nFormatted \u001b[0m\u001b[1m1\u001b[0m file.\n$ go run /root/TypeScript/tsc/internal/api/enum_values_generated.go\nAll generated values match Go.\nDone.\n$ go -C ./tools run ./gen-proto ../tsc/internal/api/proto.go ../packages/typescript/src/api/proto.generated.ts\n$ dprint fmt packages/typescript/src/api/proto.generated.ts\nFormatted \u001b[0m\u001b[1m1\u001b[0m file.\nFinished generate in 3m 54.4s\nStarting tsc:build\n$ go build -tags=noembed -o /root/TypeScript/built/local/tsc ./cmd/tsc\ngo: downloading golang.org/x/term v0.46.0\n# github.com/microsoft/TypeScript/tsc/internal/parser\ncompile: writing output: write $WORK/b154/_pkg_.a: no space left on device\ngithub.com/microsoft/TypeScript/tsc/internal/lsp/lspwatcher: mkdir /tmp/go-build1776088009/b195/: no space left on device\n# github.com/microsoft/TypeScript/tsc/internal/pseudochecker\ncompile: writing output: write $WORK/b159/_pkg_.a: no space left on device\n# github.com/microsoft/TypeScript/tsc/internal/tracing\ncompile: writing output: write $WORK/b160/_pkg_.a: no space left on device\n# github.com/microsoft/TypeScript/tsc/internal/project/ata\ncompile: writing output: write $WORK/b180/_pkg_.a: no space left on device\nError in tsc:build in 43.4s\nError: The command `go build -tags=noembed -o /root/TypeScript/built/local/tsc ./cmd/tsc` exited with a non-zero status (1)\nCompleted local with errors in 4m 37.9s\nFailed tasks: tsc:build\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "typescript-diagnostics",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "command": "git -C /root/TypeScript rev-parse HEAD; free -m; df -h ~; du -sh /root/TypeScript; cat /sys/fs/cgroup/memory.events /sys/fs/cgroup/memory.peak /sys/fs/cgroup/cpu.stat 2>/dev/null; dmesg | tail -n 20; true",
+      "at": "2026-11-04T22:24:30.399Z",
+      "clientSeconds": 1.2803320839999943,
+      "exitCode": 0,
+      "stdout": "e1a9b0b84997afa3757edd9d079bb499669ed20d\n               total        used        free      shared  buff/cache   available\nMem:            8016         185        3097           3        4733        7549\nSwap:              0           0           0\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/vdc        7.8G  7.1G  273M  97% /\n1007M\t/root/TypeScript\n[   23.219464] audit: type=1300 audit(1793722316.107:98): arch=c00000b7 syscall=280 success=yes exit=17 a0=5 a1=261f394c2208 a2=98 a3=0 items=0 ppid=371 pid=381 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm=\"runc\" exe=\"/usr/sbin/runc\" subj=system_u:system_r:kernel_t:s0 key=(null)\n[   23.220374] audit: type=1327 audit(1793722316.107:98): proctitle=72756E63002D2D726F6F74002F72756E2F636F6E7461696E6572642F72756E632F64656661756C74002D2D6C6F67002F72756E2F636F6E7461696E6572642F696F2E636F6E7461696E6572642E72756E74696D652E76322E7461736B2F64656661756C742F6170702F6C6F672E6A736F6E002D2D6C6F672D666F726D6174006A\n[   23.221223] audit: type=1334 audit(1793722316.107:99): prog-id=29 op=LOAD\n[   23.221437] audit: type=1300 audit(1793722316.107:99): arch=c00000b7 syscall=280 success=yes exit=20 a0=5 a1=261f394c1f48 a2=98 a3=0 items=0 ppid=371 pid=381 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm=\"runc\" exe=\"/usr/sbin/runc\" subj=system_u:system_r:kernel_t:s0 key=(null)\n[   23.222322] audit: type=1327 audit(1793722316.107:99): proctitle=72756E63002D2D726F6F74002F72756E2F636F6E7461696E6572642F72756E632F64656661756C74002D2D6C6F67002F72756E2F636F6E7461696E6572642F696F2E636F6E7461696E6572642E72756E74696D652E76322E7461736B2F64656661756C742F6170702F6C6F672E6A736F6E002D2D6C6F672D666F726D6174006A\n[   23.223262] audit: type=1334 audit(1793722316.107:100): prog-id=29 op=UNLOAD\n[   23.223486] audit: type=1334 audit(1793722316.107:101): prog-id=28 op=UNLOAD\n[   34.287705] kauditd_printk_skb: 4 callbacks suppressed\n[   34.287708] audit: type=1101 audit(1793722327.177:104): pid=414 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:accounting grantors=pam_succeed_if acct=\"pagent\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[   34.288596] audit: type=1123 audit(1793722327.177:105): pid=414 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='cwd=\"/opt/aws/platform-agent/var\" cmd=\"/opt/aws/platform-agent/bin/drop-memory-caches.sh\" exe=\"/usr/bin/sudo\" terminal=? res=success'\n[   34.289330] audit: type=1110 audit(1793722327.177:106): pid=414 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:setcred grantors=pam_env,pam_unix acct=\"root\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[   34.290014] audit: type=1105 audit(1793722327.177:107): pid=414 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:session_open grantors=pam_succeed_if acct=\"root\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[   34.305244] sysctl (419): drop_caches: 3\n[   34.338906] audit: type=1106 audit(1793722327.227:108): pid=414 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:session_close grantors=pam_succeed_if acct=\"root\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[   34.340796] audit: type=1104 audit(1793722327.227:109): pid=414 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:setcred grantors=pam_env,pam_unix acct=\"root\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[   35.479774] random: crng reseeded due to virtual machine fork\n[   35.564529] audit: type=1101 audit(1793722328.457:110): pid=423 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:accounting grantors=pam_succeed_if acct=\"pagent\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[   35.565267] audit: type=1101 audit(1793722328.457:111): pid=424 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:accounting grantors=pam_succeed_if acct=\"pagent\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[   35.565975] audit: type=1101 audit(1793722328.457:112): pid=425 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='op=PAM:accounting grantors=pam_succeed_if acct=\"pagent\" exe=\"/usr/bin/sudo\" hostname=? addr=? terminal=? res=success'\n[   35.566677] audit: type=1123 audit(1793722328.457:113): pid=425 uid=994 auid=4294967295 ses=4294967295 subj=system_u:system_r:kernel_t:s0 msg='cwd=\"/opt/aws/platform-agent/var\" cmd=\"/opt/aws/platform-agent/bin/kill-connections.sh\" exe=\"/usr/bin/sudo\" terminal=? res=success'\n",
+      "stderr": "",
+      "truncated": false
+    },
+    {
+      "label": "output-limit",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "command": "python3 -c 'import sys; print(\"x\"*70000); print(\"y\"*70000,file=sys.stderr)'",
+      "at": "2026-11-04T22:24:32.502Z",
+      "clientSeconds": 2.1017083749999874,
+      "exitCode": 0,
+      "stdout": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "stderr": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "truncated": true,
+      "stdoutBytes": 65536,
+      "stderrBytes": 65536
+    },
+    {
+      "label": "final-resources",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "command": "nproc; free -m; df -h ~; du -sh /root/bench-* /root/.rustup /root/.cargo /root/ripgrep-target-j4 2>/dev/null",
+      "at": "2026-11-04T22:24:32.755Z",
+      "clientSeconds": 0.24884375,
+      "exitCode": 1,
+      "stdout": "4\n               total        used        free      shared  buff/cache   available\nMem:            8016         184        3087           3        4744        7549\nSwap:              0           0           0\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/vdc        7.8G  7.1G  273M  97% /\n48K\t/root/bench-logs\n",
+      "stderr": "",
+      "truncated": false
+    }
+  ],
+  "api": [
+    {
+      "op": "RunMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:18:50.029Z",
+      "seconds": 0.17969895799999994,
+      "state": "PENDING"
+    },
+    {
+      "op": "CreateMicrovmAuthToken",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:18:50.156Z",
+      "seconds": 0.12161054200000013
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:18:52.635Z",
+      "seconds": 0.1360455420000003,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:18:52.934Z",
+      "seconds": 0.11132116700000005,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:18:54.127Z",
+      "seconds": 0.10455575000000045,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:19:25.554Z",
+      "seconds": 0.2359041670000006,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:19:26.310Z",
+      "seconds": 0.22160195899999963,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:19:29.147Z",
+      "seconds": 0.1363523339999956,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:19:30.097Z",
+      "seconds": 0.11340641599999798,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:19:37.659Z",
+      "seconds": 0.09314225000000442,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:19:44.370Z",
+      "seconds": 0.09812591700000485,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:19:49.995Z",
+      "seconds": 0.09496812500000669,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:24:29.379Z",
+      "seconds": 0.26074666699999943,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:24:30.534Z",
+      "seconds": 0.1343914170000353,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:24:32.632Z",
+      "seconds": 0.12598429200000827,
+      "state": "RUNNING"
+    },
+    {
+      "op": "TerminateMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:24:32.917Z",
+      "seconds": 0.16076458299998195
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:24:33.021Z",
+      "seconds": 0.10318349999998463,
+      "state": "RUNNING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:24:34.159Z",
+      "seconds": 0.13536962499999208,
+      "state": "TERMINATING"
+    },
+    {
+      "op": "GetMicrovm",
+      "id": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "at": "2026-11-04T22:24:35.257Z",
+      "seconds": 0.09657354199996916,
+      "state": "TERMINATED"
+    }
+  ],
+  "before": [
+    {
+      "microvmId": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "state": "TERMINATED",
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "startedAt": 1793830234.479
+    },
+    {
+      "microvmId": "microvm-449c9829-a65e-3cb9-9ba0-d44be429da86",
+      "state": "TERMINATED",
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "startedAt": 1793830257.312
+    },
+    {
+      "microvmId": "microvm-9781c897-b1ae-37f1-b84c-048599f4d9fe",
+      "state": "TERMINATED",
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "startedAt": 1793830384.564
+    },
+    {
+      "microvmId": "microvm-a41c4faf-affc-33e7-9f4f-e189b7702a5b",
+      "state": "TERMINATED",
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "startedAt": 1793830551.998
+    },
+    {
+      "microvmId": "microvm-fdcd33b6-06b1-322b-88a3-ed1b26062181",
+      "state": "TERMINATED",
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "startedAt": 1793830591.104
+    },
+    {
+      "microvmId": "microvm-fe74ce58-d015-37e1-9145-35ec5fa82ae3",
+      "state": "TERMINATED",
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "startedAt": 1793830253.866
+    }
+  ],
+  "cleanupStartedAt": "2026-11-04T22:24:32.756Z",
+  "after": [
+    {
+      "microvmId": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "state": "TERMINATED",
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "startedAt": 1793830729.969
+    },
+    {
+      "microvmId": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "state": "TERMINATED",
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "startedAt": 1793830234.479
+    },
+    {
+      "microvmId": "microvm-449c9829-a65e-3cb9-9ba0-d44be429da86",
+      "state": "TERMINATED",
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "startedAt": 1793830257.312
+    },
+    {
+      "microvmId": "microvm-9781c897-b1ae-37f1-b84c-048599f4d9fe",
+      "state": "TERMINATED",
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "startedAt": 1793830384.564
+    },
+    {
+      "microvmId": "microvm-a41c4faf-affc-33e7-9f4f-e189b7702a5b",
+      "state": "TERMINATED",
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "startedAt": 1793830551.998
+    },
+    {
+      "microvmId": "microvm-fdcd33b6-06b1-322b-88a3-ed1b26062181",
+      "state": "TERMINATED",
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "startedAt": 1793830591.104
+    },
+    {
+      "microvmId": "microvm-fe74ce58-d015-37e1-9145-35ec5fa82ae3",
+      "state": "TERMINATED",
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "startedAt": 1793830253.866
+    }
+  ],
+  "cleanupVerified": true,
+  "finishedAt": "2026-11-04T22:24:35.359Z"
+}

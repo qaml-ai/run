@@ -1,0 +1,1052 @@
+{
+  "runs": [
+    {
+      "file": "results.json",
+      "firstExec": [
+        19.407070667,
+        3.2615985419999998,
+        9.463111292
+      ],
+      "groups": {
+        "first-exec": {
+          "trials": [
+            {
+              "seconds": 16.692096416000002,
+              "exitCode": 0
+            },
+            {
+              "seconds": 1.6836269159999975,
+              "exitCode": 0
+            },
+            {
+              "seconds": 4.926911416000003,
+              "exitCode": 0
+            }
+          ],
+          "median": 4.926911416000003
+        },
+        "system": {
+          "trials": [
+            {
+              "seconds": 24.868321917,
+              "exitCode": 0
+            }
+          ],
+          "median": 24.868321917
+        },
+        "prerequisites": {
+          "trials": [
+            {
+              "seconds": 43.208607792,
+              "exitCode": 0
+            }
+          ],
+          "median": 43.208607792
+        },
+        "versions": {
+          "trials": [
+            {
+              "seconds": 0.6879513750000041,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.6879513750000041
+        },
+        "express-clone": {
+          "trials": [
+            {
+              "seconds": 3.37,
+              "exitCode": 0,
+              "wall": 3.37,
+              "user": 0.04,
+              "sys": 0,
+              "rssKB": 12000,
+              "cpuCores": 0.011869436201780416
+            },
+            {
+              "seconds": 0.44,
+              "exitCode": 0,
+              "wall": 0.44,
+              "user": 0.01,
+              "sys": 0.02,
+              "rssKB": 11972,
+              "cpuCores": 0.06818181818181818
+            },
+            {
+              "seconds": 0.41,
+              "exitCode": 0,
+              "wall": 0.41,
+              "user": 0.03,
+              "sys": 0.01,
+              "rssKB": 11884,
+              "cpuCores": 0.0975609756097561
+            }
+          ],
+          "median": 0.44
+        },
+        "express-install": {
+          "trials": [
+            {
+              "seconds": 6.58,
+              "exitCode": 0,
+              "wall": 6.58,
+              "user": 5.58,
+              "sys": 0.62,
+              "rssKB": 405964,
+              "cpuCores": 0.9422492401215805
+            },
+            {
+              "seconds": 6.22,
+              "exitCode": 0,
+              "wall": 6.22,
+              "user": 5.59,
+              "sys": 0.6,
+              "rssKB": 380288,
+              "cpuCores": 0.995176848874598
+            },
+            {
+              "seconds": 6.37,
+              "exitCode": 0,
+              "wall": 6.37,
+              "user": 5.61,
+              "sys": 0.62,
+              "rssKB": 405340,
+              "cpuCores": 0.9780219780219781
+            }
+          ],
+          "median": 6.37
+        },
+        "express-test": {
+          "trials": [
+            {
+              "seconds": 4.77,
+              "exitCode": 2,
+              "wall": 4.77,
+              "user": 3.33,
+              "sys": 0.34,
+              "rssKB": 181936,
+              "cpuCores": 0.769392033542977
+            },
+            {
+              "seconds": 3.06,
+              "exitCode": 2,
+              "wall": 3.06,
+              "user": 3.27,
+              "sys": 0.31,
+              "rssKB": 175144,
+              "cpuCores": 1.1699346405228759
+            },
+            {
+              "seconds": 3.04,
+              "exitCode": 2,
+              "wall": 3.04,
+              "user": 3.41,
+              "sys": 0.17,
+              "rssKB": 175088,
+              "cpuCores": 1.1776315789473684
+            }
+          ],
+          "median": 3.06
+        },
+        "express-revision": {
+          "trials": [
+            {
+              "seconds": 0.2359617089999956,
+              "exitCode": 0
+            },
+            {
+              "seconds": 0.23022437500000523,
+              "exitCode": 0
+            },
+            {
+              "seconds": 0.26178783400001704,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.2359617089999956
+        },
+        "rust-install": {
+          "trials": [
+            {
+              "seconds": 6.48,
+              "exitCode": 0,
+              "wall": 6.48,
+              "user": 4.68,
+              "sys": 0.69,
+              "rssKB": 496340,
+              "cpuCores": 0.8287037037037035
+            }
+          ],
+          "median": 6.48
+        },
+        "rust-versions": {
+          "trials": [
+            {
+              "seconds": 0.23464433400001145,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.23464433400001145
+        },
+        "ripgrep-clone": {
+          "trials": [
+            {
+              "seconds": 0.54,
+              "exitCode": 0,
+              "wall": 0.54,
+              "user": 0.04,
+              "sys": 0.02,
+              "rssKB": 11788,
+              "cpuCores": 0.1111111111111111
+            },
+            {
+              "seconds": 0.61,
+              "exitCode": 0,
+              "wall": 0.61,
+              "user": 0.03,
+              "sys": 0.03,
+              "rssKB": 11828,
+              "cpuCores": 0.09836065573770492
+            },
+            {
+              "seconds": 0.63,
+              "exitCode": 0,
+              "wall": 0.63,
+              "user": 0.04,
+              "sys": 0.02,
+              "rssKB": 11980,
+              "cpuCores": 0.09523809523809523
+            }
+          ],
+          "median": 0.61
+        },
+        "ripgrep-build": {
+          "trials": [
+            {
+              "seconds": 17.12,
+              "exitCode": 0,
+              "wall": 17.12,
+              "user": 56.01,
+              "sys": 2.78,
+              "rssKB": 424780,
+              "cpuCores": 3.4339953271028034
+            },
+            {
+              "seconds": 17.02,
+              "exitCode": 0,
+              "wall": 17.02,
+              "user": 55.91,
+              "sys": 2.86,
+              "rssKB": 420720,
+              "cpuCores": 3.4529964747356052
+            },
+            {
+              "seconds": 17.17,
+              "exitCode": 0,
+              "wall": 17.17,
+              "user": 56.18,
+              "sys": 2.73,
+              "rssKB": 425432,
+              "cpuCores": 3.4309842748980777
+            }
+          ],
+          "median": 17.12
+        },
+        "ripgrep-revision": {
+          "trials": [
+            {
+              "seconds": 0.282095083000022,
+              "exitCode": 0
+            },
+            {
+              "seconds": 0.2832381250000035,
+              "exitCode": 0
+            },
+            {
+              "seconds": 0.27751333300000985,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.282095083000022
+        },
+        "ripgrep-build-j4": {
+          "trials": [
+            {
+              "seconds": 16.68,
+              "exitCode": 0,
+              "wall": 16.68,
+              "user": 56,
+              "sys": 2.74,
+              "rssKB": 417996,
+              "cpuCores": 3.52158273381295
+            }
+          ],
+          "median": 16.68
+        },
+        "persistence-before": {
+          "trials": [
+            {
+              "seconds": 1.1326110000000045,
+              "exitCode": 0
+            }
+          ],
+          "median": 1.1326110000000045
+        },
+        "suspend": {
+          "trials": [
+            {
+              "seconds": 1.04260954200002
+            },
+            {
+              "seconds": 0.6122697909999988
+            },
+            {
+              "seconds": 0.592545958999981
+            }
+          ],
+          "median": 0.6122697909999988
+        },
+        "resume": {
+          "trials": [
+            {
+              "seconds": 1.2321882089999854,
+              "exitCode": 0
+            },
+            {
+              "seconds": 4.380758915999992,
+              "exitCode": 0
+            },
+            {
+              "seconds": 4.468222375000012,
+              "exitCode": 0
+            }
+          ],
+          "median": 4.380758915999992
+        },
+        "typescript-clone": {
+          "trials": [
+            {
+              "seconds": 3.31,
+              "exitCode": 0,
+              "wall": 3.31,
+              "user": 2.3,
+              "sys": 0.83,
+              "rssKB": 96356,
+              "cpuCores": 0.9456193353474319
+            }
+          ],
+          "median": 3.31
+        },
+        "typescript-install": {
+          "trials": [
+            {
+              "seconds": 9.56,
+              "exitCode": 0,
+              "wall": 9.56,
+              "user": 10.24,
+              "sys": 1.45,
+              "rssKB": 372484,
+              "cpuCores": 1.2228033472803346
+            }
+          ],
+          "median": 9.56
+        },
+        "typescript-build": {
+          "trials": [
+            {
+              "seconds": 0.57,
+              "exitCode": 1,
+              "wall": 0.57,
+              "user": 0.53,
+              "sys": 0.11,
+              "rssKB": 171112,
+              "cpuCores": 1.1228070175438598
+            }
+          ],
+          "median": 0.57
+        },
+        "typescript-diagnostics": {
+          "trials": [
+            {
+              "seconds": 0.7253721659999864,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.7253721659999864
+        },
+        "output-limit": {
+          "trials": [
+            {
+              "seconds": 2.617861708000011,
+              "exitCode": 0
+            }
+          ],
+          "median": 2.617861708000011
+        },
+        "final-resources": {
+          "trials": [
+            {
+              "seconds": 0.5295098750000179,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.5295098750000179
+        }
+      },
+      "persistenceVerified": true,
+      "lifetimeSeconds": 263.3710000514984,
+      "baselineCompute": 0.009225306715603876,
+      "snapshot2GiB": 0.04139999999999999,
+      "cycles": 3
+    },
+    {
+      "file": "node22-results.json",
+      "firstExec": [
+        8.375049125
+      ],
+      "groups": {
+        "first-exec": {
+          "trials": [
+            {
+              "seconds": 6.738769875,
+              "exitCode": 0
+            }
+          ],
+          "median": 6.738769875
+        },
+        "system": {
+          "trials": [
+            {
+              "seconds": 19.825399084,
+              "exitCode": 0
+            }
+          ],
+          "median": 19.825399084
+        },
+        "prerequisites": {
+          "trials": [
+            {
+              "seconds": 41.907121583,
+              "exitCode": 0
+            }
+          ],
+          "median": 41.907121583
+        },
+        "versions": {
+          "trials": [
+            {
+              "seconds": 0.8869668749999983,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.8869668749999983
+        },
+        "node22-install": {
+          "trials": [
+            {
+              "seconds": 2.78,
+              "exitCode": 0,
+              "wall": 2.78,
+              "user": 1.78,
+              "sys": 0.38,
+              "rssKB": 67380,
+              "cpuCores": 0.7769784172661871
+            }
+          ],
+          "median": 2.78
+        },
+        "node22-versions": {
+          "trials": [
+            {
+              "seconds": 1.0685859579999961,
+              "exitCode": 0
+            }
+          ],
+          "median": 1.0685859579999961
+        },
+        "express-clone": {
+          "trials": [
+            {
+              "seconds": 2.29,
+              "exitCode": 0,
+              "wall": 2.29,
+              "user": 0.02,
+              "sys": 0.03,
+              "rssKB": 11848,
+              "cpuCores": 0.02183406113537118
+            },
+            {
+              "seconds": 0.47,
+              "exitCode": 0,
+              "wall": 0.47,
+              "user": 0.04,
+              "sys": 0.01,
+              "rssKB": 11960,
+              "cpuCores": 0.10638297872340427
+            },
+            {
+              "seconds": 0.45,
+              "exitCode": 0,
+              "wall": 0.45,
+              "user": 0.04,
+              "sys": 0.01,
+              "rssKB": 11948,
+              "cpuCores": 0.11111111111111112
+            }
+          ],
+          "median": 0.47
+        },
+        "express-install": {
+          "trials": [
+            {
+              "seconds": 7.47,
+              "exitCode": 0,
+              "wall": 7.47,
+              "user": 5.39,
+              "sys": 1.15,
+              "rssKB": 268492,
+              "cpuCores": 0.8755020080321284
+            },
+            {
+              "seconds": 7.69,
+              "exitCode": 0,
+              "wall": 7.69,
+              "user": 5.34,
+              "sys": 1.03,
+              "rssKB": 260960,
+              "cpuCores": 0.8283485045513653
+            },
+            {
+              "seconds": 7.61,
+              "exitCode": 0,
+              "wall": 7.61,
+              "user": 5.42,
+              "sys": 1.04,
+              "rssKB": 268484,
+              "cpuCores": 0.8488830486202364
+            }
+          ],
+          "median": 7.61
+        },
+        "express-test": {
+          "trials": [
+            {
+              "seconds": 3.15,
+              "exitCode": 0,
+              "wall": 3.15,
+              "user": 3.28,
+              "sys": 0.48,
+              "rssKB": 178168,
+              "cpuCores": 1.1936507936507936
+            },
+            {
+              "seconds": 3.07,
+              "exitCode": 0,
+              "wall": 3.07,
+              "user": 3.35,
+              "sys": 0.25,
+              "rssKB": 179888,
+              "cpuCores": 1.1726384364820848
+            },
+            {
+              "seconds": 3.07,
+              "exitCode": 0,
+              "wall": 3.07,
+              "user": 3.24,
+              "sys": 0.38,
+              "rssKB": 178656,
+              "cpuCores": 1.1791530944625408
+            }
+          ],
+          "median": 3.07
+        },
+        "express-revision": {
+          "trials": [
+            {
+              "seconds": 0.2854871669999993,
+              "exitCode": 0
+            },
+            {
+              "seconds": 0.22053229200000352,
+              "exitCode": 0
+            },
+            {
+              "seconds": 0.2615633749999979,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.2615633749999979
+        },
+        "typescript-clone": {
+          "trials": [
+            {
+              "seconds": 6.25,
+              "exitCode": 0,
+              "wall": 6.25,
+              "user": 2.87,
+              "sys": 1,
+              "rssKB": 96348,
+              "cpuCores": 0.6192
+            }
+          ],
+          "median": 6.25
+        },
+        "typescript-install": {
+          "trials": [
+            {
+              "seconds": 5.41,
+              "exitCode": 0,
+              "wall": 5.41,
+              "user": 5.63,
+              "sys": 2.2,
+              "rssKB": 373608,
+              "cpuCores": 1.4473197781885396
+            }
+          ],
+          "median": 5.41
+        },
+        "typescript-build": {
+          "trials": [
+            {
+              "seconds": 21.01,
+              "exitCode": 1,
+              "wall": 21.01,
+              "user": 23.8,
+              "sys": 1.51,
+              "rssKB": 436668,
+              "cpuCores": 1.2046644455021418
+            }
+          ],
+          "median": 21.01
+        },
+        "typescript-diagnostics": {
+          "trials": [
+            {
+              "seconds": 0.5230389999999897,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.5230389999999897
+        },
+        "output-limit": {
+          "trials": [
+            {
+              "seconds": 1.6830502500000002,
+              "exitCode": 0
+            }
+          ],
+          "median": 1.6830502500000002
+        },
+        "final-resources": {
+          "trials": [
+            {
+              "seconds": 0.321626958000008,
+              "exitCode": 1
+            }
+          ],
+          "median": 0.321626958000008
+        }
+      },
+      "persistenceVerified": false,
+      "lifetimeSeconds": 149.97699999809265,
+      "baselineCompute": 0.00525336436053319,
+      "snapshot2GiB": 0.0031,
+      "cycles": 0
+    },
+    {
+      "file": "rust-results.json",
+      "firstExec": [
+        3.141914292
+      ],
+      "groups": {
+        "first-exec": {
+          "trials": [
+            {
+              "seconds": 1.370615417,
+              "exitCode": 0
+            }
+          ],
+          "median": 1.370615417
+        },
+        "system": {
+          "trials": [
+            {
+              "seconds": 19.985188458,
+              "exitCode": 0
+            }
+          ],
+          "median": 19.985188458
+        },
+        "prerequisites": {
+          "trials": [
+            {
+              "seconds": 37.291203333,
+              "exitCode": 0
+            }
+          ],
+          "median": 37.291203333
+        },
+        "versions": {
+          "trials": [
+            {
+              "seconds": 0.646086374999999,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.646086374999999
+        },
+        "rust-install": {
+          "trials": [
+            {
+              "seconds": 6.19,
+              "exitCode": 0,
+              "wall": 6.19,
+              "user": 4.73,
+              "sys": 0.65,
+              "rssKB": 546232,
+              "cpuCores": 0.8691437802907916
+            },
+            {
+              "seconds": 5.75,
+              "exitCode": 0,
+              "wall": 5.75,
+              "user": 4.83,
+              "sys": 0.54,
+              "rssKB": 563672,
+              "cpuCores": 0.9339130434782609
+            }
+          ],
+          "median": 5.970000000000001
+        }
+      },
+      "persistenceVerified": false,
+      "lifetimeSeconds": 74.10700011253357,
+      "baselineCompute": 0.0025958051785418034,
+      "snapshot2GiB": 0.0031,
+      "cycles": 0
+    },
+    {
+      "file": "typescript-results.json",
+      "firstExec": [
+        1.997850125
+      ],
+      "groups": {
+        "first-exec": {
+          "trials": [
+            {
+              "seconds": 0.34064958299999987,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.34064958299999987
+        },
+        "system": {
+          "trials": [
+            {
+              "seconds": 5.381327917,
+              "exitCode": 0
+            }
+          ],
+          "median": 5.381327917
+        },
+        "prerequisites": {
+          "trials": [
+            {
+              "seconds": 36.362433459,
+              "exitCode": 0
+            }
+          ],
+          "median": 36.362433459
+        },
+        "versions": {
+          "trials": [
+            {
+              "seconds": 0.7876963340000002,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.7876963340000002
+        },
+        "node22-install": {
+          "trials": [
+            {
+              "seconds": 8.3,
+              "exitCode": 0,
+              "wall": 8.3,
+              "user": 1.8,
+              "sys": 0.31,
+              "rssKB": 67308,
+              "cpuCores": 0.2542168674698795
+            }
+          ],
+          "median": 8.3
+        },
+        "node22-versions": {
+          "trials": [
+            {
+              "seconds": 0.9072610409999979,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.9072610409999979
+        },
+        "go-install": {
+          "trials": [
+            {
+              "seconds": 4.47,
+              "exitCode": 0,
+              "wall": 4.47,
+              "user": 1.44,
+              "sys": 0.48,
+              "rssKB": 79096,
+              "cpuCores": 0.42953020134228187
+            }
+          ],
+          "median": 4.47
+        },
+        "typescript-clone": {
+          "trials": [
+            {
+              "seconds": 16.32,
+              "exitCode": 0,
+              "wall": 16.32,
+              "user": 2.72,
+              "sys": 1.14,
+              "rssKB": 96264,
+              "cpuCores": 0.23651960784313728
+            }
+          ],
+          "median": 16.32
+        },
+        "typescript-install": {
+          "trials": [
+            {
+              "seconds": 5.47,
+              "exitCode": 0,
+              "wall": 5.47,
+              "user": 5.76,
+              "sys": 2.26,
+              "rssKB": 397480,
+              "cpuCores": 1.46617915904936
+            }
+          ],
+          "median": 5.47
+        },
+        "typescript-build": {
+          "trials": [
+            {
+              "seconds": 21.02,
+              "exitCode": 1,
+              "wall": 21.02,
+              "user": 23.52,
+              "sys": 1.76,
+              "rssKB": 438508,
+              "cpuCores": 1.2026641294005709
+            }
+          ],
+          "median": 21.02
+        },
+        "typescript-diagnostics": {
+          "trials": [
+            {
+              "seconds": 0.6882373749999969,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.6882373749999969
+        },
+        "output-limit": {
+          "trials": [
+            {
+              "seconds": 1.8763547499999986,
+              "exitCode": 0
+            }
+          ],
+          "median": 1.8763547499999986
+        },
+        "final-resources": {
+          "trials": [
+            {
+              "seconds": 0.319374250000008,
+              "exitCode": 1
+            }
+          ],
+          "median": 0.319374250000008
+        }
+      },
+      "persistenceVerified": false,
+      "lifetimeSeconds": 105.89099979400635,
+      "baselineCompute": 0.003709128762584496,
+      "snapshot2GiB": 0.0031,
+      "cycles": 0
+    },
+    {
+      "file": "typescript-go127-results.json",
+      "firstExec": [
+        2.9740749590000006
+      ],
+      "groups": {
+        "first-exec": {
+          "trials": [
+            {
+              "seconds": 0.3224152079999999,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.3224152079999999
+        },
+        "system": {
+          "trials": [
+            {
+              "seconds": 1.1979767499999998,
+              "exitCode": 0
+            }
+          ],
+          "median": 1.1979767499999998
+        },
+        "prerequisites": {
+          "trials": [
+            {
+              "seconds": 31.293348041999998,
+              "exitCode": 0
+            }
+          ],
+          "median": 31.293348041999998
+        },
+        "versions": {
+          "trials": [
+            {
+              "seconds": 0.7681526250000025,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.7681526250000025
+        },
+        "node22-install": {
+          "trials": [
+            {
+              "seconds": 2.6,
+              "exitCode": 0,
+              "wall": 2.6,
+              "user": 1.76,
+              "sys": 0.37,
+              "rssKB": 67280,
+              "cpuCores": 0.8192307692307692
+            }
+          ],
+          "median": 2.6
+        },
+        "node22-versions": {
+          "trials": [
+            {
+              "seconds": 0.9725245839999989,
+              "exitCode": 0
+            }
+          ],
+          "median": 0.9725245839999989
+        },
+        "go-install": {
+          "trials": [
+            {
+              "seconds": 7.34,
+              "exitCode": 0,
+              "wall": 7.34,
+              "user": 1.67,
+              "sys": 0.47,
+              "rssKB": 11492,
+              "cpuCores": 0.29155313351498635
+            }
+          ],
+          "median": 7.34
+        },
+        "typescript-clone": {
+          "trials": [
+            {
+              "seconds": 6.49,
+              "exitCode": 0,
+              "wall": 6.49,
+              "user": 2.6,
+              "sys": 1.26,
+              "rssKB": 96560,
+              "cpuCores": 0.5947611710323575
+            }
+          ],
+          "median": 6.49
+        },
+        "typescript-install": {
+          "trials": [
+            {
+              "seconds": 5.39,
+              "exitCode": 0,
+              "wall": 5.39,
+              "user": 5.55,
+              "sys": 2.21,
+              "rssKB": 373860,
+              "cpuCores": 1.4397031539888683
+            }
+          ],
+          "median": 5.39
+        },
+        "typescript-build": {
+          "trials": [
+            {
+              "seconds": 279.03,
+              "exitCode": 1,
+              "wall": 279.03,
+              "user": 743.15,
+              "sys": 37.63,
+              "rssKB": 2681612,
+              "cpuCores": 2.798193742608322
+            }
+          ],
+          "median": 279.03
+        },
+        "typescript-diagnostics": {
+          "trials": [
+            {
+              "seconds": 1.2803320839999943,
+              "exitCode": 0
+            }
+          ],
+          "median": 1.2803320839999943
+        },
+        "output-limit": {
+          "trials": [
+            {
+              "seconds": 2.1017083749999874,
+              "exitCode": 0
+            }
+          ],
+          "median": 2.1017083749999874
+        },
+        "final-resources": {
+          "trials": [
+            {
+              "seconds": 0.24884375,
+              "exitCode": 1
+            }
+          ],
+          "median": 0.24884375
+        }
+      },
+      "persistenceVerified": false,
+      "lifetimeSeconds": 344.4469997882843,
+      "baselineCompute": 0.012065220619184065,
+      "snapshot2GiB": 0.0031,
+      "cycles": 0
+    }
+  ],
+  "rustInstall": {
+    "trials": [
+      6.48,
+      6.19,
+      5.75
+    ],
+    "median": 6.19
+  },
+  "cost": {
+    "baselinePlus2GiBSnapshots": 0.08664882563644741,
+    "fourTimesComputePlus8GiBSnapshots": 0.34659530254578963,
+    "note": "Lifetimes include suspension; final audit supplies server timestamps when available, otherwise intervals end at first TerminateMicrovm response. Add suspended storage and unmetered transfer. Snapshot size is assumed, not observed."
+  }
+}

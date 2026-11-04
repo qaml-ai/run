@@ -1,0 +1,122 @@
+{
+  "at": "2026-11-04T22:24:54.200Z",
+  "initialInventory": [],
+  "inventory": [
+    {
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "microvmId": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "startedAt": 1793830729.969,
+      "state": "TERMINATED"
+    },
+    {
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "microvmId": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "startedAt": 1793830234.479,
+      "state": "TERMINATED"
+    },
+    {
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "microvmId": "microvm-449c9829-a65e-3cb9-9ba0-d44be429da86",
+      "startedAt": 1793830257.312,
+      "state": "TERMINATED"
+    },
+    {
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "microvmId": "microvm-9781c897-b1ae-37f1-b84c-048599f4d9fe",
+      "startedAt": 1793830384.564,
+      "state": "TERMINATED"
+    },
+    {
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "microvmId": "microvm-a41c4faf-affc-33e7-9f4f-e189b7702a5b",
+      "startedAt": 1793830551.998,
+      "state": "TERMINATED"
+    },
+    {
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "microvmId": "microvm-fdcd33b6-06b1-322b-88a3-ed1b26062181",
+      "startedAt": 1793830591.104,
+      "state": "TERMINATED"
+    },
+    {
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "microvmId": "microvm-fe74ce58-d015-37e1-9145-35ec5fa82ae3",
+      "startedAt": 1793830253.866,
+      "state": "TERMINATED"
+    }
+  ],
+  "owned": [
+    {
+      "microvmId": "microvm-3d6c94d7-f22e-3345-9bc7-17caf15a3cae",
+      "state": "TERMINATED",
+      "startedAt": 1793830234.479,
+      "terminatedAt": 1793830484.239,
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "maximumDurationInSeconds": 3600
+    },
+    {
+      "microvmId": "microvm-fe74ce58-d015-37e1-9145-35ec5fa82ae3",
+      "state": "TERMINATED",
+      "startedAt": 1793830253.866,
+      "terminatedAt": 1793830257.432,
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "maximumDurationInSeconds": 3600
+    },
+    {
+      "microvmId": "microvm-449c9829-a65e-3cb9-9ba0-d44be429da86",
+      "state": "TERMINATED",
+      "startedAt": 1793830257.312,
+      "terminatedAt": 1793830267.357,
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "maximumDurationInSeconds": 3600
+    },
+    {
+      "microvmId": "microvm-9781c897-b1ae-37f1-b84c-048599f4d9fe",
+      "state": "TERMINATED",
+      "startedAt": 1793830384.564,
+      "terminatedAt": 1793830534.541,
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "maximumDurationInSeconds": 3600
+    },
+    {
+      "microvmId": "microvm-a41c4faf-affc-33e7-9f4f-e189b7702a5b",
+      "state": "TERMINATED",
+      "startedAt": 1793830551.998,
+      "terminatedAt": 1793830626.105,
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "maximumDurationInSeconds": 3600
+    },
+    {
+      "microvmId": "microvm-fdcd33b6-06b1-322b-88a3-ed1b26062181",
+      "state": "TERMINATED",
+      "startedAt": 1793830591.104,
+      "terminatedAt": 1793830696.995,
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "maximumDurationInSeconds": 3600
+    },
+    {
+      "microvmId": "microvm-0503274a-32af-3211-9dd7-b746b17ecbd4",
+      "state": "TERMINATED",
+      "startedAt": 1793830729.969,
+      "terminatedAt": 1793831074.416,
+      "imageArn": "arn:aws:lambda:us-west-2:904534089871:microvm-image:camelrun-computers",
+      "imageVersion": "1.0",
+      "maximumDurationInSeconds": 3600
+    }
+  ],
+  "verified": true,
+  "activeOwned": []
+}
