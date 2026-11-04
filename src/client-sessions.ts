@@ -1826,6 +1826,7 @@ export class ClientSessions {
         ...(body.method === "execute" && typeof body.params.code === "string" ? { code: body.params.code } : {}),
         id: body.id, method: body.method, fingerprint, state: "running", ...(queued ? { params } : {}), ...(actor ? { actor } : {}), ...(bucket ? { bucket } : {}), ...(params.metadata ? { metadata: params.metadata } : {}),
         ...(body.method === "resume" ? { suspension: params.suspension } : {}),
+        ...(params.from || body.method === "resume" && session.requests.get(params.suspension)?.sender ? { sender: params.from ?? session.requests.get(params.suspension)?.sender } : {}),
       });
       // Taken: its running record now keeps the agent busy, so it is no longer being admitted. An abort that cancels it
       // before the write below is done then gives the slot back before the run is seen to end, as for any cancelled run.

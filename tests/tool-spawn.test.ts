@@ -43,7 +43,8 @@ test("a trusted tool prepares a persistent worker and starts it as a background 
   t.after(() => { server.closeAllConnections(); server.close(); });
   const url = `http://127.0.0.1:${(server.address() as any).port}/mcp`;
   const parent = await sdk.createAgent({ systemPrompt: "You are LEAD.", mcpServers: [{ name: "app", url, auth: { type: "runtime" } }] });
-  const record = await r.prompt(parent.session.id, "work on bot a");
+  const sender = { id: "member-alice", name: "Alice", username: "alice" };
+  const record = await r.prompt(parent.session.id, "work on bot a", undefined, { from: sender, actor: "authorized-actor" });
   assert.equal(record.error, undefined, JSON.stringify(record));
   const [first, second] = record.outcome.result.reply.split(" | ").map((part: string) => { try { return JSON.parse(part); } catch { assert.fail(part); } });
   assert.equal(first.agentId, workers.get("a"));
@@ -65,6 +66,9 @@ test("a trusted tool prepares a persistent worker and starts it as a background 
   assert.equal(worker.length, 2);
   assert.ok(worker[1].began >= worker[0].endedAt, "the second task waited its turn");
   assert.equal(worker[0].metadata.parentAgentId, parent.session.id);
+  assert.ok(worker.every((request: any) => request.actor === "authorized-actor"));
+  const workerHistory = (await r.call(`/v1/agents/${workers.get("a")}/history`)).json.messages;
+  assert.deepEqual(workerHistory.filter((message: any) => message.role === "user").map((message: any) => message.from), [sender, sender]);
 
   // Another tenant's agent is refused.
   const refused = await r.prompt(parent.session.id, "stranger");
