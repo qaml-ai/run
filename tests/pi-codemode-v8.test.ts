@@ -352,6 +352,10 @@ test("Pi execute convenience API uses the V8 launcher, and tells the CPU the scr
   if (result.ok) assert.equal(result.value, null);
   assert.equal(ends.length, 1);
   assert.ok(Number.isSafeInteger(ends[0].cpuMs) && ends[0].cpuMs! > 0 && ends[0].cpuMs! <= ends[0].ms + 5, JSON.stringify(ends));
+  // A failed script's end names its error.
+  await sandbox.execute("const x = ;");
+  await sandbox.execute("return null.x");
+  assert.deepEqual(ends.slice(1).map(end => (end as { errorName?: string }).errorName), ["SyntaxError", "TypeError"]);
 });
 
 test("Pi start keeps Linux seccomp with and without the JIT", { skip: skip || (process.platform !== "linux" && "seccomp requires Linux") }, async () => {

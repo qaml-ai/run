@@ -168,7 +168,7 @@ test("each execution writes a metric line with its duration, CPU and timeoutMs, 
   recordV8Exec({ event: "killed", signal: "SIGSYS" });
   assert.deepEqual(lines.map(({ _aws, ...line }) => line), [
     { type: "code_execution", tenant: "acme", timeoutMs: 60_000, requestedTimeoutMs: 120_000, ErrorClass: "none", Engine: "v8", CodeExecutions: 1, CodeDurationMs: 1234, CodeCpuMs: 12 },
-    { type: "code_execution", tenant: "acme", timeoutMs: 30_000, ErrorClass: "cpu_limit", Engine: "v8", CodeExecutions: 1, CodeDurationMs: 2300 },
+    { type: "code_execution", tenant: "acme", timeoutMs: 30_000, errorShape: "Codemode CPU limit exceeded: the execution kept its thread busy for over 0 ms", ErrorClass: "cpu_limit", Engine: "v8", CodeExecutions: 1, CodeDurationMs: 2300 },
     { type: "v8_exec", signal: "SIGSYS", Event: "killed", V8ExecFailures: 1 },
   ]);
   for (const [message, expected] of [
@@ -184,6 +184,24 @@ test("each execution writes a metric line with its duration, CPU and timeoutMs, 
     ["Codemode sandbox process could not start (ENOENT)", "spawn_failed"],
     ["Error: file not found: /workspace/x.csv", "guest_error"],
   ]) assert.equal(codeErrorClass(message), expected, message);
+});
+
+test("a script's error goes into its line as its name and shape: the first line, what is quoted emptied, digits as 0, never more than 160 characters", async t => {
+  const lines: any[] = [];
+  setMetricSink(line => lines.push(JSON.parse(line)));
+  t.after(() => setMetricSink());
+  recordCodeExecution({ tenant: "acme", ms: 5, timeoutMs: 30_000, error: new Error("Identifier 'tools' has already been declared"), errorName: "SyntaxError" });
+  recordCodeExecution({ tenant: "acme", ms: 5, timeoutMs: 30_000, error: new Error(`"{\"secret\":\"hunter2\"}" is not valid JSON\n    at codemode.js:3:12`), errorName: "SyntaxError" });
+  recordCodeExecution({ tenant: "acme", ms: 5, timeoutMs: 30_000, error: new Error(`Cannot read properties of undefined (reading 'mochi') at step 42 ${"x".repeat(300)}`), errorName: "TypeError" });
+  recordCodeExecution({ tenant: "acme", ms: 5, timeoutMs: 30_000, error: new Error("bad"), errorName: "not a name: <script>" });
+  assert.deepEqual(lines.map(line => [line.errorName, line.errorShape, line.ErrorClass]), [
+    ["SyntaxError", `Identifier "..." has already been declared`, "guest_error"],
+    ["SyntaxError", `"..." is not valid JSON`, "guest_error"],
+    ["TypeError", lines[2].errorShape, "guest_error"],
+    [undefined, "bad", "guest_error"],
+  ]);
+  assert.ok(lines[2].errorShape.startsWith(`Cannot read properties of undefined (reading "...") at step 0 xxx`) && lines[2].errorShape.length === 160 && lines[2].errorShape.endsWith("…"));
+  assert.doesNotMatch(JSON.stringify(lines), /hunter|secret|mochi|42/);
 });
 
 test("an admin tenant's executions waiting on slow tools are not held to the node's memory-sized capacity", { timeout: 30_000 }, async t => {
