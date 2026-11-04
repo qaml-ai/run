@@ -1,0 +1,1 @@
+{"extends":"../tsconfig.json","compilerOptions":{"noEmit":true},"include":["round2-computer-worker.ts","../worker-configuration.d.ts"]}

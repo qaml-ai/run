@@ -6,7 +6,9 @@ import {fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
 const here=dirname(fileURLToPath(import.meta.url));
 const file=process.argv[2];
-if(!['agent-wrangler.jsonc','codemode-caller.wrangler.jsonc','computer-wrangler.jsonc','codemode-sandbox.wrangler.jsonc'].includes(file)) throw new Error('Unknown benchmark config');
+if(!['agent-wrangler.jsonc','codemode-caller.wrangler.jsonc','computer-wrangler.jsonc','codemode-sandbox.wrangler.jsonc',
+  'round2-agent.wrangler.jsonc','round2-ai-sandbox.wrangler.jsonc','round2-native.wrangler.jsonc',
+  'round2-computer-wrangler.jsonc','round2-codemode.wrangler.jsonc','round2-sandbox.wrangler.jsonc','heap.wrangler.jsonc'].includes(file)) throw new Error('Unknown benchmark config');
 const source=JSON.parse(await readFile(resolve(here,file),'utf8'));
 const account='85bbd288051330fb51ee1c86031a299b';
 const classes=[...new Set(source.migrations.flatMap(m=>m.new_sqlite_classes??[]))];

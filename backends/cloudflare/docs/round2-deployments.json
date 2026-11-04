@@ -1,0 +1,10 @@
+{
+  "manualSoakRestarts": [
+    {
+      "reason": "Preserve latest turn timestamp and durable pending-alarm start across restart; add model-usage diagnostic",
+      "completedAt": "2026-11-04T20:36:58Z",
+      "version": "c090bc70-db74-4d9b-8a6c-b8c63983d378"
+    }
+  ],
+  "note": "Periodic restart records are in round2-agents.json. Earlier setup deployments precede the clean soak."
+}

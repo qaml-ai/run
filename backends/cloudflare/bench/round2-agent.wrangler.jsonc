@@ -1,0 +1,56 @@
+{
+  "name": "camelrun-proto-r2-ai",
+  "account_id": "85bbd288051330fb51ee1c86031a299b",
+  "main": "round2-agent.ts",
+  "compatibility_date": "2026-10-28",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AGENTS",
+        "class_name": "camelrun-proto-r2-ai-agent"
+      },
+      {
+        "name": "DRIVERS",
+        "class_name": "camelrun-proto-r2-ai-driver"
+      },
+      {
+        "name": "CODEMODE_SANDBOX",
+        "class_name": "camelrun-proto-r2-ai-sandbox",
+        "script_name": "camelrun-proto-r2-ai-sandbox"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "camelrun-proto-r2-ai-agent",
+        "camelrun-proto-r2-ai-driver"
+      ]
+    }
+  ],
+  "vars": {
+    "MODEL": "@cf/ibm-granite/granite-4.0-h-micro",
+    "BENCH_BUILD": "soak-restart-3"
+  },
+  "limits": {
+    "cpu_ms": 30000
+  }
+}

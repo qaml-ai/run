@@ -1,0 +1,1 @@
+{"extends":"../tsconfig.json","include":["round2-native-worker.ts"]}

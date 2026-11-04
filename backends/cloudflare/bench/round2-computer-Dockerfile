@@ -1,0 +1,8 @@
+FROM ghcr.io/cloudflare/computer-computerd-linux-x64:0.9.0 AS computerd
+FROM node:24-trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends fuse3 ca-certificates git && rm -rf /var/lib/apt/lists/*
+RUN npm install --global typescript@5.9.3
+COPY --from=computerd /usr/local/bin/computerd /usr/local/bin/computerd
+ENV PORT=8080 MOUNT_POINT=/workspace FUSE_MOUNT=auto
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/computerd"]

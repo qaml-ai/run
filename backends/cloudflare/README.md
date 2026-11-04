@@ -24,7 +24,7 @@ Existing camelRun TypeScript SDK
            Computer private filesystem in the same SQLite database
               -> isolated Dynamic Worker JavaScript
                  no outbound network or provider credentials
-           stock codemode -> separate Worker / sandbox DO (QuickJS)
+           stock codemode -> separate Worker / sandbox DO per execution (QuickJS)
            optional computer tool -> Container DO or Sandbox SDK + R2
            model provider
               production: Workers AI
@@ -35,6 +35,10 @@ The directory and agent objects have separate responsibilities. The directory
 owns lookup and authorization metadata. The agent owns its execution and files.
 No ECS heartbeats, leases, owner discovery, or subprocess supervisor runs here.
 Cloudflare's Lifecycle/PiHarness integration owns the recovery wake-up mechanism.
+Remote codemode pins a separate sandbox DO to each execution and admits four
+concurrent executions per agent incarnation. The admission count is in memory;
+it is not a durable account quota. See the round-two measurements in
+[the feasibility report](docs/FEASIBILITY.md).
 
 The prototype has one operator tenant. `API_TOKEN` is an operator secret;
 agent credentials are scoped to one agent. A real multi-tenant account service

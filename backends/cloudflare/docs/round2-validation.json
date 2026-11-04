@@ -1,0 +1,37 @@
+{
+  "backend": {
+    "typecheck": "passed",
+    "unitTests": 12,
+    "integrationTests": 14,
+    "dryRunBundles": "agent and codemode passed",
+    "benchmarkJavaScriptSyntaxChecks": 48,
+    "benchmarkTypecheck": "passed"
+  },
+  "repositoryDocs": {
+    "at": "2026-11-04T21:22:15.796Z",
+    "commit": "9ff7bfae31c0",
+    "sprite": "rt-pool-2",
+    "jobId": "20261104-152126-66260-1",
+    "command": "node --experimental-strip-types --test --test-name-pattern=llms.txt tests/docs.test.ts",
+    "committedRootDocsMatchedWorktree": true,
+    "exitCode": 0,
+    "elapsedSeconds": 33,
+    "v8BuildSeconds": 21.08,
+    "testDurationMs": 3416.867625,
+    "passed": 2,
+    "failed": 0,
+    "tests": [
+      {
+        "name": "the docs are served without credentials: llms.txt, llms-full.txt and every page, the operators' too, pointing at this runtime",
+        "durationMs": 2720.707895
+      },
+      {
+        "name": "llms.txt and llms-full.txt are current (npm run docs), llms-full.txt's links are absolute, and every relative link in the docs resolves",
+        "durationMs": 38.924831
+      }
+    ],
+    "remoteLog": "~/runs/20261104-152126-66260-1.log",
+    "cleanup": "Following script exit, coordinator has no rt-pool-2 lease and sprite status shows no lock."
+  },
+  "scope": "Cloudflare backend and root docs checks; full root runtime suite not rerun"
+}
