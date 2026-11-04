@@ -132,6 +132,12 @@ for (const where of ["in a process of this one's own", "through the launcher's s
   });
 }
 
+for (const pid of ["late", "twice"] as const) test(`a parse job reads the same when a pid frame comes after the launcher's first (${pid}): it is dropped, never answered`, { timeout: 30_000 }, async t => {
+  await fakeLauncher(t, undefined, { pid });
+  // Slow enough that the late frame comes while the job runs.
+  assert.deepEqual(await inspect(pdfBytes(["Parsed in a parse job"]), true), { media: { kind: "pdf", pages: 1 }, text: "--- Page 1 ---\nParsed in a parse job" });
+});
+
 test("whatever a parse job answers is checked, and one that dies reads as could not be read", async t => {
   let behave: (message: any, send: (message: unknown) => void, socket: Socket) => void = () => {};
   await fakeLauncher(t, (kind, socket) => {

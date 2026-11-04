@@ -47,8 +47,13 @@ export class Confined {
       socket.on("error", error => { failure ??= error; });
       let first = true;
       this.write = frames(socket, (message: any) => {
-        // The launcher's, before anything of the process's: its pid. Only a first frame is the launcher's.
-        if (first && message?.type === "pid") { first = false; if (Number.isSafeInteger(message.pid) && message.pid > 0) this.pid = message.pid; return; }
+        // The launcher's, before anything of the process's: its pid. Only a first frame is the launcher's; a pid frame after
+        // it (the process's own, or an older launcher's reported late) is dropped, never passed on.
+        if (message?.type === "pid") {
+          if (first && Number.isSafeInteger(message.pid) && message.pid > 0) this.pid = message.pid;
+          first = false;
+          return;
+        }
         first = false;
         // The launcher's, after the process's last: how it ended (the process could forge one too, which would only misreport it).
         if (message?.type === "exit") exit = { code: Number.isInteger(message.code) ? message.code : null, signal: typeof message.signal === "string" ? message.signal.slice(0, 16) : null };

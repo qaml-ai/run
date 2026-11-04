@@ -10,7 +10,7 @@
 // descriptors, an empty environment, no_new_privs and the seccomp filter below. The runtime closing
 // the connection kills the process; when the process ends, how it ended goes to the connection as
 // a last frame ({"type":"exit","code":N} or {"type":"exit","signal":"SIGSYS"}) and it is closed. Its first frame, sent
-// before the process could write, is its pid ({"type":"pid","pid":N}): the runtime reads its memory use from /proc.
+// before the process runs (it waits for it), is its pid ({"type":"pid","pid":N}): the runtime reads its memory from /proc.
 // Either way every other process of its uid (anything it forked) is killed before the slot, and so
 // the uid, is given to another.
 // It forwards termination signals to the runtime and exits with its status.
@@ -143,10 +143,18 @@ static void start(enum kind kind, int conn) {
   while (slot < MAX_CHILDREN && (children[slot].pid || children[slot].conn >= 0 || children[slot].sweeper || children[slot].sweep_again)) slot++;
   if (slot == MAX_CHILDREN) { fprintf(stderr, "agent-launcher: %d confined processes running; refused one\n", MAX_CHILDREN); close(conn); return; }
   pid_t launcher = getpid();
+  // The child waits on this until the pid frame is sent, so that frame is first on the connection.
+  int ready_pipe[2];
+  if (pipe2(ready_pipe, O_CLOEXEC)) { fprintf(stderr, "agent-launcher: pipe: %s\n", strerror(errno)); close(conn); return; }
   pid_t pid = fork();
-  if (pid < 0) { fprintf(stderr, "agent-launcher: fork: %s\n", strerror(errno)); close(conn); return; }
+  if (pid < 0) { fprintf(stderr, "agent-launcher: fork: %s\n", strerror(errno)); close(ready_pipe[0]); close(ready_pipe[1]); close(conn); return; }
   if (pid == 0) {
     sigprocmask(SIG_SETMASK, &original_mask, NULL);
+    close(ready_pipe[1]);
+    // A byte once the frame is sent, or end of file if the launcher closed the pipe first: either way, after the frame.
+    char ready;
+    while (read(ready_pipe[0], &ready, 1) < 0 && errno == EINTR) {}
+    close(ready_pipe[0]);
     // dup2 clears close-on-exec on the copies. v8-exec's stderr goes nowhere; Node's to the launcher's.
     if (dup2(conn, 0) < 0 || dup2(conn, 1) < 0) die("dup2");
     if (kind == V8) {
@@ -171,12 +179,15 @@ static void start(enum kind kind, int conn) {
   children[slot].pid = pid;
   children[slot].conn = conn;
   children[slot].hung_up = 0;
-  // The process's pid, first: it reads a request before it writes anything, and the runtime trusts only a first frame.
+  // The process's pid, first: the child waits on `ready_pipe` until it is sent, and the runtime trusts only a first frame.
+  close(ready_pipe[0]);
   char frame[64];
   int length = snprintf(frame + 4, sizeof frame - 4, "{\"type\":\"pid\",\"pid\":%d}", (int)pid);
   uint32_t header = htonl((uint32_t)length);
   memcpy(frame, &header, 4);
   (void)!send(conn, frame, 4 + length, MSG_DONTWAIT | MSG_NOSIGNAL);
+  (void)!write(ready_pipe[1], "", 1);
+  close(ready_pipe[1]);
 }
 
 /**

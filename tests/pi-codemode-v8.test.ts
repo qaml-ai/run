@@ -383,17 +383,19 @@ test("Pi start: a script holding more memory than a parked place allows waits wi
   assert.equal((await waiting).ok, true);
 });
 
-for (const reported of [true, false]) test(`Pi start: under agent-launcher, a waiting script parks only when the launcher reports its pid (${reported ? "it does" : "an older one does not"})`, { skip: skip || (process.platform !== "linux" && "reads /proc"), timeout: 60_000 }, async t => {
-  // The launcher's pid is how the runtime reads a confined process's memory: unknown, it is too large to park.
+for (const [pid, parks] of [["first", true], ["none", false], ["late", false], ["twice", true]] as const) test(`Pi start: under agent-launcher, a waiting script parks only on the pid the launcher sent first (pid frame: ${pid})`, { skip: skip || (process.platform !== "linux" && "reads /proc"), timeout: 60_000 }, async t => {
+  // The pid is how the runtime reads a confined process's memory: unknown (none, or only late), the script is too large
+  // to park. A pid frame after the first is dropped, never taken for the script's (which would end it as unknown).
   const { fakeLauncher } = await import("./fake-launcher.ts");
-  await fakeLauncher(t, undefined, { withoutPid: !reported });
+  await fakeLauncher(t, undefined, { pid });
   const pool = new V8Exec();
   const sandbox = new PiV8Sandbox({ pool, timeoutMs: 5_000, awaits: ["delegate"], tenant: "a" });
   t.after(async () => { await sandbox.close(); pool.close(); });
-  const waiting = answering(sandbox, "return await tools.delegate({})", () => 500);
-  await new Promise(resolve => setTimeout(resolve, 250));
-  assert.deepEqual({ parked: pool.parked, running: pool.running }, reported ? { parked: 1, running: 0 } : { parked: 0, running: 1 });
-  assert.equal((await waiting).ok, true);
+  const waiting = answering(sandbox, "return await tools.delegate({})", () => 800);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.deepEqual({ parked: pool.parked, running: pool.running }, parks ? { parked: 1, running: 0 } : { parked: 0, running: 1 });
+  const result = await waiting;
+  assert.equal(result.ok, true, JSON.stringify(result));
 });
 
 test("Pi start: a script waiting on a delegate and on other calls holds its slot and its clock runs", { skip, timeout: 60_000 }, async t => {
