@@ -147,7 +147,9 @@ pub(super) fn execute(scope: &mut v8::PinScope, stdin: &mut impl Read, data: &Va
   let lockdown = helper(tc, api, 3);
   let code = strip_typescript(data["code"].as_str().unwrap_or(""));
   // As Pi's vm.js: an async function body, without legacy last-expression return insertion, on the prefix's line.
-  let source = v8::String::new(tc, &format!("(async (tools, console) => {{{code}\n}})")).unwrap();
+  // The script in a block of its own, inside the function: it may declare `tools` or `console` itself, as it could in
+  // js_exec, where they were globals (a parameter's name, declared again in the function's own body, is a SyntaxError).
+  let source = v8::String::new(tc, &format!("(async (tools, console) => {{ {{{code}\n}} }})")).unwrap();
   let name = v8::String::new(tc, "codemode.js").unwrap();
   let origin = v8::ScriptOrigin::new(tc, name.into(), 0, 0, false, 0, None, false, false, false, None);
   let function = v8::Script::compile(tc, source, Some(&origin)).and_then(|script| script.run(tc));

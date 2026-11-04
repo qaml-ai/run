@@ -259,6 +259,20 @@ test("Pi start: a script reaching for fs, require, an import or js_exec's tool f
   }
 });
 
+test("Pi start: a script may declare tools or console of its own, as in js_exec", { skip }, async t => {
+  const sandbox = new PiV8Sandbox();
+  t.after(() => sandbox.close());
+  for (const [code, value] of [
+    ["const tools = ALL_TOOLS.length; return tools;", 1],
+    ["let console = { log() {} }; console.log('quiet'); return 1;", 1],
+    ["'use strict'; const tools = 2; return tools;", 2],
+  ] as const) {
+    const result = await sandbox.start(code, { ...defaults, onCall() {} }).result;
+    assert.equal(result.ok, true, `${code}: ${JSON.stringify(result)}`);
+    if (result.ok) assert.deepEqual(result.value, value, code);
+  }
+});
+
 // No executable is needed to test the trusted host's validation and shutdown behavior.
 function fakePool() {
   let receive!: (message: unknown) => void, close!: (reason: string) => void;
