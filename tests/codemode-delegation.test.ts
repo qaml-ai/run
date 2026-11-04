@@ -59,7 +59,7 @@ test("a script returning without awaiting a delegate stops that child", async t 
 });
 
 test("scripts waiting on children longer than their deadline, on an account with one code slot, finish: the wait is off their clock and holds no slot", { timeout: 120_000 }, async t => {
-  const tenants = { tenants: { alice: { tokenSha256: createHash("sha256").update(OPERATOR).digest("hex"), apiKeys: { openrouter: "fixture-model-key" }, codeConcurrency: 1, codeMaxTimeoutMs: 1_000 } } };
+  const tenants = { tenants: { alice: { tokenSha256: createHash("sha256").update(OPERATOR).digest("hex"), apiKeys: { openrouter: "fixture-model-key" }, tier: "internal", codeConcurrency: 1, codeMaxTimeoutMs: 1_000 } } };
   const r = await runtime(t, body => {
     const child = roleText(body).includes("CHILD");
     if (toolResults(body).length) return { role: "assistant", content: child ? "child done" : String(toolResults(body).at(-1)) };
