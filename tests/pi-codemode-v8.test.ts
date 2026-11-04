@@ -259,31 +259,59 @@ test("Pi start: a script reaching for fs, require, an import or js_exec's tool f
   }
 });
 
-test("Pi start: js_exec's fs works on the file tools: text in pages, bytes as base64, readdir, exists, require and promises", { skip }, async t => {
+test("Pi start: js_exec's fs works on the file tools: bytes in windows, text as UTF-8, append, readdir, exists, require and promises", { skip }, async t => {
   const sandbox = new PiV8Sandbox();
   t.after(() => sandbox.close());
   const files = [{ name: "read", jsName: "read", description: "Read" }, { name: "write", jsName: "write", description: "Write" }, { name: "ls", jsName: "ls", description: "List" }];
-  const calls: { name: string; args: any }[] = [];
-  const answer = (name: string, args: any) => {
-    if (name === "read") return args.path === "/w/big.txt" ? (args.offset ? { content: "c" } : { content: "a\nb", truncation: { truncated: true } }) : { content: "hi" };
-    if (name === "ls") return { path: args.path, entries: args.path === "/w" ? [{ name: "a.txt" }, { name: "big.txt" }] : [] };
-    return { path: args.path };
+  // The file tools' contract, as volume-tools.ts keeps it: a bare path is in the first mount; base64 reads go by bytes.
+  const store = new Map<string, Buffer>([["/w/many.txt", Buffer.from("x")]]);
+  const at = (path: string) => path.startsWith("/") ? path : `/w/${path}`;
+  const answer = (name: string, args: any): CodemodeOutcome => {
+    const path = at(args.path);
+    if (name === "write") { store.set(path, Buffer.from(args.content, args.encoding === "base64" ? "base64" : "utf8")); return success({ path }); }
+    if (name === "ls") return success({ path, entries: [...store.keys()].filter(key => key.startsWith(`${path}/`)).map(key => ({ name: key.slice(path.length + 1) })), ...path === "/big" ? { truncated: true } : {} });
+    if (path === "/w" || path === "/big") return { ok: false, message: `${path} is a directory; use ls` };
+    const data = store.get(path);
+    if (!data) return { ok: false, message: `${path} does not exist` };
+    const offset = args.offset ?? 0, window = data.subarray(offset, offset + (args.length ?? 32 * 1024));
+    return success({ path, offset, data: window.toString("base64"), ...offset + window.length < data.length ? { nextOffset: offset + window.length } : {} });
   };
   let seq = 0;
   const run: CodemodeRun = sandbox.start(`
-    await fs.writeFile("/w/a.txt", "hi");
-    await fs.writeFile("/w/b.bin", new Uint8Array([104, 105, 33]));
+    const big = { list: Array.from({ length: 30000 }, (_, i) => "é" + i) };
+    await fs.writeFile("/w/big.json", JSON.stringify(big));
+    const lines = "a\\n" + "😀".repeat(40000) + "\\nz";
+    await fs.writeFile("/w/lines.txt", lines);
+    await fs.writeFile("/w/b.bin", new Uint8Array(Array.from({ length: 256 }, (_, i) => i)));
+    await fs.writeFile("/w/view.bin", new DataView(new Uint8Array([0, 104, 105, 0]).buffer, 1, 2));
+    await fs.writeFile("log.txt", "a\\n");
+    await fs.appendFile("log.txt", "b\\n");
+    await fs.appendFile("/w/new.txt", "c");
+    const errors = [];
+    for (const attempt of [() => fs.writeFile("/w/x", { a: 1 }), () => fs.readdir("/big"), () => fs.readFile("/w/none")]) {
+      try { await attempt(); errors.push("none"); } catch (error) { errors.push(error.message); }
+    }
     let sync;
     try { fs.readFileSync("/w/a.txt", "utf8"); } catch (error) { sync = error.message; }
     await fs.mkdir("/w/sub", { recursive: true });
-    return { big: await fs.readFile("/w/big.txt", "utf8"), names: await fs.readdir("/w"), exists: [await fs.exists("/w/a.txt"), await fs.exists("/w/none")],
-      same: require("fs") === fs && require("node:fs/promises") === fs.promises, sync };`, { ...defaults, tools: files,
-    onCall: call => { calls.push({ name: call.name, args: call.args }); run.deliver(++seq, defaults.startedAt + 1, call.id, success(answer(call.name, call.args))); } });
+    return {
+      big: JSON.stringify(JSON.parse(await fs.readFile("/w/big.json", "utf8"))) === JSON.stringify(big), lines: await fs.readFile("/w/lines.txt") === lines,
+      bin: await fs.readFile("/w/b.bin", "base64"), view: await fs.readFile("/w/view.bin"), log: await fs.readFile("/w/log.txt"), appended: await fs.readFile("new.txt"),
+      exists: [await fs.exists("/w/log.txt"), await fs.exists("/w/none"), await fs.exists("/w"), await fs.exists("log.txt")],
+      names: (await fs.readdir("/w")).length, same: require("fs") === fs && require("node:fs/promises") === fs.promises, errors, sync };`, { ...defaults, tools: files,
+    onCall: call => run.deliver(++seq, defaults.startedAt + 1, call.id, answer(call.name, call.args)) });
   const result = await run.result;
   assert.equal(result.ok, true, JSON.stringify(result));
-  if (result.ok) assert.deepEqual(result.value, { big: "a\nb\nc", names: ["a.txt", "big.txt"], exists: [true, false], same: true, sync: "fs.readFileSync is not in codemode, where the file tools are asynchronous: use await fs.readFile(…)" });
-  assert.deepEqual(calls.filter(call => call.name === "write").map(call => call.args), [{ path: "/w/a.txt", content: "hi" }, { path: "/w/b.bin", content: "aGkh", encoding: "base64" }]);
-  assert.deepEqual(calls.filter(call => call.name === "read" && call.args.path === "/w/big.txt").map(call => call.args.offset), [undefined, 3]);
+  if (!result.ok) return;
+  const value = result.value as any;
+  assert.deepEqual(value, {
+    big: true, lines: true, bin: Buffer.from(Array.from({ length: 256 }, (_, i) => i)).toString("base64"), view: "hi", log: "a\nb\n", appended: "c",
+    exists: [true, false, true, true], names: store.size === 0 ? 0 : value.names, same: true,
+    errors: ["fs writes a string, a typed array, a DataView or an ArrayBuffer", "fs.readdir: /big has more entries than one listing holds; use tools.glob", "/w/none does not exist"],
+    sync: "fs.readFileSync is not in codemode, where the file tools are asynchronous: use await fs.readFile(…)",
+  });
+  assert.ok(store.get("/w/big.json")!.length > 3 * 32 * 1024, "read in several windows");
+  assert.equal(value.names, [...store.keys()].filter(key => key.startsWith("/w/")).length);
 });
 
 test("Pi start: a script may declare tools or console of its own, as in js_exec", { skip }, async t => {

@@ -18,21 +18,9 @@
     if (!scriptTools || !Reflect.has(scriptTools, name)) throw new ReferenceError(`fs is not defined in codemode: ${FILES}`);
     return scriptTools[name](args);
   };
-  const readText = async path => {
-    let text = "", offset = 1;
-    for (;;) {
-      const read = await fileTool("read", offset > 1 ? { path: String(path), offset } : { path: String(path) });
-      const chunk = typeof read?.content === "string" ? read.content : String(read?.content ?? "");
-      if (read?.truncated !== true && read?.truncation?.truncated !== true) return text + chunk;
-      text += `${chunk}\n`;
-      offset += chunk.split("\n").length;
-    }
-  };
-  const bytes = data => data instanceof Uint8Array || data instanceof ArrayBuffer;
-  // No btoa in a bare isolate.
+  // No btoa, atob or TextDecoder in a bare isolate.
   const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  const base64 = data => {
-    const view = new Uint8Array(data);
+  const base64 = view => {
     let out = "";
     for (let i = 0; i < view.length; i += 3) {
       const n = (view[i] << 16) | ((view[i + 1] ?? 0) << 8) | (view[i + 2] ?? 0);
@@ -40,16 +28,76 @@
     }
     return out;
   };
-  const writeData = (path, data) => fileTool("write", bytes(data) ? { path: String(path), content: base64(data), encoding: "base64" } : { path: String(path), content: String(data) });
-  const entries = async path => (await fileTool("ls", { path: String(path) }))?.entries ?? [];
+  const unbase64 = text => {
+    const clean = text.replace(/=+$/, ""), out = new Uint8Array(Math.floor(clean.length * 3 / 4));
+    for (let i = 0, o = 0; i < clean.length; i += 4) {
+      const n = (ALPHABET.indexOf(clean[i]) << 18) | (ALPHABET.indexOf(clean[i + 1]) << 12) | ((ALPHABET.indexOf(clean[i + 2] ?? "A") & 63) << 6) | (ALPHABET.indexOf(clean[i + 3] ?? "A") & 63);
+      out[o++] = n >> 16 & 255;
+      if (o < out.length) out[o++] = n >> 8 & 255;
+      if (o < out.length) out[o++] = n & 255;
+    }
+    return out;
+  };
+  // UTF-8, with U+FFFD for a malformed sequence, as the file tools decode.
+  const utf8 = view => {
+    let out = "";
+    for (let i = 0; i < view.length;) {
+      const b = view[i], size = b < 0x80 ? 1 : b >= 0xc2 && b < 0xe0 ? 2 : b >= 0xe0 && b < 0xf0 ? 3 : b >= 0xf0 && b < 0xf5 ? 4 : 0;
+      let code = size === 1 ? b : b & (0xff >> (size + 1)), ok = size > 0 && i + size <= view.length;
+      for (let k = 1; ok && k < size; k++) { if ((view[i + k] & 0xc0) !== 0x80) ok = false; else code = (code << 6) | (view[i + k] & 0x3f); }
+      if (ok && size > 1 && (code < [0, 0, 0x80, 0x800, 0x10000][size] || code > 0x10ffff || (code >= 0xd800 && code < 0xe000))) ok = false;
+      if (!ok) { out += "\ufffd"; i++; continue; }
+      out += String.fromCodePoint(code);
+      i += size;
+    }
+    return out;
+  };
+  // A file's bytes, in windows of the read tool's largest.
+  const readBytes = async path => {
+    const parts = [];
+    let offset = 0, total = 0;
+    for (;;) {
+      const read = await fileTool("read", { path: String(path), encoding: "base64", offset, length: 131072 });
+      if (typeof read?.data !== "string") throw new Error(`fs could not read ${path}: ${read?.note ?? "the read tool returned no bytes"}`);
+      const part = unbase64(read.data);
+      parts.push(part);
+      total += part.length;
+      if (typeof read.nextOffset !== "number") break;
+      offset = read.nextOffset;
+    }
+    const all = new Uint8Array(total);
+    for (let i = 0, at = 0; i < parts.length; at += parts[i].length, i++) all.set(parts[i], at);
+    return all;
+  };
+  const encodingOf = options => typeof options === "string" ? options : options?.encoding;
+  const readFile = async (path, options) => {
+    const data = await readBytes(path), encoding = encodingOf(options);
+    return encoding === "base64" ? base64(data) : utf8(data);
+  };
+  const missing = error => /does not exist/.test(String(error?.message ?? error));
+  const writeData = (path, data) => {
+    if (typeof data === "string") return fileTool("write", { path: String(path), content: data });
+    const view = data instanceof ArrayBuffer ? new Uint8Array(data) : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : undefined;
+    if (!view) throw new TypeError("fs writes a string, a typed array, a DataView or an ArrayBuffer");
+    return fileTool("write", { path: String(path), content: base64(view), encoding: "base64" });
+  };
   const fs = {
-    readFile: path => readText(path),
+    // Text (UTF-8), or base64 with encoding "base64": never a Buffer, which codemode does not have.
+    readFile,
     writeFile: async (path, data) => { await writeData(path, data); },
-    appendFile: async (path, data) => { const before = await fs.exists(path) ? await readText(path) : ""; await writeData(path, before + String(data)); },
-    readdir: async path => (await entries(path)).map(entry => entry.name),
+    appendFile: async (path, data) => {
+      const before = await readFile(path).catch(error => { if (missing(error)) return ""; throw error; });
+      await writeData(path, before + (typeof data === "string" ? data : utf8(ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data))));
+    },
+    readdir: async path => {
+      const listing = await fileTool("ls", { path: String(path) });
+      if (listing?.truncated) throw new Error(`fs.readdir: ${path} has more entries than one listing holds; use tools.glob`);
+      return (listing?.entries ?? []).map(entry => entry.name);
+    },
+    // The path itself, probed: a directory exists too.
     exists: async path => {
-      const at = String(path).replace(/\/+$/, ""), slash = at.lastIndexOf("/");
-      try { return (await entries(slash > 0 ? at.slice(0, slash) : "/")).some(entry => entry.name === at.slice(slash + 1)); } catch { return false; }
+      try { await fileTool("read", { path: String(path), encoding: "base64", length: 1 }); return true; }
+      catch (error) { if (missing(error)) return false; if (/is a directory/.test(String(error?.message ?? error))) return true; throw error; }
     },
     // The file tools make a file's directories as they write it.
     mkdir: async () => {}, mkdirSync: () => {},

@@ -814,7 +814,7 @@ Scripts can use `console.log`, `text(value)`, `image(...)`, top-level `return`
 and `exit()`. `store(key, value)` and `load(key)` keep JSON values across code
 calls in the agent's conversation. Call the file tools:
 `tools.read`, `tools.write`, `tools.ls`, `tools.glob`, `tools.grep`, `tools.edit`,
-`tools.mv` and `tools.cp`. `fs` is js_exec's, kept on the file tools: `await fs.readFile(path)` (text, read in pages), `fs.writeFile(path, text or bytes)`, `fs.appendFile`, `fs.readdir`, `fs.exists` and `fs.mkdir`, also as `require("fs")` and `fs.promises`; its synchronous calls are not there.
+`tools.mv` and `tools.cp`. `fs` is js_exec's, kept on the file tools: `await fs.readFile(path)` (UTF-8 text, or base64 with `"base64"`), `fs.writeFile(path, text or a typed array)`, `fs.appendFile`, `fs.readdir`, `fs.exists` and `fs.mkdir`, also as `require("fs")` and `fs.promises`; its synchronous calls are not there.
 
 The model reads Pi's result format: `Script completed` or `Script failed`,
 the wall time, then the output. Text items come first, with the returned value

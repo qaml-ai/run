@@ -25,7 +25,7 @@ namespace up to about 3,000 tokens. The reranked search service is removed;
 `AGENT_TOOL_SEARCH` and its key, secret, URL and model settings are no longer read.
 
 Use the file tools through `tools.read`, `tools.write`, `tools.ls`,
-`tools.glob`, `tools.grep`, `tools.edit`, `tools.mv` and `tools.cp`. `fs` is js_exec's, kept on the file tools: `await fs.readFile(path)` (text, read in pages), `fs.writeFile(path, text or bytes)`, `fs.appendFile`, `fs.readdir`, `fs.exists` and `fs.mkdir`, also as `require("fs")` and `fs.promises`; its synchronous calls are not there.
+`tools.glob`, `tools.grep`, `tools.edit`, `tools.mv` and `tools.cp`. `fs` is js_exec's, kept on the file tools: `await fs.readFile(path)` (UTF-8 text, or base64 with `"base64"`), `fs.writeFile(path, text or a typed array)`, `fs.appendFile`, `fs.readdir`, `fs.exists` and `fs.mkdir`, also as `require("fs")` and `fs.promises`; its synchronous calls are not there.
 `store(key, value)` and `load(key)` keep JSON values across code calls in a
 conversation. `console.log`, `text`, `image`, top-level `return` and `exit`
 are available.

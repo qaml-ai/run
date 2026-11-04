@@ -110,7 +110,7 @@ await tools.write({ path: "/workspace/out/report.txt", content: csv.content });
 text(await tools.ls({ path: "/workspace/out" }));
 ```
 
-`fs` is js_exec's, kept on the file tools: `await fs.readFile(path)` (text, read in pages), `fs.writeFile(path, text or bytes)`, `fs.appendFile`, `fs.readdir`, `fs.exists` and `fs.mkdir`, also as `require("fs")` and `fs.promises`; its synchronous calls are not there. Read large files in windows with the file tools.
+`fs` is js_exec's, kept on the file tools: `await fs.readFile(path)` (UTF-8 text, or base64 with `"base64"`), `fs.writeFile(path, text or a typed array)`, `fs.appendFile`, `fs.readdir`, `fs.exists` and `fs.mkdir`, also as `require("fs")` and `fs.promises`; its synchronous calls are not there. Read large files in windows with the file tools.
 
 ## Files out
 
