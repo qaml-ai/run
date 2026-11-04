@@ -1,9 +1,268 @@
 # Cloudflare core experiment — 2026-11-04
 
 The core model loop, journal, private files, remote code mode and optional Linux
-computers run locally on Workers/Durable Objects. This supports continuing the
-experiment. It does not establish production parity, cloud reliability or cost.
-The ECS runtime and its vendored Pi were not changed. Nothing was deployed.
+computers run on Workers/Durable Objects. The disposable Cloudflare measurements
+below extend the earlier local experiment. They do not establish production
+parity. The ECS runtime and its vendored Pi were not changed.
+
+## Measured on Cloudflare
+
+Measured November 4, 2026, in the `camelAI` account. The interrupted attempt
+started at 19:38 UTC; this continuation inspected and reused its four Workers,
+nine Durable Object namespaces, two Container applications and one R2 bucket.
+Every resource name/class starts with `camelrun-proto-`. Every public HTTP route
+requires the same random 64-character bearer secret, installed with
+`wrangler secret put` from an ignored, mode-0600 local file. Preview URLs stayed
+disabled. Only the benchmark Workers temporarily enabled `workers.dev`.
+
+Versions: Wrangler 4.157.0, Agents 0.33.0, Pi 1.5.0, Sandbox SDK 1.0.3.
+Workers AI used `@cf/zai-org/glm-5.3-flash`, capped at 256 output tokens per
+dispatch. Exactly four real model calls were reserved. A persisted 24-call
+ceiling includes failures/retries; load, recovery and safety tests use the
+deterministic provider or no model. Worker/DO placement was platform-selected;
+these tests did not select a region or measure inter-region latency.
+
+The authenticated wrappers in `backends/cloudflare/bench/` import the prototype
+or its stock remote sandbox. They add diagnostics, fixed test routes and spend
+limits. The agent wrapper has distinct real-model and deterministic namespaces.
+Client timing includes network round trips from the test machine; server timing
+is elapsed time, not CPU. A newly named DO is not proof of a cold Worker isolate
+or cold compiled Wasm module. Cloud evidence is retained in
+[cloudflare-measurements-2026-11-04.json](cloudflare-measurements-2026-11-04.json).
+
+### Agent turns, streaming and recovery
+
+| Measurement | Cloud result | Method / limit |
+| --- | ---: | --- |
+| Fresh deterministic agent provisioning | p50 580 ms; range 523–664 ms, N=5 | Includes directory and first DO construction/configuration. |
+| First deterministic turn after provisioning | p50 273 ms; range 184–495 ms, N=5 | Does not isolate platform cold-start time. |
+| Warm deterministic turn | p50 231 ms; range 153–319 ms, N=5 | Same objects, second turn. |
+| First real model turn | 3,249 ms | First turn after 1,086 ms provisioning; one observation. |
+| Next two short real turns | 1,555 / 1,482 ms | Same agent, tiny requested replies. |
+| Longer real SSE response | First text 2,582 ms; completion 6,576 ms | 25 text deltas; last delta 6,234 ms after submission. |
+| 100 concurrent agent turns | 100/100 completed; p50 1,711 ms, p95 1,937 ms, max 2,182 ms | Independent agent DOs; each deterministic turn waits 1,500 ms. |
+| Provision those 100 agents together | 56.45 s total; p50 29.28 s, p95 53.92 s | One directory serializes provisioning; this is a scaling bottleneck. |
+
+SSE delivered incremental text and a final response, with text equal to the
+completed reply. This verifies short streaming, not reconnect/replay behavior
+of long-lived streams. The 100-agent run had 100 distinct constructor IDs and
+100 overlapping server `began`/`endedAt` intervals. It measures journal,
+scheduling, directory and transport behavior; it does not measure 100
+concurrent Workers AI calls. No platform limit or request error occurred in
+that run.
+
+For recovery, a codemode script wrote and read a clock/random marker, then
+waited on durable human input. Another prompt was accepted and queued. The
+host overwrote the marker file before an immediate code-update deployment.
+After deployment, the agent's in-memory constructor UUID changed. On resuming
+at 19:49 UTC, the pending question and queued prompt survived; both completed.
+Clock/random values and the completed read matched; the host's overwritten file
+remained unchanged, proving that the completed nested write was not repeated.
+This proves the deterministic journal case across a real deployment, not
+exactly-once behavior for arbitrary external effects or idle eviction.
+
+### Remote codemode
+
+The caller and sandbox are separate Workers. The stock remote VM has a 32 MiB
+allocation limit and 100,000 interrupt polls. The standalone benchmark caller
+adds a 15-second wait deadline; the full PiHarness uses the stock timeout
+configuration. Both Workers have 30-second CPU ceilings.
+
+| Measurement | Result |
+| --- | --- |
+| Fresh caller/sandbox first callback, N=12 | p50 221 ms; p95 1,251 ms |
+| Warm first callback, N=12 | p50 49 ms; p95 60 ms |
+| 50 sequential nested echo calls, N=3 recheck | 3/3 passed; complete script p50 290 ms server / 463 ms client |
+| Nested callback interval, 150 samples | p50 4 ms; p95 6 ms; mean 4.387 ms (~228 calls/s excluding startup) |
+| 50 simultaneous independent callers/sandboxes | 50/50 passed; client p50 652 ms, p95 3,969 ms; batch 11.59 s |
+| 50 simultaneous scripts on one caller/sandbox | 0/50 passed; all hit the 15-second caller deadline |
+
+The independent concurrent scripts each used 20 nested calls. Their caller DOs
+are benchmark adapters, not full PiHarness agents. The shared-sandbox failure's
+exact cause has not been isolated; it must not be reported as successful
+throughput.
+
+Each safety case ran twice. All returned structured errors, preserved the
+calling DO's constructor ID, and allowed a following successful script.
+
+| Script | Caller result | Server wall time, first / recheck |
+| --- | --- | ---: |
+| Infinite loop | Interrupt budget exhausted | 5,540 / 14,691 ms |
+| Repeated 1 MiB string allocations | VM out-of-memory error | 408 / 373 ms |
+| Await never-resolving Promise | No possible progress error | 26 / 45 ms |
+| Throwing script | Script error | 68 / 61 ms |
+| Failing host tool | Tool error through script | 85 / 48 ms |
+
+During the loop recheck, 210 calling-DO status probes had p50 35 ms and p95
+115 ms latency. The interrupt count is not a predictable wall-time deadline.
+This does not prove containment for every builtin or isolation from sibling
+sandbox DOs sharing an isolate.
+
+The same five cases also passed through a full deployed PiHarness agent with
+the deterministic provider. End-to-end completion was 12,375 / 625 / 380 / 287 /
+373 ms respectively. Each produced a tool error, preserved the agent constructor
+ID and allowed a following prompt to complete. One state probe per case took
+280 / 144 / 199 / 104 / 52 ms; this is a small responsiveness sample, not CPU
+measurement. No additional Workers AI call was made.
+
+Cloudflare telemetry supplied real CPU observations, but with delayed sampling.
+The 19:57 UTC read covering the experiment so far reported:
+
+| Namespace | CPU total | Active time | Isolate memory p50 / p95 / p99 |
+| --- | ---: | ---: | ---: |
+| Standalone caller | 1.442 s | 103.758 s | 3.04 / 3.38 / 5.95 MiB |
+| Remote sandbox | 56.318 s | 453.748 s | 4.44 / 7.93 / 105.60 MiB |
+| Full real-model agents | 0.185 s | 10.650 s | 23.08 / 23.08 / 23.08 MiB |
+| Full deterministic agents | 11.935 s | 904.065 s | 19.08 / 20.80 / 21.56 MiB |
+
+The platform CPU-exceeded, memory-exceeded and fatal-error counters were zero.
+These are incomplete aggregate samples, not per-case CPU attribution or
+per-agent heap. The sandbox's 105.60 MiB p99 is material despite its 32 MiB
+per-VM setting: the isolate also owns Wasm/runtime memory and other objects.
+Node compatibility CPU APIs were unimplemented and memory APIs returned
+zero-filled stubs. **Heap per agent with codemode loaded remains unverified
+against the 128 MB isolate limit.** Filtering a metric to an object does not
+change its isolate memory scope; do not infer safe per-isolate agent capacity.
+
+### Cloud computers
+
+Docker 29.3.1 was available; no system software was installed. Two Container
+apps used the same uploaded image, `durable_object` scheduling, no Internet
+egress and the native `ctx.container` API. The SDK path additionally used
+Sandbox 1.0.3 `Files`, `DirectoryBackup` and its scoped R2 gateway. The observed
+location was `dfw14`, region `WNAM`.
+
+Lite instances provide 1/16 vCPU, 256 MiB memory and 2 GB disk. Measurements
+below are client elapsed time unless stated otherwise. Cold exec includes
+starting a stopped VM and running Node, but excludes Docker build/upload.
+The first placement and later starts are separated because they differed.
+
+| Measurement | Native Container, lite | Sandbox SDK, lite |
+| --- | ---: | ---: |
+| First placement / first Node exec | 10.877 s | Not separately isolated |
+| Stopped VM start + Node exec on recheck | 803 ms | 1,155 ms |
+| Three warm Node execs | 83–146 ms | 206–415 ms |
+| Small directory preparation | 197 ms | 280 ms |
+| Large directory preparation | 52.216 s (earlier run: 8.604 s) | 7.988 s |
+| Large TypeScript workload | 40.522 s | 1.196 s |
+
+Basic instances provide 1/4 vCPU, 1 GiB memory and 4 GB disk. One additional
+basic start/warm/wake pass measured 805 / 167 / 504 ms for native and
+804 / 104 / 683 ms for SDK (warm values are medians of three). Both basic VMs
+stopped about 25.2 seconds after their last response with the five-second idle
+setting, and both lost the unsaved file. Large backups were measured on lite.
+
+These are small one-shot samples. The large native timings varied sharply;
+they do not establish that one provider is intrinsically faster. The small
+fixture has 20 files and 241,635 bytes. The large fixture has 23,871 files and
+567,051,546 bytes (about 541 MiB), including `node_modules`. The image contains
+copies of this backend and its installed dependencies. Extracting that fixture
+measures filesystem work, **not a network git clone**. Native macOS optional
+dependency files are included as data; the executable workload uses pure JS
+TypeScript transpilation.
+
+| SDK R2 directory backup | Small | Large |
+| --- | ---: | ---: |
+| Source bytes | 241,635 | 567,051,546 |
+| Compressed `tar+zstd` bytes | 83,090 | 192,860,817 |
+| Backup to R2 | 1.486 s | 177.302 s |
+| Restore after VM destruction | 2.026 s | 76.702 s |
+| Post-restore file verification | 334 ms | 25.177 s |
+
+Both restores passed file-count, total-byte and marker verification. The large
+backup came close to the harness's 180-second operation deadline. The recorded
+handles and R2 objects were explicitly deleted after verification.
+
+Native cloud snapshot/restore was deliberately not executed. The public API
+has no snapshot delete/list method; snapshots can remain restorable for 30 days,
+and deleting a stored handle does not remove the snapshot. The documentation
+does not establish that deleting an app removes those snapshots. Creating one
+would prevent verifying the requested zero-leftover cleanup. This measurement
+needs a verified deletion path or explicit permission to retain an expiring
+snapshot. See [workspace save/restore](https://developers.cloudflare.com/sandbox/files/save-and-restore-a-workspace/)
+and [native snapshot API](https://developers.cloudflare.com/containers/api/durable-object-container/).
+
+The original harness failed its inactivity assertion for both providers:
+both VMs still ran after ten seconds. That assertion was too early: the timeout
+begins after the DO becomes inactive, not when an exec response arrives.
+A benchmark-only change clears operation timers explicitly, and a separate
+test polls the account instance API without sending traffic to the measured DO.
+With a five-second inactivity setting, the platform stop timestamps were about
+25.1 seconds after the last exec response for both lite providers. Wake took
+798 ms native / 1,037 ms SDK; the unsaved file was gone. This verifies filesystem
+loss on sleep and fresh-start wake, not persistent process/RAM resume. It does
+not prove that leftover timers alone caused the original failure. The normal
+backend adapter was not changed by this experiment.
+
+### Cost and account visibility
+
+The token could deploy/delete all test resources and read Workers, DO and R2
+analytics. Actual billed cost was not available at measurement time. The v1
+billable-usage endpoint returned account records ending at November 4 00:00 UTC,
+before the experiment. The v2 endpoint returned HTTP 403, code 1171,
+`billable-usage.api.resource.insufficient_permissions`. Its permission catalog
+names `Billing Read`; endpoint-specific eligibility may also be required.
+No billing or account setting was changed.
+
+At the 19:57 UTC analytics read, available usage gave this unrounded estimate:
+
+| Usage | Published-rate arithmetic | USD |
+| --- | --- | ---: |
+| Workers | 1,223 requests × $0.30/million + 1,555.445 CPU-ms × $0.02/million | 0.00039801 |
+| Durable Objects | 1,848 requests × $0.15/million + 264.291367 GB-s × $12.50/million | 0.00358084 |
+| R2 operations | 18 Class A × $4.50/million + 16 Class B × $0.36/million | 0.00008676 |
+| Four Workers AI calls | (2,319 uncached × $0.15 + 2,048 cached × $0.03 + 319 output × $0.50) / million | 0.00056879 |
+| Partial telemetry subtotal | Sum of the rows above | **0.00463440** |
+
+This is incomplete, not the invoice: Container and R2-storage datasets still
+returned no rows, SQLite operations were not counted, and analytics lagged the
+tests. Empty data was not treated as zero usage. The measured compressed backups
+totaled 192,943,907 bytes; one day's R2 peak storage at $0.015/GB-month adds about
+`0.192943907 / 30 × 0.015 = $0.00009647` before allowances.
+
+For spend control, a deliberately broad 1,457-second planning envelope through
+the 20:03 UTC cleanup assumed
+512 DOs active for the entire experiment, two lite and two basic VMs using full
+CPU throughout, 10,000 Worker requests, one million Worker CPU-ms, 100,000 SQLite
+writes, one million SQLite reads, 1,000 of each R2 operation class and 2 GB R2
+storage for one day. The DO component is
+`512 × 0.128 × 1457 / 1,000,000 × $12.50`; Container compute is
+`2 × 1457 × ($0.000002015 + $0.000007780)`. With the other stated reserves and
+model tokens, that envelope was **$1.352**, well below the $5 stop threshold.
+It is an overestimate of provisioned work, not a bound on account invoice
+rounding. Included allowances, contract rates, billing-unit rounding and
+delayed usage determine the eventual bill. The existing account plan was not
+changed or purchased for this test.
+
+Rates checked November 4: [Workers](https://developers.cloudflare.com/workers/platform/pricing/),
+[Durable Objects](https://developers.cloudflare.com/durable-objects/platform/pricing/),
+[Containers](https://developers.cloudflare.com/containers/platform/pricing/),
+[R2](https://developers.cloudflare.com/r2/pricing/) and
+[GLM-5.3-flash](https://developers.cloudflare.com/workers-ai/models/glm-5.3-flash/).
+
+### Teardown and remaining gaps
+
+At **20:03 UTC**, the complete paginated inventory and registry check returned:
+Workers `[]`, Durable Object namespaces `[]`, R2 buckets `[]`, Container apps
+`[]`, queues `[]`, images `[]` for the `camelrun-proto-` prefix. All four former
+`workers.dev` endpoints returned 404. Before deletion, all four computer slots
+reported stopped and both apps had empty active-instance lists. Both R2 backups
+were removed. Explicit delete migrations removed the nine DO classes before
+`wrangler delete` removed the four Workers. No native snapshot was created.
+The generated bearer was removed from the local ignored token file after the
+last verification. The final audit is in the attached measurement JSON.
+
+All named mutations targeted prefixed resources. One cleanup caveat: Wrangler's
+image-delete implementation also requests registry layer garbage collection.
+That request completed, but it exposes no per-layer audit; no other image was
+explicitly targeted. No routes, DNS, custom domains or account settings changed.
+
+Native snapshots, per-agent heap, long-running streams and a final billed amount
+remain unverified. Real-model 100-way load also remains untested under the
+few-dozen-call budget. A further snapshot experiment needs an explicit retention
+exception or a verified delete API; v2 billing needs `Billing Read`/endpoint
+access. The 50-script shared-sandbox failure and serialized provisioning need
+engineering work before production use.
 
 ## What runs
 
@@ -147,7 +406,7 @@ security review, live load qualification and product rollout. Rows overlap.
 | File volumes | Private small files fit Workspace SQLite; R2 + metadata authority for large/shared volumes | Private files and explicit Linux restore tested. Shared mounts, locking, versioning and automatic persistence absent. | 7–12 |
 | Human input | Pi durable document/watch fits state and restart | Simple pause/answer tested. TTL, notifications, delegation and economical parked waits missing. | 3–6 |
 | Long streams | Live watch + SSE fits connected clients; durable journal is canonical | Short streams/queued attribution tested. Not multi-hour load or deploy-mid-stream. SSE pins activity; needs bounded buffering, reconnect reconciliation and ideally hibernating WebSockets. | 4–8 |
-| Many-agent scale | One DO per agent scales horizontally; shard directory/account indices | Sixteen additional active agents measured locally. No live placement, fan-out, quota, hot-tenant or billing load test. | 6–12 |
+| Many-agent scale | One DO per agent scales horizontally; shard directory/account indices | 100 overlapping deterministic cloud turns passed. Creating those agents took 56 seconds through one directory. Real-model fan-out, quota and billing load remain untested. | 6–12 |
 
 Continuous CPU-heavy programs and persistent arbitrary Linux process/RAM resume
 do not fit a DO isolate. They require a Container or another compute service;
@@ -199,12 +458,13 @@ The repository docs generator also passed without changing its outputs. Its
 `llms.txt` test could not load because the root runtime dependencies (`pg`) are
 not installed; backend docs are outside that generator.
 
-Unverified: real Workers AI/provider behavior, Cloudflare CPU/memory enforcement,
-cloud Container/R2 performance and billing, account quotas and placement,
-multi-hour streams, many-agent production load, complete erasure, tenant/billing
-authority, and external side-effect recovery. No production resources were read
-or written. Public package/docs/image downloads and GitHub PR operations were
-the only external services used.
+The local results above predate the cloud measurements at the start of this
+report. Remaining gaps include per-agent heap and complete CPU attribution,
+native cloud snapshot deletion, actual invoice cost, account quotas and
+placement guarantees, multi-hour streams, real-model concurrent load,
+tenant/billing authority and arbitrary external-effect recovery. The cloud
+experiment used only disposable prefixed resources in the company account;
+no existing production resource was changed.
 
 - [Upgrade/API review](UPGRADE.md)
 - [Agents Pi integration](https://developers.cloudflare.com/agents/harnesses/pi/)

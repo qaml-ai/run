@@ -1,0 +1,16 @@
+{
+  "name": "camelrun-proto-codemode-bench",
+  "account_id": "85bbd288051330fb51ee1c86031a299b",
+  "main": "codemode-worker.ts",
+  "compatibility_date": "2026-11-04",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true, "head_sampling_rate": 1, "traces": { "enabled": true, "head_sampling_rate": 1 } },
+  "durable_objects": { "bindings": [
+    { "name": "CALLERS", "class_name": "camelrun-proto-codemode-caller" },
+    { "name": "CODEMODE_SANDBOX", "class_name": "camelrun-proto-codemode-sandbox", "script_name": "camelrun-proto-codemode-sandbox" }
+  ] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["camelrun-proto-codemode-caller"] }],
+  "limits": { "cpu_ms": 30000 }
+}

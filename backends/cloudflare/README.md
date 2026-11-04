@@ -157,9 +157,11 @@ routing change while both backends can run effects is not a safe migration.
   restore, including the model -> codemode -> computer tool path.
 - Local heap samples with 1, 8 and 16 additional agents; local computer timings.
 
-See [FEASIBILITY.md](docs/FEASIBILITY.md) for measurements, caveats and feature gaps.
-This does not test actual Cloudflare deployment, real model-provider behavior,
-external side-effect recovery, the Python SDK, or production load/cost.
+See [FEASIBILITY.md](docs/FEASIBILITY.md) for measurements, caveats and feature gaps,
+including the disposable November 4 Cloudflare deployment: real Workers AI
+streaming, deploy/replay recovery, 100 concurrent deterministic agents, remote
+codemode and Linux/R2 measurements. Those cloud tests do not establish arbitrary
+external-effect recovery, Python SDK parity or production load/cost.
 Request retention is unbounded. State reads scan retained requests, and history
 reads materialize the transcript before slicing. Revocation exists; full physical
 purge of Pi, Computer and backup data does not.

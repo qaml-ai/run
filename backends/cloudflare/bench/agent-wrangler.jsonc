@@ -1,0 +1,70 @@
+{
+  "name": "camelrun-proto-agent",
+  "account_id": "85bbd288051330fb51ee1c86031a299b",
+  "main": "agent-worker.ts",
+  "compatibility_date": "2026-10-28",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AGENTS",
+        "class_name": "camelrun-proto-agent"
+      },
+      {
+        "name": "DIRECTORY",
+        "class_name": "camelrun-proto-directory"
+      },
+      {
+        "name": "BENCH_AGENTS",
+        "class_name": "camelrun-proto-deterministic-agent"
+      },
+      {
+        "name": "BENCH_DIRECTORY",
+        "class_name": "camelrun-proto-deterministic-directory"
+      },
+      {
+        "name": "BENCH_BUDGET",
+        "class_name": "camelrun-proto-budget"
+      },
+      {
+        "name": "CODEMODE_SANDBOX",
+        "class_name": "camelrun-proto-codemode-sandbox",
+        "script_name": "camelrun-proto-codemode-sandbox"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "camelrun-proto-agent",
+        "camelrun-proto-directory",
+        "camelrun-proto-deterministic-agent",
+        "camelrun-proto-deterministic-directory",
+        "camelrun-proto-budget"
+      ]
+    }
+  ],
+  "vars": {
+    "MODEL": "@cf/zai-org/glm-5.3-flash",
+    "BENCH_ENABLED": "1",
+    "BENCH_BUILD": "recovery-v2",
+    "BENCH_MAX_MODEL_CALLS": "24"
+  }
+}
