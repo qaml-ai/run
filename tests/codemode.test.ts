@@ -487,3 +487,28 @@ test("an approved call from code whose script cannot resume (its sandbox changed
   assert.equal(results.length, 1);
   assert.match(textOf(results[0]), /sandbox changed since it started/);
 });
+
+test("a resumed call given up while its script restarts leaves the script's entry to it, so a later call still sees it make theirs", async () => {
+  const { DurableAgent } = await import("../src/pi-durable/agent.ts");
+  const proto = DurableAgent.prototype as any;
+  // The registry and remade() alone: the parent task never ends here, and there is no deadline.
+  const agent: any = { scripts: new Map(), harness: { waitForTask: () => new Promise(() => {}) } };
+  agent.script = proto.script.bind(agent);
+  agent.scriptRun = proto.scriptRun.bind(agent);
+  const remade = proto.remade.bind(agent);
+  const api = { snapshot: async () => ({ start: { startedAt: 1, seed: 2 } }) };
+  const input = (key: string) => ({ parent: 7, call: { name: "approve", arguments: { key } } });
+  // The script starts again here and has reported nothing yet; c1's call is given up meanwhile.
+  const seen = agent.scriptRun(1, 2);
+  const given = new AbortController();
+  const first = remade({ parentCallId: "code", parentTaskId: "7", key: "c1" }, input("c1"), api, { abortSignal: given.signal });
+  given.abort();
+  await assert.rejects(first, /aborted|given up/);
+  assert.ok(agent.scripts.has("1:2"), "the running script keeps its entry");
+  // c2's call, resumed after, is notified when the script makes it.
+  const second = remade({ parentCallId: "code", parentTaskId: "7", key: "c2" }, input("c2"), api, { abortSignal: new AbortController().signal });
+  seen.called({ id: 2, name: "approve", args: { key: "c2" } });
+  assert.equal(await second, true);
+  seen.ended();
+  assert.equal(agent.scripts.size, 0);
+});
