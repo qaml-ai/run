@@ -1,0 +1,21 @@
+{
+  "name": "camelrun-cloudflare-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "AGENTS", "class_name": "CamelAgent" },
+      { "name": "DIRECTORY", "class_name": "AgentDirectory" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CamelAgent", "AgentDirectory"] }],
+  "vars": {
+    "MODEL": "test/echo",
+    "TEST_MODEL": "1",
+    "API_TOKEN": "local-integration-only-token-with-at-least-32-characters"
+  }
+}
