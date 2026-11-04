@@ -513,7 +513,7 @@ export function createAgentHost(hostIO: HostIO) {
   function codeSandbox(tools?: CodemodeTool[]): ReturnType<CodeSandboxes> {
     const timeoutMs = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
     const options: Parameters<CodeSandboxes>[0] = {
-      ...tools ? { tools } : {}, awaits: ["delegate"], cpuMs: Math.min(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs), timeoutMs,
+      ...tools ? { tools } : {}, awaits: ["delegate"], ...config.tenant ? { tenant: config.tenant } : {}, cpuMs: Math.min(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs), timeoutMs,
       acquireSlot: async signal => { await leased(signal); return io.codeSlot ? io.codeSlot(signal) : () => {}; },
       onEnd: ({ ms, cpuMs, error, errorName }) => recordCodeExecution({ tenant: config.tenant, ms, timeoutMs, cpuMs, ...error === undefined ? {} : { error }, ...errorName === undefined ? {} : { errorName } }),
     };

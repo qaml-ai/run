@@ -10,6 +10,15 @@ export interface Guest {
   send(message: WireMessage): void;
   listen(onMessage: (message: unknown) => void, onClose: (reason: string) => void): void;
   end(): void;
+  /** Resolves once the execution has its process (`V8Exec.max`): at once, or after waiting its turn. */
+  readonly admitted?: Promise<void>;
+  /**
+   * Stop counting this execution's process against `V8Exec.max` while its script only waits (on delegate, another agent's
+   * whole turn): within the pool's budget for waiting processes, `tenant`'s share of it. False when that is full.
+   */
+  park?(tenant: string | undefined): boolean;
+  /** Count it again, once a process is free under `max`, before the script goes on. */
+  unpark?(): Promise<void>;
 }
 
 /**
@@ -28,14 +37,19 @@ export class V8Exec {
   /** Its arguments when this process starts it; the launcher passes its own (the same, from AGENT_V8_JITLESS). */
   readonly args: string[];
   readonly max: number;
+  /** Processes whose scripts only wait (`Guest.park`), outside `max`: on the node, and one tenant's. */
+  readonly parkedMax: number;
+  readonly parkedPerTenant: number;
   prespawn: number;
   running = 0;
+  parked = 0;
+  private readonly parkedBy = new Map<string, number>();
   /** Pids of the processes running executions now, when they are this process's own. */
   readonly pids = new Set<number>();
   private readonly ready: Confined[] = [];
   private readonly waiting: (() => void)[] = [];
 
-  constructor(options: { binary?: string; jitless?: boolean; seccomp?: boolean; max?: number; prespawn?: number; maxDataMb?: number } = {}) {
+  constructor(options: { binary?: string; jitless?: boolean; seccomp?: boolean; max?: number; parkedMax?: number; parkedPerTenant?: number; prespawn?: number; maxDataMb?: number } = {}) {
     const defaults = options.binary === undefined || options.jitless === undefined || options.seccomp === undefined ? v8Settings(process.env) : undefined;
     this.binary = options.binary ?? defaults!.binary;
     const jitless = options.jitless ?? defaults!.jitless;
@@ -47,8 +61,11 @@ export class V8Exec {
       "--max-data-mb", String(options.maxDataMb ?? 512),
     ];
     this.max = options.max ?? 64;
+    this.parkedMax = options.parkedMax ?? 256;
+    this.parkedPerTenant = options.parkedPerTenant ?? 32;
     this.prespawn = options.prespawn ?? 0;
-    if (!Number.isInteger(this.max) || this.max < 1 || !Number.isInteger(this.prespawn) || this.prespawn < 0) throw new Error("Invalid v8-exec process limits");
+    if (!Number.isInteger(this.max) || this.max < 1 || !Number.isInteger(this.prespawn) || this.prespawn < 0
+      || !Number.isInteger(this.parkedMax) || this.parkedMax < 0 || !Number.isInteger(this.parkedPerTenant) || this.parkedPerTenant < 0) throw new Error("Invalid v8-exec process limits");
     this.refill();
   }
 
@@ -99,12 +116,22 @@ export class V8Exec {
       for (const message of queued.splice(0)) guest.send(message);
     };
     let released = false;
+    // Parked: its process counted under `parked` (and its tenant's), not `running`; `resume` waiting to count it again.
+    let parked: { tenant?: string } | undefined, resume: (() => void) | undefined;
+    const unparked = () => {
+      this.parked--;
+      if (parked?.tenant !== undefined) this.parkedBy.set(parked.tenant, this.parkedBy.get(parked.tenant)! - 1);
+      parked = undefined;
+    };
     const release = () => {
       if (released || !child) return;
       released = true;
+      if (resume) { this.waiting.splice(this.waiting.indexOf(resume), 1); resume = undefined; }
+      if (parked) return unparked();
       this.running--;
       this.waiting.shift()?.();
     };
+    const admitted = Promise.withResolvers<void>();
     const guest: Guest = {
       dispatched: false,
       send(message) {
@@ -118,8 +145,25 @@ export class V8Exec {
         if (child) { child.kill(); release(); }
         else this.waiting.splice(this.waiting.indexOf(admit), 1);
       },
+      admitted: admitted.promise,
+      park: tenant => {
+        if (!child || released || parked || resume || this.parked >= this.parkedMax
+          || (tenant !== undefined && (this.parkedBy.get(tenant) ?? 0) >= this.parkedPerTenant)) return false;
+        parked = { tenant };
+        this.parked++;
+        if (tenant !== undefined) this.parkedBy.set(tenant, (this.parkedBy.get(tenant) ?? 0) + 1);
+        this.running--;
+        this.waiting.shift()?.();
+        return true;
+      },
+      // First in line: it holds memory meanwhile, and its answers are in.
+      unpark: () => new Promise<void>(resolve => {
+        if (!parked || released) return resolve();
+        const go = () => { resume = undefined; unparked(); this.running++; resolve(); };
+        if (this.running < this.max) go(); else this.waiting.unshift(resume = go);
+      }),
     };
-    const admit = () => { if (!ended) { (guest as { dispatched: boolean }).dispatched = true; start(); } };
+    const admit = () => { if (!ended) { (guest as { dispatched: boolean }).dispatched = true; start(); admitted.resolve(); } };
     if (this.running < this.max) admit(); else this.waiting.push(admit);
     return guest;
   }
@@ -144,12 +188,14 @@ export function v8ExecBinary(env: NodeJS.ProcessEnv = process.env) {
 
 /**
  * A runner's settings from `env`: AGENT_V8_EXEC, AGENT_V8_JITLESS and AGENT_V8_SECCOMP (both on by default),
- * AGENT_V8_PRESPAWN processes started ahead (2 under agent-launcher, else none), AGENT_V8_MAX at once (64).
+ * AGENT_V8_PRESPAWN processes started ahead (2 under agent-launcher, else none), AGENT_V8_MAX at once (64), and
+ * AGENT_V8_PARKED_MAX (256) and AGENT_V8_PARKED_PER_TENANT (32) whose scripts only wait on delegate, beside those.
  */
 export function v8Settings(env: NodeJS.ProcessEnv) {
   return {
     binary: v8ExecBinary(env), jitless: envFlag(env, "AGENT_V8_JITLESS", true), seccomp: envFlag(env, "AGENT_V8_SECCOMP", true),
     prespawn: Number(env.AGENT_V8_PRESPAWN || (env.AGENT_SANDBOX_DIR ? 2 : 0)), max: Number(env.AGENT_V8_MAX || 64),
+    parkedMax: Number(env.AGENT_V8_PARKED_MAX || 256), parkedPerTenant: Number(env.AGENT_V8_PARKED_PER_TENANT || 32),
   };
 }
 

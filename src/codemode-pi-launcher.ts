@@ -19,10 +19,13 @@ export interface PiV8Options {
    */
   timeoutMs?: number;
   /**
-   * Tools a script waits on for as long as they take (delegate: another agent's whole turn): while one is out, the
-   * script holds no code slot and its wall clock stops; it takes a slot again before it gets their answers.
+   * Tools a script waits on for as long as they take (delegate: another agent's whole turn): while it waits on these
+   * alone, the script holds no code slot, its process is outside the pool's `max` (within its budget for waiting
+   * processes) and its clock stops; it takes a slot and a process back before it gets their answers.
    */
   awaits?: readonly string[];
+  /** Whose script this is: its share of the pool's processes for waiting scripts (`V8Exec.parkedPerTenant`). */
+  tenant?: string;
   expectedFingerprint?: string;
   /** Tenant CodeGate admission. Released on process exit, also on failed or cancelled admission, and while the script waits on `awaits` calls. */
   acquireSlot?(signal: AbortSignal): Promise<() => void>;
@@ -76,8 +79,10 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     const launched = performance.now();
     const pending = new Set<number>(), sequences = new Set<number>();
     const awaits = new Set(options.awaits ?? []), awaited = new Set<number>();
-    // Taking the slot back once the last awaited call answered: answers wait in `queued` until it is held.
-    let reacquiring: Promise<void> | undefined;
+    // Parked: the script, idle, waits only on `awaits` calls, holding no code slot, its process outside the pool's `max`
+    // (`Guest.park`) and its clock stopped. Results wait in `queued` while it is parked or `moving` in or out of it.
+    // Past that budget it keeps both (`kept`), and only its clock stops.
+    let parked: { kept: boolean } | undefined, moving: Promise<void> | undefined;
     const queued: HostToWorkerMessage[] = [];
     let nextResult = 0;
     const admission = new AbortController();
@@ -86,7 +91,7 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
     const released = () => { release?.(); release = undefined; resolveClosed(); };
     const fail = (message: string) => { if (!stopped) { error ??= message; events.failure({ kind: "sandbox", message }); } };
-    // The wall clock runs while the script holds its slot and waits on no `awaits` call.
+    // The wall clock runs while the script has its process and code slot, and is not parked.
     let left = timeoutMs, since: number | undefined, timer: ReturnType<typeof setTimeout> | undefined;
     const expire = () => { if (!stopped) { error ??= `Codemode timed out after ${timeoutMs}ms`; events.failure({ kind: "timeout", message: `Pi V8 exceeded ${timeoutMs} ms` }); } };
     const runClock = () => { if (!stopped && since === undefined) { since = performance.now(); timer = setTimeout(expire, left); } };
@@ -103,18 +108,36 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
         || Buffer.byteLength(message.payload ?? "") > SANDBOX_LIMITS.resultBytes || Buffer.byteLength(message.properties ?? "") > SANDBOX_LIMITS.resultBytes) return fail("Malformed Pi result");
       if (data.deterministic && (!integer(message.seq) || message.seq === 0 || sequences.has(message.seq) || !Number.isFinite(message.now))) return fail("Malformed Pi result sequence or clock");
       pending.delete(message.id);
+      awaited.delete(message.id);
       if (message.seq !== undefined) sequences.add(message.seq);
-      if (awaited.delete(message.id) && !awaited.size) reacquiring = (async () => {
-        try { release = await options.acquireSlot?.(admission.signal); }
-        catch (error) { return fail(error instanceof Error ? error.message : String(error)); }
-        reacquiring = undefined;
-        if (stopped) { release?.(); release = undefined; return; }
-        runClock();
-        for (const held of queued.splice(0)) deliver(held);
-      })();
-      if (guest && !reacquiring) deliver(message);
-      else queued.push(message);
+      queued.push(message);
+      flush();
     };
+    // Results go to the script while it runs; a parked one takes its slot and a process back first.
+    const flush = () => {
+      if (stopped || moving || !guest?.dispatched) return;
+      if (parked) { if (queued.length) unpark(); return; }
+      for (const message of queued.splice(0)) deliver(message);
+    };
+    const moved = (work: () => Promise<void>) => {
+      moving = work().catch(error => fail(error instanceof Error ? error.message : String(error))).finally(() => { moving = undefined; flush(); });
+    };
+    const park = () => moved(async () => {
+      if (queued.length) return;
+      stopClock();
+      parked = { kept: !guest!.park?.(options.tenant) };
+      if (!parked.kept) { release?.(); release = undefined; }
+    });
+    const unpark = () => moved(async () => {
+      const kept = parked!.kept;
+      parked = undefined;
+      if (!kept) {
+        release = await options.acquireSlot?.(admission.signal);
+        await guest!.unpark?.();
+      }
+      if (stopped) { release?.(); release = undefined; return; }
+      runClock();
+    });
     const receive = (message: unknown) => {
       if (stopped) return;
       if (!record(message) || Buffer.byteLength(JSON.stringify(message)) > MAX_FRAME_BYTES) return fail("Malformed Pi V8 frame");
@@ -134,10 +157,7 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
           || !(message.target === "tool" ? toolNames.has(message.name) : message.target === "global" && globalNames.has(message.name))) return fail("Malformed Pi call");
         issued++;
         pending.add(message.id);
-        if (message.target === "tool" && awaits.has(message.name) && awaited.add(message.id).size === 1) {
-          stopClock();
-          release?.(); release = undefined;
-        }
+        if (message.target === "tool" && awaits.has(message.name)) awaited.add(message.id);
       } else if (message.type === "idle" || message.type === "done") {
         const barrier = message.type === "idle" ? message : message.during;
         if (barrier !== undefined && (!record(barrier) || !integer(barrier.seq) || barrier.seq !== idle + 1
@@ -146,6 +166,8 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
         if (message.type === "idle") {
           if (message.seq !== idle + 1) return fail("Out-of-order Pi idle");
           idle = message.seq;
+          // Waiting, and only on `awaits` calls: the script parks until one answers.
+          if (pending.size && awaited.size === pending.size && !parked && !moving && !queued.length) park();
         } else if (typeof message.ok !== "boolean" || (message.ok
           ? !optionalString(message.value) || (message.value !== undefined && !json(message.value)) || typeof message.writes !== "string" || !json(message.writes)
           : typeof message.error !== "string" || !json(message.error))) return fail("Malformed Pi completion");
@@ -174,11 +196,14 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
       try {
         release = await options.acquireSlot?.(admission.signal);
         if (stopped) return released();
-        runClock();
         guest = pool.open();
         guest.listen(receive, reason => { released(); fail(reason); });
         guest.send({ type: "request", id: "pi", method: "pi-start-v1", params: { ...data, prelude: PRELUDE_SOURCE, preludeSha256, cpuMs, wallMs: timeoutMs } });
-        if (!reacquiring) for (const message of queued.splice(0)) deliver(message);
+        // The clock starts once the script has its process, not while it waits its turn for one.
+        await guest.admitted;
+        if (stopped) return;
+        runClock();
+        flush();
       } catch (error) { released(); fail(error instanceof Error ? error.message : String(error)); }
     })();
     return { post, async stop() {
