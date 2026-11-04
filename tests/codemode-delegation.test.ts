@@ -69,7 +69,7 @@ test("scripts waiting on children longer than their deadline, on an account with
       const answers = await Promise.all(["a", "b"].map(task => tools.delegate({ instructions: "You are CHILD.", task })));
       return answers.map(answer => answer.text).join(",");
     ` }, "code");
-  }, {}, tenants);
+  }, { AGENT_MAX_AGENTS: "16", AGENT_MAX_AGENTS_PER_TENANT: "16" }, tenants);
   const parents = await Promise.all([0, 1].map(async () => (await r.call("/v1/agents", { body: { builtins: ["delegate"], delegate: { instructions: true } } })).json.id));
   const records = await Promise.all(parents.map(parent => r.prompt(parent, "go")));
   for (const record of records) {

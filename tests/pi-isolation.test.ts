@@ -99,7 +99,7 @@ test("CPU, stack and hostile serialization stay inside the guest's limits", { ti
   assert.equal(await runPi({ code: "return 42" }), 42);
 });
 
-test("Pi caps tool calls, arguments, results and output events, and queues calls past 32 at once", async () => {
+test("Pi caps tool calls, arguments and results, queues calls past 32 at once, and cuts output past its limits", async () => {
   const bridge: ToolBridge = {
     definitions: [{ name: "echo", description: "Echo", parameters: { type: "object" } }],
     call: async (_name, args) => args.big ? "x".repeat(SANDBOX_LIMITS.resultBytes + 1) : args,
@@ -108,10 +108,10 @@ test("Pi caps tool calls, arguments, results and output events, and queues calls
     ['for (let i = 0; i < 257; i++) await tools.echo({i});', /at most 256 tool calls/],
     ['await tools.echo({value: "x".repeat(150000)});', /arguments.*limit|Malformed Pi call/],
     ['await tools.echo({big: true});', /result|payload/i],
-    ['for (let i = 0; i < 1025; i++) text("x");', /output.*limit/i],
   ] as const) await assert.rejects(runPi({ code, bridge }), pattern);
-  // Past 32 calls out at once, the rest wait their turn in the guest.
+  // Past 32 calls out at once, the rest wait their turn in the guest; output past its limits is left out, not fatal.
   await runPi({ code: 'await Promise.all(Array.from({length: 40}, () => tools.echo({})));', bridge });
+  assert.equal(await runPi({ code: 'for (let i = 0; i < 1025; i++) text("x"); return 1;', bridge }), 1);
 });
 
 test("host tool schemas and code options cannot be overridden by scripts", async t => {
