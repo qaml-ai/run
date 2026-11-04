@@ -46,7 +46,7 @@ async function runWorkflow(ctx: ChildrenContext, session: Session, settings: Wor
   const { header } = session;
   const tenant = header.tenant;
   const run = runningRun(session);
-  if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("run_workflow is called directly, not from js_exec");
+  if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("run_workflow is called directly, not from code");
   if (!ctx.options.createAgent || !ctx.options.submit) throw new Error("Workflows are not enabled on this runtime");
   const { script, args } = call.args as { script?: unknown; args?: unknown };
   if (typeof script !== "string" || !script.trim()) throw new Error("Give the workflow script");

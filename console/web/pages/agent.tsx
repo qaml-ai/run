@@ -194,9 +194,9 @@ function TryIt({ agentId, onDone }: { agentId: string; onDone: () => void }) {
 
 /** What each exposure means, for its badge. */
 const EXPOSURE_HELP: Record<string, string> = {
-  direct: "direct: the model calls it as a tool of its own; never from js_exec",
-  codemode: "codemode: only from code the model runs in js_exec",
-  both: "both: as a tool of its own, or from code in js_exec",
+  direct: "direct: always declared to the model; also callable from code",
+  codemode: "codemode: only from code the model runs in codemode",
+  both: "both: as a tool of its own, or from code in codemode",
 };
 const SOURCE_KINDS: Record<ToolSource["kind"], string> = {
   channel: "Channel", application: "Your application", files: "File tools", builtin: "Built-in", mcp: "MCP server", openapi: "OpenAPI",
@@ -238,8 +238,8 @@ function ToolSources({ agentId, sources }: { agentId: string; sources: ToolSourc
         {list.length === 0 && <p className="text-muted-foreground text-sm">No tools.</p>}
         {list.length > 0 && (
           <p className="text-muted-foreground text-xs">
-            Tools marked <span className="font-mono">codemode</span> or <span className="font-mono">both</span> can be called from code the model runs in js_exec.
-            To keep one out of js_exec, set its <span className="font-mono">exposure</span> to <span className="font-mono">"direct"</span>: on the tool in your code, or on the server in its definition.{" "}
+            Tools marked <span className="font-mono">codemode</span> or <span className="font-mono">both</span> can be called from code the model runs in codemode.
+            To always declare one to the model, set its <span className="font-mono">exposure</span> to <span className="font-mono">"direct"</span>: on the tool in your code, or on the server in its definition.{" "}
             <LearnMore page="tools">How</LearnMore>
           </p>
         )}

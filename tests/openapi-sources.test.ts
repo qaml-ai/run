@@ -59,7 +59,7 @@ test("an OpenAPI spec's operations are tools: requests built from the spec, data
   const store = await petStore(t);
   const r = await runtime(t, (_body, index) => [
     toolCall("pets__listPets", { limit: 2, tags: ["a", "b"] }),
-    toolCall("js_exec", { code: "const pet = await tools.pets__getPet({ petId: 7 }); return pet.name.toUpperCase();" }),
+    toolCall("codemode", { code: "const pet = await tools.pets__getPet({ petId: 7 }); return pet.name.toUpperCase();" }),
     toolCall("pets__createPet", { body: { name: "Fido" } }),
     toolCall("pets__getPet", { petId: 404 }),
     toolCall("pets__addNote", { petId: 7, body: { text: "good dog", tags: ["a", "b"], meta: { by: "ada" } } }),

@@ -129,7 +129,7 @@ export function runRoutes(route: Route, context: () => RunsContext) {
     // A run its key already names is answered as it is; a new one is refused cheaply at a limit.
     if (context().runPrecheck && !(given !== undefined && await clients.owns(clients.agentId(tenant, key), tenant))) await context().runPrecheck!(tenant);
     // No volume unless the run needs files: its inputs', file tools it asks for, or images it may make. A run with no tools at all (no
-    // definition, builtins, delegate, MCP servers, files or mounts) has no js_exec or file tools either, unless it asks: its model
+    // definition, builtins, delegate, MCP servers, files or mounts) has no code mode or file tools either, unless it asks: its model
     // sees only the instructions and the input (nor the decide tool). What a run sets itself wins.
     const toolless = config.definition === undefined && !config.builtins?.length && !config.delegate && !config.mcpServers?.length && !files.length && !mounts?.length && !config.fileTools;
     const params = {

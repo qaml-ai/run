@@ -79,7 +79,7 @@ test("MCP tools take files by {$file}: base64 or a call-bound URL, only from the
     toolCall("files__send", { content: { $file: "/workspace/../data/notes.txt" } }),
     toolCall("files__send", { title: { $file: "/data/notes.txt" } }),
     toolCall("files__send", { content: { $file: "/workspace/big.bin" } }),
-    toolCall("js_exec", { code: "await tools.files__send({ content: { $file: 'notes.txt' } }); return 'ok';" }),
+    toolCall("codemode", { code: "await tools.files__send({ content: { $file: 'notes.txt' } }); return 'ok';" }),
   ];
   const r = await runtime(t, (_body, index) => steps[index] ?? { role: "assistant", content: "done" }, LOCAL);
   base = r.base;
@@ -106,7 +106,7 @@ test("MCP tools take files by {$file}: base64 or a call-bound URL, only from the
   assert.match(toolResults(r.model.bodies[4]).at(-1), /Validation failed/, "only fields that take files accept {$file}");
   assert.match(toolResults(r.model.bodies[5]).at(-1), new RegExp(`at most ${TOOL_FILE_LIMITS.inlineBytes} can be sent inline`));
   assert.match(toolResults(r.model.bodies[6]).at(-1), /ok/);
-  assert.equal(Buffer.from(mcp.seen[1].content!, "base64").toString(), "workspace notes", "from js_exec, relative to the first mount");
+  assert.equal(Buffer.from(mcp.seen[1].content!, "base64").toString(), "workspace notes", "from codemode, relative to the first mount");
   assert.equal(mcp.seen.length, 2, "refused files never reach the server");
 });
 
@@ -114,7 +114,7 @@ test("MCP images, audio, blobs and long text are saved to the workspace, under s
   const mcp = await fileServer(t, () => "");
   const r = await runtime(t, (_body, index) => [
     toolCall("files__outputs", {}),
-    toolCall("js_exec", { code: "const out = await tools.files__outputs({}); return out.filter(part => part.type === 'file').map(part => part.path.split('/').pop() + ':' + part.contentType);" }),
+    toolCall("codemode", { code: "const out = await tools.files__outputs({}); return out.filter(part => part.type === 'file').map(part => part.path.split('/').pop() + ':' + part.contentType);" }),
   ][index] ?? { role: "assistant", content: "done" }, LOCAL);
   const definition = (await r.call("/v1/definitions", { body: { name: "Files", mcpServers: [{ name: "files", url: mcp.url, exposure: "both" }] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json;
@@ -137,7 +137,7 @@ test("MCP images, audio, blobs and long text are saved to the workspace, under s
   assert.ok(messages.includes(PNG.toString("base64")), "the model sees the image");
   assert.ok(messages.includes(PDF.toString("base64")), "and the PDF");
   assert.equal(messages.includes("x".repeat(1000)), false, "but not the long text");
-  assert.deepEqual(toolResults(r.model.bodies[2]).at(-1), JSON.stringify(["image-1.png:image/png", "audio-2.wav:audio/wav", "hidden.pdf:application/pdf", "long.txt:text/plain"]), "code gets each file's path and type");
+  assert.ok(toolResults(r.model.bodies[2]).at(-1).includes(JSON.stringify(["image-1.png:image/png", "audio-2.wav:audio/wav", "hidden.pdf:application/pdf", "long.txt:text/plain"])), "code gets each file's path and type");
 });
 
 /** An API that takes uploads (multipart, raw bytes, base64 in JSON) and answers with a file. */
@@ -178,7 +178,7 @@ test("OpenAPI operations upload files (multipart, raw bytes, base64) and save bi
     toolCall("docs__putAny", { body: { $file: "/workspace/a.png" } }),
     toolCall("docs__postJson", { body: { data: { $file: "/workspace/a.png" } } }),
     toolCall("docs__render", {}),
-    toolCall("js_exec", { code: "const file = await tools.docs__render({}); return file.path.split('/').pop() + ':' + file.contentType + ':' + file.size;" }),
+    toolCall("codemode", { code: "const file = await tools.docs__render({}); return file.path.split('/').pop() + ':' + file.contentType + ':' + file.size;" }),
     toolCall("docs__text", {}),
   ][index] ?? { role: "assistant", content: "done" }, LOCAL);
   const definition = await r.call("/v1/definitions", { body: { name: "Docs", openApi: [{ name: "docs", spec: `${api.url}/openapi.json`, exposure: "both", fileArguments: "on" }] } });
@@ -220,7 +220,7 @@ test("web_fetch saves PDFs and images to the workspace and shows them to the mod
   });
   const r = await runtime(t, (_body, index) => [
     toolCall("web_fetch", { url: `${pages}/files/report.pdf` }),
-    toolCall("js_exec", { code: `const page = await tools.web_fetch({ url: "${pages}/pic" }); return page.path + ':' + page.contentType + ':' + page.size;` }),
+    toolCall("codemode", { code: `const page = await tools.web_fetch({ url: "${pages}/pic" }); return page.path + ':' + page.contentType + ':' + page.size;` }),
   ][index] ?? { role: "assistant", content: "done" }, LOCAL);
   const definition = (await r.call("/v1/definitions", { body: { name: "Reader", builtins: ["web_fetch"] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json;

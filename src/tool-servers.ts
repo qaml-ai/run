@@ -7,7 +7,7 @@ import { validFileRef } from "./files.ts";
 
 /**
  * A tool call as a server gets it; `toolCallId` is the model's id for the call (for a call from
- * js_exec, the js_exec call's, and `innerCallId` this call's within it), `run` the id of the
+ * code, the codemode call's, and `innerCallId` this call's key within it), `run` the id of the
  * run it is made in, `origin` where the turn came from (a channel and its sender), and `actor` who
  * the application said is acting in it: set by the runtime, never by the model, so tools can authorize.
  * `onProgress` hears the server's progress notifications for the call.
@@ -31,7 +31,7 @@ export type ToolCall = {
 };
 /**
  * A call's idempotency key: the agent, the history index of the message that made the call, the model's id for it,
- * and its place in js_exec's code, hashed. The index matters: providers may number calls per response (call_0...).
+ * and its key within a codemode call, hashed. The index matters: providers may number calls per response (call_0...).
  */
 export function toolCallKey(agent: string, messageIndex: number | undefined, toolCallId: string, innerCallId?: string) {
   return createHash("sha256").update(`${agent}:${messageIndex ?? ""}:${toolCallId}:${innerCallId ?? ""}`).digest("hex").slice(0, 32);
@@ -144,13 +144,13 @@ export function fileServer(tools: ToolDefinition[], run: (call: ToolCall) => Pro
 }
 
 const BUDGET = { count: CATALOG_LIMITS.tools, bytes: CATALOG_LIMITS.bytes };
-/** A source with at most this many tools offers them to the model directly as well as from js_exec. */
+/** A source with at most this many tools offers them to the model directly as well as to code. */
 export const SMALL_SOURCE = 10;
 
 /**
  * A source's tools with its default exposure where they set none: a few tools are declared
- * to the model directly as well (a call costs one step, not a discovery in js_exec first);
- * many are reached from js_exec only, so they do not crowd the model's context.
+ * to the model directly as well (a call costs one step, not a script that finds it first);
+ * many are reached from code only, so they do not crowd the model's context.
  */
 export function defaultExposure(tools: ToolDefinition[], exposure?: ToolDefinition["exposure"]): ToolDefinition[] {
   const chosen = exposure ?? (tools.length <= SMALL_SOURCE ? "both" : "codemode");
@@ -174,7 +174,7 @@ function select(lists: ToolDefinition[][], visit: (list: number, tool: ToolDefin
         : bytes + size > BUDGET.bytes ? `past the catalog's limit of ${BUDGET.bytes / 1024} KiB`
         : !valid(tool) ? "its name or input schema is not valid" : undefined;
       if (!excluded) { names.add(tool.name); bytes += size; }
-      // Past the model's budget of direct tools, tools offered both ways are reached from js_exec
+      // Past the model's budget of direct tools, tools offered both ways are reached from code
       // only, earlier servers keeping theirs: many small sources must not crowd the model's context.
       if (!excluded && (tool.callers!.includes("model") && tool.modelDeclared)) {
         if (direct < CATALOG_LIMITS.direct || tool.modelPreferred) direct++;

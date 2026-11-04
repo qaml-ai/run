@@ -47,7 +47,7 @@ export function contentResult(result: McpResult, files = false) {
 }
 
 /**
- * What `js_exec` code gets from a content result: the data, not the envelope. Structured
+ * What code gets from a content result: the data, not the envelope. Structured
  * content when the tool gave it, else one text block (parsed when it is JSON) or one saved
  * file, else the blocks themselves. A saved file is `{ type: "file", path, contentType, size }`.
  * A tool error throws, as a failed call of any other tool does.

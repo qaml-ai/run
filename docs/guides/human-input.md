@@ -78,7 +78,7 @@ const deleteApp = tool({
 });
 ```
 
-Code in `js_exec` cannot wait for days: a call from code that would ask fails
+Code in `codemode` cannot wait for days: a call from code that would ask fails
 with "needs the user's input: call it directly". Tools that ask remain listed and searchable in code; approval and human input
 do not change caller access. Set `exposure: "direct"` to always declare such a
 tool to the model as well.

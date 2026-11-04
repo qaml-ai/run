@@ -65,7 +65,7 @@ test("a real Pi turn receives an SSE client function's result", async t => {
     for await (const chunk of req) body += chunk;
     bodies.push(JSON.parse(body));
     const delta = bodies.length === 1
-      ? { role: "assistant", tool_calls: [{ index: 0, id: "call_sse", type: "function", function: { name: "js_exec", arguments: JSON.stringify({ code: 'return await tools.echo({value:"from model"})' }) } }] }
+      ? { role: "assistant", tool_calls: [{ index: 0, id: "call_sse", type: "function", function: { name: "codemode", arguments: JSON.stringify({ code: 'return await tools.echo({value:"from model"})' }) } }] }
       : { role: "assistant", content: "Client updated." };
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     for (const [content, finish_reason] of [[delta, null], [{}, bodies.length === 1 ? "tool_calls" : "stop"]]) res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta: content, finish_reason }] })}\n\n`);

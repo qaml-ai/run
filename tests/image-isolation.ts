@@ -1,6 +1,6 @@
 /**
  * Linux, Docker: boots the built image the way ECS runs it (as root, under an init) and proves the
- * processes agent-launcher confines (v8-exec for js_exec, parse jobs for files) are confined, from
+ * processes agent-launcher confines (v8-exec for codemode, parse jobs for files) are confined, from
  * inside them:
  *   IMAGE=agent-runtime:ci DATABASE_URL=postgres://... [AGENT_HOSTING=process] node --experimental-strip-types tests/image-isolation.ts
  * DATABASE_URL is as the container sees it; the container shares the host network on
@@ -27,7 +27,7 @@ const name = `agent-isolation-${randomBytes(4).toString("hex")}`;
 /** The launcher's sandbox uids: 1001 + a process's slot, of 512. */
 const SANDBOX_UIDS = [1001, 1001 + 512];
 
-// The runtime reads its one tenant from a file mounted into the container; js_exec needs no model key.
+// The runtime reads its one tenant from a file mounted into the container; codemode needs no model key.
 const tenants = mkdtempSync(join(tmpdir(), "agent-isolation-"));
 chmodSync(tenants, 0o755);
 writeFileSync(join(tenants, "tenants.json"), JSON.stringify({ tenants: { isolation: { tokenSha256: createHash("sha256").update(token).digest("hex"), apiKeys: { anthropic: "unset" } } } }), { mode: 0o644 });
@@ -149,7 +149,7 @@ try {
   const fitted = scale();
   console.log(`parse job: scaled a 2400×1800 image to ${fitted.width}×${fitted.height} (${fitted.bytes} bytes) with sharp`);
 
-  // js_exec end to end through the runtime, with a client tool call; then every confined process killed mid-execution.
+  // codemode end to end through the runtime, with a client tool call; then every confined process killed mid-execution.
   let kill = false;
   let seen: { processes: Record<string, string>[]; probe: any } | undefined;
   const runtime = new AgentRuntime({ url, apiKey: token });
@@ -178,7 +178,7 @@ try {
   try {
     const executed = await agent.execute('const key: string = "answer"; return await tools.lookup({ key })');
     assert.deepEqual(executed.output, ["42"]);
-    console.log("js_exec: ok through the launcher, client tool included");
+    console.log("codemode: ok through the launcher, client tool included");
     const v8 = seen!.processes.filter(entry => entry.program === "v8-exec");
     const running = v8.filter(entry => entry.limits.includes("Max processes 0 0"));
     assert.equal(running.length, 1, JSON.stringify(seen));
@@ -209,7 +209,7 @@ try {
     for (let i = 0; i < 4; i++) assert.deepEqual((await agent.execute('return await tools.lookup({ key: "answer" })')).output, ["42"]);
     scale();
     assert.ok(confined().every(entry => !before.includes(entry.pid)), "Those started ahead were replaced");
-    console.log(`killed every confined process: the execution failed with "${outcome}"; js_exec and parsing still serve`);
+    console.log(`killed every confined process: the execution failed with "${outcome}"; codemode and parsing still serve`);
   } finally {
     await agent.destroy();
   }

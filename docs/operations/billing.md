@@ -167,7 +167,7 @@ credit"; API errors name nothing to buy, since they reach MCP clients and applic
 users, and the console and billing emails say where to add credit);
 a running turn ends after the response that spent the last credit, as at the
 [monthly spend cap](persistence.md). Within a turn, each `web_search` and `web_fetch`
-render on the platform's key checks credit first, so a `js_exec` loop of them stops
+render on the platform's key checks credit first, so a `codemode` loop of them stops
 there rather than at the next model request (a refused render returns the plain page).
 The balance counts this node's unwritten charges
 at once and other nodes' within about five seconds.
@@ -271,8 +271,8 @@ billing-admin operator sets another limit for a self-serve tenant with
 apply it within a minute); an admin tenant's is `maxStorageGb` in the tenants file, and
 an unbilled tenant has none unless that sets one. The same call takes the tenant's
 [rate limits](../reference/limits.md#rate-limits), `{agentCreatesPerMinute, runsPerMinute}`,
-and its [js_exec limits](../reference/limits.md#js_exec-code-the-model-writes-and-execute),
-`{codeCpuMs, codeMaxTimeoutMs, codeConcurrency}`, and its decision calls at once per node, `decisionConcurrency`, in place of its usage tier's (null returns to it). js_exec
+and its [codemode limits](../reference/limits.md#codemode-code-the-model-writes-and-execute),
+`{codeCpuMs, codeMaxTimeoutMs, codeConcurrency}`, and its decision calls at once per node, `decisionConcurrency`, in place of its usage tier's (null returns to it). codemode
 runs on V8 only: `codeEngine` is refused unless `null`, which clears one set before QuickJS was removed.
 
 `GET /v1/billing` has the balance, this month by kind, recent entries and the

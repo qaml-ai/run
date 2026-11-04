@@ -63,7 +63,9 @@ so a `write` or `edit` of a file someone else changed since then fails ("changed
 since you last read it; read it again") and the model reads again. The model
 never sees version numbers; the files API for applications keeps them. An application whose own tools
 handle files can leave these out with `fileTools: false` (in a definition, or when
-the agent is made).
+the agent is made): the model then has only `present_file`, and its code still
+calls the others (`tools.read`, `tools.write`, …) for its attachments and tool
+outputs.
 
 Text tools use Pi's implementations. `read({ path, offset?, limit? })` uses a
 1-based line offset and a maximum number of lines, with bounded output and a
@@ -79,7 +81,7 @@ await tools.edit({ path: "/workspace/notes.md", edits: [
 ```
 
 `edit` no longer accepts `old`, `new` or `replaceAll`. It returns edit details,
-including a diff and patch. In `js_exec`, text reads return an object with
+including a diff and patch. In `codemode`, text reads return an object with
 `content` and any truncation details. Images and PDFs still use file references when the model can view them. PDF text windows use character
 `offset` and `length`. Raw bytes use `encoding: "base64"`, with byte `offset` and
 `length` on reads, and base64 `content` on writes. Writes can also set `contentType`.
@@ -94,23 +96,21 @@ a failure can leave part of a directory moved. Read-only mounts refuse writes
 and moves out of them.
 
 An attached, running shell computer adds `/computer`, a read-write mount of its
-home directory (`~`, not `/`). All these tools and the `fs` helpers can use it.
+home directory (`~`, not `/`). All these tools can use it.
 Its files live only as long as the computer session and are gone after it
 expires. Use `cp` or `mv` to save results to a volume. With no running session,
 paths under `/computer` say to call `computer_start`; with no computer attached,
 it is not a mount. See [Computers](computers.md) for transfer limits and examples.
 
-Code in `js_exec` has `fs` over the same mounts:
+Code in `codemode` calls the same file tools over these mounts:
 
 ```js
-const csv = await fs.readFile("/workspace/data.csv", { encoding: "utf8" });
-await fs.writeFile("/workspace/out/chart.png", png, { contentType: "image/png" });
-await fs.stat("/workspace/out/chart.png");  // {path, type, size, updatedAt, contentType}
-await fs.list("/workspace/out");
+const csv = await tools.read({ path: "/workspace/data.csv" });
+await tools.write({ path: "/workspace/out/report.txt", content: csv.content });
+text(await tools.ls({ path: "/workspace/out" }));
 ```
 
-One `fs` call moves at most about 700 KiB; read larger files in windows with
-`tools.read({ path, offset, encoding: "base64" })`.
+There is no `fs` global. Read large files in windows with the file tools.
 
 ## Files out
 

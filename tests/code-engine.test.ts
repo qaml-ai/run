@@ -1,4 +1,4 @@
-// js_exec has one engine, V8 (v8-exec), since QuickJS was removed. A tenant's `codeEngine` (tenants
+// Code mode has one engine, V8 (v8-exec), since QuickJS was removed. A tenant's `codeEngine` (tenants
 // file, or `PUT /v1/tenants/{id}/limits`) pinned one of the two; what is left of it refuses QuickJS
 // with a message that says how to clear it.
 import { test } from "node:test";
@@ -13,12 +13,12 @@ const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
 test("a tenants-file entry's codeEngine may only be v8, which changes nothing; quickjs says how to clear it", async () => {
   const load = (codeEngine: unknown) => new Tenants({ read: async () => JSON.stringify({ tenants: { pinned: { tokenSha256: sha(OPERATOR), codeEngine } } }) }).reload();
-  await assert.rejects(load("quickjs"), /pinned has codeEngine "quickjs", but QuickJS was removed and js_exec runs on V8 only: remove codeEngine from its entry \(infra\/tenant\.sh clear-engine pinned\)/);
+  await assert.rejects(load("quickjs"), /pinned has codeEngine "quickjs", but QuickJS was removed and code runs on V8 only: remove codeEngine from its entry \(infra\/tenant\.sh clear-engine pinned\)/);
   await assert.rejects(load("node"), /QuickJS was removed/);
   await load("v8");
 });
 
-test("js_exec runs on V8 for every tenant, and the limits API refuses an engine", { timeout: 120_000, skip: !existsSync(v8ExecBinary()) && "v8-exec is not built" }, async t => {
+test("codemode runs on V8 for every tenant, and the limits API refuses an engine", { timeout: 120_000, skip: !existsSync(v8ExecBinary()) && "v8-exec is not built" }, async t => {
   const tenantsFile = {
     tenants: {
       alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" }, codeEngine: "v8" },
@@ -26,10 +26,10 @@ test("js_exec runs on V8 for every tenant, and the limits API refuses an engine"
     },
     platformKeys: { openrouter: "fixture-platform-key" },
   };
-  // One js_exec that reports its engine (only V8 has Intl here), then an answer.
+  // One codemode that reports its engine (only V8 has Intl here), then an answer.
   const r = await runtime(t, (body: any, index) => body.messages.some((message: any) => message.role === "tool")
     ? { role: "assistant", content: "done", usage: { prompt_tokens: 10, completion_tokens: 1 } }
-    : { ...toolCall("js_exec", { code: 'return typeof Intl === "object" ? "v8" : "other"' }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 1 } },
+    : { ...toolCall("codemode", { code: 'return typeof Intl === "object" ? "v8" : "other"' }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 1 } },
   { AGENT_BILLING_ADMINS: "alice" }, tenantsFile);
   const engineOf = async (token?: string) => {
     const before = r.model.bodies.length;
@@ -38,8 +38,8 @@ test("js_exec runs on V8 for every tenant, and the limits API refuses an engine"
     const tool = r.model.bodies.slice(before).flatMap((body: any) => body.messages).find((message: any) => message.role === "tool");
     return String(tool.content).trim();
   };
-  assert.equal(await engineOf(), "v8");
-  assert.equal(await engineOf(OTHER_OPERATOR), "v8");
+  assert.match(await engineOf(), /Output:\n+v8/);
+  assert.match(await engineOf(OTHER_OPERATOR), /Output:\n+v8/);
 
   const made = await r.call("/v1/tenants", { body: { id: "lab-engine" } });
   assert.equal(made.status, 201, made.text);
@@ -48,12 +48,12 @@ test("js_exec runs on V8 for every tenant, and the limits API refuses an engine"
   for (const codeEngine of ["quickjs", "v8"]) {
     const refused = await r.call("/v1/tenants/lab-engine/limits", { method: "PUT", body: { codeEngine } });
     assert.equal(refused.status, 400);
-    assert.match(refused.text, /codeEngine was removed with QuickJS: js_exec runs on V8 only/);
+    assert.match(refused.text, /codeEngine was removed with QuickJS: code runs on V8 only/);
   }
   const cleared = await r.call("/v1/tenants/lab-engine/limits", { method: "PUT", body: { codeEngine: null, codeCpuMs: 3_000 } });
   assert.equal(cleared.status, 200, cleared.text);
   assert.deepEqual(cleared.json.limits, { codeCpuMs: 3_000 });
-  assert.equal(await engineOf(token), "v8");
+  assert.match(await engineOf(token), /Output:\n+v8/);
 
   // The metric line keeps its Engine dimension, always v8 (agent processes write theirs to the runtime's log when it collects them).
   const lines = r.logs.map(line => { try { return JSON.parse(line); } catch { return undefined; } }).filter(line => line?.type === "code_execution");

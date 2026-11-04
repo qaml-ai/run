@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { CodemodeSandboxBase, type CodemodeSandboxBaseOptions, type HostToWorkerMessage } from "@earendil-works/pi-codemode/portable";
 import type { Guest } from "./codemode.ts";
+import { SANDBOX_LIMITS } from "./limits.ts";
 import { MAX_FRAME_BYTES } from "./sandbox-wire.ts";
 import { V8Exec, v8Exec } from "./v8-exec.ts";
 
@@ -17,14 +18,18 @@ export interface PiV8Options {
   expectedFingerprint?: string;
   /** Tenant CodeGate admission. Released on process exit, also on failed or cancelled admission. */
   acquireSlot?(signal: AbortSignal): Promise<() => void>;
+  /** Once per execution, when it stops: how long it ran from launch, the CPU its script used (when it got to the end), and why it failed (the script's error, a limit, the sandbox), if it did. */
+  onEnd?(end: { ms: number; cpuMs?: number; error?: string }): void;
 }
 
 const record = (value: unknown): value is Record<string, any> => typeof value === "object" && value !== null && !Array.isArray(value);
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
 const optionalString = (value: unknown) => value === undefined || typeof value === "string";
+/** Text one script prints: v8-exec's EMIT_CHARS, in bytes. */
+const OUTPUT_TEXT_BYTES = 128_000;
 const json = (value: string) => { try { JSON.parse(value); return true; } catch { return false; } };
 
-/** Unused by production. Pi owns calls and replay; this launcher only owns transport and capacity. */
+/** Pi's code mode on v8-exec: Pi owns calls and replay; this launcher only owns transport and capacity. */
 export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
   const pool = options.pool ?? v8Exec();
   const cpuMs = options.cpuMs ?? 2_000, timeoutMs = options.timeoutMs ?? 300_000;
@@ -45,7 +50,9 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     const reserved = new Set(["Object", "Function", "Array", "Number", "String", "Boolean", "BigInt", "Symbol", "Math", "Date", "Intl", "JSON", "Reflect", "Proxy", "Promise", "RegExp", "Error", "Map", "Set", "WeakMap", "WeakSet", "WeakRef", "FinalizationRegistry", "performance", "eval", "undefined", "NaN", "Infinity", "WebAssembly", "SharedArrayBuffer", "Atomics"]);
     if (data.globals.some(global => reserved.has(global.name.split(".")[0]))) throw new Error("Pi global shadows a built-in");
     // V8 uses its fixed HEAP_BYTES cap; Pi's per-request memoryLimitBytes is not applied.
-    let guest: Guest | undefined, stopped = false, started = false, issued = 0, idle = -1, output = 0, items = 0;
+    let guest: Guest | undefined, stopped = false, started = false, issued = 0, idle = -1, error: string | undefined, usedCpuMs: number | undefined;
+    const output = { items: 0, bytes: 0, images: 0, imageBytes: 0 };
+    const launched = performance.now();
     const pending = new Set<number>(), sequences = new Set<number>();
     const queued: HostToWorkerMessage[] = [];
     let nextResult = 0;
@@ -54,15 +61,16 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     let resolveClosed!: () => void;
     const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
     const released = () => { release?.(); release = undefined; resolveClosed(); };
-    const fail = (message: string) => { if (!stopped) events.failure({ kind: "sandbox", message }); };
-    const timer = setTimeout(() => { if (!stopped) events.failure({ kind: "timeout", message: `Pi V8 exceeded ${timeoutMs} ms` }); }, timeoutMs);
+    const fail = (message: string) => { if (!stopped) { error ??= message; events.failure({ kind: "sandbox", message }); } };
+    const timer = setTimeout(() => { if (!stopped) { error ??= `Codemode timed out after ${timeoutMs}ms`; events.failure({ kind: "timeout", message: `Pi V8 exceeded ${timeoutMs} ms` }); } }, timeoutMs);
     const post = (message: HostToWorkerMessage) => {
       if (stopped) return;
       if (!data.deterministic) message = { ...message, seq: ++nextResult, now: Date.now() };
       if (!integer(message.id) || !pending.has(message.id) || message.type !== "result" || typeof message.ok !== "boolean"
-        || !optionalString(message.payload) || (message.payload !== undefined && Buffer.byteLength(message.payload) > 1024 * 1024)
-        || (message.ok && message.payload !== undefined && !json(message.payload))
-        || !optionalString(message.properties) || (message.properties !== undefined && (Buffer.byteLength(message.properties) > 1024 * 1024 || !json(message.properties) || !record(JSON.parse(message.properties))))) return fail("Malformed Pi result");
+        || !optionalString(message.payload) || (message.ok && message.payload !== undefined && !json(message.payload))
+        || !optionalString(message.properties) || (message.properties !== undefined && (!json(message.properties) || !record(JSON.parse(message.properties))))
+        // v8-exec takes each at most SANDBOX_LIMITS.resultBytes (pi.rs); the host keeps a script's results under it (`scriptBytes`).
+        || Buffer.byteLength(message.payload ?? "") > SANDBOX_LIMITS.resultBytes || Buffer.byteLength(message.properties ?? "") > SANDBOX_LIMITS.resultBytes) return fail("Malformed Pi result");
       if (data.deterministic && (!integer(message.seq) || message.seq === 0 || sequences.has(message.seq) || !Number.isFinite(message.now))) return fail("Malformed Pi result sequence or clock");
       pending.delete(message.id);
       if (message.seq !== undefined) sequences.add(message.seq);
@@ -99,12 +107,20 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
         } else if (typeof message.ok !== "boolean" || (message.ok
           ? !optionalString(message.value) || (message.value !== undefined && !json(message.value)) || typeof message.writes !== "string" || !json(message.writes)
           : typeof message.error !== "string" || !json(message.error))) return fail("Malformed Pi completion");
+        if (message.type === "done") {
+          if (integer(message.cpuMs)) usedCpuMs = message.cpuMs;
+          delete message.cpuMs;
+          if (!message.ok) error ??= String(JSON.parse(message.error)?.message ?? "Script error");
+        }
       } else if (message.type === "output") {
         const item = message.item;
         if (!record(item) || !(item.type === "text" ? typeof item.text === "string" && (item.console === undefined || item.console === true)
           : item.type === "image" && typeof item.data === "string" && typeof item.mimeType === "string")) return fail("Malformed Pi output");
-        output += Buffer.byteLength(item.type === "text" ? item.text : item.data);
-        if (++items > 1024 || output > 128_000) return fail("Pi output exceeds limit");
+        // v8-exec leaves out what is past its limits and notes it once (sandbox/v8-exec/src/pi.rs `bounded`).
+        if (item.type === "text") { output.items++; output.bytes += Buffer.byteLength(item.text); }
+        else { output.images++; output.imageBytes += item.data.length; }
+        if (output.items > SANDBOX_LIMITS.outputEvents + 3 || output.bytes > OUTPUT_TEXT_BYTES + 1024
+          || output.images > SANDBOX_LIMITS.outputImages || output.imageBytes > SANDBOX_LIMITS.outputImageBytes) return fail("Pi output exceeds limit");
       } else if (message.type !== "crash" || typeof message.message !== "string") return fail("Unknown Pi V8 frame");
       events.message(message);
     };
@@ -122,6 +138,7 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
       if (!stopped) {
         stopped = true;
         clearTimeout(timer);
+        options.onEnd?.({ ms: Math.round(performance.now() - launched), ...usedCpuMs === undefined ? {} : { cpuMs: usedCpuMs }, ...error === undefined ? {} : { error } });
         admission.abort();
         if (guest) { guest.end(); if (!guest.dispatched) released(); } else released();
       }
@@ -129,6 +146,9 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     } };
   };
 }
+
+/** Where an agent's code runs: v8-exec in production; a test or the simulation may give Pi's in-process sandbox. */
+export type CodeSandboxes = (options: CodemodeSandboxBaseOptions & PiV8Options) => CodemodeSandboxBase;
 
 export class PiV8Sandbox extends CodemodeSandboxBase {
   constructor(options: CodemodeSandboxBaseOptions & PiV8Options = {}) {

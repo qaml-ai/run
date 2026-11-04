@@ -152,7 +152,8 @@ test("a history pi 0.80.6 wrote loads, replays its tool history and summary, and
   const inspect = { definitions: [{ name: "inspect", description: "Inspect", parameters: { type: "object" }, exposure: "direct" as const }], async call() { return "inspected"; } };
   // Compactions between runs report to the bridge, as no run's stream carries them.
   const events: any[] = [];
-  const started = await supervisor.start("legacy", { model: fake.model(8000), apiKey: "fixture" }, { ...inspect, background: (event: any) => events.push(event) });
+  // 9,000 tokens: code mode's tool and section are about 500 more than js_exec's were, so 8,000 compacts at load.
+  const started = await supervisor.start("legacy", { model: fake.model(9000), apiKey: "fixture" }, { ...inspect, background: (event: any) => events.push(event) });
   assert.equal(started.messages, 20);
   assert.deepEqual(((await journalMessages({ sessionId: "legacy", directory })) as any[]), before);
   const result = await supervisor.request("legacy", "prompt", { text: "After the upgrade" });

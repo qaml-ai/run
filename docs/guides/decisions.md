@@ -4,7 +4,7 @@
 yes/no, one of a set of options, or a level on a scale, each with calibrated probabilities instead of text. It is
 fast (a few hundred milliseconds) and cheap (about $0.00002 for three questions about a short message), so it suits
 moderation, routing, triage, and classifying or scoring a dataset. Every agent has the `decide` tool by default (from
-`js_exec`, `tools.decide`); see [In an agent](#in-an-agent) for who doesn't and how to opt out.
+`codemode`, `tools.decide`); see [In an agent](#in-an-agent) for who doesn't and how to opt out.
 
 Decisions run on TypeSafe's Jev (`typesafe/jev-1.14`), through OpenRouter's decisions API, with the OpenRouter key a
 model call of yours would use: a [key scope](models-and-keys.md#key-scopes)'s, your own
@@ -107,9 +107,9 @@ several states in one call.
 ## In an agent
 
 Every agent has the `decide` tool, with no builtin to list: it asks directly (`{state, questions}` or `{items}`, as
-above), and from `js_exec` as `tools.decide`. The exceptions:
+above), and from `codemode` as `tools.decide`. The exceptions:
 
-- An agent with no `js_exec` (`codeMode: false`) and no tools of its own, and a run with no tools at all, have none
+- An agent with no `codemode` (`codeMode: false`) and no tools of its own, and a run with no tools at all, have none
   unless they ask for it (`decide: true`).
 - `decide: false` on an agent (`POST /v1/agents`, `PATCH /v1/agents/{id}/configuration`; `null` goes back to the
   default), a run, or a definition (for its agents) opts out.
@@ -131,7 +131,7 @@ for (let start = 0; start < rows.length; start += 100) {
 ```
 
 One `tools.decide` call takes up to 100 states; a script may have several in flight (`Promise.all` over a few chunks),
-within js_exec's limits (256 tool calls and 30 seconds by default per execution, 128 KB of arguments a call). For more
+within codemode's limits (256 tool calls and 60 seconds by default per execution, 128 KiB of arguments a call). For more
 than one execution holds, loop executions over files in the workspace. What the calls cost counts against the agent's
 and the run's spend limits (the run's `usage.decisionCostUsd`), and the run's budget is checked against each call's
 estimate before it is sent.

@@ -117,7 +117,7 @@ async function openrouter(t: Parameters<typeof runtime>[0], particle: () => { st
 test("an agent naming no model stores the alias; Particle's outage moves that call to 1017, with history, routing and records on the model that ran", async t => {
   let down = true;
   const provider = await openrouter(t, () => down ? { status: 503 } : { text: "Particle again." }, body =>
-    toolResults(body).length ? { role: "assistant", content: "Tool done, from 1017." } : body.messages.some((message: any) => /run the tool/.test(JSON.stringify(message.content))) ? toolCall("js_exec", { code: "return 2 + 2" }) : { role: "assistant", content: "From 1017." });
+    toolResults(body).length ? { role: "assistant", content: "Tool done, from 1017." } : body.messages.some((message: any) => /run the tool/.test(JSON.stringify(message.content))) ? toolCall("codemode", { code: "return 2 + 2" }) : { role: "assistant", content: "From 1017." });
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), ALIASED);
   await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: provider.url } });
   assert.equal((await r.call("/v1/me")).json.defaultModel, ALIAS);

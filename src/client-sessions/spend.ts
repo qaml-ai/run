@@ -123,7 +123,7 @@ export function imageServer(ctx: SpendContext, session: Session, sources: Source
 /**
  * The decide tool, answered here rather than by a tool source: its decisions are billed like a model response, with the
  * run's facts, and count against the agent's spend limit and the run's. Every agent's unless its sources opt out
- * (`decide: false`), or it is `plain` (no js_exec, no tools of its own) and did not ask (`decide: true`). Not offered
+ * (`decide: false`), or it is `plain` (no code mode, no tools of its own) and did not ask (`decide: true`). Not offered
  * where it could only fail: no OpenRouter key decisions could use (the tenant's own, its key scope's or the platform's),
  * or an agent that denies data collection while the provider cannot pass that on.
  */
@@ -392,7 +392,7 @@ export function entryEffect(ctx: SpendContext, session: Session, entry: import("
   return nativeUsageEffect(ctx, session, entry) ?? ctx.spendWrite(session, 0);
 }
 
-/** The tenant's js_exec limits. */
+/** The tenant's code limits. */
 export async function codeLimits(ctx: SpendContext, tenant: string): Promise<CodeLimits> {
   return await ctx.options.codeLimitsFor?.(tenant) ?? { cpuMs: CODE_LIMITS.cpuMs, maxTimeoutMs: CODE_LIMITS.maxTimeoutMs, concurrent: CODE_LIMITS.concurrent };
 }

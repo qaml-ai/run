@@ -1,6 +1,6 @@
-// v8-exec: js_exec on V8, a process per execution (src/v8-exec.ts, sandbox/v8-exec). Its own
+// v8-exec: workflow code on V8, a process per execution (src/v8-exec.ts, sandbox/v8-exec). Its own
 // workings (processes killed, pre-spawned, waiting past `max`), and Intl, the seccomp allowlist and
-// jitless; tests/sandbox.test.ts and tests/codemode-limits.test.ts run js_exec end to end on it. Needs the binary (npm run build:v8-exec); the seccomp
+// jitless; tests/sandbox.test.ts and tests/codemode-limits.test.ts run workflow code end to end on it. Needs the binary (npm run build:v8-exec); the seccomp
 // tests need Linux (tests/image-isolation.ts runs them in the image as well).
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import type { Socket } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
-import { executeCode, FS_CALLS, HOST_CALLS } from "../src/codemode.ts";
+import { executeCode } from "../src/codemode.ts";
 import { frames } from "../src/sandbox-wire.ts";
 import { V8Exec, v8ExecBinary } from "../src/v8-exec.ts";
 import type { ToolBridge } from "../src/protocol.ts";
@@ -27,32 +27,20 @@ function hanging() {
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const run = (pool: V8Exec, code: string, bridge = none) => executeCode({ code, bridge, pool }).then(result => JSON.parse(result.output.at(-1)!));
 
-test("the bootstrap calls the host by the names the runtime answers", () => {
-  const bootstrap = readFileSync(new URL("../sandbox/v8-exec/src/bootstrap.js", import.meta.url), "utf8");
-  const hostCalls = [...bootstrap.matchAll(/call\("(tools\.\w+)"/g)].map(match => match[1]);
-  assert.deepEqual(hostCalls.sort(), Object.values(HOST_CALLS).sort());
-  assert.match(bootstrap, /call\("fs\." \+ name/);
-  const fsCalls = [...bootstrap.matchAll(/fsCall\("(\w+)"/g)].map(match => `fs.${match[1]}`);
-  assert.deepEqual([...new Set(fsCalls)].sort(), [...FS_CALLS].sort());
-});
-
 for (const jitless of [true, false]) {
-  test(`${jitless ? "jitless" : "with the JIT"}: code, TypeScript, tools, fs and Intl run`, { skip, timeout: 30_000 }, async t => {
+  test(`${jitless ? "jitless" : "with the JIT"}: code, TypeScript, tools and Intl run`, { skip, timeout: 30_000 }, async t => {
     const pool = new V8Exec({ jitless });
     t.after(() => pool.close());
-    const files = new Map<string, string>();
     const bridge: ToolBridge = {
       definitions: [{ name: "echo", description: "Echoes", parameters: { type: "object" } }],
       call: async (_name, args) => args,
-      fs: async (op, args) => op === "writeFile" ? (files.set(String(args.path), String(args.text)), { path: args.path }) : { path: args.path, text: files.get(String(args.path)) },
     };
     assert.deepEqual(await run(pool, [
       "enum Color { Red, Green }",
       "const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0);",
       "const echoed = await Promise.all([1, 2, 3].map(i => tools.echo({ i })));",
-      "await fs.writeFile('/workspace/a.txt', 'hello');",
-      "return { sum: sum(echoed.map(e => e.i)), green: Color.Green, file: await fs.readFile('/workspace/a.txt') };",
-    ].join("\n"), bridge), { sum: 6, green: 1, file: "hello" });
+      "return { sum: sum(echoed.map(e => e.i)), green: Color.Green };",
+    ].join("\n"), bridge), { sum: 6, green: 1 });
     // ICU is compiled in: formatting, dates, collation and case mapping in other locales, in UTC by default.
     assert.deepEqual(await run(pool, `return [
       new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" }).format(1234.5),

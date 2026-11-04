@@ -38,19 +38,22 @@ test("two real agents compose tools concurrently, with distinct workspaces", asy
     await tools.write({path: "result.txt", content: value});
     const results = await Promise.all([tools.read({path: "result.txt"}), tools.ls({})]);
     text(results[0].data.text);
-    text((await tools.describe("read")).name);
+    text(ALL_TOOLS.find(tool => tool.name === "read").name);
     return typeof process;
   ` })));
   assert.deepEqual(outputs.map(r => r.output), [["a", "read", "undefined"], ["b", "read", "undefined"]]);
   assert.equal(await readFile(join(root, "workspaces", "a", "result.txt"), "utf8"), "a");
 });
 
-test("timeout, cancellation, errors and output limits leave the agent usable", async t => {
+test("timeout, cancellation, errors and output leave the agent usable", async t => {
   const { supervisor, start } = await fixture(t);
-  await start("a");
-  await assert.rejects(supervisor.request("a", "execute", { code: "while (true) {}", timeoutMs: 1000 }), /timed out/);
   const started = Promise.withResolvers<void>();
-  const running = supervisor.request("a", "execute", { code: 'text("started");\nreturn await new Promise(() => {});' }, () => started.resolve());
+  await supervisor.start("a", { model }, {
+    definitions: [{ name: "hold", description: "Wait until cancelled", parameters: { type: "object" } }],
+    call: async () => { started.resolve(); return new Promise(() => {}); },
+  });
+  await assert.rejects(supervisor.request("a", "execute", { code: "while (true) {}", timeoutMs: 1000 }), /timed out|exceeded/);
+  const running = supervisor.request("a", "execute", { code: 'await tools.hold({});' });
   const rejected = assert.rejects(running, /aborted/);
   await started.promise;
   await assert.rejects(supervisor.request("a", "execute", { code: "return 1" }), /busy/);
@@ -61,7 +64,7 @@ test("timeout, cancellation, errors and output limits leave the agent usable", a
   const capped = await supervisor.request("a", "execute", { code: 'text("1234567890"); return "more";', maxOutputCharacters: 5 });
   assert.deepEqual(capped, { output: ["12345"], truncated: true });
   assert.equal((await supervisor.request("a", "status")).busy, false);
-  assert.deepEqual((await supervisor.request("a", "execute", { code: "1 + 2;" })).output, ["3"]);
+  assert.deepEqual((await supervisor.request("a", "execute", { code: "return 1 + 2;" })).output, ["3"]);
 });
 
 test("tool calls are correlated across reversed completion order and aborted on timeout", async t => {
@@ -78,7 +81,7 @@ test("tool calls are correlated across reversed completion order and aborted on 
   });
   const result = await supervisor.request("a", "execute", { code: 'return await Promise.all([tools.delay({ms: 100, value: "first"}), tools.delay({ms: 1, value: "second"})]);' });
   assert.deepEqual(JSON.parse(result.output[0]), ["first", "second"]);
-  await assert.rejects(supervisor.request("a", "execute", { code: 'await tools.delay({ms: 10000, value: 1});', timeoutMs: 1000 }), /timed out/);
+  await assert.rejects(supervisor.request("a", "execute", { code: 'await tools.delay({ms: 10000, value: 1});', timeoutMs: 1000 }), /timed out|exceeded/);
   assert.equal(cancelled, true);
   const bridge = await localTools(join(root, "workspace"));
   await assert.rejects(bridge.call("read", { path: "../elsewhere" }, new AbortController().signal), /escapes/);
@@ -112,7 +115,7 @@ test("real Pi provider loop calls codemode and persists native messages across p
   const requests: any[] = [];
   const chosen = await fakeProvider(t, body => {
     requests.push(body);
-    if (requests.length === 1) return { role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "js_exec", arguments: JSON.stringify({ code: 'await tools.write({path: "pi.txt", content: "from Pi"}); return await tools.read({path: "pi.txt"});' }) } }] };
+    if (requests.length === 1) return { role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "codemode", arguments: JSON.stringify({ code: 'await tools.write({path: "pi.txt", content: "from Pi"}); return await tools.read({path: "pi.txt"});' }) } }] };
     return { role: "assistant", content: "File verified." };
   });
   const { root, supervisor, start } = await fixture(t);
@@ -143,8 +146,8 @@ test("real Pi provider loop calls codemode and persists native messages across p
   for (const request of [requests[0], requests[2]]) {
     const instructions = request.messages.filter((m: any) => ["system", "developer"].includes(m.role)).map((m: any) => m.content).join("\n");
     assert.ok(instructions.includes(applicationPrompt));
-    assert.ok(instructions.includes('tools.search("refund an invoice")'));
-    assert.equal(instructions.split("Finding tools in js_exec:").length - 1, 1);
+    assert.ok(instructions.includes('searchTools("refund an invoice")'));
+    assert.equal(instructions.split("Finding tools:").length - 1, 1);
     assert.equal(instructions.split("Your environment:").length - 1, 1);
   }
 });
@@ -158,13 +161,13 @@ test("the prompt summarizes the agent's environment from its configuration, and 
   await supervisor.start("env", { model: chosen, apiKey: "fixture", mounts: [{ path: "/workspace", mode: "rw" }, { path: "/shared", mode: "ro" }] }, bridge);
   await supervisor.request("env", "prompt", { text: "Hi" });
   const system = (body: any) => body.messages[0].content as string;
-  assert.equal(system(requests[0]).slice(system(requests[0]).indexOf("Your environment:")), [
+  assert.equal(system(requests[0]).slice(system(requests[0]).indexOf("Your environment:")).split("\n\n")[0], [
     "Your environment:",
-    "- Files: /workspace (read-write), /shared (read-only); relative paths resolve against /workspace. Attachments are saved under /workspace/uploads/<request>/ and files that tools return under /workspace/tool-outputs/; keep scratch data under /workspace/tmp/. The file tools (read, write, edit, ls, glob, grep, mv, cp) are for looking at and changing files yourself; fs in js_exec is for code that works on their contents.",
+    "- Files: /workspace (read-write), /shared (read-only); relative paths resolve against /workspace. Attachments are saved under /workspace/uploads/<request>/ and files that tools return under /workspace/tool-outputs/; keep scratch data under /workspace/tmp/. The file tools (read, write, edit, ls, glob, grep, mv, cp) are for looking at and changing them; a script calls the same tools (tools.read and so on) to work on their contents.",
     "- You cannot see images or PDFs: read a PDF for its text.",
     "- Tools declared to you: lookup, preferred.",
-    "- Tools only in js_exec: 3, in 1 without a namespace, crm (2); find them with tools.search.",
-    "- js_exec limits per execution: 2 s of CPU, 128 MB of memory, 30 s (timeoutMs, up to 120 s), 256 tool calls, 32,000 output characters. Process large data in one pass.",
+    "- Tools only scripts can call: 3.",
+    "- codemode limits per script: 2 s of CPU, 128 MB of memory, 120 s in all (tool calls included), 256 tool calls. Process large data in one pass.",
   ].join("\n"));
   // Presented files reach the user by themselves: the model is told not to write links to them (it wrote sandbox:/workspace/... ones).
   assert.match(system(requests[0]), /present_file[^\n]*shown to the user[^\n]*never write a link/);
@@ -202,9 +205,12 @@ test("process death closes the interrupted turn on restart without replaying it 
 
 test("stopping an agent also stops its CPU-bound codemode execution", async t => {
   const { supervisor, start } = await fixture(t);
-  await start("a");
   const started = Promise.withResolvers<void>();
-  const running = supervisor.request("a", "execute", { code: 'text("started");\nwhile (true) {}', timeoutMs: 60_000 }, () => started.resolve());
+  await supervisor.start("a", { model }, {
+    definitions: [{ name: "started", description: "Signal execution", parameters: { type: "object" } }],
+    call: async () => { started.resolve(); return null; },
+  });
+  const running = supervisor.request("a", "execute", { code: 'await tools.started({}); while (true) {}', timeoutMs: 60_000 });
   const rejected = assert.rejects(running, /stopped|exited/);
   await started.promise;
   const handle = supervisor.agents.get("a")!;

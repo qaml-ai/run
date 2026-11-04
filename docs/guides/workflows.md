@@ -180,7 +180,7 @@ parent's view.
 
 ## Where the script runs
 
-The script runs in the runtime's sandbox — the same `v8-exec` isolate `js_exec`
+The script runs in the runtime's sandbox — the same `v8-exec` isolate `codemode`
 uses: a bare V8 with no Node globals, no filesystem, no network, and no module
 loader. It is killed at its deadline or when the run stops, so a loop in a script
 cannot hold the node. What a script can do is what its `agent()` calls can do, and
@@ -192,7 +192,7 @@ Nested workflows do not take another slot, to avoid waiting on the slot their
 parent holds. They remain bounded by the node's agent capacity, the tenant's
 busy-agent limit, chain depth and spend limits. Each workflow has a 60-minute
 deadline and a 128 MB transfer budget; The workflow profile allows 8,192 tool calls and 64 concurrent calls, with
-1 MB arguments per call; CPU and heap limits are `js_exec`'s.
+1 MB arguments per call; CPU and heap limits are `codemode`'s.
 
 ## Running a workflow without the model
 

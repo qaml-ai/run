@@ -72,7 +72,7 @@ export function childProcess(entry: string, cwd: string, runtime = process.execP
   const child = spawn(runtime, [...args, fileURLToPath(new URL(entry, import.meta.url))], {
     cwd,
     detached,
-    // One agent runs one js_exec at a time, in a v8-exec process: none started ahead per agent.
+    // One agent runs a script at a time, in a v8-exec process: none started ahead per agent.
     env: { ...env, HOME: cwd, TMPDIR: cwd, AGENT_V8_PRESPAWN: "0" },
     // Its stderr reaches the node's log only through childStderr: a crash's text never does.
     stdio: ["ignore", "ignore", "pipe", "ipc"],

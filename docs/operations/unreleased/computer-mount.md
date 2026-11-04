@@ -1,7 +1,7 @@
 ### Computer files share the file tools
 
 A running shell computer mounts its home directory at `/computer`. `read`,
-`write`, `edit`, `ls`, `glob`, `grep` and the `fs` helpers use it as they use
+`write`, `edit`, `ls`, `glob` and `grep` use it as they use
 volumes. Computer files disappear when the session expires or stops.
 
 New `cp` and `mv` tools copy or move files between mounts, without sending their

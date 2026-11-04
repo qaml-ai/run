@@ -5,7 +5,7 @@ import { loadDecision, MAX_RESUMES } from "../src/client-sessions.ts";
 
 // What used to be the process's settings are each node's own, from its environment, and its agent processes are told
 // its settings rather than inheriting the process's.
-test("a node's js_exec and agent process settings come from its own environment, not the process's", () => {
+test("a node's codemode and agent process settings come from its own environment, not the process's", () => {
   const before = { ...process.env };
   process.env.AGENT_CODE_WORKERS_MAX = "99";
   process.env.AGENT_OUTBOUND_ALLOW_HTTP = "true";

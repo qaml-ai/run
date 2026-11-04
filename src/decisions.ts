@@ -9,7 +9,7 @@ import { recordDecisionWait, safeError } from "./metrics.ts";
 /**
  * Decisions: typed questions about one state (a message, a record, a document), answered by a decision model ("System
  * One" models such as TypeSafe's Jev) with calibrated probabilities instead of text. `POST /v1/decisions` and the `decide`
- * builtin (an agent's, and js_exec's `tools.decide`) ask through a `Decider`; a `DecisionProvider` (decision-providers.ts)
+ * builtin (an agent's, and code's `tools.decide`) ask through a `Decider`; a `DecisionProvider` (decision-providers.ts)
  * is the only part that knows a provider's wire format. Questions about one state go in one call, which answers them in
  * parallel; a batch (`items`) is many states, fanned out within the tenant's and the node's concurrency.
  *
@@ -117,7 +117,7 @@ export type DecisionRequest = { items: DecisionItem[]; batch: boolean; model: st
 /** A request as `POST /v1/decisions` and the decide tool take it (other fields are the caller's to take out first). */
 /**
  * `decide` as an agent, a run or a definition gives it: false opts out of the decide tool; true asks for it even with no
- * js_exec and no other tools; null (where a change takes it) goes back to the default.
+ * code mode and no other tools; null (where a change takes it) goes back to the default.
  */
 export function decideInput(value: unknown, nullable = false): boolean | null {
   if (typeof value !== "boolean" && !(nullable && value === null)) throw new HttpError(400, `decide must be true or false${nullable ? ", or null for the default" : ""}`);
@@ -514,13 +514,13 @@ const QUESTIONS_SCHEMA = {
 };
 
 /**
- * The decide tool: every agent's unless it opts out (`decide: false`), called directly or from js_exec as
+ * The decide tool: every agent's unless it opts out (`decide: false`), called directly or from code as
  * `tools.decide(...)`. Short, since every agent's prompt carries it, and neutral: it says what it does, not when to use it.
  * Answers: `{answers: {id: answer}}`, or for items `{results: [{answers} | {error}]}` in order.
  */
 export const DECIDE: ToolDefinition = {
   name: "decide", exposure: "both",
-  description: "Answer typed questions about text or JSON with calibrated probabilities, in about 0.3 s for a fraction of a cent: noul (yes/no), choice (one of named options), score (a level on a scale). For classifying, scoring or routing many items, call it from js_exec with items (up to 100 states a call).",
+  description: "Answer typed questions about text or JSON with calibrated probabilities, in about 0.3 s for a fraction of a cent: noul (yes/no), choice (one of named options), score (a level on a scale). For classifying, scoring or routing many items, call it from codemode with items (up to 100 states a call).",
   parameters: { type: "object", additionalProperties: false, properties: {
     state: { description: "A string, object or array" },
     questions: QUESTIONS_SCHEMA,

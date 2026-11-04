@@ -12,7 +12,7 @@ import { PROD, type Served, servingModel, slowLookup, busyAgents } from "./fresh
 
 test("a 20 s database outage with no partition: nobody is reaped, effects pause and then go on, every turn completes, and nothing is served twice", { timeout: 120_000 }, async t => {
   const c = await cluster(t);
-  // 100 lookups (25 s) plus the pause (about 14 s) fit js_exec's 60 s with room to spare. 160 took 58 s here and past 60 s
+  // 100 lookups (25 s) plus the pause (about 14 s) fit codemode's 60 s with room to spare. 160 took 58 s here and past 60 s
   // on a loaded CI runner, where the execution timed out after 140.
   const model = await servingModel(t, { lookups: 100 });
   const database = await databaseLink(new URL(c.databaseUrl));

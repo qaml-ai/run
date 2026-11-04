@@ -35,7 +35,7 @@ test("DeepSeek V4.1 Flash on OpenRouter may be served only by its listed hosts; 
 });
 
 test("an agent's calls send their model's hosts: V4.1 Flash five, 1017 two ignored with at most 131,072 tokens; nothing else", async t => {
-  const host = await fakeModel(t, (_body, index) => index % 2 === 0 ? toolCall("js_exec", { code: "return 1 + 1;" }, `call_${index}`) : { role: "assistant", content: "2." });
+  const host = await fakeModel(t, (_body, index) => index % 2 === 0 ? toolCall("codemode", { code: "return 1 + 1;" }, `call_${index}`) : { role: "assistant", content: "2." });
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
   await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: host.url } });
   for (const [model, provider] of [[FLASH.id, { only: HOSTS }], [FLASH_1017.id, { ignore: IGNORED }]] as const) {

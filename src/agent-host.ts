@@ -1,19 +1,21 @@
+import { randomUUID } from "node:crypto";
 import { END_USER_CREDIT, type CreditStop, type ModelAttemptHook } from "./model-attempt.ts";
 import { mkdir } from "node:fs/promises";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { COMPACTION_SUMMARY_PREFIX, convertToLlm, createCompactionSummaryMessage } from "./pi-harness/messages.ts";
 import {
-  getCurrentSystemMessage, getCurrentTools, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
+  contentText, getCurrentSystemMessage, getCurrentTools, getToolStateChanges, isContextOverflow, isRetryableAssistantError, toToolDeclaration, validateToolArguments,
   type AssistantMessage, type AssistantMessageEventStream, type Message, type SystemMessage, type Tool, type ToolCall, type ToolResultMessage,
 } from "@earendil-works/pi-ai";
-import { executeCode, presentResult, type CodeExecutor, type CodeResult } from "./codemode.ts";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import type { CodemodeTool } from "@earendil-works/pi-codemode/portable";
+import { PiV8Sandbox, type CodeSandboxes } from "./codemode-pi-launcher.ts";
 import type { Outbound } from "./outbound.ts";
 import { scriptValue } from "./mcp-results.ts";
-import { callableFromCode, declaredToModel, errorText, normalizeTool, STOPPED_NOTICE, type ToolDefinition, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, legacyFormatRefused, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop, type ToolBridge } from "./protocol.ts";
-import { APPLICATION, applicationInstructions, ENVIRONMENT, environmentSummary, INSTRUCTIONS, LANGUAGE, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL } from "./system-prompt.ts";
+import { callableFromCode, declaredToModel, errorText, normalizeTool, STOPPED_NOTICE, type ToolDefinition, CONTEXT_RANGE_MAX_BYTES, CONTEXT_TOO_LARGE, contextRangeMessage, IDENTITY_KEY, legacyFormatRefused, PERSISTENCE_FAILED, SCOPE_KEY, scratchMount, type AgentConfig, type CallContext, type Credentials, type RunStop } from "./protocol.ts";
+import { APPLICATION, applicationInstructions, CODEMODE, ENVIRONMENT, environmentSummary, INSTRUCTIONS, LANGUAGE, leadingSystemMessage, OUTPUT, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER, OUTPUT_TOOL, RUNTIME, runtimeRules } from "./system-prompt.ts";
 import { languageInstructions } from "./language.ts";
 import { AGENT_UPDATES, renderMessages, senderInput, stamp, type MessageSource } from "./sender.ts";
-import type { SearchHit, SearchQuery } from "./tool-search.ts";
 import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, step, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } from "./compaction.ts";
 import { requestImageLimit } from "./request-images.ts";
@@ -23,14 +25,15 @@ import { MODEL_INTERRUPTED, modelFailure, retriesModelError, isContentFilterBloc
 import { withModelFallback } from "./model-fallback.ts";
 import { routeModel, type ModelRouteReason } from "./virtual-models.ts";
 import { forcedToolChoice } from "./tool-choice.ts";
-import { filesRefused, schemaAccepts } from "./tool-policy.ts";
+import { filesRefused, namespaceOf, schemaAccepts } from "./tool-policy.ts";
 import { callSettings } from "./pi-catalog.ts";
 import { describeFile, documentPayload, FILE_LIMITS, IMAGE_PAST_BUDGET, nativeBlock, unseen, validFileRef, type FileRef } from "./files.ts";
 import { errorClass, observeContextMetrics, observeTurns, recordCodeExecution, recordContextRange, recordModelFallback, recordToolResultSize, safeError } from "./metrics.ts";
 import { fitImage, fits, type Fitted } from "./inspect.ts";
 import { imageHeader, imageIntact, IMAGE_DAMAGED } from "./image-header.ts";
-import type { Storage as PiStorage } from "@earendil-works/pi-durable";
-import { DurableAgent, piRunning, type DurableAgentOptions, type FailedAttempt, type RetryDecision } from "./pi-durable/agent.ts";
+import type { Extension, PromptSection, Storage as PiStorage } from "@earendil-works/pi-durable";
+import { FileError, type ExecutionEnv } from "@earendil-works/pi-durable/env";
+import { DurableAgent, piRunning, type DurableAgentOptions, type FailedAttempt, type NestedCall, type RetryDecision } from "./pi-durable/agent.ts";
 import { contextRangeSize } from "./pi-durable/storage.ts";
 import { HostJournal } from "./pi-durable/host-journal.ts";
 import { JournalHistory } from "./pi-durable/history.ts";
@@ -42,6 +45,8 @@ const modelTools = (tools: HostTool[]) => tools.filter(tool => tool.callers?.inc
 
 /** How long a stopping agent waits to index its settled turns (see `index`). */
 
+/** Heads the runtime's rules where a context still holds older ones as its content (`runtimeSection`). */
+const RULES_CHANGED = "The runtime's rules changed. Where the rules earlier in this prompt differ from these, these hold.";
 /** Model requests of one structured run that may force final_output (see `outputChoice`). */
 const FORCED_OUTPUT_REQUESTS = 3;
 
@@ -80,8 +85,6 @@ export interface HostIO {
   legacyLog: LegacyLog;
   /** Native Pi storage stays on the supervisor under the session's ownership claim. */
   piStorage?(): Promise<PiStorage | undefined>;
-  /** `tools.search`, answered by the supervisor (which holds the rerankers); without it, code searches here. */
-  search?(query: SearchQuery): Promise<SearchHit[]>;
   /** A file reference's bytes as base64, read by the supervisor: the agent holds no storage access. */
   file(ref: FileRef): Promise<string>;
   /**
@@ -90,15 +93,15 @@ export interface HostIO {
    */
   modelAuth(provider?: string): Promise<Credentials>;
   modelAttempt?: ModelAttemptHook;
-  /** js_exec's `fs`, answered by the supervisor over the agent's mounts. */
+  /** File operations over the agent's mounts, answered by the supervisor: the host saves a long tool result with them. */
   fs(op: string, args: Record<string, unknown>): Promise<unknown>;
-  /** Wait for the tenant's turn to run js_exec on the node, until `signal` aborts; resolves with the function that gives it back. */
+  /** Wait for the tenant's turn to run code on the node, until `signal` aborts; resolves with the function that gives it back. */
   codeSlot?(signal: AbortSignal): Promise<() => void>;
-  /** Where js_exec runs: this process's v8-exec runner unless given (an inline host's node may give its own). */
-  codeExecutor?: CodeExecutor;
+  /** Where code runs: this process's v8-exec runner unless given (an inline host's node may give its own). */
+  codeSandbox?: CodeSandboxes;
   /** The outbound policy model calls to endpoints tenants give go through: its node's (this process's unless given). */
   modelOutbound?: Outbound;
-  /** Wait until the node may act for the agent (its lease is fresh), before each model request and js_exec; rejects once it lost the agent. */
+  /** Wait until the node may act for the agent (its lease is fresh), before each model request and code execution; rejects once it lost the agent. */
   lease?(): Promise<void>;
 }
 
@@ -181,8 +184,10 @@ export function createAgentHost(hostIO: HostIO) {
    * whether the latest request did.
    */
   let forcing = { left: 0, reminding: false, last: false };
-  /** js_exec, which an agent has unless its codeMode is false; made at init. */
-  let jsExec: HostTool | undefined;
+  /** Pi's code mode (its `codemode` tool), which an agent has unless its codeMode is false; made at init and on configure. */
+  let codemode: Extension | undefined;
+  /** Its section's renderer, which the host renders itself (`codemodeText`). */
+  let codemodeSection: PromptSection | undefined;
   /** Model requests wait for the node's lease, and are cut (`interrupt`) when it goes stale. */
   const gate: ModelGate = { wait: signal => leased(signal), open: new Set() };
 
@@ -200,9 +205,12 @@ export function createAgentHost(hostIO: HostIO) {
     finally { signal.removeEventListener("abort", abort); }
   }
 
+  /** The tools declared to the model: code mode's first, then the host's, as Pi offers them (`DurableAgent.syncContext`). */
+  const declared = (tools: HostTool[]): Tool[] => [...(codemode?.tools ?? []).map(toToolDeclaration), ...modelTools(tools)];
+
   /** The leading system message the agent's configuration makes: a new agent's Pi context starts with it. */
-  function leading(tools: Tool[] = modelTools(agent!.state.tools)): SystemMessage {
-    return leadingSystemMessage(config, tools);
+  function leading(tools: HostTool[] = agent!.state.tools): SystemMessage {
+    return leadingSystemMessage(config, declared(tools), codemodeText(tools));
   }
 
   /**
@@ -213,14 +221,15 @@ export function createAgentHost(hostIO: HostIO) {
    */
   async function declareConfiguration(durable = false): Promise<void> {
     const messages = agent!.state.messages;
-    const tools = modelTools(agent!.state.tools);
+    const tools = declared(agent!.state.tools);
     if (!durable && !journal.total) {
-      const rebuilt = leading(tools);
+      const rebuilt = leading();
       if (JSON.stringify(convertToLlm([rebuilt])) !== JSON.stringify(convertToLlm(messages.slice(0, 1)))) await agent!.replaceContext([rebuilt, ...messages.filter(message => message.role !== "system")]);
       return;
     }
     const { toolsAdded, toolsRemoved } = getToolStateChanges(getCurrentTools(messages), tools);
-    let current = getCurrentSystemMessage(messages)?.sections ?? {};
+    const system = getCurrentSystemMessage(messages);
+    let current = system?.sections ?? {};
     // Pi reserves `instructions`: sections under that old key are removed and every section declared again in order, as
     // a section declared later is placed after the others, so re-keying one alone would move the application's
     // instructions after the environment.
@@ -230,7 +239,8 @@ export function createAgentHost(hostIO: HostIO) {
       current = {};
     }
     const wanted = {
-      [APPLICATION]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
+      [RUNTIME]: runtimeSection(current, system ? contentText(system.content) : ""), [APPLICATION]: applicationInstructions(config.systemPrompt, config.systemPromptAppend), [ENVIRONMENT]: environmentSummary(config),
+      [CODEMODE]: codemodeText(agent!.state.tools),
       [LANGUAGE]: config.language ? languageInstructions(config.language) : null,
       [OUTPUT]: tools.some(tool => tool.name === OUTPUT_TOOL) ? OUTPUT_INSTRUCTIONS : null,
     };
@@ -243,6 +253,19 @@ export function createAgentHost(hostIO: HostIO) {
     // Pi takes the change once it is written.
     await journal.commit(() => [...cleared, change].map(message => ({ t: "system" as const, message })));
     await agent!.reload();
+  }
+
+  /**
+   * The runtime's rules as a section, where they changed since the context was written (js_exec and tools.search before
+   * code mode). Held in a section, they change in place. Held in the content (a context from before they were a
+   * section), they cannot: the new ones follow as a section saying they hold, and once a compaction leaves only
+   * sections they are the section alone. Missing (a compaction dropped them), nothing is declared: the agent renders
+   * today's (DurableAgent's `missingRules`).
+   */
+  function runtimeSection(current: Record<string, string | null>, content: string): string | null {
+    const rules = runtimeRules(config);
+    if (content && content !== rules) return `${RULES_CHANGED}\n\n${rules}`;
+    return RUNTIME in current ? rules : null;
   }
 
   /** Whether each model call asks the supervisor for its credentials. */
@@ -356,60 +379,28 @@ export function createAgentHost(hostIO: HostIO) {
     await declareConfiguration(true);
   }
 
-  /** The tools code can call; `toolCallId` is the js_exec call running it, if the model made one. */
-  /** One js_exec execution under the tenant's limits, and its metric line. */
-  async function runCode(options: Parameters<typeof executeCode>[0]) {
-    const started = Date.now();
-    let result: CodeResult | undefined, failure: unknown;
-    // Code makes tool calls and writes files: it starts only while the node's lease is fresh.
-    await leased(options.signal);
-    try { return result = await executeCode({ ...options, limits: config.codeLimits, admit: io.codeSlot && (signal => io.codeSlot!(signal)), ...(io.codeExecutor ? { pool: io.codeExecutor } : {}) }); }
-    catch (error) { failure = error; throw error; }
-    finally {
-      const maxTimeoutMs = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
-      recordCodeExecution({ tenant: config.tenant, ms: Date.now() - started, requestedTimeoutMs: options.timeoutMs, timeoutMs: Math.min(options.timeoutMs ?? SANDBOX_LIMITS.timeoutMs, maxTimeoutMs), cpuMs: result?.cpuMs, error: failure });
-    }
-  }
-
-  function bridge(signal: AbortSignal, toolCallId?: string): ToolBridge {
-    let calls = 0;
-    return {
-      definitions: config.tools.filter(callableFromCode),
-      call: async (name, args) => {
-        signal.throwIfAborted();
-        const value = await io.tool(name, args, toolCallId ? { toolCallId, innerCallId: `${toolCallId}:${++calls}`, ...await made(toolCallId) } : undefined);
-        // MCP tools answer with content; code gets their data.
-        return config.tools.find(tool => tool.name === name)?.resultFormat === "content" ? scriptValue(value) : value;
-      },
-      ...(io.search ? { search: io.search } : {}),
-      fs: (op, args) => { signal.throwIfAborted(); return io.fs(op, args); },
-    };
-  }
-
   /**
-   * A direct tool call's content as the model gets it: text past SANDBOX_LIMITS.outputCharacters is cut, as js_exec's
-   * output is, and the whole text saved to the agent's workspace (tool-results/<call>.txt), which the model is told to read in parts.
+   * A direct tool call's content as the model gets it: text past SANDBOX_LIMITS.outputCharacters is cut, and the whole
+   * text saved to the agent's workspace (tool-results/<call>.txt), which the model is told to read in parts.
    */
-  async function capped(toolCallId: string, content: any[]): Promise<any[]> {
+  async function capped(toolCallId: string, content: any[], limit: number = SANDBOX_LIMITS.outputCharacters): Promise<any[]> {
     // The runtime's <agent_updates> part (sender.ts AGENT_UPDATES) is not the tool's: it is never cut, and stays its own part.
     const updates = content.filter(part => part.type === "text" && part[AGENT_UPDATES] === true);
-    if (updates.length) return [...await capped(toolCallId, content.filter(part => !updates.includes(part))), ...updates];
+    if (updates.length) return [...await capped(toolCallId, content.filter(part => !updates.includes(part)), limit), ...updates];
     const text = content.filter(part => part.type === "text").map(part => part.text as string).join("\n");
-    const limit = SANDBOX_LIMITS.outputCharacters;
     if (text.length <= limit) return content;
     const whole = Buffer.from(text, "utf8");
     const path = await saveToolResult(toolCallId, text);
-    const saved = !!path;
-    // Read with what the agent has: its file tools, or, without them (fileTools: false), fs in js_exec.
-    const how = config.fileTools === false ? "with fs.readFile in js_exec" : "with read (offset and length)";
-    const where = saved ? ` The whole result${whole.length > FILE_LIMITS.scriptFileBytes ? ` (its first ${FILE_LIMITS.scriptFileBytes.toLocaleString("en-US")} bytes)` : ""} is in ${path}: read it in parts ${how}.` : " Ask the tool for less.";
+    // Read with what the agent has: its file tools, or, without them (fileTools: false), the same tools from code.
+    const how = config.fileTools === false ? "with tools.read (offset and length) in codemode" : "with read (offset and length)";
+    const where = path ? ` The whole result${whole.length > FILE_LIMITS.scriptFileBytes ? ` (its first ${FILE_LIMITS.scriptFileBytes.toLocaleString("en-US")} bytes)` : ""} is in ${path}: read it in parts ${how}.` : " Ask the tool for less.";
     return [...content.filter(part => part.type !== "text"), { type: "text", text: `${text.slice(0, limit)}\n\n[Result cut at ${limit.toLocaleString("en-US")} of ${text.length.toLocaleString("en-US")} characters.${where}]` }];
   }
 
   /** Save large results beside their text, using the same call identity and workspace limits. */
   async function saveToolResult(toolCallId: string, text: string, extension = "txt"): Promise<string | undefined> {
-    const readable = config.fileTools !== false || config.codeMode !== false;
-    const mount = readable ? scratchMount(config.mounts) : undefined;
+    // Saved only where the agent can read it back: with its file tools, or from code.
+    const mount = config.fileTools !== false || config.codeMode !== false ? scratchMount(config.mounts) : undefined;
     // Named by the message that made the call too: providers may give calls in different turns the same id.
     const at = (await made(toolCallId)).messageIndex;
     const path = mount && `${mount.path}/tool-results/${at !== undefined ? `${at}-` : ""}${toolCallId.replace(/[^A-Za-z0-9_.-]/g, "_")}.${extension}`;
@@ -429,64 +420,185 @@ export function createAgentHost(hostIO: HostIO) {
     return { truncated: true, ...(path ? { path } : {}) };
   }
 
+  /**
+   * Bytes of the results each running script got from its calls (`scriptBytes`), by its code mode call's Pi task: unique,
+   * where the model's call ids are not (providers number them per response).
+   */
+  const scriptResults = new Map<string, number>();
+  /** Where each running script's code mode call is in the history (`made`), read once for all of its calls, by its Pi task. */
+  const scriptCalls = new Map<string, Promise<{ messageIndex?: number }>>();
+  function scriptMadeAt(nested: NestedCall) {
+    let at = scriptCalls.get(nested.parentTaskId);
+    if (!at) {
+      scriptCalls.set(nested.parentTaskId, at = made(nested.parentCallId));
+      at.catch(() => scriptCalls.delete(nested.parentTaskId));
+    }
+    return at;
+  }
+  /**
+   * Count a result a script gets toward its limits: SANDBOX_LIMITS.resultBytes each, totalToolBytes in all. The total is
+   * this process's: a script resumed elsewhere (after a restart, at most Pi's restartLimit times) counts afresh.
+   */
+  function scriptBytes(parentTaskId: string, data: unknown) {
+    const bytes = Buffer.byteLength(JSON.stringify(data));
+    // Under v8-exec's own bound on a result (pi.rs RESULT_BYTES), with room for how Pi frames it.
+    const most = SANDBOX_LIMITS.resultBytes - 1024;
+    if (bytes > most) throw new Error(`The result is ${bytes.toLocaleString("en-US")} bytes; a script gets at most ${most.toLocaleString("en-US")} from one call. Ask the tool for less.`);
+    const total = (scriptResults.get(parentTaskId) ?? 0) + bytes;
+    if (total > SANDBOX_LIMITS.totalToolBytes) throw new Error(`This script's calls have returned more than ${SANDBOX_LIMITS.totalToolBytes.toLocaleString("en-US")} bytes in all, the most one script gets. Ask for less, or split the work across scripts.`);
+    scriptResults.set(parentTaskId, total);
+  }
+
   /** Register every enabled tool; model advertisement does not change who may call it. */
   function agentTools(tools: AgentConfig["tools"]): HostTool[] {
     return tools.map(tool => ({
         callers: config.codeMode === false && tool.modelFallback ? ["model", "tools"] as const : normalizeTool(tool).callers, modelDeclared: declaredToModel(tool, config.codeMode !== false),
         name: tool.name, label: tool.name, description: tool.description, ...RERUN.includes(tool.name) ? { replay: "safe" as const } : {},
         parameters: tool.parameters as AgentTool["parameters"], executionMode: tool.executionMode,
+        // Any value: code gets each tool's data (`structuredContent`), the model its content.
+        outputSchema: {},
         // Ahead of Pi's own check, whose complaint about a file named for a tool that takes none reads as a wrong path.
         prepareArguments: (args: unknown) => {
           const refused = filesRefused(tool.name, tool.parameters, args);
           if (refused && !schemaAccepts(tool.parameters, args)) throw new Error(refused);
           return args as Record<string, unknown>;
         },
-        execute: async (toolCallId, args, signal) => {
+        execute: async (toolCallId: string, args: unknown, signal?: AbortSignal, _onUpdate?: unknown, nested?: NestedCall) => {
           signal?.throwIfAborted();
+          if (nested) {
+            // A call from code: named by the model's code mode call and its key there, which a replay of the script keeps.
+            const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await scriptMadeAt(nested) });
+            signal?.throwIfAborted();
+            // Code gets the data: an MCP tool's structured content, or its text parsed (scriptValue throws its error).
+            const data = (tool.resultFormat === "content" ? scriptValue(value) : value) ?? null;
+            scriptBytes(nested.parentTaskId, data);
+            return { content: [], structuredContent: data };
+          }
           const at = await made(toolCallId);
           const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId, ...at, ...tool.name === "delegate" && at.messageIndex !== undefined ? { delegates: await delegatesIn(at.messageIndex) } : {} });
           signal?.throwIfAborted();
           // The call waits on a person (inputs.ts): it stays open, with no result, and the turn suspends after this step.
           if (value?.inputRequired) {
             await journal.await([toolCallId]);
-            return { content: value.content, details: { inputRequired: true } };
+            return { content: value.content, details: { inputRequired: true }, structuredContent: null };
           }
           if (tool.resultFormat === "content") {
             if (!value || !Array.isArray(value.content) || value.content.some((part: any) => !part || !(part.type === "text" && typeof part.text === "string" || part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string" || validFileRef(part)))) throw new Error("Invalid content tool result");
             // A failed call (an MCP tool's isError, an OpenAPI operation's HTTP error) is an error result that keeps its content and details.
-            return { ...value, content: await capped(toolCallId, (await fittedImages([value]))[0].content), details: await cappedDetails(toolCallId, tool.name, value.details), isError: value.isError === true };
+            return { ...value, content: await capped(toolCallId, (await fittedImages([value]))[0].content), details: await cappedDetails(toolCallId, tool.name, value.details), isError: value.isError === true,
+              ...value.isError === true ? {} : { structuredContent: scriptValue(value) ?? null } };
           }
-          return { content: await capped(toolCallId, [{ type: "text", text: JSON.stringify(value) ?? "null" }]) };
+          return { content: await capped(toolCallId, [{ type: "text", text: JSON.stringify(value) ?? "null" }]), structuredContent: value ?? null };
         },
       }));
   }
 
-  /** js_exec, with the agent's code limits. */
-  function codeTool(): HostTool {
-    const maxTimeoutMs = config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs;
-    return {
-      callers: ["model"], name: "js_exec", label: "JavaScript",
-      description: "Run JavaScript or TypeScript in a fresh sandbox. Return what you want to see: it comes back as JSON (a string as its own text), after any console.log lines. In scope: tools (await tools.<name>(args) gives the tool's result as data; tools.search, tools.namespaces and tools.describe find them) and fs for your files (readFile(path, { encoding: \"utf8\" }) gives a string, a Uint8Array without it; writeFile(path, string | Uint8Array); stat, list, remove); no network, imports, Node APIs or timers. Variables are gone after each execution; files persist. An execution gets timeoutMs of wall time (default " + Math.min(SANDBOX_LIMITS.timeoutMs, maxTimeoutMs) + ", at most " + maxTimeoutMs + "), tool calls included: raise it for slow tools." + " For example:\nconst tickets = [];\nfor (let page = 1; page; ) { const result = await tools.helpdesk__list_tickets({ status: \"open\", page }); tickets.push(...result.tickets); page = result.nextPage; }\nawait fs.writeFile(\"" + (scratchMount(config.mounts)?.path ?? "/workspace") + "/tmp/tickets.json\", JSON.stringify(tickets)); // a later execution can read it back\nreturn { open: tickets.length, oldest: tickets[0]?.createdAt };",
-      parameters: {
-        type: "object", required: ["code"],
-        properties: { code: { type: "string" }, description: { type: "string" }, timeoutMs: { type: "number" }, maxOutputCharacters: { type: "number" } },
-      } as AgentTool["parameters"],
-      executionMode: "sequential",
-      execute: async (id, args, signal, onUpdate) => {
-        try {
-          const request = codeRequest(args);
-          const { returned, cpuMs: _cpuMs, ...result } = await runCode({
-            ...request, bridge: bridge(signal ?? new AbortController().signal, id), signal,
-            onEvent: event => {
-              io.emit({ type: "codemode", toolCallId: id, event });
-              onUpdate?.({ content: [{ type: "text", text: JSON.stringify(event) }], details: event });
-            },
-          });
-          // details keeps the output as events streamed it, for clients that render it.
-          return { content: [{ type: "text", text: presentResult({ ...result, returned }, request.maxOutputCharacters) }], details: await cappedDetails(id, "js_exec", result, 32 * 1024) };
-        } finally { await io.cancelTools(); }
-      },
+  /**
+   * Where the agent's code runs (v8-exec, codemode-pi-launcher.ts) under its tenant's limits: CPU per execution, and a
+   * deadline (Pi's code mode has none unless a script asks), each admitted only while the node's lease is fresh and the
+   * tenant has a code slot on the node, and measured (`code_execution`).
+   */
+  function codeSandbox(tools?: CodemodeTool[]): ReturnType<CodeSandboxes> {
+    const timeoutMs = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
+    const options: Parameters<CodeSandboxes>[0] = {
+      ...tools ? { tools } : {}, cpuMs: Math.min(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs), timeoutMs,
+      acquireSlot: async signal => { await leased(signal); return io.codeSlot ? io.codeSlot(signal) : () => {}; },
+      onEnd: ({ ms, cpuMs, error }) => recordCodeExecution({ tenant: config.tenant, ms, timeoutMs, cpuMs, ...error === undefined ? {} : { error } }),
     };
+    return io.codeSandbox ? io.codeSandbox(options) : new PiV8Sandbox(options);
+  }
+
+  /**
+   * An `execute` request: code run with the agent's tools outside its history (no model, nothing kept), as code mode runs
+   * it. Its result is what the code printed, in order, then what it returned (JSON, or a string as its own text), cut at
+   * `maxOutputCharacters` in all.
+   */
+  async function execute(params: unknown, signal: AbortSignal) {
+    const { code, timeoutMs, maxOutputCharacters = SANDBOX_LIMITS.outputCharacters } = codeRequest(params);
+    const longest = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
+    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1)) throw new Error(`timeoutMs must be 1..${longest}`);
+    if (!Number.isInteger(maxOutputCharacters) || maxOutputCharacters < 1 || maxOutputCharacters > SANDBOX_LIMITS.maxOutputCharacters) throw new Error(`maxOutputCharacters must be 1..${SANDBOX_LIMITS.maxOutputCharacters}`);
+    const tools = config.tools.filter(callableFromCode).map((tool): CodemodeTool => ({
+      name: tool.name, description: tool.description, inputSchema: tool.parameters,
+      execute: async args => {
+        const value = await io.tool(tool.name, args as Record<string, unknown>);
+        return tool.resultFormat === "content" ? scriptValue(value) : value;
+      },
+    }));
+    const result = await codeSandbox(tools).execute(code, { signal, ...timeoutMs ? { timeoutMs: Math.min(timeoutMs, longest) } : {} });
+    if (!result.ok) throw new Error(result.error.message);
+    const printed = result.output.map(item => item.type === "text" ? item.text : `[image ${item.mimeType}]`);
+    if (result.value !== undefined) printed.push(typeof result.value === "string" ? result.value : JSON.stringify(result.value));
+    let left = maxOutputCharacters;
+    const output = printed.flatMap(text => { const kept = text.slice(0, left); left -= kept.length; return kept ? [kept] : []; });
+    return { output, truncated: printed.join("").length > maxOutputCharacters };
+  }
+
+  /**
+   * Pi's code mode as it ships, on the agent's sandbox, its tools grouped by source (what precedes `__` in their names);
+   * none when codeMode is false. Its section (the tools scripts can call) is declared with the host's own
+   * (`codemodeText`), so it changes with them, in their place, rather than after the next prompt. Its tool runs alone in
+   * its round, and the calls its script leaves running are cancelled when it ends. Its result's text is held to
+   * SANDBOX_LIMITS.maxOutputCharacters, which a script's own maxOutputTokens cannot raise.
+   */
+  function codeMode(): Extension | undefined {
+    if (config.codeMode === false) {
+      codemodeSection = undefined;
+      return undefined;
+    }
+    const extension = createCodemodeExtension({ sandbox: codeSandbox(), models: false,
+      namespaces: [...new Set(config.tools.map(tool => namespaceOf(tool.name)).filter(Boolean))].map(name => ({ name, prefix: `${name}__` })) });
+    codemodeSection = extension.sections?.find(entry => entry.key === CODEMODE);
+    return { ...extension, sections: [], tools: (extension.tools ?? []).map(tool => ({ ...tool, description: codemodeDescription(tool.description), executionMode: "sequential" as const,
+      execute: async (...args: Parameters<typeof tool.execute>) => {
+        try {
+          const result = await tool.execute(...args);
+          if (!result.output) return result;
+          // Its images go into history as requests carry them (scaled down once, as attachments are), its text capped.
+          const [fitted] = await fittedImages([{ content: [...result.output] }]);
+          return { ...result, output: await capped((args[1] as { callId: string }).callId, fitted.content, SANDBOX_LIMITS.maxOutputCharacters) };
+        } finally {
+          scriptResults.delete(String((args[1] as { taskId: unknown }).taskId));
+          scriptCalls.delete(String((args[1] as { taskId: unknown }).taskId));
+          await io.cancelTools();
+        }
+      } })) };
+  }
+
+  /**
+   * Pi's description of its code mode tool, as it is here: scripts run on V8 (v8-exec), not QuickJS, and the files
+   * `image()` saves are in the workspace (`outputFiles`), or nowhere without one.
+   */
+  function codemodeDescription(text: string): string {
+    const sandbox = " in a QuickJS sandbox:", saved = " `image()` also saves the image to a temp file and the result names its path.";
+    if (!text.includes(sandbox) || !text.includes(saved)) throw new Error("Pi's code mode description changed: review codemodeDescription");
+    return text.replace(sandbox, " in a JavaScript sandbox:")
+      .replace(saved, scratchMount(config.mounts) ? " `image()` also saves the image in your workspace (tool-results/), and the result names its path." : "");
+  }
+
+  /**
+   * Where code mode keeps a script's whole output when it cuts it, and the images it shows: a folder of the agent's
+   * scratch mount (tool-results/), as long tool results are, through the supervisor. Code mode only creates that folder
+   * and writes files in it; without a writable mount there is none, and its result says so.
+   */
+  function outputFiles(): ExecutionEnv | undefined {
+    const mount = scratchMount(config.mounts);
+    if (!mount) return undefined;
+    const failed = (path: string, error: unknown) => ({ ok: false as const, error: new FileError("unknown", errorText(error), path) });
+    const files: Pick<ExecutionEnv, "createTempDir" | "writeFile"> = {
+      createTempDir: async prefix => ({ ok: true, value: `${mount.path}/tool-results/${prefix ?? ""}${randomUUID().slice(0, 8)}` }),
+      writeFile: (path, content) => io.fs("writeFile", typeof content === "string" ? { path, text: content } : { path, base64: Buffer.from(content).toString("base64") })
+        .then(() => ({ ok: true as const, value: undefined }), error => failed(path, error)),
+    };
+    return files as ExecutionEnv;
+  }
+
+  /** Code mode's section for these tools, as Pi renders it from the tools scripts can call; null without code mode or such tools. */
+  function codemodeText(tools: HostTool[]): string | null {
+    const callable = tools.filter(tool => tool.callers?.includes("tools") !== false)
+      .map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters, structuredOutputSchema: tool.outputSchema }));
+    const text = codemodeSection?.render({ agent: { callable } } as never, BACKGROUND_CONTEXT) as string | undefined;
+    return text === undefined ? null : codemodeSection!.tag === false ? text : `<${CODEMODE}>\n${text}\n</${CODEMODE}>`;
   }
 
   /** A referenced file's bytes as the request carries them: an image scaled down if it must be (`fitImage`), or why it is omitted. */
@@ -678,7 +790,7 @@ export function createAgentHost(hostIO: HostIO) {
    * in the legacy format (never imported, or rolled back to the legacy engine by an earlier release) is refused,
    * loudly: this release imports nothing, and starting it empty would lose its history.
    */
-  async function open(storage: PiStorage, tools: Tool[]): Promise<HostJournal> {
+  async function open(storage: PiStorage, tools: HostTool[]): Promise<HostJournal> {
     // A host transcript no release retired holds history before the journal that only its records have.
     if ((await JournalHistory.snapshotBase(storage))?.enabled) throw legacyFormatRefused(config.id, config.tenant, "host_transcript");
     const opened = await HostJournal.open(storage);
@@ -686,7 +798,7 @@ export function createAgentHost(hostIO: HostIO) {
     const legacy = await storage.conversation(SESSION_CONVERSATION_ID, BACKGROUND_CONTEXT) ? "not_on_pi"
       : await io.legacyLog.empty() ? undefined : "legacy_log";
     if (legacy) throw legacyFormatRefused(config.id, config.tenant, legacy);
-    const leadingSystem = leadingSystemMessage(config, tools);
+    const leadingSystem = leading(tools);
     // Pi's context starts with the leading system message: before the history it was created with (`initialMessages`), or
     // with that history's summary, at its cut.
     let messages: AgentMessage[] = [], head: AgentMessage[] = [leadingSystem], headAt = 0;
@@ -729,9 +841,9 @@ export function createAgentHost(hostIO: HostIO) {
       // Check before even opening the host journal, and before either Pi reload path can scan its range.
       await requireContextSize();
       // Tools first: a new agent's Pi context starts with the leading system message they make.
-      jsExec = codeTool();
-      const tools = [...config.codeMode === false ? [] : [jsExec], ...agentTools(config.tools)];
-      journal = await open(piStorage, modelTools(tools));
+      codemode = codeMode();
+      const tools = agentTools(config.tools);
+      journal = await open(piStorage, tools);
       let recovered = false;
       let resume: { continue: true } | { finished: { messages: number; error: string | null; reply?: string; stopped?: string; output?: unknown } } | undefined;
       if (journal.active && journal.awaiting.length) {
@@ -817,7 +929,7 @@ export function createAgentHost(hostIO: HostIO) {
           tools, messages: [],
           thinkingLevel: config.thinkingLevel ?? "off",
         },
-        // SQL returns only two scalars, so every request checks: one step's tool results (up to ~8 MiB a js_exec)
+        // SQL returns only two scalars, so every request checks: one step's tool results (up to ~8 MiB a script's)
         // can't carry the range far past the bound. It covers hidden range entries too, without reserializing the context.
         prepareRequest: async () => {
           const message = await contextError();
@@ -882,7 +994,9 @@ export function createAgentHost(hostIO: HostIO) {
       await requireContextSize();
       agent = await DurableAgent.create({ ...agentOptions, durable: {
         storage: piStorage, conversationId: SESSION_CONVERSATION_ID, cursor: journal.history.latest, written: () => journal.written,
-        leading: () => leading(agent ? undefined : modelTools(tools)),
+        leading: () => leading(agent ? undefined : tools),
+        extensions: codemode ? [codemode] : [],
+        env: outputFiles,
         onContextRequest: (held, sent) => contextMetrics.request(held, sent),
         // Pi's journal failed a write or read: what the host holds is no longer known to be stored, as when one of its own
         // writes fails. The run ends with PERSISTENCE_FAILED and the session gives the agent up.
@@ -966,7 +1080,10 @@ export function createAgentHost(hostIO: HostIO) {
       if (params.dataCollection !== undefined) config.dataCollection = params.dataCollection;
       if (params.language !== undefined) config.language = params.language;
       if (params.tools !== undefined) config.tools = params.tools.map(normalizeTool);
-      if (params.tools !== undefined || params.codeMode !== undefined) agent.state.tools = [...config.codeMode === false ? [] : [jsExec!], ...agentTools(config.tools)];
+      if (params.tools !== undefined || params.codeMode !== undefined) {
+        agent.useExtensions((codemode = codeMode()) ? [codemode] : []);
+        agent.state.tools = agentTools(config.tools);
+      }
       if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.language !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.model !== undefined) await declareConfiguration();
       return { configured: true };
     }
@@ -1025,8 +1142,7 @@ export function createAgentHost(hostIO: HostIO) {
       }
       if (method === "prompt") await useOutput(params.output?.schema);
       if (method === "execute") {
-        const { returned: _returned, cpuMs: _cpuMs, ...result } = await runCode({ ...codeRequest(params), bridge: bridge(active.signal), signal: active.signal, onEvent: event => io.emit(event) });
-        return result;
+        return await execute(params, active.signal);
       }
       if (method === "continue" && journal.awaiting.length) throw new Error("The agent is waiting for input: answer it, or send a new prompt");
       await journal.setActive(true);
@@ -1149,7 +1265,7 @@ export function createAgentHost(hostIO: HostIO) {
       io.emit({ type: "tool_execution_start", toolCallId: call.toolCallId, toolName: toolCall?.name ?? "", args: toolCall?.arguments ?? {} });
       let result = call.result;
       if (!result) {
-        const tool = agent!.state.tools.find(entry => entry.name === toolCall?.name && entry.name !== "js_exec");
+        const tool = agent!.state.tools.find(entry => entry.name === toolCall?.name);
         try {
           if (!tool || !toolCall) throw new Error(`${toolCall?.name ?? "This tool"} is no longer available to this agent`);
           // The arguments as Pi gave them the first time: the approval is bound to them (inputs.ts).

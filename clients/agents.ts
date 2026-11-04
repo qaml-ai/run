@@ -50,7 +50,7 @@ export interface AgentConfig {
   /** false: no file tools (read, write, edit, ls, glob, grep), for an application with file tools of its own. */
   fileTools?: boolean;
   /**
-   * false: no js_exec (code mode). The model calls every tool directly, and the prompt carries only the runtime text its
+   * false: no codemode (code mode). The model calls every tool directly, and the prompt carries only the runtime text its
    * tools need: with fileTools: false and no tools, just your instructions and a short note on who sent each message.
    * For a tool-less agent (a classifier, a one-line answerer). Best set when the agent is made.
    */
@@ -177,7 +177,7 @@ export interface Run<T = unknown> {
    * effect matters. `not_connected`: no process served the agent's tools, so the call did not run.
    */
   toolErrors: ToolError[];
-  /** The tool calls it made (the first 100), those from js_exec's code included: ids and `ok` or an error `code`; arguments and results are in history. */
+  /** The tool calls it made (the first 100), those from codemode's code included: ids and `ok` or an error `code`; arguments and results are in history. */
   toolCalls: RunToolCall[];
   /** Tool sources (MCP servers, OpenAPI specs) that could not be reached, so the model went without their tools. */
   sourceErrors: { kind: string; source: string; message: string }[];
@@ -389,7 +389,7 @@ export class Agents {
 
 /** A stateless run's configuration (an agent's, but for tools that need a connected process) and its input. */
 export interface StatelessRunConfig<S extends OutputSchema = never> extends Pick<AgentConfig, "model" | "instructions" | "instructionsAppend" | "definition" | "delegate" | "workflow" | "mcpServers" | "thinkingLevel" | "maxOutputTokens" | "temperature" | "dataCollection" | "language" | "subject" | "context" | "workspaceId" | "keyScope" | "bucket" | "runLimits" | "modelHeaders" | "mounts" | "name" | "fileTools"> {
-  /** js_exec. Default: on for a run with tools (builtins, MCP servers, a definition, files), off for a tool-less run. */
+  /** codemode. Default: on for a run with tools (builtins, MCP servers, a definition, files), off for a tool-less run. */
   codeMode?: boolean;
   /** What the run is asked. It may be empty when `files` has audio, whose transcript is then the input. */
   input: string;

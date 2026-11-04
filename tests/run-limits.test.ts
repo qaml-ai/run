@@ -7,7 +7,7 @@ const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const CAPPED = "capped-operator-token-at-least-24-chars";
 
 // The model never stops calling tools: only a limit ends its turn.
-const looping = (_body: unknown, index: number) => ({ ...toolCall("js_exec", { code: `return ${index}` }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 1 } });
+const looping = (_body: unknown, index: number) => ({ ...toolCall("codemode", { code: `return ${index}` }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 1 } });
 
 test("a run stops at its agent's limit of model responses with stopped turn_limit, and the next message continues", async t => {
   const r = await runtime(t, looping);
@@ -111,7 +111,7 @@ test("a definition's run limits reach its agents, and an agent's own stay when t
 test("a run stops at its time limit before its next model request", async t => {
   // Its first step alone (the tool call) outlasts the 1 s limit, however fast the runner: the check before the second
   // model request stops it, so there is exactly one response. The clock starts when the run begins, agent start included.
-  const r = await runtime(t, (_body, index) => ({ ...toolCall("js_exec", { code: "const start = Date.now(); while (Date.now() - start < 1500) {} return 1" }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 1 } }));
+  const r = await runtime(t, (_body, index) => ({ ...toolCall("codemode", { code: "const start = Date.now(); while (Date.now() - start < 1500) {} return 1" }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 1 } }));
   const { id } = (await r.call("/v1/agents", { body: { runLimits: { maxSeconds: 1 } } })).json;
   const run = await r.prompt(id, "go");
   assert.equal(run.outcome.result.stopped, "turn_limit");

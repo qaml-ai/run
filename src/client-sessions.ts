@@ -153,7 +153,7 @@ export class ClientSessions {
   readonly heartbeat: ReturnType<typeof setInterval>;
   /** Agents' history in pages. */
   readonly historyReader: AgentHistory;
-  /** Turns to run js_exec on this node, shared fairly among tenants. */
+  /** Turns to run code on this node, shared fairly among tenants. */
   readonly codeGate: CodeGate;
   private readonly eventContext: events.EventContext;
   private readonly spendContext: spend.SpendContext;
@@ -870,7 +870,6 @@ export class ClientSessions {
           return tracked;
         },
         fs: (op, args, signal) => tools.fsCall(this.toolsContext, session, op, args, signal),
-        search: async query => { await this.leased(session); return tools.searchTools(this.toolsContext, session, query); },
         lease: () => this.leased(session),
         background: event => this.backgroundEvent(session, event),
         committing: entry => spend.entryEffect(this.spendContext, session, entry),
@@ -2412,7 +2411,7 @@ export class ClientSessions {
 
   /**
    * Wait until this node may act for the agent: its lease is fresh (`Ownership.whenFresh`), so no peer can have taken
-   * the agent over. Before each model request, tool call and js_exec. Rejects once the node lost the agent.
+   * the agent over. Before each model request, tool call and script. Rejects once the node lost the agent.
    */
   private async leased(session: Session, signal?: AbortSignal) {
     const ownership = this.options.ownership;

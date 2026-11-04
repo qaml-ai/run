@@ -58,12 +58,12 @@ async function mcpServer(t: T, token = "s3cret") {
   };
 }
 
-test("an MCP server's tools reach the model and js_exec; its credentials are sealed and go only to it", async t => {
+test("an MCP server's tools reach the model and codemode; its credentials are sealed and go only to it", async t => {
   const mcp = await mcpServer(t);
   const r = await runtime(t, (_body, index) => [
     toolCall("kb__echo", { text: "hi" }),
     // Code gets the tool's data, not the MCP envelope: here its one text block.
-    toolCall("js_exec", { code: "const r = await tools.kb__echo({ text: 'from code' }); return r.toUpperCase();" }),
+    toolCall("codemode", { code: "const r = await tools.kb__echo({ text: 'from code' }); return r.toUpperCase();" }),
     toolCall("kb__picture", {}),
     toolCall("kb__fail", {}),
     toolCall("kb__echo", { words: "no text" }),
@@ -81,7 +81,7 @@ test("an MCP server's tools reach the model and js_exec; its credentials are sea
   assert.equal(outcome.outcome.result.reply, "done");
   const offered = r.model.bodies[0].tools.map((tool: any) => tool.function.name);
   assert.deepEqual(offered.filter((name: string) => name.startsWith("kb__")).sort(), ["kb__echo", "kb__fail", "kb__picture"]);
-  assert.ok(offered.includes("js_exec"));
+  assert.ok(offered.includes("codemode"));
   assert.match(toolResults(r.model.bodies[1]).at(-1), /echo: hi/);
   assert.match(toolResults(r.model.bodies[2]).at(-1), /ECHO: FROM CODE/);
   assert.match(toolResults(r.model.bodies[3]).at(-1), /a dot/);
@@ -108,8 +108,8 @@ test("tool lists refresh when the server says they changed, and edits keep seale
   assert.deepEqual(tools(0), ["kb__echo", "kb__fail", "kb__hidden_tool", "kb__picture"], "a server of a few tools is declared to the model as well, by default");
   const codemode = (await r.call(`/v1/definitions/${definition.id}`, { method: "PATCH", body: { mcpServers: [{ name: "kb", url: mcp.url, exposure: "codemode" }] } })).json;
   await r.prompt((await r.call("/v1/agents", { body: { definition: codemode.id, name: "codemode" } })).json.id, "hi");
-  assert.deepEqual(tools(1), [], "codemode tools are reached through js_exec, not declared to the model");
-  const inCode = r.model.bodies[1].tools.find((tool: any) => tool.function.name === "js_exec");
+  assert.deepEqual(tools(1), [], "codemode tools are reached through codemode, not declared to the model");
+  const inCode = r.model.bodies[1].tools.find((tool: any) => tool.function.name === "codemode");
   assert.ok(inCode);
 
   mcp.addTool();
@@ -200,7 +200,7 @@ test("an agent shows every tool source and what its model gets, connecting to MC
   sources = byName((await r.call(`/v1/agents/${agent}`)).json.toolSources);
   const offered = r.model.bodies[0].tools.map((tool: any) => tool.function.name);
   const direct = Object.values(sources).flatMap((source: any) => source.tools).filter((tool: any) => !tool.excluded && tool.exposure !== "codemode").map((tool: any) => tool.name);
-  assert.deepEqual(offered.filter((name: string) => name !== "js_exec").sort(), direct.sort());
+  assert.deepEqual(offered.filter((name: string) => name !== "codemode").sort(), direct.sort());
 });
 
 test("MCP servers must be on public addresses, checked when saved and again when connecting", async t => {
@@ -267,11 +267,11 @@ async function progressServer(t: T, delayMs = 0, steps: (readonly [number, strin
   return { url: `${url}/mcp`, metas };
 }
 
-test("tool servers get the model's call id, js_exec's too, and the actor; their progress reaches the event stream", async t => {
+test("tool servers get the model's call id, codemode's too, and the actor; their progress reaches the event stream", async t => {
   const server = await progressServer(t);
   const r = await runtime(t, (_body, index) => [
     toolCall("camel__deploy", {}, "call_direct"),
-    toolCall("js_exec", { code: "return await tools.camel__deploy({});" }, "call_code"),
+    toolCall("codemode", { code: "return await tools.camel__deploy({});" }, "call_code"),
   ][index] ?? { role: "assistant", content: "done" }, LOCAL);
   const definition = (await r.call("/v1/definitions", { body: { name: "Camel", mcpServers: [{ name: "camel", url: server.url, exposure: "both" }] } })).json;
   const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json.id;
@@ -282,15 +282,15 @@ test("tool servers get the model's call id, js_exec's too, and the actor; their 
   const ids = (meta: any) => ({ toolCallId: meta["agent-runtime/toolCallId"], innerCallId: meta["agent-runtime/innerCallId"], actor: meta["agent-runtime/actor"], progress: meta.progressToken !== undefined });
   assert.deepEqual(server.metas.map(ids), [
     { toolCallId: "call_direct", innerCallId: undefined, actor: "u_7", progress: true },
-    { toolCallId: "call_code", innerCallId: "call_code:1", actor: "u_7", progress: true },
+    { toolCallId: "call_code", innerCallId: "c1", actor: "u_7", progress: true },
   ]);
   const updates = (await r.call(`/v1/agents/${agent}`)).json.events.map((entry: any) => entry.data)
     .filter((data: any) => data.event?.type === "tool_execution_update" && data.event.partialResult.details?.type === "progress").map((data: any) => data.event);
   assert.deepEqual(updates.map((event: any) => [event.toolCallId, event.toolName, event.partialResult.content[0].text, event.partialResult.details]), [
     ["call_direct", "camel__deploy", "Building", { type: "progress", tool: "camel__deploy", progress: 1, total: 3, message: "Building" }],
     ["call_direct", "camel__deploy", "Uploading", { type: "progress", tool: "camel__deploy", progress: 2, total: 3, message: "Uploading" }],
-    ["call_code", "js_exec", "Building", { type: "progress", tool: "camel__deploy", innerCallId: "call_code:1", progress: 1, total: 3, message: "Building" }],
-    ["call_code", "js_exec", "Uploading", { type: "progress", tool: "camel__deploy", innerCallId: "call_code:1", progress: 2, total: 3, message: "Uploading" }],
+    ["call_code", "codemode", "Building", { type: "progress", tool: "camel__deploy", innerCallId: "c1", progress: 1, total: 3, message: "Building" }],
+    ["call_code", "codemode", "Uploading", { type: "progress", tool: "camel__deploy", innerCallId: "c1", progress: 2, total: 3, message: "Uploading" }],
   ]);
 });
 

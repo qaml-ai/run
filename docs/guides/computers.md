@@ -1,7 +1,7 @@
 # Computers
 
 Connect an agent to a remote Linux computer or browser from **Computers** in the
-console. The agent calls its computer tools directly, or from `js_exec`, just as
+console. The agent calls its computer tools directly, or from `codemode`, just as
 it calls web search. You do not need to host an MCP server for a managed provider.
 
 A computer is attached to one agent. Its files and processes survive between
@@ -136,7 +136,7 @@ The shared file tools also reach the computer through `/computer`. Browserbase a
 After `computer_start`, `/computer` mounts the computer's home directory (`~`),
 read-write. For example, `/computer/project/main.py` is `~/project/main.py` in
 `computer_exec`. It is not the computer's `/`. `read`, `write`, `edit`, `ls`,
-`glob`, `grep` and the `fs` helpers use the same paths as other mounts. A stopped
+`glob` and `grep` use the same paths as other mounts. A stopped
 or expired computer has no mount; calls under `/computer` say to call
 `computer_start`. Browser-only connections do not have a filesystem mount.
 

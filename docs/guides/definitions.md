@@ -30,11 +30,11 @@ servers of its own, but without credentials (identity tokens or none); see
 from a definition has only its definition's sources.
 
 Each MCP server and OpenAPI source takes the deprecated `exposure` setting:
-`"codemode"` allows calls only from `js_exec`; `"both"` allows code and direct
+`"codemode"` allows calls only from `codemode`; `"both"` allows code and direct
 model calls subject to the direct-tool budget; `"direct"` allows both and always
 declares the tools to the model. Left out, a source of up to 10 tools is `both`
 and a larger one `codemode`. A tool's own setting takes precedence over its
-source's. See [Tools in js_exec](tools.md#tools-in-js_exec).
+source's. See [Tools in codemode](tools.md#tools-in-codemode).
 
 A `description` (1–1,000 characters) says what its agents are for; models see it
 as the description of each agent's [MCP tool](mcp-server.md), and as what it is

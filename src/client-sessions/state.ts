@@ -23,7 +23,6 @@ import type { Sources, ToolSources } from "../tool-sources.ts";
 import type { AttachedServer } from "../attached.ts";
 import type { AgentIdentity, TokenClaims } from "../identity.ts";
 import type { RunToolCall, ToolError, ToolServer } from "../tool-servers.ts";
-import type { Reranker } from "../tool-search.ts";
 import type { CodeLimits } from "../codemode.ts";
 import type { FileLinks, FileRef } from "../files.ts";
 import type { Transcriber } from "../transcription.ts";
@@ -173,8 +172,6 @@ export type Session = {
   servers?: ToolServer[];
   /** The mounts the running agent started with, which its prompt describes: when they change, its next run starts it again. */
   hosted?: Mount[];
-  /** The tools its code reaches (not direct-only), which `tools.search` ranks. */
-  searchable?: ToolDefinition[];
   /** Runs (prompt, execute, continue) execute one at a time, in the order accepted. */
   runs: Promise<void>;
   /** Runs that began on a lost node, queued here to resume their turn. */
@@ -333,9 +330,9 @@ export interface ClientSessionOptions {
    * summaries count) and seconds from when it began; Infinity for no limit. Default 1,000 responses and 2 hours (`RUN_LIMITS`).
    */
   runLimitsFor?: (tenant: string) => Promise<Required<Pick<RunLimits, "maxResponses" | "maxSeconds">>>;
-  /** A tenant's js_exec limits: CPU per execution, the longest timeoutMs, and executions at once on this node. Default `CODE_LIMITS`. */
+  /** A tenant's code limits: CPU per script, the longest timeoutMs, and executions at once on this node. Default `CODE_LIMITS`. */
   codeLimitsFor?: (tenant: string) => Promise<CodeLimits>;
-  /** js_exec executions this node runs at once for tenants with a concurrency limit, together (AGENT_CODE_WORKERS_MAX, default 16). */
+  /** Scripts this node runs at once for tenants with a concurrency limit, together (AGENT_CODE_WORKERS_MAX, default 16). */
   codeCapacity?: number;
   /** Why a tenant may not start any run, code executions included (spent prepaid credit). Checked when a run is accepted and when it starts. */
   creditLimit?: (tenant: string) => Promise<Refusal | undefined>;
@@ -377,8 +374,6 @@ export interface ClientSessionOptions {
   definitionFor?: (tenant: string, id: string) => Promise<DefinitionConfig>;
   /** Tools the runtime calls itself (MCP servers), from the agent's definition. */
   sources?: ToolSources;
-  /** Stages that order `tools.search` results by meaning, fused with keyword ranking (AGENT_TOOL_SEARCH). */
-  rerankers?: Reranker[];
   /** Human input (questions, approvals, setup steps) that suspended turns wait on; without it, tools cannot ask. */
   inputs?: Inputs;
   /** Submit a request to an agent on whichever node serves it (resuming a suspension that expired). */

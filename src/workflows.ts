@@ -13,7 +13,7 @@ import type { ToolBridge } from "./protocol.ts";
  * `delegate` builtin does, and everything they answer stays in the script's variables. Only the script's return value
  * reaches the caller. See docs/guides/workflows.md.
  *
- * The script runs in the runtime's sandbox (`v8-exec`, as js_exec does): a bare V8 isolate with no Node globals, no
+ * The script runs in the runtime's sandbox (`v8-exec`, as code mode does): a bare V8 isolate with no Node globals, no
  * filesystem and no network, killed at its deadline, on cancel, or when the session ends. Its `agent()` calls cross back
  * through one host tool, and the host starts and awaits the child agents under the session's own delegation, budget and
  * depth rules.

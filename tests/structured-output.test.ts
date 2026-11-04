@@ -141,7 +141,7 @@ test("a structured run forces final_output from the first request when it is the
     if (body.tool_choice) return toolCall("final_output", { sentiment: "positive", score: 1 });
     return { role: "assistant", content: "Positive." };
   });
-  // No js_exec, no file tools, no tools of any source: final_output is the only tool.
+  // No codemode, no file tools, no tools of any source: final_output is the only tool.
   const bare = (await r.call("/v1/agents", { body: { codeMode: false, fileTools: false, systemPrompt: "Reply with one line of text." } })).json.id as string;
   const record = await r.prompt(bare, "I love it", undefined, { output: { schema: SCHEMA } });
   assert.deepEqual(record.outcome.result.output, { sentiment: "positive", score: 1 }, JSON.stringify(record));
@@ -153,12 +153,12 @@ test("a structured run forces final_output from the first request when it is the
   assert.equal(r.model.bodies[1].tool_choice, undefined);
   assert.deepEqual(declared(r.model.bodies[1]), []);
 
-  // With js_exec too: the first request is free to use it; once the model answers in text, the reminder forces the tool.
+  // With codemode too: the first request is free to use it; once the model answers in text, the reminder forces the tool.
   const coded = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const reminded = await r.prompt(coded, "I love it", undefined, { output: { schema: SCHEMA } });
   assert.deepEqual(reminded.outcome.result.output, { sentiment: "positive", score: 1 });
   assert.equal(r.model.bodies[2].tool_choice, undefined);
-  assert.ok(declared(r.model.bodies[2]).includes("js_exec"));
+  assert.ok(declared(r.model.bodies[2]).includes("codemode"));
   assert.deepEqual(r.model.bodies[3].tool_choice, forced);
   assert.match(systemText(r.model.bodies[3]), /structured_output_reminder/);
 });
@@ -182,7 +182,7 @@ test("a provider that refuses a forced tool_choice is asked again without it; fo
   assert.deepEqual(r2.model.bodies.map(body => !!body.tool_choice), [true, true, true, false, false]);
 });
 
-test("codeMode: false leaves out js_exec and the runtime's code rules; with no tools at all, the prompt is the instructions and the sender note", async t => {
+test("codeMode: false leaves out codemode and the runtime's code rules; with no tools at all, the prompt is the instructions and the sender note", async t => {
   const r = await runtime(t, () => ({ role: "assistant", content: "yes" }));
   const instructions = "Answer yes or no.";
   const made = async (body: object) => (await r.call("/v1/agents", { body: { systemPrompt: instructions, ...body } })).json.id as string;
@@ -192,25 +192,25 @@ test("codeMode: false leaves out js_exec and the runtime's code rules; with no t
   for (const id of [bare, direct, coded]) await r.prompt(id, "Is water wet?");
   const [bareBody, directBody, codedBody] = r.model.bodies;
   assert.deepEqual(declared(bareBody), []);
-  assert.doesNotMatch(systemText(bareBody), /js_exec|Your environment|present_file|Tools:/);
+  assert.doesNotMatch(systemText(bareBody), /codemode|Your environment|present_file|Tools:/);
   assert.match(systemText(bareBody), /Answer yes or no\./);
   assert.match(systemText(bareBody), /Message context:/);
   // File tools, declared directly; the rules for tools and files, nothing about code.
   assert.ok(declared(directBody).includes("present_file") && declared(directBody).includes("read"), declared(directBody).join());
-  assert.ok(!declared(directBody).includes("js_exec"));
-  assert.doesNotMatch(systemText(directBody), /js_exec/);
+  assert.ok(!declared(directBody).includes("codemode"));
+  assert.doesNotMatch(systemText(directBody), /codemode/);
   assert.match(systemText(directBody), /Call your tools directly/);
-  assert.ok(declared(codedBody).includes("js_exec"));
+  assert.ok(declared(codedBody).includes("codemode"));
   // What each costs: the request's system text and tools, in characters (about four to a token).
   const size = (body: any) => systemText(body).length + JSON.stringify(body.tools ?? []).length;
   assert.ok(size(bareBody) < 1_500, `bare: ${size(bareBody)}`);
   assert.ok(size(codedBody) > 4 * size(bareBody), `coded ${size(codedBody)} vs bare ${size(bareBody)}`);
   const detail = (await r.call(`/v1/agents/${bare}`)).json;
   assert.equal(detail.codeMode, false);
-  // An upsert can turn it back on: js_exec returns.
+  // An upsert can turn it back on: codemode returns.
   const keyed = await r.call("/v1/agents", { body: { codeMode: false }, headers: { "Idempotency-Key": "coded-later" } });
   const changed = await r.call("/v1/agents", { body: {}, headers: { "Idempotency-Key": "coded-later" } });
   assert.notEqual(changed.json.configHash, keyed.json.configHash);
   await r.prompt(keyed.json.id, "Is it?");
-  assert.ok(declared(r.model.bodies.at(-1)).includes("js_exec"));
+  assert.ok(declared(r.model.bodies.at(-1)).includes("codemode"));
 });

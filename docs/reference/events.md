@@ -226,8 +226,9 @@ Messages (`message` fields, and history) are one of:
 | `system` | `content`: instructions the runtime added (a changed configuration, a compaction summary) |
 
 Tool results keep their model-visible `content`. Direct JSON results do not repeat that value in `details`.
-Other direct-tool `details` are kept up to 16 KiB of JSON; js_exec details up to 32 KiB.
-Larger values become `{ truncated: true, path? }`. When a writable workspace is available and the JSON fits the
+Other direct-tool `details` are kept up to 16 KiB of JSON. Code-mode results
+use Pi's output format and token budget (see [Tools](../guides/tools.md#tools-from-code-codemode)).
+Larger values become `{ truncated: true, path? }`. When file tools and a writable workspace are available and the JSON fits the
 700 KiB file-write limit, `path` names the full value in `tool-results/<call>.json`. Otherwise the value is dropped
 and `path` is absent. Drops past 700 KiB log `tool_details_dropped` with only the agent, tool and byte count.
 Input-required markers and structured `final_output` results are preserved.
@@ -240,10 +241,8 @@ User entries keep content in both the original and model message. Entries that h
 | Type | Fields | When |
 | --- | --- | --- |
 | `tool_execution_start` | `toolCallId`, `toolName`, `args` | a tool call starts |
-| `tool_execution_update` | `toolCallId`, `toolName`, `args`, `partialResult` | progress. A tool's own progress (MCP `notifications/progress`, `context.progress()`) arrives as `partialResult: {content: [{type: "text", text}], details: {type: "progress", tool, innerCallId?, progress, total?, message?}}`, at most every 250 ms per call. A call from js_exec code reports on js_exec's `toolCallId`, with `innerCallId` |
+| `tool_execution_update` | `toolCallId`, `toolName`, `args`, `partialResult` | progress. A tool's own progress (MCP `notifications/progress`, `context.progress()`) arrives as `partialResult: {content: [{type: "text", text}], details: {type: "progress", tool, innerCallId?, progress, total?, message?}}`, at most every 250 ms per call. A call from codemode code reports on codemode's `toolCallId`, with `toolName: "codemode"` and `innerCallId` |
 | `tool_execution_end` | `toolCallId`, `toolName`, `result` (`{content, details}`), `isError` | a tool call finished. A call that waits on a person ends first with a placeholder (`result.details.inputRequired`); when its turn resumes (the input answered, declined or closed) it gets its own `tool_execution_start` and `tool_execution_end` again, in the resume's run, before its `toolResult` message |
-| `codemode` *internal* | `toolCallId`, `event: {type: "output", text}` | js_exec's code printed `text` (`console.log`, `text()`), as it runs |
-| `output` | `text` | an `execute` request's code printed `text` (not a model run: no `codemode` wrapper) |
 | `file_presented` | `file` (`{type: "file", path, volume, version, size, contentType, caption?, …}`), `url?`, `expiresAt?` | the agent presented a file to the user (`present_file`): `url` is a signed download link |
 
 ### People
@@ -298,7 +297,7 @@ A prompt's `response.outcome.result` (and `GET …/requests/:id`'s `outcome`):
 | `files` | files the run wrote (at most 100): `{path, version, size, contentType, …}` |
 | `presented` | files the run presented to the user (at most 20) |
 | `toolErrors` | tool calls that did not complete (the model was told): `{tool, toolCallId?, innerCallId?, code, outcomeUnknown?, message}`; `code` is `timeout`, `connection_lost`, `not_connected`, `source_unavailable` or `failed`. See [Errors](errors.md#tool-errors) |
-| `toolCalls` | every tool call the run made, in order, the first 100: `{tool, toolCallId?, innerCallId?, ok, code?, agentId?}`; `agentId` is the sub-agent a `delegate` call ran. A call from `js_exec`'s code has js_exec's `toolCallId` and its own `innerCallId`; `js_exec` itself is not listed. `code`, when `ok` is false: a `toolErrors` code, `tool_error` (the tool answered with an error), `input_required` (it waits on a person; the run that resumes it lists it again) or `aborted`. Arguments and results are left out: read them from history (`GET /v1/agents/:id/history`) by `toolCallId` |
+| `toolCalls` | every tool call the run made, in order, the first 100: `{tool, toolCallId?, innerCallId?, ok, code?, agentId?}`; `agentId` is the sub-agent a `delegate` call ran. A call from `codemode`'s code has codemode's `toolCallId` and its own `innerCallId` (`c1`, `c2`, …); `codemode` itself is not listed. `code`, when `ok` is false: a `toolErrors` code, `tool_error` (the tool answered with an error), `input_required` (it waits on a person; the run that resumes it lists it again) or `aborted`. Arguments and results are left out: read them from history (`GET /v1/agents/:id/history`) by `toolCallId` |
 | `sourceErrors` | tool sources (MCP servers, OpenAPI specs) that could not be listed, so the model went without their tools: `{kind, source, message}` |
 | `usage` | what its model responses used: `{responses, input, output, cacheRead, cacheWrite, costUsd}`, and `subagentCostUsd` when its sub-agents spent something (theirs, apart from `costUsd`), `imageCostUsd` when its `generate_image` calls did, `decisionCostUsd` when its `decide` calls did |
 
@@ -355,3 +354,8 @@ the script makes. See [Workflows](../guides/workflows.md).
 | `workflow_start` | `toolCallId` | the script began |
 | `workflow_progress` | `toolCallId`, `phase?`, `log?` | a `phase(title)` began, or a `log(message)` line |
 | `workflow_end` | `toolCallId`, `status` (`completed`, `failed`, `canceled`), `agents`, `error?` | the script ended, with how many agent calls it made |
+
+A `codemode` call emits ordinary `tool_execution_start` and `tool_execution_end`
+events. Calls made inside its script emit no separate tool execution events.
+Their MCP progress arrives as `tool_execution_update` on the parent call.
+There is no `codemode` output-stream event.

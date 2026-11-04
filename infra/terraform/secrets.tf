@@ -13,7 +13,6 @@ locals {
     github-oauth = "GitHub OAuth app for agent runtime console sign-in"
     google-oauth = "Google OAuth client for agent runtime console sign-in. Set with infra/google-oauth.sh."
     stripe       = "Stripe secret key and webhook signing secret for agent runtime credit purchases. Set with infra/stripe.sh."
-    tool-search  = "OpenRouter API key for tools.search ranking by meaning (embeddings and Jev). Set with infra/tool-search.sh."
     # Journey events (journey.tf): each stays off until infra/journey.sh stores its value. Two secrets, never one
     # value: whoever can ask the store for reports must not be able to sign an event or an erasure.
     journey        = "Standard Webhooks secret (whsec_...) that signs journey events to the operator's analytics store. Set with infra/journey.sh."

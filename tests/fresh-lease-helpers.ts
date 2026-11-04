@@ -16,8 +16,8 @@ export type Served = { node: string; prompt: string; started: number; ended?: nu
 /**
  * An OpenAI-compatible model that logs each call with the node that made it (each node has its own key for the
  * tenant, see `env`), when it started, and when it ended (`cut` when the caller closed it first). The prompt "stream"
- * answers slowly, a chunk every 200 ms for 40 s, the first time; "loop" asks for js_exec looking up `lookups` keys one
- * by one (250 ms each), within js_exec's 60 s: a test that pauses effects mid-loop counts the pause against that too.
+ * answers slowly, a chunk every 200 ms for 40 s, the first time; "loop" asks for codemode looking up `lookups` keys one
+ * by one (250 ms each), within codemode's 60 s: a test that pauses effects mid-loop counts the pause against that too.
  */
 export async function servingModel(t: { after(fn: () => Promise<void>): void }, options: { lookups?: number } = {}) {
   const lookups = options.lookups ?? 160;
@@ -45,7 +45,7 @@ export async function servingModel(t: { after(fn: () => Promise<void>): void }, 
     } else if (kind === "loop" && !finished && !answered.has("loop")) {
       answered.add("loop");
       const code = `for (let i = 0; i < ${lookups}; i++) await tools.lookup({ key: String(i) }); return 'looped';`;
-      chunk({ role: "assistant", tool_calls: [{ index: 0, id: "call_loop", type: "function", function: { name: "js_exec", arguments: JSON.stringify({ code, timeoutMs: 60_000 }) } }] });
+      chunk({ role: "assistant", tool_calls: [{ index: 0, id: "call_loop", type: "function", function: { name: "codemode", arguments: JSON.stringify({ code: '// @options: {"timeout_ms": 60000}\n' + code }) } }] });
       chunk({}, "tool_calls");
       return res.end("data: [DONE]\n\n");
     } else chunk({ role: "assistant", content: `answered by ${node}` });
@@ -73,7 +73,7 @@ export function slowLookup(calls: { key: string; at: number }[]) {
   };
 }
 
-/** Two agents on `url`: one in a js_exec loop of tool calls, one waiting on a slow model stream. */
+/** Two agents on `url`: one in a codemode loop of tool calls, one waiting on a slow model stream. */
 export async function busyAgents(t: { after(fn: () => Promise<void> | void): void }, url: string, calls: { key: string; at: number }[], served: Served[]) {
   const runtime = new AgentRuntime({ url, apiKey: token });
   const looping = await runtime.createAgent({ tools: slowLookup(calls), idempotencyKey: "looping" });

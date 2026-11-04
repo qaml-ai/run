@@ -81,7 +81,8 @@ import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from
 import { cgroupMemory } from "./process-memory.ts";
 import { decisionLoadLine, recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
 import { runtimeSecrets, managedDiscordSecrets } from "./secrets.ts";
-import { checkSandbox, type CodeExecutor } from "./codemode.ts";
+import { checkSandbox } from "./codemode.ts";
+import { PiV8Sandbox, type CodeSandboxes } from "./codemode-pi-launcher.ts";
 import { V8Exec } from "./v8-exec.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
 import { openaiTranscription, Transcriber } from "./transcription.ts";
@@ -100,7 +101,6 @@ import { FileUrls } from "./file-arguments.ts";
 import { builtinsInput, builtinWarnings } from "./builtins.ts";
 import { delegateSettings } from "./multi-agent.ts";
 import { workflowSettings } from "./workflows.ts";
-import { rerankersFromEnv } from "./tool-search.ts";
 import { Inputs, inputView } from "./inputs.ts";
 import { BrowserTokens } from "./browser-tokens.ts";
 import { publicOrigins } from "./origins.ts";
@@ -141,7 +141,7 @@ export type NodeDeps = {
   db: Db;
   /** Listen for notifications on each channel of `handlers` over a connection of its own (listenFromEnvironment). */
   listen: (handlers: Record<string, (payload: string) => void>) => Promise<{ close(): Promise<void> }>;
-  /** Where js_exec and file parsing run (checkSandbox), reported in the "listening" line. */
+  /** Where code and file parsing run (checkSandbox), reported in the "listening" line. */
   sandbox: Record<string, unknown>;
   /** This task's private address on ECS, where peers reach it. */
   address?: string;
@@ -164,8 +164,8 @@ export type NodeDeps = {
   network?: Network;
   clock?: Clock;
   random?: Random;
-  /** Where inline agents run js_exec: this process's v8-exec runner unless given (src/codemode.ts). */
-  codeExecutor?: CodeExecutor;
+  /** Where inline agents run code: this process's v8-exec runner unless given (codemode-pi-launcher.ts); `close` lets its processes go. */
+  codeSandbox?: CodeSandboxes & { close?(): void };
   /**
    * The data plane every node shares, given the node's log tail and storage meter: AGENT_STORAGE's unless given (a
    * simulation's in-memory store).
@@ -210,14 +210,15 @@ export async function nodeDeps(config: NodeConfig): Promise<NodeDeps> {
   const tenants = await tenantsFromEnvironment(env);
   const secrets = await runtimeSecrets(env);
   sessionSecretOf(secrets);
-  // Fails startup if js_exec or file parsing does not work, or if isolation is required but absent.
-  // The node's js_exec runner, which inline agents use (agent processes start their own, from agentEnv).
-  const codeExecutor = new V8Exec(config.v8);
-  const sandbox = await checkSandbox({ executor: codeExecutor, required: config.sandboxRequired });
+  // Fails startup if code or file parsing does not run, or if isolation is required but absent.
+  // The node's v8-exec runner, which inline agents use (agent processes start their own, from agentEnv).
+  const v8 = new V8Exec(config.v8);
+  const codeSandbox = Object.assign((options: Parameters<CodeSandboxes>[0]) => new PiV8Sandbox({ ...options, pool: v8 }), { close: () => v8.close() });
+  const sandbox = await checkSandbox({ sandboxes: codeSandbox, required: config.sandboxRequired });
   const db = await databaseFromEnvironment(env);
   const address = await taskAddress(env);
   return {
-    tenants, secrets, db, listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, codeExecutor, readCgroupMemory: cgroupMemory,
+    tenants, secrets, db, listen: handlers => listenFromEnvironment(handlers, env), sandbox, address, codeSandbox, readCgroupMemory: cgroupMemory,
     supersession: () => supersession(env), managedDiscord: () => managedDiscordSecrets(env),
   };
 }
@@ -269,15 +270,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const { env, root, port, maxAgents, maxAgentsPerTenant, retireMaxMs, leaseTtlMs, orphanMs, hosting, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs, publicUrl, systemPrompt } = config;
   const { tenants, secrets, db, sandbox } = deps;
   const sessionSecret = sessionSecretOf(secrets);
-  // How tools.search ranks: keywords alone, or fused with the operator's rerank stages.
-  // The key: a dedicated one if set (AGENT_TOOL_SEARCH_API_KEY, or the tool-search secret), else the
-  // platform's OpenRouter key from the tenants file, read at each search so a reload takes effect.
-  const platformOpenRouter = () => tenants.platformKey("openrouter");
   const pricing = pricingFromEnvironment(env);
-  const rerankers = rerankersFromEnv(env, secrets.toolSearchKey || platformOpenRouter, pricing.openrouterCreditMultiplier);
-  if (rerankers.length && !secrets.toolSearchKey && !platformOpenRouter()) {
-    console.error(JSON.stringify({ type: "tool_search_not_configured", reason: "no platformKeys.openrouter in the tenants file and no AGENT_TOOL_SEARCH_API_KEY; tools.search ranks by keywords until one is set" }));
-  }
   if (config.ignored.length) console.error(JSON.stringify({ type: "settings_ignored", settings: config.ignored, reason: "removed: the legacy agent engine and the host transcript; every agent runs on Pi durable, its history in Pi's journal" }));
   // Control plane: coordination and small mutable state in Postgres.
   await migrate(db);
@@ -314,7 +307,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   // (`withoutOrigins`).
   const outbound = outboundFromEnvironment(env);
   const supervisor = new AgentSupervisor(join(root, "sessions"), {
-    runtime: config.runtime, maxAgents, ...(config.memoryHighBytes ? { memoryHighBytes: config.memoryHighBytes } : {}), hosting, ...(distributed ? { storage } : {}), ...(deps.codeExecutor ? { codeExecutor: deps.codeExecutor } : {}),
+    runtime: config.runtime, maxAgents, ...(config.memoryHighBytes ? { memoryHighBytes: config.memoryHighBytes } : {}), hosting, ...(distributed ? { storage } : {}), ...(deps.codeSandbox ? { codeSandbox: deps.codeSandbox } : {}),
     db,
     // Pi's journal rides out a failover as the log tail does: for as long as the node's lease lasts.
     piRetryMs: leaseTtlMs,
@@ -913,7 +906,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     },
     codeLimitsFor: tenant => accounts.billing.codeLimits(tenant),
     runRate: tenant => rateLimits.run(tenant),
-    rerankers,
     creditLimit: tenant => accounts.billing.creditLimit(tenant),
     db, storage, prefix: "client-sessions/", ownership, volumes, links, computers,
     get scheduler() { return scheduler; },
@@ -1475,7 +1467,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       server.off("error", failed);
       // Without AGENT_PUBLIC_URL the issuer is where this node listens: known only now when PORT is 0.
       if (!config.publicUrlSet) signer.issuer = links.publicUrl = origins.canonical = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-      console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: deps.storage ? "given" : storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, accountEmail: accountMailSettings?.provider ?? false, keyStorage: accounts.canStoreKeys, sandbox, toolSearch: rerankers.length ? rerankers.map(stage => stage.kind).join(",") : "keyword", stripe: stripe ? (stripe.live ? "live" : "test") : false }));
+      console.log(JSON.stringify({ type: "listening", address: server.address(), node, tenants: tenants.source, hosting, storage: deps.storage ? "given" : storageDescriptor.kind, github: github ? (github.open ? "open" : "org") : false, google: !!google, accountEmail: accountMailSettings?.provider ?? false, keyStorage: accounts.canStoreKeys, sandbox, stripe: stripe ? (stripe.live ? "live" : "test") : false }));
       resolve(server.address() as AddressInfo);
     });
     // As soon as it listens, as before: whether a newer deployment replaced this task (ECS only).
@@ -1780,7 +1772,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     clearInterval(idempotencyTimer);
     clearInterval(lotsTimer);
     clearTimeout(firstCharge);
-    deps.codeExecutor?.close?.();
+    deps.codeSandbox?.close?.();
     await step("database", () => db.end());
     console.log(JSON.stringify({ type: "drain_finished", node, ms: Date.now() - started, unfinished }));
     if (failed) throw new Error("Drain finished with errors");

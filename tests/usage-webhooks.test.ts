@@ -22,7 +22,7 @@ test("each model response's usage is POSTed, signed, to the tenant's webhook: re
   });
   // The first response reports its own cost, as OpenRouter does; the second does not.
   const respond = (_body: any, index: number) => index % 2 === 0
-    ? { ...toolCall("js_exec", { code: "return 1" }, `call_${index}`), usage: { prompt_tokens: 1000, completion_tokens: 20, cost: 0.0123 } }
+    ? { ...toolCall("codemode", { code: "return 1" }, `call_${index}`), usage: { prompt_tokens: 1000, completion_tokens: 20, cost: 0.0123 } }
     : { role: "assistant", content: "done", usage: { prompt_tokens: 1100, completion_tokens: 5 } };
   const env = { ...LOCAL, AGENT_SECRETS_KEY: randomBytes(32).toString("hex") };
   const first = await runtime(t, respond, env);

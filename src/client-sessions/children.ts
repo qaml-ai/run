@@ -96,7 +96,7 @@ async function spawnAgent(ctx: ChildrenContext, session: Session, settings: Dele
   const tenant = header.tenant;
   const run = runningRun(session);
   if (!ctx.options.createAgent || !ctx.options.submit) throw new Error("Sub-agents are not enabled on this runtime");
-  if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("spawn_agent is called directly, not from js_exec");
+  if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("spawn_agent is called directly, not from code");
   const { target, task, output } = delegation.childTarget(settings, call.args, "start");
   const asked = call.args.name;
   if (asked !== undefined && (typeof asked !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(asked))) throw new Error("A name is 1 to 64 letters, digits, _ and -");
@@ -165,7 +165,7 @@ export async function toolSpawn(ctx: ChildrenContext, session: Session, call: To
   const run = runningRun(session);
   if (!ctx.options.submit) throw new Error("Sub-agents are not enabled on this runtime");
   if (session.toolSources?.get(call.name) !== "served") throw new Error(`${call.name} asked to start a sub-agent (camelrun/spawn), which only a tool server with auth "runtime" may`);
-  if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error(`${call.name} starts a sub-agent: call it directly, not from js_exec`);
+  if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error(`${call.name} starts a sub-agent: call it directly, not from code`);
   const { agent, task, name, output: schema, ...rest } = (directive ?? {}) as Record<string, unknown>;
   if (!directive || typeof directive !== "object" || Array.isArray(directive) || Object.keys(rest).length || typeof agent !== "string" || !validSessionId(agent) || typeof task !== "string" || !task.trim() || task.length > MULTI_AGENT_LIMITS.taskChars
     || (name !== undefined && (typeof name !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(name)))) {
@@ -290,7 +290,7 @@ export async function pendingUpdates(ctx: ChildrenContext, session: Session) {
  */
 async function reportProgress(ctx: ChildrenContext, session: Session, call: ToolCall): Promise<McpResult> {
   const run = runningRun(session);
-  if (!run || !call.toolCallId || call.innerCallId) throw new Error("report_progress is called directly, not from js_exec");
+  if (!run || !call.toolCallId || call.innerCallId) throw new Error("report_progress is called directly, not from code");
   const { text } = call.args as { text?: unknown };
   if (typeof text !== "string" || !text.trim() || text.length > MULTI_AGENT_LIMITS.progressChars) throw new Error(`A progress report is 1 to ${MULTI_AGENT_LIMITS.progressChars} characters`);
   const sent = session.progressSent ??= new Map();
@@ -325,7 +325,7 @@ async function reportProgress(ctx: ChildrenContext, session: Session, call: Tool
  */
 async function waitAgents(ctx: ChildrenContext, session: Session, call: ToolCall): Promise<McpResult> {
   const run = runningRun(session);
-  if (!run || call.innerCallId) throw new Error("wait_agent is called directly, not from js_exec");
+  if (!run || call.innerCallId) throw new Error("wait_agent is called directly, not from code");
   const { agents: names, timeoutMs, untilProgress } = call.args as { agents?: unknown; timeoutMs?: unknown; untilProgress?: unknown };
   if (untilProgress !== undefined && typeof untilProgress !== "boolean") throw new Error("untilProgress is true or false");
   if (names !== undefined && (!Array.isArray(names) || names.some(name => typeof name !== "string"))) throw new Error("agents is a list of names or agentIds");
@@ -619,7 +619,7 @@ async function sendMessage(ctx: ChildrenContext, session: Session, settings: Del
   const run = runningRun(session);
   const { submit } = ctx.options;
   if (!submit) throw new Error("Sub-agents are not enabled on this runtime");
-  if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("send_message is called directly, not from js_exec");
+  if (!run || !call.toolCallId || call.innerCallId || !call.idempotencyKey) throw new Error("send_message is called directly, not from code");
   const { to, text } = call.args as { to?: unknown; text?: unknown };
   if (typeof to !== "string" || !to) throw new Error("Say whom the message is for: a sub-agent's name or agentId, or \"parent\"");
   if (typeof text !== "string" || !text.trim() || text.length > MULTI_AGENT_LIMITS.taskChars) throw new Error(`The message is 1 to ${MULTI_AGENT_LIMITS.taskChars} characters`);

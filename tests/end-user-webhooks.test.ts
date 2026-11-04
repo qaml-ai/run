@@ -104,7 +104,7 @@ test("end-user events reach an endpoint that selected them, signed", async t => 
     received.push({ headers: req.headers, body });
     res.writeHead(200).end();
   });
-  const r = await runtime(t, (_body, index) => ({ ...toolCall("js_exec", { code: `return ${index}` }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.05 } }),
+  const r = await runtime(t, (_body, index) => ({ ...toolCall("codemode", { code: `return ${index}` }, `call_${index}`), usage: { prompt_tokens: 10, completion_tokens: 10, cost: 0.05 } }),
     { AGENT_MODEL: "openai/gpt-4.1", AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.0/8" });
   const endpoint = await r.call("/v1/webhooks", { body: { url: `${hook}/hook`, events: ["end_user.balance.low", "end_user.credit.exhausted"] } });
   assert.equal(endpoint.status, 201, endpoint.text);

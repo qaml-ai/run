@@ -143,7 +143,7 @@ test("a turn's line: its outcome, duration, time to first token and to its first
       turns.event({ type: "message_end", message: { role: "assistant", provider: "openrouter", model: "openai/gpt-6-luna", stopReason: "error", errorMessage: "429 rate limited: my secret memo" } });
       turns.event({ type: "auto_retry_start", attempt: 1 });
       turns.event({ type: "message_end", message: { role: "assistant", provider: "openrouter", model: "openai/gpt-6-luna", stopReason: "toolUse" } });
-      turns.event({ type: "tool_execution_end", toolName: "js_exec", isError: false });
+      turns.event({ type: "tool_execution_end", toolName: "codemode", isError: false });
       turns.event({ type: "tool_execution_end", toolName: "camel__query", isError: true, result: { content: [{ type: "text", text: "secret stuff" }] } });
       turns.event({ type: "message_end", message: { role: "toolResult" } });
       turns.event({ type: "message_end", message: { role: "assistant", provider: "openrouter", model: "openai/gpt-6-luna", stopReason: "stop" } });

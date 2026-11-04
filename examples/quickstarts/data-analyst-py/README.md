@@ -1,6 +1,6 @@
 # data-analyst-py
 
-Attach a CSV to a message; the agent analyses it with code in its sandbox (`js_exec` with `fs`), writes a report and
+Attach a CSV to a message; the agent analyses it with code in its sandbox (`codemode` with `tools.read` and `tools.write`), writes a report and
 hands it back with `present_file`, which this script saves locally.
 
 ```sh

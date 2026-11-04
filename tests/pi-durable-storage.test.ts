@@ -354,7 +354,39 @@ test("Pi shared journal reads match the SQLite reference through forks, head mar
   }
 });
 
-test("Pi shared storage reads a conversation's journal in one statement and commits a step in five", async () => {
+test("Pi shared commits read their documents again when another commit landed while they waited for the lock", async () => {
+  const { db } = await database;
+  const sessionId = randomUUID();
+  const [first, second] = [await PostgresPiStorage.open(db, sessionId), await PostgresPiStorage.open(db, sessionId)];
+  const id = await first.mintId<any>();
+  await commitWrites(first, [{ type: "document.create", record: { id, kind: "probe", scope: { kind: "session" as const } }, content: { kind: "base", version: 1, value: {} } }], context);
+  const client = await db.connect();
+  let retired: Promise<unknown>, again: Promise<unknown>;
+  try {
+    await client.query("begin");
+    await client.query("select next_id from pi_durable_metadata where session_id = $1 for update", [sessionId]);
+    // Both wait for the lock, their reads taken before it: the first to get it retires the document, so the other's
+    // read is out of date, and it finds the document retired only by reading again.
+    // Each is seen waiting on the lock before the next starts, so the order is theirs, not the scheduler's.
+    const waiting = async (count: number) => {
+      for (;;) {
+        const { rows } = await db.query("select count(*) as n from pg_stat_activity where wait_event_type = 'Lock' and query like '%pi_durable_metadata%' and application_name = current_setting('application_name')");
+        if (Number(rows[0].n) >= count) return;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    };
+    retired = commitWrites(first, [{ type: "document.retire", id }], context);
+    await waiting(1);
+    again = commitWrites(second, [{ type: "document.retire", id }], context);
+    await waiting(2);
+  } finally { await client.query("rollback"); client.release(); }
+  await retired!;
+  await assert.rejects(again!, /Document \d+ is retired/);
+  await first.close(context);
+  await second.close(context);
+});
+
+test("Pi shared storage reads a conversation's journal in one statement and commits a step in four", async () => {
   const { db } = await database;
   const sessionId = randomUUID();
   const statements: string[] = [];
@@ -374,7 +406,7 @@ test("Pi shared storage reads a conversation's journal in one statement and comm
     { type: "entry", value: { id: ids[0] as EntryId, conversationId: root, kind: "message" } },
     { type: "task", value: { id: task, conversationId: root, kind: "probe", state: { status: "running" } } as never },
     { type: "document.change", id: document as never, content: { kind: "base", version: 1, value: { n: 1 } } },
-  ], context)), 5, "begin, the metadata lock taking the sequence, one check, one write, commit");
+  ], context)), 4, "begin, the metadata lock taking the sequence with the check's read, one write, commit");
   assert.deepEqual((await storage.document(document as never, "current", context))?.value, { n: 1 }, "the base replaced, its old revision gone");
   assert.equal(Number((await db.query("select count(*) from pi_durable_document_revisions where session_id = $1", [sessionId])).rows[0].count), 1);
   assert.equal(await measure(() => storage.scanEntries({ conversationId: root }, 10, undefined, context)), 1);
@@ -413,7 +445,7 @@ test("Pi shared commits check the claim in their lock statement: a takeover wait
   const [first, second, third] = await node.mintIds(3);
   statements.length = 0;
   await commitWrites(node, [{ type: "entry", value: { id: first as EntryId, conversationId: root, kind: "message" } }], context);
-  assert.equal(statements.length, 5, "begin, the claim and metadata lock in one statement, one check, one write, commit");
+  assert.equal(statements.length, 4, "begin, the claim and metadata lock with the check's read in one statement, one write, commit");
 
   hold = Promise.withResolvers(); entered = Promise.withResolvers();
   const inFlight = commitWrites(node, [{ type: "entry", value: { id: second as EntryId, conversationId: root, kind: "message" } }], context);

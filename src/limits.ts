@@ -14,7 +14,7 @@ export const SANDBOX_LIMITS = Object.freeze({
   timeoutMs: 30_000, maxTimeoutMs: 120_000, outputCharacters: 32_000, maxOutputCharacters: 128_000,
   /**
    * A workflow script's wall clock and transfer budget: it coordinates agents and mostly waits, so its deadline is the
-   * run's, and its calls (a prompt and an answer per agent) add up past what one js_exec call transfers. Host-enforced
+   * run's, and its calls (a prompt and an answer per agent) add up past what one script transfers. Host-enforced
    * with `executeCode({ workflow: true })`; CPU and heap limits stay unchanged.
    */
   workflowTimeoutMs: 3_600_000, workflowToolBytes: 128 * 1024 * 1024,
@@ -25,10 +25,12 @@ export const SANDBOX_LIMITS = Object.freeze({
   resultBytes: 1024 * 1024,
   totalToolBytes: 8 * 1024 * 1024,
   outputEvents: 1024,
+  /** Images one script shows, and their base64 in all: past them, as past outputEvents and 128,000 bytes of text, output is left out with a note. */
+  outputImages: 16, outputImageBytes: 8 * 1024 * 1024,
 });
 
 /**
- * A tenant's js_exec limits unless its own are set (a tenants-file entry's `codeCpuMs`,
+ * A tenant's code limits unless its own are set (a tenants-file entry's `codeCpuMs`,
  * `codeMaxTimeoutMs`, `codeConcurrency`, or `tenants.limits`'): CPU per execution, the longest
  * timeoutMs it may ask for, and executions it may run at once on one node (on free credit, `freeConcurrent`).
  * Admin tenants (the tenants file's) are not held to `concurrent` or `maxTimeoutMs` unless their entry sets them.
@@ -36,7 +38,7 @@ export const SANDBOX_LIMITS = Object.freeze({
 export const CODE_LIMITS = Object.freeze({ cpuMs: SANDBOX_LIMITS.cpuMs, maxTimeoutMs: 60_000, concurrent: 4, freeConcurrent: 2 });
 
 /**
- * An agent's tool catalog. Most tools are reached from js_exec, where only names enter the
+ * An agent's tool catalog. Most tools are reached from code, where only names enter the
  * sandbox and search runs on the host; at most `direct` are declared to the model itself.
  */
 export const CATALOG_LIMITS = Object.freeze({ tools: 4096, bytes: 16 * 1024 * 1024, direct: 64 });
@@ -74,7 +76,7 @@ export const FILE_LIMITS = Object.freeze({
   urlBytes: 64 * 1024 * 1024, urlMs: 60_000, urlRedirects: 3,
   /** An upload's whole request may take this long (other requests get 30 s). */
   uploadMs: 15 * 60_000,
-  /** One js_exec fs.readFile or fs.writeFile: base64 of this, with its path, fits a 1 MiB tool result. */
+  /** The most of a long tool result the host saves to the workspace (`saveToolResult`), with its path within a 1 MiB tool result. */
   scriptFileBytes: 700 * 1024,
 });
 

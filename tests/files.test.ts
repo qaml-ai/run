@@ -325,8 +325,8 @@ test("only the runtime's own file tools may return file references: anyone else'
 test("a run's outcome lists the files it wrote and presented, and a presented file is an event with a download link", async t => {
   const server = await runtime(t, (_body, index) => [
     toolCall("write", { path: "/workspace/out/summary.md", content: "# Summary" }),
-    toolCall("js_exec", { code: 'await fs.writeFile("/workspace/out/chart.png", new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]))' }),
-    toolCall("present_file", { path: "/workspace/out/chart.png", caption: "Q3 chart" }),
+    toolCall("codemode", { code: 'await tools.write({ path: "/workspace/out/chart.svg", content: "<svg/>" })' }),
+    toolCall("present_file", { path: "/workspace/out/chart.svg", caption: "Q3 chart" }),
     { role: "assistant", content: "Here is your chart." },
   ][index] ?? { role: "assistant", content: "ok" });
   const events: any[] = [];
@@ -335,13 +335,13 @@ test("a run's outcome lists the files it wrote and presented, and a presented fi
   t.after(() => agent.close());
   const result = await agent.prompt("Make me a chart");
   assert.equal(result.reply, "Here is your chart.");
-  assert.deepEqual(result.files.map((file: any) => [file.path, file.contentType]), [["/workspace/out/summary.md", "text/markdown"], ["/workspace/out/chart.png", "image/png"]]);
-  assert.deepEqual(result.presented.map((file: any) => [file.type, file.path, file.caption, file.contentType, file.size]), [["file", "/workspace/out/chart.png", "Q3 chart", "image/png", 8]]);
+  assert.deepEqual(result.files.map((file: any) => [file.path, file.contentType]), [["/workspace/out/summary.md", "text/markdown"], ["/workspace/out/chart.svg", "image/svg+xml"]]);
+  assert.deepEqual(result.presented.map((file: any) => [file.type, file.path, file.caption, file.contentType, file.size]), [["file", "/workspace/out/chart.svg", "Q3 chart", "image/svg+xml", 6]]);
   await until(() => events.length, "the file_presented event");
-  assert.equal(events[0].file.path, "/workspace/out/chart.png");
+  assert.equal(events[0].file.path, "/workspace/out/chart.svg");
   const fetched = await fetch(events[0].url.replace("https://agents.example.test", server.base));
-  assert.equal(fetched.headers.get("content-type"), "image/png");
-  assert.equal(Buffer.from(await fetched.arrayBuffer()).length, 8);
+  assert.equal(fetched.headers.get("content-type"), "image/svg+xml");
+  assert.equal(Buffer.from(await fetched.arrayBuffer()).length, 6);
   // Each run has its own list; a code execution is a run too.
   await agent.prompt("Thanks");
   const later = (await agent.outcomes()).requests.at(-1)!.outcome!.result as any;

@@ -6,11 +6,18 @@ import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { RUNTIME } from "../system-prompt.ts";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
 import {
-  GenerationTask, Harness, LiveDoc, ToolTask, createRegistry, defineDoc, hook, section,
-  type Conversation, type ConversationId, type EntryId, type EntryRecord, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Report, type Storage, type Tx,
+  GenerationTask, Harness, LiveDoc, ToolTask, createRegistry, defineDoc, hook, section, wrapTool,
+  type Conversation, type ConversationId, type EntryId, type EntryRecord, type Extension, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Report, type Storage, type ToolRegistration, type Tx,
 } from "@earendil-works/pi-durable";
 
-type RuntimeTool = AgentTool & { callers?: readonly ("model" | "tools")[]; modelDeclared?: boolean };
+/** A call a running tool made (code mode's `tools.<name>()`): the model's call that made it, and its key within that call. */
+/** A call from code: its code mode call's id (the model's), that call's Pi task, and its key in the script. */
+export type NestedCall = { parentCallId: string; parentTaskId: string; key: string };
+type RuntimeTool = AgentTool & {
+  callers?: readonly ("model" | "tools")[]; modelDeclared?: boolean;
+  /** As AgentTool's, with `nested` set for a call a running tool made: its result goes to that tool, not to the model. */
+  execute(toolCallId: string, params: any, signal?: AbortSignal, onUpdate?: Parameters<AgentTool["execute"]>[3], nested?: NestedCall): ReturnType<AgentTool["execute"]>;
+};
 
 /** Small latest-value document: loading an agent never scans its journal for a limit. */
 export const ContextLimitDoc = defineDoc({
@@ -56,6 +63,10 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
      * yet (the first after a compaction, before Pi writes its baseline), and the fixed part of the recent context kept.
      */
     leading?: () => AgentMessage | undefined;
+    /** Pi's own extensions installed beside the host's (code mode's tool): their model tools are offered first. */
+    extensions?: Extension[];
+    /** Where Pi's tools keep files (code mode's cut output and images): `HarnessOptions.env`. */
+    env?: HarnessOptions["env"];
     /** Telemetry only: Pi's held context before conversion, and the request sent. */
     onContextRequest?: (held: number, sent: number) => void;
     contextWindow?: number;
@@ -298,6 +309,7 @@ export class DurableAgent {
   static async create(options: DurableAgentOptions): Promise<DurableAgent> {
     const agent = new DurableAgent(options);
     agent.installTools();
+    for (const extension of options.durable.extensions ?? []) agent.registry.install(extension);
     // Pi's generation task with one change: preparation does not take a context checkpoint (`camel.legacy.context`) for a
     // head marker.
     const original = GenerationTask.definition;
@@ -382,6 +394,7 @@ export class DurableAgent {
     let givenUp = false;
     const giveUp = (error: unknown) => { if (!givenUp) { givenUp = true; options.durable.onStorageFailure?.(error); } };
     agent.harness = await Harness.open(options.durable.storage, { registry, models: models as unknown as HarnessOptions["models"],
+      ...options.durable.env ? { env: options.durable.env } : {},
       // Pi 1.4 attributes every request to pi by default (OpenRouter `HTTP-Referer: https://pi.dev` and
       // `X-OpenRouter-Title: pi`, NVIDIA and OpenCode origin headers): requests are the tenant's, so send none.
       identity: { attribution: null },
@@ -750,21 +763,35 @@ export class DurableAgent {
   private installTools() {
     const keys = Object.keys(this.sections());
     this.sectionKeys = JSON.stringify(keys);
-    this.registry.install({ name: "camel", sections: keys.map(key => section(key, input =>
+    // A model's call of one of Pi's own tools (code mode) is told on the stream as the host's are: its end comes with its result.
+    const announced = (tool: ToolRegistration): ToolRegistration => ({ ...tool, execute: async (args: any, api: any, callContext: any) => {
+      await this.flushEvents();
+      this.pending.add(api.callId);
+      await this.emit({ type: "tool_execution_start", toolCallId: api.callId, toolName: tool.name, args });
+      return tool.execute(args, api, callContext);
+    } });
+    const native = (this.options.durable.extensions ?? []).flatMap(extension => extension.tools ?? []);
+    this.registry.install({ name: "camel", wraps: native.map(tool => wrapTool(tool, announced)), sections: keys.map(key => section(key, input =>
       !Object.keys(input.shown).length ? this.sections()[key] : input.shown[key] ?? (key === RUNTIME ? this.missingRules() : undefined), { tag: false })), tools: this.tools.map(tool => ({ ...tool, replay: tool.replay === "safe" ? "safe" : "unsafe",
       structuredOutputSchema: tool.outputSchema,
       // Camel already bounds tool output; a second truncation changes persisted replies.
       outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
       execute: async (args: any, api: any, callContext: any): Promise<any> => {
-        await this.flushEvents();
         const id = api.callId as string;
-        this.pending.add(id);
-        await this.emit({ type: "tool_execution_start", toolCallId: id, toolName: tool.name, args });
+        // A call from code (Pi names it `<code mode call>/<key>`): its result goes back to the script, so the stream and
+        // the round's pending calls never see it.
+        const input = id.includes("/") ? (await api.getTask(api.taskId, callContext))?.input : undefined;
+        const nested: NestedCall | undefined = input?.kind === "nested" ? { parentCallId: input.parentCallId, parentTaskId: String(input.parent), key: input.key } : undefined;
+        if (!nested) {
+          await this.flushEvents();
+          this.pending.add(id);
+          await this.emit({ type: "tool_execution_start", toolCallId: id, toolName: tool.name, args });
+        }
         let result: AgentToolResult;
         try {
-          result = await tool.execute(id, args, callContext.abortSignal, partialResult => {
+          result = await tool.execute(id, args, callContext.abortSignal, nested ? undefined : partialResult => {
             this.queueEvent(() => this.emit({ type: "tool_execution_update", toolCallId: id, toolName: tool.name, args, partialResult }));
-          });
+          }, nested);
         } catch (error) { result = { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], details: undefined, isError: true }; }
         return { output: result.content, ...(result.details === undefined ? {} : { details: result.details }), isError: result.isError,
           ...(result.structuredContent === undefined || !tool.outputSchema ? {} : { structuredOutput: result.structuredContent }),
@@ -814,6 +841,14 @@ export class DurableAgent {
         }
       },
     })] });
+  }
+
+  /** Replace Pi's own extensions (code mode on or off); the model is offered their tools from the next sync. */
+  useExtensions(extensions: Extension[]) {
+    for (const extension of this.options.durable.extensions ?? []) this.registry.uninstall(extension);
+    this.options.durable.extensions = extensions;
+    for (const extension of extensions) this.registry.install(extension);
+    this.installTools();
   }
 
   private async clearRoundEnd() {
@@ -871,9 +906,13 @@ export class DurableAgent {
     // The turn limit a round's end set (`afterTool`) and that round's calls go once the round is over; a round a lost
     // node left open keeps them, so it still ends here.
     const round = !!(await this.harness.snapshot(LiveDoc, this.conversation.id, context))?.tools;
-    const modelTools = new Set(this.tools.filter(tool => tool.modelDeclared !== false).map(tool => tool.name));
+    // Offered in the order the host declares them (Pi re-declares every tool when the order differs): Pi's own extensions'
+    // first (code mode), then the host's.
+    const registered = new Map(this.registry.snapshot().tools().map(entry => [entry.tool.name, entry.tool]));
+    const modelTools = [...(this.options.durable.extensions ?? []).flatMap(extension => extension.tools ?? []).filter(tool => tool.callers?.includes("model") !== false),
+      ...this.tools.filter(tool => tool.modelDeclared !== false)].flatMap(tool => registered.get(tool.name) ?? []);
     await this.conversation.configure({ model: { provider: this.state.model.provider, modelId: this.state.model.id },
-      thinkingLevel: this.state.thinkingLevel, instructions: null, modelTools: this.registry.snapshot().tools().map(entry => entry.tool).filter(tool => modelTools.has(tool.name)), ...round ? {} : { maxTurns: null } }, context);
+      thinkingLevel: this.state.thinkingLevel, instructions: null, modelTools, ...round ? {} : { maxTurns: null } }, context);
     if (!round) await this.clearRoundEnd();
     await this.reload();
   }

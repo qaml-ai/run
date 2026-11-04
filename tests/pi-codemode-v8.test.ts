@@ -170,13 +170,12 @@ test("Pi start: fingerprint refusal runs no user code; JIT and limits have disti
   if (!result.ok) assert.match(result.error.message, /fingerprint mismatch/);
 });
 
-test("Pi start: CPU, heap, output and wall limits still terminate the child", { skip, timeout: 60_000 }, async () => {
+test("Pi start: CPU, heap and wall limits still terminate the child", { skip, timeout: 60_000 }, async () => {
   for (const [code, options, pattern] of [
     ["while (true) {}", { cpuMs: 100 }, /CPU limit/],
     ["while (true) await null", { cpuMs: 100 }, /CPU limit/],
     ["return /(a+)+$/.test('a'.repeat(40) + '!')", { cpuMs: 100 }, /CPU limit/],
     ["const a = []; for (;;) a.push({ x: Math.random(), y: [1, 2, 3] })", { cpuMs: 30_000 }, /memory limit/],
-    ["for (;;) text('x'.repeat(1000))", {}, /output/],
     ["await tools.echo(1)", { timeoutMs: 100 }, /exceeded/],
   ] as const) {
     const pool = new V8Exec();
@@ -188,6 +187,46 @@ test("Pi start: CPU, heap, output and wall limits still terminate the child", { 
     } finally { await sandbox.close(); pool.close(); }
     assert.equal(pool.running, 0);
   }
+});
+
+test("Pi start: output past its limits is left out with a note, and the script still completes", { skip, timeout: 60_000 }, async t => {
+  const sandbox = new PiV8Sandbox();
+  t.after(() => sandbox.close());
+  // A 200 KB PNG as base64, as Pi's image() takes it: the signature, then filler.
+  const image = `data:image/png;base64,iVBORw0KGgoA${"A".repeat(200 * 1024)}`;
+  const run = (code: string) => sandbox.start(code, { ...defaults, onCall() {} }).result;
+  const lines = await run("for (let i = 0; i < 1100; i++) console.log(`line ${i}`); return 'done'");
+  assert.equal(lines.ok, true, JSON.stringify(lines).slice(0, 300));
+  assert.equal(lines.output.length, 1025);
+  assert.match((lines.output.at(-1) as { text: string }).text, /Output stops here: a script prints at most 1,024 times/);
+  const long = await run("text('x'.repeat(130 * 1024)); text('after'); return 1");
+  assert.equal(long.ok, true);
+  const [cut, note] = long.output as { text: string }[];
+  assert.equal(long.output.length, 2);
+  assert.equal(cut.text.length, 128_000);
+  assert.match(note.text, /Output stops here/);
+  const images = await run(`for (let i = 0; i < 3; i++) image(${JSON.stringify(image)}); text("shown"); return 1`);
+  assert.equal(images.ok, true);
+  assert.deepEqual(images.output.map(item => item.type), ["image", "image", "image", "text"]);
+  const many = await run(`for (let i = 0; i < 50; i++) image(${JSON.stringify(image)}); return 1`);
+  assert.equal(many.ok, true);
+  assert.equal(many.output.filter(item => item.type === "image").length, 16);
+  assert.match((many.output.at(-1) as { text: string }).text, /Images past 16/);
+});
+
+test("Pi start: one message too large for a frame is cut or noted, and a return value too large fails the script, saying so", { skip, timeout: 60_000 }, async t => {
+  const sandbox = new PiV8Sandbox();
+  t.after(() => sandbox.close());
+  const run = (code: string) => sandbox.start(code, { ...defaults, onCall() {} }).result;
+  const huge = await run("console.log('x'.repeat(2_500_000)); return 1");
+  assert.equal(huge.ok, true, JSON.stringify(huge).slice(0, 300));
+  assert.equal((huge.output[0] as { text: string }).text.length, 128_000);
+  const image = await run(`image("data:image/png;base64,iVBORw0KGgoA" + "A".repeat(2_200_000)); return 1`);
+  assert.equal(image.ok, true, JSON.stringify(image).slice(0, 300));
+  assert.match((image.output[0] as { text: string }).text, /image of \d+ base64 characters was left out/);
+  const returned = await run("return 'y'.repeat(3_000_000)");
+  assert.equal(returned.ok, false);
+  if (!returned.ok) { assert.equal(returned.error.kind, "script"); assert.match(returned.error.message, /return value is too large to return/); }
 });
 
 // No executable is needed to test the trusted host's validation and shutdown behavior.
@@ -274,12 +313,15 @@ test("Pi native wire rejects duplicate, missing and malformed delivery metadata"
   }
 });
 
-test("Pi execute convenience API uses the V8 launcher", { skip }, async t => {
-  const sandbox = new PiV8Sandbox({ tools: [{ name: "echo", execute: args => args }] });
+test("Pi execute convenience API uses the V8 launcher, and tells the CPU the script used", { skip }, async t => {
+  const ends: { ms: number; cpuMs?: number }[] = [];
+  const sandbox = new PiV8Sandbox({ tools: [{ name: "echo", execute: args => args }], onEnd: end => ends.push(end) });
   t.after(() => sandbox.close());
-  const result = await sandbox.execute("return await tools.echo(null)");
+  const result = await sandbox.execute("let x = 0; for (let i = 0; i < 3e7; i++) x += i; return await tools.echo(null)");
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.value, null);
+  assert.equal(ends.length, 1);
+  assert.ok(Number.isSafeInteger(ends[0].cpuMs) && ends[0].cpuMs! > 0 && ends[0].cpuMs! <= ends[0].ms + 5, JSON.stringify(ends));
 });
 
 test("Pi start keeps Linux seccomp with and without the JIT", { skip: skip || (process.platform !== "linux" && "seccomp requires Linux") }, async () => {

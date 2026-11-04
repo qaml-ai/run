@@ -12,7 +12,7 @@ import { contextRangeSize, openPiStorage, remotePiStorage, storageRequest } from
 import { nodeConfig } from "../src/node-config.ts";
 import { CONTEXT_RANGE_MAX_BYTES } from "../src/protocol.ts";
 import { testDatabase } from "./database.ts";
-import { runtime, toolCall, until } from "./runtime-server.ts";
+import { runtime, sleep, toolCall, until } from "./runtime-server.ts";
 import { cluster, fakeModel, token } from "./cluster-helpers.ts";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 
@@ -88,15 +88,19 @@ test("a newly seeded oversized range fails startup with a coded outcome", async 
 });
 
 test("a live range stops with context_too_large and does not retry the model", { timeout: 60_000 }, async t => {
-  const r = await runtime(t, (_body, index) => toolCall("js_exec", { code: 'return "x".repeat(8192)' }, `call_${index}`), {
+  const r = await runtime(t, (_body, index) => toolCall("codemode", { code: 'return "x".repeat(8192)' }, `call_${index}`), {
     AGENT_CONTEXT_RANGE_MAX_BYTES: "65536", AGENT_IDLE_MS: "1000",
   });
   const agent = (await r.call("/v1/agents", { body: {} })).json;
   const run = await r.prompt(agent.id, "go");
   assert.equal(run.outcome.result.code, "context_too_large", JSON.stringify(run));
   assert.equal(run.outcome.result.stopped, "turn_limit");
-  // Every request checks: the first past 64 KiB (~8 KiB of tool result a step) is stopped before it reaches the provider.
-  assert.equal(r.model.bodies.length, 4, "the request past the bound is stopped before contacting the provider");
+  // Every request checks: the first past 64 KiB (~8 KiB of tool result a step) is stopped before it reaches the provider,
+  // and the model is not asked again.
+  const asked = r.model.bodies.length;
+  assert.ok(asked >= 4, `${asked} requests`);
+  await sleep(500);
+  assert.equal(r.model.bodies.length, asked, "the request past the bound is stopped before contacting the provider");
   await until(async () => !(await r.db.query("select pending_runs from agents where id = $1", [agent.id])).rows[0].pending_runs, "the idle agent to clear pending work");
 });
 

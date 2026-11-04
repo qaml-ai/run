@@ -9,7 +9,6 @@ import type { Sources } from "../tool-sources.ts";
 import { contentResult, type McpResult } from "../mcp-results.ts";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { compose, toolCallKey, ToolFailure, type ToolCallCode, defaultExposure, describeSources, fileServer, type Progress, type ToolCall, type ToolServer, type ToolSourceView } from "../tool-servers.ts";
-import { searchTools as searchCatalog, type SearchQuery } from "../tool-search.ts";
 import { declaredType, FILE_LIMITS, safeName, validFileRef, type FileRef } from "../files.ts";
 import { fileRef } from "../inspect.ts";
 import { resolve as resolveMount, type ToolContext } from "../volume-tools.ts";
@@ -68,16 +67,16 @@ async function toolServers(ctx: ToolsContext, session: Session, tools: ToolDefin
   const images = spend.imageServer(ctx.spendContext, session, sources);
   // Sources that give tools (`decide` alone is a setting).
   const sourced = !!sources && Object.keys(sources).some(key => key !== "decide");
-  // An agent with no js_exec and no tools of its own gets no decide tool unless it asks for it (decide: true).
+  // An agent with no code mode and no tools of its own gets no decide tool unless it asks for it (decide: true).
   const plain = codeMode === false && !tools.length && !feature && !multiAgent && !workflow && !images && !sourced;
   const decisions = spend.decisionServer(ctx.spendContext, session, sources, plain);
   const definition = header.definition;
-  // An agent with no tools at all (no js_exec, file tools or tools of any source) has nothing to present a file from: no present_file either.
+  // An agent with no tools at all (no code mode, file tools or tools of any source) has nothing to present a file from: no present_file either.
   const bare = codeMode === false && fileTools === false && !tools.length && !feature && !multiAgent && !workflow && !images && !sourced;
   return [
     ...feature ? [view("channel", feature)] : [],
     { tools: () => defaultExposure(tools), call: call => events.callAttached(ctx.eventContext, session, call), sources: async () => [{ kind: "application", name: "application", status: "listed", connected: !!session.attached?.open, tools: defaultExposure(tools) }] },
-    ...volumes && (header.mounts?.length || await ctx.options.sources?.computerFilesystem(tenant, header.id) !== undefined) && !bare ? [view("files", fileServer(volumes.definitions().filter(tool => fileTools !== false || tool.name === "present_file"), ({ name, args, signal }) => volumes.tool(toolContext(ctx, session), name, args, signal)))] : [],
+    ...volumes && (header.mounts?.length || await ctx.options.sources?.computerFilesystem(tenant, header.id) !== undefined) && !bare ? [view("files", fileServer(fileToolsFor(volumes.definitions(), fileTools, codeMode), ({ name, args, signal }) => volumes.tool(toolContext(ctx, session), name, args, signal)))] : [],
     ...multiAgent ? [multiAgent] : [],
     ...workflow ? [workflow] : [],
     ...images ? [images] : [],
@@ -116,6 +115,13 @@ export function toolContext(ctx: ToolsContext, session: Session): ToolContext {
  * The agent's tools from its servers (see `toolServers`), or from the ones `next` gives it (a configuration it is about to
  * take). Records the route, and the servers for `toolSources`.
  */
+/**
+ * The file tools an agent has: all of them, or with `fileTools: false` only present_file for the model, the rest left to
+ * its code (its attachments, tool outputs and saved results are files it reads there), none without code mode.
+ */
+const fileToolsFor = (tools: ToolDefinition[], fileTools: boolean | undefined, codeMode: boolean | undefined): ToolDefinition[] =>
+  tools.flatMap(tool => fileTools !== false || tool.name === "present_file" ? [tool] : codeMode !== false ? [{ ...tool, callers: ["tools"] as const }] : []);
+
 export async function toolset(ctx: ToolsContext, session: Session, next: { tools?: ToolDefinition[]; sources?: Sources; fileTools?: boolean; codeMode?: boolean; warm?: boolean } = {}) {
   const { header } = session;
   const servers = await toolServers(ctx, session, next.tools ?? header.definitions, "sources" in next ? next.sources : header.sources, "fileTools" in next ? next.fileTools : header.config.fileTools, "codeMode" in next ? next.codeMode : header.config.codeMode);
@@ -128,9 +134,6 @@ export async function toolset(ctx: ToolsContext, session: Session, next: { tools
   const served = new Set((("sources" in next ? next.sources : header.sources)?.mcpServers ?? []).filter(spec => spec.auth?.type === "runtime").map(spec => spec.name));
   session.toolSources = new Map(views.flatMap(view => view.tools.map(tool => [tool.name, view.kind === "application" ? "attached" : view.kind === "mcp" && served.has(view.name) ? "served" : view.kind] as const)));
   session.sourceErrors = views.flatMap(view => view.status === "error" ? [{ kind: view.kind, source: view.name, message: view.error ?? "Could not be listed" }] : []);
-  session.searchable = definitions.filter(callableFromCode);
-  // Rerankers that index the catalog (embeddings) start now, so the first search need not wait; the agent's tenant pays for it at cost.
-  if (next.warm !== false) for (const stage of ctx.options.rerankers ?? []) stage.warm?.(session.searchable, usd => toolSearchUsage(ctx, session, usd, 0));
   return definitions;
 }
 
@@ -198,11 +201,11 @@ async function answerToolCall(ctx: ToolsContext, session: Session, call: ToolCal
   const lineage = delegation.lineage(ctx.delegationContext, session, request);
   await ctx.beforeEffect(session);
   await ctx.leased(session, call.signal);
-  // A server's progress reaches the event stream as an update of the model's tool call (js_exec's, for a call from code),
+  // A server's progress reaches the event stream as an update of the model's tool call (the codemode call's, for a call from code),
   // at most one per PROGRESS_MS: the latest of a burst is published at its window's end, and before the call's result.
   let progressed: (() => void) | undefined;
   const onProgress = call.toolCallId ? events.throttled(({ progress, total, message }: Progress) => ctx.publish(session, { type: "event", requestId: request?.id ?? "", event: {
-    type: "tool_execution_update", toolCallId: call.toolCallId, toolName: call.innerCallId ? "js_exec" : call.name,
+    type: "tool_execution_update", toolCallId: call.toolCallId, toolName: call.innerCallId ? "codemode" : call.name,
     partialResult: { content: [{ type: "text", text: message ?? `${progress}${total !== undefined ? `/${total}` : ""}` }], details: { type: "progress", tool: call.name, ...(call.innerCallId ? { innerCallId: call.innerCallId } : {}), progress, ...(total !== undefined ? { total } : {}), ...(message !== undefined ? { message } : {}) } },
   } }), flush => { progressed = flush; }) : undefined;
   let result: McpResult;
@@ -437,10 +440,10 @@ async function fetchAttachment(ctx: ToolsContext, url: URL): Promise<{ body: Asy
   return { body: body(), ...(contentType ? { contentType } : {}) };
 }
 
-/** js_exec's `fs`: the file tools over the agent's mounts, durable before any effect like any other tool call. */
+/** A file operation of the agent's host (a long tool result saved): the file tools over its mounts, durable before any effect like any other tool call. */
 export async function fsCall(ctx: ToolsContext, session: Session, op: string, args: Record<string, unknown>, signal: AbortSignal) {
   if (!ctx.options.volumes || (!session.header.mounts?.length && await ctx.options.sources?.computerFilesystem(session.header.tenant, session.header.id) === undefined)) throw new Error("This agent has no volumes mounted");
-  if (!["readFile", "writeFile", "stat", "list", "remove"].includes(op)) throw new Error("Unknown fs call");
+  if (op !== "writeFile") throw new Error("Unknown fs call");
   await ctx.beforeEffect(session);
   return ctx.options.volumes.tool(toolContext(ctx, session), `fs.${op}`, args, signal);
 }
@@ -451,21 +454,3 @@ export async function fileData(ctx: ToolsContext, session: Session, ref: unknown
   return (await ctx.options.volumes.readRange(session.header.tenant, ref, 0, ref.size)).toString("base64");
 }
 
-/**
- * A `tools.search` query over the agent's code-mode tools; a rerank stage that fails is logged and
- * left out. Ranking by meaning is platform usage at what its providers charged: the tenant pays
- * the runtime, never with its own keys, so which provider serves it stays the runtime's choice.
- */
-export function searchTools(ctx: ToolsContext, session: Session, query: SearchQuery) {
-  return searchCatalog(session.searchable ?? [], query, {
-    rerankers: ctx.options.rerankers ?? [],
-    onError: (error, stage) => console.error(JSON.stringify({ type: "tool_search_rerank_failed", reranker: stage.kind, agent: session.header.id, error: safeError(error) })),
-    onRanked: ({ cost }) => toolSearchUsage(ctx, session, cost, 1),
-  });
-}
-
-function toolSearchUsage(ctx: ToolsContext, session: Session, usd: number, searches: number) {
-  const usage: UsageRecord = { provider: "runtime", model: "tool_search", usage: { cost: { total: usd } }, platform: true, toolSearch: true, toolSearches: searches };
-  ctx.options.onUsage?.(session.header.tenant, session.header.id, usage);
-  ctx.endUserCharge(session.header.id, usage);
-}

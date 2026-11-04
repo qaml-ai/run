@@ -4,7 +4,7 @@ import { listen, OPERATOR, OTHER_OPERATOR, runtime, sleep, toolCall, until, watc
 
 const usage = { prompt_tokens: 100, completion_tokens: 20 };
 async function setup(t: Parameters<typeof runtime>[0]) {
-  const r = await runtime(t, (_body, index) => index % 2 === 0 ? { ...toolCall("js_exec", { code: "console.log('hi'); return 1" }, `call_${index}`), usage } : { content: "done", usage });
+  const r = await runtime(t, (_body, index) => index % 2 === 0 ? { ...toolCall("codemode", { code: "console.log('hi'); return 1" }, `call_${index}`), usage } : { content: "done", usage });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const other = (await r.call("/v1/agents", { body: { name: "other" } })).json.id as string;
   const mint = async (body: object = {}, id = agent, token?: string) => r.call(`/v1/agents/${id}/browser-tokens`, { body, token });
@@ -154,7 +154,7 @@ test("a snapshot shows a token's reader only what its scopes and event list let 
 test("a token that redacts usage.cost reads no cost anywhere: the catalog's or the provider's, in events, snapshots, state, history and inputs", async t => {
   // The provider reports its own cost (OpenRouter's usage.cost), which the runtime keeps as usage.providerCost and providerCreditCost.
   const priced = { prompt_tokens: 100, completion_tokens: 20, cost: 0.0123 };
-  const r = await runtime(t, (_body, index) => index % 2 === 0 ? { ...toolCall("js_exec", { code: "return 1" }, `call_${index}`), usage: priced } : { content: "done", usage: priced });
+  const r = await runtime(t, (_body, index) => index % 2 === 0 ? { ...toolCall("codemode", { code: "return 1" }, `call_${index}`), usage: priced } : { content: "done", usage: priced });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const token = (await r.call(`/v1/agents/${agent}/browser-tokens`, { body: { redact: ["usage.cost"] } })).json.token as string;
   const costs = (value: unknown, path = "$"): string[] => !value || typeof value !== "object" ? []

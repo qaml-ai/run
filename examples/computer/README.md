@@ -84,7 +84,7 @@ useful for testing your own attached-tool service. Their receipts are in memory.
 
 Neither path provides snapshots, pause/resume, desktop streaming, GPUs or
 transferring files automatically between the computer and camelRun volumes.
-The restricted `js_exec` remains separate from the computer environment.
+The restricted `codemode` remains separate from the computer environment.
 
 Provider references: [Modal sandboxes](https://modal.com/docs/guide/sandboxes),
 [Daytona SDK](https://www.daytona.io/docs/en/python-sdk/sync/daytona/),

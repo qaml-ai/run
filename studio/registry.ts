@@ -15,7 +15,7 @@ export function snapshotAgent(snapshot: RegistrySnapshot, previous: Run[]): Agen
   for (const request of snapshot.requests) {
     if (!request.startedAt || !['prompt', 'execute'].includes(request.method)) continue;
     const run: Run = runs.get(request.id) ?? { id: request.id, prompt: request.prompt ?? 'Code execution', mode: request.method === 'prompt' ? 'live' : 'scripted', started: request.startedAt, status: 'running', answer: '', traces: [], tokens: 0, cost: 0, cursor: 0 };
-    if (request.code && !run.traces.some(t => t.kind === 'code')) run.traces.push({ at: run.started, kind: 'code', name: 'js_exec', code: request.code });
+    if (request.code && !run.traces.some(t => t.kind === 'code')) run.traces.push({ at: run.started, kind: 'code', name: 'codemode', code: request.code });
     const first = snapshot.events[0]?.id ?? 0;
     if (first > (run.cursor ?? 0) + 1 && !run.traces.some(t => t.kind === 'gap')) run.traces.push({ at: run.started, kind: 'gap', error: 'Some earlier events are no longer in the runtime replay window.' });
     for (const entry of snapshot.events) {

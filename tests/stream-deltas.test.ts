@@ -130,7 +130,7 @@ test("a snapshot too large for one frame drops the turn's finished messages firs
 });
 
 test("a tool call's updates are Pi's, less the message: toolcall_start names the call, toolcall_end carries it", async t => {
-  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("js_exec", { code: "return 1" }) : { content: "done" });
+  const r = await runtime(t, (_body, index) => index === 0 ? toolCall("codemode", { code: "return 1" }) : { content: "done" });
   const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
   const watcher = await watchEvents(t, `${r.base}/v1/agents/${agent}/events`, { Authorization: `Bearer ${OPERATOR}` }, { query: "" });
   const done = await r.prompt(agent, "go");
@@ -138,7 +138,7 @@ test("a tool call's updates are Pi's, less the message: toolcall_start names the
   const calls = updates(watcher.frames).map(event => event.assistantMessageEvent).filter(delta => delta.type.startsWith("toolcall_"));
   // The call's id and name, which Pi's start carries only in the message, as fields of their own: never as a toolCall
   // (a consumer that reads toolcall_start's toolCall, like chiridion's relay, would take it for a whole call).
-  assert.deepEqual(calls.find(delta => delta.type === "toolcall_start"), { type: "toolcall_start", contentIndex: 0, id: "call_js_exec", name: "js_exec" });
-  assert.equal(calls.find(delta => delta.type === "toolcall_end").toolCall.name, "js_exec");
+  assert.deepEqual(calls.find(delta => delta.type === "toolcall_start"), { type: "toolcall_start", contentIndex: 0, id: "call_codemode", name: "codemode" });
+  assert.equal(calls.find(delta => delta.type === "toolcall_end").toolCall.name, "codemode");
   for (const delta of updates(watcher.frames).map(event => event.assistantMessageEvent)) assert.equal(delta.partial ?? delta.message ?? delta.error, undefined);
 });

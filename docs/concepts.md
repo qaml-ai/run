@@ -75,7 +75,7 @@ A `Run` has:
 | `inputs` | what it waits on, each with `answer()` |
 | `error` | `{code, message, uncertain?}` when it failed |
 | `toolErrors` | tool calls that did not complete (timed out, connection lost, no process serving the tools); the model was told and carried on |
-| `toolCalls` | every tool call the run made (the first 100), calls from `js_exec`'s code included: `{tool, toolCallId, innerCallId?, ok, code?, agentId?}`. A `delegate` call names its sub-agent (`agentId`). Arguments and results are in history |
+| `toolCalls` | every tool call the run made (the first 100), calls from `codemode`'s code included: `{tool, toolCallId, innerCallId?, ok, code?, agentId?}`. A `delegate` call names its sub-agent (`agentId`). Arguments and results are in history |
 | `files` | files the run wrote |
 | `usage` | what its model calls used, where the runtime reports it; `subagentCostUsd`, what its sub-agents spent; `imageCostUsd`, what its `generate_image` calls cost; `decisionCostUsd`, what its `decide` calls cost |
 
@@ -216,7 +216,7 @@ An agent's tools come from four kinds of place. Pick by where your code runs:
 The same `tool({...})` definitions work attached and served, so you can start
 attached and move to served without changing a tool (see [Several processes,
 workers and deploys](guides/tools.md#several-processes-workers-and-deploys)). Every agent also has file
-tools over its [files](guides/files.md), and `js_exec`, a sandbox where the model
+tools over its [files](guides/files.md), and `codemode`, a sandbox where the model
 writes code that calls all of its tools. See [Tools](guides/tools.md).
 
 ## Processes and connections

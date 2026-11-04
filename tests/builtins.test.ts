@@ -15,7 +15,7 @@ test("HTML is reduced to the text a reader sees", () => {
   assert.deepEqual(readableText(PAGE), { title: "Release notes & more", text: "Home\n\nHello\n\nWorld — ok ☺\n\n- one\n- two" });
 });
 
-test("web_fetch reads public pages as text, from the model and js_exec, and never reaches inside", async t => {
+test("web_fetch reads public pages as text, from the model and codemode, and never reaches inside", async t => {
   const pages = await listen(t, (req, res) => {
     if (req.url === "/page") return res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(PAGE);
     if (req.url === "/moved") return res.writeHead(302, { Location: "/page" }).end();
@@ -28,7 +28,7 @@ test("web_fetch reads public pages as text, from the model and js_exec, and neve
     toolCall("web_fetch", { url: `${pages}/moved` }),
     toolCall("web_fetch", { url: `${pages}/meta` }),
     toolCall("web_fetch", { url: `${pages}/binary` }),
-    toolCall("js_exec", { code: `const page = await tools.web_fetch({ url: "${pages}/long", maxCharacters: 1000 }); return [page.text.length, page.truncated, page.totalCharacters].join(",");` }),
+    toolCall("codemode", { code: `const page = await tools.web_fetch({ url: "${pages}/long", maxCharacters: 1000 }); return [page.text.length, page.truncated, page.totalCharacters].join(",");` }),
   ][index] ?? { role: "assistant", content: "done" }, LOCAL);
   assert.equal((await r.call("/v1/definitions", { body: { name: "Bad", builtins: ["web_browse"] } })).status, 400);
   assert.equal((await r.call("/v1/definitions", { body: { name: "Bad", builtins: ["schedule", "schedule"] } })).status, 400);

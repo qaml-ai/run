@@ -45,7 +45,7 @@ test("the SDK still takes history: \"none\" (ignored), codeMode and configHash",
   const body = r.model.bodies.at(-1);
   assert.deepEqual(userTexts(body).map((text: string) => text.includes("First question") || text.includes("Second question")), [true, true]);
   assert.deepEqual(body.tool_choice, { type: "function", function: { name: "final_output" } });
-  assert.doesNotMatch(JSON.stringify(body), /js_exec/);
+  assert.doesNotMatch(JSON.stringify(body), /codemode/);
 });
 
 test("a schedule's history: \"none\", sent or stored, is accepted and ignored: its wake-up sees the agent's history", async t => {

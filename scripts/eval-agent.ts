@@ -1,4 +1,4 @@
-// Measures how directly an agent gets realistic work done: tool calls (by name), js_exec calls,
+// Measures how directly an agent gets realistic work done: tool calls (by name), codemode calls,
 // model turns, tokens, cost, wall time and success, checked the way the examples check. Each run
 // makes a fresh agent, so the numbers compare conditions (a runtime version, a model) fairly.
 //
@@ -6,7 +6,7 @@
 //     node --experimental-strip-types scripts/eval-agent.ts [--runs 3] [--scenarios files,discovery,state,plain,list] [--label before]
 //   node --experimental-strip-types scripts/eval-agent.ts --summary .agent-runtime/eval/before.jsonl .agent-runtime/eval/after.jsonl
 //
-// Each run appends a line to .agent-runtime/eval/<label>.jsonl, and its events (js_exec code included) to
+// Each run appends a line to .agent-runtime/eval/<label>.jsonl, and its events (codemode code included) to
 // .agent-runtime/eval/<label>/<scenario>-<n>.jsonl, to read what the model did.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { AgentRuntime, schema, tool, type Tools } from "../clients/node.ts";
@@ -24,10 +24,10 @@ function files(): Scenario {
   const csv = ["month,region,revenue", ...rows.map(row => `${row.month},${row.region},${row.revenue}`)].join("\n");
   const totals = Object.fromEntries(regions.map(region => [region, rows.filter(row => row.region === region).reduce((sum, row) => sum + row.revenue, 0)]));
   return {
-    systemPrompt: "You are an analyst. Do arithmetic in js_exec with fs, never in your head. Keep replies short.",
+    systemPrompt: "You are an analyst. Do arithmetic in codemode with tools.read and tools.write, never in your head. Keep replies short.",
     async run({ agent }) {
       const result = await agent.prompt(
-        "Attached are sales.csv, policy.pdf and logo.png. In js_exec, read the CSV with fs and total revenue per region. " +
+        "Attached are sales.csv, policy.pdf and logo.png. In codemode, read the CSV with tools.read and total revenue per region. " +
         "Check each total against the annual target stated in the PDF. Tell me the logo's main colour. " +
         "Write /workspace/out/report.md (a table of totals, which regions meet the target, the colour) and " +
         "/workspace/out/chart.svg (a bar chart of the totals), then present both with present_file.",
@@ -124,7 +124,7 @@ function state(): Scenario {
   const refunded = orders.filter(order => order.refunded).length;
   const PAGE = 100;
   return {
-    systemPrompt: "You are an analyst for an equipment wholesaler. Compute in js_exec; never estimate. Keep replies short.",
+    systemPrompt: "You are an analyst for an equipment wholesaler. Compute in codemode; never estimate. Keep replies short.",
     tools: {
       orders__list: tool({ description: `List orders, ${PAGE} per page (page from 1). Each order: id, date, region, product, units, unitPrice, refunded. nextPage is null on the last page.`,
         input: schema.Object({ page: schema.Integer({ minimum: 1 }) }, { additionalProperties: false }),
@@ -222,9 +222,9 @@ async function evaluate(label: string, name: string, index: number) {
   catch (error) { failures = [`error: ${(error as Error).message}`]; }
   finally { await agent.destroy().catch(() => {}); }
   const row = { label, scenario: name, run: index, model: process.env.AGENT_MODEL ?? "openrouter/deepseek/deepseek-v4.1-flash-1017", success: !failures.length, failures,
-    toolCalls, jsExec: toolCalls.js_exec ?? 0, calls: Object.values(toolCalls).reduce((a, b) => a + b, 0), appCalls, turns, ...usage, wallMs: Date.now() - started };
+    toolCalls, codeMode: toolCalls.codemode ?? 0, calls: Object.values(toolCalls).reduce((a, b) => a + b, 0), appCalls, turns, ...usage, wallMs: Date.now() - started };
   appendFileSync(`${DIR}/${label}.jsonl`, JSON.stringify(row) + "\n");
-  console.log(`${name} #${index}: ${row.success ? "ok" : `FAILED (${failures.join("; ")})`}, ${row.calls} calls (${row.jsExec} js_exec), ${turns} turns, ${usage.input + usage.cacheRead + usage.cacheWrite} in / ${usage.output} out, $${usage.cost.toFixed(3)}, ${(row.wallMs / 1000).toFixed(0)} s`);
+  console.log(`${name} #${index}: ${row.success ? "ok" : `FAILED (${failures.join("; ")})`}, ${row.calls} calls (${row.codeMode} codemode), ${turns} turns, ${usage.input + usage.cacheRead + usage.cacheWrite} in / ${usage.output} out, $${usage.cost.toFixed(3)}, ${(row.wallMs / 1000).toFixed(0)} s`);
   return row;
 }
 
@@ -233,10 +233,10 @@ function summary(paths: string[]) {
   const rows = paths.flatMap(path => readFileSync(path, "utf8").trim().split("\n").map(line => JSON.parse(line)));
   const groups = Map.groupBy(rows, row => `${row.scenario}\t${row.label}`);
   const mean = (list: any[], key: (row: any) => number) => (list.reduce((sum, row) => sum + key(row), 0) / list.length);
-  console.log("| scenario | label | runs | success | tool calls | js_exec | turns | input tokens | output tokens | cost | wall s |\n|---|---|---|---|---|---|---|---|---|---|---|");
+  console.log("| scenario | label | runs | success | tool calls | codemode | turns | input tokens | output tokens | cost | wall s |\n|---|---|---|---|---|---|---|---|---|---|---|");
   for (const [key, list] of [...groups].sort()) {
     const [scenario, label] = key.split("\t");
-    console.log(`| ${scenario} | ${label} | ${list.length} | ${list.filter(row => row.success).length}/${list.length} | ${mean(list, row => row.calls).toFixed(1)} | ${mean(list, row => row.jsExec).toFixed(1)} | ${mean(list, row => row.turns).toFixed(1)} | ${mean(list, row => row.input + row.cacheRead + row.cacheWrite).toFixed(0)} | ${mean(list, row => row.output).toFixed(0)} | $${mean(list, row => row.cost).toFixed(3)} | ${mean(list, row => row.wallMs / 1000).toFixed(0)} |`);
+    console.log(`| ${scenario} | ${label} | ${list.length} | ${list.filter(row => row.success).length}/${list.length} | ${mean(list, row => row.calls).toFixed(1)} | ${mean(list, row => row.codeMode).toFixed(1)} | ${mean(list, row => row.turns).toFixed(1)} | ${mean(list, row => row.input + row.cacheRead + row.cacheWrite).toFixed(0)} | ${mean(list, row => row.output).toFixed(0)} | $${mean(list, row => row.cost).toFixed(3)} | ${mean(list, row => row.wallMs / 1000).toFixed(0)} |`);
   }
 }
 

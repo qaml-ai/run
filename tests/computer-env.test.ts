@@ -84,13 +84,13 @@ test("computer Pi read/write/edit round trip, windows, conflict, binary and miss
   assert.equal((await env.exists("/computer/missing", BACKGROUND_CONTEXT)).ok, true);
 });
 
-test("routing covers mounts, stopped and absent computers, fs helpers, listings and searches", async t => {
+test("routing covers mounts, stopped and absent computers, reads and writes, listings and searches", async t => {
   const f = await fixture(t);
   f.seed("v", "/local", "local");
   assert.equal((await f.call("read", { path: "local" })).content[0].text, "local");
-  await f.call("fs.writeFile", { path: "/computer/sub/hello.txt", text: "hello\nworld" });
-  assert.equal((await f.call("fs.readFile", { path: "/computer/sub/hello.txt", encoding: "utf8" })).text, "hello\nworld");
-  assert.equal((await f.call("fs.stat", { path: "/computer/sub" })).type, "directory");
+  await f.call("write", { path: "/computer/sub/hello.txt", content: "hello\nworld" });
+  assert.equal((await f.call("read", { path: "/computer/sub/hello.txt" })).content[0].text, "hello\nworld");
+  assert.equal((await f.call("ls", { path: "/computer" })).entries.find((entry: any) => entry.name === "sub").type, "directory");
   assert.equal((await f.call("ls", { path: "/" })).entries.at(-1).name, "computer");
   assert.equal((await f.call("ls", { path: "/computer/sub" })).entries[0].name, "hello.txt");
   assert.deepEqual((await f.call("glob", { path: "/computer", pattern: "**/*.{txt,md}" })).paths, ["/computer/sub/hello.txt"]);
@@ -176,11 +176,11 @@ test("small computer bytes use one inline data command; large reads and writes t
   const execute = f.computer.exec;
   f.computer.exec = async (command, receipts) => { commands.push(command); return execute(command, receipts); };
   const small = Buffer.alloc(32 * 1024, 255);
-  await f.call("fs.writeFile", { path: "/computer/small", data: small.toString("base64") });
+  await f.call("write", { path: "/computer/small", content: small.toString("base64"), encoding: "base64" });
   assert.equal(f.transfers(), 0);
   assert.equal(commands.filter(c => c.includes("base64 -d")).length, 1);
   commands.length = 0;
-  assert.equal((await f.call("fs.readFile", { path: "/computer/small" })).data, small.toString("base64"));
+  assert.equal((await f.call("read", { path: "/computer/small", encoding: "base64" })).data, small.toString("base64"));
   assert.equal(commands.filter(c => c.includes("tail -c")).length, 1);
   assert.ok(commands.every(c => !c.includes("dd ") && !c.includes("base64 -w0 | base64")));
   assert.equal(f.transfers(), 0);
@@ -202,7 +202,7 @@ test("failed transfer receipts and concurrent large writes clean scratch and pre
   await f.call("write", { path: "/computer/file", content: "original" });
   const transfer = f.computer.transfer;
   f.computer.transfer = async (...args) => { await transfer(...args); return { size: 40000, sha256: "bad" }; };
-  await assert.rejects(f.call("fs.writeFile", { path: "/computer/file", data: Buffer.alloc(40000).toString("base64") }), /receipt mismatch/);
+  await assert.rejects(f.call("write", { path: "/computer/file", content: Buffer.alloc(40000).toString("base64"), encoding: "base64" }), /receipt mismatch/);
   assert.equal(await readFile(join(f.home, "file"), "utf8"), "original");
   assert.equal(f.data.size, 0);
   assert.deepEqual(await readdir(f.home), ["file"]);

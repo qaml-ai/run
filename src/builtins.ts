@@ -99,7 +99,7 @@ const DEFINITIONS: Record<string, ToolDefinition> = {
   },
   x_search: {
     name: "x_search", exposure: "both",
-    description: "Search X posts with Grok and return a summary, source citations, and usage. Use for recent discussion, specialist commentary, and reported claims; corroborate important claims with primary sources. Optional handle filters and dates narrow the search. toDate is exclusive, in UTC. Your main model stays the same. A search can take two minutes; call directly or give js_exec a timeoutMs of 150000.",
+    description: "Search X posts with Grok and return a summary, source citations, and usage. Use for recent discussion, specialist commentary, and reported claims; corroborate important claims with primary sources. Optional handle filters and dates narrow the search. toDate is exclusive, in UTC. Your main model stays the same. A search can take two minutes: call it directly.",
     parameters: { type: "object", additionalProperties: false, required: ["query"], properties: {
       query: { type: "string", minLength: 1, maxLength: X_SEARCH.queryCharacters },
       allowedHandles: { type: "array", minItems: 1, maxItems: 20, items: { type: "string", pattern: "^@?[A-Za-z0-9_]{1,15}$" }, description: "Only these handles; cannot be combined with excludedHandles" },

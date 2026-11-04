@@ -121,7 +121,7 @@ test("a tenant's OpenAI-compatible provider: stored sealed, listed with its mode
 test("a server without usage or finish_reason (so declared) still runs tools; images reach only a model declared to see them", async t => {
   const server = await chatServer(t, (body, index) => {
     if (body.messages.at(-1).role === "tool") return { text: `tool said ${body.messages.at(-1).content}` };
-    return index === 0 ? { tool: { name: "js_exec", args: { code: "return 6 * 7" } } } : { text: "seen" };
+    return index === 0 ? { tool: { name: "codemode", args: { code: "return 6 * 7" } } } : { text: "seen" };
   }, { bare: true });
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
   const models = [
@@ -132,11 +132,11 @@ test("a server without usage or finish_reason (so declared) still runs tools; im
   const agent = (await r.call("/v1/agents", { body: { model: "local/text-only" } })).json.id;
   const done = await r.prompt(agent, "Compute");
   assert.equal(done.state, "completed", JSON.stringify(done.outcome));
-  assert.match(done.outcome.result.reply, /tool said .*42/);
+  assert.match(done.outcome.result.reply, /tool said [\s\S]*42/);
   assert.equal(server.headers[0].authorization, undefined, "no key, no Authorization");
   assert.equal(server.bodies[0].stream_options, undefined, "usage is not asked of a server that has none");
   assert.equal(server.bodies[0].max_tokens, 8192, "max_tokens, at the default for a model that declares no maximum");
-  assert.ok(server.bodies[0].tools.some((tool: any) => tool.function.name === "js_exec"));
+  assert.ok(server.bodies[0].tools.some((tool: any) => tool.function.name === "codemode"));
   assert.equal(done.outcome.result.usage.costUsd, 0, "no pricing, no cost");
 
   const image = [{ name: "dot.png", data: PNG.toString("base64") }];

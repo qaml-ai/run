@@ -206,8 +206,8 @@ test("fileArguments: other parties' servers are not offered or sent files unless
   const done = { role: "assistant", content: "done" };
   const steps = [
     toolCall("app__attach", { attachment: { $file: "/workspace/report.pdf" } }),
-    toolCall("js_exec", { code: "try { await tools.app__loose({ attachment: { $file: 'report.pdf' } }); return 'sent'; } catch (error) { return String(error.message); }" }),
-    toolCall("js_exec", { code: "try { await tools.docs__upload({ body: { file: { $file: 'report.pdf' } } }); return 'sent'; } catch (error) { return String(error.message); }" }),
+    toolCall("codemode", { code: "try { await tools.app__loose({ attachment: { $file: 'report.pdf' } }); return 'sent'; } catch (error) { return String(error.message); }" }),
+    toolCall("codemode", { code: "try { await tools.docs__upload({ body: { file: { $file: 'report.pdf' } } }); return 'sent'; } catch (error) { return String(error.message); }" }),
     done,
     toolCall("app__attach", { attachment: { $file: "/workspace/report.pdf" } }),
   ];

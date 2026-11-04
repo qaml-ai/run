@@ -189,7 +189,7 @@ test("send returns the request as soon as the runtime has it; wait gets its run"
 });
 
 test("a run takes limits of its own: at its maxResponses it stops as turn_limit, and the agent's stay as they were", async t => {
-  const { make, r } = await setup(t, (_body, index) => toolCall("js_exec", { code: `return ${index}` }, `call_${index}`));
+  const { make, r } = await setup(t, (_body, index) => toolCall("codemode", { code: `return ${index}` }, `call_${index}`));
   const agent = await make();
   const run = await agent.run("Go", { runLimits: { maxResponses: 2 }, throwOnError: false });
   assert.equal(run.raw?.stopped, "turn_limit");
@@ -201,7 +201,7 @@ test("a run takes limits of its own: at its maxResponses it stops as turn_limit,
 
 test("a run takes a budget of its own", async t => {
   // Every response costs something and asks for another tool call: only the budget ends the run.
-  const { make } = await setup(t, (_body, index) => ({ ...toolCall("js_exec", { code: `return ${index}` }, `call_${index}`), usage: { prompt_tokens: 100_000, completion_tokens: 0 } }));
+  const { make } = await setup(t, (_body, index) => ({ ...toolCall("codemode", { code: `return ${index}` }, `call_${index}`), usage: { prompt_tokens: 100_000, completion_tokens: 0 } }));
   const agent = await make();
   const run = await agent.run("Go", { spendLimit: { usd: 0.001 }, throwOnError: false });
   assert.equal(run.raw?.stopped, "spend_limit");

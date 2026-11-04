@@ -12,13 +12,12 @@ import { callableFromCode, legacyFormatRefused, type AgentConfig, type CallConte
 import type { RequestMethod } from "../shared/client-protocol.ts";
 import type { ChildProcess } from "node:child_process";
 import { validateDefinitions, validateToolCall } from "./tool-policy.ts";
-import { searchQuery, searchTools } from "./tool-search.ts";
 import { jsonWithinLimit, SANDBOX_LIMITS } from "./limits.ts";
 import type { Storage } from "../shared/storage.ts";
 import { fileAppendLog, type AppendLog } from "../shared/append-log.ts";
 import type { Claim } from "./ownership.ts";
 import { createAgentHost, type LegacyLog } from "./agent-host.ts";
-import type { CodeExecutor } from "./codemode.ts";
+import type { CodeSandboxes } from "./codemode-pi-launcher.ts";
 import type { Outbound } from "./outbound.ts";
 import { buggify } from "./buggify.ts";
 import { closeInterruptedTurn } from "./history.ts";
@@ -39,7 +38,7 @@ export const transcriptPath = (directory: string) => join(directory, "transcript
  */
 export type Hosting = "process" | "inline";
 type Common = { bridge: ToolBridge; calls: Set<AbortController>; listeners: Set<(event: any) => void>; legacy: AppendLog<unknown>; durable?: PiStorage };
-/** An agent process's js_exec turns (`codeSlot`), by its id for them: waiting (`release` unset) or held. */
+/** An agent process's code turns (`codeSlot`), by its id for them: waiting (`release` unset) or held. */
 type CodeSlots = Map<string, { controller: AbortController; release?: () => void }>;
 type ProcessHandle = Common & { kind: "process"; child: ChildProcess; rpc: Rpc; slots: CodeSlots; watchdog?: NodeJS.Timeout };
 type InlineHandle = Common & { kind: "inline"; host: ReturnType<typeof createAgentHost>; stop: (error: Error) => void; stopped: Promise<never> };
@@ -56,8 +55,8 @@ type SupervisorOptions = {
   piRetryMs?: number;
   /** An agent process is pinged this often, and killed once a ping has gone this long unanswered (default 5 s and 30 s). */
   pingMs?: number; unresponsiveMs?: number;
-  /** Where inline agents run js_exec (src/codemode.ts): this process's v8-exec runner unless given. Agent processes always use their own. */
-  codeExecutor?: CodeExecutor;
+  /** Where inline agents run code (codemode-pi-launcher.ts): this process's v8-exec runner unless given. Agent processes always use their own. */
+  codeSandbox?: CodeSandboxes;
   /** What agent processes are told of the node's settings (`agentProcessEnv`); this process's own unless given. */
   agentEnv?: Record<string, string>;
   /** The outbound policy inline agents' model calls go through (agent processes get it in `agentEnv`). */
@@ -263,7 +262,7 @@ export class AgentSupervisor {
     const cleanup = () => {
       clearInterval(handle.watchdog);
       this.cancelTools(handle);
-      // A process that ends holding js_exec turns gives them back.
+      // A process that ends holding code turns gives them back.
       for (const slot of handle.slots.keys()) this.releaseSlot(handle, slot);
       if (this.agents.get(id) === handle) this.agents.delete(id);
       void handle.legacy.close();
@@ -281,7 +280,6 @@ export class AgentSupervisor {
         return storageRequest(handle.durable, params);
       }
       if (method === "run-limit") return (await handle.bridge.runLimit?.()) ?? null;
-      if (method === "search") return this.search(handle, params);
       if (method === "file") return this.file(handle, params);
       if (method === "model-auth") return this.modelAuth(handle, typeof params?.provider === "string" ? params.provider : undefined);
       if (method === "model-attempt") return handle.bridge.modelAttempt?.(params) ?? false;
@@ -322,7 +320,7 @@ export class AgentSupervisor {
     handle.watchdog.unref();
   }
 
-  /** Wait for a js_exec turn for an agent process (`ToolBridge.codeSlot`); it is held under `id` until `releaseSlot`. */
+  /** Wait for a code turn for an agent process (`ToolBridge.codeSlot`); it is held under `id` until `releaseSlot`. */
   private async codeSlot(handle: ProcessHandle, id: unknown) {
     if (typeof id !== "string" || id.length > 64 || handle.slots.has(id)) throw new Error("Invalid code slot");
     if (!handle.bridge.codeSlot) return null;
@@ -346,14 +344,7 @@ export class AgentSupervisor {
     return null;
   }
 
-  /** `tools.search` from an agent's code: the bridge's search (with rerankers), else keywords over its code-mode tools. */
-  private search(handle: Handle, params: unknown) {
-    const query = searchQuery(params);
-    if (handle.bridge.search) return handle.bridge.search(query);
-    return searchTools(handle.bridge.definitions.filter(callableFromCode), query);
-  }
-
-  /** An agent's js_exec `fs` call: cancelled with its tool calls, and bounded like a tool result. */
+  /** A file operation of the agent's host (a long tool result saved): cancelled with its tool calls, and bounded like a tool result. */
   private async dispatchFs(handle: Handle, params: { op: string; args: Record<string, unknown> }) {
     if (!handle.bridge.fs) throw new Error("fs is not available: this agent has no files");
     const controller = new AbortController();
@@ -404,13 +395,12 @@ export class AgentSupervisor {
       tool: (name, args, call) => this.dispatchTool(handle, { name, args: structuredClone(args), ...call }),
       cancelTools: async () => this.cancelTools(handle),
       runLimit: async () => handle.bridge.runLimit?.(),
-      search: async query => structuredClone(await this.search(handle, structuredClone(query))),
       file: ref => this.file(handle, structuredClone(ref)),
       modelAuth: provider => this.modelAuth(handle, provider),
       modelAttempt: event => handle.bridge.modelAttempt?.(structuredClone(event)) ?? Promise.resolve(false),
       fs: (op, args) => this.dispatchFs(handle, structuredClone({ op, args })),
       codeSlot: signal => handle.bridge.codeSlot?.(signal) ?? Promise.resolve(() => {}),
-      ...(this.options.codeExecutor ? { codeExecutor: this.options.codeExecutor } : {}),
+      ...(this.options.codeSandbox ? { codeSandbox: this.options.codeSandbox } : {}),
       ...(this.options.modelOutbound ? { modelOutbound: this.options.modelOutbound } : {}),
       lease: async () => { await handle.bridge.lease?.(); },
     });

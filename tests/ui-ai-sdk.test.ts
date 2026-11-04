@@ -57,14 +57,15 @@ async function reply(stream: ReadableStream<any>, message?: UIMessage) {
 const userMessage = (id: string, text: string): UIMessage => ({ id, role: "user", parts: [{ type: "text", text }] });
 
 test("useChat's transport sends the new message and streams the agent's reply, tool calls included", async t => {
-  const { transport } = await setup(t, index => index === 0 ? callDeltas("call_1", "js_exec", { code: "return 6 * 7" }) : words("The answer is 42."));
+  const { transport } = await setup(t, index => index === 0 ? callDeltas("call_1", "codemode", { code: "return 6 * 7" }) : words("The answer is 42."));
   const stream = await transport.sendMessages({ trigger: "submit-message", chatId: "chat-1", messageId: undefined, messages: [userMessage("msg_00000001", "What is 6 * 7?")], abortSignal: undefined });
   const message = await reply(stream);
   assert.equal(message.role, "assistant");
   const types = message.parts.map(part => part.type).filter(type => type !== "step-start");
   assert.deepEqual(types, ["dynamic-tool", "text"]);
   const tool = message.parts.find(part => part.type === "dynamic-tool") as any;
-  assert.deepEqual([tool.toolName, tool.state, tool.input, tool.output], ["js_exec", "output-available", { code: "return 6 * 7" }, 42]);
+  assert.deepEqual([tool.toolName, tool.state, tool.input], ["codemode", "output-available", { code: "return 6 * 7" }]);
+  assert.match(String(tool.output), /Script completed[\s\S]*Output:\n+42/);
   assert.equal((message.parts.find(part => part.type === "text") as any).text, "The answer is 42.");
   // The agent has the conversation: the history reads back as UI messages, the sent message by its id.
   const history = await transport.loadMessages({ chatId: "chat-1" });

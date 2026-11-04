@@ -94,7 +94,7 @@ test("a fork may act for someone else and carry its own prompt addition and mode
 
 test("a fork ends at a message: that message and the tool results answering it, or a request's whole turn", async t => {
   const r = await runtime(t, body => lastUser(body) === "use a tool" && !body.messages.some((message: any) => message.role === "tool")
-    ? toolCall("js_exec", { code: "return 6 * 7" }) : answering()(body), roomy);
+    ? toolCall("codemode", { code: "return 6 * 7" }) : answering()(body), roomy);
   const source = (await r.call("/v1/agents", { body: {} })).json.id as string;
   await r.prompt(source, "one");
   const second = await r.prompt(source, "use a tool");

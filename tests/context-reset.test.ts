@@ -19,10 +19,10 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const system = (fields: Partial<SystemMessage>): SystemMessage => ({ role: "system", content: "", timestamp: 1, ...fields });
 const user = (text: string): AgentMessage => ({ role: "user", content: text, timestamp: 2 });
-const assistant = (calls: string[], text = ""): AgentMessage => ({ role: "assistant", content: [...text ? [{ type: "text" as const, text }] : [], ...calls.map(id => ({ type: "toolCall" as const, id, name: "js_exec", arguments: {} }))],
+const assistant = (calls: string[], text = ""): AgentMessage => ({ role: "assistant", content: [...text ? [{ type: "text" as const, text }] : [], ...calls.map(id => ({ type: "toolCall" as const, id, name: "codemode", arguments: {} }))],
   api: "openai-completions", provider: "openrouter", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
   stopReason: calls.length ? "toolUse" : "stop", timestamp: 3 } as AgentMessage);
-const result = (id: string, text: string): AgentMessage => ({ role: "toolResult", toolCallId: id, toolName: "js_exec", content: [{ type: "text", text }], isError: false, timestamp: 4 } as AgentMessage);
+const result = (id: string, text: string): AgentMessage => ({ role: "toolResult", toolCallId: id, toolName: "codemode", content: [{ type: "text", text }], isError: false, timestamp: 4 } as AgentMessage);
 
 /** Every entry of the root from `from` on, read after the reset (the stubs restored). */
 async function entriesFrom(storage: Storage, from: number) {
@@ -50,7 +50,7 @@ for (const backend of ["sqlite", "postgres"] as const) test(`${backend} resets a
   const db = backend === "postgres" ? (await testDatabase()).db : undefined;
   const storage = await openPiStorage({ sessionId: "reset-test", directory, db });
   t.after(async () => { await storage.close(context); await rm(directory, { recursive: true, force: true }); });
-  const tools = [{ name: "js_exec", description: "run", parameters: { type: "object", properties: {} } }, { name: "old", description: "gone", parameters: { type: "object", properties: {} } }];
+  const tools = [{ name: "codemode", description: "run", parameters: { type: "object", properties: {} } }, { name: "old", description: "gone", parameters: { type: "object", properties: {} } }];
   const leading = system({ content: "BASE INSTRUCTIONS", sections: { instructions: "be brief", environment: "env v1" }, toolsAdded: tools as never });
   const big = "x".repeat(40_000);
   const messages = [user("first"), assistant(["c1"]), result("c1", big), assistant(["c2"]), result("c2", big), assistant([], "done")];
@@ -118,7 +118,7 @@ for (const backend of ["sqlite", "postgres"] as const) test(`${backend} resets a
 test("a context too large to load resets over the API, and the next prompt runs from the new context", { timeout: 90_000 }, async t => {
   let mode: "answer" | "fill" | "slow" = "answer";
   let release: () => void = () => {};
-  const r = await runtime(t, (_body, index) => mode === "fill" ? toolCall("js_exec", { code: 'return "x".repeat(8192)' }, `call_${index}`)
+  const r = await runtime(t, (_body, index) => mode === "fill" ? toolCall("codemode", { code: 'return "x".repeat(8192)' }, `call_${index}`)
     : mode === "slow" ? { role: "assistant", content: "slow", wait: new Promise<void>(resolve => { release = resolve; }) } : { role: "assistant", content: "fine" }, {
     AGENT_CONTEXT_RANGE_MAX_BYTES: "65536", AGENT_IDLE_MS: "1000",
   });
