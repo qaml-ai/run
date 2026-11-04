@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runtime, toolCall, toolResults, until } from "./runtime-server.ts";
+import { runtime, toolCall, until } from "./runtime-server.ts";
 import { childPrompt } from "../src/client-sessions/delegation.ts";
 import { visible } from "../src/client-sessions/state.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
@@ -26,7 +26,8 @@ for (const tool of ["delegate", "spawn_agent"]) test(`${tool} preserves each sen
     }, "the owner to answer");
   }
   const detail = (await r.call(`/v1/agents/${owner}`)).json;
-  assert.equal(detail.subject, "team:one", "the sender never changes the target's billing principal");
+  assert.equal((await r.db.query("select header->'identity'->>'subject' as subject from agents where id=$1", [owner])).rows[0].subject,
+    "team:one", "the sender never changes the target's billing principal");
   assert.deepEqual(detail.requests.filter((request: any) => request.method === "prompt").map((request: any) => request.actor), ["actor-0", "actor-1"]);
   const messages = (await r.call(`/v1/agents/${owner}/history`)).json.messages.filter((message: any) => message.role === "user");
   assert.deepEqual(messages.map((message: any) => message.from), senders);
