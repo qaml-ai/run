@@ -61,3 +61,8 @@ was the way to reach the workspace, scripts call the file tools instead: the
 model is not offered them, but code can call `tools.read`, `tools.write` and
 the rest. See `docs/guides/tools.md`, `docs/reference/limits.md` and
 `docs/reference/events.md`.
+
+Rolling back to an earlier release is safe for conversations mid-script: it has
+no `codemode` tool, so it ends a `codemode` call left open as interrupted ("Tool
+codemode was interrupted; its outcome is unknown and it may or may not have
+run") and the turn goes on; calls the script had made are not made again.
