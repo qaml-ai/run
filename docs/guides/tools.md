@@ -75,13 +75,14 @@ Code can call your tools with `tools.<name>(args)`, including tools marked
 `toolcall_delta` events. Set `direct` when the model should always see the tool's
 schema, but do not use it to prevent calls from code.
 
-Tools needing approval or human input remain listed and searchable in code.
-Until code can pause for a person, a call that needs their answer fails with a
-message to call the tool directly. Approval policies do not change caller access.
+Tools needing approval or human input are called from code as directly: a call
+that needs a person's answer pauses the turn until they answer, and the script
+goes on from there ([Human input](human-input.md)). Approval policies do not
+change caller access.
 
 Runtime control tools (`codemode`, `final_output`, the background multi-agent
-tools, the channel's `send_message`, and `ask_user`) can only be called directly
-by the model. `delegate` is always declared to the model and scripts can call it too.
+tools and the channel's `send_message`) can only be called directly by the
+model. `delegate` is always declared to the model and scripts can call it too.
 
 The console's agent page shows each tool's exposure (**Tools the model gets**),
 and `GET /v1/agents/:id` its `toolSources`. There is no network in the sandbox:
@@ -827,8 +828,10 @@ the node stopped rejects with an unknown outcome.
 
 Calls from a script use the model's `codemode` call id as `toolCallId` and Pi's
 key (`c1`, `c2`, …) as `innerCallId`. Idempotency keys hash those identities.
-`ask_user` and background multi-agent tools must still be called directly.
-Scripts cannot pause for a person in this release. Use `tools.delegate` to
+A call that needs a person (an approval, a judged call the judge escalates,
+`ask_user`, a tool's own question) ends the run `input_required` and the script
+goes on once they answer; see [Human input](human-input.md). Background
+multi-agent tools must still be called directly. Use `tools.delegate` to
 coordinate sub-agents from a script.
 
 `agent.client.execute(code)` and schedules with `code` use the same sandbox

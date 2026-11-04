@@ -43,6 +43,28 @@ const RoundEndDoc = defineDoc({
   checkpointWhen: () => true,
 });
 
+/**
+ * A host tool call that may run again after its attempt was cut off: it never started its effect (it waits on a person,
+ * or code's calls were held while the run suspended for one). Any other host call cut off ends as interrupted.
+ */
+const ResumableDoc = defineDoc({
+  kind: "camel.call.resumable", version: 1, scope: "task",
+  initial: (): { resumable: boolean } => ({ resumable: false }),
+  // The document retires with its task.
+  checkpointWhen: () => false,
+});
+
+/**
+ * Pi's own record of a code mode run (pi-durable/codemode's CodemodeRunDoc, which it does not export): its `result` is
+ * set once the script ended, whether it finished or refused to go on (only whether it is set is read here), and its
+ * `start.deadline` is when it times out: absolute, so a script's `timeout_ms` counts a person's wait.
+ */
+const CodemodeRunDoc = defineDoc({
+  kind: "pi.codemode.run", version: 1, scope: "task",
+  initial: (): { result?: { [key: string]: never }; start?: { deadline?: number; startedAt: number; seed: number; fingerprint?: string } } => ({}),
+  checkpointWhen: () => false,
+});
+
 interface DurableCursor { entryId: number; index: number }
 /** A failed model request: one whose response failed (`model_error`), or one a lost node or a close left in flight (`interrupted`). */
 export type FailedAttempt = { reason: "model_error" | "interrupted"; message?: AssistantMessage };
@@ -67,6 +89,12 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     extensions?: Extension[];
     /** Where Pi's tools keep files (code mode's cut output and images): `HarnessOptions.env`. */
     env?: HarnessOptions["env"];
+    /**
+     * A call from code waits on a person: the host leaves the code mode call open (`parentCallId`) and the run ends there.
+     * The agent then holds code's new calls, waits for those running to finish, and closes: its code task is left to the
+     * next load, which goes on with it once the person has answered.
+     */
+    onSuspend?: (parentCallId: string) => Promise<void>;
     /** Telemetry only: Pi's held context before conversion, and the request sent. */
     onContextRequest?: (held: number, sent: number) => void;
     contextWindow?: number;
@@ -253,6 +281,20 @@ export class DurableAgent {
   private closing?: Promise<void>;
   /** Entries the host's journal appended (`journalSession`), until they are published. */
   private hostEntries = new Set<number>();
+  /** Host tool calls whose first attempt runs in this process: one Pi runs again without being here was cut off. */
+  private firstAttempts = new Set<string>();
+  /**
+   * Calls from code that have ended or are held in this process, those whose results Pi has yet to commit, and the
+   * suspension a call from code asked for, once one did (`suspend`): the calls Pi had launched by then, which run
+   * before the agent closes, and the agent's close.
+   */
+  private codeDone = new Set<string>();
+  private codeSettling = new Set<Promise<unknown>>();
+  private suspension?: { launched: Promise<Set<string>>; quiet: PromiseWithResolvers<void>; closed: Promise<void> };
+  /** Whether the agent closed, or is closing, for a call from code that waits on a person. */
+  get suspended() { return this.suspension !== undefined; }
+  /** Resolves once a suspension (`suspended`) has closed the agent. */
+  whenSuspended() { return this.suspension?.closed ?? Promise.resolve(); }
 
   private get messages() { return this._messages; }
   /** Pi's context as the agent last read it, with the run's messages since; a change of its system section keys reinstalls the `camel` extension's sections. */
@@ -772,32 +814,91 @@ export class DurableAgent {
     } });
     const native = (this.options.durable.extensions ?? []).flatMap(extension => extension.tools ?? []);
     this.registry.install({ name: "camel", wraps: native.map(tool => wrapTool(tool, announced)), sections: keys.map(key => section(key, input =>
-      !Object.keys(input.shown).length ? this.sections()[key] : input.shown[key] ?? (key === RUNTIME ? this.missingRules() : undefined), { tag: false })), tools: this.tools.map(tool => ({ ...tool, replay: tool.replay === "safe" ? "safe" : "unsafe",
+      !Object.keys(input.shown).length ? this.sections()[key] : input.shown[key] ?? (key === RUNTIME ? this.missingRules() : undefined), { tag: false })), tools: this.tools.map(tool => ({ ...tool,
       structuredOutputSchema: tool.outputSchema,
       // Camel already bounds tool output; a second truncation changes persisted replies.
       outputLimits: { maxBytes: Number.MAX_SAFE_INTEGER, maxLines: Number.MAX_SAFE_INTEGER },
+      // Pi may run any host call again (`replay: "safe"`), and the host decides: a call cut off in an attempt that was not
+      // this process's ends as interrupted, as Pi would end it, unless it never started its effect (`ResumableDoc`).
+      replay: "safe",
       execute: async (args: any, api: any, callContext: any): Promise<any> => {
         const id = api.callId as string;
         // A call from code (Pi names it `<code mode call>/<key>`): its result goes back to the script, so the stream and
         // the round's pending calls never see it.
         const input = id.includes("/") ? (await api.getTask(api.taskId, callContext))?.input : undefined;
         const nested: NestedCall | undefined = input?.kind === "nested" ? { parentCallId: input.parentCallId, parentTaskId: String(input.parent), key: input.key } : undefined;
+        if (!this.firstAttempts.has(id)) {
+          // A call from code whose script ended, or will as it resumes (its deadline passed while it waited), is not made:
+          // Pi goes on with the open nested task by itself.
+          // A call from code goes on only once its script, started again here, makes it again: the script then passed Pi's
+          // checks to resume (its sandbox, its version, its calls so far). One that ends first, or never gets here by its
+          // deadline, takes the call with it, unmade.
+          if (nested && !(await this.remade(nested, input, api, callContext))) {
+            const message = `Tool ${tool.name} was not run: its script did not go on`;
+            return { output: [{ type: "text", text: message }], isError: true, diagnostics: [{ severity: "error", code: "aborted", message }] };
+          }
+          const run = nested ? await api.snapshot(CodemodeRunDoc, input.parent, callContext) : undefined;
+          if (run && (run.result !== undefined || (run.start?.deadline !== undefined && Date.now() >= run.start.deadline))) {
+            const message = `Tool ${tool.name} was not run: its script ended first`;
+            return { output: [{ type: "text", text: message }], isError: true, diagnostics: [{ severity: "error", code: "aborted", message }] };
+          }
+          if (tool.replay !== "safe") {
+            if (!(await api.snapshot(ResumableDoc, api.taskId, callContext))?.resumable) {
+              const message = `Tool ${tool.name} was interrupted and may have partially run`;
+              return { output: [{ type: "text", text: message }], isError: true, diagnostics: [{ severity: "error", code: "interrupted", message }] };
+            }
+            // The mark is used up before the call runs: an attempt cut off from here on may have started its effect.
+            await api.commit(async (tx: Tx) => { (await tx.doc(ResumableDoc, api.taskId)).resumable = false; }, callContext);
+          }
+        }
         if (!nested) {
           await this.flushEvents();
           this.pending.add(id);
           await this.emit({ type: "tool_execution_start", toolCallId: id, toolName: tool.name, args });
         }
-        let result: AgentToolResult;
+        let result: AgentToolResult | undefined;
+        // A call from code that is to run again, from its top, when the agent goes on: one that waits on a person, or one
+        // made while the run suspends for one, which starts nothing. Marked before the agent may close (`suspend`).
+        let held = false;
         try {
-          result = await tool.execute(id, args, callContext.abortSignal, nested ? undefined : partialResult => {
+          // A call Pi launched before the run began to suspend runs (it asks too, if it asks); a later one waits.
+          if (nested && this.suspension && !(await this.suspension.launched).has(id)) held = true;
+          else result = await tool.execute(id, args, callContext.abortSignal, nested ? undefined : partialResult => {
             this.queueEvent(() => this.emit({ type: "tool_execution_update", toolCallId: id, toolName: tool.name, args, partialResult }));
           }, nested);
+          if (nested && (result?.details as { inputRequired?: boolean } | undefined)?.inputRequired) {
+            held = true;
+            void this.suspend(nested.parentCallId);
+          }
+          if (held) {
+            // Stored before the agent closes (`suspend` waits on codeSettling): else a held call that never ran reads as cut off.
+            const marked = api.commit(async (tx: Tx) => { (await tx.doc(ResumableDoc, api.taskId)).resumable = true; }, callContext);
+            this.codeSettling.add(marked);
+            void marked.finally(() => this.codeSettling.delete(marked)).catch(() => {});
+            await marked;
+          }
         } catch (error) { result = { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], details: undefined, isError: true }; }
+        finally {
+          if (nested && !held) {
+            const settled = this.harness.waitForTask(api.taskId, context).catch(() => {});
+            this.codeSettling.add(settled);
+            void settled.then(() => this.codeSettling.delete(settled));
+          }
+          if (nested) {
+            this.codeDone.add(id);
+            void this.quiet();
+          }
+          // A call that settled here is not attempted again in this process: its first attempt is over.
+          if (!held) this.firstAttempts.delete(id);
+        }
+        if (held) return this.untilClosed(callContext);
+        if (!result) throw new Error("No tool result");
         return { output: result.content, ...(result.details === undefined ? {} : { details: result.details }), isError: result.isError,
           ...(result.structuredContent === undefined || !tool.outputSchema ? {} : { structuredOutput: result.structuredContent }),
           ...(result.usage === undefined ? {} : { usage: result.usage }), ...(result.terminate ? { control: { terminate: true } } : {}) };
       },
     })), hooks: [hook(ToolTask, {
+      beforeTool: async call => { this.firstAttempts.add(call.id); return undefined; },
       // Each call of the model's round, as its result is final: whether the host ends the run after this round
       // (`finishTurn`: a call waiting for input, final_output, a run or spend limit). Pi ends it when every call of the
       // round asks to terminate; a condition holds for the calls after it, so only a call that settled before it, or one
@@ -841,6 +942,100 @@ export class DurableAgent {
         }
       },
     })] });
+  }
+
+  /** A held call from code waits here until the agent closes, which ends its invocation without a result. */
+  private async untilClosed(callContext: any): Promise<never> {
+    await new Promise<void>(resolve => {
+      const signal: AbortSignal | undefined = callContext.abortSignal;
+      if (!signal || signal.aborted) return resolve();
+      signal.addEventListener("abort", () => resolve(), { once: true });
+      // A suspension that failed to close (logged as code_suspend_failed) releases its held calls too.
+      this.suspension?.closed.then(() => {}, () => resolve());
+    });
+    throw new Error("The agent closed while this call waited");
+  }
+
+  /**
+   * End the run for a call from code that waits on a person (`onSuspend`), once: code's calls already running finish
+   * first, then the agent closes with its code task still open.
+   */
+  private suspend(parentCallId: string): Promise<void> {
+    if (this.suspension) return this.suspension.closed;
+    const quiet = Promise.withResolvers<void>();
+    // The calls code had made that Pi had launched, and not ended, as the run began to suspend.
+    const launched = this.harness.snapshot(LiveDoc, this.conversation.id, context)
+      .then(live => new Set((live?.nestedTools ?? []).filter(slot => slot.status !== "done").map(slot => slot.callId)));
+    const closed = (async () => {
+      await this.options.durable.onSuspend?.(parentCallId);
+      // Code's calls already launched finish (or wait, if they ask too), and their results are stored, before the agent closes.
+      await this.quiet();
+      await quiet.promise;
+      await Promise.all(this.codeSettling);
+      await this.close();
+    })();
+    this.suspension = { launched, quiet, closed };
+    closed.catch(error => console.error(JSON.stringify({ type: "code_suspend_failed", error: error instanceof Error ? error.message : String(error) })));
+    return closed;
+  }
+
+  /** Code mode scripts running in this process, by their start (`startedAt` and seed): their sandbox and the calls they made. */
+  private scripts = new Map<string, { fingerprint?: string; calls: Map<number, { name: string; args: unknown }>; changed: Set<() => void> }>();
+  private script(startedAt: number, seed: number) {
+    const key = `${startedAt}:${seed}`;
+    let script = this.scripts.get(key);
+    if (!script) this.scripts.set(key, script = { calls: new Map(), changed: new Set() });
+    return script;
+  }
+
+  /**
+   * A code mode script starting in this process (the host's sandbox, agent-host `codeSandbox`): what it reports as it
+   * runs, so a call Pi resumes on its own waits for its script to make it again (`remade`).
+   */
+  scriptRun(startedAt: number, seed: number) {
+    const script = this.script(startedAt, seed);
+    const changed = () => { for (const notify of script.changed) notify(); };
+    return {
+      started: (fingerprint: string) => { script.fingerprint = fingerprint; changed(); },
+      called: (call: { id: number; name: string; args?: unknown }) => { script.calls.set(call.id, { name: call.name, args: call.args }); changed(); },
+      ended: () => { this.scripts.delete(`${startedAt}:${seed}`); },
+    };
+  }
+
+  /**
+   * Whether a call from code that Pi resumed on its own (its first attempt was another process's) may run: once its
+   * script, started again here, made it again, with the same arguments, in the sandbox it started in. Pi checks the
+   * sandbox only as the script resumes, which may be after this call would have run: a script that cannot resume (its
+   * sandbox changed), ends, or passes its deadline first takes the call with it, unmade.
+   */
+  private async remade(nested: NestedCall, input: { parent: unknown; call: { name: string; arguments?: unknown } }, api: any, callContext: any): Promise<boolean> {
+    const start = (await api.snapshot(CodemodeRunDoc, input.parent, callContext))?.start;
+    if (!start) return false;
+    const script = this.script(start.startedAt, start.seed);
+    const id = Number(nested.key.slice(1));
+    let timer: ReturnType<typeof setTimeout> | undefined, notify: (() => void) | undefined;
+    const signal: AbortSignal | undefined = callContext.abortSignal;
+    try {
+      const made = await Promise.race([
+        new Promise<boolean>(resolve => { notify = () => { if (script.calls.has(id) && (start.fingerprint === undefined || script.fingerprint !== undefined)) resolve(true); }; script.changed.add(notify); notify(); }),
+        this.harness.waitForTask(input.parent as never, context).then(() => false, () => false),
+        ...start.deadline !== undefined ? [new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(0, start.deadline! - Date.now())); })] : [],
+        ...signal ? [new Promise<boolean>(resolve => { if (signal.aborted) resolve(false); signal.addEventListener("abort", () => resolve(false), { once: true }); })] : [],
+      ]);
+      const call = script.calls.get(id);
+      return made && script.fingerprint === start.fingerprint && call?.name === input.call.name && JSON.stringify(call.args ?? {}) === JSON.stringify(input.call.arguments ?? {});
+    } finally {
+      clearTimeout(timer);
+      if (notify) script.changed.delete(notify);
+    }
+  }
+
+  /** Resolve the suspension's quiet once every call launched before it has ended or is held here. */
+  private async quiet() {
+    const suspension = this.suspension;
+    if (!suspension) return;
+    const launched = await suspension.launched;
+    if ([...launched].every(id => this.codeDone.has(id))) suspension.quiet.resolve();
   }
 
   /** Replace Pi's own extensions (code mode on or off); the model is offered their tools from the next sync. */

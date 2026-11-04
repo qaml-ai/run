@@ -307,3 +307,182 @@ test("a call from a script gets its own signal, which Pi aborts when it gives th
   await run;
   assert.equal(call.signal!.aborted, true);
 });
+
+/** A tool that asks for a person the first time each call (by its key) reaches it, and answers once resumed. */
+function asking(names: string[]) {
+  const asked = new Set<string>();
+  return (call: Call) => {
+    const key = `${call.call?.toolCallId}/${call.call?.innerCallId}`;
+    if (names.includes(call.name) && !asked.has(key)) { asked.add(key); return { inputRequired: true, content: [{ type: "text", text: "Waiting for the user's input." }] }; }
+    return `${call.name} ran`;
+  };
+}
+
+test("a call from code that needs a person ends the run suspended; the next load goes on without repeating finished calls", async t => {
+  const fake = await setup(t, [tool("read"), tool("approve", { needsApproval: true }), tool("write")]);
+  const answers = asking(["approve"]);
+  const first = await fake.start(answers);
+  fake.respond(answer(fauxToolCall("codemode", { code: `const read = await tools.read({});
+const approved = await tools.approve({ id: 1 });
+const written = await tools.write({});
+return [read, approved, written];` }, { id: "code" }), "toolUse"), answer("done"));
+  const run = await first.host.handle("prompt", { text: "go" });
+  assert.equal(run.stopped, "input_required");
+  assert.equal(run.unload, true);
+  assert.deepEqual(fake.calls.map(call => call.name), ["read", "approve"]);
+  assert.equal(fake.faux.getPendingResponseCount(), 1, "the model is not asked meanwhile");
+  await first.dispose();
+
+  // Loaded again for something else first: nothing runs.
+  const idle = await fake.start(answers);
+  await idle.dispose();
+  assert.deepEqual(fake.calls.map(call => call.name), ["read", "approve"]);
+
+  const second = await fake.start(answers);
+  const resumed = await second.host.handle("resume", { calls: [{ toolCallId: "code/c2", retry: true }] });
+  assert.equal(resumed.error, null);
+  assert.equal(resumed.reply, "done");
+  assert.deepEqual(fake.calls.map(call => [call.name, call.call?.innerCallId]), [["read", "c1"], ["approve", "c2"], ["approve", "c2"], ["write", "c3"]]);
+  const output = textOf((await fake.history()).find(message => message.role === "toolResult"));
+  assert.match(output, /\["read ran","approve ran","write ran"\]/);
+});
+
+test("calls from code waiting on a person together, and a slow one running beside them, make one suspension", async t => {
+  const fake = await setup(t, [tool("first", { needsApproval: true }), tool("second", { needsApproval: true }), tool("slow"), tool("after")]);
+  const answers = asking(["first", "second"]);
+  const slow = Promise.withResolvers<void>();
+  // The questions come once the slow call is under way.
+  const answer$ = async (call: Call) => call.name === "slow" ? slow.promise.then(() => "slow ran") : (await new Promise(resolve => setTimeout(resolve, 50)), answers(call));
+  const first = await fake.start(answer$);
+  fake.respond(answer(fauxToolCall("codemode", { code: `const [a, b, c] = await Promise.all([tools.first({}), tools.second({}), tools.slow({})]);
+return [a, b, c, await tools.after({})];` }, { id: "code" }), "toolUse"), answer("done"));
+  const running = first.host.handle("prompt", { text: "go" });
+  // The run ends only once the slow call, already running, has finished.
+  await new Promise(resolve => setTimeout(resolve, 200));
+  slow.resolve();
+  const run = await running;
+  assert.equal(run.stopped, "input_required");
+  assert.deepEqual(fake.calls.map(call => call.name).sort(), ["first", "second", "slow"]);
+  await first.dispose();
+
+  const second = await fake.start(answer$);
+  const resumed = await second.host.handle("resume", { calls: [{ toolCallId: "code/c1", retry: true }, { toolCallId: "code/c2", retry: true }] });
+  assert.equal(resumed.reply, "done");
+  assert.deepEqual(fake.calls.map(call => call.name).sort(), ["after", "first", "first", "second", "second", "slow"], "the slow call ran once");
+  assert.match(textOf((await fake.history()).find(message => message.role === "toolResult")), /\["first ran","second ran","slow ran","after ran"\]/);
+});
+
+test("a person's answer days later still reaches the script: the wait is not code time", async t => {
+  const fake = await setup(t, [tool("approve", { needsApproval: true })]);
+  const answers = asking(["approve"]);
+  const first = await fake.start(answers, { codeLimits: { cpuMs: 2_000, maxTimeoutMs: 300, concurrent: 4 } });
+  fake.respond(answer(fauxToolCall("codemode", { code: `return await tools.approve({});` }, { id: "code" }), "toolUse"), answer("done"));
+  assert.equal((await first.host.handle("prompt", { text: "go" })).stopped, "input_required");
+  await first.dispose();
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const second = await fake.start(answers, { codeLimits: { cpuMs: 2_000, maxTimeoutMs: 300, concurrent: 4 } });
+  const resumed = await second.host.handle("resume", { calls: [{ toolCallId: "code/c1", retry: true }] });
+  assert.equal(resumed.reply, "done");
+  assert.match(textOf((await fake.history()).find(message => message.role === "toolResult")), /approve ran/);
+});
+
+test("a new message instead of an answer, or inputs closed without one, end the code mode call without running the call", async t => {
+  for (const ending of ["message", "close"] as const) {
+    const fake = await setup(t, [tool("approve", { needsApproval: true })]);
+    const answers = asking(["approve"]);
+    const first = await fake.start(answers);
+    fake.respond(answer(fauxToolCall("codemode", { code: `return await tools.approve({});` }, { id: "code" }), "toolUse"), answer("after the new message"));
+    assert.equal((await first.host.handle("prompt", { text: "go" })).stopped, "input_required");
+    await first.dispose();
+    const second = await fake.start(answers);
+    const run = ending === "message" ? await second.host.handle("prompt", { text: "never mind" }) : await second.host.handle("resume", { calls: [{ toolCallId: "code/c1", result: { content: [{ type: "text", text: "expired" }], isError: true } }], close: true });
+    assert.equal(run.error, null, ending);
+    if (ending === "message") assert.equal(run.reply, "after the new message");
+    assert.deepEqual(fake.calls.map(call => call.name), ["approve"], `${ending}: the approved call never ran`);
+    const result = (await fake.history()).find(message => message.role === "toolResult") as any;
+    assert.equal(result?.toolCallId, "code", ending);
+    assert.equal(result.isError, true, ending);
+    await second.dispose();
+  }
+});
+
+test("an approved call from code cut off mid-effect after its resume is not made again on the next load", async t => {
+  const fake = await setup(t, [tool("approve", { needsApproval: true })]);
+  let n = 0;
+  // 1st: asks. 2nd (resumed with the answer): starts its effect and its node goes. A 3rd would repeat the effect.
+  const answers = (call: Call) => {
+    if (call.name !== "approve") return "?";
+    n++;
+    if (n === 1) return { inputRequired: true, content: [{ type: "text", text: "Waiting for the user's input." }] };
+    if (n === 2) return new Promise(() => {});
+    return "approve ran";
+  };
+  const first = await fake.start(answers);
+  fake.respond(answer(fauxToolCall("codemode", { code: "return await tools.approve({ id: 1 });" }, { id: "code" }), "toolUse"), answer("done"), answer("done"));
+  assert.equal((await first.host.handle("prompt", { text: "go" })).stopped, "input_required");
+  await first.dispose();
+  const second = await fake.start(answers);
+  void second.host.handle("resume", { calls: [{ toolCallId: "code/c1", retry: true }] }).catch(() => {});
+  while (n < 2) await new Promise(resolve => setTimeout(resolve, 10));
+  await second.dispose();
+  const third = await fake.start(answers, { resume: true });
+  await third.host.handle("continue", {}).catch(() => {});
+  assert.equal(n, 2, "the approved call ran once");
+  const result = (await fake.history()).find(message => message.role === "toolResult");
+  assert.match(textOf(result), /interrupted and may have partially run/);
+});
+
+test("a direct call and a call from code asking in one round both take their answers", async t => {
+  const fake = await setup(t, [tool("direct", { needsApproval: true, exposure: "direct" }), tool("approve", { needsApproval: true })]);
+  const answers = asking(["direct", "approve"]);
+  const first = await fake.start(answers);
+  fake.respond(answer([fauxToolCall("direct", {}, { id: "d1" }), fauxToolCall("codemode", { code: "return await tools.approve({});" }, { id: "code" })], "toolUse"), answer("done"));
+  assert.equal((await first.host.handle("prompt", { text: "go" })).stopped, "input_required");
+  await first.dispose();
+  const second = await fake.start(answers);
+  const resumed = await second.host.handle("resume", { calls: [{ toolCallId: "d1", retry: true }, { toolCallId: "code/c1", retry: true }] });
+  assert.equal(resumed.stopped, undefined, JSON.stringify(resumed));
+  assert.deepEqual(fake.calls.map(call => call.name).sort(), ["approve", "approve", "direct", "direct"]);
+  const results = (await fake.history()).filter(message => message.role === "toolResult").map(textOf);
+  assert.ok(results.some(text => /direct ran/.test(text)) && results.some(text => /approve ran/.test(text)), JSON.stringify(results));
+});
+
+test("a script's timeout_ms counts the person's wait: past it, the approved call is not made", async t => {
+  const fake = await setup(t, [tool("approve", { needsApproval: true })]);
+  const answers = asking(["approve"]);
+  const first = await fake.start(answers);
+  fake.respond(answer(fauxToolCall("codemode", { code: '// @options: {"timeout_ms": 1000}\nreturn await tools.approve({});' }, { id: "code" }), "toolUse"), answer("done"));
+  assert.equal((await first.host.handle("prompt", { text: "go" })).stopped, "input_required");
+  await first.dispose();
+  await new Promise(resolve => setTimeout(resolve, 1_500));
+  const second = await fake.start(answers);
+  await second.host.handle("resume", { calls: [{ toolCallId: "code/c1", retry: true }] });
+  assert.deepEqual(fake.calls.map(call => call.name), ["approve"], "asked once, never made");
+  const result = (await fake.history()).find(message => message.role === "toolResult");
+  assert.doesNotMatch(textOf(result), /approve ran/);
+});
+
+test("an approved call from code whose script cannot resume (its sandbox changed) is never made", async t => {
+  const fake = await setup(t, [tool("approve", { needsApproval: true })]);
+  const answers = asking(["approve"]);
+  // The sandbox reports another fingerprint after the person was asked, as after a deploy that changed v8-exec.
+  let changed = false;
+  const sandboxes = inlineSandboxes();
+  const codeSandbox: HostIO["codeSandbox"] = options => {
+    const sandbox = sandboxes(options);
+    const start = sandbox.start.bind(sandbox);
+    sandbox.start = (code, run) => start(code, { ...run, onStarted: fingerprint => run.onStarted?.(changed ? `${fingerprint}-changed` : fingerprint) });
+    return sandbox;
+  };
+  const first = await fake.start(answers, { io: { codeSandbox } });
+  fake.respond(answer(fauxToolCall("codemode", { code: "return await tools.approve({});" }, { id: "code" }), "toolUse"), answer("done"));
+  assert.equal((await first.host.handle("prompt", { text: "go" })).stopped, "input_required");
+  await first.dispose();
+  changed = true;
+  const second = await fake.start(answers, { io: { codeSandbox } });
+  await second.host.handle("resume", { calls: [{ toolCallId: "code/c1", retry: true }] });
+  assert.deepEqual(fake.calls.map(call => call.name), ["approve"], "asked once, never made");
+  const results = (await fake.history()).filter(message => message.role === "toolResult");
+  assert.equal(results.length, 1);
+  assert.match(textOf(results[0]), /sandbox changed since it started/);
+});

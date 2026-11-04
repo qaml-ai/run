@@ -21,11 +21,10 @@ export interface ToolDefinition extends PublicToolDefinition {
 }
 
 export function normalizeTool(tool: ToolDefinition): ToolDefinition {
-  // A tool that asks first (a person, or the judge) is declared to the model, which can always pause for it: code cannot yet.
-  const asks = !!(tool.needsApproval || tool.judged);
-  return { ...tool, callers: tool.callers ?? (tool.exposure === "codemode" && !asks ? ["tools"] : ["model", "tools"]),
-    modelDeclared: tool.modelDeclared ?? (asks || tool.exposure !== "codemode"),
-    modelPreferred: tool.modelPreferred ?? (asks || tool.exposure === "direct"),
+  // A tool that asks first (a person, or the judge) is called from code as from the model: either pauses the turn for it.
+  return { ...tool, callers: tool.callers ?? (tool.exposure === "codemode" ? ["tools"] : ["model", "tools"]),
+    modelDeclared: tool.modelDeclared ?? tool.exposure !== "codemode",
+    modelPreferred: tool.modelPreferred ?? tool.exposure === "direct",
     modelFallback: tool.modelFallback ?? !tool.callers };
 }
 export const callableFromCode = (tool: ToolDefinition) => (tool.callers ?? normalizeTool(tool).callers)!.includes("tools");
