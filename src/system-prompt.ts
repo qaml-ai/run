@@ -15,15 +15,24 @@ const RESULT_RULES = `Results:
 - Explain actions in the application's language. Do not require users to know tool names or sandbox implementation details.`;
 const APPLICATION_FOLLOWS = "Application instructions follow. They define your role, task-specific behavior and response style.";
 
+/**
+ * Files in code mode. With the file tools declared, writing and editing go through them directly: a file's text inside
+ * a script's string breaks on its backticks, ${ and quotes. Without them (fileTools: false), scripts are the only way.
+ */
+const FILES_IN_CODE = "- Write and edit files with the write and edit tools called directly, not from a script: a file's text inside a JavaScript string breaks on backticks, ${ and quotes. Scripts have no fs, require or imports; use them to batch reads and queries, reading files with tools.read.";
+const FILES_ONLY_IN_CODE = "- Scripts have no fs, require or imports: read, write and edit files with tools.read, tools.write and tools.edit, passing a file's text as a plain string (a template literal breaks on backticks and ${ inside it).";
+
 /** Harness mechanics belong to the runtime, not each application's prompt. */
-const runtimeInstructions = `You work through an application's agent runtime. After these rules come the application's instructions and a summary of your environment.
+const codeInstructions = (files: string) => `You work through an application's agent runtime. After these rules come the application's instructions and a summary of your environment.
 
 Tools:
-- Call a declared tool directly for a single action whose result you want to read. Use codemode for the rest: tools reachable only there, several calls, loops, computing, and working on file contents. Plan one script to do a whole task (fetch, compute, write files, return a short summary) rather than one small step per script.
+- Call a declared tool directly for a single action whose result you want to read. Use codemode for the rest: tools reachable only there, several calls, loops, computing, and going through file contents. Plan one script to do a whole task (fetch, compute, return a short summary) rather than one small step per script.
 - Fetch data you will process in code within that script: a direct call's result lands in your context, where code cannot reach it.
 - Return or print only what you need to read (counts, totals, a few rows), not whole datasets or files.
 - Each script starts fresh: keep a value for a later script with store(key, value) and load(key), or in a file.
-- Finding tools: the codemode section lists the tools scripts can call, as far as space allows. searchTools("refund an invoice") finds others, describeTool(name) gives one's declaration and describeNamespace(name) a namespace's tools (js_exec's tools.search, tools.describe and tools.namespaces are gone); when a match is clear, search and call in one script. If nothing fits, search again in other words; never invent tools.
+${files}
+- A call that fails inside a script throws, and ends the script unless caught: wrap one that may fail in try/catch.
+- Finding tools: the codemode section lists the tools scripts can call, as far as space allows. searchTools("refund an invoice") finds others, describeTool(name) gives one's declaration and describeNamespace(name) a namespace's tools (all three are globals, not members of tools; js_exec's tools.search, tools.describe and tools.namespaces are gone); when a match is clear, search and call in one script. If nothing fits, search again in other words; never invent tools.
 
 ${FILE_RULES}
 
@@ -131,9 +140,16 @@ export function environmentSummary(config: Pick<AgentConfig, "mounts" | "model" 
   ].join("\n");
 }
 
-/** The runtime's instructions: without code mode (codeMode: false) they cover only the tools the agent has, if any. */
-export function runtimeRules(config: Pick<AgentConfig, "codeMode" | "tools">): string {
-  return config.codeMode !== false ? runtimeInstructions : bare(config) ? bareInstructions : directInstructions;
+/** Code mode's instructions, with the file tools declared to the model, or only to code (fileTools: false). */
+const runtimeInstructions = codeInstructions(FILES_IN_CODE), fileCodeInstructions = codeInstructions(FILES_ONLY_IN_CODE);
+
+/**
+ * The runtime's instructions: without code mode (codeMode: false) they cover only the tools the agent has, if any; with
+ * it, where file work goes, by whether the file tools are the model's (`fileTools`).
+ */
+export function runtimeRules(config: Pick<AgentConfig, "codeMode" | "tools"> & Partial<Pick<AgentConfig, "fileTools">>): string {
+  if (config.codeMode === false) return bare(config) ? bareInstructions : directInstructions;
+  return config.fileTools === false ? fileCodeInstructions : runtimeInstructions;
 }
 
 /**

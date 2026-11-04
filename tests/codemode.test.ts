@@ -251,6 +251,7 @@ return 1;` }, { id: "code" }), "toolUse");
   const run = await host.handle("prompt", { text: "go" });
   assert.equal(run.error, null);
   assert.match(seen[0], /in a JavaScript sandbox:/);
+  assert.match(seen[0], /\n\nWrite and edit files with the write and edit tools directly, not from a script\.$/);
   assert.match(seen[0], /saves the image in your workspace \(tool-results\/\)/);
   assert.doesNotMatch(seen[0], /QuickJS|temp file/);
   const output = textOf((await fake.history())[2]);
