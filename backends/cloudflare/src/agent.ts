@@ -34,6 +34,10 @@ export class CamelAgent extends DurableObject<Env> {
   private models = modelRuntime(this.env);
   private availableTools: ToolRegistration[] = [];
   private workspaceToolNames: string[] = [];
+  // Pi can reopen its Harness after a storage failure without replacing this
+  // agent. Keep admission here so old remote work still occupies its slots.
+  private readonly sandboxRemote = isolatedSandboxRemote({ agentKey: this.ctx.id.toString(),
+    getByName: key => this.env.CODEMODE_SANDBOX.getByName(key), maxConcurrent: 4 });
   private harness = new PiHarness({ defaults: { model: this.models.model },
     harness: async ({ storage, context, onWake }) => {
       await this.workspace.fs.mkdir("/workspace", { recursive: true });
@@ -57,8 +61,7 @@ export class CamelAgent extends DurableObject<Env> {
       registry.install({ name: "camel.linux", tools: [computerTool(this.env, this.ctx.id.toString())] });
       registry.install(createCodemodeExtension({
         sandbox: new RemoteCodemodeSandbox({
-          remote: isolatedSandboxRemote({ agentKey: this.ctx.id.toString(),
-            getByName: key => this.env.CODEMODE_SANDBOX.getByName(key), maxConcurrent: 4 }),
+          remote: this.sandboxRemote,
         }),
         // Keep provider calls outside the script's capability set.
         models: false,

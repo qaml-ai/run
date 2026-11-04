@@ -24,21 +24,32 @@ test("execution routing pins one remote through callbacks and releases admission
   assert.equal(callbacks,5);assert.deepEqual(keys,["agent:execution:1","agent:execution:2","agent:execution:3"]);
 });
 
-test("caller timeout keeps admission until the remote actually settles", async () => {
+test("reopening the caller bridge keeps admission until old remote work settles", async () => {
   let release!:()=>void;
   const stopped=new Promise<void>(resolve=>release=resolve);
   let launches=0;
   const route=isolatedSandboxRemote({agentKey:"agent",maxConcurrent:1,getByName:()=>({
-    execute:async()=>{ launches++;if(launches===1)await stopped; },
+    execute:async(_request,exchange)=>{
+      launches++;
+      if(launches===1)await stopped;
+      await exchange([{type:"done",ok:true,value:"1",writes:"[]"}]);
+    },
   })});
   const sandbox=new RemoteCodemodeSandbox({remote:route,timeoutMs:10});
   const result=await sandbox.execute("return 1;");
   assert.equal(result.ok,false);
   if(!result.ok)assert.equal(result.error.kind,"timeout");
   await sandbox.close();
-  const request={} as Parameters<CodemodeRemote["execute"]>[0];
-  await assert.rejects(route().execute(request,async()=>null),/concurrency limit/);
+  // A Harness reopen creates a new bridge but must reuse the agent's route.
+  const reopened=new RemoteCodemodeSandbox({remote:route,timeoutMs:1000});
+  const blocked=await reopened.execute("return 1;");
+  assert.equal(blocked.ok,false);
+  if(!blocked.ok)assert.match(blocked.error.message,/concurrency limit/);
+  assert.equal(launches,1,"reopening must not bypass the old remote's slot");
   release();await new Promise(resolve=>setImmediate(resolve));
-  await route().execute(request,async()=>null);
+  const recovered=await reopened.execute("return 1;");
+  assert.equal(recovered.ok,true);
+  if(recovered.ok)assert.equal(recovered.value,1);
   assert.equal(launches,2);
+  await reopened.close();
 });
