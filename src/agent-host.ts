@@ -582,8 +582,11 @@ export function createAgentHost(hostIO: HostIO) {
   function codemodeDescription(text: string): string {
     const sandbox = " in a QuickJS sandbox:", saved = " `image()` also saves the image to a temp file and the result names its path.";
     if (!text.includes(sandbox) || !text.includes(saved)) throw new Error("Pi's code mode description changed: review codemodeDescription");
+    // Where the model has the file tools itself, it writes and edits files with them: a file's text inside a script's
+    // string breaks on its backticks, ${ and quotes, and a failed edit ends the script.
+    const files = config.fileTools !== false && scratchMount(config.mounts) ? "\n\nWrite and edit files with the write and edit tools directly, not from a script." : "";
     return text.replace(sandbox, " in a JavaScript sandbox:")
-      .replace(saved, scratchMount(config.mounts) ? " `image()` also saves the image in your workspace (tool-results/), and the result names its path." : "");
+      .replace(saved, scratchMount(config.mounts) ? " `image()` also saves the image in your workspace (tool-results/), and the result names its path." : "") + files;
   }
 
   /**
@@ -1094,7 +1097,7 @@ export function createAgentHost(hostIO: HostIO) {
         agent.useExtensions((codemode = codeMode()) ? [codemode] : []);
         agent.state.tools = agentTools(config.tools);
       }
-      if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.language !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.model !== undefined) await declareConfiguration();
+      if (params.systemPrompt !== undefined || params.systemPromptAppend !== undefined || params.language !== undefined || params.tools !== undefined || params.codeMode !== undefined || params.fileTools !== undefined || params.model !== undefined) await declareConfiguration();
       return { configured: true };
     }
     // Before a stop: index the settled turns, so a page of them needs neither the process nor the journal.

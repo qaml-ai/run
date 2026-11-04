@@ -120,7 +120,28 @@ export function toolContext(ctx: ToolsContext, session: Session): ToolContext {
  * its code (its attachments, tool outputs and saved results are files it reads there), none without code mode.
  */
 const fileToolsFor = (tools: ToolDefinition[], fileTools: boolean | undefined, codeMode: boolean | undefined): ToolDefinition[] =>
-  tools.flatMap(tool => fileTools !== false || tool.name === "present_file" ? [tool] : codeMode !== false ? [{ ...tool, callers: ["tools"] as const }] : []);
+  tools.flatMap(tool => {
+    if (fileTools !== false || tool.name === "present_file") return [codeMode !== false ? nudged(tool, IN_CODE) : tool];
+    return codeMode !== false ? [{ ...nudged(tool, ONLY_IN_CODE), callers: ["tools"] as const }] : [];
+  });
+
+/**
+ * A sentence for read, write and edit in code mode, where models do worse with them inside scripts (a failed edit ends
+ * the script; a file's text inside a JavaScript string breaks on its backticks, ${ and quotes): call them directly. With
+ * `fileTools: false` scripts are the only way, and the sentence says how.
+ */
+const IN_CODE: Record<string, string> = {
+  read: "Call it directly to read a file; read from a codemode script only to go through many files at once or filter large results.",
+  write: "Call it directly, not from a codemode script: a file's text inside a JavaScript string breaks on backticks, ${ and quotes.",
+  edit: "Call it directly, not from a codemode script: there a failed edit ends the script.",
+};
+const ONLY_IN_CODE: Record<string, string> = {
+  read: "This is how scripts read files: there is no fs.",
+  write: "This is how scripts write files (there is no fs): pass the text as a plain string, as a template literal breaks on backticks and ${ inside it.",
+  edit: "This is how scripts edit files: wrap the call in try/catch, as a failed edit ends the script otherwise.",
+};
+const nudged = (tool: ToolDefinition, sentences: Record<string, string>): ToolDefinition =>
+  sentences[tool.name] ? { ...tool, description: `${tool.description} ${sentences[tool.name]}` } : tool;
 
 export async function toolset(ctx: ToolsContext, session: Session, next: { tools?: ToolDefinition[]; sources?: Sources; fileTools?: boolean; codeMode?: boolean; warm?: boolean } = {}) {
   const { header } = session;

@@ -229,6 +229,9 @@ test("fileTools: false leaves the model present_file, and the file tools to code
   assert.match(toolResults(r.model.bodies[1]).at(-1), /Script completed[\s\S]*\nhi$/, "code calls the file tools the model is not offered");
   assert.match(systemText(r.model.bodies[0]), /Scripts read and write them with the file tools \(tools\.read, tools\.write, tools\.ls and so on\); the application's own tools may reach other files/);
   assert.doesNotMatch(systemText(r.model.bodies[0]), /The file tools \(read/);
+  // Scripts are the only way to the files here, and the codemode section's declarations say how.
+  assert.match(systemText(r.model.bodies[0]), /This is how scripts write files \(there is no fs\): pass the text as a plain string/);
+  assert.match(systemText(r.model.bodies[0]), /Scripts have no fs, require or imports: read, write and edit files with tools\.read, tools\.write and tools\.edit/);
 
   // Applying the definition without it brings the file tools back, but not to an agent that chose to go without.
   const own = (await r.call("/v1/agents", { body: { definition: definition.id, fileTools: false } })).json.id;
@@ -236,6 +239,10 @@ test("fileTools: false leaves the model present_file, and the file tools to code
   await until(async () => (await r.call(`/v1/definitions/${definition.id}/agents`)).json.every((entry: any) => entry.revision === 2), "the apply");
   await r.prompt(agent, "again");
   assert.deepEqual(direct(r.model.bodies.at(-1)), ["codemode", "cp", "decide", "edit", "glob", "grep", "ls", "mv", "present_file", "read", "write"]);
+  // Declared to the model, write and edit say to call them directly rather than from a script.
+  const described = (name: string) => r.model.bodies.at(-1).tools.find((tool: any) => tool.function.name === name).function.description;
+  assert.match(described("write"), /Call it directly, not from a codemode script: a file's text inside a JavaScript string breaks on backticks/);
+  assert.match(described("edit"), /Call it directly, not from a codemode script: there a failed edit ends the script\.$/);
   assert.match(systemText(r.model.bodies.at(-1)) + JSON.stringify(r.model.bodies.at(-1).messages), /The file tools \(read/);
   await r.prompt(own, "hello");
   assert.deepEqual(direct(r.model.bodies.at(-1)), ["codemode", "decide", "present_file"]);
