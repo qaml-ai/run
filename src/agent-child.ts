@@ -12,7 +12,10 @@ setMetricService(process.env.AGENT_SERVICE_NAME);
 const rpc = parentRpc();
 const host = createAgentHost({
   emit: event => rpc.send({ type: "event", event }),
-  tool: (name, args, call) => rpc.request("tool", { name, args, ...call }),
+  tool: (name, args, call, signal) => {
+    if (call && signal) signal.addEventListener("abort", () => { void rpc.request("cancel-tool", call).catch(() => {}); }, { once: true });
+    return rpc.request("tool", { name, args, ...call });
+  },
   cancelTools: () => rpc.request("cancel-tools"),
   runLimit: async () => (await rpc.request("run-limit")) ?? undefined,
   file: ref => rpc.request("file", ref),

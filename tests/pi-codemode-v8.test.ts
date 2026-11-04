@@ -18,7 +18,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { num, obj } from "@earendil-works/pi-schema";
 import { type CodemodeHostCall, type CodemodeOutcome, type CodemodeRun } from "@earendil-works/pi-codemode";
 import { PiV8Sandbox } from "../src/codemode-pi-launcher.ts";
-import type { Guest } from "../src/codemode.ts";
+import type { Guest } from "../src/v8-exec.ts";
 import { frames } from "../src/sandbox-wire.ts";
 import { V8Exec, v8ExecBinary } from "../src/v8-exec.ts";
 
@@ -271,6 +271,151 @@ test("Pi start: a script may declare tools or console of its own, as in js_exec"
     assert.equal(result.ok, true, `${code}: ${JSON.stringify(result)}`);
     if (result.ok) assert.deepEqual(result.value, value, code);
   }
+});
+
+/** Runs `code` with a delegate and an echo tool, answering each call after `delayMs(name)`; resolves with its result. */
+function answering(sandbox: PiV8Sandbox, code: string, delayMs: (name: string) => number) {
+  let seq = 0;
+  const run: CodemodeRun = sandbox.start(code, { ...defaults, tools: [...tools, { name: "delegate", jsName: "delegate", description: "Delegate" }],
+    onCall: call => { setTimeout(() => run.deliver(++seq, defaults.startedAt + 1, call.id, success(call.args)), delayMs(call.name)); } });
+  return run.result;
+}
+
+test("Pi start: time waiting on delegate is not on the script's clock, and the script holds no code slot meanwhile", { skip, timeout: 60_000 }, async t => {
+  // One slot for everything: a second script runs while the first waits on its delegate.
+  let holders = 0, most = 0, waiters: (() => void)[] = [];
+  const acquireSlot = async () => {
+    while (holders >= 1) await new Promise<void>(resolve => waiters.push(resolve));
+    most = Math.max(most, ++holders);
+    return () => { holders--; waiters.shift()?.(); };
+  };
+  const ended: string[] = [];
+  const first = new PiV8Sandbox({ timeoutMs: 300, acquireSlot, awaits: ["delegate"] }), second = new PiV8Sandbox({ timeoutMs: 300, acquireSlot, awaits: ["delegate"] });
+  t.after(async () => { await first.close(); await second.close(); });
+  const waiting = answering(first, "return await tools.delegate({ task: 'x' })", () => 800).then(result => { ended.push("first"); return result; });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const other = await answering(second, "return await tools.echo(1)", () => 0);
+  ended.push("second");
+  const result = await waiting;
+  assert.equal(other.ok, true, JSON.stringify(other));
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(ended, ["second", "first"]);
+  assert.equal(most, 1);
+  assert.equal(holders, 0);
+  // Any other tool's wait is on the clock.
+  const slow = await answering(first, "return await tools.echo(1)", () => 800);
+  assert.equal(slow.ok, false);
+  if (!slow.ok) assert.match(slow.error.message, /exceeded 300 ms/);
+});
+
+/** A code slot gate as the node's: `limit` at once per tenant. */
+function slots(limit: number) {
+  const held = new Map<string, number>(), waiters: (() => void)[] = [];
+  const acquire = (tenant: string) => async () => {
+    while ((held.get(tenant) ?? 0) >= limit) await new Promise<void>(resolve => waiters.push(resolve));
+    held.set(tenant, (held.get(tenant) ?? 0) + 1);
+    return () => { held.set(tenant, held.get(tenant)! - 1); for (const wake of waiters.splice(0)) wake(); };
+  };
+  return { acquire, held };
+}
+
+test("Pi start: a script waiting on delegate leaves the pool's processes to others, and its clock starts only with a process", { skip, timeout: 60_000 }, async t => {
+  // One process for running scripts: the waiting one is parked outside it, so another runs within its own 500 ms.
+  const pool = new V8Exec({ max: 1 });
+  const gate = slots(4);
+  const waiting = new PiV8Sandbox({ pool, timeoutMs: 500, acquireSlot: gate.acquire("a"), awaits: ["delegate"], tenant: "a" });
+  const other = new PiV8Sandbox({ pool, timeoutMs: 500, acquireSlot: gate.acquire("b"), awaits: ["delegate"], tenant: "b" });
+  t.after(async () => { await waiting.close(); await other.close(); pool.close(); });
+  const parked = answering(waiting, "return await tools.delegate({ task: 'x' })", () => 3_000);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(pool.parked, 1);
+  const quick = await answering(other, "return 1", () => 0);
+  assert.equal(quick.ok, true, JSON.stringify(quick));
+  assert.equal((await parked).ok, true);
+  assert.deepEqual({ running: pool.running, parked: pool.parked }, { running: 0, parked: 0 });
+});
+
+test("Pi start: past its share of parked processes, a tenant's waiting script keeps its process but not its slot, and others still run", { skip, timeout: 60_000 }, async t => {
+  const pool = new V8Exec({ max: 2, parkedPerTenant: 1 });
+  const gate = slots(1);
+  const sandbox = (tenant: string) => new PiV8Sandbox({ pool, timeoutMs: 5_000, acquireSlot: gate.acquire(tenant), awaits: ["delegate"], tenant });
+  const [a1, a2, b] = [sandbox("a"), sandbox("a"), sandbox("b")];
+  t.after(async () => { await a1.close(); await a2.close(); await b.close(); pool.close(); });
+  const first = answering(a1, "return await tools.delegate({})", () => 2_000);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  const second = answering(a2, "return await tools.delegate({})", () => 2_000);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  // a's first is parked; its second, past a's share, keeps a process but gives back a's one slot; b runs beside them.
+  assert.deepEqual({ parked: pool.parked, running: pool.running, a: gate.held.get("a") }, { parked: 1, running: 1, a: 0 });
+  assert.equal((await answering(b, "return 1", () => 0)).ok, true);
+  assert.deepEqual([(await first).ok, (await second).ok], [true, true]);
+});
+
+test("Pi start: a waiting script refused a parked place gives back its slot, so its children run; its wait counts and says why", { skip, timeout: 60_000 }, async t => {
+  // No parked places, one code slot: the parent's child needs that slot to run at all.
+  const pool = new V8Exec({ parkedMax: 0 });
+  const gate = slots(1);
+  const parent = new PiV8Sandbox({ pool, timeoutMs: 5_000, acquireSlot: gate.acquire("a"), awaits: ["delegate"], tenant: "a" });
+  const child = new PiV8Sandbox({ pool, timeoutMs: 5_000, acquireSlot: gate.acquire("a"), awaits: ["delegate"], tenant: "a" });
+  t.after(async () => { await parent.close(); await child.close(); pool.close(); });
+  let seq = 0;
+  const run: CodemodeRun = parent.start("return await tools.delegate({})", { ...defaults, tools: [...tools, { name: "delegate", jsName: "delegate", description: "Delegate" }],
+    onCall: call => { void answering(child, "return 'child done'", () => 0).then(result => run.deliver(++seq, defaults.startedAt + 1, call.id, success(result.ok ? result.value : null))); } });
+  const result = await run.result;
+  assert.equal(result.ok, true, JSON.stringify(result));
+  if (result.ok) assert.equal(result.value, "child done");
+  assert.equal(pool.parked, 0);
+  // Its wait is on its clock: past its deadline it ends, saying the node had no room for it.
+  const slow = new PiV8Sandbox({ pool, timeoutMs: 300, acquireSlot: gate.acquire("a"), awaits: ["delegate"], tenant: "a" });
+  t.after(() => slow.close());
+  const timedOut = await answering(slow, "return await tools.delegate({})", () => 800);
+  assert.equal(timedOut.ok, false);
+  if (!timedOut.ok) assert.match(timedOut.error.message, /no room to set a waiting script aside/);
+});
+
+test("Pi start: a script holding more memory than a parked place allows waits with its process, its clock running", { skip: skip || (process.platform !== "linux" && "reads /proc"), timeout: 60_000 }, async t => {
+  const pool = new V8Exec({ parkedMaxRssMb: 1 });
+  const sandbox = new PiV8Sandbox({ pool, timeoutMs: 5_000, awaits: ["delegate"], tenant: "a" });
+  t.after(async () => { await sandbox.close(); pool.close(); });
+  const waiting = answering(sandbox, "return await tools.delegate({})", () => 500);
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.deepEqual({ parked: pool.parked, running: pool.running }, { parked: 0, running: 1 });
+  assert.equal((await waiting).ok, true);
+});
+
+for (const [pid, parks] of [["first", true], ["none", false], ["late", false], ["twice", true]] as const) test(`Pi start: under agent-launcher, a waiting script parks only on the pid the launcher sent first (pid frame: ${pid})`, { skip: skip || (process.platform !== "linux" && "reads /proc"), timeout: 60_000 }, async t => {
+  // The pid is how the runtime reads a confined process's memory: unknown (none, or only late), the script is too large
+  // to park. A pid frame after the first is dropped, never taken for the script's (which would end it as unknown).
+  const { fakeLauncher } = await import("./fake-launcher.ts");
+  await fakeLauncher(t, undefined, { pid });
+  const pool = new V8Exec();
+  const sandbox = new PiV8Sandbox({ pool, timeoutMs: 5_000, awaits: ["delegate"], tenant: "a" });
+  t.after(async () => { await sandbox.close(); pool.close(); });
+  const waiting = answering(sandbox, "return await tools.delegate({})", () => 800);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.deepEqual({ parked: pool.parked, running: pool.running }, parks ? { parked: 1, running: 0 } : { parked: 0, running: 1 });
+  const result = await waiting;
+  assert.equal(result.ok, true, JSON.stringify(result));
+});
+
+test("Pi start: a script waiting on a delegate and on other calls holds its slot and its clock runs", { skip, timeout: 60_000 }, async t => {
+  const gate = slots(4);
+  const sandbox = new PiV8Sandbox({ timeoutMs: 300, acquireSlot: gate.acquire("a"), awaits: ["delegate"], tenant: "a" });
+  t.after(() => sandbox.close());
+  const result = await answering(sandbox, "const d = tools.delegate({}); for (let i = 0; i < 5; i++) await tools.echo(i); return await d;", name => name === "delegate" ? 2_000 : 100);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error.message, /exceeded 300 ms/);
+});
+
+test("Pi start: a script awaits any number of calls at once, 32 out at a time, and the 257th call says the limit", { skip, timeout: 60_000 }, async t => {
+  const sandbox = new PiV8Sandbox();
+  t.after(() => sandbox.close());
+  const many = await answering(sandbox, "return (await Promise.all(Array.from({ length: 100 }, (_, i) => tools.delegate({ i })))).length", () => 5);
+  assert.equal(many.ok, true, JSON.stringify(many).slice(0, 300));
+  if (many.ok) assert.equal(many.value, 100);
+  const over = await answering(sandbox, "return (await Promise.all(Array.from({ length: 257 }, (_, i) => tools.echo(i)))).length", () => 1);
+  assert.equal(over.ok, false);
+  if (!over.ok) assert.match(over.error.message, /at most 256 tool calls/);
 });
 
 // No executable is needed to test the trusted host's validation and shutdown behavior.

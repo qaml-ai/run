@@ -1,4 +1,4 @@
-// Versioned Pi start protocol, independent of the legacy execute bridge.
+// Versioned Pi start protocol.
 use super::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
@@ -74,7 +74,8 @@ fn send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::
     let error = match kind.as_deref() {
       Some("call") => {
         let id = frame["id"].as_u64().unwrap_or(0);
-        if id != state.issued + 1 || id > TOOL_CALLS as u64 { Some("Pi tool call limit or invalid call id") }
+        if id > TOOL_CALLS as u64 { Some("A script makes at most 256 tool calls: split the work across scripts") }
+        else if id != state.issued + 1 { Some("Invalid Pi call id") }
         else if state.inflight.len() >= CONCURRENT_TOOLS { Some("Too many concurrent tool calls") }
         else if frame["args"].as_str().map_or(0, str::len) > ARGUMENT_BYTES as usize { Some("Pi call arguments exceed limit") }
         else { state.issued = id; state.inflight.insert(id); None }
@@ -146,7 +147,7 @@ pub(super) fn execute(scope: &mut v8::PinScope, stdin: &mut impl Read, data: &Va
   let stalled = helper(tc, api, 2);
   let lockdown = helper(tc, api, 3);
   let code = strip_typescript(data["code"].as_str().unwrap_or(""));
-  // As Pi's vm.js: an async function body, without legacy last-expression return insertion, on the prefix's line.
+  // As Pi's vm.js: an async function body on the prefix's line.
   // The script in a block of its own, inside the function: it may declare `tools` or `console` itself, as it could in
   // js_exec, where they were globals (a parameter's name, declared again in the function's own body, is a SyntaxError).
   let source = v8::String::new(tc, &format!("(async (tools, console) => {{ {{{code}\n}} }})")).unwrap();
@@ -172,6 +173,8 @@ pub(super) fn execute(scope: &mut v8::PinScope, stdin: &mut impl Read, data: &Va
   loop {
     tc.perform_microtask_checkpoint();
     if tc.has_terminated() || REASON.load(Ordering::SeqCst) != 0 { crash(&limit_message()); }
+    // A refused bridge message says why (its STATE error) rather than only that the bridge failed.
+    if let Some(error) = STATE.with(|state| state.borrow().error.clone()) { crash(&error); }
     if tc.has_caught() { crash("Pi bridge execution failed"); }
     stalled.call(tc, undefined, &[]);
     if let Some(error) = STATE.with(|state| state.borrow().error.clone()) { crash(&error); }

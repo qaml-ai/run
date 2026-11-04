@@ -39,7 +39,6 @@ export const BUILTINS = {
   delegate: [],
   generate_image: [],
   agents: [],
-  workflow: [],
   decide: [],
 } as const;
 export type Builtin = keyof typeof BUILTINS;
@@ -73,6 +72,7 @@ export async function builtinWarnings(sources: { builtins?: readonly string[]; w
 }
 /** `builtins` as a definition or an agent gives them: distinct names of BUILTINS. */
 export function builtinsInput(value: unknown): Builtin[] {
+  rejectWorkflow({ builtins: value });
   if (!Array.isArray(value) || new Set(value).size !== value.length || value.some(name => typeof name !== "string" || !Object.hasOwn(BUILTINS, name))) {
     throw new HttpError(400, `builtins is a list of: ${Object.keys(BUILTINS).join(", ")}`);
   }
@@ -252,4 +252,13 @@ async function webFetch({ outbound, render }: BuiltinServices, context: BuiltinC
   }
   const text = page.text.length > maxCharacters ? page.text.slice(0, maxCharacters) : page.text;
   return jsonResult({ url: finalUrl, status: response.status, contentType: type.split(";")[0] || undefined, ...(page.title ? { title: page.title } : {}), text, ...(text.length < page.text.length ? { truncated: true, totalCharacters: page.text.length } : {}) });
+}
+
+/** Old workflow input must not silently turn into an agent without its intended tools. */
+export function rejectWorkflow(value: unknown) {
+  if (!value || typeof value !== "object") return;
+  const input = value as { builtins?: unknown; workflow?: unknown };
+  if (Object.hasOwn(input, "workflow") || (Array.isArray(input.builtins) && input.builtins.includes("workflow"))) {
+    throw new HttpError(400, "The workflow builtin was removed: a workflow is now a codemode script that calls tools.delegate (the delegate builtin)");
+  }
 }

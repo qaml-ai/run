@@ -2,12 +2,29 @@
 // arrived (what sandbox/v8-exec/src/seccomp.rs must allow), and any its seccomp filter killed it for.
 // --no-seccomp traces without the filter, to see what a change needs.
 //   node --experimental-strip-types scripts/v8-syscalls.ts [--jit] [--no-seccomp]
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Socket } from "node:net";
 import { frames } from "../src/sandbox-wire.ts";
 import { v8ExecBinary } from "../src/v8-exec.ts";
+
+const { PRELUDE_SOURCE } = await import(new URL("./runtime/prelude-source.js", import.meta.resolve("@earendil-works/pi-codemode/portable")).href) as { PRELUDE_SOURCE: string };
+const preludeSha256 = createHash("sha256").update(PRELUDE_SOURCE).digest("hex");
+function execute(child: ReturnType<typeof spawn>, code: string, cpuMs: number) {
+  let seq = 0;
+  const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+  child.once("close", () => clearTimeout(timer));
+  const write = frames(child.stdout as Socket, (message: any) => {
+    if (message.type === "started") write({ type: "request", id: "pi", method: "pi-run-v1" });
+    if (message.type === "call") write({ type: "request", id: "pi", method: "pi-result-v1", params: { type: "result", id: message.id, seq: ++seq, now: seq, ok: true, payload: JSON.stringify({ a: 1 }) } });
+  }, undefined, child.stdin as Socket);
+  write({ type: "request", id: "pi", method: "pi-start-v1", params: {
+    code, tools: [{ name: "echo", jsName: "echo", description: "Echo" }], globals: [], store: {},
+    deterministic: { startedAt: 0, seed: 1 }, prelude: PRELUDE_SOURCE, preludeSha256, cpuMs,
+  } });
+}
 
 const jitless = !process.argv.includes("--jit");
 const snippets = [
@@ -20,7 +37,7 @@ const snippets = [
   "while (true) {}",
   "return [new Intl.NumberFormat('de-DE').format(1234.5), new Date(0).toLocaleString(), ['b', 'a'].sort(new Intl.Collator('de').compare)]",
   "enum E { A } return E.A",
-  // tests/sandbox.test.ts's CPU, stack and hostile-serialization cases.
+  // tests/pi-isolation.test.ts's CPU, stack and hostile-serialization cases.
   "while (true) await Promise.resolve();",
   "function recurse() { return recurse() + 1; } return recurse();",
   "return { toJSON() { while (true) {} } };",
@@ -34,10 +51,7 @@ for (const [index, code] of snippets.entries()) {
   const out = join(dir, String(index));
   const child = spawn("strace", ["-f", "-ff", "-qq", "-o", out, v8ExecBinary(), "--max-data-mb", "512", ...(jitless ? ["--jitless"] : []), ...(process.argv.includes("--no-seccomp") ? ["--no-seccomp"] : ["--seccomp-debug"])], { stdio: ["pipe", "pipe", "ignore"] });
   const done = new Promise<void>(resolve => child.once("close", () => resolve()));
-  const write = frames(child.stdout as Socket, (message: any) => {
-    if (message.type === "request") write({ type: "response", id: message.id, result: JSON.stringify({ a: 1 }) });
-  }, undefined, child.stdin as Socket);
-  write({ type: "request", id: "x", method: "execute", params: { code, tools: ["echo"], timeoutMs: 10_000, maxOutputCharacters: 1000, cpuMs: 1000 } });
+  execute(child, code, 1000);
   await done;
   for (const file of readdirSync(dir).filter(name => name.startsWith(`${index}.`))) {
     let arrived = false, reads = 0;
@@ -48,7 +62,7 @@ for (const [index, code] of snippets.entries()) {
       if (!name) continue;
       all.add(name);
       if (arrived) afterRequest.add(name);
-      // The execute frame arrives in the first read from stdin (buffered: header and body together).
+      // The start frame arrives in the first read from stdin (buffered: header and body together).
       if (/^read\(0, /.test(line) && ++reads === 1) arrived = true;
     }
     // A filter's kill shows as the thread's last call, which never returned.
@@ -73,10 +87,7 @@ await Promise.all(Array.from({ length: process.argv.includes("--parallel") ? par
   let stderr = "";
   child.stderr!.on("data", chunk => { stderr += chunk; });
   const done = new Promise<void>(resolve => child.once("close", () => resolve()));
-  const write = frames(child.stdout as Socket, (message: any) => {
-    if (message.type === "request") write({ type: "response", id: message.id, result: JSON.stringify({ a: 1 }) });
-  }, undefined, child.stdin as Socket);
-  write({ type: "request", id: "x", method: "execute", params: { code, tools: ["echo"], timeoutMs: 10_000, maxOutputCharacters: 1000, cpuMs: 2000 } });
+  execute(child, code, 2000);
   await done;
   for (const match of stderr.matchAll(/seccomp: syscall (\d+ \(first argument \w+\))/g)) trapped.add(`${match[1]} (${code.slice(0, 40)})`);
 } }));

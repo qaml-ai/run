@@ -75,7 +75,8 @@ export interface LegacyLog { empty(): Promise<boolean> }
 export interface HostIO {
   emit(event: unknown): void;
   /** Dispatch an application tool through the supervisor, which validates and limits it. */
-  tool(name: string, args: Record<string, unknown>, call?: CallContext): Promise<any>;
+  /** An application tool's call; `signal` cancels this call alone (one a script's Pi task gave up on). */
+  tool(name: string, args: Record<string, unknown>, call?: CallContext, signal?: AbortSignal): Promise<any>;
   /** Abort the application tool calls this agent has in flight. */
   cancelTools(): Promise<unknown>;
   /** Why the running turn must end before its next model request (a reached spend cap, the run's own limits, or its node leaving), if so. */
@@ -108,7 +109,7 @@ export interface HostIO {
 }
 
 /** Tools Pi makes again when a lost node left their call open (`replay: "safe"`), not answered as interrupted: each is keyed by its call (multi-agent.ts). */
-export const RERUN = ["delegate", "run_workflow", "spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"];
+export const RERUN = ["delegate", "spawn_agent", "wait_agent", "list_agents", "send_message", "interrupt_agent"];
 
 /**
  * A limit's stop as a run's result carries it: its code (its own, else the kind of stop), and the limit, reason, bucket
@@ -473,7 +474,7 @@ export function createAgentHost(hostIO: HostIO) {
             // An error rejects the call in the script with its message, cut to fit what a script gets from a call.
             let data: unknown;
             try {
-              const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await scriptMadeAt(nested) });
+              const value = await io.tool(tool.name, args as Record<string, unknown>, { toolCallId: nested.parentCallId, innerCallId: nested.key, ...await scriptMadeAt(nested) }, signal);
               signal?.throwIfAborted();
               data = (tool.resultFormat === "content" ? scriptValue(value) : value) ?? null;
             } catch (error) {
@@ -506,12 +507,13 @@ export function createAgentHost(hostIO: HostIO) {
   /**
    * Where the agent's code runs (v8-exec, codemode-pi-launcher.ts) under its tenant's limits: CPU per execution, and a
    * deadline (Pi's code mode has none unless a script asks), each admitted only while the node's lease is fresh and the
-   * tenant has a code slot on the node, and measured (`code_execution`).
+   * tenant has a code slot on the node, and measured (`code_execution`). A script waiting on delegate (another agent's
+   * whole turn) holds no slot meanwhile, and the wait is not on its clock.
    */
   function codeSandbox(tools?: CodemodeTool[]): ReturnType<CodeSandboxes> {
     const timeoutMs = Math.min(config.codeLimits?.maxTimeoutMs ?? SANDBOX_LIMITS.maxTimeoutMs, SANDBOX_LIMITS.maxTimeoutMs);
     const options: Parameters<CodeSandboxes>[0] = {
-      ...tools ? { tools } : {}, cpuMs: Math.min(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs), timeoutMs,
+      ...tools ? { tools } : {}, awaits: ["delegate"], ...config.tenant ? { tenant: config.tenant } : {}, cpuMs: Math.min(config.codeLimits?.cpuMs ?? SANDBOX_LIMITS.cpuMs, SANDBOX_LIMITS.maxCpuMs), timeoutMs,
       acquireSlot: async signal => { await leased(signal); return io.codeSlot ? io.codeSlot(signal) : () => {}; },
       onEnd: ({ ms, cpuMs, error, errorName }) => recordCodeExecution({ tenant: config.tenant, ms, timeoutMs, cpuMs, ...error === undefined ? {} : { error }, ...errorName === undefined ? {} : { errorName } }),
     };

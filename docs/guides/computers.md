@@ -12,7 +12,7 @@ camelRun workspace files.
 ## Sub-agents
 
 By default, each sub-agent the runtime creates gets its own computer connection
-when its parent has one. This applies to `spawn_agent`, `delegate` and `run_workflow`, including
+when its parent has one. This applies to `spawn_agent` and `delegate`, including
 children made from definitions. The
 connection has the same provider, provider credentials, managed setting and
 lease and daily limits. It starts without a session: the child calls

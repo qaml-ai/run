@@ -1,3 +1,4 @@
+import { rejectWorkflow } from "./builtins.ts";
 import { computerRoutes } from "./computers/api.ts";
 import type { Computers } from "./computers/service.ts";
 import { workspaceRoutes } from "./workspaces-api.ts";
@@ -579,6 +580,7 @@ export function api(context: ApiContext) {
     // Only the fields an agent takes: the model by name, never a model object of the caller's (its prices, its endpoint).
     // The fields' values are checked as the agent is made, with the messages the SDKs rely on.
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "Send an agent object");
+    rejectWorkflow(body);
     for (const key of Object.keys(body)) if (!Object.hasOwn(schema.AgentInput.shape, key)) throw new HttpError(400, `Unknown agent field: ${key}`);
     if (body.model !== undefined && typeof body.model !== "string") throw new HttpError(400, 'model must be a "provider/model-id" string; see GET /v1/models');
     const { prompt, importMessages, ...params } = body;
@@ -745,7 +747,9 @@ export function api(context: ApiContext) {
     method: "patch", path: "/v1/agents/{id}/configuration", request: { params: agentId, body: content(schema.ConfigureInput) },
     responses: { 202: reply("Configuration accepted; poll its request for completion. Conversation history is preserved", schema.RequestRecord) },
   }), async c => {
-    const { requestId, ...params } = parse(schema.ConfigureInput, await readJson(c.req.raw.body, 1024 * 1024, {}));
+    const body = await readJson(c.req.raw.body, 1024 * 1024, {});
+    rejectWorkflow(body);
+    const { requestId, ...params } = parse(schema.ConfigureInput, body);
     const tenant = c.var.principal.tenant;
     // A model the agent could not call is refused now, not when the request runs.
     if (params.model !== undefined) {

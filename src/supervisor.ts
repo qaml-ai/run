@@ -37,7 +37,9 @@ export const transcriptPath = (directory: string) => join(directory, "transcript
  * processes either way (confined by agent-launcher when it started the runtime).
  */
 export type Hosting = "process" | "inline";
-type Common = { bridge: ToolBridge; calls: Set<AbortController>; listeners: Set<(event: any) => void>; legacy: AppendLog<unknown>; durable?: PiStorage };
+/** A call's key among an agent's calls in flight: its model call's id, and its key within a script's. */
+const callKey = (call: Partial<CallContext>) => `${call.toolCallId}/${call.innerCallId ?? ""}`;
+type Common = { bridge: ToolBridge; calls: Set<AbortController>; keyed?: Map<string, AbortController>; listeners: Set<(event: any) => void>; legacy: AppendLog<unknown>; durable?: PiStorage };
 /** An agent process's code turns (`codeSlot`), by its id for them: waiting (`release` unset) or held. */
 type CodeSlots = Map<string, { controller: AbortController; release?: () => void }>;
 type ProcessHandle = Common & { kind: "process"; child: ChildProcess; rpc: Rpc; slots: CodeSlots; watchdog?: NodeJS.Timeout };
@@ -196,9 +198,11 @@ export class AgentSupervisor {
   /** Validate and dispatch an agent's application tool call, with the same limits in either hosting mode. */
   private async dispatchTool(handle: Handle, params: { name: string; args: unknown } & Partial<CallContext>) {
     const checked = validateToolCall(handle.bridge.definitions, params.name, params.args,
-      params.name === "run_workflow" ? SANDBOX_LIMITS.workflowArgumentBytes : SANDBOX_LIMITS.argumentBytes);
+      SANDBOX_LIMITS.argumentBytes);
     const controller = new AbortController();
     handle.calls.add(controller);
+    const key = params.toolCallId ? callKey(params) : undefined;
+    if (key) (handle.keyed ??= new Map()).set(key, controller);
     try {
       // A tool call may fail before its tool hears of it.
       if (buggify("tool.call.fails")) throw new Error("BUGGIFY: the tool call failed before it was sent");
@@ -206,7 +210,15 @@ export class AgentSupervisor {
       controller.signal.throwIfAborted();
       return JSON.parse(jsonWithinLimit(result, SANDBOX_LIMITS.resultBytes, "Tool result"));
     }
-    finally { handle.calls.delete(controller); }
+    finally {
+      handle.calls.delete(controller);
+      if (key && handle.keyed?.get(key) === controller) handle.keyed.delete(key);
+    }
+  }
+  /** Cancel one call (a script's call Pi gave up on), by its ids. */
+  private cancelTool(handle: Handle, params: Partial<CallContext>) {
+    if (params?.toolCallId) handle.keyed?.get(callKey(params))?.abort();
+    return null;
   }
   /** A run's events reach its listeners; background work's (a compaction between runs) goes to the bridge instead, whether or not a run is open. */
   private dispatchEvent(handle: Handle, event: any, copy = false) {
@@ -273,6 +285,7 @@ export class AgentSupervisor {
     rpc.onEvent = event => this.dispatchEvent(handle, event);
     rpc.handler = async (method, params) => {
       if (method === "cancel-tools") return this.cancelTools(handle);
+      if (method === "cancel-tool") return this.cancelTool(handle, params);
       if (method === "legacy-log") return this.legacyRequest(handle, params);
       if (method === "pi-storage") {
         if (params?.method === "available") return !!handle.durable;
@@ -392,7 +405,10 @@ export class AgentSupervisor {
       legacyLog: { empty: () => this.legacyRequest(handle, { op: "empty" }) } as LegacyLog,
       piStorage: async () => durable,
       emit: event => this.dispatchEvent(handle, event, true),
-      tool: (name, args, call) => this.dispatchTool(handle, { name, args: structuredClone(args), ...call }),
+      tool: (name, args, call, signal) => {
+        if (call && signal) signal.addEventListener("abort", () => this.cancelTool(handle, call), { once: true });
+        return this.dispatchTool(handle, { name, args: structuredClone(args), ...call });
+      },
       cancelTools: async () => this.cancelTools(handle),
       runLimit: async () => handle.bridge.runLimit?.(),
       file: ref => this.file(handle, structuredClone(ref)),
