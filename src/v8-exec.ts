@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { WireMessage } from "./protocol.ts";
 import { recordV8Exec } from "./metrics.ts";
@@ -40,6 +40,8 @@ export class V8Exec {
   /** Processes whose scripts only wait (`Guest.park`), outside `max`: on the node, and one tenant's. */
   readonly parkedMax: number;
   readonly parkedPerTenant: number;
+  /** The most a process may hold resident (RSS, bytes) to be parked: its memory is not freed while it waits. */
+  readonly parkedMaxRss: number;
   prespawn: number;
   running = 0;
   parked = 0;
@@ -49,7 +51,7 @@ export class V8Exec {
   private readonly ready: Confined[] = [];
   private readonly waiting: (() => void)[] = [];
 
-  constructor(options: { binary?: string; jitless?: boolean; seccomp?: boolean; max?: number; parkedMax?: number; parkedPerTenant?: number; prespawn?: number; maxDataMb?: number } = {}) {
+  constructor(options: { binary?: string; jitless?: boolean; seccomp?: boolean; max?: number; parkedMax?: number; parkedPerTenant?: number; parkedMaxRssMb?: number; prespawn?: number; maxDataMb?: number } = {}) {
     const defaults = options.binary === undefined || options.jitless === undefined || options.seccomp === undefined ? v8Settings(process.env) : undefined;
     this.binary = options.binary ?? defaults!.binary;
     const jitless = options.jitless ?? defaults!.jitless;
@@ -63,9 +65,11 @@ export class V8Exec {
     this.max = options.max ?? 64;
     this.parkedMax = options.parkedMax ?? 32;
     this.parkedPerTenant = options.parkedPerTenant ?? 8;
+    this.parkedMaxRss = (options.parkedMaxRssMb ?? 64) * 1024 * 1024;
     this.prespawn = options.prespawn ?? 0;
     if (!Number.isInteger(this.max) || this.max < 1 || !Number.isInteger(this.prespawn) || this.prespawn < 0
-      || !Number.isInteger(this.parkedMax) || this.parkedMax < 0 || !Number.isInteger(this.parkedPerTenant) || this.parkedPerTenant < 0) throw new Error("Invalid v8-exec process limits");
+      || !Number.isInteger(this.parkedMax) || this.parkedMax < 0 || !Number.isInteger(this.parkedPerTenant) || this.parkedPerTenant < 0
+      || !(this.parkedMaxRss > 0)) throw new Error("Invalid v8-exec process limits");
     this.refill();
   }
 
@@ -120,7 +124,10 @@ export class V8Exec {
     let parked: { tenant?: string } | undefined, resume: (() => void) | undefined;
     const unparked = () => {
       this.parked--;
-      if (parked?.tenant !== undefined) this.parkedBy.set(parked.tenant, this.parkedBy.get(parked.tenant)! - 1);
+      if (parked?.tenant !== undefined) {
+        const left = this.parkedBy.get(parked.tenant)! - 1;
+        if (left) this.parkedBy.set(parked.tenant, left); else this.parkedBy.delete(parked.tenant);
+      }
       parked = undefined;
     };
     const release = () => {
@@ -148,7 +155,8 @@ export class V8Exec {
       admitted: admitted.promise,
       park: tenant => {
         if (!child || released || parked || resume || this.parked >= this.parkedMax
-          || (tenant !== undefined && (this.parkedBy.get(tenant) ?? 0) >= this.parkedPerTenant)) return false;
+          || (tenant !== undefined && (this.parkedBy.get(tenant) ?? 0) >= this.parkedPerTenant)
+          || (resident(child.pid) ?? 0) > this.parkedMaxRss) return false;
         parked = { tenant };
         this.parked++;
         if (tenant !== undefined) this.parkedBy.set(tenant, (this.parkedBy.get(tenant) ?? 0) + 1);
@@ -174,6 +182,13 @@ export class V8Exec {
   }
 }
 
+/** A process's resident memory in bytes, where /proc tells it (Linux); undefined elsewhere or once it is gone. */
+function resident(pid: number | undefined): number | undefined {
+  if (!pid) return undefined;
+  try { return Number(/^VmRSS:\s+(\d+) kB/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"))?.[1]) * 1024 || undefined; }
+  catch { return undefined; }
+}
+
 const envFlag = (env: NodeJS.ProcessEnv, name: string, fallback: boolean) => {
   const value = env[name];
   return value === undefined || value === "" ? fallback : !/^(0|false|no|off)$/i.test(value);
@@ -189,14 +204,16 @@ export function v8ExecBinary(env: NodeJS.ProcessEnv = process.env) {
 /**
  * A runner's settings from `env`: AGENT_V8_EXEC, AGENT_V8_JITLESS and AGENT_V8_SECCOMP (both on by default),
  * AGENT_V8_PRESPAWN processes started ahead (2 under agent-launcher, else none), AGENT_V8_MAX at once (64), and
- * AGENT_V8_PARKED_MAX (32) and AGENT_V8_PARKED_PER_TENANT (8) whose scripts only wait on delegate, beside those: a
- * parked process holds 23 MB (an idle script) to 42 MB (one holding 100,000 small objects), measured on Linux x86_64.
+ * AGENT_V8_PARKED_MAX (32) and AGENT_V8_PARKED_PER_TENANT (8) whose scripts only wait on delegate, beside those, each
+ * at most AGENT_V8_PARKED_MAX_RSS_MB (64) resident when it parks: a parked process holds 22 MB (an idle script) to 42 MB
+ * (one holding 100,000 small objects), and up to about 260 MB (V8's heap and ArrayBuffer limits) holding large data.
  */
 export function v8Settings(env: NodeJS.ProcessEnv) {
   return {
     binary: v8ExecBinary(env), jitless: envFlag(env, "AGENT_V8_JITLESS", true), seccomp: envFlag(env, "AGENT_V8_SECCOMP", true),
     prespawn: Number(env.AGENT_V8_PRESPAWN || (env.AGENT_SANDBOX_DIR ? 2 : 0)), max: Number(env.AGENT_V8_MAX || 64),
     parkedMax: Number(env.AGENT_V8_PARKED_MAX || 32), parkedPerTenant: Number(env.AGENT_V8_PARKED_PER_TENANT || 8),
+    parkedMaxRssMb: Number(env.AGENT_V8_PARKED_MAX_RSS_MB || 64),
   };
 }
 
