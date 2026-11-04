@@ -213,7 +213,7 @@ async function prepaid(names: string[]) {
 }
 
 test("usage flushes: a commit that fails, or whose answer is lost, is retried and charged exactly once; rounding stays within bounds", async t => {
-  const response = fc.record({ usd: fc.oneof(fc.double({ min: 0, max: 0.05, noNaN: true }), fc.double({ min: 0, max: 2e-6, noNaN: true })), platform: fc.boolean(), kind: fc.constantFrom("tokens", "search", "toolSearch"), activeMs: fc.nat({ max: 5_000 }) });
+  const response = fc.record({ usd: fc.oneof(fc.double({ min: 0, max: 0.05, noNaN: true }), fc.double({ min: 0, max: 2e-6, noNaN: true })), platform: fc.boolean(), kind: fc.constantFrom("tokens", "search"), activeMs: fc.nat({ max: 5_000 }) });
   const step = fc.oneof({ weight: 4, arbitrary: response.map(value => ({ t: "response" as const, ...value })) }, { weight: 1, arbitrary: fc.constantFrom<Fault>("none", "before-commit", "lost-ack").map(fault => ({ t: "flush" as const, fault })) });
   await check(t, fc.asyncProperty(fc.array(step, { minLength: 1, maxLength: 30 }), async steps => {
     const id = run();
@@ -226,7 +226,7 @@ test("usage flushes: a commit that fails, or whose answer is lost, is retried an
     let exact = 0, batches = 0;
     const record = (accounts: Accounts, tenant: string, value: { usd: number; platform: boolean; kind: string; activeMs: number }) => {
       accounts.recordUsage(tenant, "agent", { provider: "anthropic", model: "m", platform: value.platform, usage: { cost: { total: value.usd } },
-        ...(value.kind === "search" ? { searches: 1 } : value.kind === "toolSearch" ? { toolSearch: true, toolSearches: 1 } : {}) });
+        ...(value.kind === "search" ? { searches: 1 } : {}) });
       accounts.recordActive(tenant, "agent", value.activeMs);
     };
     for (const next of steps) {
@@ -250,7 +250,7 @@ test("usage flushes: a commit that fails, or whose answer is lost, is retried an
     const charged = { flaky: -(accounts.get(flaky)?.balance ?? 0), steady: -(accounts.get(steady)?.balance ?? 0) };
     // Faults never change what is charged: each batch applied exactly once.
     assert.equal(charged.flaky, charged.steady, `charged ${charged.flaky} with faults, ${charged.steady} without`);
-    // And rounding: each batch rounds each of its four parts once, so the total stays within 2 micro-USD per batch.
+    // And rounding: each batch rounds each of its three parts once, so the total stays within 2 micro-USD per batch.
     assert.ok(Math.abs(charged.steady - exact) <= 2 * batches + 1e-6 * exact, `charged ${charged.steady} for ${exact} over ${batches} batches`);
     const rows = await ledger([flaky, steady]);
     for (const tenant of [flaky, steady]) assert.equal(rows.filter(row => row.tenant === tenant).reduce((sum, row) => sum + row.amount, 0), accounts.get(tenant)?.balance ?? 0);

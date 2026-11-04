@@ -4983,8 +4983,8 @@ a later correction contributes its signed amounts when posted (`createdAt`),
 which may differ from the call's day in `/days`.
 
 `call` comes from usage metadata: `response`, `compaction`, `image`, `decision`,
-`transcription`, `speech`, `web_search`, `web_fetch`, `tool_search`, `tool`, `voice`,
-`voice_say` or `voice_realtime`. `agent` is the agent ID when recorded. Direct API
+`transcription`, `speech`, `web_search`, `web_fetch`, `tool`, `voice`, `voice_say` or
+`voice_realtime`; entries recorded before November 4, 2026 may also have `tool_search`. `agent` is the agent ID when recorded. Direct API
 and voice calls may have no agent; absent call or agent metadata is `null`.
 
 ### Units
