@@ -351,6 +351,38 @@ test("Pi start: past its share of parked processes, a tenant's waiting script ke
   assert.deepEqual([(await first).ok, (await second).ok], [true, true]);
 });
 
+test("Pi start: a waiting script refused a parked place gives back its slot, so its children run; its wait counts and says why", { skip, timeout: 60_000 }, async t => {
+  // No parked places, one code slot: the parent's child needs that slot to run at all.
+  const pool = new V8Exec({ parkedMax: 0 });
+  const gate = slots(1);
+  const parent = new PiV8Sandbox({ pool, timeoutMs: 5_000, acquireSlot: gate.acquire("a"), awaits: ["delegate"], tenant: "a" });
+  const child = new PiV8Sandbox({ pool, timeoutMs: 5_000, acquireSlot: gate.acquire("a"), awaits: ["delegate"], tenant: "a" });
+  t.after(async () => { await parent.close(); await child.close(); pool.close(); });
+  let seq = 0;
+  const run: CodemodeRun = parent.start("return await tools.delegate({})", { ...defaults, tools: [...tools, { name: "delegate", jsName: "delegate", description: "Delegate" }],
+    onCall: call => { void answering(child, "return 'child done'", () => 0).then(result => run.deliver(++seq, defaults.startedAt + 1, call.id, success(result.ok ? result.value : null))); } });
+  const result = await run.result;
+  assert.equal(result.ok, true, JSON.stringify(result));
+  if (result.ok) assert.equal(result.value, "child done");
+  assert.equal(pool.parked, 0);
+  // Its wait is on its clock: past its deadline it ends, saying the node had no room for it.
+  const slow = new PiV8Sandbox({ pool, timeoutMs: 300, acquireSlot: gate.acquire("a"), awaits: ["delegate"], tenant: "a" });
+  t.after(() => slow.close());
+  const timedOut = await answering(slow, "return await tools.delegate({})", () => 800);
+  assert.equal(timedOut.ok, false);
+  if (!timedOut.ok) assert.match(timedOut.error.message, /no room to set a waiting script aside/);
+});
+
+test("Pi start: a script holding more memory than a parked place allows waits with its process, its clock running", { skip: skip || (process.platform !== "linux" && "reads /proc"), timeout: 60_000 }, async t => {
+  const pool = new V8Exec({ parkedMaxRssMb: 1 });
+  const sandbox = new PiV8Sandbox({ pool, timeoutMs: 5_000, awaits: ["delegate"], tenant: "a" });
+  t.after(async () => { await sandbox.close(); pool.close(); });
+  const waiting = answering(sandbox, "return await tools.delegate({})", () => 500);
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.deepEqual({ parked: pool.parked, running: pool.running }, { parked: 0, running: 1 });
+  assert.equal((await waiting).ok, true);
+});
+
 test("Pi start: a script waiting on a delegate and on other calls holds its slot and its clock runs", { skip, timeout: 60_000 }, async t => {
   const gate = slots(4);
   const sandbox = new PiV8Sandbox({ timeoutMs: 300, acquireSlot: gate.acquire("a"), awaits: ["delegate"], tenant: "a" });

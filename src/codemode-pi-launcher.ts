@@ -81,7 +81,7 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     const awaits = new Set(options.awaits ?? []), awaited = new Set<number>();
     // Parked: the script, idle, waits only on `awaits` calls, holding no code slot, its process outside the pool's `max`
     // (`Guest.park`) and its clock stopped. Results wait in `queued` while it is parked or `moving` in or out of it.
-    // Past that budget it keeps both (`kept`), and only its clock stops.
+    // Past that budget it keeps its process (`kept`) and its clock runs.
     let parked: { kept: boolean } | undefined, moving: Promise<void> | undefined;
     const queued: HostToWorkerMessage[] = [];
     let nextResult = 0;
@@ -93,7 +93,12 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     const fail = (message: string) => { if (!stopped) { error ??= message; events.failure({ kind: "sandbox", message }); } };
     // The wall clock runs while the script has its process and code slot, and is not parked.
     let left = timeoutMs, since: number | undefined, timer: ReturnType<typeof setTimeout> | undefined;
-    const expire = () => { if (!stopped) { error ??= `Codemode timed out after ${timeoutMs}ms`; events.failure({ kind: "timeout", message: `Pi V8 exceeded ${timeoutMs} ms` }); } };
+    const expire = () => {
+      if (stopped) return;
+      const why = parked?.kept ? " waiting on delegate: this node had no room to set a waiting script aside" : "";
+      error ??= `Codemode timed out after ${timeoutMs}ms${why}`;
+      events.failure({ kind: "timeout", message: `Pi V8 exceeded ${timeoutMs} ms${why}` });
+    };
     const runClock = () => { if (!stopped && since === undefined) { since = performance.now(); timer = setTimeout(expire, left); } };
     const stopClock = () => { if (since !== undefined) { clearTimeout(timer); left -= performance.now() - since; since = undefined; } };
     const deliver = (message: HostToWorkerMessage) => guest!.send({ type: "request", id: "pi", method: "pi-result-v1", params: message });
@@ -122,19 +127,20 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
     const moved = (work: () => Promise<void>) => {
       moving = work().catch(error => fail(error instanceof Error ? error.message : String(error))).finally(() => { moving = undefined; flush(); });
     };
+    // Either way the code slot goes back (the script's children may need it). Parked, its process leaves the pool's
+    // `max` and its clock stops. Refused (the budget for waiting processes full, or its process too large to keep
+    // waiting), it keeps its process and its clock runs: the wait counts, so it ends on its own deadline, saying why.
     const park = () => moved(async () => {
       if (queued.length) return;
-      stopClock();
       parked = { kept: !guest!.park?.(options.tenant) };
-      if (!parked.kept) { release?.(); release = undefined; }
+      if (!parked.kept) stopClock();
+      release?.(); release = undefined;
     });
     const unpark = () => moved(async () => {
       const kept = parked!.kept;
       parked = undefined;
-      if (!kept) {
-        release = await options.acquireSlot?.(admission.signal);
-        await guest!.unpark?.();
-      }
+      release = await options.acquireSlot?.(admission.signal);
+      if (!kept) await guest!.unpark?.();
       if (stopped) { release?.(); release = undefined; return; }
       runClock();
     });
