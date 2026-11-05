@@ -29,6 +29,7 @@ import { SessionCodemodeSandbox } from "../codemode/sandbox.ts";
 import { isolatedSandboxRemote } from "../codemode/routing.ts";
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord";
 import { PiHarness } from "agents/harness/pi";
 import { Lifecycle } from "agents/lifecycle";
 import {
@@ -692,6 +693,14 @@ export class CamelAgent extends DurableObject<Env> {
             await applyModelReceipt(this.env, receipt);
             await this.ctx.storage.delete(key);
           },
+          async (refused) => {
+            const { id } = await this.currentRun();
+            const limit: RuntimeLimit = refused.endUser
+              ? { stopped: "spend_limit", error: refused.message, code: "end_user_credit", limit: "end_user", reason: refused.reason, bucket: refused.bucket, endUser: refused.endUser }
+              : { stopped: "spend_limit", error: refused.message, code: "spend_limit", limit: "credit" };
+            await this.ctx.storage.put(`run-limit:${id}`, limit);
+            await this.emit({ type: "event", requestId: id, event: { type: "spend_limit_reached", message: refused.message } });
+          },
         ),
       settings: async () => {
         const conf = await this.config();
@@ -948,7 +957,7 @@ export class CamelAgent extends DurableObject<Env> {
               await this.ctx.storage.put(`output:${run.id}`, args);
               return {
                 output: [{ type: "text", text: "Accepted." }],
-                details: { output: args },
+                details: { output: args as JsonValue },
                 control: { terminate: true },
               };
             },
@@ -1455,9 +1464,11 @@ export class CamelAgent extends DurableObject<Env> {
       const outputValue = await this.ctx.storage.get(`output:${id}`);
       const limit = await this.ctx.storage.get<RuntimeLimit>(`run-limit:${id}`);
       const runUsage = this.usageView(usage);
+      const modelFailed = usage.last?.stopReason === "error" || usage.last?.stopReason === "aborted";
+      const runCompleted = result.status === "done" && !modelFailed;
       const outcome = limit
         ? { result: { ...limit, usage: runUsage } }
-        : result.status === "done"
+        : runCompleted
           ? {
               result: {
                 reply: result.text ?? "",
@@ -1502,14 +1513,14 @@ export class CamelAgent extends DurableObject<Env> {
           outcome,
           status:
             !limit &&
-            result.status === "done" &&
+            runCompleted &&
             (!requestedOutput || outputValue !== undefined)
               ? "completed"
               : "failed",
-          ...(result.status !== "done"
+          ...(!runCompleted
             ? { error: usage.last?.errorMessage ?? result.reason ?? "Model operation failed" }
             : requestedOutput && outputValue === undefined && "result" in outcome
-              ? { error: outcome.result.error ?? undefined }
+              ? { error: outcome.result?.error ?? undefined }
               : {}),
         };
         const conf = await tx.get<Config>("configuration");
