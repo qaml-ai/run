@@ -1594,7 +1594,13 @@ export class CamelAgent extends DurableObject<Env> {
     const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
     if (!record)
       throw Object.assign(new Error("Unknown request"), { status: 404 });
-    if (record.state === "completed" || !record.accepted) return record;
+    if (record.state === "completed") {
+      // Completion and its receipt commit together. A concurrent observer must
+      // also wait for settlement to release the tenant's busy-agent slot.
+      await this.flushBilling(true);
+      return record;
+    }
+    if (!record.accepted) return record;
     if (record.method === "execute") {
       const signal = waitMs ? AbortSignal.timeout(waitMs) : undefined;
       let result;
@@ -1608,7 +1614,10 @@ export class CamelAgent extends DurableObject<Env> {
         throw error;
       }
       const current = await this.ctx.storage.get<RequestRecord>(reqKey(id));
-      if (current?.state === "completed") return current;
+      if (current?.state === "completed") {
+        await this.flushBilling(true);
+        return current;
+      }
       const completed: RequestRecord = {
         ...record,
         state: "completed",
@@ -1667,7 +1676,10 @@ export class CamelAgent extends DurableObject<Env> {
         }
       }
       const current = await this.ctx.storage.get<RequestRecord>(reqKey(id));
-      if (current?.state === "completed") return current;
+      if (current?.state === "completed") {
+        await this.flushBilling(true);
+        return current;
+      }
       if (await this.ctx.storage.get(`cancelled-request:${id}`)) await this.delegation.settleStopped(id);
       const usage = await this.usageForRequest(record.piId ?? id);
       const stored = await this.ctx.storage.get<Config>("configuration");
