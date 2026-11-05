@@ -24,7 +24,7 @@ test("auxiliary costs share agent and run budgets with immutable idempotent rece
   await transaction(db, sql => recordAuxiliaryUsage(sql, web, { costUsd: 0.2 }));
   assert.ok(Math.abs((await agentSpend(db, "tenant", "agent"))!.spent - 0.3) < 1e-10);
   assert.equal((await modelSpendLimit(db, { tenant: "tenant", agent: "agent", requestId: "run", spendLimit: 1 }))?.stopLimit, "agent");
-  assert.deepEqual(await auxiliaryUsageCosts(env, "tenant", "agent", "run"), { decisionCostUsd: 0.1, imageCostUsd: 0, webCostUsd: 0.2 });
+  assert.deepEqual(await auxiliaryUsageCosts(env, "tenant", "agent", "run"), { decisionCostUsd: 0.1, imageCostUsd: 0, webCostUsd: 0.2, transcriptionCostUsd: 0 });
   await setAgentSpendLimit(db, "agent", 1, 20);
   assert.equal((await agentSpend(db, "tenant", "agent"))!.spent, 0);
   await recordAuxiliaryUsage(db, { ...call, callId: "late-old-call", startedAt: 15 }, { costUsd: 0.1 });
@@ -36,8 +36,9 @@ test("auxiliary costs share agent and run budgets with immutable idempotent rece
   assert.equal(admitted, true);
   await assert.rejects(admitAuxiliaryUsage(env, { tenant: "tenant", agent: "agent", requestId: "run", spendLimit: 0.2 }), /run has reached/);
   await recordAuxiliaryUsage(db, { ...call, callId: "image-call", kind: "image", startedAt: 21 }, { costUsd: 0.05 });
-  assert.deepEqual(await auxiliaryUsageCosts(env, "tenant", "agent", "run"), { decisionCostUsd: 0.2, imageCostUsd: 0.05, webCostUsd: 0.2 });
-  assert.equal((await agentSpend(db, "tenant", "agent"))!.spent, 0.05);
+  await recordAuxiliaryUsage(db, { ...call, callId: "audio-call", kind: "transcription", startedAt: 21 }, { costUsd: 0.07 });
+  assert.deepEqual(await auxiliaryUsageCosts(env, "tenant", "agent", "run"), { decisionCostUsd: 0.2, imageCostUsd: 0.05, webCostUsd: 0.2, transcriptionCostUsd: 0.07 });
+  assert.ok(Math.abs((await agentSpend(db, "tenant", "agent"))!.spent - 0.12) < 1e-12);
   await db.query("update agents set revoked=true where id='agent'");
   assert.equal(await recordAuxiliaryUsage(db, { ...call, callId: "late-after-revoke", kind: "image", startedAt: 22 }, { costUsd: 0.02 }), true, "revoking an agent cannot erase provider usage already incurred");
   assert.equal(await recordAuxiliaryUsage(db, { ...call, callId: "late-after-revoke", kind: "image", startedAt: 22 }, { costUsd: 0.02 }), false);
