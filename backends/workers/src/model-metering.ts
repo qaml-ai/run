@@ -9,6 +9,7 @@ import { modelSpendLimit } from './agent-spend.ts';
 import type { ModelAttemptEvent, ModelAttemptHook } from './model-attempt.ts';
 import { keyServices, providerCredentials, type KeyEnv } from './security-services.ts';
 import { PREPARED_MODEL_CREDENTIALS } from './model-request-auth.ts';
+import { accountingModel, modelCallKind } from './model-call-context.ts';
 
 export type ModelReceipt = { tenant: string; agent: string; platform: boolean; event: ModelAttemptEvent };
 export type ModelBillingContext = {
@@ -77,9 +78,8 @@ export function meterProvider<P extends Provider<any>>(
       };
       const estimate = estimateModelAttempt(model, transcript, options);
       const gateway = !platform && (model.provider === 'cloudflare-ai-gateway' || !!credentials?.baseUrl && model.provider === 'openrouter');
-      // Pi does not expose the compaction purpose at this provider boundary yet;
-      // both call paths are charged, with kind=response until it does.
-      const source = await attemptStream(model, typeof key === 'string' ? key : '', 'response', hook,
+      const billedModel = accountingModel(model, options.endpointIdentity);
+      const source = await attemptStream(billedModel, typeof key === 'string' ? key : '', options.modelCallKind ?? modelCallKind(transcript), hook,
         (sink, halt, affordable) => stream(model, transcript, {
           ...options,
           signal: options.signal ? AbortSignal.any([options.signal, halt]) : halt,

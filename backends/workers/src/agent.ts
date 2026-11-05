@@ -1,3 +1,5 @@
+import { retriesModelError } from "./model-errors.ts";
+import { modelCompactionSettings } from "./model-context.ts";
 import { toolOutputExtension } from "./tool-output.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
@@ -125,7 +127,6 @@ import { runAdmission } from "./admission.ts";
 import { PromptPreparations } from "./prompt-admission.ts";
 import { actorInput, bucketInput } from "./security-policy.ts";
 import { MessageProjection } from "./message-projection.ts";
-import { OUTPUT_REMINDER } from "./output-policy.ts";
 import { runtimePromptSections } from "./prompt-sections.ts";
 import { toolResultFiles } from "./tool-output-files.ts";
 import { projectRunFailure } from "./run-failure.ts";
@@ -618,6 +619,8 @@ export class CamelAgent extends DurableObject<Env> {
       },
     };
   }
+  private retryModelFailure = true;
+  private modelCompaction?: ReturnType<typeof modelCompactionSettings>;
   private models = modelRuntime(
     this.env,
     async () => (await this.config()).tenantId,
@@ -626,12 +629,26 @@ export class CamelAgent extends DurableObject<Env> {
       // Pi batches its live document. Project the provider's individual deltas
       // through the same projection so short chunks remain observable.
       onStreamEvent: async (event) => {
+        if (event.type === "error") {
+          const conf = await this.config();
+          const endpoints = (await keyServices(this.env)).tenants.modelEndpoints(conf.tenantId);
+          const provider = (conf.config.model ?? this.env.MODEL).split("/")[0];
+          this.retryModelFailure = retriesModelError(event.error, { ownEndpoint: !!endpoints?.[provider] });
+        } else if (event.type === "done") this.retryModelFailure = true;
         if (!("partial" in event)) return;
         await this.eventsProcessed;
         const run = await this.currentRun();
         await this.markBegan(run.id);
         this.partial = event.partial;
         await this.projectMessage(run.id, event.partial, false);
+      },
+      onDiscardedOutput: async (message) => {
+        const run = await this.currentRun();
+        await this.ctx.storage.put({ [`discarded-output:${run.id}`]: message, [`output-reminded:${run.id}`]: true });
+        await this.projectMessage(run.id, message, true);
+        this.nextMessage--;
+        this.partial = null;
+        await this.emit({ type: "event", requestId: run.id, event: { type: "message_retracted", index: this.nextMessage } });
       },
       onStall: async (stall) => {
         const run = await this.currentRun();
@@ -757,7 +774,7 @@ export class CamelAgent extends DurableObject<Env> {
       const registry = this.registry;
       const conf = await this.config();
       // A recreated object must register the stored custom model before Pi resumes tasks.
-      this.models.resolve(
+      const model = this.models.resolve(
         conf.config.model,
         conf.config.runLimits?.contextTokens,
         await resolveCustomProviders(
@@ -768,9 +785,14 @@ export class CamelAgent extends DurableObject<Env> {
         (await keyServices(this.env)).tenants.modelEndpoints(conf.tenantId),
         conf.resolvedModel,
       );
+      this.modelCompaction = modelCompactionSettings(model, conf.config.maxOutputTokens);
       registry.install(
         runtimePromptSections(
-          async () => (await this.config()).config as never,
+          async () => {
+            const config = (await this.config()).config;
+            const run = await this.currentRun();
+            return { ...config, output: "params" in run ? run.params?.output : undefined } as never;
+          },
         ),
       );
       registry.install(senderExtension());
@@ -905,32 +927,13 @@ export class CamelAgent extends DurableObject<Env> {
             : [],
       });
       registry.install({
-        name: "camel.output-retry",
-        hooks: [
-          hook(GenerationTask, {
-            onYield: async (_answer, api, context) => {
-              const run = await this.currentRun();
-              if (
-                !("params" in run) ||
-                !run.params?.output ||
-                (await this.ctx.storage.get(`output:${run.id}`)) !== undefined
-              )
-                return;
-              if (await this.ctx.storage.get(`output-reminded:${run.id}`))
-                return;
-              await this.ctx.storage.put(`output-reminded:${run.id}`, true);
-              return { continue: OUTPUT_REMINDER };
-            },
-          }),
-        ],
-      });
-      registry.install({
         name: "camel.output",
         tools: [
           {
             name: "final_output",
             description: "End the run with the requested structured output.",
             parameters: { type: "object", additionalProperties: true },
+            callers: ["model"],
             replay: "safe",
             execute: async (args, api) => {
               const run = await this.currentRun(api);
@@ -940,12 +943,12 @@ export class CamelAgent extends DurableObject<Env> {
               if (!schema?.schema)
                 throw new Error("This run has no output schema");
               if (!schemaAccepts(schema.schema, args)) {
-                await this.ctx.storage.put(`output-invalid:${run.id}`, true);
-                throw new Error("Output does not match the requested schema");
+                throw new Error('Validation failed for tool "final_output": arguments do not match the requested schema');
               }
               await this.ctx.storage.put(`output:${run.id}`, args);
               return {
-                output: [{ type: "text", text: JSON.stringify(args) }],
+                output: [{ type: "text", text: "Accepted." }],
+                details: { output: args },
                 control: { terminate: true },
               };
             },
@@ -990,10 +993,11 @@ export class CamelAgent extends DurableObject<Env> {
           models: this.models.models,
           registry,
           onWake,
-          settings: {
+          settings: () => ({
             afterFailedRun: "withdraw",
-            retry: { enabled: true, maxRetries: 2, baseDelayMs: 500 },
-          },
+            compaction: this.modelCompaction,
+            retry: { enabled: this.retryModelFailure, maxRetries: 2, baseDelayMs: 500 },
+          }),
         },
         context,
       );
@@ -1449,7 +1453,6 @@ export class CamelAgent extends DurableObject<Env> {
       const stored = await this.ctx.storage.get<Config>("configuration");
       const requestedOutput = record.params?.output;
       const outputValue = await this.ctx.storage.get(`output:${id}`);
-      const outputInvalid = await this.ctx.storage.get(`output-invalid:${id}`);
       const limit = await this.ctx.storage.get<RuntimeLimit>(`run-limit:${id}`);
       const runUsage = this.usageView(usage);
       const outcome = limit
@@ -1472,12 +1475,8 @@ export class CamelAgent extends DurableObject<Env> {
                   ? { output: outputValue }
                   : requestedOutput
                     ? {
-                        error: outputInvalid
-                          ? "The model's output did not match the requested schema"
-                          : "The model did not return the requested structured output",
-                        code: outputInvalid
-                          ? "output_invalid"
-                          : "output_missing",
+                        error: "The model ended its turn without calling final_output, so the run has no output in its schema",
+                        code: "output_missing",
                       }
                     : {}),
               },
@@ -1509,7 +1508,9 @@ export class CamelAgent extends DurableObject<Env> {
               : "failed",
           ...(result.status !== "done"
             ? { error: usage.last?.errorMessage ?? result.reason ?? "Model operation failed" }
-            : {}),
+            : requestedOutput && outputValue === undefined && "result" in outcome
+              ? { error: outcome.result.error ?? undefined }
+              : {}),
         };
         const conf = await tx.get<Config>("configuration");
         if (conf)
@@ -2040,6 +2041,8 @@ export class CamelAgent extends DurableObject<Env> {
         "Use file upload before prompting; attachment hydration is not implemented",
       );
     if (request.method === 'steer') params.whileRunning = 'steer';
+    if (params.output !== undefined && params.whileRunning === "steer")
+      throw new BadRequest("output is for a prompt that starts its own turn, not whileRunning: steer");
     const fingerprint =
       params.files === undefined
         ? canonical({ method: request.method, params })
@@ -2417,6 +2420,7 @@ export class CamelAgent extends DurableObject<Env> {
             (await keyServices(this.env)).tenants.modelEndpoints(incoming.tenantId),
             incoming.resolvedModel,
           );
+          this.modelCompaction = modelCompactionSettings(model, incoming.config.maxOutputTokens);
           const refusal = modelSettingsRefusal(model, incoming.config as never);
           if (refusal) throw new BadRequest(refusal);
           if (
@@ -3019,6 +3023,15 @@ export class CamelAgent extends DurableObject<Env> {
       }
       cursor = page.next;
     } while (cursor !== undefined);
+    const discarded = await this.ctx.storage.get<AssistantMessage>(`discarded-output:${id}`);
+    if (discarded) {
+      responses++;
+      inputTokens += discarded.usage.input;
+      outputTokens += discarded.usage.output;
+      cacheRead += discarded.usage.cacheRead;
+      cacheWrite += discarded.usage.cacheWrite;
+      cost += discarded.usage.cost.total;
+    }
     return {
       last,
       ...projection.finish(),

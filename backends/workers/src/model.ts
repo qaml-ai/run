@@ -27,9 +27,9 @@ import { stream as streamCodex, streamSimple as simpleCodex } from "@earendil-wo
 import { stream as streamAzure, streamSimple as simpleAzure } from "@earendil-works/pi-ai/api/azure-openai-responses";
 import { getModels, getModel, callSettings, withOpenRouterHosts, reasoningFloor } from "./model-catalog.ts";
 import { resolveModel, virtualChain, routeModel, virtualModelReferences, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
-import { deepseekContext } from "./deepseek-policy.ts";
-import { forcedToolChoice, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER } from "./output-policy.ts";
-import { normalizeContext, getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
+import { deepseekContext, refusedReasoningReplay } from "./deepseek-policy.ts";
+import { OutputRequest } from "./output-request.ts";
+import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import { boundedModel } from "./model-context.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { sourceUrl } from "./tool-sources.ts";
@@ -37,6 +37,7 @@ import { listModels } from "./catalog-policy.ts";
 import { streamTimeouts, watchedStream, isStalled, type Stall } from "./model-stream.ts";
 import { runtimeStreamTimeouts, type ModelTimeoutEnv } from "./model-runtime-options.ts";
 import { PREPARED_MODEL_CREDENTIALS } from "./model-request-auth.ts";
+import { modelCallKind } from "./model-call-context.ts";
 import { contentFilterFallbacks } from "./default-model-policy.ts";
 import { isContentFilterBlock, isModelUnavailable } from "./model-errors.ts";
 
@@ -46,6 +47,7 @@ export type ModelHooks = {
   agentId?: () => Promise<string>;
   beforeRequest?: () => Promise<void>;
   onStreamEvent?: (event: AssistantMessageEvent) => void | Promise<void>;
+  onDiscardedOutput?: (message: AssistantMessage) => void | Promise<void>;
   onStall?: (stall: Stall & { provider: string; model: string }) => void | Promise<void>;
   wrapProvider?: (provider: Provider) => Provider;
   settings?: () => Promise<ModelRequestSettings>;
@@ -57,9 +59,10 @@ export type ModelHooks = {
 function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEnv & { TEST_MODE?: string; TEST_MODEL?: string; AGENT_CONTENT_FILTER_FALLBACKS?: string }): Provider {
   const timeouts = runtimeStreamTimeouts(env);
   let routing: { user: string; previous?: Model<Api>; failed?: Model<Api> } | undefined;
-  let forcing: { request: string; count: number; refused: boolean } | undefined;
+  const outputRequest = new OutputRequest();
   const filterFallbacks = contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS);
   const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}) => {
+    const callKind = modelCallKind(context);
     await hooks.beforeRequest?.();
     const config = await hooks.settings?.() ?? {};
     if (config.model?.startsWith("camelrun/")) {
@@ -74,20 +77,9 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
     let fallback = filterFallbacks.get(`${model.provider}/${model.id}`);
     if (fallback && (credential?.identity || credential?.baseUrl && !credential.deployments || !(await hooks.credentials?.(fallback.provider))?.apiKey)) fallback = undefined;
     const virtualNext = config.model?.startsWith("camelrun/") ? routeModel(resolveModel(config.model), { reason: "retry", failed: model }) : undefined;
-    const outputSchema = config.output?.schema;
-    const request = config.requestId ?? String(context.messages.find(message => message.role === "user")?.timestamp ?? 0);
-    if (!forcing || forcing.request !== request) forcing = { request, count: 0, refused: false };
-    const currentTools = getCurrentTools(context.messages).filter(tool => tool.name !== "final_output");
-    let toolChoice: unknown;
-    if (outputSchema) {
-      const finalTool = { name: "final_output", description: "Give the final answer as the arguments of this tool. The turn ends when the answer is accepted.", parameters: outputSchema };
-      const reminded = !!config.outputReminded || context.messages.some(message => message.role === "user" && JSON.stringify(message.content).includes("<structured_output_reminder>"));
-      context = normalizeContext({ messages: [...context.messages, { role: "system", content: "", sections: { structured_output: OUTPUT_INSTRUCTIONS + (reminded ? `\n${OUTPUT_REMINDER}` : "") }, toolsAdded: [finalTool], timestamp: Date.now() }] });
-      if ((!currentTools.length || reminded) && !forcing.refused && forcing.count < 3) toolChoice = forcedToolChoice(model, "final_output", { sole: !currentTools.length, thinking: (config.thinkingLevel ?? "off") !== "off" });
-      if (toolChoice !== undefined) forcing.count++;
-    } else {
-      context = normalizeContext({ messages: [...context.messages, { role: "system", content: "", toolsRemoved: [{ name: "final_output" }], timestamp: Date.now() }] });
-    }
+    const structured = callKind === "compaction" ? { context, toolChoice: undefined } : outputRequest.prepare(model, context, config);
+    const { toolChoice } = structured;
+    context = structured.context;
     const deployment = credential?.deployments?.[model.id];
     if (model.provider === "azure" && !credential?.identity && (!credential?.baseUrl || !deployment))
       throw new Error(`No azure deployment is configured for ${model.provider}/${model.id} on this runtime; move the agent to a model you can use (GET /v1/models?available=true)`);
@@ -113,6 +105,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
     } : undefined;
     const prepared = {
       [PREPARED_MODEL_CREDENTIALS]: credential,
+      modelCallKind: callKind,
       ...options, ...(toolChoice !== undefined ? { toolChoice: toolChoice as SimpleStreamOptions["toolChoice"] } : {}), ...callSettings(model, config, config.thinkingLevel),
       ...(reasoning ? { reasoning } : {}),
       ...(fallback || virtualNext ? { supersede: (message: AssistantMessage) => fallback && isContentFilterBlock(message) ? "content_filter" as const : virtualNext && !message.content.length && isModelUnavailable(message) ? "unavailable" as const : undefined } : {}),
@@ -127,7 +120,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
         return await onPayload?.(adjusted, target) ?? adjusted;
       },
     };
-    return { model: credential?.baseUrl ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, fallback, virtualNext, transportError: () => transportError };
+    return { model: credential?.baseUrl ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, fallback, virtualNext, callKind, transportError: () => transportError };
   };
   const wrap = (simple: boolean) => (model: Model<Api>, context: TranscriptContext, options?: StreamOptions) => {
     const output = createAssistantMessageEventStream();
@@ -135,6 +128,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
       try {
         let prepared = await prepare(model, context, options);
         let retry = false;
+        let reasoningRetries = 0;
         do {
         retry = false;
         let stalled: Promise<void> | undefined;
@@ -147,6 +141,16 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
         for await (const event of stream) {
           if (event.type === "error" || event.type === "done") await stalled;
           if (event.type === "error" && event.reason !== "aborted" && !isStalled(event.error.errorMessage) && prepared.transportError()) event.error.errorMessage = prepared.transportError();
+          // Pi retries transient provider errors. OpenRouter's DeepSeek replay
+          // refusal is a 400, but the source runtime also retries this exact
+          // request so OpenRouter can choose another host. Keep the prepared
+          // context and payload unchanged, and never retry a tenant endpoint.
+          if (event.type === "error" && event.reason !== "aborted" && prepared.model.provider === "openrouter" &&
+              !prepared.options.endpointIdentity && refusedReasoningReplay(event.error.errorMessage) &&
+              reasoningRetries++ < 2 && !options?.signal?.aborted) {
+            retry = true;
+            continue;
+          }
           if (event.type === "error" && event.reason !== "aborted" && prepared.virtualNext && !event.error.content.length && isModelUnavailable(event.error) && !options?.signal?.aborted) {
             routing!.failed = prepared.model;
             prepared = await prepare(prepared.virtualNext, context, options);
@@ -158,8 +162,14 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
             catch { /* If the fallback is unavailable, retain the provider's original refusal. */ }
           }
           if (event.type === "error" && prepared.options.toolChoice !== undefined && /400/.test(event.error.errorMessage ?? "") && /tool.?choice|forced.*tool/i.test(event.error.errorMessage ?? "")) {
-            forcing!.refused = true;
+            outputRequest.refuse();
             delete prepared.options.toolChoice;
+            retry = true;
+            continue;
+          }
+          if (event.type === "done" && prepared.callKind === "response" && !options?.signal?.aborted && outputRequest.remind(event.message, prepared.config)) {
+            await hooks.onDiscardedOutput?.(event.message);
+            prepared = await prepare(prepared.model, context, options);
             retry = true;
             continue;
           }

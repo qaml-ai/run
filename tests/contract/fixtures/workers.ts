@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { EndUserCredits } from "../../../src/end-user-credits.ts";
 import { configuredModel } from "../../../src/model.ts";
@@ -234,8 +234,11 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     async failNextAdmissionWrite(_agent) { throw new Error("Unsupported fixture state: Workers request admission does not update Postgres pending_runs"); },
     setModel(next) { respond = next; replyStart = model.bodies.length; },
     async imageResizeFailureCount() { throw new Error("Unsupported fixture state: Workers has no parse-job resize boundary"); },
-    async restartWithLegacyModel(_agent, _model) {
-      throw new Error("Unsupported fixture state: Workers agents have no legacy stored Node model configuration to restore at restart");
+    async restartWithLegacyModel(agent, legacyModel) {
+      const token = `cat_${createHmac("sha256", internalOperator).update(`camelrun-cloudflare:${agent}`).digest("hex")}`;
+      const result = await call(`/clients/${agent}/__test/contract-legacy-model`, { token, body: { model: { ...legacyModel, baseUrl: model.url } } });
+      if (result.status !== 200) throw new Error(`Legacy model fixture: ${result.status} ${result.text}`);
+      await server.restart();
     },
     async now() { return Date.now(); },
     async advanceTime(milliseconds) {

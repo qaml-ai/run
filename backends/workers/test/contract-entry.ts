@@ -29,6 +29,16 @@ export class CamelAgent extends RuntimeAgent {
 
   async fetch(request: Request) {
     this.env.AGENT_TENANTS_JSON = await fixtureConfiguration(this.env);
+    if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-legacy-model" && request.method === "POST") {
+      const { model } = await request.json() as { model: { provider: string; id: string } };
+      if (!model || typeof model.provider !== "string" || typeof model.id !== "string") return Response.json({ error: "Invalid legacy model fixture input" }, { status: 400 });
+      const configuration = await this.ctx.storage.get<Record<string, unknown>>("configuration");
+      if (!configuration) return Response.json({ error: "Unknown agent" }, { status: 404 });
+      // The stored resolved model is the Workers counterpart of Node's legacy
+      // model object. Restart below makes the real runtime reload these facts.
+      await this.ctx.storage.put("configuration", { ...configuration, resolvedModel: model });
+      return Response.json({ updated: true });
+    }
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-schedule-due" && request.method === "POST") {
       const { id, dueAt, history } = await request.json() as { id: string; dueAt: number; history?: "none" };
       if (typeof id !== "string" || !Number.isSafeInteger(dueAt) || (history !== undefined && history !== "none")) return Response.json({ error: "Invalid schedule fixture input" }, { status: 400 });
