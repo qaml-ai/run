@@ -10,6 +10,11 @@ This is an experimental implementation of the core agent contract, not a
 production replacement for every camelRun service. No deployment is required
 for its local integration tests.
 
+[HYBRID.md](docs/HYBRID.md) studies agents in Durable Objects with Postgres kept
+for accounts and billing. It includes the complete table audit, local Hyperdrive
+transaction spike and image-memory measurements. This is a design study, not a
+migration. Rebuild that report with `node studies/build-hybrid.mjs` from here.
+
 ## Architecture
 
 ```text
