@@ -8,6 +8,7 @@ import { dollars } from "./agent-spend-policy.ts";
 import { agentSpendRefusal, type SpendLimit } from "./agent-spend.ts";
 import { RUN_LIMITS, duration } from "./run-caps-policy.ts";
 import type { BillingRunStop } from "./billing-run-stop.ts";
+import { usageCost } from "./webhook-policy.ts";
 
 type Run = {
   id: string;
@@ -92,7 +93,7 @@ export class AgentRunLimits {
     this.current = current;
     this.billing = billing;
   }
-  async check(now = Date.now()) {
+  async check(now = Date.now(), billing = true) {
     const { config, run, agentId, spend, most, childCost = 0 } = await this.current();
     if (!run.state || run.state === "completed") return;
     const usage = (await this.storage.get<Usage>(`run-usage:${run.id}`)) ?? {
@@ -102,7 +103,7 @@ export class AgentRunLimits {
     const stopped =
       runLimit(config, run, { ...usage, costUsd: usage.costUsd + childCost }, now, most) ??
       (agentId ? agentSpendRefusal(agentId, spend ?? null) : undefined) ??
-      await this.billing?.();
+      (billing ? await this.billing?.() : undefined);
     if (stopped) await this.storage.put(`run-limit:${run.id}`, stopped);
     return stopped;
   }
@@ -123,6 +124,7 @@ export class AgentRunLimits {
             return undefined;
           },
           afterResponse: async (message, api, context) => {
+            if (message.stopReason === "error" && !(message.usage as { billingAttemptId?: string }).billingAttemptId) return;
             const { run } = await this.current();
             const key = `run-response:${run.id}:${api.taskId}:${message.timestamp}`;
             if (await this.storage.get(key)) return;
@@ -133,7 +135,7 @@ export class AgentRunLimits {
                 costUsd: 0,
               };
               usage.responses++;
-              usage.costUsd += message.usage.cost.total;
+              usage.costUsd += usageCost(message.usage).usd;
               await tx.put(`run-usage:${run.id}`, usage);
               await tx.put(key, true);
             });

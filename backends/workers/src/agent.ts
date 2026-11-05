@@ -1954,6 +1954,11 @@ export class CamelAgent extends DurableObject<Env> {
     const completed = { ...record, state: "completed" as const, status: "failed", endedAt: Date.now(),
       outcome: { error: "Execution aborted", result: { code: "aborted" } } };
     await this.ctx.storage.put(reqKey(record.id), completed);
+    if (record.admitted) {
+      const conf = await this.config();
+      await releaseTurn(this.env, conf.tenantId, conf.id, record.id);
+      await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${record.id}`);
+    }
     await this.emit({ type: "response", id: record.id, outcome: completed.outcome });
   }
   private async cancelHumanInputs(requestId?: string) {
@@ -1974,6 +1979,11 @@ export class CamelAgent extends DurableObject<Env> {
       await this.emit({ type: "event", requestId: owner, event: { type: "input_resolved", id: key, state: "cancelled" } });
   }
   private async startHostRequest(intent: RequestRecord) {
+    if (await this.ctx.storage.get(`cancelled-request:${intent.id}`)) {
+      await abortHostExecution(await this.harness.pi(), intent.id);
+      await this.cancelHostIntent(intent);
+      return (await this.ctx.storage.get<RequestRecord>(reqKey(intent.id)))!;
+    }
     if (!intent.accepted) {
       const conf = await this.config();
       const { accounts } = await keyServices(this.env);
@@ -1982,6 +1992,7 @@ export class CamelAgent extends DurableObject<Env> {
       if (!intent.admitted) {
         await this.admitRequest(conf, intent.id);
         intent.admitted = true;
+        await this.ctx.storage.put(reqKey(intent.id), intent);
       }
     }
     if (await this.ctx.storage.get(`cancelled-request:${intent.id}`)) {
@@ -2254,7 +2265,7 @@ export class CamelAgent extends DurableObject<Env> {
       throw Object.assign(new Error("Request id reused with different input"), {
         status: 409,
       });
-    if (old?.state === "completed") return old;
+    if (old?.state === "completed" || old?.accepted) return old;
     if (!old && request.method !== "steer" && (await this.records()).filter(record => record.state !== "completed").length >= MAX_OPEN_REQUESTS)
       throw Object.assign(new Error("Too many requests queued for this agent"), { status: 429 });
     const conf = await this.config();
@@ -3272,6 +3283,7 @@ export class CamelAgent extends DurableObject<Env> {
         for (const message of entry.model ?? [])
           if (message.role === "assistant") {
             last = message;
+            if (message.stopReason === "error" && !(message.usage as { billingAttemptId?: string }).billingAttemptId) continue;
             responses++;
             inputTokens += message.usage.input;
             cacheRead += message.usage.cacheRead;
@@ -3543,7 +3555,9 @@ export class CamelAgent extends DurableObject<Env> {
     this.admission = expire.catch(() => {});
     await expire;
     await this.restoreHostAdmissions();
-    if (await this.limits.check()) await this.harness.session().abort();
+    // A call's live credit hold reserves its funds. Only check available credit
+    // between calls; checking here could abort work that already reserved it.
+    if (await this.limits.check(Date.now(), false)) await this.harness.session().abort();
     await this.delegation.recover();
     await this.notifications.drain();
     for (const record of await this.records()) {
