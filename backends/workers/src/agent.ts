@@ -1176,6 +1176,10 @@ export class CamelAgent extends DurableObject<Env> {
       if (entry.kind === "camel.steer") {
         const id = (entry.data as { requestId: string }).requestId;
         const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
+        if (record && record.state !== 'completed' && !record.steeredInto) {
+          this.active = id;
+          await this.markBegan(id);
+        }
         if (record?.steeredInto && record.state !== "completed") {
           record.state = "completed";
           record.status = "completed";
@@ -1574,6 +1578,14 @@ export class CamelAgent extends DurableObject<Env> {
       await this.abortExecutions();
       await this.harness.session().abort();
     } else {
+      for (const queued of pending.filter(item => item.status === 'queued')) {
+        const record = await this.ctx.storage.get<RequestRecord>(reqKey(queued.operationId));
+        if (record?.steeredInto) {
+          delete record.steeredInto;
+          record.steer = 'queued';
+          await this.ctx.storage.put(reqKey(record.id), record);
+        }
+      }
       for (const id of running) {
         await this.cancelHumanInputs(id);
         await this.delegation.cancel(id);
@@ -2078,6 +2090,11 @@ export class CamelAgent extends DurableObject<Env> {
       record.outcome = { result: { queued: true } };
       await this.ctx.storage.put(`held-steer:${id}`, { id, prompt, startedAt: record.startedAt });
       await this.ctx.storage.put(reqKey(id), record);
+      if (preparing) {
+        await this.promptPreparations.finish(id);
+        await releaseTurn(this.env, conf.tenantId, conf.id, id);
+        await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${id}`);
+      }
       await this.emit({ type: 'response', id, outcome: record.outcome });
       return record;
     }
@@ -2757,7 +2774,7 @@ export class CamelAgent extends DurableObject<Env> {
         return json(batch ? { inputs: answered.inputs, requests: answered.requests } : { input: answered.inputs[0], request: answered.requests[0] ?? null }, answered.status);
       }
       if (path === "/abort" && request.method === "POST") {
-        const params = object(await body(request), ['queued']);
+        const params = object(request.body ? await body(request) : {}, ['queued']);
         if (params.queued !== undefined && !['cancel', 'keep'].includes(String(params.queued))) throw new BadRequest('queued is cancel or keep');
         const aborting = this.admission.then(async () => {
           const stopped = await this.abortRequests(params.queued === 'keep' ? 'keep' : 'cancel');
