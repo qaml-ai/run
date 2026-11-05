@@ -446,14 +446,15 @@ const worker = {
         const next = await body(request);
         if (!next || typeof next !== "object" || Array.isArray(next))
           throw new BadRequest("Expected configuration object");
-        if (!auth) scopedConfiguration(next);
-        const patched = configuration({ ...entry.config, ...next }, entry.config.model ?? env.MODEL).config;
-        const modelError = (Object.hasOwn(next, "model") || Object.hasOwn(next, "keyScope"))
+        const { requestId, ...changes } = next as Record<string, unknown>;
+        if (!auth) scopedConfiguration(changes);
+        const patched = configuration({ ...entry.config, ...changes }, entry.config.model ?? env.MODEL).config;
+        const modelError = (Object.hasOwn(changes, "model") || Object.hasOwn(changes, "keyScope"))
           ? await configurationModelError(env, entry.tenantId, patched) : undefined;
         if (modelError) throw new ApiError(400, modelError);
         return forward(new Request(request.url, {
           method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ id: crypto.randomUUID(), method: "configure", params: next }),
+          body: JSON.stringify({ id: requestId ?? crypto.randomUUID(), method: "configure", params: changes }),
         }), env, entry.id, "/requests");
       }
       if (tail === "/mounts") {
