@@ -10,8 +10,8 @@ import type { UsageRecord } from "./web-policy-host.ts";
 export async function admitWebUsage(env: KeyEnv, scope: BuiltinScope, platform: boolean) {
   const { accounts } = await keyServices(env);
   await admitAuxiliaryUsage(env, scope, platform, async () => {
-    const refused = await accounts.runLimit(scope.tenant);
-    if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
+    const refused = await accounts.billing.creditLimit(scope.tenant);
+    if (refused) throw refused;
   });
 }
 
