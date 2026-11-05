@@ -2,7 +2,7 @@ import { keyServices, type KeyEnv } from "./security-services.ts";
 import { transaction } from "./postgres.ts";
 import { admitAuxiliaryUsage, recordAuxiliaryUsage } from "./auxiliary-usage.ts";
 import { HttpError } from "./errors.ts";
-import { publishPending } from "./webhooks.ts";
+import { publishPending, type WebhookEnv } from "./webhooks.ts";
 import type { BuiltinScope } from "./agent-builtins.ts";
 import type { UsageRecord } from "./web-policy-host.ts";
 
@@ -16,7 +16,7 @@ export async function admitWebUsage(env: KeyEnv, scope: BuiltinScope, platform: 
 }
 
 /** Use the source accounting path so platform prices, workspaces and ledger metadata agree. */
-export async function recordWebUsage(env: KeyEnv, scope: BuiltinScope, usage: UsageRecord) {
+export async function recordWebUsage(env: KeyEnv & WebhookEnv, scope: BuiltinScope, usage: UsageRecord) {
   if (!scope.callId || scope.startedAt === undefined) throw new HttpError(503, "Web call identity is unavailable");
   const { accounts } = await keyServices(env);
   await transaction(env, async sql => {

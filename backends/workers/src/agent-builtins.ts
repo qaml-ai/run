@@ -14,9 +14,10 @@ import { agentScheduleTools, type ScheduleToolsHost } from './agent-schedules.ts
 import { admitWebUsage, recordWebUsage } from './web-billing.ts';
 import type { KeyEnv } from './security-services.ts';
 import { toolResult } from './attached-tools.ts';
+import type { WebhookEnv } from './webhooks.ts';
 
 export type BuiltinScope = { tenant: string; agent: string; requestId?: string; spendLimit?: number; callId?: string; startedAt?: number; builtins?: string[]; webSearch?: { providers: string[] }; keyScope?: string; files?: WebFiles };
-export type BuiltinEnv = ProviderKeyEnv & KeyEnv & { TEST_MODEL?: string; AGENT_OUTBOUND_ALLOW_HTTP?: string; AGENT_OUTBOUND_ALLOW_CIDRS?: string; AGENT_OUTBOUND_BLOCK_CIDRS?: string; AGENT_EXA_SEARCH_URL?: string; AGENT_BRAVE_SEARCH_URL?: string; AGENT_PARALLEL_SEARCH_URL?: string; AGENT_WEB_SEARCH_PROVIDERS?: string; AGENT_XAI_RESPONSES_URL?: string; AGENT_X_SEARCH_URL?: string; AGENT_FIRECRAWL_SCRAPE_URL?: string };
+export type BuiltinEnv = ProviderKeyEnv & KeyEnv & WebhookEnv & { TEST_MODEL?: string; AGENT_OUTBOUND_ALLOW_HTTP?: string; AGENT_OUTBOUND_ALLOW_CIDRS?: string; AGENT_OUTBOUND_BLOCK_CIDRS?: string; AGENT_EXA_SEARCH_URL?: string; AGENT_BRAVE_SEARCH_URL?: string; AGENT_PARALLEL_SEARCH_URL?: string; AGENT_WEB_SEARCH_PROVIDERS?: string; AGENT_XAI_RESPONSES_URL?: string; AGENT_X_SEARCH_URL?: string; AGENT_FIRECRAWL_SCRAPE_URL?: string };
 export type BuiltinHost = { outbound?: Outbound; key?: (scope: BuiltinScope, provider: string) => Promise<{ key: string; platform: boolean } | undefined>; admit?: (scope: BuiltinScope, platform: boolean) => Promise<void>; record?: (scope: BuiltinScope, usage: UsageRecord) => Promise<void>; schedules?: ScheduleToolsHost };
 
 /** Register only enabled web capabilities; source policy owns validation, routing and budgets. */
@@ -27,7 +28,7 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
   const outbound = host.outbound ?? new PublicOutbound({ allowHttp: testMode && env.AGENT_OUTBOUND_ALLOW_HTTP === 'true', allow: testMode ? cidrs(env.AGENT_OUTBOUND_ALLOW_CIDRS) ?? [] : [], block: cidrs(env.AGENT_OUTBOUND_BLOCK_CIDRS) });
   const settings = testMode ? env : { AGENT_WEB_SEARCH_PROVIDERS: env.AGENT_WEB_SEARCH_PROVIDERS };
   const providers = searchProvidersFromEnvironment(settings as never);
-  const pricing = pricingFromEnvironment(env as NodeJS.ProcessEnv);
+  const pricing = pricingFromEnvironment(Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === 'string')));
   return [...agentScheduleTools(initial.builtins, host.schedules), ...builtinDefinitions(initial.builtins).map(definition => {
     const check = compile(definition.parameters as never);
     return defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, structuredOutputSchema: {}, replay: 'safe', execute: async (args: Record<string, unknown>, api, call) => {

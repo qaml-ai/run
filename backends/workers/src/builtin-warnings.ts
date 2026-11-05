@@ -1,5 +1,5 @@
 import { keyServices, type KeyEnv } from "./security-services.ts";
-import { searchProvidersFromEnvironment, webSearchUnavailable } from "./web-search-policy.ts";
+import { SEARCH_PROVIDERS, searchOrder, webSearchUnavailable } from "./web-search-policy.ts";
 import { xSearchUnavailable } from "./x-search-policy.ts";
 
 /** Save-time warnings describe enabled capabilities whose provider keys cannot resolve. */
@@ -9,7 +9,7 @@ export async function builtinWarnings(env: KeyEnv & { AGENT_WEB_SEARCH_PROVIDERS
   if (!["web_search", "x_search", "generate_image", "decide"].some(name => builtins.includes(name))) return {};
   const { accounts } = await keyServices(env);
   const has = await accounts.keyedProviders(tenant);
-  const providers = sources.webSearch?.providers ?? searchProvidersFromEnvironment({ AGENT_WEB_SEARCH_PROVIDERS: env.AGENT_WEB_SEARCH_PROVIDERS }).order;
+  const providers = sources.webSearch?.providers ?? searchOrder((env.AGENT_WEB_SEARCH_PROVIDERS ?? SEARCH_PROVIDERS.join(",")).split(",").map(value => value.trim()).filter(Boolean), "AGENT_WEB_SEARCH_PROVIDERS");
   const warnings = [
     ...builtins.includes("web_search") && !providers.some(provider => has(provider)) ? [webSearchUnavailable(providers)] : [],
     ...builtins.includes("x_search") && !has("xai") ? [xSearchUnavailable()] : [],
