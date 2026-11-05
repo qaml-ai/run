@@ -2,7 +2,7 @@ import { BadRequest, object } from "./validation.ts";
 
 import { languageInput } from "../../../src/language.ts";
 import { dataCollectionInput, maxOutputTokensInput, modelHeadersInput, runLimitsInput, temperatureInput, type RunLimits } from "./model-policy.ts";
-import { delegateInput, delegateSettings, limitsOnly, startsChildren, type DelegateSettings } from "./multi-agent-policy.ts";
+import { delegateInput, delegateSettings, type DelegateSettings } from "./multi-agent-policy.ts";
 import { toPiMessages } from "./history-formats.ts";
 import { validateInitialMessages } from "./history-policy.ts";
 import type { ToolDefinition } from "./attached-tools.ts";
@@ -144,7 +144,6 @@ export function configuration(input: unknown, defaultModel: string): { config: A
   }
   if (fields.delegate !== undefined) {
     config.delegate = delegateInput(fields.delegate);
-    if (!limitsOnly(config.delegate) && !startsChildren(config.builtins)) config.builtins = [...(config.builtins ?? []), "delegate"];
   }
   delegateSettings(config.builtins, config.delegate);
   if (fields.mcp !== undefined) {

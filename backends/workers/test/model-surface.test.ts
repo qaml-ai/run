@@ -44,7 +44,7 @@ test("configuration retains provider settings, imports history and rejects reser
 });
 test("configuration keeps attached tools, normalizes delegation, and clears optional model settings", () => {
   const tool = { name: "sum", inputSchema: { type: "object", properties: { a: { type: "number" } } } };
-  const { config } = configuration({ mcp: { tools: [tool] }, delegate: { agents: ["helper"], maxDepth: 3 }, temperature: null, maxOutputTokens: null }, "test/echo");
+  const { config } = configuration({ mcp: { tools: [tool] }, builtins: ["delegate"], delegate: { agents: ["helper"], maxDepth: 3 }, temperature: null, maxOutputTokens: null }, "test/echo");
   assert.deepEqual(config.mcp?.tools, [tool]);
   assert.deepEqual(config.delegate?.agents, [{ name: "helper", definition: "helper" }]);
   assert.ok(config.builtins?.includes("delegate"));
@@ -55,6 +55,7 @@ test("configuration keeps attached tools, normalizes delegation, and clears opti
   const limited = configuration({delegate:{maxParallel:3,maxDepth:1}},"test/echo").config;
   assert.equal(limited.builtins, undefined);
   assert.deepEqual(limited.delegate,{maxParallel:3,maxDepth:1});
+  assert.throws(() => configuration({ delegate: { agents: ["helper"] } }, "test/echo"), /need the delegate or agents builtin/);
   assert.throws(() => configuration({builtins:["agents"],delegate:{maxParallel:3}},"test/echo"), /needs delegate/);
 });
 
