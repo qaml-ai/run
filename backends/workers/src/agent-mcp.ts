@@ -78,7 +78,7 @@ export async function serveAgentMcp(request: Request, options: AgentMcpOptions):
 function tooLarge() { return Response.json({ jsonrpc: '2.0', error: { code: -32600, message: 'A message is at most ' + MAX_BODY + ' bytes' }, id: null }, { status: 413, headers: AGENT_MCP_CORS }); }
 
 /** The source's Web Standard stateless transport, without its Hono request wrapper. */
-async function transport(request: Request, server: McpServer, body: string, stream: boolean, extraHeaders: Record<string, string>): Promise<Response> {
+export async function transport(request: Request, server: McpServer, body: string, stream: boolean, extraHeaders: Record<string, string>): Promise<Response> {
   const headers = new Headers(request.headers); headers.delete('content-length');
   const incoming = new Request(request.url, { method: 'POST', headers, body });
   const native = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: !stream });
