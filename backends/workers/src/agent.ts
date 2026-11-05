@@ -63,13 +63,31 @@ import {
 } from "../../../src/calendar.ts";
 import type { TenantAdmission } from "./tenant.ts";
 import { imageReferenceInput, type ImageRef } from "./images.ts";
-import { eventFrame, negotiateEvents, EVENT_PROTOCOL } from "./live-transport.ts";
+import {
+  eventFrame,
+  negotiateEvents,
+  EVENT_PROTOCOL,
+} from "./live-transport.ts";
 import { attachedComputerTools } from "./computers/agent-tools.ts";
-import { ComputerService, inheritComputer, type ComputerEnv } from "./computers/service.ts";
+import {
+  ComputerService,
+  inheritComputer,
+  type ComputerEnv,
+} from "./computers/service.ts";
 import type { AdminEnv } from "./admin-api.ts";
 import type { MediaBindings } from "./media-api.ts";
-import { newSchedule, scheduleDeliveries, queueScheduleEmail, publishScheduleEmails, type StoredSchedule as Schedule } from "./schedules.ts";
-import { nextOccurrence, retryable, RETRY_DELAYS_MS } from "./schedule-policy.ts";
+import {
+  newSchedule,
+  scheduleDeliveries,
+  queueScheduleEmail,
+  publishScheduleEmails,
+  type StoredSchedule as Schedule,
+} from "./schedules.ts";
+import {
+  nextOccurrence,
+  retryable,
+  RETRY_DELAYS_MS,
+} from "./schedule-policy.ts";
 import { metric, safeError, errorClass } from "./observability.ts";
 import { modelRuntime } from "./model.ts";
 import {
@@ -102,6 +120,7 @@ import { decisionService, recordDecision } from "./decision-service.ts";
 import { offersDecisions } from "./decision-runtime.ts";
 import {
   hostExecutionTool,
+  hostExecutionRequest,
   startHostExecution,
   waitHostExecution,
   abortHostExecution,
@@ -143,6 +162,16 @@ import {
   runSpend,
 } from "./agent-spend.ts";
 import { withSql } from "./postgres.ts";
+import {
+  writtenFile,
+  presentedFile,
+  fileOutputs,
+  releasePresentedFiles,
+} from "./file-output.ts";
+import { DurableFileVersions } from "./file-versions.ts";
+import { forkWorkspaceMounts } from "./agent-workspace.ts";
+import { agentMediaTools, flushAgentMediaUsage } from "./agent-media.ts";
+import { selectFileTools } from "./file-tool-selection.ts";
 
 type Config = {
   id: string;
@@ -179,7 +208,10 @@ export interface Env
     ControlEnv,
     FileBindings,
     KeyEnv,
-    AccountEnv {
+    AccountEnv,
+    ComputerEnv,
+    MediaBindings,
+    AdminEnv {
   TENANTS: DurableObjectNamespace<TenantAdmission>;
   RATE_LIMITER?: RateLimit;
   CODEMODE_SANDBOX: DurableObjectNamespace<CodemodeSandboxDurableObject>;
@@ -212,17 +244,6 @@ const canonical = (value: unknown): string =>
       : value,
   );
 type BillingReceipt = TurnReceipt;
-type Schedule = {
-  id: string;
-  text: string;
-  dueAt: number;
-  createdAt: number;
-  everySeconds?: number;
-  calendar?: Calendar;
-  failures?: number;
-  retryAt?: number;
-  lastError?: string;
-};
 type Child = {
   id: string;
   key: string;
@@ -301,8 +322,14 @@ export class CamelAgent extends DurableObject<Env> {
     },
     create: async (config, key) => {
       const conf = await this.config();
-      const entry = await new Directory(this.env, conf.tenantId).upsert(
-        config,
+      const directory = new Directory(this.env, conf.tenantId);
+      const workspace = await forkWorkspaceMounts(
+        (config as AgentConfiguration).mounts,
+        conf.id,
+        await directory.id(key),
+      );
+      const entry = await directory.upsert(
+        { ...config, mounts: workspace.mounts },
         key,
         conf.runtimeOrigin,
       );
@@ -325,6 +352,10 @@ export class CamelAgent extends DurableObject<Env> {
       return { id: entry.id, config: entry.config as never };
     },
     fetch: (id, request) => this.env.AGENTS.getByName(id).fetch(request),
+    inheritComputer: async (parent, child) => {
+      const conf = await this.config();
+      await inheritComputer(this.env, conf.tenantId, parent, child);
+    },
     emit: (event) => this.emit(event),
     waitUntil: (promise) => this.ctx.waitUntil(promise),
     notify: (child) => this.notifications.deliver(child),
@@ -388,6 +419,53 @@ export class CamelAgent extends DurableObject<Env> {
           spent: spend.spent + (await this.delegation.costSince(spend.setAt)),
         }
       : null;
+  }
+  private async imageTools() {
+    return agentMediaTools(
+      this.env,
+      async () => {
+        const conf = await this.config(),
+          run = await this.currentRun();
+        const params = "params" in run ? run.params : undefined;
+        const spendLimit = (params?.spendLimit as { usd?: number } | undefined)
+          ?.usd;
+        const spend = await this.agentSpend(conf);
+        let budget = spend ? Math.max(0, spend.usd - spend.spent) : Infinity;
+        if (spendLimit !== undefined) {
+          const used = await withSql(this.env, (sql) =>
+            runSpend(sql, conf.tenantId, conf.id, run.id),
+          );
+          budget = Math.min(
+            budget,
+            Math.max(
+              0,
+              spendLimit - used - (await this.delegation.cost(run.id)),
+            ),
+          );
+        }
+        return {
+          tenant: conf.tenantId,
+          agent: conf.id,
+          requestId: run.id === "background" ? undefined : run.id,
+          spendLimit,
+          budget: Number.isFinite(budget) ? budget : undefined,
+          builtins: conf.config.builtins,
+          keyScope: conf.config.keyScope,
+          identity: {
+            subject: conf.config.subject,
+            context: conf.config.context,
+          },
+          actor: params?.actor as string | undefined,
+          bucket: (params?.bucket as string | undefined) ?? conf.config.bucket,
+          mounts: (conf.config.mounts ?? []) as import("./files.ts").Mount[],
+        };
+      },
+      {
+        storage: this.ctx.storage,
+        onWrite: async (file) =>
+          writtenFile(this.ctx.storage, await this.fileRequestId(), file),
+      },
+    );
   }
   private async admitRequest(conf: Config, id: string) {
     let acquired = false;
@@ -518,18 +596,33 @@ export class CamelAgent extends DurableObject<Env> {
   private async computerNames() {
     if (!this.env.HYPERDRIVE) return new Set<string>();
     const conf = await this.config();
-    return new Set((await new ComputerService(this.env, conf.tenantId).tools(conf.id)).map(tool => tool.name));
+    return new Set(
+      (await new ComputerService(this.env, conf.tenantId).tools(conf.id)).map(
+        (tool) => tool.name,
+      ),
+    );
   }
   private async refreshComputerTools() {
     const conf = await this.config();
+    const pi = await this.harness.pi(),
+      root = await pi.root(BACKGROUND_CONTEXT);
+    const enabled = await this.enabledTools(conf.config);
+    await root.configure(enabled, BACKGROUND_CONTEXT);
+  }
+  private async enabledTools(config: AgentConfiguration) {
     const names = await this.computerNames();
-    const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
-    const enabled = this.availableTools.filter(tool => {
-      if (/^(computer_|browser_)/.test(tool.name)) return names.has(tool.name);
-      if (conf.config.codeMode === false && ["exec","codemode"].includes(tool.name)) return false;
-      return conf.config.fileTools !== false || !this.workspaceToolNames.includes(tool.name);
-    });
-    await root.configure({ tools: enabled, modelTools: enabled }, BACKGROUND_CONTEXT);
+    const disabled = new Set([
+      HOST_EXECUTION_TOOL,
+      ...(config.codeMode === false ? ["computer", "exec", "codemode"] : []),
+      ...(!config.builtins?.includes("ask_user") ? ["ask_user"] : []),
+      ...(!config.builtins?.includes("ask_human") ? ["ask_human"] : []),
+    ]);
+    const available = this.availableTools.filter(
+      (tool) =>
+        !disabled.has(tool.name) &&
+        (!/^(computer_|browser_)/.test(tool.name) || names.has(tool.name)),
+    );
+    return selectFileTools(available, new Set(this.workspaceToolNames), config);
   }
   private workspaceToolNames: string[] = [];
   private fileVersions = new DurableFileVersions(this.ctx.storage);
@@ -578,21 +671,32 @@ export class CamelAgent extends DurableObject<Env> {
               config.tenantId,
               config.id,
               async () => (config.config.mounts as never) ?? [],
+              async (file, volumePath) => {
+                await presentedFile(
+                  this.ctx.storage,
+                  this.env,
+                  {
+                    requestId: await this.fileRequestId(api.conversationId),
+                    callId: api.callId,
+                    tenant: config.tenantId,
+                    origin: await this.ctx.storage.get<string>("file-origin"),
+                  },
+                  file,
+                  volumePath,
+                  (event) => this.emit(event),
+                );
+              },
+              async (file) =>
+                writtenFile(
+                  this.ctx.storage,
+                  await this.fileRequestId(api.conversationId),
+                  file,
+                ),
+              this.fileVersions,
             )[index];
             return impl.execute(args as never, api, context);
           },
         })),
-        async (path, init) => {
-          const c = await this.config();
-          return handleAgentFileRequest(
-            new Request("https://files/", init),
-            this.env,
-            c.tenantId,
-            c.id,
-            path,
-            c.config.mounts as never,
-          );
-        },
       );
       this.workspaceToolNames = tools.map((tool) => tool.name);
       registry.install({
@@ -601,6 +705,25 @@ export class CamelAgent extends DurableObject<Env> {
         sections: [],
       });
       registry.install({ name: "camel.human", tools: [askHuman, askUser] });
+      registry.install({
+        name: "camel.images",
+        tools: await this.imageTools(),
+      });
+      registry.install({
+        name: "camel.computers",
+        tools: attachedComputerTools(
+          this.env,
+          () => this.config(),
+          (run) =>
+            this.serializeComputer(async () => {
+              try {
+                return await run();
+              } finally {
+                await this.arm();
+              }
+            }),
+        ),
+      });
       registry.install({
         name: "camel.application",
         tools: this.attached.tools(conf.config.mcp?.tools ?? [], (api) =>
@@ -883,10 +1006,20 @@ export class CamelAgent extends DurableObject<Env> {
       }
     }
   }
-  private async fileRequestId() {
+  private async fileRequestId(
+    conversationId?: Parameters<typeof hostExecutionRequest>[1],
+  ) {
+    if (conversationId !== undefined) {
+      const requestId = await hostExecutionRequest(
+        await this.harness.pi(),
+        conversationId,
+      );
+      if (requestId) return requestId;
+    }
     const watch = await this.harness.session().watch();
     const live = watch.value.docs["pi.live"] as LiveState | undefined;
-    const id = await this.requestForInputs(live?.run?.inputs ?? []) ?? this.active;
+    const id =
+      (await this.requestForInputs(live?.run?.inputs ?? [])) ?? this.active;
     if (!id) throw new Error("Files can be presented only during a run");
     return id;
   }
@@ -1122,6 +1255,9 @@ export class CamelAgent extends DurableObject<Env> {
                   cacheRead: usage.cacheRead,
                   cacheWrite: usage.cacheWrite,
                   costUsd: usage.costMicros / 1_000_000,
+                  ...(usage.imageCostUsd > 0
+                    ? { imageCostUsd: usage.imageCostUsd }
+                    : {}),
                   ...(usage.decisionCostUsd > 0
                     ? { decisionCostUsd: usage.decisionCostUsd }
                     : {}),
@@ -1138,6 +1274,7 @@ export class CamelAgent extends DurableObject<Env> {
                 toolCalls: usage.toolCalls ?? [],
                 toolErrors: usage.toolErrors ?? [],
                 replyIndex: usage.replyIndex,
+                ...(await fileOutputs(this.ctx.storage, id)),
                 ...(outputValue !== undefined
                   ? { output: outputValue }
                   : requestedOutput
@@ -1210,7 +1347,25 @@ export class CamelAgent extends DurableObject<Env> {
       // Receipt and terminal state commit together. A lost PG acknowledgement
       // only replays this immutable receipt; money remains one PG transaction.
       await this.flushBilling();
-      if (changed) await this.flushTerminalEvents();
+      if (changed) {
+        metric(
+          this.env,
+          "turn_metrics",
+          {
+            Turns: 1,
+            TurnDurationMs: terminal.endedAt! - terminal.startedAt,
+            ModelResponses: usage.responses,
+          },
+          {
+            Outcome: terminal.status ?? "completed",
+            ErrorClass: errorClass(terminal.error),
+            Model: terminal.billing?.model ?? "unknown",
+            Provider: (terminal.billing?.model ?? "unknown").split("/")[0],
+          },
+        );
+        await this.flushTerminalEvents();
+        if (id.startsWith("schedule-")) await publishScheduleEmails(this.env);
+      }
       return terminal;
     } catch (error) {
       if (
@@ -1783,28 +1938,15 @@ export class CamelAgent extends DurableObject<Env> {
                 ? [this.decisions.tool()]
                 : [],
           });
+          this.registry.install({
+            name: "camel.images",
+            tools: await this.imageTools(),
+          });
           this.availableTools = this.registry
             .snapshot()
             .tools()
             .map(({ tool }) => tool);
-          const disabled = [
-            HOST_EXECUTION_TOOL,
-            ...(incoming.config.codeMode === false ? ["computer"] : []),
-            ...(incoming.config.codeMode === false ? ["exec", "codemode"] : []),
-            ...(incoming.config.fileTools === false
-              ? this.workspaceToolNames
-              : []),
-            ...(!incoming.config.builtins?.includes("ask_user")
-              ? ["ask_user"]
-              : []),
-            ...(!incoming.config.builtins?.includes("ask_human")
-              ? ["ask_human"]
-              : []),
-          ];
-          const names = await this.computerNames();
-          const enabled = this.availableTools.filter(
-            (tool) => !disabled.includes(tool.name) && (!/^(computer_|browser_)/.test(tool.name) || names.has(tool.name)),
-          );
+          const enabled = await this.enabledTools(incoming.config);
           await root.configure(
             {
               model: { provider: model.provider, modelId: model.id },
@@ -1820,8 +1962,7 @@ export class CamelAgent extends DurableObject<Env> {
                   ? { remove: [this.codeExtension!] }
                   : { add: [this.codeExtension!] },
               thinkingLevel: incoming.config.thinkingLevel as never,
-              tools: enabled,
-              modelTools: enabled,
+              ...enabled,
             },
             BACKGROUND_CONTEXT,
           );
@@ -1836,11 +1977,20 @@ export class CamelAgent extends DurableObject<Env> {
       if (request.method === "DELETE" && path === "/") {
         const deletion = this.admission.then(async () => {
           const conf = await this.ctx.storage.get<Config>("configuration");
-          if (conf) await this.serializeComputer(() => new ComputerService(this.env, conf.tenantId).removeAgent(conf.id));
+          if (conf)
+            await this.serializeComputer(() =>
+              new ComputerService(this.env, conf.tenantId).removeAgent(conf.id),
+            );
           await this.ctx.storage.put("deleted", true);
           await this.delegation.cancel();
           await this.harness.session().abort();
-          if (conf) await releasePresentedFiles(this.ctx.storage, this.env, conf.tenantId, conf.id);
+          if (conf)
+            await releasePresentedFiles(
+              this.ctx.storage,
+              this.env,
+              conf.tenantId,
+              conf.id,
+            );
           for (const listener of this.listeners) listener(0, null);
           return json({ deleted: true });
         });
@@ -1848,18 +1998,44 @@ export class CamelAgent extends DurableObject<Env> {
         return deletion;
       }
       if (path === "/__computer" && request.method === "POST") {
-        const input = await body(request) as any;
-        const conf = input.operation === "sweep" ? await this.ctx.storage.get<Config>("configuration") : await this.config();
+        const input = (await body(request)) as any;
+        const conf =
+          input.operation === "sweep"
+            ? await this.ctx.storage.get<Config>("configuration")
+            : await this.config();
         if (!conf) return json({ error: "Agent not found" }, 404);
-        if (input.tenant !== conf.tenantId) return json({error:"Forbidden"},403);
+        if (input.tenant !== conf.tenantId)
+          return json({ error: "Forbidden" }, 403);
         return await this.serializeComputer(async () => {
           const service = new ComputerService(this.env, conf.tenantId);
-          if (input.operation === "sweep") { await service.sweepAgent(conf.id); await this.arm(); return json({ swept: true }); }
-          if (input.operation === "refresh") { await this.refreshComputerTools(); return json({ refreshed: true }); }
-          if (input.operation === "remove") { const removed = await service.remove(conf.id); await this.refreshComputerTools(); return json(removed); }
-          if (input.operation === "confirm-cleanup") return json(await service.confirmCleanup(conf.id));
-          try { return json(await service.call(conf.id,input.operation,input.args??{},input.key)); }
-          finally { await this.arm(); }
+          if (input.operation === "sweep") {
+            await service.sweepAgent(conf.id);
+            await this.arm();
+            return json({ swept: true });
+          }
+          if (input.operation === "refresh") {
+            await this.refreshComputerTools();
+            return json({ refreshed: true });
+          }
+          if (input.operation === "remove") {
+            const removed = await service.remove(conf.id);
+            await this.refreshComputerTools();
+            return json(removed);
+          }
+          if (input.operation === "confirm-cleanup")
+            return json(await service.confirmCleanup(conf.id));
+          try {
+            return json(
+              await service.call(
+                conf.id,
+                input.operation,
+                input.args ?? {},
+                input.key,
+              ),
+            );
+          } finally {
+            await this.arm();
+          }
         });
       }
       await this.config();
@@ -1907,7 +2083,11 @@ export class CamelAgent extends DurableObject<Env> {
         return json([
           ...(await this.ctx.storage
             .list<Schedule>({ prefix: "schedule:" })
-            .then((x) => [...x.values()].sort((a,b)=>a.dueAt-b.dueAt || a.id.localeCompare(b.id)))),
+            .then((x) =>
+              [...x.values()].sort(
+                (a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id),
+              ),
+            )),
         ]);
       if (path === "/schedules" && request.method === "POST")
         return json(await this.createSchedule(await body(request)), 201);
@@ -1986,7 +2166,7 @@ export class CamelAgent extends DurableObject<Env> {
         }
         const sources = toolSourceViews(
           conf.config as never,
-          this.availableTools,
+          (await this.enabledTools(conf.config)).tools,
           this.attached.connected,
         );
         if (url.searchParams.get("schemas") !== "true")
@@ -2194,10 +2374,13 @@ export class CamelAgent extends DurableObject<Env> {
         );
         return json({ ok: true });
       }
-      if (path === "/events" && request.method === "GET")
+      if (path === "/events" && request.method === "GET") {
+        const selected = negotiateEvents(request);
+        if (selected) return selected;
         return request.headers.get("upgrade")?.toLowerCase() === "websocket"
-          ? this.webSocketEvents()
+          ? this.webSocketEvents(request)
           : this.events(request);
+      }
       if (path === "/computer" && request.method === "POST") {
         const inputBody = await body(request, 1100 * 1024);
         if (!compile(computerParameters).check(inputBody))
@@ -2213,9 +2396,20 @@ export class CamelAgent extends DurableObject<Env> {
           await namespace.getByName(this.ctx.id.toString()).operate(input),
         );
       }
-      if(path==="/files"||path==="/links"||path.startsWith("/uploads/")) {
-        const conf=await this.config();
-        return (await handleAgentFilesRoute(request,this.env,conf.tenantId,conf.id,(conf.config.mounts??[]) as never,path))!;
+      if (
+        path === "/files" ||
+        path === "/links" ||
+        path.startsWith("/uploads/")
+      ) {
+        const conf = await this.config();
+        return (await handleAgentFilesRoute(
+          request,
+          this.env,
+          conf.tenantId,
+          conf.id,
+          (conf.config.mounts ?? []) as never,
+          path,
+        ))!;
       }
       if (path.startsWith("/files/")) {
         const conf = await this.config();
@@ -2309,6 +2503,12 @@ export class CamelAgent extends DurableObject<Env> {
     };
   }
   private async flushBilling(propagate = false) {
+    try {
+      await flushAgentMediaUsage(this.env, this.ctx.storage);
+    } catch (error) {
+      await this.arm(Date.now() + 1000);
+      if (propagate) throw error;
+    }
     for (const [key, receipt] of await this.ctx.storage.list<ModelReceipt>({
       prefix: "model-billing:",
     })) {
@@ -2408,9 +2608,13 @@ export class CamelAgent extends DurableObject<Env> {
     return child;
   }
   private async createSchedule(raw: unknown): Promise<Schedule> {
-    if ((await this.ctx.storage.list({prefix:"schedule:",limit:100})).size >= 100) throw new BadRequest("At most 100 schedules per agent");
-    const conf=await this.config();
-    const schedule=await newSchedule(this.env,conf.tenantId,conf.id,raw);
+    if (
+      (await this.ctx.storage.list({ prefix: "schedule:", limit: 100 })).size >=
+      100
+    )
+      throw new BadRequest("At most 100 schedules per agent");
+    const conf = await this.config();
+    const schedule = await newSchedule(this.env, conf.tenantId, conf.id, raw);
     await this.ctx.storage.put(`schedule:${schedule.id}`, schedule);
     await this.arm();
     return schedule;
@@ -2422,6 +2626,8 @@ export class CamelAgent extends DurableObject<Env> {
     });
     const pendingBilling =
       (await this.ctx.storage.list({ prefix: "billing:", limit: 1 })).size ||
+      (await this.ctx.storage.list({ prefix: "image-billing:", limit: 1 }))
+        .size ||
       (await this.ctx.storage.list({ prefix: "model-billing:", limit: 1 }))
         .size;
     const pendingEvents = (
@@ -2433,7 +2639,11 @@ export class CamelAgent extends DurableObject<Env> {
     );
     const next = Math.min(
       config?.expiresAt ?? Infinity,
-      config ? await new ComputerService(this.env, config.tenantId).nextDeadline(config.id) ?? Infinity : Infinity,
+      config
+        ? ((await new ComputerService(this.env, config.tenantId).nextDeadline(
+            config.id,
+          )) ?? Infinity)
+        : Infinity,
       ...[...schedules.values()].map((item) => item.retryAt ?? item.dueAt),
       retry ?? Infinity,
       pendingBilling ? Date.now() + 5000 : Infinity,
@@ -2449,6 +2659,9 @@ export class CamelAgent extends DurableObject<Env> {
       });
   }
   async onStart() {
+    return withMoneyMetrics(this.env, () => this.restorePending());
+  }
+  private async restorePending() {
     await this.delegation.recover();
     await this.notifications.drain();
     // Pi restores its own work on startup. Restore the adapter's result/receipt
@@ -2458,6 +2671,8 @@ export class CamelAgent extends DurableObject<Env> {
         this.track(record.id);
     if (
       (await this.ctx.storage.list({ prefix: "billing:", limit: 1 })).size ||
+      (await this.ctx.storage.list({ prefix: "image-billing:", limit: 1 }))
+        .size ||
       (await this.ctx.storage.list({ prefix: "model-billing:", limit: 1 })).size
     )
       this.ctx.waitUntil(this.flushBilling());
@@ -2470,7 +2685,14 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private async wake() {
     const conf = await this.ctx.storage.get<Config>("configuration");
-    if (conf) await this.serializeComputer(() => new ComputerService(this.env, conf.tenantId).sweepAgent(conf.id)).catch(() => console.error(JSON.stringify({ type: "computer_cleanup_failed", agent: conf.id })));
+    if (conf)
+      await this.serializeComputer(() =>
+        new ComputerService(this.env, conf.tenantId).sweepAgent(conf.id),
+      ).catch(() =>
+        console.error(
+          JSON.stringify({ type: "computer_cleanup_failed", agent: conf.id }),
+        ),
+      );
     if (conf?.expiresAt && conf.expiresAt <= Date.now()) {
       await this.ctx.storage.put("deleted", true);
       await this.delegation.cancel();
@@ -2505,11 +2727,24 @@ export class CamelAgent extends DurableObject<Env> {
       if ((schedule.retryAt ?? schedule.dueAt) > now) continue;
       try {
         const occurrence = `schedule-${schedule.id}-${schedule.dueAt}`;
-        await queueScheduleEmail(this.env,schedule,occurrence);
-        await this.submit({ id: occurrence, method: schedule.code === undefined ? "prompt" : "execute", params: schedule.code === undefined ? {
-          text: schedule.calendar ? calendarPrompt(schedule.text!,schedule.calendar,schedule.dueAt) : schedule.text,
-          allowDisconnected: true,
-        } : { code: schedule.code, allowDisconnected: true } });
+        await queueScheduleEmail(this.env, schedule, occurrence);
+        await this.submit({
+          id: occurrence,
+          method: schedule.code === undefined ? "prompt" : "execute",
+          params:
+            schedule.code === undefined
+              ? {
+                  text: schedule.calendar
+                    ? calendarPrompt(
+                        schedule.text!,
+                        schedule.calendar,
+                        schedule.dueAt,
+                      )
+                    : schedule.text,
+                  allowDisconnected: true,
+                }
+              : { code: schedule.code, allowDisconnected: true },
+        });
         if (schedule.email) await publishScheduleEmails(this.env);
         if (schedule.calendar || schedule.everySeconds) {
           delete schedule.retryAt;
@@ -2519,22 +2754,41 @@ export class CamelAgent extends DurableObject<Env> {
           await this.ctx.storage.put(key, schedule);
         } else await this.ctx.storage.delete(key);
       } catch (error) {
-        const status = (error as {status?:number}).status;
+        const status = (error as { status?: number }).status;
         const attempt = (schedule.attempts ?? 0) + 1;
-        const delay = retryable(status) ? RETRY_DELAYS_MS[attempt-1] : undefined;
-        const next = schedule.calendar || schedule.everySeconds ? nextOccurrence(schedule) : undefined;
+        const delay = retryable(status)
+          ? RETRY_DELAYS_MS[attempt - 1]
+          : undefined;
+        const next =
+          schedule.calendar || schedule.everySeconds
+            ? nextOccurrence(schedule)
+            : undefined;
         schedule.lastError = safeError(error);
         schedule.lastErrorAt = Date.now();
-        if (status === 404 || status === 410) await this.ctx.storage.delete(key);
-        else if (delay !== undefined && (next === undefined || Date.now()+delay < next)) {
-          schedule.attempts = attempt; schedule.retryAt = Date.now()+delay;
-          await this.ctx.storage.put(key,schedule);
+        if (status === 404 || status === 410)
+          await this.ctx.storage.delete(key);
+        else if (
+          delay !== undefined &&
+          (next === undefined || Date.now() + delay < next)
+        ) {
+          schedule.attempts = attempt;
+          schedule.retryAt = Date.now() + delay;
+          await this.ctx.storage.put(key, schedule);
         } else if (next !== undefined) {
-          schedule.failures = (schedule.failures??0)+1;
-          schedule.attempts = 0; delete schedule.retryAt; schedule.dueAt = next;
-          await this.ctx.storage.put(key,schedule);
+          schedule.failures = (schedule.failures ?? 0) + 1;
+          schedule.attempts = 0;
+          delete schedule.retryAt;
+          schedule.dueAt = next;
+          await this.ctx.storage.put(key, schedule);
         } else await this.ctx.storage.delete(key);
-        metric(this.env,"schedule_delivery_failed",{ScheduleDeliveryFailures:1},{ErrorClass:errorClass(error instanceof Error?error.message:"")});
+        metric(
+          this.env,
+          "schedule_delivery_failed",
+          { ScheduleDeliveryFailures: 1 },
+          {
+            ErrorClass: errorClass(error instanceof Error ? error.message : ""),
+          },
+        );
       }
     }
     await this.arm();
@@ -2544,13 +2798,37 @@ export class CamelAgent extends DurableObject<Env> {
     const state = await this.state();
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
-    this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    this.ctx.setWebSocketAutoResponse(
+      new WebSocketRequestResponsePair("ping", "pong"),
+    );
     pair[1].send(eventFrame({}, undefined, "ready"));
-    pair[1].send(eventFrame({ type: "snapshot", cursor: state.cursor, requestId: this.active ?? null, turn: this.active ? { start:null,count:0,messages:[],partial:this.partial } : null },state.cursor));
-    const selected = request.headers.get("sec-websocket-protocol")?.split(",").map(x=>x.trim()).includes(EVENT_PROTOCOL);
-    return new Response(null, { status: 101, webSocket: pair[0], headers: selected ? {"Sec-WebSocket-Protocol": EVENT_PROTOCOL} : {} });
+    pair[1].send(
+      eventFrame(
+        {
+          type: "snapshot",
+          cursor: state.cursor,
+          requestId: this.active ?? null,
+          turn: this.active
+            ? { start: null, count: 0, messages: [], partial: this.partial }
+            : null,
+        },
+        state.cursor,
+      ),
+    );
+    const selected = request.headers
+      .get("sec-websocket-protocol")
+      ?.split(",")
+      .map((x) => x.trim())
+      .includes(EVENT_PROTOCOL);
+    return new Response(null, {
+      status: 101,
+      webSocket: pair[0],
+      headers: selected ? { "Sec-WebSocket-Protocol": EVENT_PROTOCOL } : {},
+    });
   }
-  async webSocketMessage(socket: WebSocket, _data: string | ArrayBuffer) { socket.close(1008,"Read-only event stream"); }
+  async webSocketMessage(socket: WebSocket, _data: string | ArrayBuffer) {
+    socket.close(1008, "Read-only event stream");
+  }
   async webSocketClose(socket: WebSocket, code: number) {
     socket.close(code, "Closed");
   }

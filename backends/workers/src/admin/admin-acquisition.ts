@@ -3,7 +3,7 @@ import { mcpSignupAttribution } from "./admin-mcp.ts";
 import { MCP_CLIENT_LABELS } from "../../../../src/mcp-client-kind.ts";
 import type { Db } from "../postgres.ts";
 import { adminWindow, counted, modelCall, n, SELF_SERVE, snapshot, utcDate, windowDates, windowOf, type AdminWindow } from "./admin-accounts.ts";
-import { keptSignupSource } from "../../../../src/signup-source.ts";
+import { keptSignupSource } from "../account-signup-source.ts";
 
 /**
  * How a source is known: the MCP plugin whose sign-in made the account, the `ref` of the link that opened the console,
