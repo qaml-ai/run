@@ -12,6 +12,7 @@ export async function requestView<
     configurationWaitSequence: _configurationWaitSequence,
     replaceConfiguration: _replaceConfiguration,
     billing: _billing,
+    usageBaseline: _usageBaseline,
     task: _task,
     piId: _piId,
     agentSpendAt: _agentSpendAt,

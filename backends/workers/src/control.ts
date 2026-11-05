@@ -189,10 +189,14 @@ export class Directory {
       for (const field of ['subject', 'context', 'definition'] as const)
         if (fields[field] !== undefined && JSON.stringify(fields[field]) !== JSON.stringify(previousEntry.config[field]))
           throw new ApiError(409, `An agent's ${field} cannot change`);
+      const target: Record<string, unknown> = { ...config };
+      // Resolve omitted fields when this target reaches the head of the queue.
+      if (fields.model === undefined) delete target.model;
+      if (fields.language === undefined) delete target.language;
       const response = await this.env.AGENTS.getByName(id).fetch(new Request('https://agent/upsert', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ id: crypto.randomUUID(), method: 'configure', params: {
-          ...config, ...(fields.remount !== undefined ? { remount: fields.remount } : {}),
+          ...target, ...(fields.remount !== undefined ? { remount: fields.remount } : {}),
         } }),
       }));
       const reconfigured = await response.json() as Record<string, unknown>;
