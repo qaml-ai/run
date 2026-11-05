@@ -18,6 +18,7 @@ export class RunProjection {
   readonly requestId: string;
   constructor(requestId: string) { this.requestId = requestId; }
   add(entry: Pick<EntryRecord, 'kind' | 'data' | 'model'>) {
+    if (entry.kind === 'camel.context' || entry.kind === 'pi.reset') return;
     if (entry.kind === 'camel.prompt') this.active = (entry.data as { requestId?: string })?.requestId;
     for (const message of entry.model ?? []) {
       if (message.role === 'system') continue;
@@ -37,7 +38,7 @@ export class RunProjection {
     const code = message.isError ? typeof value?.code === 'string' ? value.code : 'tool_error' : undefined;
     const child = ['delegate', 'spawn_agent'].includes(call.tool) && typeof value?.agentId === 'string' ? value.agentId : undefined;
     if (this.calls.size < 100 || this.calls.has(message.toolCallId)) this.calls.set(message.toolCallId, { tool: call.tool, toolCallId: call.toolCallId, ok: !message.isError, ...(code ? { code } : {}), ...(child ? { agentId: child } : {}) });
-    if (message.isError && this.errors.size < 100) this.errors.set(message.toolCallId, { tool: call.tool, toolCallId: call.toolCallId, code: code!, message: typeof value?.message === 'string' ? value.message : text });
+    if (message.isError && this.errors.size < 100) this.errors.set(message.toolCallId, { tool: call.tool, toolCallId: call.toolCallId, code: code!, message: typeof value?.message === 'string' ? value.message : text, ...(value?.outcomeUnknown===true ? {outcomeUnknown:true} : {}) });
     // Pi's codemode result keeps a bounded table of inner calls. Only metadata,
     // never their arguments or result bodies, enters the public run summary.
     const details = message.details as { calls?: { id: number | string; name: string; status: string; error?: string }[] } | undefined;

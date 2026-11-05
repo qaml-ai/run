@@ -29,6 +29,7 @@ export function projectRunFailure(options: RunFailureOptions): RunFailure | unde
   else if (error === 'restart_limit') result.code = 'runtime_restart';
   else if (errorClass(error) === 'runtime_restart' || errorClass(error) === 'resume_limit') result.code = errorClass(error);
   if (last && failed && result.code !== 'aborted' && result.code !== 'cancelled') {
+    result.code ??= 'model_error';
     const key = modelKeyFailure(error, { provider: last.provider, id: last.model });
     if (key) Object.assign(result, key);
     result.modelError = modelFailure({ ...last, errorMessage: error }, options.context ?? { ownEndpoint: false });
