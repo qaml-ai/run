@@ -1,5 +1,6 @@
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
+import { serveHostedMcp } from "./hosted-mcp.ts";
 import { resolveDefinition } from "./definitions.ts";
 import { sweepComputers } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
@@ -81,6 +82,7 @@ function summary(entry: DirectoryEntry) {
     ...visibleConfiguration(entry.config),
     ...(entry.config.definition ? { definition: { id: entry.config.definition, revision: entry.config.definitionRevision } } : {}),
     ...("forkedFrom" in entry ? { forkedFrom: entry.forkedFrom } : {}),
+    ...(entry.parentAgentId ? { parentAgentId: entry.parentAgentId, parentRunId: entry.parentRunId } : {}),
     id: entry.id,
     key: entry.key,
     name: entry.config.name ?? "",
@@ -133,13 +135,17 @@ const worker = {
     return withMoneyMetrics(env, async () => corsResponse(request, await (async () => {
     try {
       request = websocketAuthorization(request);
-      if (request.method === "OPTIONS" && /^\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(new URL(request.url).pathname)) return agentMcpPreflight();
+      if (request.method === "OPTIONS" && (/^\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(new URL(request.url).pathname) || new URL(request.url).pathname === "/mcp")) return agentMcpPreflight();
       const preflight = corsPreflight(request);
       if (preflight) return preflight;
       const signed = await handleSignedFileRequest(request, env);
       if (signed) return signed;
       const url = new URL(request.url),
         path = url.pathname;
+      if (path === "/.well-known/openai-apps-challenge" && request.method === "GET") {
+        const challenge = (env as Env & { AGENT_OPENAI_APPS_CHALLENGE?: string }).AGENT_OPENAI_APPS_CHALLENGE?.trim();
+        return new Response(challenge || null, { status: challenge ? 200 : 404, headers: { "Content-Type": "text/plain; charset=UTF-8", "Cache-Control": "no-store" } });
+      }
       if (path === "/healthz" && request.method === "GET")
         return json({
           ok: true,
@@ -160,6 +166,15 @@ const worker = {
       }
       let auth = browser ? null : await authenticateMoney(request, env)
         ?? (((env.TEST_MODE === "1" && !bearer?.startsWith("Bearer art_")) || await authorized(request, env.API_TOKEN)) ? await authenticate(request, env) : null);
+      if (path === "/mcp") {
+        if (!auth) return agentMcpSignIn(request, url.origin, "");
+        const publicOrigin = env.AGENT_PUBLIC_URL || url.origin;
+        return serveHostedMcp(request, { publicOrigin, fetch: (async (input, init) => {
+          const local = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+          if (local.origin === new URL(publicOrigin).origin) local.host = url.host, local.protocol = url.protocol;
+          return worker.fetch(new Request(local, input instanceof Request ? input : init), env, ctx);
+        }) as typeof fetch });
+      }
       const service = await handleServiceRequest(request, env, auth);
       if (service) return service;
       const match =
@@ -437,6 +452,12 @@ const worker = {
         const headers = new Headers(request.headers);
         headers.set("x-camel-input-via", match[1] === "clients" ? "agent" : "api");
         request = new Request(request, { headers });
+      }
+      if (tail === "/events") {
+        const eventUrl = new URL(request.url), headers = new Headers(request.headers);
+        headers.set("x-camel-events-path", eventUrl.pathname);
+        if (match[1] === "v1/agents" || browser) eventUrl.searchParams.set("watch", "1");
+        request = new Request(eventUrl, { method: request.method, headers, signal: request.signal });
       }
       const response = await forward(request, env, entry.id, tail);
       return browser ? browserResponse(response, browser, tail) : response;

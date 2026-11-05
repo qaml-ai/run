@@ -4,6 +4,7 @@ import { forkSnapshot } from "./fork-snapshot.ts";
 import { seedHistory, writeModelContext } from "./history-seed.ts";
 import { assertContextRange, contextRangeExtension, contextRangeLimit } from "./context-range.ts";
 import { workflowTools } from "./workflow.ts";
+import { recordChildParent } from "./child-parent.ts";
 import { RecentEvents } from "./recent-events.ts";
 import { tenantRunCaps } from "./tenant-run-caps.ts";
 import { toolCallSite } from "./tool-call-context.ts";
@@ -126,12 +127,16 @@ import { actorInput, bucketInput } from "./security-policy.ts";
 import { MessageProjection } from "./message-projection.ts";
 import { OUTPUT_REMINDER } from "./output-policy.ts";
 import { runtimePromptSections } from "./prompt-sections.ts";
+import { toolResultFiles } from "./tool-output-files.ts";
 import { projectRunFailure } from "./run-failure.ts";
 import { RunProjection } from "./run-projection.ts";
 import { requestView } from "./request-view.ts";
 import { AgentHistory } from "./history.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { digest, configuration } from "./api-contract.ts";
+import { configurationModelError } from "./default-model.ts";
+import { MAX_OPEN_REQUESTS } from "./access-policy.ts";
+import { follow as followLiveTurn, replay as replayEvents, type LiveTurn } from "./live-event-policy.ts";
 import { AttachedTools } from "./attached-tools.ts";
 import { prioritizedTools } from "./tool-priority.ts";
 import { compatibleFileTools } from "./fs-tools.ts";
@@ -298,7 +303,8 @@ export class CamelAgent extends DurableObject<Env> {
     await this.env.TENANTS.getByName(receipt.tenant).release(`${receipt.agent}:${receipt.requestId}`);
   });
   private socketsRestored = this.restoreWebSockets();
-  private wakeBudget = new DelegationWakeBudget(this.ctx.storage);
+  private delegateWakeLimit = (this.env as Env & { AGENT_WAKES_PER_HOUR?: string }).AGENT_WAKES_PER_HOUR;
+  private wakeBudget = new DelegationWakeBudget(this.ctx.storage, this.delegateWakeLimit ? Number(this.delegateWakeLimit) : undefined);
   async admitDelegateWake(id: string): Promise<WakeDecision> {
     return this.wakeBudget.admit(id);
   }
@@ -314,6 +320,8 @@ export class CamelAgent extends DurableObject<Env> {
   private notifications = new DelegationNotifications({
     storage: this.ctx.storage,
     canLand: async () => !(await this.activity()).busy,
+    isBusy: async () => (await this.activity()).busy,
+    wakeLimit: this.delegateWakeLimit ? Number(this.delegateWakeLimit) : undefined,
     submit: (request, notice, delivery) =>
       this.submit(request, notice, delivery),
     admitWake: (root, id) =>
@@ -357,7 +365,7 @@ export class CamelAgent extends DurableObject<Env> {
       }
       return Number.isFinite(left) ? Math.max(0, left) : undefined;
     },
-    create: async (config, key) => {
+    create: async (config, key, parent) => {
       const conf = await this.config();
       const directory = new Directory(this.env, conf.tenantId);
       const entry = await directory.upsert(
@@ -367,6 +375,7 @@ export class CamelAgent extends DurableObject<Env> {
       );
       if ("failed" in entry)
         throw Object.assign(new Error(entry.error), { status: entry.status });
+      if (parent) await recordChildParent(this.env, conf.tenantId, entry.id, parent.agent, parent.run);
       return entry;
     },
     target: async (ref) => {
@@ -633,6 +642,7 @@ export class CamelAgent extends DurableObject<Env> {
                 (params?.bucket as string | undefined) ?? conf.config.bucket,
               actor: params?.actor as string | undefined,
               keyScope: conf.config.keyScope,
+            files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: conf.config.mounts ?? [], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
               spendLimit: (params?.spendLimit as { usd?: number } | undefined)
                 ?.usd,
               platform: this.env.TEST_MODEL !== "1",
@@ -974,6 +984,7 @@ export class CamelAgent extends DurableObject<Env> {
   private emittedText = "";
   private active?: string;
   private serial: Promise<unknown> = Promise.resolve();
+  private readonly initialCursor = Date.now() * 1000;
   private pendingWaits = new Set<string>();
   private admission: Promise<unknown> = Promise.resolve();
   private eventsProcessed: Promise<void> = Promise.resolve();
@@ -1000,8 +1011,15 @@ export class CamelAgent extends DurableObject<Env> {
       const cursor = await this.ctx.storage.transaction(async (tx) => {
         if (delivery && !(await acknowledgeTerminalEvent(tx, delivery)))
           return undefined;
-        const next = ((await tx.get<number>("cursor")) ?? 1) + 1;
+        const next = ((await tx.get<number>("cursor")) ?? this.initialCursor) + 1;
         await tx.put("cursor", next);
+        const value = event as any;
+        const live = { cursor: next, events: [], turn: await tx.get<LiveTurn>("live-turn"), partial: this.partial };
+        if (value.type === "event" && value.event?.type === "agent_start" && live.turn?.requestId !== value.requestId)
+          live.turn = { requestId: value.requestId, count: 0, bytes: 0, messages: [] };
+        followLiveTurn(live, value, JSON.stringify(value), false);
+        if (live.turn) await tx.put("live-turn", live.turn);
+        else await tx.delete("live-turn");
         this.eventLog.append(next, event);
         this.recentEvents.append(next, event);
         return next;
@@ -1406,14 +1424,7 @@ export class CamelAgent extends DurableObject<Env> {
       const outputValue = await this.ctx.storage.get(`output:${id}`);
       const outputInvalid = await this.ctx.storage.get(`output-invalid:${id}`);
       const limit = await this.ctx.storage.get<RuntimeLimit>(`run-limit:${id}`);
-      const outcome = limit
-        ? { result: limit }
-        : result.status === "done"
-          ? {
-              result: {
-                reply: result.text ?? "",
-                error: null,
-                usage: {
+      const runUsage = {
                   responses: usage.responses,
                   input: usage.inputTokens,
                   output: usage.outputTokens,
@@ -1435,7 +1446,15 @@ export class CamelAgent extends DurableObject<Env> {
                   ...(usage.subagentCostUsd > 0
                     ? { subagentCostUsd: usage.subagentCostUsd }
                     : {}),
-                },
+                };
+      const outcome = limit
+        ? { result: { ...limit, usage: runUsage } }
+        : result.status === "done"
+          ? {
+              result: {
+                reply: result.text ?? "",
+                error: null,
+                usage: runUsage,
                 servedModel: usage.last
                   ? `${usage.last.provider}/${usage.last.model}`
                   : (record.billing?.model ?? stored?.config.model),
@@ -1465,6 +1484,7 @@ export class CamelAgent extends DurableObject<Env> {
                 "Model operation failed",
               last: usage.last,
             }) ?? { error: "Model operation failed" });
+      if ("result" in outcome) Object.assign(outcome.result, { usage: runUsage });
       let changed = false;
       const terminal = await this.ctx.storage.transaction(async (tx) => {
         const latest = await tx.get<RequestRecord>(reqKey(id));
@@ -1564,7 +1584,7 @@ export class CamelAgent extends DurableObject<Env> {
     this.admission = result.catch(() => {});
     return result;
   }
-  private async abortRequests(queued: 'cancel' | 'keep' = 'cancel') {
+  private async abortRequests(queued: 'cancel' | 'keep' = 'cancel', keepChildren = false) {
     if (queued === 'cancel') {
       await this.promptPreparations.cancel();
       const held = await this.ctx.storage.list({ prefix: 'held-steer:' });
@@ -1584,7 +1604,7 @@ export class CamelAgent extends DurableObject<Env> {
       if (keepTask !== undefined) await tx.put('resume-kept-queue', { taskId: keepTask });
     });
     if (queued === 'cancel') {
-      await this.delegation.cancel();
+      if (!keepChildren) await this.delegation.cancel();
       await this.cancelHumanInputs();
       await this.abortExecutions();
       await this.harness.session().abort();
@@ -1599,7 +1619,7 @@ export class CamelAgent extends DurableObject<Env> {
       }
       for (const id of running) {
         await this.cancelHumanInputs(id);
-        await this.delegation.cancel(id);
+        if (!keepChildren) await this.delegation.cancel(id);
       }
       await this.resumeKeptQueue();
     }
@@ -1750,7 +1770,9 @@ export class CamelAgent extends DurableObject<Env> {
       throw new BadRequest("Expected configuration object");
     const conf = await this.config();
     const params = request.params as Record<string, unknown>;
-    configuration({ ...conf.config, ...params }, conf.config.model);
+    const patched = configuration({ ...conf.config, ...params }, conf.config.model ?? this.env.MODEL).config;
+    const modelError = (params.model !== undefined || params.keyScope !== undefined)
+      ? await configurationModelError(this.env, conf.tenantId, patched) : undefined;
     const fingerprint = canonical(request);
     const previous = await this.ctx.storage.transaction(async (tx) => {
       const old = await tx.get<RequestRecord>(reqKey(id));
@@ -1770,6 +1792,12 @@ export class CamelAgent extends DurableObject<Env> {
       return old;
     });
     if (previous?.state === "completed") return previous;
+    if (modelError) {
+      const failed: RequestRecord = { id, method: "configure", fingerprint, state: "completed", startedAt: previous?.startedAt ?? Date.now(), endedAt: Date.now(), outcome: { error: modelError } };
+      await this.ctx.storage.put(reqKey(id), failed);
+      await this.emit({ type: "response", id, outcome: failed.outcome });
+      return failed;
+    }
     const directory = new Directory(this.env, conf.tenantId);
     const current = await directory.get(conf.id);
     if (!current)
@@ -1865,9 +1893,11 @@ export class CamelAgent extends DurableObject<Env> {
       return this.startHostRequest(record);
     }
     if (request.method === "abort") {
-      const params = object(request.params ?? {}, ["queued"]);
+      const params = object(request.params ?? {}, ["queued", "children"]);
       if (params.queued !== undefined && !['cancel', 'keep'].includes(String(params.queued)))
         throw new BadRequest('queued is cancel or keep');
+      if (params.children !== undefined && !['cancel', 'keep'].includes(String(params.children)))
+        throw new BadRequest('children is cancel or keep');
       const fingerprint = canonical({ method: "abort", params });
       const previous = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (previous && previous.fingerprint !== fingerprint)
@@ -1876,7 +1906,7 @@ export class CamelAgent extends DurableObject<Env> {
           { status: 409 },
         );
       if (previous?.state === "completed") return previous;
-      const stopped = await this.abortRequests(params.queued === 'keep' ? 'keep' : 'cancel');
+      const stopped = await this.abortRequests(params.queued === 'keep' ? 'keep' : 'cancel', params.children === 'keep');
       await this.state();
       const record: RequestRecord = {
         id,
@@ -2015,6 +2045,8 @@ export class CamelAgent extends DurableObject<Env> {
         status: 409,
       });
     if (old?.state === "completed") return old;
+    if (!old && request.method !== "steer" && (await this.records()).filter(record => record.state !== "completed").length >= MAX_OPEN_REQUESTS)
+      throw Object.assign(new Error("Too many requests queued for this agent"), { status: 429 });
     const conf = await this.config();
     if (!old) await refreshIdleLifetime(this.env, this.ctx.storage, conf);
     if (conf.config.spendLimit) await this.flushBilling(true);
@@ -2034,7 +2066,7 @@ export class CamelAgent extends DurableObject<Env> {
       params.allowDisconnected !== true
     )
       throw Object.assign(
-        new Error("No process is connected to serve this agent's tools"),
+        new Error("APPLICATION_NOT_CONNECTED: this agent's tools are answered by its application, and none is connected. Connect it: upsert the agent with its tools in a process that stays up (TypeScript agents.upsert(key, { tools }), Python agents.upsert(key, tools=[…]); lower down, connectAgent or connect_agent), or send allowDisconnected: true (allow_disconnected=True) to run anyway"),
         { status: 409, code: "APPLICATION_NOT_CONNECTED" },
       );
     const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
@@ -2221,7 +2253,7 @@ export class CamelAgent extends DurableObject<Env> {
     const activity = await this.activity();
     const lastActive = Math.max(this.recentEvents.lastActivity() ?? 0, (await this.ctx.storage.get<number>("last-active")) ?? 0);
     return {
-      cursor: (await this.ctx.storage.get<number>("cursor")) ?? 1,
+      cursor: (await this.ctx.storage.get<number>("cursor")) ?? this.initialCursor,
       connected: this.attached.connected,
       ...activity,
       running: activity.busy || Date.now() - lastActive < Number((this.env as Env & { AGENT_IDLE_MS?: string }).AGENT_IDLE_MS ?? 60_000),
@@ -2439,6 +2471,7 @@ export class CamelAgent extends DurableObject<Env> {
                 builtins: conf.config.builtins,
                 webSearch: conf.config.webSearch,
                 keyScope: conf.config.keyScope,
+                files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: conf.config.mounts ?? [], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
               };
             }),
           });
@@ -2692,6 +2725,7 @@ export class CamelAgent extends DurableObject<Env> {
           (await this.enabledTools(conf.config)).tools,
           this.attached.connected,
           this.sourceFailures,
+          refresh === "true" || (await this.state()).running,
         );
         if (url.searchParams.get("schemas") !== "true")
           for (const source of sources)
@@ -2795,10 +2829,11 @@ export class CamelAgent extends DurableObject<Env> {
         return json(batch ? { inputs: answered.inputs, requests: answered.requests } : { input: answered.inputs[0], request: answered.requests[0] ?? null }, answered.status);
       }
       if (path === "/abort" && request.method === "POST") {
-        const params = object(request.body ? await body(request) : {}, ['queued']);
+        const params = object(request.body ? await body(request) : {}, ['queued', 'children']);
         if (params.queued !== undefined && !['cancel', 'keep'].includes(String(params.queued))) throw new BadRequest('queued is cancel or keep');
+        if (params.children !== undefined && !['cancel', 'keep'].includes(String(params.children))) throw new BadRequest('children is cancel or keep');
         const aborting = this.admission.then(async () => {
-          const stopped = await this.abortRequests(params.queued === 'keep' ? 'keep' : 'cancel');
+          const stopped = await this.abortRequests(params.queued === 'keep' ? 'keep' : 'cancel', params.children === 'keep');
           await this.state();
           return json(stopped);
         });
@@ -3283,6 +3318,7 @@ export class CamelAgent extends DurableObject<Env> {
   private async webSocketEvents(request: Request): Promise<Response> {
     await this.observe();
     const state = await this.state();
+    const replay = await this.replayEvents(request);
     const conf = await this.config();
     const url = new URL(request.url);
     const watch = url.searchParams.get("watch") === "1";
@@ -3341,19 +3377,8 @@ export class CamelAgent extends DurableObject<Env> {
           socket.serializeAttachment({ ...attachment, initialized: true });
         })
         .catch(() => this.retireAttachedSocket(socket));
-    socket.send(
-      eventFrame(
-        {
-          type: "snapshot",
-          cursor: state.cursor,
-          requestId: this.active ?? null,
-          turn: this.active
-            ? { start: null, count: 0, messages: [], partial: this.partial }
-            : null,
-        },
-        state.cursor,
-      ),
-    );
+    if (replay.snapshot) socket.send(eventFrame(replay.snapshot, replay.snapshot.cursor));
+    for (const row of replay.events) socket.send(eventFrame(row.data, row.id));
     const selected = request.headers
       .get("sec-websocket-protocol")
       ?.split(",")
@@ -3385,7 +3410,7 @@ export class CamelAgent extends DurableObject<Env> {
       {
         transport: "websocket",
         protocol: EVENT_PROTOCOL,
-        url: `/clients/${conf.id}/events${url.search}`,
+        url: `${request.headers.get("x-camel-events-path") ?? `/clients/${conf.id}/events`}${url.search}`,
       },
       { headers: selected.headers },
     );
@@ -3452,6 +3477,14 @@ export class CamelAgent extends DurableObject<Env> {
   async webSocketError(socket: WebSocket) {
     await this.webSocketClose(socket, 1011);
   }
+  private async replayEvents(request: Request) {
+    const state = await this.state();
+    const watch = new URL(request.url).searchParams.get("watch") === "1";
+    const asked = new URL(request.url).searchParams.get("snapshot");
+    return replayEvents({ cursor: state.cursor, events: state.events,
+      turn: await this.ctx.storage.get<LiveTurn>("live-turn"), partial: this.partial },
+      request.headers.get("Last-Event-ID") ?? "0", watch ? asked !== "0" : asked === "1");
+  }
   private async events(request: Request): Promise<Response> {
     const runId = new URL(request.url).searchParams.get("runId");
     if (runId)
@@ -3461,6 +3494,20 @@ export class CamelAgent extends DurableObject<Env> {
       });
     await this.observe();
     const state = await this.state();
+    let replay = await this.replayEvents(request);
+    if (new URL(request.url).searchParams.get("poll") === "1") {
+      const wait = Math.min(25_000, Math.max(0, Number(new URL(request.url).searchParams.get("wait") ?? 0) * 1000));
+      if (!replay.snapshot && !replay.events.length && wait) {
+        await new Promise<void>(resolve => {
+          const wake = () => { clearTimeout(timer); this.listeners.delete(wake); request.signal.removeEventListener("abort", wake); resolve(); };
+          const timer = setTimeout(wake, wait);
+          this.listeners.add(wake);
+          request.signal.addEventListener("abort", wake, { once: true });
+        });
+        replay = await this.replayEvents(request);
+      }
+      return json({ cursor: replay.cursor, events: [...(replay.snapshot ? [{ id: replay.snapshot.cursor, data: replay.snapshot }] : []), ...replay.events] });
+    }
     const encoder = new TextEncoder();
     const conf = await this.config();
     const toolsHash = await digest(
@@ -3532,14 +3579,8 @@ export class CamelAgent extends DurableObject<Env> {
             ),
           );
           connection?.start();
-          send(state.cursor, {
-            type: "snapshot",
-            cursor: state.cursor,
-            requestId: this.active ?? null,
-            turn: this.active
-              ? { start: null, count: 0, messages: [], partial: this.partial }
-              : null,
-          });
+          if (replay.snapshot) send(replay.snapshot.cursor, replay.snapshot);
+          for (const event of replay.events) send(event.id, event.data);
           heartbeat = setInterval(() => {
             if (closed) return;
             if ((controller.desiredSize ?? 0) <= 0) {

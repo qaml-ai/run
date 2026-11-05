@@ -16,7 +16,7 @@ const waiting: Call['waiting'] = new Map();
 
 export function agentMcpSignIn(request: Request, publicOrigin: string, id: string): Response {
   const invalid = !!request.headers.get('Authorization');
-  const metadata = publicOrigin + '/.well-known/oauth-protected-resource/v1/agents/' + id + '/mcp';
+  const metadata = publicOrigin + '/.well-known/oauth-protected-resource' + (id ? '/v1/agents/' + id : '') + '/mcp';
   return Response.json({ error: invalid ? 'invalid_token' : 'unauthorized', error_description: invalid ? 'The token is invalid, expired or revoked' : 'Sign in (OAuth), or send Authorization: Bearer <API token>' }, { status: 401, headers: { ...AGENT_MCP_CORS, 'WWW-Authenticate': 'Bearer resource_metadata="' + metadata + '"' + (invalid ? ', error="invalid_token"' : '') + ', scope="agents"' } });
 }
 export function agentMcpPreflight(): Response {

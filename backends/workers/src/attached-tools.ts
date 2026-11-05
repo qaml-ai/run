@@ -37,7 +37,7 @@ export class AttachedTools {
     try { await this.request(connection, "ping", {}, 2_000); }
     catch { this.close(connection.id); return; }
     if (this.current === connection && !connection.draining)
-      throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools", "APPLICATION_CONNECTED");
+      throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools; reconnect with ?takeover=true to replace it", "APPLICATION_CONNECTED");
   }
 
   /** Hibernation retains the socket and SDK, but recreates this in-memory pool.
@@ -51,7 +51,7 @@ export class AttachedTools {
 
   attach(send: (event: unknown) => void, previous?: string, takeover = false, retired?: () => void) {
     if (this.connected && !takeover && previous !== this.current?.id)
-      throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools", "APPLICATION_CONNECTED");
+      throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools; reconnect with ?takeover=true to replace it", "APPLICATION_CONNECTED");
     const old = this.current;
     // A reconnect has already lost its receive stream. Never replay a call
     // whose application-side effect may have happened on that connection.
