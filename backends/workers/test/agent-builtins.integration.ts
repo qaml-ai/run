@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import { startFixture } from './fixture.ts';
 import { sealProviderSecret } from '../src/model-credentials.ts';
+import { recordWebUsage } from '../src/web-billing.ts';
 
 test('workerd web builtins fetch pages, search with own keys and record usage', { timeout: 90_000 }, async t => {
   let base = '', searches = 0, xSearches = 0;
@@ -33,21 +34,26 @@ test('workerd web builtins fetch pages, search with own keys and record usage', 
   base = `http://127.0.0.1:${(provider.address() as any).port}`;
   t.after(() => { provider.closeAllConnections(); return new Promise<void>(resolve => provider.close(() => resolve())); });
   const secretsKey = randomBytes(32).toString('hex');
-  const fixture = await startFixture({ modelURL: base + '/v1', vars: { AGENT_SECRETS_KEY: secretsKey, AGENT_EXA_SEARCH_URL: base + '/exa', AGENT_X_SEARCH_URL: base + '/xai' } });
+  const fixture = await startFixture({ modelURL: base + '/v1', vars: { AGENT_SECRETS_KEY: secretsKey, AGENT_EXA_SEARCH_URL: base + '/exa', AGENT_X_SEARCH_URL: base + '/xai', AGENT_PRICE_AGENT_HOUR_USD: '0' } });
   t.after(() => fixture.stop());
   for (const name of ['exa', 'xai']) {
     const sealed = await sealProviderSecret({ AGENT_SECRETS_KEY: secretsKey } as never, `camelrun-proto-local:${name}`, 'fixture-' + name);
     await fixture.db.query('insert into provider_keys(tenant,provider,sealed,last4,set_at) values($1,$2,$3,$4,$5)', ['camelrun-proto-local', name, sealed, 'test', Date.now()]);
   }
-  const call = async (path: string, body?: unknown) => {
-    const response = await fetch(fixture.url + path, { method: body === undefined ? 'GET' : 'POST', headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const call = async (path: string, body?: unknown, method = body === undefined ? 'GET' : 'POST') => {
+    const response = await fetch(fixture.url + path, { method, headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const value = await response.json() as any;
     assert.ok(response.ok, `${path}: ${response.status} ${JSON.stringify(value)}`);
     return value;
   };
+  await call('/v1/end-user-settings', { enabled: true, allowances: { chosen: 2000, '*': 0 }, markupBps: 2500 }, 'PUT');
+  const expiresAt = Date.now() + 3_600_000;
+  await call('/v1/end-users/person/entries', { kind: 'grant', amount: 100_000, key: 'web-credit', expiresAt });
+  const agents = new Map<string, string>();
   for (const [builtin, prompt] of [['web_fetch', 'read the page'], ['web_search', 'web search'], ['x_search', 'x search']]) {
-    const agent = await call('/v1/agents', { codeMode: false, fileTools: false, builtins: [builtin] });
-    const accepted = await call(`/v1/agents/${agent.id}/prompt`, { text: prompt });
+    const agent = await call('/v1/agents', { codeMode: false, fileTools: false, builtins: [builtin], subject: 'person', bucket: 'agent-default' });
+    agents.set(builtin, agent.id);
+    const accepted = await call(`/v1/agents/${agent.id}/prompt`, { text: prompt, requestId: `run-${builtin}`, bucket: 'chosen', actor: 'web-caller' });
     let record: any, attempts = 0;
     do {
       record = await call(`/v1/agents/${agent.id}/requests/${accepted.id}`);
@@ -69,4 +75,31 @@ test('workerd web builtins fetch pages, search with own keys and record usage', 
   const usage = (await fixture.db.query("select model,responses,cost from usage where model in ('exa/web_search','xai/x_search') order by model")).rows;
   assert.deepEqual(usage.map(row => row.model), ['exa/web_search', 'xai/x_search']);
   assert.deepEqual(usage.map(row => Number(row.responses)), [1, 1]);
+
+  await t.test('web calls charge the selected end-user bucket once and preserve expiring lots', async () => {
+    const person = await call('/v1/end-users/person?buckets=chosen,agent-default');
+    assert.equal(person.balance, 92_500, 'the allowance pays 2000 raw, then 6000 raw costs 7500 after markup');
+    assert.equal(person.held, 0);
+    const lot = person.lots.find((lot: any) => lot.key === 'web-credit');
+    assert.deepEqual([lot.remaining, lot.expiresAt], [92_500, expiresAt]);
+    const ledger = (await call('/v1/end-users/person/ledger')).entries.filter((entry: any) => entry.kind === 'usage');
+    assert.equal(ledger.length, 2);
+    for (const entry of ledger) assert.equal(entry.metadata.agent, agents.get(entry.metadata.provider === 'exa' ? 'web_search' : 'x_search'));
+    assert.deepEqual(ledger.map((entry: any) => [entry.bucket, entry.raw, entry.allowance, entry.amount, entry.metadata.call, entry.metadata.provider, entry.metadata.requestId]).sort(), [
+      ['chosen', 1000, 0, -1250, 'web_search', 'xai', 'run-x_search'],
+      ['chosen', 7000, 2000, -6250, 'web_search', 'exa', 'run-web_search'],
+    ]);
+    const receipts = (await fixture.db.query("select session_id,message from pi_usage_receipts where message->'_workersAuxiliary'->>'kind'='web_search' and message->'_workersAuxiliary'->>'provider'='exa'")).rows;
+    assert.equal(receipts.length, 1);
+    const receipt = receipts[0].message._workersAuxiliary;
+    const scope = { tenant: 'camelrun-proto-local', agent: receipts[0].session_id, requestId: receipt.requestId, callId: receipt.callId, startedAt: receipt.startedAt,
+      identity: { subject: 'person' }, actor: 'web-caller', bucket: 'chosen' };
+    const recorded = { provider: receipt.provider, model: receipt.model, platform: false, searches: 1, usage: { cost: { total: receipt.costUsd } } };
+    await Promise.all([recordWebUsage({ HYPERDRIVE: { connectionString: fixture.databaseUrl } } as never, scope, recorded),
+      recordWebUsage({ HYPERDRIVE: { connectionString: fixture.databaseUrl } } as never, scope, recorded)]);
+    assert.deepEqual((await call('/v1/end-users/person/ledger')).entries.filter((entry: any) => entry.kind === 'usage'), ledger);
+    assert.equal((await call('/v1/end-users/person')).balance, person.balance);
+    const counted = (await fixture.db.query("select responses from usage where model='exa/web_search'")).rows;
+    assert.deepEqual(counted.map(row => Number(row.responses)), [1], 'duplicate receipts cannot add tenant or end-user usage');
+  });
 });

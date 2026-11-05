@@ -1022,6 +1022,9 @@ export class CamelAgent extends DurableObject<Env> {
             builtins: conf.config.builtins,
             webSearch: conf.config.webSearch,
             keyScope: conf.config.keyScope,
+            identity: { subject: conf.config.subject, context: conf.config.context },
+            actor: ("actor" in run ? run.actor : undefined) ?? params?.actor as string | undefined,
+            bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
             files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
           };
         }, { schedules: this.scheduleTools() }),
@@ -2801,6 +2804,9 @@ export class CamelAgent extends DurableObject<Env> {
                 builtins: conf.config.builtins,
                 webSearch: conf.config.webSearch,
                 keyScope: conf.config.keyScope,
+                identity: { subject: conf.config.subject, context: conf.config.context },
+                actor: ("actor" in run ? run.actor : undefined) ?? params?.actor as string | undefined,
+                bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
                 files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
               };
             }, { schedules: this.scheduleTools() }),
