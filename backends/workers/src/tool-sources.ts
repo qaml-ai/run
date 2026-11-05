@@ -220,7 +220,7 @@ export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mc
     const installed = tools.filter(tool => tool.name.startsWith(`${source.name}__`));
     result.push({ kind, name: source.name, url: source.url ?? source.baseUrl, status: installed.length ? "listed" : "error", tools: installed.map(view), ...(installed.length ? {} : { error: "Source unavailable or no tools selected" }) });
   }
-  for (const name of config.builtins ?? []) {
+  for (const name of new Set([...(config.builtins ?? []), ...(tools.some(tool => tool.name === "decide") ? ["decide"] : [])])) {
     const installed = tools.filter(tool => tool.name === name);
     if (installed.length) result.push({ kind: "builtin", name, status: "listed", tools: installed.map(view) });
   }

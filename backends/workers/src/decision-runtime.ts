@@ -7,11 +7,28 @@ import { body } from './validation.ts';
 
 export interface DecisionContext {
   tenant: string;
+  agent?: string;
+  requestId?: string;
+  callId?: string;
+  startedAt?: number;
   keyScope?: string;
   dataCollection?: 'deny' | null;
   budget?: number;
+  spendLimit?: number;
   identity?: { subject?: string; context?: Record<string, unknown> };
   actor?: string;
+}
+/** Match src/client-sessions/tools.ts: a plain agent only gets decide when explicitly requested. */
+export function offersDecisions(config: {
+  decide?: boolean | null;
+  codeMode?: boolean;
+  mcp?: { tools?: unknown[] };
+  builtins?: unknown[];
+  mcpServers?: unknown[];
+  openApi?: unknown[];
+}) {
+  return config.decide !== false && (config.decide === true || config.codeMode !== false ||
+    !!(config.mcp?.tools?.length || config.builtins?.length || config.mcpServers?.length || config.openApi?.length));
 }
 export interface DecisionRuntimeOptions {
   key(tenant: string, keyScope: string | undefined, provider: string): Promise<(DecisionCredentials & { platform: boolean }) | undefined>;
@@ -61,7 +78,11 @@ export class DecisionRuntime {
     return decisionsAnswer(decided, request.batch);
   }
   tool(): ToolRegistration {
-    return defineTool({ name: DECIDE.name, description: DECIDE.description, parameters: DECIDE.parameters as never, replay: 'unsafe', execute: async (args: Record<string, unknown>, _api, context) => ({ output: [{ type: 'text', text: JSON.stringify(await this.run(args, context.abortSignal ?? new AbortController().signal)) }] }) });
+    return defineTool({ name: DECIDE.name, description: DECIDE.description, parameters: DECIDE.parameters as never, structuredOutputSchema: {}, replay: 'unsafe', execute: async (args: Record<string, unknown>, api, context) => {
+      const result = await this.run(args, context.abortSignal ?? new AbortController().signal, { callId: api.callId, startedAt: Date.now() });
+      const text = JSON.stringify(result);
+      return { output: [{ type: 'text', text }], structuredOutput: JSON.parse(text) };
+    } });
   }
 }
 

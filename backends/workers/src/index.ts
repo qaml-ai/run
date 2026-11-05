@@ -31,6 +31,23 @@ import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
 import { apiRequest, admissionError, errorFields, errorHeaders } from "./admission.ts";
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
 import { browserResponse } from "./browser-response.ts";
+import { decisionService, type DecisionEnv } from "./decision-service.ts";
+import { decisionRoute } from "./decision-runtime.ts";
+import {
+  definitionRoutes,
+  provisionDefinition,
+  visibleConfiguration,
+  configurationPatch,
+} from "./definitions.ts";
+import { statelessRoutes, agentLifecycleRoutes } from "./agent-routes.ts";
+import { modelCatalog } from "./model.ts";
+import { providerRoutes } from "./provider-routes.ts";
+import { TENANT_CONFIGURATION_KEYS } from "./access-policy.ts";
+import {
+  readAgentSpendLimit,
+  setAgentSpendLimit,
+  agentSpendView,
+} from "./agent-spend.ts";
 export { CamelAgent };
 export { TenantAdmission } from "./tenant.ts";
 export { Volume } from "./volume.ts";
@@ -59,6 +76,8 @@ function credentials(entry: DirectoryEntry, token: string) {
 }
 function summary(entry: DirectoryEntry) {
   return {
+    ...visibleConfiguration(entry.config),
+    ...("forkedFrom" in entry ? { forkedFrom: entry.forkedFrom } : {}),
     id: entry.id,
     key: entry.key,
     name: entry.config.name ?? "",
@@ -75,6 +94,29 @@ async function forward(request: Request, env: Env, id: string, path: string) {
   const url = new URL(request.url);
   url.pathname = path;
   return env.AGENTS.getByName(id).fetch(new Request(url, request));
+}
+function scopedConfiguration(input: unknown) {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new BadRequest("Expected configuration object");
+  for (const key of [
+    ...TENANT_CONFIGURATION_KEYS,
+    "definition",
+    "openApi",
+    "subject",
+    "context",
+    "humanInput",
+    "subagents",
+    "workspaceId",
+    "remount",
+    "initialMessages",
+    "importMessages",
+  ])
+    if (Object.hasOwn(input, key))
+      throw new ApiError(
+        403,
+        `Only the tenant can change an agent's ${key}`,
+        "FORBIDDEN",
+      );
 }
 
 export default {
@@ -168,32 +210,54 @@ export default {
           return json({ queued: await publishPending(env) });
         const money = await moneyRoutes(request, env, auth, ctx);
         if (money) return money;
-        const admin = await handleAdminRequest(request, env, auth);
-        if (admin) return admin;
+        if (path === "/v1/decisions") {
+          const decisions = decisionService(
+            env as Env & DecisionEnv,
+            async () => ({ tenant: auth!.tenantId }),
+          );
+          const response = await decisionRoute(request, decisions);
+          if (response) return response;
+        }
         const control = await controlRoutes(request, env, auth);
         if (control) return control;
         const media = await handleMediaRequest(request, env, auth);
         if (media) return media;
         const files = await handleFileRequest(request, env, auth);
         if (files) return files;
+        const definition = await definitionRoutes(request, env, auth);
+        if (definition) return definition;
+        const provider = await providerRoutes(request, env, auth);
+        if (provider) return provider;
+        const run = await statelessRoutes(request, env, auth);
+        if (run) return run;
         if (path === "/v1/models" && request.method === "GET")
-          return json([
-            {
-              id: env.MODEL,
-              name: env.MODEL,
-              provider: env.TEST_MODEL === "1" ? "fixture" : "cloudflare",
-              input: ["text", "image"],
-            },
-          ]);
+          return json(
+            modelCatalog(env, url.searchParams.get("provider") ?? undefined),
+          );
         if (path === "/v1/agents") {
           const directory = new Directory(env, auth.tenantId);
           if (request.method === "GET")
-            return json((await directory.list()).map(summary));
+            return json(
+              (await directory.list())
+                .filter((entry) => entry.config.type !== "run")
+                .map(summary),
+            );
           if (request.method === "POST") {
-            const input = await body(request);
+            const raw = await body(request, 17 * 1024 * 1024);
+            if (!raw || typeof raw !== "object" || Array.isArray(raw))
+              throw new BadRequest("Expected configuration object");
+            const input = await provisionDefinition(
+              env,
+              auth.tenantId,
+              raw as Record<string, unknown>,
+            );
             configuration(input, env.MODEL);
             const key = request.headers.get("Idempotency-Key") ?? undefined;
-            const created = result(await directory.upsert(input, key));
+            const created = result(await directory.upsert(input, key, url.origin));
+            if (Object.hasOwn(raw, "spendLimit"))
+              await setAgentSpendLimit(
+                env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,
+              );
             return json(
               credentials(created, await agentToken(env.API_TOKEN, created.id)),
               201,
@@ -210,6 +274,8 @@ export default {
         throw new ApiError(404, "Not found", "NOT_FOUND");
       const directory = new Directory(env, entry.tenantId);
       if (entry.deleted) {
+        if (["/", "/credentials"].includes(tail) && request.method === "GET")
+          throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
         if (auth && tail === "/" && request.method === "DELETE") {
           result(await directory.remove(entry.id));
           return json({ deleted: true });
@@ -235,30 +301,75 @@ export default {
         );
       }
       if (tail === "/" && request.method === "DELETE") {
-        if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");
         result(await directory.remove(entry.id));
         return json({ deleted: true });
       }
-      if (tail === "/" && request.method === "GET") return json(summary(entry));
+      if (tail === "/" && request.method === "GET") {
+        const response = await forward(
+          new Request(request.url, { headers: request.headers }),
+          env,
+          entry.id,
+          "/tool-sources",
+        );
+        if (!response.ok) return response;
+        return json({
+          ...summary(entry),
+          spendLimit: agentSpendView(
+            await readAgentSpendLimit(env, entry.tenantId, entry.id),
+          ),
+          toolSources: await response.json(),
+        });
+      }
+      if (tail === "/" && request.method === "PATCH") {
+        if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");
+        const input = await body(request);
+        if (
+          !input || typeof input !== "object" || Array.isArray(input) ||
+          Object.keys(input).some((key) => !["name", "type"].includes(key))
+        )
+          throw new BadRequest("Only name and type may be patched here");
+        return json(summary(result(await directory.upsert(
+          { ...entry.config, ...input }, entry.key ?? entry.id, url.origin,
+        ))));
+      }
+      if (tail === "/metadata" && request.method === "POST") {
+        const input = await body(request, 4096);
+        if (
+          !input || typeof input !== "object" || Array.isArray(input) ||
+          Object.keys(input).some((key) => !["name", "type"].includes(key))
+        )
+          throw new BadRequest("Expected name and type");
+        const next = result(await directory.upsert(
+          { ...entry.config, ...input }, entry.key ?? entry.id, url.origin,
+        ));
+        return json({ name: next.config.name ?? "", type: next.config.type ?? "agent" });
+      }
       if (tail === "/configuration") {
-        if (request.method === "GET") return json(entry.config);
+        if (request.method === "GET") return json(visibleConfiguration(entry.config));
         if (!["PUT", "PATCH"].includes(request.method))
           throw new ApiError(405, "Method not allowed");
         const next = await body(request);
         if (!next || typeof next !== "object" || Array.isArray(next))
           throw new BadRequest("Expected configuration object");
+        if (!auth) scopedConfiguration(next);
         const updated = result(
           await directory.upsert(
-            { ...entry.config, ...next },
+            await configurationPatch(env, entry.tenantId, entry.config, next),
             entry.key ?? entry.id,
+            url.origin,
           ),
         );
-        return json({ id: updated.id, configHash: updated.configHash });
+        if (Object.hasOwn(next, "spendLimit"))
+          await setAgentSpendLimit(
+            env, entry.tenantId, entry.id, (next as { spendLimit: unknown }).spendLimit,
+          );
+        return json({ id: updated.id, configHash: updated.configHash }, 202);
       }
       if (tail === "/mounts") {
         if (request.method === "GET")
           return json(entry.config.mounts ?? []);
         if (request.method === "PUT") {
+          if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");
           const input = (await body(request)) as { mounts?: unknown[] };
           const updated = result(
             await directory.upsert(
@@ -275,16 +386,13 @@ export default {
         env.TEST_MODEL !== "1"
       )
         throw new ApiError(404, "Not found");
-      if (!browser && tail === "/events" && request.method === "GET" && request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
-        const selected = negotiateEvents(request);
-        if (selected) return selected;
-      }
-      // Browser grants retain Node's read-only SSE policy. The internal agent
-      // endpoint also negotiates transports, so strip the WebSocket offer here.
-      if (browser && tail === "/events") {
-        const headers = new Headers(request.headers);
-        headers.set("accept", "text/event-stream");
-        request = new Request(request, { headers });
+      const lifecycle = !browser
+        ? await agentLifecycleRoutes(request, env, entry, tail)
+        : undefined;
+      if (lifecycle) return lifecycle;
+      if (!auth && tail === "/requests" && request.method === "POST") {
+        const input = (await request.clone().json()) as { method?: string; params?: unknown };
+        if (input.method === "configure") scopedConfiguration(input.params);
       }
       const response = await forward(request, env, entry.id, tail);
       return browser ? browserResponse(response, browser, tail) : response;
