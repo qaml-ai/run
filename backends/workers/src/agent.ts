@@ -132,6 +132,7 @@ import { AgentHistory } from "./history.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { digest } from "./api-contract.ts";
 import { AttachedTools } from "./attached-tools.ts";
+import { prioritizedTools } from "./tool-priority.ts";
 import { compatibleFileTools } from "./fs-tools.ts";
 import { sourceTools, toolSourceViews, type SourceFailure } from "./tool-sources.ts";
 import { Delegation } from "./delegation.ts";
@@ -943,10 +944,7 @@ export class CamelAgent extends DurableObject<Env> {
         models: false,
       });
       registry.install(this.codeExtension);
-      this.availableTools = registry
-        .snapshot()
-        .tools()
-        .map(({ tool }) => tool);
+      this.availableTools = prioritizedTools(registry.snapshot().tools());
       return Harness.open(
         storage,
         {
@@ -2383,10 +2381,7 @@ export class CamelAgent extends DurableObject<Env> {
             delegation: this.delegation, settings: incoming.config.workflow,
             context: api => this.currentRun(api), emit: event => this.emit(event),
           }) });
-          this.availableTools = this.registry
-            .snapshot()
-            .tools()
-            .map(({ tool }) => tool);
+          this.availableTools = prioritizedTools(this.registry.snapshot().tools());
           const enabled = await this.enabledTools(incoming.config);
           await root.configure(
             {
@@ -2604,10 +2599,7 @@ export class CamelAgent extends DurableObject<Env> {
           (input, api, context) => this.decisions.judge(input, context.abortSignal ?? new AbortController().signal, api),
           );
           this.registry.install({ name: "camel.sources", tools });
-          this.availableTools = this.registry
-            .snapshot()
-            .tools()
-            .map(({ tool }) => tool);
+          this.availableTools = prioritizedTools(this.registry.snapshot().tools());
         }
         const sources = toolSourceViews(
           conf.config as never,
