@@ -4,6 +4,7 @@ import { withCompactionPrompt } from "./model-compaction.ts";
 import { takesFiles } from './tool-file-schema.ts';
 import { ToolFiles } from './tool-files.ts';
 import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
+import { steeringJoined } from "./steering-placement.ts";
 import { ConfigurationTargets } from "./configuration-targets.ts";
 import { toolOutputExtension } from "./tool-output.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
@@ -1149,7 +1150,7 @@ export class CamelAgent extends DurableObject<Env> {
   private async markBegan(id: string) {
     const started = await this.ctx.storage.transaction(async (tx) => {
       const record = await tx.get<RequestRecord>(reqKey(id));
-      if (!record || record.began) return false;
+      if (!record || record.began || record.state === 'completed') return false;
       record.began = Date.now();
       // Pi can start the next queued turn before the previous public outcome
       // finishes projection. Preserve that boundary instead of dating its end
@@ -1222,6 +1223,7 @@ export class CamelAgent extends DurableObject<Env> {
         const record = await this.ctx.storage.get<RequestRecord>(
           reqKey(status.requestId),
         );
+        if (record?.steeredInto) await this.reconcileSteering(record, inputs);
         return (
           (await this.ctx.storage.get<string>(
             `resume-for:${status.requestId}`,
@@ -1271,7 +1273,25 @@ export class CamelAgent extends DurableObject<Env> {
       await this.emit({ type: "event", requestId: id, event });
     if (ended) this.nextMessage++;
   }
+  private async reconcileSteering(record: RequestRecord, inputs: readonly number[]) {
+    if (!record.steeredInto) return;
+    const parent = await this.ctx.storage.get<RequestRecord>(reqKey(record.steeredInto));
+    const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
+    const joined = await root.commit(async tx => {
+      const current = await tx.submissionByRequest(root.id, record.piId ?? record.id);
+      const previous = await tx.submissionByRequest(root.id, parent?.piId ?? record.steeredInto!);
+      const active = await Promise.all(inputs.map(id => tx.submission(id as never)));
+      return steeringJoined(current, previous, active);
+    }, BACKGROUND_CONTEXT);
+    if (joined === false) {
+      delete record.steeredInto;
+      record.steer = 'queued';
+      record.state = 'running';
+      await this.ctx.storage.put(reqKey(record.id), record);
+    }
+  }
   private async onView(view: ConversationView) {
+    const live = view.docs["pi.live"] as LiveState | undefined;
     // A paused Pi turn keeps its original input ID. New output belongs to its
     // admitted resume alias, including snapshots delivered just after answer().
     if (this.active)
@@ -1299,6 +1319,7 @@ export class CamelAgent extends DurableObject<Env> {
       if (entry.kind === "camel.steer") {
         const id = (entry.data as { requestId: string }).requestId;
         const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
+        if (record && record.state !== 'completed') await this.reconcileSteering(record, live?.run?.inputs ?? []);
         if (record && record.state !== 'completed' && !record.steeredInto) {
           this.active = id;
           await this.markBegan(id);
@@ -1335,7 +1356,6 @@ export class CamelAgent extends DurableObject<Env> {
           await this.projectMessage(this.active, message, true);
       this.lastEntry = Number(entry.id);
     }
-    const live = view.docs["pi.live"] as LiveState | undefined;
     const id = await this.requestForInputs(live?.run?.inputs ?? []);
     this.partial = (live?.generation?.message as AssistantMessage) ?? null;
     if (id) {
@@ -1532,6 +1552,7 @@ export class CamelAgent extends DurableObject<Env> {
       }
       const current = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (current?.state === "completed") return current;
+      if (await this.ctx.storage.get(`cancelled-request:${id}`)) await this.delegation.settleStopped(id);
       const usage = await this.usageForRequest(record.piId ?? id);
       const stored = await this.ctx.storage.get<Config>("configuration");
       const requestedOutput = record.params?.output;
@@ -1702,10 +1723,14 @@ export class CamelAgent extends DurableObject<Env> {
       if (keepTask !== undefined) await tx.put('resume-kept-queue', { taskId: keepTask });
     });
     if (queued === 'cancel') {
-      if (!keepChildren) await this.delegation.cancel();
-      await this.cancelHumanInputs();
-      await this.abortExecutions();
-      await this.harness.session().abort();
+      await Promise.all([
+        keepChildren ? Promise.resolve() : this.delegation.cancel(),
+        (async () => {
+          await this.cancelHumanInputs();
+          await this.abortExecutions();
+          await this.harness.session().abort();
+        })(),
+      ]);
       await this.notifications.abortPending();
     } else {
       for (const queued of pending.filter(item => item.status === 'queued')) {
@@ -1879,6 +1904,8 @@ export class CamelAgent extends DurableObject<Env> {
       } catch (error) { throw new BadRequest(error instanceof Error ? error.message : String(error)); }
     }
     const record = await this.configurationTargets.enqueue({ id, params, ...(replace ? { replace: true } : {}) });
+    // An idle agent applies this before the caller can submit its next prompt.
+    // A busy agent returns with the durable target waiting behind its turn.
     await this.configurationTargets.drain();
     await this.arm();
     return await this.ctx.storage.get<RequestRecord>(reqKey(id)) ?? record;

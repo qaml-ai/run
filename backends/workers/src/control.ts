@@ -128,8 +128,17 @@ export class Directory {
       ),
     );
     return rows[0]
-      ? { ...rows[0].header, ...(rows[0].revoked ? { deleted: true } : {}) }
+      ? this.applied({ ...rows[0].header, ...(rows[0].revoked ? { deleted: true } : {}) })
       : null;
+  }
+  /** The directory stages a replacement before the DO accepts it. Readers keep the applied configuration. */
+  private async applied(entry: DirectoryEntry): Promise<DirectoryEntry> {
+    if (entry.initialized || entry.deleted) return entry;
+    const response = await this.env.AGENTS.getByName(entry.id).fetch(new Request("https://agent/configuration"));
+    if (!response.ok) return entry;
+    const current = await response.json() as Pick<DirectoryEntry, "id" | "tenantId" | "config" | "revision" | "expiresAt">;
+    if (current.id !== entry.id || current.tenantId !== this.tenantId) return entry;
+    return { ...entry, ...current, configHash: await digest(JSON.stringify(current.config)), initialized: true };
   }
   async list(): Promise<DirectoryEntry[]> {
     const { rows } = await withSql(this.env, (sql) =>
@@ -138,7 +147,7 @@ export class Directory {
         [this.tenantId, Date.now()],
       ),
     );
-    return rows.map((row) => row.header);
+    return Promise.all(rows.map((row) => this.applied(row.header)));
   }
   async upsert(
     input: unknown,

@@ -131,9 +131,9 @@ function scopedConfiguration(input: unknown) {
   ])
     if (Object.hasOwn(input, key))
       throw new ApiError(
-        403,
+        key === "definition" ? 400 : 403,
         `Only the tenant can change an agent's ${key}`,
-        "FORBIDDEN",
+        key === "definition" ? "INVALID_REQUEST" : "FORBIDDEN",
       );
 }
 

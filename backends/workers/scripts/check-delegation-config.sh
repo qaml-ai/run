@@ -15,6 +15,7 @@ npm --prefix backends/workers run typecheck
   node --import ./test/sdk-deps.mjs --experimental-strip-types --test \
     test/child-config.test.ts test/configuration-targets.test.ts \
     test/delegation-charges.test.ts test/delegation-notifications.test.ts \
+    test/steering-placement.test.ts \
     test/run-limits.test.ts
 )
 CONTRACT_CONCURRENCY=${CONTRACT_CONCURRENCY:-4} npm run parity -- --area=definitions,delegation
