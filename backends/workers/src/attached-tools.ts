@@ -168,6 +168,7 @@ export class AttachedTools {
       const meta = toolCallMeta(claims?.agent ?? String(api.conversationId), site, claims?.origin, claims?.act);
       try { return await withToolInputs(reply => this.call(definition.name, args, timeoutMs, context?.abortSignal, { ...reply, meta: {
         ...meta,
+        "io.modelcontextprotocol/clientCapabilities": { elicitation: { form: {}, url: {} } },
         ...(claims ? { "agent-runtime/identity": { ...claims, ...(reply.approval ? { approval: reply.approval } : {}) } } : {}),
         ...(claims?.origin ? { "agent-runtime/origin": claims.origin } : {}),
         ...(claims?.act ? { "agent-runtime/actor": claims.act } : {}),

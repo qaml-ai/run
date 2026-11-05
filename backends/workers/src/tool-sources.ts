@@ -10,7 +10,7 @@ import { parse as parseYaml } from "yaml";
 import { signRuntimeIdentity, type IdentityEnv, type RuntimeIdentity } from "./tool-identity.ts";
 import { resolveToolInputs, withInputNote, withToolInputs, type ToolInputReply } from "./mcp-inputs.ts";
 import { openProviderSecret } from "./model-credentials.ts";
-import { credentialExchange, type ExchangeAuth } from "./exchange-auth.ts";
+import { credentialExchange, CredentialExchangeError, type ExchangeAuth } from "./exchange-auth.ts";
 import { COMPUTER_TOOLS } from "./computers/policy.ts";
 import { fileToolsFor } from "./file-tool-policy.ts";
 
@@ -22,6 +22,7 @@ export type RemoteSource = {
   headerNames?: string[]; auth?: { type: "bearer" | "runtime" } | ExchangeAuth; sealed?: Sealed; audience?: string;
   allowTools?: string[]; denyTools?: string[]; timeoutMs?: number;
   exposure?: "direct" | "codemode" | "both"; approval?: Approval;
+  discovery?: { tools?: ToolDefinition[]; error?: string };
 };
 const MAX_BYTES = 1024 * 1024;
 const NAME = /^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*$/;
@@ -213,7 +214,7 @@ export function sourceView(source: RemoteSource) {
 }
 
 /** Public catalog from the installed tools, with no credentials or executable callbacks. */
-export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mcpServers?: RemoteSource[]; openApi?: RemoteSource[]; fileTools?: boolean; codeMode?: boolean; builtins?: string[] }, tools: ToolRegistration[], connected: boolean) {
+export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mcpServers?: RemoteSource[]; openApi?: RemoteSource[]; fileTools?: boolean; codeMode?: boolean; builtins?: string[] }, tools: ToolRegistration[], connected: boolean, failures: SourceFailure[] = []) {
   const view = (tool: ToolRegistration) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters, exposure: tool.callers?.length === 1 ? tool.callers[0] === "model" ? "direct" : "codemode" : "both", ...(tool.executionMode ? { executionMode: tool.executionMode } : {}) });
   const result: { kind: string; name: string; status: string; tools: unknown[]; connected?: boolean; url?: string; error?: string }[] = [];
   const fileNames = new Set(["read", "write", "edit", "ls", "find", "glob", "grep", "stat", "mkdir", "rm", "rename", "cp", "mv", "present_file"]);
@@ -225,7 +226,8 @@ export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mc
   if (config.mcp?.tools?.length) result.push({ kind: "application", name: "application", status: "listed", connected, tools: config.mcp.tools });
   for (const [kind, sources] of [["mcp", config.mcpServers], ["openapi", config.openApi]] as const) for (const source of sources ?? []) {
     const installed = tools.filter(tool => tool.name.startsWith(`${source.name}__`));
-    result.push({ kind, name: source.name, url: source.url ?? source.baseUrl, status: installed.length ? "listed" : "error", tools: installed.map(view), ...(installed.length ? {} : { error: "Source unavailable or no tools selected" }) });
+    const failure = failures.find(failure => failure.kind === kind && failure.source === source.name);
+    result.push({ kind, name: source.name, url: source.url ?? source.baseUrl, status: failure ? "error" : "listed", tools: installed.map(view), ...(failure ? { error: failure.message } : {}) });
   }
   for (const name of new Set([...(config.builtins ?? []), ...(tools.some(tool => tool.name === "decide") ? ["decide"] : [])])) {
     const installed = tools.filter(tool => tool.name === name);
@@ -283,7 +285,11 @@ class RemoteMcp {
     if (attempt === 0 && this.refused && [401, 403].includes(result.response.status)) { this.refused(); continue; }
     break;
     }
-    if (!result.response.ok) throw new Error(`MCP source ${this.source.name} answered HTTP ${result.response.status}`);
+    if (!result.response.ok) {
+      let detail = result.text.slice(0, 1000);
+      try { detail = String(JSON.parse(result.text).error ?? detail).slice(0, 1000); } catch {}
+      throw Object.assign(new Error(`MCP source ${this.source.name} answered HTTP ${result.response.status}${detail ? `: ${detail}` : ""}`), { status: result.response.status });
+    }
     this.session = result.response.headers.get("mcp-session-id") ?? this.session;
     return notification ? undefined : rpcResult(result.text, id);
   }
@@ -310,17 +316,55 @@ class RemoteMcp {
     const { approval, note: _note, ...responses } = reply;
     const identity = api ? await this.identity?.(api) : undefined;
     const site = api ? identity?.call ?? await toolCallSite(api) : undefined;
-    const meta = site ? toolCallMeta(identity?.claims.agent ?? String(api!.conversationId), site, identity?.claims.origin, identity?.claims.act) : undefined;
+    const meta = site ? { ...toolCallMeta(identity?.claims.agent ?? String(api!.conversationId), site, identity?.claims.origin, identity?.claims.act), ...(identity?.elicit ? { "io.modelcontextprotocol/clientCapabilities": { elicitation: { form: {}, url: {} } } } : {}) } : undefined;
     return this.rpc("tools/call", { name, arguments: args, ...responses, ...(meta ? { _meta: { ...meta, ...(approval ? { "agent-runtime/approval": approval } : {}) } } : {}) }, false, signal, api, approval);
   }
 }
 
+export type SourceFailure = { kind: "mcp" | "openapi"; source: string; message: string };
+const sourceError = (error: unknown, headers: Record<string, string>) => {
+  let message = error instanceof Error ? error.message : String(error);
+  for (const value of Object.values(headers)) for (const secret of [value, value.replace(/^Bearer /i, "")])
+    if (secret) message = message.split(secret).join("[redacted]");
+  return message.slice(0, 2000);
+};
+
+/** Definitions validate static credentials now; temporary unavailability remains visible and can recover later. */
+export async function discoverSources(env: Env, tenant: string, definition: string, sources: RemoteSource[], origin: string): Promise<RemoteSource[]> {
+  return Promise.all(sources.map(async source => {
+    const identity = async () => ({ issuer: origin, claims: { tenant, agent: definition, definition, sub: definition } });
+    const exchange = source.auth?.type === "exchange" ? credentialExchange(env as IdentityEnv, { name: source.name, url: source.url!, auth: source.auth }, identity, (url, init, max) => fetchSource(env, url, init, max)) : undefined;
+    const runtimeHeaders = async (): Promise<Record<string, string>> => exchange ? exchange.headers() : source.auth?.type === "runtime" ? { Authorization: `Bearer ${await signRuntimeIdentity(env as IdentityEnv, origin, source.audience ?? source.url!, (await identity()).claims)}` } : {};
+    const headers = await unseal(env, aad(tenant, definition, "mcpServers", source.name), source.sealed);
+    try {
+      const client = new RemoteMcp(env, { ...source, timeoutMs: Math.min(source.timeoutMs ?? 20_000, 20_000) }, headers, runtimeHeaders, exchange?.refused);
+      return { ...source, discovery: { tools: await client.list() } };
+    } catch (error) {
+      const message = sourceError(error, headers);
+      if ([401, 403].includes((error as { status?: number }).status ?? 0) || error instanceof CredentialExchangeError && !["unreachable", "unavailable"].includes(error.reason)) throw bad(message);
+      return { ...source, discovery: { error: message } };
+    }
+  }));
+}
+
+export function sourceDefinitionViews(config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[] }) {
+  return [
+    ...(config.mcpServers ?? []).map(source => ({ kind: "mcp", name: source.name, url: source.url,
+      status: source.discovery?.error ? "error" : source.discovery?.tools ? "listed" : "unlisted",
+      ...(source.discovery?.error ? { error: source.discovery.error } : {}),
+      ...(source.discovery?.tools ? { tools: source.discovery.tools.filter(tool => (!source.allowTools || source.allowTools.includes(tool.name)) && !source.denyTools?.includes(tool.name)).map(tool => ({ description: tool.description, inputSchema: tool.inputSchema ?? tool.parameters, name: `${source.name}__${tool.name}`, exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] ?? source.exposure ?? "both" })) } : {}),
+    })),
+    ...(config.openApi ?? []).map(source => ({ kind: "openapi", name: source.name, url: source.baseUrl, status: "listed", tools: (source.operations ?? []).map(operation => ({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: operation.inputSchema, exposure: source.exposure ?? "both" })) })),
+  ];
+}
+
 export type SourceApproval = (input: { name: string; args: unknown; kind: "approval"; message: string; detail: Record<string, unknown> }) => Promise<void>;
-export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity; call?: ToolCallSite }>;
+export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity; call?: ToolCallSite; elicit?: boolean }>;
 
 /** Resolve only this agent's configured sources; credentials never enter model context. */
-export async function sourceTools(env: Env, tenant: string, definition: string | undefined, config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[] }, approve?: SourceApproval, identity?: SourceIdentity): Promise<ToolRegistration[]> {
+export async function sourceTools(env: Env, tenant: string, definition: string | undefined, config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[] }, approve?: SourceApproval, identity?: SourceIdentity, report?: (failures: SourceFailure[]) => void): Promise<ToolRegistration[]> {
   const result: ToolRegistration[] = [];
+  const failures: SourceFailure[] = [];
   for (const kind of ["mcpServers", "openApi"] as const) for (const source of config[kind] ?? []) {
     const headers = await unseal(env, aad(tenant, definition ?? "", kind, source.name), source.sealed);
     const exchange = source.auth?.type === "exchange" && identity && env.HYPERDRIVE ? credentialExchange(env as IdentityEnv, { name: source.name, url: source.url!, auth: source.auth }, identity, (url, init, max) => fetchSource(env, url, init, max)) : undefined;
@@ -350,7 +394,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       const client = new RemoteMcp(env, source, headers, runtimeHeaders, exchange?.refused, identity);
       // An unavailable server cannot prevent loading or using the agent's other tools.
       let listed: ToolDefinition[];
-      try { listed = await client.list(); } catch { continue; }
+      try { listed = await client.list(); } catch (error) { failures.push({ kind: "mcp", source: source.name, message: sourceError(error, headers) }); continue; }
       for (const tool of listed) {
         if (source.allowTools && !source.allowTools.includes(tool.name) || source.denyTools?.includes(tool.name)) continue;
         const { name } = tool;
@@ -394,5 +438,6 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       }));
     }
   }
+  report?.(failures);
   return result;
 }

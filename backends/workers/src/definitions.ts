@@ -3,7 +3,7 @@ import { body, object } from "./validation.ts";
 import { Directory, type ControlEnv, type AuthContext, type DirectoryEntry } from "./control.ts";
 import { withSql, transaction } from "./postgres.ts";
 import { canonical } from "../../../shared/durable-json.ts";
-import { prepareSources, sourceView, type RemoteSource } from "./tool-sources.ts";
+import { discoverSources, sourceDefinitionViews, prepareSources, sourceView, type RemoteSource } from "./tool-sources.ts";
 
 export type Definition = { id: string; tenant: string; name: string; revision: number; spec: AgentConfiguration & { description?: string; applyOnUpdate?: boolean; limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; webSearch?: { providers: string[] } }; createdAt: number; updatedAt: number };
 const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits"] as const;
@@ -24,7 +24,7 @@ export async function configurationPatch(env: ControlEnv, tenant: string, config
 }
 const reply = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
 const fromRow = (row: Record<string, any>): Definition => ({ id: row.id, tenant: row.tenant, name: row.name, revision: Number(row.revision), spec: row.spec, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) });
-const view = ({ tenant, spec, ...definition }: Definition) => ({ ...definition, ...spec, ...(spec.mcpServers ? { mcpServers: spec.mcpServers.map(x => sourceView(x as RemoteSource)) } : {}), ...(spec.openApi ? { openApi: spec.openApi.map(x => sourceView(x as RemoteSource)) } : {}) });
+const view = ({ tenant, spec, ...definition }: Definition) => ({ ...definition, ...spec, toolSources: sourceDefinitionViews(spec as never), ...(spec.mcpServers ? { mcpServers: spec.mcpServers.map(x => sourceView(x as RemoteSource)) } : {}), ...(spec.openApi ? { openApi: spec.openApi.map(x => sourceView(x as RemoteSource)) } : {}) });
 export function visibleConfiguration(config: AgentConfiguration) {
   const { definitionOverrides, definitionRevision, ...visible } = config;
   return { ...visible, decide: config.decide ?? null, ...(config.mcpServers ? { mcpServers: config.mcpServers.map(source => sourceView(source as RemoteSource)) } : {}), ...(config.openApi ? { openApi: config.openApi.map(source => sourceView(source as RemoteSource)) } : {}) };
@@ -86,7 +86,13 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
   if (raw.model === undefined) delete spec.model;
   for (const field of ["mcpServers", "openApi"] as const) {
     const given = raw[field];
-    if (given !== undefined) spec[field] = await prepareSources(env, auth.tenantId, id, field, given, existing?.spec[field] as RemoteSource[] | undefined);
+    if (given !== undefined) {
+      if (request.method === "PATCH" && !Object.hasOwn(changes, field)) spec[field] = existing?.spec[field];
+      else {
+        const prepared = await prepareSources(env, auth.tenantId, id, field, given, existing?.spec[field] as RemoteSource[] | undefined);
+        spec[field] = field === "mcpServers" ? await discoverSources(env, auth.tenantId, id, prepared, new URL(request.url).origin) : prepared;
+      }
+    }
   }
   if (input.limits !== undefined && input.limits !== null) {
     const limits = object(input.limits, ["ttlSeconds", "idleTtlSeconds"]);
