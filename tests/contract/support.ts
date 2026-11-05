@@ -1,6 +1,7 @@
 import { test, type TestContext } from "node:test";
 import { createFixture, type ContractFixture, type FixtureOptions } from "./fixture.ts";
 import { evidence } from "./evidence.ts";
+import { caseTimeout } from "./timing.ts";
 export * from "./http.ts";
 export { createFixture as createContractFixture } from "./fixture.ts";
 
@@ -13,7 +14,7 @@ export function describeCase(area: string, source: string, name: string) {
 export function contractTest(area: string, source: string, name: string,
   body: (t: TestContext, fixture: ContractFixture) => Promise<void> | void, options: FixtureOptions = {}) {
   if (describeCase(area, source, name)) return;
-  test(`[${area}] ${source} :: ${name}`, { timeout: Number(process.env.CONTRACT_TIMEOUT_MS ?? 90_000) }, async t => evidence.run({ backend: null }, async () => {
+  test(`[${area}] ${source} :: ${name}`, { timeout: caseTimeout(area, source, name) }, async t => evidence.run({ backend: null }, async () => {
     // Copied cases with a one-argument callback start their own fixture after
     // constructing local providers. Do not start an unused second runtime.
     let fixture: ContractFixture | undefined;
@@ -32,7 +33,7 @@ export async function runtime(t: import("./http.ts").T, respond: (body: any, ind
 export function sdkTest(source: string) {
   return (name: string, body: (t: TestContext) => Promise<void> | void) => {
     if (describeCase("sdk", source, name)) return;
-    return test(`[sdk] ${source} :: ${name}`, { timeout: 90_000 }, async t => evidence.run({ backend: null }, async () => {
+    return test(`[sdk] ${source} :: ${name}`, { timeout: caseTimeout("sdk", source, name) }, async t => evidence.run({ backend: null }, async () => {
     try { await body(t); }
     finally { t.diagnostic(`contract-backend:${JSON.stringify({ name: t.name, backend: evidence.getStore()!.backend ?? "sdk-unit" })}`); }
     }));

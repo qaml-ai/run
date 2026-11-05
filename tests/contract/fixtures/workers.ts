@@ -5,9 +5,10 @@ import { configuredModel } from "../../../src/model.ts";
 import { modelReference } from "../../../src/virtual-models.ts";
 import { tenantsFromEnvironment } from "../../../src/tenants.ts";
 import { seedJourneyAccount } from "./journey-state.ts";
-import { fakeModel, OPERATOR, OTHER_OPERATOR, until, type T } from "../http.ts";
+import { fakeModel, OPERATOR, OTHER_OPERATOR, until, untilRequestState, type T } from "../http.ts";
 import type { ContractFixture, FixtureOptions, TenantSeed } from "../fixture.ts";
 import { fixtureSigner } from "./signing.ts";
+import { observePollingResponse } from "../polling.ts";
 
 /** A real workerd process and an isolated local Postgres database. No production bindings. */
 export async function createWorkersFixture(t: T, options: FixtureOptions = {}): Promise<ContractFixture> {
@@ -147,15 +148,14 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     const text = await response.text();
     let json: any = text;
     try { json = JSON.parse(text); } catch { /* non-JSON HTTP response */ }
+    observePollingResponse(path, response.status, json, init.method ?? (init.body === undefined ? "GET" : "POST"));
     return { status: response.status, json, text, headers: response.headers };
   };
   const prompt: ContractFixture["prompt"] = async (agent, text, token, extra = {}) => {
     const sent = await call(`/v1/agents/${agent}/prompt`, { body: { text, ...extra }, token });
     if (sent.status !== 202) throw new Error(`prompt: ${sent.status} ${sent.text}`);
-    return until(async () => {
-      const record = (await call(`/v1/agents/${agent}/requests/${sent.json.id}`, { token })).json;
-      return record.state === "completed" && record;
-    }, "the turn to end", 60_000);
+    return untilRequestState(async () => (await call(`/v1/agents/${agent}/requests/${sent.json.id}`, { token })).json,
+      "completed", "the turn to end", 60_000);
   };
   return {
     base: server.url, call, prompt, model, seedTenant, close,

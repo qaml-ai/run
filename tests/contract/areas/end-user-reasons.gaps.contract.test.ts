@@ -39,7 +39,10 @@ async function queuedRefusal(t: Parameters<typeof runtime>[0], setup: { settings
   let viaSdk: Promise<any> | undefined;
   if (agent) {
     viaSdk = agent.run("two", { idempotencyKey: "second", throwOnError: false });
-    await until(async () => (await r.call(`/v1/agents/${id}/requests/second`)).status === 200, "the second to be queued");
+    // The concurrent SDK call has not acknowledged admission yet; this exact
+    // request resource may be absent until it is created.
+    await until(async () => (await r.call(`/v1/agents/${id}/requests/second`)).status === 200, "the second to be queued", undefined,
+      { pendingResources: [`/v1/agents/${id}/requests/second`] });
   } else {
     const second = await r.call(`/v1/agents/${id}/prompt`, { body: { text: "two", requestId: "second" } });
     assert.equal(second.status, 202, `accepted while credit is left: ${second.text}`);

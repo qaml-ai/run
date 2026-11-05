@@ -1,5 +1,6 @@
 import {createServer} from "node:http";
 import {once} from "node:events";
+import { pollingAttempt, observeMissingStream, observePollingFailure, terminalRequestStates, type PollingOptions } from "./polling.ts";
 
 export type T = { after(fn: () => Promise<void> | void): void };
 export const OPERATOR = "fixture-operator-token-at-least-24-chars";
@@ -16,14 +17,24 @@ export async function freshWindow(windowSeconds: number, marginMs: number) {
   if (left < marginMs) await sleep(left + 200);
 }
 
-export async function until<V>(check: () => V | Promise<V>, what: string, timeoutMs = 15_000): Promise<Exclude<V, false | 0 | "" | null | undefined>> {
+export async function until<V>(check: () => V | Promise<V>, what: string, timeoutMs = 15_000, options: PollingOptions = {}): Promise<Exclude<V, false | 0 | "" | null | undefined>> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const value = await check();
+    const value = await pollingAttempt(check, what, options);
     if (value) return value as Exclude<V, false | 0 | "" | null | undefined>;
     if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
     await sleep(25);
   }
+}
+
+/** Terminal request states cannot transition to a different requested state. */
+export function untilRequestState<V extends { state: string }>(read: () => V | Promise<V>, state: string, what: string, timeoutMs = 15_000) {
+  return until(async () => {
+    const value = await read();
+    if (value.state === state) return value;
+    if (terminalRequestStates.has(value.state)) throw new Error(`Cannot wait for ${what}: request reached terminal state ${value.state}, expected ${state}`);
+    return false;
+  }, what, timeoutMs);
 }
 
 export async function listen(t: T, handler: Parameters<typeof createServer>[1]) {
@@ -127,19 +138,30 @@ export async function attach(t: T, base: string, agent: string, token: string,
   const ended = Promise.withResolvers<void>();
   // A stalled application (a half-open connection, say) stops answering the runtime's pings.
   let stalled = false;
-  if (!response.ok) return { calls: [] as any[], status: response.status, body: await response.text(), frames, ended: ended.promise, close: () => stream.abort(), stall: () => {} };
+  if (!response.ok) {
+    const body = await response.text(), calls: any[] = [];
+    let json: unknown;
+    try { json = JSON.parse(body); } catch { /* plain HTTP error */ }
+    const observe = observeMissingStream(`${base}/clients/${agent}/events`, response.status, json);
+    return { get calls() { observe(); return calls; }, status: response.status, body, get frames() { observe(); return frames; }, ended: ended.promise, close: () => stream.abort(), stall: () => {} };
+  }
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let connection = "";
   const calls: any[] = [];
   const initialized = Promise.withResolvers<void>();
-  const post = (message: unknown) => fetch(`${base}/clients/${agent}/mcp`, { method: "POST", headers: { ...headers, "Content-Type": "application/json", "X-Agent-Connection": connection }, body: JSON.stringify(message) });
+  let streamEnded = false;
+  const post = async (message: unknown) => {
+    const result = await fetch(`${base}/clients/${agent}/mcp`, { method: "POST", headers: { ...headers, "Content-Type": "application/json", "X-Agent-Connection": connection }, body: JSON.stringify(message) });
+    if (!result.ok) throw new Error(`Required MCP reply route returned HTTP ${result.status}`);
+    return result;
+  };
   void (async () => {
     let buffer = "";
     try {
       for (;;) {
         const { value, done } = await reader.read();
-        if (done) { ended.resolve(); return; }
+        if (done) return;
         buffer += decoder.decode(value, { stream: true });
         for (let end; (end = buffer.indexOf("\n\n")) !== -1;) {
           const frame = buffer.slice(0, end); buffer = buffer.slice(end + 2);
@@ -163,11 +185,17 @@ export async function attach(t: T, base: string, agent: string, token: string,
           }
         }
       }
-    } catch { /* the stream ended */ }
-    ended.resolve();
+    } catch (error) {
+      initialized.reject(error);
+    } finally {
+      streamEnded = true;
+      initialized.reject(new Error("Required MCP event stream ended before initialization"));
+      ended.resolve();
+    }
   })();
   await initialized.promise;
-  return { calls, status: response.status, body: "", frames, ended: ended.promise, close: () => stream.abort(), stall: () => { stalled = true; } };
+  const observe = () => { if (streamEnded) observePollingFailure("MCP event stream ended; no more calls or frames can arrive"); };
+  return { get calls() { observe(); return calls; }, status: response.status, body: "", get frames() { observe(); return frames; }, ended: ended.promise, close: () => stream.abort(), stall: () => { stalled = true; } };
 }
 
 /**
@@ -180,6 +208,7 @@ export async function watchEvents(t: T, url: string, headers: Record<string, str
   const response = await fetch(`${url}?${options.query ?? "watch=1"}`, { headers: { ...headers, Accept: "text/event-stream", ...(options.cursor !== undefined ? { "Last-Event-ID": String(options.cursor) } : {}) }, signal: stream.signal });
   const frames: { id?: number; event?: string; data: any }[] = [];
   let ended = false;
+  let errorBody: unknown;
   if (response.ok) void (async () => {
     const decoder = new TextDecoder();
     let buffer = "";
@@ -198,6 +227,15 @@ export async function watchEvents(t: T, url: string, headers: Record<string, str
     } catch { /* aborted */ }
     ended = true;
   })();
-  else await response.body?.cancel();
-  return { status: response.status, frames, get ended() { return ended; }, close: () => stream.abort() };
+  else {
+    const text = await response.text();
+    try { errorBody = JSON.parse(text); } catch { /* plain HTTP error */ }
+    ended = true;
+  }
+  const observe = observeMissingStream(url, response.status, errorBody);
+  return { status: response.status, get frames() {
+    observe();
+    if (response.ok && ended) observePollingFailure("Event stream ended; no more frames can arrive");
+    return frames;
+  }, get ended() { return ended; }, close: () => stream.abort() };
 }
