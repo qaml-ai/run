@@ -31,12 +31,15 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
   if (!runId && request.method === "POST") {
     const raw = await body(request, 7 * 1024 * 1024) as {[key:string]:any};
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ApiError(400, "Expected run configuration");
-    const { input, files, wait, retentionSeconds = 86400, output, actor, from, metadata, ...given } = raw;
+    const { input, files, wait, retentionSeconds: askedRetention, output, actor, from, metadata, spendLimit, ...given } = raw;
+    const retentionSeconds = askedRetention ?? Number((env as ControlEnv & { AGENT_RUN_RETENTION_SECONDS?: string }).AGENT_RUN_RETENTION_SECONDS ?? 86400);
     const { text, files: attached } = runInput(input, files);
-    if (!Number.isInteger(retentionSeconds) || retentionSeconds < 60 || retentionSeconds > 604800) throw new ApiError(400, "Invalid retentionSeconds");
+    if (!Number.isInteger(retentionSeconds) || retentionSeconds < (askedRetention === undefined ? 1 : 60) || retentionSeconds > 604800) throw new ApiError(400, "Invalid retentionSeconds");
+    if (given.mcp !== undefined) throw new ApiError(400, "A run uses mcpServers, not attached mcp tools");
+    if (given.builtins?.some((name: string) => ["ask_user", "ask_human", "schedule"].includes(name))) throw new ApiError(400, "A run's builtins cannot ask for input or schedule later work");
     const key = request.headers.get("Idempotency-Key"), hash = await digest(key ?? crypto.randomUUID());
     const directoryKey = `run-${hash.slice(0, 40)}`;
-    const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ input, files, retentionSeconds, output, actor, from, metadata, ...given }))));
+    const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ input, files, retentionSeconds, output, actor, from, metadata, spendLimit, ...given }))));
     const old = await directory.get(directoryKey) as typeof entry | null;
     if (old?.run && old.run.fingerprint !== fingerprint) throw new ApiError(409, "Idempotency-Key was used for a different run", "IDEMPOTENCY_CONFLICT");
     if (old) entry = old;
@@ -53,7 +56,13 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
       entry = saved.rows[0].header;
     }
     runId = `run_${entry.id.slice("client_".length)}`;
-    let record = await payload(await call(env, entry.id, "/requests", { id: runId, method:"prompt", params: { text, allowDisconnected:true, ...(attached.length ? {files: attached} : {}), ...(output ? {output} : {}), ...(actor ? {actor} : {}), ...(from ? {from} : {}), ...(metadata ? {metadata} : {}) } })) as Record;
+    let record: Record;
+    try {
+      record = await payload(await call(env, entry.id, "/requests", { id: runId, method:"prompt", params: { text, allowDisconnected:true, ...(attached.length ? {files: attached} : {}), ...(output ? {output} : {}), ...(spendLimit !== undefined ? {spendLimit} : {}), ...(actor ? {actor} : {}), ...(from ? {from} : {}), ...(metadata ? {metadata} : {}) } })) as Record;
+    } catch (error) {
+      if (!old) await directory.remove(entry.id);
+      throw error;
+    }
     const seconds = url.searchParams.get("wait") ?? (wait === true ? 60 : wait === false || wait === undefined ? 0 : Number(wait));
     if (!Number.isFinite(Number(seconds)) || Number(seconds) < 0) throw new ApiError(400, "Invalid wait");
     if (Number(seconds) > 0 && record.state !== "completed") record = await payload(await call(env, entry.id, `/requests/${runId}?wait=${Math.min(60,Number(seconds))}`));
