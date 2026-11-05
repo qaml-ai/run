@@ -141,7 +141,7 @@ export async function serveToolFile(request: Request, env: Env): Promise<Respons
   if (range && (!matchRange || start > end)) return new Response(null,{status:416,headers:{'content-range':`bytes */${file.size}`}});
   const object = await env.BUCKET.get(file.key, range ? { range: {offset:start,length:end-start+1} } : undefined);
   if (!object) throw new HttpError(503,'File object missing');
-  return new Response(object.body, { status: range ? 206 : 200, headers: { 'Content-Type': file.contentType, 'X-Content-Type-Options':'nosniff', 'Cache-Control':'no-store', ...(range ? {'Content-Range':`bytes ${start}-${end}/${file.size}`} : {}) } });
+  return new Response(object.body, { status: range ? 206 : 200, headers: { ...downloadHeaders(file.contentType, nameOf(file.path)), 'Content-Length': String(end - start + 1), 'Accept-Ranges': 'bytes', 'X-File-Version': String(file.version), 'ETag': `"${file.version}"`, 'Cache-Control':'no-store', ...(range ? {'Content-Range':`bytes ${start}-${end}/${file.size}`} : {}) } });
 }
 
 const named = (kind: string, index: number, type: unknown) => `${kind}-${index}${typeof type === 'string' && /^[a-z]+\/[a-z0-9]+/i.test(type) ? '.' + /^[a-z]+\/([a-z0-9]+)/i.exec(type)![1].toLowerCase() : ''}`;
@@ -153,7 +153,7 @@ export async function savedContent(result: McpResult, files?: ToolFiles, fetcher
     if (part?.type === 'file') { content.push({type:'text',text:'[file content omitted]'}); continue; }
     if (fetcher && files && part?.type === 'resource_link' && typeof part.uri === 'string' && /^(https?|data):/i.test(part.uri)) {
       const label = typeof part.name === 'string' ? part.name : 'linked file'; index++;
-      try { const inline = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(part.uri); const response = inline ? undefined : await fetcher(part.uri); if (response && !response.ok) throw new Error(`fetching it answered HTTP ${response.status}`); content.push(await files.save(typeof part.name === 'string' ? part.name : resourceName(part.uri,index,part.mimeType), inline ? Buffer.from(inline[3],inline[2] ? 'base64' : 'utf8') : response!.body as any, part.mimeType ?? inline?.[1] ?? response?.headers.get('content-type') ?? undefined)); }
+      try { const inline = /^data:([^,;]*)((?:;[^,;]*)*),(.*)$/is.exec(part.uri); const response = inline ? undefined : await fetcher(part.uri); if (response && !response.ok) throw new Error(`fetching it answered HTTP ${response.status}`); content.push(await files.save(typeof part.name === 'string' ? part.name : resourceName(part.uri,index,part.mimeType), inline ? (inline[2].split(';').includes('base64') ? Buffer.from(inline[3], 'base64') : Buffer.from(decodeURIComponent(inline[3]))) : response!.body as any, part.mimeType ?? inline?.[1] ?? response?.headers.get('content-type') ?? undefined)); }
       catch (error) { content.push({type:'text',text:`[${label} not saved: ${errorText(error)}]`}); }
       continue;
     }
