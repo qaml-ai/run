@@ -54,6 +54,7 @@ import {
   handleAgentFileRequest,
   handleAgentFilesRoute,
   type FileBindings,
+  type Mount,
 } from "./files.ts";
 import {
   calendarInput,
@@ -63,6 +64,12 @@ import {
 } from "../../../src/calendar.ts";
 import type { TenantAdmission } from "./tenant.ts";
 import { imageReferenceInput, type ImageRef } from "./images.ts";
+import {
+  PromptAttachments,
+  attachmentInput,
+  attachmentFiles,
+  attachmentMessage,
+} from "./prompt-attachments.ts";
 import {
   eventFrame,
   negotiateEvents,
@@ -104,6 +111,7 @@ import { OUTPUT_REMINDER } from "./output-policy.ts";
 import { runtimePromptSections } from "./prompt-sections.ts";
 import { projectRunFailure } from "./run-failure.ts";
 import { RunProjection } from "./run-projection.ts";
+import { requestView } from "./request-view.ts";
 import { AgentHistory } from "./history.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { digest } from "./api-contract.ts";
@@ -262,6 +270,8 @@ export class CamelAgent extends DurableObject<Env> {
   private registry = createRegistry();
   private codeExtension?: Extension;
   private attached = new AttachedTools();
+  private promptAttachments = new PromptAttachments(this.ctx.storage, this.env);
+  private socketsRestored = this.restoreWebSockets();
   private wakeBudget = new DelegationWakeBudget(this.ctx.storage);
   async admitDelegateWake(id: string): Promise<WakeDecision> {
     return this.wakeBudget.admit(id);
@@ -295,14 +305,14 @@ export class CamelAgent extends DurableObject<Env> {
   private delegation: Delegation = new Delegation({
     storage: this.ctx.storage,
     secret: this.env.API_TOKEN,
-    context: async () => {
+    context: async (api) => {
       const conf = await this.config();
-      const run = await this.currentRun();
+      const run = await this.currentRun(api);
       return { id: conf.id, config: conf.config as never, run: run as never };
     },
-    remainingBudget: async (background): Promise<number | undefined> => {
+    remainingBudget: async (background, api): Promise<number | undefined> => {
       const conf = await this.config(),
-        run = await this.currentRun();
+        run = await this.currentRun(api);
       const spend = await this.agentSpend(conf);
       let left = spend ? spend.usd - spend.spent : Infinity;
       const perRun =
@@ -352,6 +362,8 @@ export class CamelAgent extends DurableObject<Env> {
       return { id: entry.id, config: entry.config as never };
     },
     fetch: (id, request) => this.env.AGENTS.getByName(id).fetch(request),
+    cancelRequest: (id, requestId) =>
+      this.env.AGENTS.getByName(id).cancelRequest(requestId),
     inheritComputer: async (parent, child) => {
       const conf = await this.config();
       await inheritComputer(this.env, conf.tenantId, parent, child);
@@ -367,9 +379,9 @@ export class CamelAgent extends DurableObject<Env> {
   });
   private decisions = decisionService(
     this.env,
-    async () => {
+    async (api) => {
       const conf = await this.config();
-      const run = await this.currentRun();
+      const run = await this.currentRun(api);
       const params = "params" in run ? run.params : undefined;
       return {
         tenant: conf.tenantId,
@@ -387,7 +399,13 @@ export class CamelAgent extends DurableObject<Env> {
     },
     async (context, usage) => {
       const conf = await this.config();
-      await recordDecision(this.env, context, usage, conf.id, this.active);
+      await recordDecision(
+        this.env,
+        context,
+        usage,
+        conf.id,
+        context.requestId,
+      );
     },
   );
   private limits = new AgentRunLimits(this.ctx.storage, async () => {
@@ -399,7 +417,18 @@ export class CamelAgent extends DurableObject<Env> {
       spend: await this.agentSpend(conf),
     };
   });
-  private async currentRun() {
+  private async currentRun(api?: ToolExecutionApi) {
+    if (api) {
+      const id = await hostExecutionRequest(
+        await this.harness.pi(),
+        api.conversationId,
+      );
+      if (id) {
+        const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
+        if (!record) throw new Error("The executing request is missing");
+        return record;
+      }
+    }
     return (
       (this.active
         ? await this.ctx.storage.get<RequestRecord>(reqKey(this.active))
@@ -423,9 +452,9 @@ export class CamelAgent extends DurableObject<Env> {
   private async imageTools() {
     return agentMediaTools(
       this.env,
-      async () => {
+      async (api) => {
         const conf = await this.config(),
-          run = await this.currentRun();
+          run = await this.currentRun(api);
         const params = "params" in run ? run.params : undefined;
         const spendLimit = (params?.spendLimit as { usd?: number } | undefined)
           ?.usd;
@@ -462,8 +491,11 @@ export class CamelAgent extends DurableObject<Env> {
       },
       {
         storage: this.ctx.storage,
-        onWrite: async (file) =>
-          writtenFile(this.ctx.storage, await this.fileRequestId(), file),
+        onWrite: async (file, scope) => {
+          if (!scope.requestId)
+            throw new Error("Image output has no executing request");
+          await writtenFile(this.ctx.storage, scope.requestId, file);
+        },
       },
     );
   }
@@ -507,7 +539,7 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private async sourceIdentity(api?: ToolExecutionApi) {
     const conf = await this.config(),
-      run = await this.currentRun(),
+      run = await this.currentRun(api),
       params = "params" in run ? run.params : undefined;
     const issuer = this.env.AGENT_PUBLIC_URL || conf.runtimeOrigin;
     if (!issuer) throw new Error("Runtime public URL is not configured");
@@ -532,6 +564,7 @@ export class CamelAgent extends DurableObject<Env> {
     this.env,
     async () => (await this.config()).tenantId,
     {
+      agentId: async () => (await this.config()).id,
       wrapProvider: (provider) =>
         meterProvider(
           provider,
@@ -743,9 +776,9 @@ export class CamelAgent extends DurableObject<Env> {
       });
       registry.install({
         name: "camel.web",
-        tools: await agentBuiltins(this.env, async () => {
+        tools: await agentBuiltins(this.env, async (api) => {
           const conf = await this.config();
-          const run = await this.currentRun();
+          const run = await this.currentRun(api);
           const params = "params" in run ? run.params : undefined;
           return {
             tenant: conf.tenantId,
@@ -794,8 +827,8 @@ export class CamelAgent extends DurableObject<Env> {
             description: "End the run with the requested structured output.",
             parameters: { type: "object", additionalProperties: true },
             replay: "safe",
-            execute: async (args) => {
-              const run = await this.currentRun();
+            execute: async (args, api) => {
+              const run = await this.currentRun(api);
               const schema = (
                 "params" in run ? run.params?.output : undefined
               ) as { schema?: object } | undefined;
@@ -1025,6 +1058,7 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private async projectMessage(id: string, message: Message, ended: boolean) {
     if (message.role === "system") return;
+    message = attachmentMessage(message);
     if (message.role === "user") {
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (ended)
@@ -1401,9 +1435,7 @@ export class CamelAgent extends DurableObject<Env> {
       .filter((item) => item.status === "queued")
       .map((item) => item.operationId);
     await this.delegation.cancel();
-    for (const running of await this.records())
-      if (running.method === "execute" && running.state !== "completed")
-        await abortHostExecution(await this.harness.pi(), running.id);
+    await this.abortExecutions();
     await this.harness.session().abort();
     const conf = await this.config();
     for (const id of cancelled) {
@@ -1424,11 +1456,62 @@ export class CamelAgent extends DurableObject<Env> {
     }
     return { aborted: true, cancelled };
   }
+  /** Withdraw only this delegated input, including a cancellation that arrives before it. */
+  async cancelRequest(id: string) {
+    const cancel = this.admission.then(async () => {
+      await this.ctx.storage.put(`cancelled-request:${id}`, true);
+      const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
+      if (!record || record.state === "completed") return false;
+      this.resumeCancellation(record);
+      return true;
+    });
+    this.admission = cancel.catch(() => {});
+    const cancelled = await cancel;
+    return cancelled;
+  }
+  private cancellations = new Set<string>();
+  private resumeCancellation(record: RequestRecord) {
+    if (this.cancellations.has(record.id)) return;
+    this.cancellations.add(record.id);
+    // A child tool may be waiting on its parent's admission queue. Acknowledge
+    // the durable cancellation before draining tools or calling another object.
+    const work = (async () => {
+      if (record.method === "execute")
+        await abortHostExecution(await this.harness.pi(), record.id);
+      else await this.harness.session().abort(record.piId ?? record.id);
+      await this.delegation.cancel(record.id);
+      this.track(record.id);
+    })()
+      .catch(async () => {
+        await this.arm(Date.now() + 1000);
+      })
+      .finally(() => this.cancellations.delete(record.id));
+    this.ctx.waitUntil(work);
+  }
+  private async restoreCancellations() {
+    for (const record of await this.records())
+      if (
+        record.state !== "completed" &&
+        (await this.ctx.storage.get(`cancelled-request:${record.id}`))
+      )
+        this.resumeCancellation(record);
+  }
+  private async abortExecutions() {
+    const pi = await this.harness.pi();
+    for (const record of await this.records())
+      if (record.method === "execute" && record.state !== "completed")
+        await abortHostExecution(pi, record.id);
+  }
   private async configureRequest(input: unknown) {
     const request = object(input, ["id", "method", "params"]);
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id))
       throw new BadRequest("Invalid request id");
+    if (await this.ctx.storage.get(`cancelled-request:${id}`))
+      throw Object.assign(new Error("Request cancelled"), {
+        status: 409,
+        code: "aborted",
+      });
     const fingerprint = canonical(request);
     const previous = await this.ctx.storage.transaction(async (tx) => {
       const old = await tx.get<RequestRecord>(reqKey(id));
@@ -1500,6 +1583,11 @@ export class CamelAgent extends DurableObject<Env> {
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id))
       throw new BadRequest("Invalid request id");
+    if (await this.ctx.storage.get(`cancelled-request:${id}`))
+      throw Object.assign(new Error("Request cancelled"), {
+        status: 409,
+        code: "aborted",
+      });
     if (request.method === "execute") {
       let params;
       const raw = object(request.params, [
@@ -1626,6 +1714,7 @@ export class CamelAgent extends DurableObject<Env> {
       "metadata",
       "from",
       "attachments",
+      "files",
       "images",
       "whileRunning",
       "output",
@@ -1691,7 +1780,10 @@ export class CamelAgent extends DurableObject<Env> {
       throw new BadRequest(
         "Use file upload before prompting; attachment hydration is not implemented",
       );
-    const fingerprint = canonical({ method: request.method, params });
+    const fingerprint =
+      params.files === undefined
+        ? canonical({ method: request.method, params })
+        : await digest(canonical({ method: request.method, params }));
     const old = await this.ctx.storage.get<RequestRecord>(reqKey(id));
     if (old && old.fingerprint !== fingerprint)
       throw Object.assign(new Error("Request id reused with different input"), {
@@ -1719,6 +1811,19 @@ export class CamelAgent extends DurableObject<Env> {
         new Error("No process is connected to serve this agent's tools"),
         { status: 409, code: "APPLICATION_NOT_CONNECTED" },
       );
+    const files =
+      params.files === undefined
+        ? undefined
+        : await this.promptAttachments.attach(
+            {
+              tenant: conf.tenantId,
+              agent: conf.id,
+              requestId: id,
+              mounts: (conf.config.mounts ?? []) as Mount[],
+            },
+            params.files,
+          );
+    if (files) params.files = attachmentFiles(files);
     const record: RequestRecord = old ?? {
       id,
       method: String(request.method),
@@ -1739,9 +1844,11 @@ export class CamelAgent extends DurableObject<Env> {
         : {}),
       startedAt: Date.now(),
     };
-    const prompt = params.images
-      ? imageReferenceInput(text, params.images as ImageRef[], conf.tenantId)
-      : text;
+    const prompt = files
+      ? attachmentInput(text, files)
+      : params.images
+        ? imageReferenceInput(text, params.images as ImageRef[], conf.tenantId)
+        : text;
     await this.ctx.storage.put(reqKey(id), record);
     if (delivery && !delivery.run && notice) {
       const pi = await this.harness.pi(),
@@ -1823,7 +1930,8 @@ export class CamelAgent extends DurableObject<Env> {
     );
     return {
       cursor: (await this.ctx.storage.get<number>("cursor")) ?? 1,
-      requests: await this.records(),
+      connected: this.attached.connected,
+      requests: await Promise.all((await this.records()).map(requestView)),
       ...(this.env.TEST_MODEL === "1"
         ? { localInstanceId: this.instanceId }
         : {}),
@@ -1914,9 +2022,9 @@ export class CamelAgent extends DurableObject<Env> {
           });
           this.registry.install({
             name: "camel.web",
-            tools: await agentBuiltins(this.env, async () => {
+            tools: await agentBuiltins(this.env, async (api) => {
               const conf = await this.config();
-              const run = await this.currentRun();
+              const run = await this.currentRun(api);
               const params = "params" in run ? run.params : undefined;
               return {
                 tenant: conf.tenantId,
@@ -1941,6 +2049,14 @@ export class CamelAgent extends DurableObject<Env> {
           this.registry.install({
             name: "camel.images",
             tools: await this.imageTools(),
+          });
+          this.registry.install({
+            name: "camel.delegation",
+            tools: this.delegation.tools(
+              incoming.config.delegate ?? {},
+              incoming.config.builtins ?? [],
+              incoming.config.type === "subagent",
+            ),
           });
           this.availableTools = this.registry
             .snapshot()
@@ -1977,6 +2093,7 @@ export class CamelAgent extends DurableObject<Env> {
       if (request.method === "DELETE" && path === "/") {
         const deletion = this.admission.then(async () => {
           const conf = await this.ctx.storage.get<Config>("configuration");
+          await this.abortExecutions();
           if (conf)
             await this.serializeComputer(() =>
               new ComputerService(this.env, conf.tenantId).removeAgent(conf.id),
@@ -2116,7 +2233,7 @@ export class CamelAgent extends DurableObject<Env> {
         );
       }
       if (path === "/prompt" && request.method === "POST") {
-        const input = object(await body(request), [
+        const input = object(await body(request, 6 * 1024 * 1024), [
           "text",
           "idempotencyKey",
           "history",
@@ -2131,14 +2248,17 @@ export class CamelAgent extends DurableObject<Env> {
           "actor",
           "images",
           "attachments",
+          "files",
         ]);
         const { idempotencyKey, requestId, ...params } = input;
         return json(
-          await this.submit({
-            id: requestId ?? idempotencyKey ?? crypto.randomUUID(),
-            method: "prompt",
-            params,
-          }),
+          await requestView(
+            await this.submit({
+              id: requestId ?? idempotencyKey ?? crypto.randomUUID(),
+              method: "prompt",
+              params,
+            }),
+          ),
           202,
         );
       }
@@ -2184,14 +2304,21 @@ export class CamelAgent extends DurableObject<Env> {
       if (path === "/state" && request.method === "GET")
         return json(await this.state());
       if (path === "/requests" && request.method === "POST")
-        return json(await this.submit(await body(request)), 202);
+        return json(
+          await requestView(
+            await this.submit(await body(request, 6 * 1024 * 1024)),
+          ),
+          202,
+        );
       if (path.startsWith("/requests/") && request.method === "GET") {
         const wait = Math.max(
           1,
           Math.min(25000, Number(url.searchParams.get("wait") ?? 0) * 1000),
         );
         return json(
-          await this.settle(decodeURIComponent(path.slice(10)), wait),
+          await requestView(
+            await this.settle(decodeURIComponent(path.slice(10)), wait),
+          ),
         );
       }
       if (path === "/history" && request.method === "GET")
@@ -2375,7 +2502,7 @@ export class CamelAgent extends DurableObject<Env> {
         return json({ ok: true });
       }
       if (path === "/events" && request.method === "GET") {
-        const selected = negotiateEvents(request);
+        const selected = await this.negotiateAgentEvents(request);
         if (selected) return selected;
         return request.headers.get("upgrade")?.toLowerCase() === "websocket"
           ? this.webSocketEvents(request)
@@ -2662,6 +2789,7 @@ export class CamelAgent extends DurableObject<Env> {
     return withMoneyMetrics(this.env, () => this.restorePending());
   }
   private async restorePending() {
+    await this.restoreCancellations();
     await this.delegation.recover();
     await this.notifications.drain();
     // Pi restores its own work on startup. Restore the adapter's result/receipt
@@ -2684,6 +2812,7 @@ export class CamelAgent extends DurableObject<Env> {
     });
   }
   private async wake() {
+    await this.restoreCancellations();
     const conf = await this.ctx.storage.get<Config>("configuration");
     if (conf)
       await this.serializeComputer(() =>
@@ -2694,6 +2823,7 @@ export class CamelAgent extends DurableObject<Env> {
         ),
       );
     if (conf?.expiresAt && conf.expiresAt <= Date.now()) {
+      await this.abortExecutions();
       await this.ctx.storage.put("deleted", true);
       await this.delegation.cancel();
       await this.harness.session().abort();
@@ -2796,13 +2926,65 @@ export class CamelAgent extends DurableObject<Env> {
   private async webSocketEvents(request: Request): Promise<Response> {
     await this.observe();
     const state = await this.state();
+    const conf = await this.config();
+    const url = new URL(request.url);
+    const watch = url.searchParams.get("watch") === "1";
+    const previous =
+      request.headers.get("X-Agent-Connection") ??
+      url.searchParams.get("connection") ??
+      undefined;
+    const takeover = url.searchParams.get("takeover") === "true";
+    if (!watch) await this.attached.prepareAttach(previous, takeover);
     const pair = new WebSocketPair();
-    this.ctx.acceptWebSocket(pair[1]);
+    const socket = pair[1];
+    this.ctx.acceptWebSocket(socket);
     this.ctx.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair("ping", "pong"),
     );
-    pair[1].send(eventFrame({}, undefined, "ready"));
-    pair[1].send(
+    const connection = watch
+      ? undefined
+      : this.attached.attach(
+          (event) => this.sendAttachedSocket(socket, event),
+          previous,
+          takeover,
+          () => this.retireAttachedSocket(socket),
+        );
+    if (connection) {
+      for (const other of this.ctx.getWebSockets()) {
+        if (other === socket) continue;
+        const attachment = other.deserializeAttachment();
+        if (attachment?.type === "camel.application" && attachment.serving) {
+          other.serializeAttachment({ ...attachment, serving: false });
+        }
+      }
+      socket.serializeAttachment({
+        type: "camel.application",
+        connection: connection.id,
+        serving: true,
+        initialized: false,
+      });
+    }
+    socket.send(
+      eventFrame(
+        {
+          version: 5,
+          agentId: conf.id,
+          connection: connection?.id,
+          toolsHash: await digest(JSON.stringify(conf.config.mcp?.tools ?? [])),
+        },
+        undefined,
+        "ready",
+      ),
+    );
+    if (connection)
+      void connection
+        .start()
+        .then(() => {
+          const attachment = socket.deserializeAttachment();
+          socket.serializeAttachment({ ...attachment, initialized: true });
+        })
+        .catch(() => this.retireAttachedSocket(socket));
+    socket.send(
       eventFrame(
         {
           type: "snapshot",
@@ -2826,11 +3008,92 @@ export class CamelAgent extends DurableObject<Env> {
       headers: selected ? { "Sec-WebSocket-Protocol": EVENT_PROTOCOL } : {},
     });
   }
+  /** Check ownership before returning the capability response: upgrade failures
+   * cannot carry the SDK's typed HTTP refusal. */
+  private async negotiateAgentEvents(
+    request: Request,
+  ): Promise<Response | undefined> {
+    const selected = negotiateEvents(request);
+    if (!selected) return;
+    const url = new URL(request.url);
+    if (url.searchParams.get("watch") !== "1" && !url.searchParams.has("runId"))
+      await this.attached.prepareAttach(
+        request.headers.get("X-Agent-Connection") ?? undefined,
+        url.searchParams.get("takeover") === "true",
+      );
+    // Directory forwarding strips the public prefix. The capability must point
+    // the SDK back through the authenticated public route, not internal /events.
+    const conf = await this.config();
+    return Response.json(
+      {
+        transport: "websocket",
+        protocol: EVENT_PROTOCOL,
+        url: `/clients/${conf.id}/events${url.search}`,
+      },
+      { headers: selected.headers },
+    );
+  }
+  /** Socket attachments hold routing metadata only; credentials remain in the
+   * authenticated request and are never retained in hibernation state. */
+  private restoreWebSockets() {
+    for (const socket of this.ctx.getWebSockets()) {
+      const value = socket.deserializeAttachment();
+      if (value?.type !== "camel.application") continue;
+      if (!value.serving || !value.initialized || this.attached.connected) {
+        this.retireAttachedSocket(socket);
+        continue;
+      }
+      this.attached.restore(
+        value.connection,
+        (event) => this.sendAttachedSocket(socket, event),
+        () => this.retireAttachedSocket(socket),
+      );
+    }
+  }
+  private sendAttachedSocket(socket: WebSocket, event: unknown) {
+    try {
+      socket.send(eventFrame(event));
+    } catch {
+      const attachment = socket.deserializeAttachment();
+      if (attachment?.type === "camel.application")
+        this.attached.close(attachment.connection);
+      try {
+        socket.close(1011, "Send failed");
+      } catch {}
+    }
+  }
+  private retireAttachedSocket(socket: WebSocket) {
+    const attachment = socket.deserializeAttachment();
+    if (attachment?.type === "camel.application")
+      socket.serializeAttachment({ ...attachment, serving: false });
+    try {
+      socket.send(eventFrame({}, undefined, "closed"));
+    } catch {}
+    try {
+      socket.close(1000, "Connection retired");
+    } catch {}
+  }
   async webSocketMessage(socket: WebSocket, _data: string | ArrayBuffer) {
+    const attachment = socket.deserializeAttachment();
+    if (attachment?.type === "camel.application")
+      this.attached.close(attachment.connection);
     socket.close(1008, "Read-only event stream");
   }
   async webSocketClose(socket: WebSocket, code: number) {
-    socket.close(code, "Closed");
+    const attachment = socket.deserializeAttachment();
+    if (attachment?.type === "camel.application")
+      this.attached.close(attachment.connection);
+    try {
+      socket.close(
+        code === 1000 || code === 1001 || (code >= 3000 && code <= 4999)
+          ? code
+          : 1000,
+        "Closed",
+      );
+    } catch {}
+  }
+  async webSocketError(socket: WebSocket) {
+    await this.webSocketClose(socket, 1011);
   }
   private async events(request: Request): Promise<Response> {
     const runId = new URL(request.url).searchParams.get("runId");

@@ -1,4 +1,4 @@
-import { defineTool, type ToolRegistration } from '@earendil-works/pi-durable';
+import { defineTool, type ToolRegistration, type ToolExecutionApi } from '@earendil-works/pi-durable';
 import { compile } from '@earendil-works/pi-schema';
 import { resolveProviderKey, type ProviderKeyEnv } from './model-credentials.ts';
 import { PublicOutbound } from './public-outbound.ts';
@@ -30,7 +30,7 @@ async function recordUsage(env: BuiltinEnv, scope: BuiltinScope, usage: UsageRec
 }
 
 /** Register only enabled web capabilities; source policy owns validation, routing and budgets. */
-export async function agentBuiltins(env: BuiltinEnv, context: () => Promise<BuiltinScope>, host: BuiltinHost = {}): Promise<ToolRegistration[]> {
+export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecutionApi) => Promise<BuiltinScope>, host: BuiltinHost = {}): Promise<ToolRegistration[]> {
   const initial = await context();
   const testMode = env.TEST_MODEL === '1' && env.TEST_MODE === '1';
   const outbound = host.outbound ?? new PublicOutbound({ testMode });
@@ -40,7 +40,7 @@ export async function agentBuiltins(env: BuiltinEnv, context: () => Promise<Buil
     const check = compile(definition.parameters as never);
     return defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, replay: 'safe', execute: async (args: Record<string, unknown>, api, call) => {
       if (!(check.check as (value: unknown) => boolean)(args)) throw new HttpError(400, `Invalid ${definition.name} arguments`);
-      const scope = { ...await context(), callId: api.callId, startedAt: Date.now() }, usages: UsageRecord[] = [];
+      const scope = { ...await context(api), callId: `${api.conversationId}:${api.taskId}:${api.callId}`, startedAt: Date.now() }, usages: UsageRecord[] = [];
       const key = async (_tenant: string, provider: string) => {
         const credential = host.key ? await host.key(scope, provider) : await resolveProviderKey(env, scope.tenant, provider, scope.keyScope);
         const found = credential && ('key' in credential ? credential : credential.apiKey ? { key: credential.apiKey, platform: credential.platform } : undefined);

@@ -16,7 +16,7 @@ import { handleAdminRequest } from "./admin-api.ts";
 import { handleServiceRequest } from "./service-api.ts";
 import { handleMediaRequest } from "./media-api.ts";
 import { handleComputerRequest } from "./computers/api.ts";
-import { websocketAuthorization, negotiateEvents } from "./live-transport.ts";
+import { websocketAuthorization } from "./live-transport.ts";
 import { publishScheduleEmails, deliverScheduleEmail } from "./schedules.ts";
 import { metric, failure } from "./observability.ts";
 import { withSql } from "./postgres.ts";
@@ -314,8 +314,15 @@ export default {
           "/tool-sources",
         );
         if (!response.ok) return response;
+        const stateResponse = await forward(
+          new Request(request.url, { headers: request.headers }), env, entry.id, "/state",
+        );
+        if (!stateResponse.ok) return stateResponse;
+        const state = await stateResponse.json() as { requests: { state: string }[]; cursor: number };
         return json({
           ...summary(entry),
+          ...state,
+          running: state.requests.some(record => record.state !== "completed"),
           spendLimit: agentSpendView(
             await readAgentSpendLimit(env, entry.tenantId, entry.id),
           ),
@@ -395,10 +402,6 @@ export default {
       if (!auth && tail === "/requests" && request.method === "POST") {
         const input = (await request.clone().json()) as { method?: string; params?: unknown };
         if (input.method === "configure") scopedConfiguration(input.params);
-      }
-      if (!browser && tail === "/events" && request.method === "GET" && request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
-        const selected = negotiateEvents(request);
-        if (selected) return selected;
       }
       // Browser grants retain Node's read-only SSE policy. The internal agent
       // endpoint also negotiates transports, so strip the WebSocket offer here.
