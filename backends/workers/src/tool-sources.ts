@@ -1,3 +1,5 @@
+import { legacyMcpRequest } from "./legacy-mcp.ts";
+import { pacedProgress, progressEvent, silenceDeadline, type Progress, type ToolProgressEvent } from "./mcp-progress.ts";
 import { Outbound } from "./security-outbound.ts";
 import { ownAudience, mcpToolName } from "./source-input-policy.ts";
 import { DENIED_PERMISSION, type JudgeInput, type Judged } from "./tool-judge.ts";
@@ -272,6 +274,7 @@ function rpcResult(text: string, id: string): any {
 }
 
 class RemoteMcp {
+  private legacy = false;
   private session?: string;
   private ready?: Promise<void>;
   private env: Env;
@@ -284,17 +287,40 @@ class RemoteMcp {
     this.env = env; this.source = source; this.headers = headers; this.runtimeHeaders = runtimeHeaders;
     this.refused = refused; this.identity = identity;
   }
-  private async rpc(method: string, params: unknown, notification = false, signal?: AbortSignal, api?: ToolExecutionApi, approval?: ToolInputReply["approval"]): Promise<any> {
+  private async rpc(method: string, params: unknown, notification = false, signal?: AbortSignal, api?: ToolExecutionApi, approval?: ToolInputReply["approval"], onProgress?: (progress: Progress) => void): Promise<any> {
     const id = crypto.randomUUID();
+    const deadline = silenceDeadline(this.source.timeoutMs ?? 300_000, signal);
+    let read = 0;
+    const complete = (text: string) => {
+      const messages = rpcMessages(text);
+      for (const message of messages.slice(read)) if (message.method === "notifications/progress" && String(message.params?.progressToken) === id) { deadline.touch(); onProgress?.(message.params); }
+      read = messages.length;
+      return messages.some(message => String(message.id) === id);
+    };
+    const request = { jsonrpc: "2.0", ...(notification ? {} : { id }), method, params: method === "tools/call" ? { ...params as object, _meta: { ...(params as { _meta?: object })._meta, progressToken: id } } : params };
+    const legacy = async () => {
+      const response = await legacyMcpRequest(this.source.url!, request, { ...this.headers, ...await this.runtimeHeaders(api, approval) }, async (url, init) => {
+        await outbound(this.env).reachable(url);
+        const result = await fetch(url, { ...init, redirect: "manual" });
+        if (result.status >= 300 && result.status < 400) { await result.body?.cancel(); throw new Error("Legacy MCP redirects are not allowed"); }
+        return result;
+      }, deadline.signal, notification, message => {
+        if (message.method === "notifications/progress" && String(message.params?.progressToken) === id) { deadline.touch(); onProgress?.(message.params); }
+      });
+      return notification ? undefined : rpcResult(JSON.stringify(response), id);
+    };
+    try {
+    if (this.legacy) return await legacy();
     let result!: Awaited<ReturnType<typeof fetchSource>>;
     for (let attempt = 0; attempt < 2; attempt++) {
     result = await fetchSource(this.env, this.source.url!, {
       method: "POST", headers: { ...this.headers, ...await this.runtimeHeaders(api, approval), Accept: "application/json, text/event-stream", "Content-Type": "application/json", ...(this.session ? { "Mcp-Session-Id": this.session, "MCP-Protocol-Version": "2025-06-18" } : {}) },
-      body: JSON.stringify({ jsonrpc: "2.0", ...(notification ? {} : { id }), method, params }), signal: AbortSignal.any([AbortSignal.timeout(this.source.timeoutMs ?? 300_000), ...(signal ? [signal] : [])]),
-    }, MAX_BYTES, notification ? undefined : text => rpcMessages(text).some(message => String(message.id) === id));
+      body: JSON.stringify(request), signal: deadline.signal,
+    }, MAX_BYTES, notification ? undefined : complete);
     if (attempt === 0 && this.refused && [401, 403].includes(result.response.status)) { this.refused(); continue; }
     break;
     }
+    if ([404, 405].includes(result.response.status)) { this.legacy = true; return await legacy(); }
     if (!result.response.ok) {
       let detail = result.text.slice(0, 1000);
       try { detail = String(JSON.parse(result.text).error ?? detail).slice(0, 1000); } catch {}
@@ -302,6 +328,8 @@ class RemoteMcp {
     }
     this.session = result.response.headers.get("mcp-session-id") ?? this.session;
     return notification ? undefined : rpcResult(result.text, id);
+    } catch (error) { if (deadline.signal.aborted) throw deadline.signal.reason; throw error; }
+    finally { deadline.close(); }
   }
   private init() {
     return this.ready ??= this.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "agent-runtime", version: "1.0.0" } }).then(() => this.rpc("notifications/initialized", {}, true));
@@ -327,7 +355,9 @@ class RemoteMcp {
     const identity = api ? await this.identity?.(api) : undefined;
     const site = api ? identity?.call ?? await toolCallSite(api) : undefined;
     const meta = site ? { ...toolCallMeta(identity?.claims.agent ?? String(api!.conversationId), site, identity?.claims.origin, identity?.claims.act), ...(identity?.elicit ? { "io.modelcontextprotocol/clientCapabilities": { elicitation: { form: {}, url: {} } } } : {}) } : undefined;
-    return this.rpc("tools/call", { name, arguments: args, ...responses, ...(meta ? { _meta: { ...meta, ...(approval ? { "agent-runtime/approval": approval } : {}) } } : {}) }, false, signal, api, approval);
+    const progress = pacedProgress(value => site ? identity?.progress?.(progressEvent(mcpToolName(this.source.name, name), site, value)) : undefined);
+    try { return await this.rpc("tools/call", { name, arguments: args, ...responses, ...(meta ? { _meta: { ...meta, ...(approval ? { "agent-runtime/approval": approval } : {}) } } : {}) }, false, signal, api, approval, progress.update); }
+    finally { await progress.flush(); }
   }
 }
 
@@ -369,7 +399,7 @@ export function sourceDefinitionViews(config: { mcpServers?: RemoteSource[]; ope
 }
 
 export type SourceApproval = (input: { name: string; args: unknown; kind: "approval"; message: string; detail: Record<string, unknown> }) => Promise<void>;
-export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity; call?: ToolCallSite; elicit?: boolean; intent?: string }>;
+export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity; call?: ToolCallSite; elicit?: boolean; intent?: string; progress?: (event: ToolProgressEvent) => Promise<void> }>;
 
 /** Resolve only this agent's configured sources; credentials never enter model context. */
 export async function sourceTools(env: Env, tenant: string, definition: string | undefined, config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[] }, approve?: SourceApproval, identity?: SourceIdentity, report?: (failures: SourceFailure[]) => void, judge?: (input: JudgeInput, api: ToolExecutionApi, context: Context) => Promise<Judged>): Promise<ToolRegistration[]> {
