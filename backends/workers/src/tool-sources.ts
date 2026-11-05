@@ -515,11 +515,11 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           else if (operation.body === "form") { sent["Content-Type"] = "application/x-www-form-urlencoded"; body = formEncode(args.body); }
           else if (operation.body === 'multipart') {
             if (!files) throw new Error('This agent has no files to send: it has no volumes mounted');
-            const form = await multipartBody(args.body, files, (operation.inputSchema.properties as any)?.body); body = form.body; sent['Content-Type'] = form.contentType; sent['Content-Length'] = String(form.length);
+            const form = await multipartBody(args.body, files, (operation.inputSchema.properties as any)?.body); body = form.body.pipeThrough(new FixedLengthStream(form.length)); sent['Content-Type'] = form.contentType; sent['Content-Length'] = String(form.length);
           } else {
             if (hasFileArgument(args.body)) {
               if (!files) throw new Error('This agent has no files to send: it has no volumes mounted');
-              const file = await files.bodyFile(args.body); body = file.stream; sent['Content-Type'] = operation.bodyType?.includes('*') ? file.contentType : operation.bodyType ?? file.contentType; sent['Content-Length'] = String(file.size);
+              const file = await files.bodyFile(args.body); body = file.stream.pipeThrough(new FixedLengthStream(file.size)); sent['Content-Type'] = operation.bodyType?.includes('*') ? file.contentType : operation.bodyType ?? file.contentType; sent['Content-Length'] = String(file.size);
             } else { body = typeof args.body === 'string' ? args.body : JSON.stringify(args.body); sent['Content-Type'] = operation.bodyType?.includes('*') ? 'application/octet-stream' : operation.bodyType ?? 'application/octet-stream'; }
           }
         }
