@@ -8,6 +8,7 @@ import { Stripe } from "./stripe.ts";
 import { HttpError } from "./errors.ts";
 import * as schema from "./billing-inputs.ts";
 import type { RateLimits } from "./account-rate-limits.ts";
+import { DECISION_LIMITS } from "../../../src/limits.ts";
 
 export type BillingEnv = PostgresEnv & {
   PUBLIC_URL?: string;
@@ -121,7 +122,8 @@ export async function billingRoutes(request: Request, env: BillingEnv, principal
     const perMinute = (applied: Awaited<ReturnType<RateLimits["tenantLimit"]>>) => applied
       ? { limit: applied.max, source: applied.source, ...(applied.tier ? { tier: applied.tier.name, paid: applied.tier.paid, ...(applied.tier.next ? { next: applied.tier.next } : {}) } : {}) }
       : { limit: null, source: own.tier?.name === "internal" ? "internal" : "default" };
-    return json({ tier: own.tier, limits: { busyAgents: { ...own.busyAgents, ...(busy === undefined ? {} : { busy }) }, runsPerMinute: perMinute(runs), agentCreatesPerMinute: perMinute(creates), codeConcurrency: own.codeConcurrency, decisionConcurrency: own.decisionConcurrency }, tiers: own.tiers });
+    const decisions = { ...own.decisionConcurrency, limit: own.decisionConcurrency.limit === null ? DECISION_LIMITS.nodeConcurrent : Math.min(own.decisionConcurrency.limit, DECISION_LIMITS.nodeConcurrent) };
+    return json({ tier: own.tier, limits: { busyAgents: { ...own.busyAgents, ...(busy === undefined ? {} : { busy }) }, runsPerMinute: perMinute(runs), agentCreatesPerMinute: perMinute(creates), codeConcurrency: own.codeConcurrency, decisionConcurrency: decisions }, tiers: own.tiers });
   }
   if (path === "/v1/billing/ledger" && method === "GET") {
     const before = url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined;
