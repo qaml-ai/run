@@ -81,4 +81,15 @@ test("HTTP host scripts keep separate human inputs across restart and cancellati
   assert.equal((await call(`${base}/inputs?state=pending`)).value.length, 0);
   await call(`${base}/requests`, { id: "after-abort", method: "prompt", params: { text: "still usable" } });
   assert.equal((await result("after-abort")).status, "completed");
+  const cancelledResult = (await call(`${base}/history`)).value.messages.find((message: any) => message.role === "toolResult" && message.content?.some((part: any) => /Cancelled by the application/.test(part.text ?? "")));
+  assert.ok(cancelledResult, "abort closes the open model call with the source result");
+
+  await call(`${base}/requests`, { id: "superseded-model", method: "prompt", params: { text: "ask:Replace this question?" } });
+  const [superseded] = await inputs(1);
+  await call(`${base}/requests`, { id: "replacement", method: "prompt", params: { text: "A new message" } });
+  assert.equal((await result("replacement")).status, "completed");
+  const closed = (await call(`${base}/inputs?state=superseded`)).value;
+  assert.deepEqual(closed.map((item: any) => item.id), [superseded.id]);
+  const messages = (await call(`${base}/history`)).value.messages;
+  assert.ok(messages.some((message: any) => message.role === "toolResult" && message.content?.some((part: any) => /sent a new message instead/.test(part.text ?? ""))));
 });

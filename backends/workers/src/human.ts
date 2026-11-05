@@ -1,4 +1,4 @@
-import { defineDoc, defineTool, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
+import { defineDoc, defineTool, hook, ToolTask, type Extension, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord";
 import { answerInput, expiresAt, mayAnswer, questionsInput, resolution, type Answer, type HumanInputSettings, type InputRow, type Responder } from "./input-policy.ts";
@@ -16,6 +16,7 @@ export type HumanInput = {
   answerDetail?: Omit<Answer, "content"> & { content?: any };
   responders?: { audience?: string[] };
   policyBound?: boolean;
+  resumeOnExpire?: boolean;
   requestId?: string;
   conversationId?: number;
 };
@@ -97,7 +98,8 @@ export function humanInputView(id: string, item: HumanInput, agent: string, requ
 export function bindHumanInput(item: HumanInput, requestId: string, actor: string | undefined, settings: HumanInputSettings | undefined, agentExpiresAt: number | null): HumanInput {
   if (item.policyBound) return item;
   return { ...item, requestId, responders: actor ? { audience: [actor] } : {},
-    expiresAt: expiresAt(settings, agentExpiresAt, item.createdAt), policyBound: true };
+    expiresAt: expiresAt(settings, agentExpiresAt, item.createdAt), policyBound: true,
+    ...(settings?.onExpire === "resume" ? { resumeOnExpire: true } : {}) };
 }
 
 /** Question answers are model results; external tools retain their retry payload. */
@@ -107,7 +109,8 @@ export function humanInputResult(item: HumanInput) {
     const input: InputRow = { ...view, tenant: "", kind: item.kind ?? "question", answer: item.answerDetail,
       stored: { message: item.question, detail: item.detail ?? {}, responders: item.responders ?? {}, tool: "ask_user", argumentsHash: "" } };
     const resolved = resolution([input], () => undefined);
-    if ("result" in resolved) return { output: resolved.result.content, ...(resolved.result.isError ? { isError: true } : {}) };
+    if ("result" in resolved) return { output: resolved.result.content, ...(resolved.result.isError ? { isError: true } : {}),
+      ...(item.answerDetail.by.system ? { control: { terminate: !(item.answerDetail.by.system === "expired" && item.resumeOnExpire) } } : {}) };
   }
   return { output: [{ type: "text" as const, text: item.answer! }] };
 }
@@ -134,10 +137,29 @@ export function answerHuman(item: HumanInput, body: unknown, via: Responder["via
   };
 }
 
+export function systemHumanAnswer(system: NonNullable<Responder["system"]>, now = Date.now()) {
+  return { answer: '{"action":"cancel"}', state: system === "aborted" ? "cancelled" as const : system,
+    answerDetail: { action: "cancel" as const, by: { system }, at: now } };
+}
+
 export function cancelledHumanInput(item: HumanInput, now = Date.now()): HumanInput {
   if (item.answer !== undefined) return item;
-  return { ...item, answer: '{"action":"cancel"}', state: "cancelled",
-    answerDetail: { action: "cancel", by: { system: "aborted" }, at: now } };
+  return { ...item, ...systemHumanAnswer("aborted", now) };
+}
+
+/** Pi keeps the tool result and its post-tools stop durable, even during abort. */
+export function humanInputExtension(): Extension {
+  return { name: "camel.human-input", hooks: [hook(ToolTask, {
+    async afterTool(_call, result, api, context) {
+      const prefix = String(api.taskId);
+      const inputs = Object.entries((await api.snapshot(HumanInputs, context))?.requests ?? {})
+        .filter(([key]) => key === prefix || key.startsWith(`${prefix}:`)).map(([, input]) => input);
+      const closed = inputs.find(input => input.answerDetail?.by.system);
+      if (!closed) return;
+      const terminate = inputs.every(input => input.answerDetail?.by.system && !(input.answerDetail.by.system === "expired" && input.resumeOnExpire));
+      return { ...result, ...humanInputResult(closed), control: { ...result.control, terminate } };
+    },
+  })] };
 }
 
 export const askUser: ToolRegistration = {

@@ -40,6 +40,8 @@ import {
   answerHuman,
   bindHumanInput,
   sameHumanAnswer,
+  systemHumanAnswer,
+  humanInputExtension,
   cancelledHumanInput,
   humanInputView,
   HumanInputs,
@@ -124,7 +126,7 @@ import type { AgentConfiguration } from "./api-contract.ts";
 import { digest } from "./api-contract.ts";
 import { AttachedTools } from "./attached-tools.ts";
 import { compatibleFileTools } from "./fs-tools.ts";
-import { sourceTools, toolSourceViews } from "./tool-sources.ts";
+import { sourceTools, toolSourceViews, type SourceFailure } from "./tool-sources.ts";
 import { Delegation } from "./delegation.ts";
 import { resolveDefinition, configurationPatch } from "./definitions.ts";
 import {
@@ -565,6 +567,7 @@ export class CamelAgent extends DurableObject<Env> {
     return {
       issuer,
       ...(call ? { call } : {}),
+      elicit: !!(conf.config.humanInput || conf.config.builtins?.includes("ask_user") || this.attached.connected),
       claims: {
         tenant: conf.tenantId,
         agent: conf.id,
@@ -639,6 +642,7 @@ export class CamelAgent extends DurableObject<Env> {
       },
     },
   );
+  private sourceFailures: SourceFailure[] = [];
   private availableTools: ToolRegistration[] = [];
   private computerSerial: Promise<unknown> = Promise.resolve();
   private serializeComputer<T>(run: () => Promise<T>): Promise<T> {
@@ -707,6 +711,7 @@ export class CamelAgent extends DurableObject<Env> {
         ),
       );
       registry.install(senderExtension());
+      registry.install(humanInputExtension());
       registry.install(toolOutputExtension(this.env, async (api, callId) => {
         const conf = await this.config(), pi = await this.harness.pi();
         const site = await toolCallSite({ taskId: api.taskId, callId, getTask: pi.getTask.bind(pi) } as ToolExecutionApi);
@@ -801,6 +806,7 @@ export class CamelAgent extends DurableObject<Env> {
           conf.config as never,
           undefined,
           (api) => this.sourceIdentity(api),
+          (failures) => { this.sourceFailures = failures; },
         ),
       });
       registry.install({
@@ -1179,6 +1185,7 @@ export class CamelAgent extends DurableObject<Env> {
       ([, input]) => input.answer === undefined,
     );
     const owners = new Map<string, Array<[string, HumanInput]>>();
+    const deadlines: number[] = [];
     for (const [key, input] of pending) {
       const id = input.requestId ?? await this.ctx.storage.get<string>(`input-owner:${key}`)
         ?? this.active ?? (await this.currentRun()).id;
@@ -1192,13 +1199,14 @@ export class CamelAgent extends DurableObject<Env> {
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       const actor = record?.params?.actor as string | undefined ?? (record?.params?.from as { id?: string } | undefined)?.id;
       const bound = entries.map(([key, input]) => [key, bindHumanInput(input, id, actor, conf.config.humanInput, conf.expiresAt ?? null)] as const);
+      deadlines.push(...bound.flatMap(([, input]) => input.expiresAt === undefined ? [] : [input.expiresAt]));
       if (bound.some(([, input], index) => input !== entries[index][1])) {
         const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
         await root.commit(async tx => {
           const doc = await tx.doc(HumanInputs);
           for (const [key, input] of bound) {
             const current = doc.requests[key];
-            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, expiresAt: input.expiresAt, policyBound: true });
+            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, expiresAt: input.expiresAt, policyBound: true, ...(input.resumeOnExpire ? { resumeOnExpire: true } : {}) });
           }
         }, BACKGROUND_CONTEXT);
       }
@@ -1254,6 +1262,9 @@ export class CamelAgent extends DurableObject<Env> {
         await this.flushTerminalEvents();
       }
     }
+    if (deadlines.length) await this.ctx.storage.put("human-input-deadline", Math.min(...deadlines));
+    else await this.ctx.storage.delete("human-input-deadline");
+    await this.arm();
   }
   private track(id: string) {
     if (this.pendingWaits.has(id)) return;
@@ -1374,6 +1385,7 @@ export class CamelAgent extends DurableObject<Env> {
                   : (record.billing?.model ?? stored?.config.model),
                 ...(usage.toolCalls?.length ? { toolCalls: usage.toolCalls } : {}),
                 ...(usage.toolErrors?.length ? { toolErrors: usage.toolErrors } : {}),
+                ...(this.sourceFailures.length ? { sourceErrors: this.sourceFailures } : {}),
                 replyIndex: usage.replyIndex,
                 ...(await fileOutputs(this.ctx.storage, id)),
                 ...(outputValue !== undefined
@@ -1504,9 +1516,9 @@ export class CamelAgent extends DurableObject<Env> {
       .filter((item) => item.status === "queued")
       .map((item) => item.operationId);
     await this.delegation.cancel();
+    await this.cancelHumanInputs();
     await this.abortExecutions();
     await this.harness.session().abort();
-    await this.cancelHumanInputs();
     const conf = await this.config();
     for (const id of cancelled) {
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
@@ -1546,11 +1558,11 @@ export class CamelAgent extends DurableObject<Env> {
     // A child tool may be waiting on its parent's admission queue. Acknowledge
     // the durable cancellation before draining tools or calling another object.
     const work = (async () => {
+      await this.cancelHumanInputs(record.id);
       if (record.method === "execute")
         await abortHostExecution(await this.harness.pi(), record.id);
       else await this.harness.session().abort(record.piId ?? record.id);
       await this.delegation.cancel(record.id);
-      await this.cancelHumanInputs(record.id);
       if (record.method === "execute" && !record.accepted)
         await this.cancelHostIntent(record);
       else this.track(record.id);
@@ -1969,6 +1981,8 @@ export class CamelAgent extends DurableObject<Env> {
       if (preparing) await this.promptPreparations.fail(id);
       throw error;
     }
+    if (request.method === "prompt" && !notice && !old?.accepted)
+      await this.closeHumanInputs("superseded");
     const record: RequestRecord = old ?? {
       id,
       method: String(request.method),
@@ -2091,7 +2105,7 @@ export class CamelAgent extends DurableObject<Env> {
     return this.historyIndex.read(url);
   }
 
-  private async answerHumanInputs(answers: Array<{ id: string; body: unknown }>, via: "api" | "agent") {
+  private async answerHumanInputs(answers: Array<{ id: string; body: unknown }>, via: "api" | "agent", system?: "expired" | "superseded") {
     if (!answers.length || answers.length > 100 || new Set(answers.map(entry => entry.id)).size !== answers.length)
       throw Object.assign(new Error("Answer 1 to 100 different inputs"), { status: 400 });
     // Pi can resume a tool during this commit. Install all resume records first,
@@ -2107,15 +2121,15 @@ export class CamelAgent extends DurableObject<Env> {
       const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
       conf = await this.config();
       const snapshot = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
-      const checked: Array<{ id: string; body: unknown; pending: HumanInput; owner: string | undefined; answer: ReturnType<typeof answerHuman> }> = [];
+      const checked: Array<{ id: string; body: unknown; pending: HumanInput; owner: string | undefined; answer: ReturnType<typeof answerHuman> | ReturnType<typeof systemHumanAnswer> }> = [];
       for (const entry of answers) {
         const pending = snapshot?.requests[entry.id];
         if (!pending) throw Object.assign(new Error(`Unknown input ${entry.id}`), { status: 404 });
         const owner = pending.requestId ?? await this.ctx.storage.get<string>(`input-owner:${entry.id}`) ?? this.active;
         const view = humanInputView(entry.id, pending, conf.id, owner);
-        if (owner && await this.ctx.storage.get(`cancelled-request:${owner}`))
+        if (!system && owner && await this.ctx.storage.get(`cancelled-request:${owner}`))
           throw Object.assign(new Error("This input is cancelled"), { status: 409, input: view });
-        checked.push({ ...entry, pending, owner, answer: answerHuman(pending, entry.body, via, conf.config.humanInput?.approvers as string[] | undefined) });
+        checked.push({ ...entry, pending, owner, answer: system ? systemHumanAnswer(system) : answerHuman(pending, entry.body, via, conf.config.humanInput?.approvers as string[] | undefined) });
       }
       const fresh = checked.every(entry => entry.pending.answer === undefined);
       if (!fresh && !checked.every(entry => sameHumanAnswer(entry.pending, entry.answer)))
@@ -2140,7 +2154,7 @@ export class CamelAgent extends DurableObject<Env> {
         let resumed = await this.ctx.storage.get<RequestRecord>(reqKey(resumeId));
         if (!resumed) {
           await this.flushBilling(true);
-          await this.admitRequest(conf, resumeId);
+          if (!system) await this.admitRequest(conf, resumeId);
           resumed = { ...old, id: resumeId, piId, method: "resume", state: "running", status: undefined,
             outcome: undefined, startedAt: Date.now(), began: Date.now(), endedAt: undefined };
           await this.ctx.storage.put(reqKey(resumeId), resumed);
@@ -2178,6 +2192,22 @@ export class CamelAgent extends DurableObject<Env> {
       }
       throw error;
     } finally { releaseProjection(); }
+  }
+
+  private async closeHumanInputs(system: "expired" | "superseded") {
+    const pi = await this.harness.pi();
+    const doc = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
+    const answers = Object.entries(doc?.requests ?? {}).filter(([, input]) => input.answer === undefined &&
+      (system === "expired" ? input.expiresAt !== undefined && input.expiresAt <= Date.now() : input.requestId !== undefined));
+    const selected: Array<{ id: string; body: { action: string } }> = [];
+    for (const [id, input] of answers) {
+      const owner = input.requestId ?? await this.ctx.storage.get<string>(`input-owner:${id}`);
+      const record = owner ? await this.ctx.storage.get<RequestRecord>(reqKey(owner)) : undefined;
+      // A user message supersedes the model's questions, not independent host scripts.
+      if (system === "superseded" && record?.method === "execute") continue;
+      selected.push({ id, body: { action: "cancel" } });
+    }
+    if (selected.length) await this.answerHumanInputs(selected, "api", system);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -2254,6 +2284,7 @@ export class CamelAgent extends DurableObject<Env> {
               incoming.config as never,
               undefined,
               (api) => this.sourceIdentity(api),
+          (failures) => { this.sourceFailures = failures; },
             ),
           });
           this.registry.install({
@@ -2516,6 +2547,7 @@ export class CamelAgent extends DurableObject<Env> {
             conf.config as never,
             undefined,
             (api) => this.sourceIdentity(api),
+          (failures) => { this.sourceFailures = failures; },
           );
           this.registry.install({ name: "camel.sources", tools });
           this.availableTools = this.registry
@@ -2527,6 +2559,7 @@ export class CamelAgent extends DurableObject<Env> {
           conf.config as never,
           (await this.enabledTools(conf.config)).tools,
           this.attached.connected,
+          this.sourceFailures,
         );
         if (url.searchParams.get("schemas") !== "true")
           for (const source of sources)
@@ -2925,6 +2958,7 @@ export class CamelAgent extends DurableObject<Env> {
       pendingEvents ? Date.now() + 1000 : Infinity,
       pendingRun ? Date.now() + 1000 : Infinity,
       await this.promptPreparations.deadline(),
+      await this.ctx.storage.get<number>("human-input-deadline") ?? Infinity,
       await this.limits.deadline(),
     );
     if (Number.isFinite(next))
@@ -2990,6 +3024,9 @@ export class CamelAgent extends DurableObject<Env> {
     }
     await this.flushBilling();
     await this.flushTerminalEvents();
+    const expire = this.admission.then(() => this.closeHumanInputs("expired"));
+    this.admission = expire.catch(() => {});
+    await expire;
     await this.restoreHostAdmissions();
     if (await this.limits.check()) await this.harness.session().abort();
     await this.delegation.recover();

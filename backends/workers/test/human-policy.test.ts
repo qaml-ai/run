@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { answerHuman, bindHumanInput, cancelledHumanInput, humanInputResult, humanInputView, sameHumanAnswer } from "../src/human.ts";
+import { answerHuman, bindHumanInput, cancelledHumanInput, humanInputResult, humanInputView, sameHumanAnswer, systemHumanAnswer } from "../src/human.ts";
 import { answerList, humanInputSettings, questionsInput } from "../src/input-policy.ts";
 
 const questions = questionsInput([{ question: "Where?", header: "Region", options: [{ label: "EU" }, { label: "US" }] }]);
@@ -34,6 +34,11 @@ test("human answers enforce source identity and produce source question metadata
   assert.equal(sameHumanAnswer(settled, answerHuman(bound, { action: "decline", actor: "alice" })), false);
   assert.equal(humanInputResult(cancelledHumanInput(bound)).output[0].text, "Cancelled by the application before anyone answered.");
   assert.equal(humanInputResult(cancelledHumanInput(bound)).isError, true);
+  assert.equal(humanInputResult(cancelledHumanInput(bound)).control?.terminate, true);
+  const expired = { ...bound, ...systemHumanAnswer("expired") };
+  assert.equal(humanInputResult(expired).control?.terminate, true);
+  assert.equal(humanInputResult({ ...expired, resumeOnExpire: true }).control?.terminate, false);
+  assert.match(humanInputResult({ ...bound, ...systemHumanAnswer("superseded") }).output[0].text, /sent a new message instead/);
 });
 
 test("legacy ask_human keeps its unstructured reply", () => {
