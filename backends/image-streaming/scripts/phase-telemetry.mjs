@@ -1,12 +1,14 @@
 // Read-only phase-scoped Worker telemetry. This never changes deployed resources.
 import { readFile,writeFile } from 'node:fs/promises';
 import { resolve,dirname,basename } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 
 const reportFile=process.argv[2];
-if(!reportFile)throw Error('Usage: node scripts/phase-telemetry.mjs REPORT.json [--include-provider]');
+if(!reportFile)throw Error('Usage: node scripts/phase-telemetry.mjs REPORT.json[.gz] [--include-provider]');
 const token=process.env.CLOUDFLARE_API_TOKEN;
 if(!token)throw Error('Configured CLOUDFLARE_API_TOKEN is required');
-const report=JSON.parse(await readFile(resolve(reportFile),'utf8'));
+const bytes=await readFile(resolve(reportFile));
+const report=JSON.parse((reportFile.endsWith('.gz')?gunzipSync(bytes):bytes).toString('utf8'));
 if(!report.finishedMeasurementsAt&&!report.cleanup?.at)throw Error('Wait for the measurement matrix to finish before querying phase telemetry');
 const account=report.account??process.env.CLOUDFLARE_ACCOUNT_ID;
 if(!/^[a-f0-9]{32}$/i.test(account??''))throw Error('Report must identify a valid Cloudflare account');

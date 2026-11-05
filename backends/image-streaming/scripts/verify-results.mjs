@@ -1,10 +1,12 @@
 // Verify a completed retained run without network calls or cloud mutations.
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 
 const file=process.argv[2];
-if(!file)throw Error('Usage: node scripts/verify-results.mjs measurements/cloud-....json');
-const report=JSON.parse(await readFile(resolve(file),'utf8'));
+if(!file)throw Error('Usage: node scripts/verify-results.mjs measurements/cloud-....json[.gz]');
+const bytes=await readFile(resolve(file));
+const report=JSON.parse((file.endsWith('.gz')?gunzipSync(bytes):bytes).toString('utf8'));
 const failures=[],notes=[];
 let checks=0;
 function check(ok,message) {checks++;if(!ok)failures.push(message);}

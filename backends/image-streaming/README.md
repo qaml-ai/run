@@ -26,6 +26,9 @@ node scripts/phase-telemetry.mjs measurements/cloud-YYYY-MM-DDTHH-MM-SS-mmmZ.jso
 node scripts/report.mjs
 ```
 
+The three report tools accept plain `.json` or gzip-compressed `.json.gz` files.
+The default report search recognizes both formats.
+
 `CLOUDFLARE_API_TOKEN` is read from the environment. Its value is never written to
 the report. The experiment bearer is generated in process memory and installed
 through Wrangler stdin. Do not pass either credential as an argument.

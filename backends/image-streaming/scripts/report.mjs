@@ -1,11 +1,12 @@
 // Read-only reduction of retained cloud evidence. It never fills missing telemetry with zero.
 import { readFile,readdir,writeFile } from 'node:fs/promises';
 import { resolve,basename } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 
 const cwd=resolve(import.meta.dirname,'..');
 let files=process.argv.slice(2);
 if(!files.length) {
-  const candidates=(await readdir(resolve(cwd,'measurements'))).filter(name=>/^cloud-.*\.json$/.test(name)).sort();
+  const candidates=(await readdir(resolve(cwd,'measurements'))).filter(name=>/^cloud-.*\.json(?:\.gz)?$/.test(name)).sort();
   const complete=candidates.filter(name=>!name.startsWith('cloud-smoke-'));
   files=[resolve(cwd,'measurements',(complete.length?complete:candidates).at(-1)??'missing-cloud-report.json')];
 }
@@ -54,7 +55,8 @@ function single(row,allRows) {
 }
 const runs=[];
 for(const file of files) {
-  const report=JSON.parse(await readFile(resolve(file),'utf8'));
+  const bytes=await readFile(resolve(file));
+  const report=JSON.parse((file.endsWith('.gz')?gunzipSync(bytes):bytes).toString('utf8'));
   const rows=deduplicateTelemetry(report);
   const cases=(report.cases??[]).map(row=>single(row,rows));
   const groups=(report.concurrency??[]).map(group=>{
