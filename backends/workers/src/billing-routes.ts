@@ -22,6 +22,9 @@ export type BillingEnv = PostgresEnv & {
   BILLING_ADMINS?: string;
   TEST_MODE?: string;
   EMAIL_FROM?: string;
+  AGENT_BILLING_EMAIL_FROM?: string;
+  AGENT_BILLING_EMAIL_NAME?: string;
+  AGENT_BILLING_EMAIL_CONFIGURATION_SET?: string;
 };
 export type BillingPrincipal = { tenantId: string; kind: string };
 export type BillingServices = { billing?: Billing; alerts?: BillingAlerts; emailEnabled?: boolean; rateLimits?: Pick<RateLimits, "tenantLimit">; busy?: (tenant: string) => Promise<number>; exists?: (tenant: string) => Promise<boolean> };
@@ -97,7 +100,7 @@ export async function billingPublicRoutes(request: Request, env: BillingEnv, ser
       catch { throw new HttpError(400, "Invalid form submission"); }
       if (form.get("List-Unsubscribe") !== "One-Click") throw new HttpError(400, "Expected List-Unsubscribe=One-Click");
       await services.alerts?.unsubscribe(token);
-      return json({ unsubscribed: true });
+      return new Response(null, { status: 204 });
     }
   }
 }

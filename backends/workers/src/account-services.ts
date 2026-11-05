@@ -1,3 +1,4 @@
+import { operationsMcp } from "./ops-api.ts";
 import type { Context } from "hono";
 import type { Accounts, Principal } from "./accounts.ts";
 import { ConsoleAuth, personal } from "./account-console-auth.ts";
@@ -114,6 +115,7 @@ export function accountServices(env: AccountEnv, accounts: Accounts, fallbackOri
 
 export async function publicAccountRoutes(request: Request, service: AccountServices, ctx?: Pick<ExecutionContext, "waitUntil">): Promise<Response | null> {
   const url = new URL(request.url), path = url.pathname;
+  if (path === "/v1/ops/mcp") return operationsMcp(request, service);
   if (["GET", "HEAD"].includes(request.method) && /^\/(?:$|console(?:\/|$)|oauth\/authorize$)/.test(path) && service.origins.alias(request.headers)) {
     return Response.redirect(`${service.origins.canonical}${path}${url.search}`, 302);
   }
