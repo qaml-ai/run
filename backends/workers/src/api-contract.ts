@@ -23,6 +23,7 @@ export interface AgentConfiguration {
     path: string;
     mode: "rw" | "ro";
     subpath?: string;
+    notify?: boolean;
   }[];
 }
 export class ApiError extends Error {
@@ -79,6 +80,7 @@ export function configuration(
     "builtins",
     "delegate",
     "mounts",
+    "remount",
   ]);
   if (fields.mcp !== undefined) {
     const mcp = object(fields.mcp, ["tools"]);
@@ -154,26 +156,18 @@ export function configuration(
     config.delegate = delegate as { agents?: string[] };
   }
   if (fields.mounts !== undefined) {
-    if (!Array.isArray(fields.mounts) || fields.mounts.length > 20)
-      throw new BadRequest("At most 20 mounts");
-    config.mounts = fields.mounts.map((raw) => {
-      const mount = object(raw, ["volumeId", "path", "mode", "subpath"]);
-      if (
-        typeof mount.volumeId !== "string" ||
-        typeof mount.path !== "string" ||
-        !mount.path.startsWith("/") ||
-        mount.path.split("/").some((x) => x === ".." || x === ".") ||
-        !["rw", "ro"].includes(String(mount.mode))
-      )
-        throw new BadRequest("Invalid mount");
-      return mount as {
-        volumeId: string;
-        path: string;
-        mode: "rw" | "ro";
-        subpath?: string;
-      };
-    });
+    if (!Array.isArray(fields.mounts) || fields.mounts.length > 16)
+      throw new BadRequest("At most 16 mounts");
+    for(const raw of fields.mounts) {
+      const mount=object(raw,["workspace","volumeId","path","mode","subpath","notify"]);
+      if("workspace" in mount) {
+        if(typeof mount.workspace!=="boolean"||Object.keys(mount).some(key=>key!=="workspace"&&(mount.workspace!==true||key!=="path")))throw new BadRequest("Invalid workspace mount");
+      } else if(typeof mount.volumeId!=="string"||typeof mount.path!=="string"||!["rw","ro"].includes(String(mount.mode)))throw new BadRequest("Invalid mount");
+    }
+    // Ownership and the workspace marker are resolved by the directory before persistence.
+    config.mounts=fields.mounts as AgentConfiguration["mounts"];
   }
+  if(fields.remount!==undefined&&typeof fields.remount!=="boolean")throw new BadRequest("remount must be a boolean");
   const ttlSeconds = fields.ttlSeconds;
   if (
     ttlSeconds !== undefined &&

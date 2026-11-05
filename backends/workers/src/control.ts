@@ -1,3 +1,4 @@
+import type { FileBindings } from "./files.ts";
 import type { TenantAdmission } from "./tenant.ts";
 import {
   ApiError,
@@ -43,7 +44,7 @@ export type ControlBindings = PostgresEnv & {
   DEFAULT_TENANT?: string;
   TEST_MODE?: string;
 };
-export type ControlEnv = WebhookEnv & {
+export type ControlEnv = WebhookEnv & Omit<FileBindings,"HYPERDRIVE"> & {
   AGENTS: AgentNamespace;
   API_TOKEN: string;
   MODEL: string;
@@ -145,8 +146,12 @@ export class Directory {
       suppliedKey === undefined
         ? null
         : boundedText(suppliedKey, "Idempotency-Key", 80);
-    const id = await this.id(key ?? crypto.randomUUID()),
-      configHash = await digest(JSON.stringify(config));
+    const id = await this.id(key ?? crypto.randomUUID());
+    const requested=(input as {mounts?:unknown;remount?:boolean}).mounts;
+    const before = requested === undefined ? await this.get(id) : undefined;
+    // Volume initialization uses its own SQL and DO calls. Keep those outside
+    // the directory transaction; preserve the latest mounts under its lock.
+    config.mounts=await (await import('./file-mounts.ts')).prepareMounts(this.env,this.tenantId,id,requested===undefined?before?.config.mounts:requested);
     const entry = await transaction(this.env, async (sql) => {
       // A transaction-scoped lock covers the absent row as well as concurrent creates.
       await sql.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
@@ -163,6 +168,10 @@ export class Directory {
       if (previous?.revoked)
         throw new ApiError(410, "Agent is deleted", "AGENT_GONE");
       const old = previous?.header as DirectoryEntry | undefined;
+      if (requested===undefined && old?.config.mounts) config.mounts=old.config.mounts;
+      if(old?.config.mounts&&requested!==undefined&&JSON.stringify(old.config.mounts)!==JSON.stringify(config.mounts)&&(input as {remount?:boolean}).remount!==true)
+        throw new ApiError(409,"Agent mounts differ; set remount: true to change them");
+      const configHash=await digest(JSON.stringify(config));
       await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
       if (old?.initialized && old.configHash === configHash) return old;
       const next: DirectoryEntry = {
@@ -210,7 +219,7 @@ export class Directory {
           body: JSON.stringify({
             id,
             tenantId: this.tenantId,
-            config,
+            config:entry.config,
             revision: entry.revision,
             expiresAt: entry.expiresAt,
           }),
@@ -262,6 +271,7 @@ export class Directory {
         error: "Agent revoked; cleanup pending",
         code: "CLEANUP_PENDING",
       };
+    await (await import('./file-mounts.ts')).releaseAgentFiles(this.env,this.tenantId,entry.id,entry.config.mounts??[]);
     entry.cleanupPending = false;
     entry.config = {};
     entry.configHash = "";
