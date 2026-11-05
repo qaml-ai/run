@@ -33,9 +33,9 @@ source extractions, not new generated copies.
 
 ## Verification
 
-The tested revision is `96355e4dc714bfbfa1c2c03a26ff7475c61e7bb7`, rebased onto
-`5c26c585` (the models track). All four runs have suite hash
-`67b02bffd2a22bc2200dea203b56b33d07bafc6aa69781b17d3e04eee7db9c41`.
+The tested revision is `b65f6aebdb4546e2f499a1913bfe45db50f66a28`, rebased onto
+`8db58007` (the models and tools-MCP tracks). All four runs have suite hash
+`3a3056b0e7be9ca9594ea0079378a7b11261cbd645eb7e731782b2a7ae59b39e`.
 
 The 51 scoped checks finish at **Node 51 pass; Workers 50 pass, 1 fail**. Two
 checks only exercise SDK configuration: the HTTP totals are Node 49/49 and
@@ -64,23 +64,24 @@ runtime, preserve every row, and record each source report.
 
 | Areas | Sprite / run | Node report | Workers report |
 | --- | --- | --- | --- |
-| `images` | `rt-pool-23` / `20261105-162041-72175-1` | [Node](measurements/files-platform/images-node.json) | [Workers](measurements/files-platform/images-workers.json) |
-| `files,volumes` | `rt-pool-25` / `20261105-162101-73551-1` | [Node](measurements/files-platform/files-node.json) | [Workers](measurements/files-platform/files-workers.json) |
-| `search` | `rt-pool-4` / `20261105-162040-71993-1` | [Node](measurements/files-platform/search-node.json) | [Workers](measurements/files-platform/search-workers.json) |
-| `schedules,workspaces,selfhost,cli,journey` | `rt-pool-24` / `20261105-162042-72285-1` | [Node](measurements/files-platform/misc-node.json) | [Workers](measurements/files-platform/misc-workers.json) |
+| `images` | `rt-pool-20` / `20261105-163347-15607-1` | [Node](measurements/files-platform/images-node.json) | [Workers](measurements/files-platform/images-workers.json) |
+| `files,volumes` | `rt-pool-22` / `20261105-163347-15674-1` | [Node](measurements/files-platform/files-node.json) | [Workers](measurements/files-platform/files-workers.json) |
+| `search` | `rt-pool-5` / `20261105-163346-15567-1` | [Node](measurements/files-platform/search-node.json) | [Workers](measurements/files-platform/search-workers.json) |
+| `schedules,workspaces,selfhost,cli,journey` | `rt-pool-21` / `20261105-163347-15684-1` | [Node](measurements/files-platform/misc-node.json) | [Workers](measurements/files-platform/misc-workers.json) |
 
 Each area bucket ran through `scripts/sprite-test HEAD bash -lc ...`, with
 Workers dependencies and Python SDK requirements installed on the Sprite:
 
 ```sh
-export CONTRACT_REVISION=96355e4dc714bfbfa1c2c03a26ff7475c61e7bb7
+export CONTRACT_REVISION=b65f6aebdb4546e2f499a1913bfe45db50f66a28
 CONTRACT_CONCURRENCY=2 npm run parity -- --backend=node --area="$AREA"
 CONTRACT_CONCURRENCY=1 npm run parity -- --backend=workers --area="$AREA"
 ```
 
 The Node gate is green for each exact suite before Workers runs. Workers
-fixtures run serially on each Sprite because an earlier four-fixture run hit a
-local workerd port collision. All execution uses local workerd, Postgres and
+fixtures run serially on each Sprite. An earlier four-fixture run hit a local
+workerd port collision; this revision also includes the integration branch's
+direct HTTP socket launcher. All execution uses local workerd, Postgres and
 scripted providers. The full 590-case comparison remains the coordinator's job.
 
 The original Node file-argument and tool-file suites pass 11/11. The original
@@ -94,7 +95,7 @@ node --experimental-strip-types --disable-warning=ExperimentalWarning --test --t
 node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/journey.test.ts tests/journey-billing.test.ts
 ```
 
-On `rt-pool-22`, run `20261105-162114-74487-1`, these also pass:
+On `rt-pool-4`, run `20261105-163355-16581-1`, these also pass:
 
 - `npm run typecheck` and `npm run typecheck --prefix backends/workers`.
 - `npm run build --prefix backends/workers`: both Wrangler dry builds.

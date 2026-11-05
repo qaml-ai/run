@@ -1,14 +1,14 @@
 {
   "backend": "node",
   "area": "files,volumes",
-  "suiteHash": "67b02bffd2a22bc2200dea203b56b33d07bafc6aa69781b17d3e04eee7db9c41",
-  "revision": "96355e4dc714bfbfa1c2c03a26ff7475c61e7bb7",
+  "suiteHash": "3a3056b0e7be9ca9594ea0079378a7b11261cbd645eb7e731782b2a7ae59b39e",
+  "revision": "b65f6aebdb4546e2f499a1913bfe45db50f66a28",
   "runtime": {
     "node": "v24.22.1",
     "platform": "linux",
     "arch": "x64"
   },
-  "recordedAt": "2026-11-05T22:22:33.453Z",
+  "recordedAt": "2026-11-05T22:35:36.374Z",
   "expectedCases": 19,
   "rows": [
     {
@@ -16,7 +16,7 @@
       "source": "tests/agent-links.test.ts:5",
       "name": "a tenant signs links to its agent's files with its own token, as for its volumes",
       "status": "pass",
-      "durationMs": 4258.578965,
+      "durationMs": 4470.836186,
       "reason": "",
       "backend": "node"
     },
@@ -25,7 +25,7 @@
       "source": "tests/file-arguments.test.ts",
       "name": "fileArguments: other parties' servers are not offered or sent files unless a definition turns it on",
       "status": "pass",
-      "durationMs": 5723.091371,
+      "durationMs": 7223.964795,
       "reason": "",
       "backend": "node"
     },
@@ -34,7 +34,7 @@
       "source": "tests/file-arguments.test.ts",
       "name": "files reach a tool as URLs bound to the call: a file at its version, a directory as a snapshot, small ones inline",
       "status": "pass",
-      "durationMs": 4522.691848,
+      "durationMs": 4484.155152,
       "reason": "",
       "backend": "node"
     },
@@ -43,7 +43,7 @@
       "source": "tests/files.test.ts:261",
       "name": "the TypeScript SDK attaches bytes, Blobs, local paths and workspace files; a file deleted or replaced after attaching still reads as attached",
       "status": "pass",
-      "durationMs": 3597.93248,
+      "durationMs": 3673.223917,
       "reason": "",
       "backend": "node"
     },
@@ -52,7 +52,7 @@
       "source": "tests/files.test.ts:76",
       "name": "the REST API stores the upload's type and serves downloads with safe headers",
       "status": "pass",
-      "durationMs": 2635.889354,
+      "durationMs": 2650.628672,
       "reason": "",
       "backend": "node"
     },
@@ -61,7 +61,7 @@
       "source": "tests/files.test.ts:98",
       "name": "signed links: bound to tenant, volume, path, method, expiry, size and content type; tampering fails",
       "status": "pass",
-      "durationMs": 3432.981173,
+      "durationMs": 3404.247167,
       "reason": "",
       "backend": "node"
     },
@@ -70,7 +70,7 @@
       "source": "tests/files.test.ts",
       "name": "a run's outcome lists the files it wrote and presented, and a presented file is an event with a download link",
       "status": "pass",
-      "durationMs": 3797.812337,
+      "durationMs": 3917.805054,
       "reason": "",
       "backend": "node"
     },
@@ -79,7 +79,7 @@
       "source": "tests/files.test.ts",
       "name": "an upload streams to storage a chunk at a time: the source is never more than a few chunks ahead of storage",
       "status": "pass",
-      "durationMs": 2996.404924,
+      "durationMs": 3072.593722,
       "reason": "",
       "backend": "node"
     },
@@ -88,7 +88,7 @@
       "source": "tests/files.test.ts",
       "name": "attachments over REST land in the workspace, the transcript keeps references, and the model sees them natively",
       "status": "pass",
-      "durationMs": 3471.61991,
+      "durationMs": 3611.485007,
       "reason": "",
       "backend": "node"
     },
@@ -97,7 +97,7 @@
       "source": "tests/tool-files.test.ts",
       "name": "application-attached MCP files are saved to the workspace like a server's",
       "status": "pass",
-      "durationMs": 3709.132284,
+      "durationMs": 3866.341749,
       "reason": "",
       "backend": "node"
     },
@@ -106,7 +106,7 @@
       "source": "tests/tool-files.test.ts",
       "name": "MCP images, audio, blobs and long text are saved to the workspace, under sanitized names",
       "status": "pass",
-      "durationMs": 4065.374472,
+      "durationMs": 4183.35224,
       "reason": "",
       "backend": "node"
     },
@@ -115,7 +115,7 @@
       "source": "tests/tool-files.test.ts",
       "name": "MCP tools take files by {$file}: base64 or a call-bound URL, only from the agent's mounts",
       "status": "pass",
-      "durationMs": 4313.582312,
+      "durationMs": 4331.264197,
       "reason": "",
       "backend": "node"
     },
@@ -124,7 +124,7 @@
       "source": "tests/tool-files.test.ts",
       "name": "OpenAPI operations upload files (multipart, raw bytes, base64) and save binary responses",
       "status": "pass",
-      "durationMs": 3713.216646,
+      "durationMs": 3755.609456,
       "reason": "",
       "backend": "node"
     },
@@ -133,7 +133,7 @@
       "source": "tests/tool-files.test.ts",
       "name": "web_fetch saves PDFs and images to the workspace and shows them to the model",
       "status": "pass",
-      "durationMs": 3735.170317,
+      "durationMs": 3733.202226,
       "reason": "",
       "backend": "node"
     },
@@ -142,7 +142,7 @@
       "source": "tests/projects.test.ts",
       "name": "a project is a keyed volume seeded once, mounted with the workspace beside it, and published as checked snapshots",
       "status": "pass",
-      "durationMs": 3527.564316,
+      "durationMs": 3650.934314,
       "reason": "",
       "backend": "node"
     },
@@ -151,7 +151,7 @@
       "source": "tests/projects.test.ts",
       "name": "a project is restored in place to a published version, and a check hands what it computed to store and the result",
       "status": "pass",
-      "durationMs": 2642.270617,
+      "durationMs": 2362.773185,
       "reason": "",
       "backend": "node"
     },
@@ -160,7 +160,7 @@
       "source": "tests/projects.test.ts",
       "name": "pinned versions outlast keep and the snapshot cap, carry labels, and a snapshot can be made from contents",
       "status": "pass",
-      "durationMs": 2739.505312,
+      "durationMs": 2992.280701,
       "reason": "",
       "backend": "node"
     },
@@ -169,7 +169,7 @@
       "source": "tests/projects.test.ts",
       "name": "publishTool finds the project from the call's identity, never its arguments, and tells the model what to fix",
       "status": "pass",
-      "durationMs": 2985.12834,
+      "durationMs": 2767.185864,
       "reason": "",
       "backend": "node"
     },
@@ -178,7 +178,7 @@
       "source": "tests/volumes.test.ts:538",
       "name": "the REST API and SDK manage volumes within a tenant, and nothing crosses tenants",
       "status": "pass",
-      "durationMs": 10435.261242,
+      "durationMs": 10497.321878,
       "reason": "",
       "backend": "node"
     }

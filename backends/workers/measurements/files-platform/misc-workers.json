@@ -1,14 +1,14 @@
 {
   "backend": "workers",
   "area": "schedules,workspaces,selfhost,cli,journey",
-  "suiteHash": "67b02bffd2a22bc2200dea203b56b33d07bafc6aa69781b17d3e04eee7db9c41",
-  "revision": "96355e4dc714bfbfa1c2c03a26ff7475c61e7bb7",
+  "suiteHash": "3a3056b0e7be9ca9594ea0079378a7b11261cbd645eb7e731782b2a7ae59b39e",
+  "revision": "b65f6aebdb4546e2f499a1913bfe45db50f66a28",
   "runtime": {
     "node": "v24.22.1",
     "platform": "linux",
     "arch": "x64"
   },
-  "recordedAt": "2026-11-05T22:24:14.729Z",
+  "recordedAt": "2026-11-05T22:37:48.969Z",
   "expectedCases": 19,
   "rows": [
     {
@@ -16,7 +16,7 @@
       "source": "tests/cli.test.ts",
       "name": "a manifest's delegate settings bring their builtin",
       "status": "pass",
-      "durationMs": 0.22382,
+      "durationMs": 0.290778,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -25,7 +25,7 @@
       "source": "tests/cli.test.ts",
       "name": "a run waiting on a person exits 2 and resumes once answered",
       "status": "pass",
-      "durationMs": 6722.342914,
+      "durationMs": 7478.448143,
       "reason": "",
       "backend": "workers"
     },
@@ -34,7 +34,7 @@
       "source": "tests/cli.test.ts",
       "name": "login saves a checked key readable only by its owner",
       "status": "pass",
-      "durationMs": 4329.466767,
+      "durationMs": 5069.128677,
       "reason": "",
       "backend": "workers"
     },
@@ -43,7 +43,7 @@
       "source": "tests/cli.test.ts",
       "name": "run --stateless answers in one call and leaves no agent; runs get reads it back",
       "status": "pass",
-      "durationMs": 5717.168794,
+      "durationMs": 5991.856569,
       "reason": "",
       "backend": "workers"
     },
@@ -52,7 +52,7 @@
       "source": "tests/cli.test.ts",
       "name": "the CLI deploys a manifest, runs its agent, and manages agents and definitions",
       "status": "pass",
-      "durationMs": 16184.769021,
+      "durationMs": 17587.023084,
       "reason": "",
       "backend": "workers"
     },
@@ -61,7 +61,7 @@
       "source": "tests/cli.test.ts",
       "name": "the CLI reads the runtime's URL from CAMELAI_BASE_URL, as the SDKs do, or CAMELAI_URL",
       "status": "pass",
-      "durationMs": 0.74717,
+      "durationMs": 0.932652,
       "reason": "",
       "backend": "sdk-unit"
     },
@@ -70,7 +70,7 @@
       "source": "tests/cli.test.ts",
       "name": "the MCP server deploys and runs agents for a coding agent",
       "status": "pass",
-      "durationMs": 7463.621329,
+      "durationMs": 8641.367967,
       "reason": "",
       "backend": "workers"
     },
@@ -79,7 +79,7 @@
       "source": "tests/journey-server.test.ts:120",
       "name": "an account's export holds its journey: what this runtime kept and what the store holds; an account journey never knew has none",
       "status": "fail",
-      "durationMs": 4594.887152,
+      "durationMs": 5096.41173,
       "reason": "Expected values to be strictly equal: 404 !== 200",
       "error": {
         "message": "Expected values to be strictly equal:\n\n404 !== 200\n",
@@ -95,7 +95,7 @@
       "source": "tests/journey-server.test.ts:148",
       "name": "an email sign-up is an account made when its mailed link is finished, in the browser that finishes it",
       "status": "pass",
-      "durationMs": 4835.036498,
+      "durationMs": 5468.17038,
       "reason": "",
       "backend": "workers"
     },
@@ -104,7 +104,7 @@
       "source": "tests/journey-server.test.ts:46",
       "name": "a runtime with journey events off serves the console as ever: no tag, no cookie, no endpoint",
       "status": "pass",
-      "durationMs": 5273.6848,
+      "durationMs": 5577.484353,
       "reason": "",
       "backend": "workers"
     },
@@ -113,7 +113,7 @@
       "source": "tests/journey-server.test.ts:57",
       "name": "with journey events on, an arrival is noted through the redirect, the browser gets its visitor id, and the console's pages reach the store",
       "status": "pass",
-      "durationMs": 4783.618671,
+      "durationMs": 5032.571783,
       "reason": "",
       "backend": "workers"
     },
@@ -122,7 +122,7 @@
       "source": "tests/journey-server.test.ts:88",
       "name": "with journey events on, making an agent and running it tells the store of the agent, the day's activity and the account's first run",
       "status": "pass",
-      "durationMs": 7133.547118,
+      "durationMs": 8042.106719,
       "reason": "",
       "backend": "workers"
     },
@@ -131,7 +131,7 @@
       "source": "tests/schedule-api.test.ts:21",
       "name": "public accounts can email their verified address and cannot email strangers or suppressed recipients",
       "status": "pass",
-      "durationMs": 5420.734933,
+      "durationMs": 5791.409759,
       "reason": "",
       "backend": "workers"
     },
@@ -140,7 +140,7 @@
       "source": "tests/schedule-api.test.ts:37",
       "name": "a calendar wake-up tells the model its fixed local edition date",
       "status": "pass",
-      "durationMs": 5128.483549,
+      "durationMs": 5496.655756,
       "reason": "",
       "backend": "workers"
     },
@@ -149,7 +149,7 @@
       "source": "tests/schedule-api.test.ts:7",
       "name": "calendar schedules and owner-configured email round trip through the API without crossing accounts",
       "status": "pass",
-      "durationMs": 6422.05184,
+      "durationMs": 6930.354101,
       "reason": "",
       "backend": "workers"
     },
@@ -158,7 +158,7 @@
       "source": "tests/selfhost.test.ts:39",
       "name": "a runtime bootstrapped from AGENT_TENANT and AGENT_OPERATOR_TOKEN serves that tenant",
       "status": "pass",
-      "durationMs": 5737.956153,
+      "durationMs": 6496.516108,
       "reason": "",
       "backend": "workers"
     },
@@ -167,7 +167,7 @@
       "source": "tests/selfhost.test.ts:48",
       "name": "on a runtime configured by AGENT_TENANT, a run without a model key also names AGENT_TENANT_API_KEYS",
       "status": "pass",
-      "durationMs": 5086.213593,
+      "durationMs": 5508.579116,
       "reason": "",
       "backend": "workers"
     },
@@ -176,7 +176,7 @@
       "source": "tests/selfhost.test.ts:57",
       "name": "a private runtime names no URL to browsers: AGENT_BROWSER_URL overrides the browser token's url, or empty leaves it out, and links carry their path on the runtime",
       "status": "pass",
-      "durationMs": 9858.407453,
+      "durationMs": 10709.593244,
       "reason": "",
       "backend": "workers"
     },
@@ -185,7 +185,7 @@
       "source": "tests/workspaces.test.ts:48",
       "name": "workspaces API validates ownership, inherits definitions, and accounts agent and stateless model calls",
       "status": "pass",
-      "durationMs": 9443.802608,
+      "durationMs": 11213.223895,
       "reason": "",
       "backend": "workers"
     }

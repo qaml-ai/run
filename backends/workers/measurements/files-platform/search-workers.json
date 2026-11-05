@@ -1,14 +1,14 @@
 {
   "backend": "workers",
   "area": "search",
-  "suiteHash": "67b02bffd2a22bc2200dea203b56b33d07bafc6aa69781b17d3e04eee7db9c41",
-  "revision": "96355e4dc714bfbfa1c2c03a26ff7475c61e7bb7",
+  "suiteHash": "3a3056b0e7be9ca9594ea0079378a7b11261cbd645eb7e731782b2a7ae59b39e",
+  "revision": "b65f6aebdb4546e2f499a1913bfe45db50f66a28",
   "runtime": {
     "node": "v24.22.1",
     "platform": "linux",
     "arch": "x64"
   },
-  "recordedAt": "2026-11-05T22:23:23.024Z",
+  "recordedAt": "2026-11-05T22:36:11.011Z",
   "expectedCases": 7,
   "rows": [
     {
@@ -16,7 +16,7 @@
       "source": "tests/web-render.test.ts",
       "name": "web_fetch has Firecrawl render JavaScript shells, and only those, charging a platform render",
       "status": "pass",
-      "durationMs": 8451.80859,
+      "durationMs": 8110.003709,
       "reason": "",
       "backend": "workers"
     },
@@ -25,7 +25,7 @@
       "source": "tests/web-search.test.ts",
       "name": "a definition pins web_search's providers; a platform search is charged at the answering provider's price and counted in the hour's ledger entry",
       "status": "pass",
-      "durationMs": 7043.044213,
+      "durationMs": 7804.690173,
       "reason": "",
       "backend": "workers"
     },
@@ -34,7 +34,7 @@
       "source": "tests/web-search.test.ts",
       "name": "a search key the operator set for a tenant (its apiKeys) is used, and is not counted as the platform's",
       "status": "pass",
-      "durationMs": 6195.228506,
+      "durationMs": 6048.012065,
       "reason": "",
       "backend": "workers"
     },
@@ -43,7 +43,7 @@
       "source": "tests/web-search.test.ts",
       "name": "an operator's tenant without a key of its own searches on the platform's, recorded as platform usage and never charged; its own key wins; platformKeys: false keeps the refusal",
       "status": "pass",
-      "durationMs": 9417.49954,
+      "durationMs": 9296.785813,
       "reason": "",
       "backend": "workers"
     },
@@ -52,7 +52,7 @@
       "source": "tests/web-search.test.ts",
       "name": "codemode's searches on the platform's key stop once the tenant's credit is spent, without waiting for the next model request",
       "status": "pass",
-      "durationMs": 6733.452693,
+      "durationMs": 6498.01427,
       "reason": "",
       "backend": "workers"
     },
@@ -61,7 +61,7 @@
       "source": "tests/web-search.test.ts",
       "name": "web_search uses the tenant's own search key, else the platform's billed to credit, and pairs with web_fetch",
       "status": "pass",
-      "durationMs": 10826.178565,
+      "durationMs": 10133.882249,
       "reason": "",
       "backend": "workers"
     },
@@ -70,7 +70,7 @@
       "source": "tests/x-search.test.ts",
       "name": "X search works in agents and stateless runs, uses tenant keys first and bills only platform requests",
       "status": "pass",
-      "durationMs": 11670.264015,
+      "durationMs": 10801.333488,
       "reason": "",
       "backend": "workers"
     }
