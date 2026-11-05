@@ -317,6 +317,11 @@ export class CamelAgent extends DurableObject<Env> {
     const deleted = await this.ctx.storage.get<boolean>("deleted");
     if (!deleted || config && (config.tenantId !== tenant || config.id !== id))
       throw new Error("Account purge requires the owned, deleted agent");
+    for (;;) {
+      const pending = await Promise.all(["billing:", "model-billing:", "image-billing:", "transcription-billing:"].map(prefix => this.ctx.storage.list({ prefix, limit: 1 })));
+      if (pending.every(rows => rows.size === 0)) break;
+      await this.flushBilling(true);
+    }
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
     await this.ctx.storage.put("deleted", true);
@@ -1610,16 +1615,20 @@ export class CamelAgent extends DurableObject<Env> {
             }
           : { result: { ...result, ...(await fileOutputs(this.ctx.storage, id)) } },
       };
+      const conf = await this.config();
       const terminal = await this.ctx.storage.transaction(async (tx) => {
         const latest = await tx.get<RequestRecord>(reqKey(id));
         if (latest?.state === "completed") return latest;
         await tx.put(reqKey(id), completed);
+        await tx.put(`billing:${id}`, {
+          tenantId: conf.tenantId, agentId: conf.id, requestId: id,
+          modelMetered: true, costMicros: 0, activeMs: Math.max(0, completed.endedAt! - (record.began ?? record.startedAt)),
+          startedAt: record.startedAt, responses: 0,
+        } satisfies BillingReceipt);
         await enqueueTerminalEvents(tx, id, completed.outcome, false);
         return completed;
       });
-      const conf = await this.config();
-      await releaseTurn(this.env, conf.tenantId, conf.id, id);
-      await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${id}`);
+      await this.flushBilling();
       await this.flushTerminalEvents();
       this.toolFileBudgets.delete(id);
       return terminal;

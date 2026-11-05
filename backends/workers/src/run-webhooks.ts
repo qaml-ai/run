@@ -5,7 +5,7 @@ import { withSql, type PostgresEnv } from "./postgres.ts";
 /** Same fields and idempotency key as ClientSessions.runEvent in the source host. */
 export async function enqueueRunWebhook(env: PostgresEnv, tenant: string, agentId: string, record: {
   id: string; method: string; actor?: string; metadata?: unknown; steeredInto?: string;
-  outcome?: { result?: unknown; error?: string };
+  outcome?: { result?: unknown; error?: string; uncertain?: boolean };
 }) {
   const outcome = record.outcome ?? { error: "No outcome was recorded" };
   const result = (outcome.result ?? {}) as Record<string, any>;
@@ -17,7 +17,7 @@ export async function enqueueRunWebhook(env: PostgresEnv, tenant: string, agentI
   const coded = Object.fromEntries(["code", "limit", "reason", "bucket", "endUser"].flatMap(name => typeof result[name] === "string" ? [[name, result[name]]] : []));
   const key = `run.ended:${agentId}:${record.id}`;
   const event = error !== undefined
-    ? webhookEvent("run.failed", tenant, { ...ended, error, ...coded, ...(outcome.error === undefined ? result.modelError : {}) }, key)
+    ? webhookEvent("run.failed", tenant, { ...ended, error, ...coded, ...(outcome.error === undefined ? result.modelError : {}), ...(outcome.uncertain ? { uncertain: true } : {}) }, key)
     : webhookEvent("run.completed", tenant, { ...ended, ...(result.stopped ? { stopped: result.stopped } : {}),
       ...(result.inputs?.length ? { inputIds: result.inputs.map((input: { id: string }) => input.id) } : {}),
       ...(typeof result.replyIndex === "number" ? { replyIndex: result.replyIndex } : {}),
