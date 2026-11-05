@@ -60,7 +60,8 @@ That adds **3,362–5,262 lines including the prototype**, for an estimated net
 agent ownership/host coordination from our operating model, not promising a large
 code-count reduction. All ranges are engineering judgment based on responsibilities
 read in the listed files, not measurements of an implemented migration. Tests and
-migration utilities add further code and are excluded on both sides.
+throwaway migration scripts add further code and are excluded on both sides; the
+production export/import adapter is included in the directory/migration estimate.
 
 ## Where the simplification stops
 
@@ -103,7 +104,9 @@ handler atomic. Put short local transitions in SQLite transactions; do not hold
 `blockConcurrencyWhile` or a PG transaction across a model/tool request.
 
 Credits remain a PG authority. Admit a bounded model call using a durable PG
-reservation, then run the provider outside the transaction. Commit the canonical
+reservation and a persisted dispatch-attempt identity, then run the provider
+outside the transaction. A crash after dispatch is uncertain: reconcile the
+existing attempt rather than blindly calling the provider again. Commit the canonical
 model entry and usage outbox together in SQLite. Apply the receipt and charge
 atomically in PG using a stable receipt ID, and acknowledge only after PG commits.
 Crash/retry tests must cover every boundary. A hold's expiry is not evidence that

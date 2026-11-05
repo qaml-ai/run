@@ -14,6 +14,8 @@ for (const row of estimate.retired) {
 async function tsLines(directory) {
   let sum = 0;
   for (const item of await readdir(directory, { withFileTypes: true })) {
+    // Wrangler leaves generated TypeScript under .wrangler/tmp after a build.
+    if (item.name.startsWith('.')) continue;
     const name = path.join(directory, item.name);
     if (item.isDirectory()) sum += await tsLines(name);
     else if (item.name.endsWith('.ts')) sum += lines(await readFile(name, 'utf8'));
