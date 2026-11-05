@@ -39,7 +39,7 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
   const providers = searchProvidersFromEnvironment(settings as never);
   return builtinDefinitions(initial.builtins).map(definition => {
     const check = compile(definition.parameters as never);
-    return defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, structuredOutputSchema: {}, replay: 'safe', execute: async (args: Record<string, unknown>, api, call) => {
+    return defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, replay: 'safe', execute: async (args: Record<string, unknown>, api, call) => {
       if (!(check.check as (value: unknown) => boolean)(args)) throw new HttpError(400, `Invalid ${definition.name} arguments`);
       const scope = { ...await context(api), callId: `${api.conversationId}:${api.taskId}:${api.callId}`, startedAt: Date.now() }, usages: UsageRecord[] = [];
       const key = async (_tenant: string, provider: string) => {
@@ -54,12 +54,12 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
         if (definition.name === 'web_fetch') {
           const render = new WebRender({ outbound, key, price: DEFAULT_PRICING.webRender, ...(testMode && env.AGENT_FIRECRAWL_SCRAPE_URL ? { endpoint: env.AGENT_FIRECRAWL_SCRAPE_URL } : {}), onRender: record });
           const result = await webFetch({ outbound, render }, scope, String(args.url), args.maxCharacters as number ?? 20_000, signal);
-          return { output: result.content, details: result.structuredContent as never, structuredOutput: result.structuredContent as never };
+          return { output: result.content, details: result.structuredContent as never };
         }
         const value = definition.name === 'web_search'
           ? await new WebSearch({ outbound, ...providers, key, price: provider => DEFAULT_PRICING.webSearch[provider], onSearch: record }).search({ ...scope, providers: scope.webSearch?.providers }, args, signal)
           : await new XSearch({ outbound, key, ...(testMode && env.AGENT_X_SEARCH_URL ? { endpoint: env.AGENT_X_SEARCH_URL } : {}), onSearch: record }).search(scope, args, signal);
-        return { output: [{ type: 'text' as const, text: JSON.stringify(value) }], details: value, structuredOutput: value };
+        return { output: [{ type: 'text' as const, text: JSON.stringify(value) }], details: value };
       } finally {
         for (const [index, usage] of usages.entries()) await (host.record ?? ((scope, usage) => recordUsage(env, scope, usage)))({ ...scope, callId: `${scope.callId}:${index}` }, usage);
       }
