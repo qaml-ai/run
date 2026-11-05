@@ -20,7 +20,7 @@ outputs.set('openrouter-details.ts', banner + pass
 const catalog = await source('src/catalog.ts');
 const defaults = await source('src/model.ts');
 outputs.set('anthropic-federation-policy.ts', banner + (await source('src/anthropic-federation.ts'))
- .replace('import { GetWebIdentityTokenCommand, STSClient } from "@aws-sdk/client-sts";', 'class GetWebIdentityTokenCommand { constructor(readonly input: { Audience: string[]; SigningAlgorithm: string; DurationSeconds: number }) {} }')
+ .replace('import { GetWebIdentityTokenCommand, STSClient } from "@aws-sdk/client-sts";', 'class GetWebIdentityTokenCommand { readonly input: { Audience: string[]; SigningAlgorithm: string; DurationSeconds: number }; constructor(input: GetWebIdentityTokenCommand["input"]) { this.input = input; } }')
  .replace('import { metricLine } from "./metrics.ts";\n', '')
  .replace('import type { Credentials } from "./protocol.ts";', 'type Credentials = { apiKey: string; bearer?: true };')
  .replace('env: NodeJS.ProcessEnv)', 'env: Record<string, string | undefined>, options: Options = {})')
