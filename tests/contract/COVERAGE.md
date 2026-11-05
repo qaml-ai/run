@@ -69,7 +69,7 @@ original primary/legacy customer references. Account signup and sessions use the
 real public GitHub and password endpoints. Account row deletion, physical object
 cleanup, tombstones and encrypted-at-rest checks remain in the source test; the
 shared case retains the exported bytes, authorization, revocation and re-signup
-assertions. The project archive probe cancels its unread response body after
+assertions. The project archive probe drains its response body after
 checking the same sequence number, so fixture teardown does not wait for a socket.
 
 ## TypeScript SDK and transport coverage

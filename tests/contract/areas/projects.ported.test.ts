@@ -169,8 +169,8 @@ test("pinned versions outlast keep and the snapshot cap, carry labels, and a sna
   assert.deepEqual(read.files.map(file => [file.path, file.text ?? file.data]), [["/bot.ts", "export const v = 0;\n"], ["/data.bin", "AAEC"]]);
   const importedArchive = await project.archive({ version: imported.id });
   assert.ok(importedArchive.seq >= 0);
-  // The source only inspects the archive metadata; release its unread HTTP body.
-  await importedArchive.body.cancel();
+  // Drain the tiny archive so the SDK transfer stream flushes its stall timer.
+  await new Response(importedArchive.body).arrayBuffer();
   assert.equal(new TextDecoder().decode((await project.volume.read("bot.ts", { snapshot: imported.id })).data), "export const v = 0;\n");
   for (const files of [{ "/": "x" }, { "/a": 1 }, Object.fromEntries(Array.from({ length: 1001 }, (_, i) => [`/f${i}`, "x"]))]) {
     const refused = await r.call(`/v1/volumes/${project.id}/snapshots`, { body: { files } });
