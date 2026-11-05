@@ -484,10 +484,13 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
     } else {
       for (const operation of source.operations ?? []) result.push(markListed(registration({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: takesFiles(source) ? acceptFiles(operation.inputSchema, undefined, true) : operation.inputSchema, needsApproval: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "always", judged: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "judged", exposure: source.exposure, executionMode: operation.readOnly ? "parallel" : "sequential" }, async (input, api, context) => {
         const files = (await identity?.(api))?.toolFiles?.(`${source.name}__${operation.name}`, takesFiles(source) ? undefined : `${source.name} is not sent files: $file needs fileArguments "on" in its definition`);
-        const args = (operation.body === 'multipart' || operation.body === 'binary' ? input : await resolveFiles(input, operation.inputSchema, files)) as Record<string, unknown>;
-        if (!takesFiles(source) && hasFileArgument(input)) throw new Error(`${source.name} is not sent files: $file needs fileArguments "on" in its definition`);
-        const approval = await needsApproval(operation.name, args, !operation.readOnly, api, context, operation.method, operation.description);
+        const approval = await needsApproval(operation.name, input, !operation.readOnly, api, context, operation.method, operation.description);
         if ("result" in approval) return approval.result;
+        if (!takesFiles(source) && hasFileArgument(input)) throw new Error(`${source.name} is not sent files: $file needs fileArguments "on" in its definition`);
+        const { body: originalBody, ...rest } = input as Record<string, unknown>;
+        const rawBody = operation.body === 'multipart' || operation.body === 'binary';
+        const args = await resolveFiles(rawBody ? rest : input, operation.inputSchema, files) as Record<string, unknown>;
+        if (rawBody) args.body = originalBody;
         const text = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value);
         const path = operation.path.replace(/\{([^}]+)\}/g, (_, name: string) => {
           if (args[name] === undefined) throw new Error(`Missing path parameter ${name}`);
@@ -511,16 +514,18 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           else if (operation.body === "form") { sent["Content-Type"] = "application/x-www-form-urlencoded"; body = formEncode(args.body); }
           else if (operation.body === 'multipart') {
             if (!files) throw new Error('This agent has no files to send: it has no volumes mounted');
-            const form = await multipartBody(args.body, files); body = form.body; sent['Content-Type'] = form.contentType; sent['Content-Length'] = String(form.length);
+            const form = await multipartBody(args.body, files, (operation.inputSchema.properties as any)?.body); body = form.body; sent['Content-Type'] = form.contentType; sent['Content-Length'] = String(form.length);
           } else {
-            if (!files) throw new Error('This agent has no files to send: it has no volumes mounted');
-            const file = await files.bodyFile(args.body); body = file.stream; sent['Content-Type'] = operation.bodyType?.includes('*') || operation.bodyType === 'application/octet-stream' ? file.contentType : operation.bodyType ?? file.contentType; sent['Content-Length'] = String(file.size);
+            if (hasFileArgument(args.body)) {
+              if (!files) throw new Error('This agent has no files to send: it has no volumes mounted');
+              const file = await files.bodyFile(args.body); body = file.stream; sent['Content-Type'] = operation.bodyType?.includes('*') ? file.contentType : operation.bodyType ?? file.contentType; sent['Content-Length'] = String(file.size);
+            } else { body = typeof args.body === 'string' ? args.body : JSON.stringify(args.body); sent['Content-Type'] = operation.bodyType?.includes('*') ? 'application/octet-stream' : operation.bodyType ?? 'application/octet-stream'; }
           }
         }
         await outbound(env).reachable(url);
         const response = await fetch(url, { method: operation.method, headers: sent, body, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(source.timeoutMs ?? 30_000), ...(context?.abortSignal ? [context.abortSignal] : [])]) });
-        const contentType = response.headers.get('content-type')?.split(';')[0] ?? 'application/octet-stream';
-        if (response.ok && !textual(contentType) && files) {
+        const contentType = response.headers.get('content-type')?.split(';')[0] ?? '';
+        if (response.ok && contentType && !textual(contentType) && files) {
           const name = /filename\*?=(?:UTF-8''|"?)([^";]+)/i.exec(response.headers.get('content-disposition') ?? '')?.[1] ?? url.pathname.split('/').pop() ?? 'output';
           const file = await files.save(decodeURIComponent(name), response.body as any, contentType);
           return withInputNote({ content: [file], structuredContent: file }, approval.reply);
