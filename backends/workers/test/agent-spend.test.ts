@@ -3,6 +3,7 @@ import test from "node:test";
 import { agentSpendRefusal, agentSpendView, pendingAgentSpend, readAgentSpendLimit, remainingAgentSpend, setAgentSpendLimit, spendInput, writeAgentSpend } from "../src/agent-spend.ts";
 import { transaction } from "../src/postgres.ts";
 import { startFixture } from "./fixture.ts";
+import { reserveTurn, settleTurn } from "../src/control.ts";
 
 test("agent spend uses the source input and refusal policy", () => {
   assert.equal(spendInput(null), null);
@@ -61,4 +62,10 @@ test("agent spend persists cumulative usage, rolls back with settlement, and iso
   assert.equal(await setAgentSpendLimit(env, tenant, id, null), null);
   await transaction(env, sql => writeAgentSpend(sql, id, reset!.setAt, 1));
   assert.equal(await readAgentSpendLimit(env, tenant, id), null);
+  await setAgentSpendLimit(env, tenant, id, { usd: 1 }, 300);
+  await reserveTurn(env, tenant, id, "precise-settlement");
+  const receipt = { tenantId: tenant, agentId: id, requestId: "precise-settlement", costMicros: 0, agentCostUsd: 0.0000001, agentSpendAt: 300 };
+  await assert.rejects(settleTurn({ ...env, TEST_MODE: "1" }, { ...receipt, faultAfterCommit: true }), /lost PG acknowledgement/);
+  assert.deepEqual(await settleTurn(env, receipt), { duplicate: true });
+  assert.equal((await readAgentSpendLimit(env, tenant, id))?.spent, 0.0000001, "sub-micro dollar costs survive idempotent receipt replay");
 });

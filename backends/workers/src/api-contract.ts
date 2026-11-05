@@ -7,6 +7,7 @@ import { toPiMessages } from "./history-formats.ts";
 import { validateInitialMessages } from "./history-policy.ts";
 import type { ToolDefinition } from "./attached-tools.ts";
 import { searchOrder } from "./web-search-policy.ts";
+import { spendInput } from "./agent-spend-policy.ts";
 
 export interface AgentConfiguration {
   model?: string;
@@ -39,7 +40,7 @@ export interface AgentConfiguration {
   context?: Record<string, unknown>;
   keyScope?: string;
   bucket?: string;
-  spendLimit?: { usd: number };
+  spendLimit?: { usd: number } | null;
   humanInput?: Record<string, unknown>;
   subagents?: Record<string, unknown>;
   mounts?: { volumeId?: string; workspace?: boolean; path?: string; mode?: "rw" | "ro"; subpath?: string; notify?: boolean }[];
@@ -132,9 +133,8 @@ export function configuration(input: unknown, defaultModel: string): { config: A
     config[field] = fields[field] as Record<string, unknown>;
   }
   if (fields.spendLimit !== undefined) {
-    const limit = object(fields.spendLimit, ["usd"]);
-    if (typeof limit.usd !== "number" || !Number.isFinite(limit.usd) || limit.usd < 0 || limit.usd > 1_000_000) throw new BadRequest("spendLimit.usd must be 0 to 1000000");
-    config.spendLimit = { usd: limit.usd };
+    const usd = spendInput(fields.spendLimit);
+    config.spendLimit = usd === null ? null : { usd };
   }
   if (fields.initialMessages !== undefined && fields.importMessages !== undefined) throw new ApiError(400, "Give initialMessages or importMessages, not both", "INVALID_HISTORY");
   if (fields.initialMessages !== undefined || fields.importMessages !== undefined) {
