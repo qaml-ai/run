@@ -41,7 +41,7 @@ export function attachmentInput(
   files: AttachedFile[],
 ): UserMessage["content"] {
   return [
-    { type: "text", text },
+    ...(text ? [{ type: "text" as const, text }] : []),
     ...files.map((file) => ({
       type: "text" as const,
       text: ATTACHMENT_MARKER + JSON.stringify(file),

@@ -1726,6 +1726,10 @@ export class CamelAgent extends DurableObject<Env> {
     const text =
       request.method === "continue"
         ? ""
+        : (params.text === undefined || (typeof params.text === "string" && !params.text.trim() &&
+            new TextEncoder().encode(params.text).length <= 100_000)) &&
+            Array.isArray(params.files) && params.files.length > 0
+          ? ""
         : boundedText(params.text, "text", 100_000);
     if (notice) {
       params.whileRunning =
@@ -1823,6 +1827,8 @@ export class CamelAgent extends DurableObject<Env> {
             },
             params.files,
           );
+    if (request.method !== "continue" && !text.trim() && !files?.some(file => file.transcript))
+      throw new BadRequest("Give the agent some text, or audio to transcribe");
     if (files) params.files = attachmentFiles(files);
     const record: RequestRecord = old ?? {
       id,
