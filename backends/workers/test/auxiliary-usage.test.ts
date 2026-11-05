@@ -1,0 +1,37 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { admitAuxiliaryUsage, auxiliaryUsageCosts, recordAuxiliaryUsage } from "../src/auxiliary-usage.ts";
+import { agentSpend, modelSpendLimit, runSpend, setAgentSpendLimit } from "../src/agent-spend.ts";
+import { transaction } from "../src/postgres.ts";
+import { testDatabase } from "./billing-database.ts";
+
+test("auxiliary costs share agent and run budgets with immutable idempotent receipts", async () => {
+  const { db, url } = await testDatabase();
+  const env = { HYPERDRIVE: { connectionString: url } };
+  await db.query("insert into agents(id,tenant,header,revision,name,type,model) values('agent','tenant','{}',1,'','agent','test')");
+  await setAgentSpendLimit(db, "agent", 0.3, 10);
+  const call = { tenant: "tenant", agent: "agent", requestId: "run", callId: "decide-1", kind: "decision" as const, startedAt: 11 };
+  assert.equal(await transaction(db, sql => recordAuxiliaryUsage(sql, call, { costUsd: 0.1 })), true);
+  assert.equal(await transaction(db, sql => recordAuxiliaryUsage(sql, call, { costUsd: 0.1 })), false);
+  await assert.rejects(transaction(db, sql => recordAuxiliaryUsage(sql, call, { costUsd: 0.2 })), /receipt changed/);
+  const web = { ...call, callId: "search-1", kind: "web_search" as const };
+  await assert.rejects(transaction(db, async sql => {
+    await recordAuxiliaryUsage(sql, web, { costUsd: 0.2 });
+    throw new Error("billing transaction failed");
+  }), /billing transaction failed/);
+  assert.equal(await runSpend(db, "tenant", "agent", "run"), 0.1);
+  await transaction(db, sql => recordAuxiliaryUsage(sql, web, { costUsd: 0.2 }));
+  assert.ok(Math.abs((await agentSpend(db, "tenant", "agent"))!.spent - 0.3) < 1e-10);
+  assert.equal((await modelSpendLimit(db, { tenant: "tenant", agent: "agent", requestId: "run", spendLimit: 1 }))?.stopLimit, "agent");
+  assert.deepEqual(await auxiliaryUsageCosts(env, "tenant", "agent", "run"), { decisionCostUsd: 0.1, webCostUsd: 0.2 });
+  await setAgentSpendLimit(db, "agent", 1, 20);
+  assert.equal((await agentSpend(db, "tenant", "agent"))!.spent, 0);
+  await recordAuxiliaryUsage(db, { ...call, callId: "late-old-call", startedAt: 15 }, { costUsd: 0.1 });
+  assert.equal((await agentSpend(db, "tenant", "agent"))!.spent, 0, "a late tool result cannot charge a reset budget");
+  await assert.rejects(admitAuxiliaryUsage(env, { tenant: "other", agent: "agent" }), /not found/);
+  await assert.rejects(admitAuxiliaryUsage(env, { tenant: "tenant", agent: "agent" }, true), /billing admission/);
+  let admitted = false;
+  await admitAuxiliaryUsage(env, { tenant: "tenant", agent: "agent" }, true, async () => { admitted = true; });
+  assert.equal(admitted, true);
+  await assert.rejects(admitAuxiliaryUsage(env, { tenant: "tenant", agent: "agent", requestId: "run", spendLimit: 0.2 }), /run has reached/);
+});

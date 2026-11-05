@@ -42,6 +42,7 @@ export async function provisionDefinition(env: ControlEnv, tenant: string, input
     return result;
   }
   if (input.systemPrompt !== undefined) throw new ApiError(400, "Use systemPromptAppend with a definition");
+  if (input.decide !== undefined) throw new ApiError(400, "decide is set by the definition");
   const definition = await resolveDefinition(env, tenant, input.definition);
   const { description, applyOnUpdate, limits, ...spec } = definition.spec;
   return { ...limits, ...spec, ...input, definition: definition.id, definitionRevision: definition.revision, definitionOverrides: OVERRIDES.filter(field => Object.hasOwn(input, field)) };

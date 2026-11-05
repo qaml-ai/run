@@ -52,7 +52,7 @@ test('web_fetch preserves source HTML conversion and truncation contract', async
 test('web search falls back only on retryable failures and records the answering provider', async () => {
   const calls: string[] = [], usages: UsageRecord[] = [];
   const tools = await agentBuiltins({} as never, context(['web_search'], { webSearch: { providers: ['exa', 'brave'] } }), {
-    key: async () => ({ key: 'fixture', platform: false }), record: async (_scope, usage) => { usages.push(usage); },
+    key: async () => ({ key: 'fixture', platform: false }), admit: async () => {}, record: async (_scope, usage) => { usages.push(usage); },
     outbound: outbound(async url => { calls.push(String(url)); return String(url).includes('exa.ai') ? new Response('', { status: 429 }) : Response.json({ web: { results: [{ title: '<b>Title</b>', url: 'https://example.com', description: 'The <b>answer</b>', page_age: '2026-11-01' }] } }); }),
   });
   const result = value(await invoke(tools[0], { query: 'the answer', count: 1, freshness: 'week' }));
@@ -73,7 +73,7 @@ test('x_search preserves handle filters, citations and provider-reported exact c
   let request: any;
   const usages: UsageRecord[] = [];
   const tools = await agentBuiltins({} as never, context(['x_search']), {
-    key: async () => ({ key: 'fixture', platform: false }), record: async (_scope, usage) => { usages.push(usage); },
+    key: async () => ({ key: 'fixture', platform: false }), admit: async () => {}, record: async (_scope, usage) => { usages.push(usage); },
     outbound: outbound(async (_url, init) => { request = JSON.parse(init!.body as string); return Response.json({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'The answer', annotations: [{ url: 'https://x.com/example/status/1', title: 'Post' }] }] }], usage: { input_tokens: 10, output_tokens: 20, cost_in_usd_ticks: '25000000', server_side_tool_usage_details: { x_search_calls: 2 } } }); }),
   });
   const result = value(await invoke(tools[0], { query: 'topic', allowedHandles: ['@example'], fromDate: '2026-11-01', toDate: '2026-11-05' }));
@@ -88,7 +88,7 @@ test('JavaScript shells use source renderer and meter once', async () => {
   const usages: UsageRecord[] = [];
   const tools = await agentBuiltins({} as never, context(['web_fetch']), {
     key: async (_scope, provider) => provider === 'firecrawl' ? { key: 'fixture', platform: false } : undefined,
-    record: async (_scope, usage) => { usages.push(usage); },
+    admit: async () => {}, record: async (_scope, usage) => { usages.push(usage); },
     outbound: outbound(async url => String(url).includes('firecrawl') ? Response.json({ data: { markdown: 'Rendered page content', metadata: { title: 'Rendered' } } }) : new Response('<html><div id="root"></div></html>', { headers: { 'content-type': 'text/html' } })),
   });
   const result = value(await invoke(tools[0], { url: 'https://public.example/' }));

@@ -5,6 +5,7 @@ import { accrueUsage, BillingSpendable } from './billing-sql.ts';
 import { enqueueEvents, webhookEvent, type WebhookEnv } from './webhooks.ts';
 import { HttpError } from './errors.ts';
 import type { UsageRecord } from './policy-host.ts';
+import { admitAuxiliaryUsage, recordAuxiliaryUsage } from './auxiliary-usage.ts';
 export type DecisionEnv = ProviderKeyEnv & WebhookEnv & {
   TEST_MODEL?: string; TEST_MODE?: string; AGENT_DECISIONS_URL?: string;
   /** Synthetic fixture keys only, installed by the compatibility harness. */
@@ -32,6 +33,10 @@ export async function recordDecision(env: DecisionEnv, context: DecisionContext,
     // A real platform key must come with the money track's admission and hold
     // integration. This adapter's platform credentials are local fixtures only.
     if (usage.platform && !(env.TEST_MODEL === '1' && env.TEST_MODE === '1')) throw new HttpError(503, 'Platform decision billing is not configured');
+    if (agentId) {
+      if (!context.callId || context.startedAt === undefined) throw new HttpError(503, 'Decision call identity is unavailable');
+      if (!await recordAuxiliaryUsage(sql, { tenant: context.tenant, agent: agentId, requestId, callId: context.callId, startedAt: context.startedAt, kind: 'decision' }, { costUsd: usage.usage.cost.total, provider: usage.provider, model: usage.model })) return;
+    }
     await sql.query('select tenant from credit_accounts where tenant=$1 for update', [context.tenant]);
     if (charge > 0) {
       if (await new BillingSpendable().spendable(context.tenant, sql) < charge) throw new HttpError(402, 'Insufficient credit', 'INSUFFICIENT_CREDIT');
@@ -46,6 +51,8 @@ export async function recordDecision(env: DecisionEnv, context: DecisionContext,
 export function decisionService(env: DecisionEnv, context: () => Promise<DecisionContext>, record?: (context: DecisionContext, usage: UsageRecord) => Promise<void>) {
   return new DecisionRuntime({ key: (tenant, scope, provider) => key(env, tenant, scope, provider), context, record: record ?? ((context, usage) => recordDecision(env, context, usage)), testUrl: env.AGENT_DECISIONS_URL, testMode: env.TEST_MODEL === '1' && env.TEST_MODE === '1', admit: async context => {
     const credentials = await key(env, context.tenant, context.keyScope, 'openrouter');
+    if (credentials?.platform && !(env.TEST_MODEL === '1' && env.TEST_MODE === '1')) throw new HttpError(503, 'Platform decision billing is not configured');
+    if (context.agent) await admitAuxiliaryUsage(env, { tenant: context.tenant, agent: context.agent, requestId: context.requestId, spendLimit: context.spendLimit });
     if (credentials?.platform && await withSql(env, sql => new BillingSpendable().spendable(context.tenant, sql)) <= 0) throw new HttpError(402, 'Insufficient credit', 'INSUFFICIENT_CREDIT');
   } });
 }

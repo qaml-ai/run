@@ -69,6 +69,12 @@ export async function agentSpend(sql: Sql, tenant: string, agent: string): Promi
       select coalesce(sum((attempt.totals->>'cost')::double precision),0)
       from model_attempts as attempt
       where attempt.tenant=$1 and attempt.agent=limits.agent and attempt.started_at>=limits.set_at
+    ) + (
+      select coalesce(sum((receipt.message->'_workersAuxiliary'->>'costUsd')::double precision),0)
+      from pi_usage_receipts as receipt
+      where receipt.tenant=$1 and receipt.session_id=limits.agent and receipt.accounted
+        and receipt.entry_id<0 and receipt.message ? '_workersAuxiliary'
+        and (receipt.message->'_workersAuxiliary'->>'startedAt')::bigint>=limits.set_at
     ) where limits.agent=$2
       and exists(select 1 from agents where agents.id=limits.agent and agents.tenant=$1)
     returning limits.usd,limits.spent,limits.set_at`, [tenant, agent])).rows[0];
@@ -84,8 +90,14 @@ export async function readAgentSpendLimit(env: PostgresEnv, tenant: string, agen
 }
 
 export async function runSpend(sql: Sql, tenant: string, agent: string, requestId: string): Promise<number> {
-  const row = (await sql.query(`select coalesce(sum((totals->>'cost')::double precision),0) as spent
-    from model_attempts where tenant=$1 and agent=$2 and context->>'requestId'=$3`, [tenant, agent, requestId])).rows[0];
+  const row = (await sql.query(`select (
+      select coalesce(sum((totals->>'cost')::double precision),0)
+      from model_attempts where tenant=$1 and agent=$2 and context->>'requestId'=$3
+    ) + (
+      select coalesce(sum((message->'_workersAuxiliary'->>'costUsd')::double precision),0)
+      from pi_usage_receipts where tenant=$1 and session_id=$2 and accounted
+        and entry_id<0 and message ? '_workersAuxiliary' and message->'_workersAuxiliary'->>'requestId'=$3
+    ) as spent`, [tenant, agent, requestId])).rows[0];
   const spent = Number(row.spent);
   if (!Number.isFinite(spent) || spent < 0) throw new HttpError(503, "Run spend is unavailable", "SPEND_LIMIT_UNAVAILABLE");
   return spent;
