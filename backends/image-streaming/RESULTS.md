@@ -15,7 +15,7 @@ main, are the basis of this report. No upstream issue or PR was opened.
 
 The marker approach works without changing Pi. In the initial large-PNG stress run, all three alternatives passed at 1, 20 and 100 images, both singly and across 50 concurrent agent workflows. The inline baseline failed at 20 images during requests and at 100 while seeding. Every completed receiver check matched the expected image hashes.
 
-Use **B, in-DO streaming**, as the base64 HTTP path: it is simpler than a proxy and passed the full matrix. Prefer **D, signed URLs**, for explicitly verified URL-capable provider/model combinations; it used less agent CPU and had the best large-image latency here. Keep **C** for a deliberate isolation or centralized-egress requirement. It reduced agent DO work but added a service and did not improve the 50-agent/100-image latency materially. None of these results establish production readiness; integration gaps are listed below.
+**Decision (CTO, 2026-11-05): B only.** Use **B, in-DO streaming**, as the single image path for every provider: it is simpler than a proxy and passed the full matrix, and with realistic images (202–392 KB JPEGs) its 100-image CPU fell to 2.85 s. **D (signed URLs) is not adopted** even though it measured lighter here: the receiver fetched inside Cloudflare, so provider-side fetch time and failures were not measured; it would add a second code path for URL-capable providers only, a public image endpoint, and timing gaps between sending and the provider's fetch. **C (proxy) is not adopted**: it added a service without a latency benefit. The C and D data below are kept as evidence. None of these results establish production readiness; integration gaps are listed below.
 
 ## Realistic JPEG follow-up
 
