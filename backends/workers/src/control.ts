@@ -306,7 +306,7 @@ export class Directory {
       const inherited = await workspaces.current(this.tenantId, "definition", config.definition);
       if (inherited) await workspaces.assign(this.tenantId, "agent", id, inherited.workspace, true);
     }
-    const result = createdHere ? entry : { ...entry, reconfigured: true };
+    const result: DirectoryEntry = createdHere ? entry : { ...entry, reconfigured: true };
     if (rate) creationRates.set(result, rate);
     return result;
     } finally { await release(); }
