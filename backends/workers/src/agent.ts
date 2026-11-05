@@ -36,6 +36,8 @@ import {
   askHuman,
   askUser,
   answerHuman,
+  bindHumanInput,
+  sameHumanAnswer,
   cancelledHumanInput,
   humanInputView,
   HumanInputs,
@@ -1168,7 +1170,20 @@ export class CamelAgent extends DurableObject<Env> {
     }
     for (const [id, entries] of owners) {
       const conf = await this.config();
-      const inputs = entries.map(([key, input]) =>
+      const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
+      const actor = record?.params?.actor as string | undefined ?? (record?.params?.from as { id?: string } | undefined)?.id;
+      const bound = entries.map(([key, input]) => [key, bindHumanInput(input, id, actor, conf.config.humanInput, conf.expiresAt ?? null)] as const);
+      if (bound.some(([, input], index) => input !== entries[index][1])) {
+        const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
+        await root.commit(async tx => {
+          const doc = await tx.doc(HumanInputs);
+          for (const [key, input] of bound) {
+            const current = doc.requests[key];
+            if (current && !current.policyBound) Object.assign(current, { requestId: input.requestId, responders: input.responders, expiresAt: input.expiresAt, policyBound: true });
+          }
+        }, BACKGROUND_CONTEXT);
+      }
+      const inputs = bound.map(([key, input]) =>
         humanInputView(key, input, conf.id, id),
       );
       for (const input of inputs)
@@ -1180,7 +1195,6 @@ export class CamelAgent extends DurableObject<Env> {
             event: { type: "input_required", input },
           });
         }
-      const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (record?.state === "running") {
         // A host script waits on its own ToolTask, not the root model submission.
         // Keep that request live so answering resumes and settles the same task.
@@ -2455,6 +2469,7 @@ export class CamelAgent extends DurableObject<Env> {
             "declined",
             "cancelled",
             "expired",
+            "superseded",
           ].includes(state)
         )
           throw new BadRequest("Invalid input state");
@@ -2498,9 +2513,10 @@ export class CamelAgent extends DurableObject<Env> {
             this.active;
           if (owner && await this.ctx.storage.get(`cancelled-request:${owner}`))
             throw Object.assign(new Error("This input is cancelled"), { status: 409 });
-          const answer = answerHuman(pending, input);
-          if (pending.answer !== undefined && pending.answer !== answer.answer)
-            throw Object.assign(new Error("Already answered"), { status: 409 });
+          const answer = answerHuman(pending, input, request.headers.get("x-camel-input-via") === "agent" ? "agent" : "api", conf.config.humanInput?.approvers as string[] | undefined);
+          const fresh = pending.answer === undefined;
+          if (!fresh && !sameHumanAnswer(pending, answer))
+            throw Object.assign(new Error(`This input is already ${pending.state}`), { status: 409, input: humanInputView(id, pending, conf.id, owner) });
           const otherOwners = await Promise.all(Object.entries(snapshot?.requests ?? {})
             .filter(([key, input]) => key !== id && input.answer === undefined)
             .map(async ([key, input]) => input.requestId ?? await this.ctx.storage.get<string>(`input-owner:${key}`)));
@@ -2554,12 +2570,12 @@ export class CamelAgent extends DurableObject<Env> {
                 current = doc.requests[id];
               if (
                 current.answer !== undefined &&
-                current.answer !== answer.answer
+                !sameHumanAnswer(current, answer)
               )
                 throw Object.assign(new Error("Already answered"), {
-                  status: 409,
+                  status: 409, input: humanInputView(id, current, conf.id, owner),
                 });
-              Object.assign(current, answer);
+              if (current.answer === undefined) Object.assign(current, answer);
               item = JSON.parse(JSON.stringify(current));
             }, BACKGROUND_CONTEXT);
           } catch (error) {
@@ -2574,7 +2590,7 @@ export class CamelAgent extends DurableObject<Env> {
             }
             throw error;
           }
-          await this.emit({
+          if (fresh) await this.emit({
             type: "event",
             requestId: owner,
             event: { type: "input_resolved", id },
@@ -2587,7 +2603,7 @@ export class CamelAgent extends DurableObject<Env> {
             answered: true,
             input: humanInputView(id, item, conf.id, owner),
             request: resume ?? null,
-          });
+          }, fresh ? 202 : 200);
         } finally {
           releaseProjection();
         }
@@ -2697,6 +2713,7 @@ export class CamelAgent extends DurableObject<Env> {
           ...(typeof (error as { code?: unknown }).code === "string"
             ? { code: (error as { code: string }).code }
             : {}),
+          ...("input" in Object(error) ? { input: (error as { input: unknown }).input } : {}),
           error:
             status >= 500
               ? "Backend operation failed"

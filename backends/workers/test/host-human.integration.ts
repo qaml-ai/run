@@ -46,7 +46,7 @@ test("HTTP host scripts keep separate human inputs across restart and cancellati
   for (const input of pending) {
     const answer = `${input.requestId} answer`;
     const answered = await call(`${base}/inputs/${input.id}`, { answer });
-    assert.equal(answered.status, 200, JSON.stringify(answered.value));
+    assert.equal(answered.status, 202, JSON.stringify(answered.value));
     assert.equal(answered.value.request.id, input.requestId, "host resumes its ToolTask, not a model submission alias");
     assert.deepEqual((await result(input.requestId)).outcome.result.output, [answer]);
   }

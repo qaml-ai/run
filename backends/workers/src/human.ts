@@ -1,15 +1,21 @@
 import { defineDoc, defineTool, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord";
-import { answerInput, questionsInput } from "./input-policy.ts";
+import { answerInput, expiresAt, mayAnswer, questionsInput, resolution, type Answer, type HumanInputSettings, type InputRow, type Responder } from "./input-policy.ts";
 import { HostExecutionRequest } from "./host-execution.ts";
+import { senderInput } from "./sender.ts";
+import { actorInput } from "./security-policy.ts";
+import { HttpError } from "./errors.ts";
+import { canonical } from "../../../shared/durable-json.ts";
 
 export type HumanInput = {
   question: string; answer?: string; toolCallId?: string;
   kind?: "question" | "approval" | "form" | "url";
   detail?: Record<string, any>; createdAt?: number; expiresAt?: number;
-  state?: "pending" | "answered" | "declined" | "cancelled" | "expired";
-  answerDetail?: { action: "accept" | "decline" | "cancel"; content?: any; by: Record<string, any>; at: number };
+  state?: "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded";
+  answerDetail?: Answer;
+  responders?: { audience?: string[] };
+  policyBound?: boolean;
   requestId?: string;
   conversationId?: number;
 };
@@ -55,10 +61,10 @@ export async function waitForHuman(input: HumanInput, api: ToolExecutionApi, con
       context,
     ))!;
     try {
-      const answer = await new Promise<string>((resolve, reject) => {
+      const answer = await new Promise<HumanInput>((resolve, reject) => {
         const read = (value: typeof watch.value) => {
-          const answer = value.requests[key]?.answer;
-          if (answer !== undefined) resolve(answer);
+          const item = value.requests[key];
+          if (item?.answer !== undefined) resolve(item);
         };
         read(watch.value);
         watch.start(async (call) => {
@@ -68,7 +74,7 @@ export async function waitForHuman(input: HumanInput, api: ToolExecutionApi, con
           reject(new Error("Human input wait interrupted")),
         );
       });
-      return { output: [{ type: "text" as const, text: answer }] };
+      return humanInputResult(answer);
     } finally {
       await watch.stop();
     }
@@ -79,6 +85,7 @@ export function humanInputView(id: string, item: HumanInput, agent: string, requ
     id, agent, requestId, toolCallId: item.toolCallId ?? id,
     kind: item.kind ?? "question", message: item.question,
     detail: item.detail ?? {}, state: item.state ?? (item.answer === undefined ? "pending" : "answered"),
+    responders: item.responders ?? {},
     createdAt: item.createdAt ?? 0, expiresAt: item.expiresAt ?? 0,
     // Existing experimental clients use the unstructured question field.
     question: item.question,
@@ -86,13 +93,37 @@ export function humanInputView(id: string, item: HumanInput, agent: string, requ
   };
 }
 
-export function answerHuman(item: HumanInput, body: unknown) {
-  if (item.state === "cancelled" || item.state === "expired" || (item.answer === undefined && item.expiresAt !== undefined && item.expiresAt <= Date.now()))
-    throw Object.assign(new Error(`This input is ${item.state === "cancelled" ? "cancelled" : "expired"}`), { status: 409 });
+/** Bind policy once, before publishing the input or accepting an answer. */
+export function bindHumanInput(item: HumanInput, requestId: string, actor: string | undefined, settings: HumanInputSettings | undefined, agentExpiresAt: number | null): HumanInput {
+  if (item.policyBound) return item;
+  return { ...item, requestId, responders: actor ? { audience: [actor] } : {},
+    expiresAt: expiresAt(settings, agentExpiresAt, item.createdAt), policyBound: true };
+}
+
+/** Question answers are model results; external tools retain their retry payload. */
+export function humanInputResult(item: HumanInput) {
+  if (item.answerDetail && (item.answerDetail.by.system || item.kind === "question" && item.detail?.questions)) {
+    const view = humanInputView("", item, "", item.requestId);
+    const input: InputRow = { ...view, tenant: "", kind: item.kind ?? "question", answer: item.answerDetail,
+      stored: { message: item.question, detail: item.detail ?? {}, responders: item.responders ?? {}, tool: "ask_user", argumentsHash: "" } };
+    const resolved = resolution([input], () => undefined);
+    if ("result" in resolved) return { output: resolved.result.content, ...(resolved.result.isError ? { isError: true } : {}) };
+  }
+  return { output: [{ type: "text" as const, text: item.answer! }] };
+}
+
+export function sameHumanAnswer(item: HumanInput, answer: { answerDetail: Answer }) {
+  const recorded = item.answerDetail;
+  return !!recorded && !recorded.by.system && recorded.action === answer.answerDetail.action && canonical(recorded.content ?? null) === canonical(answer.answerDetail.content ?? null);
+}
+
+export function answerHuman(item: HumanInput, body: unknown, via: Responder["via"] = "api", approvers: string[] = []) {
   const value = body as Record<string, unknown>;
-  const by: Record<string, unknown> = { via: "agent", ...(typeof value?.actor === "string" ? { actor: value.actor } : {}), ...(value?.from && typeof value.from === "object" ? { from: value.from } : {}) };
+  const by: Responder = { via, ...(value?.actor !== undefined ? { actor: actorInput(value.actor) } : {}), ...(value?.from !== undefined ? { from: senderInput(value.from) } : {}) };
+  if (!mayAnswer({ responders: item.responders ?? {} }, by, approvers)) throw new HttpError(403, "This person may not answer this input");
+  if (item.answer === undefined && item.expiresAt !== undefined && item.expiresAt <= Date.now()) throw new HttpError(409, "This input is expired");
   if (typeof value?.answer === "string") {
-    if (value.answer.length > 4096) throw new Error("Answer exceeds 4096 characters");
+    if (value.answer.length > 4096) throw new HttpError(400, "Answer exceeds 4096 characters");
     return { answer: value.answer, state: "answered" as const, answerDetail: { action: "accept" as const, content: value.answer, by, at: Date.now() } };
   }
   const checked = answerInput({ kind: item.kind ?? "question", detail: item.detail ?? {} }, body);

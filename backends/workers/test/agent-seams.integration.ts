@@ -140,7 +140,7 @@ test(
     const answered = await call(`/v1/agents/${a}/inputs/${inputs[0].id}`, {
       answer: "yes",
     });
-    assert.equal(answered.status, 200);
+    assert.equal(answered.status, 202);
     const resumed = answered.body.request.id;
     let result: any;
     for (let n = 0; n < 100; n++) {

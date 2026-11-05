@@ -410,6 +410,11 @@ export default {
         headers.set("accept", "text/event-stream");
         request = new Request(request, { headers });
       }
+      if (tail === "/inputs" || tail.startsWith("/inputs/")) {
+        const headers = new Headers(request.headers);
+        headers.set("x-camel-input-via", match[1] === "clients" ? "agent" : "api");
+        request = new Request(request, { headers });
+      }
       const response = await forward(request, env, entry.id, tail);
       return browser ? browserResponse(response, browser, tail) : response;
     } catch (error) {
