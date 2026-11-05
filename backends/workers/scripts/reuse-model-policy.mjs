@@ -9,6 +9,13 @@ const session = await source('src/session-config.ts');
 const virtual = (await source('src/virtual-models.ts')).replace(/import[^\n]+\n/g, '');
 const pass = await source('src/openrouter-model.ts');
 const catalog = await source('src/catalog.ts');
+outputs.set('catalog-policy.ts', banner + catalog
+ .replace('from "./virtual-models.ts"', 'from "./model-policy.ts"')
+ .replace('import { readFileSync } from "node:fs";\n', '')
+ .replace('from "./pi-catalog.ts"', 'from "./model-catalog.ts"')
+ .replace('import { SEARCH_PROVIDERS } from "./web-search.ts";', `const SEARCH_PROVIDERS = ${(await source('src/web-search.ts')).match(/export const SEARCH_PROVIDERS = (\[[^;]+);/)[1]};`)
+ .replace('from "./deepseek-replay.ts"', 'from "./deepseek-policy.ts"')
+ .replace('JSON.parse(readFileSync(new URL("./tool-streaming.json", import.meta.url), "utf8")).models', JSON.stringify(JSON.parse(await source('src/tool-streaming.json')).models)));
 outputs.set('model-policy.ts', banner + `import type { Api, Model } from '@earendil-works/pi-ai';
 import { getModel, temperatureRefusal } from './model-catalog.ts';
 import { deepseekOnOpenRouter } from './deepseek-policy.ts';
@@ -31,6 +38,26 @@ outputs.set('deepseek-policy.ts', banner + await source('src/deepseek-replay.ts'
 outputs.set('history-formats.ts', banner + (await source('clients/history-formats.ts')).replace('import type { Message } from \"./types.ts\";', 'import type { Message } from \"@earendil-works/pi-ai\";'));
 const prompt = await source('src/system-prompt.ts');
 outputs.set('output-policy.ts', banner + await source('src/tool-choice.ts') + '\n' + prompt.slice(prompt.indexOf('export const OUTPUT_TOOL'), prompt.indexOf('export function applicationInstructions')));
+const provider = await source('src/model-providers.ts');
+const keyScopes = await source('src/key-scopes.ts');
+outputs.set('provider-policy.ts', banner + `import { getProviders } from '@earendil-works/pi-ai/compat';
+import { HttpError } from './errors.ts';
+import { CUSTOM_APIS, type CustomModel, type CustomProvider } from './model-policy.ts';
+const FETCH_PROVIDERS = ${catalog.match(/export const FETCH_PROVIDERS = (\[[^;]+);/)[1]};
+const SEARCH_PROVIDERS = ${(await source('src/web-search.ts')).match(/export const SEARCH_PROVIDERS = (\[[^;]+);/)[1]};
+` + keyScopes.slice(keyScopes.indexOf('export const RESERVED_HEADERS'), keyScopes.indexOf('/** An AWS region')) .replace('RESERVED_HEADERS', 'RESERVED') +
+keyScopes.slice(keyScopes.indexOf('export function endpoint('), keyScopes.indexOf('/** An endpoint the runtime')) +
+provider.slice(provider.indexOf('export type ProviderInput'), provider.indexOf('type Row =')).replace('const shownModel =', 'export const shownModel =').replace('const MAX_PROVIDERS =', 'export const MAX_PROVIDERS ='));
+const toolPolicy = await source('src/tool-policy.ts');
+outputs.set('output-validation.ts', banner + `import { compile, type Validator } from '@earendil-works/pi-schema';
+const jsonWithinLimit = (value: unknown, limit: number, label: string) => {
+  const json = JSON.stringify(value);
+  if (new TextEncoder().encode(json).byteLength > limit) throw new Error(label + ' exceeds ' + limit + ' bytes');
+  return json;
+};
+` + toolPolicy.slice(toolPolicy.indexOf('/** Compiled once per schema'), toolPolicy.indexOf('const namesFile ='))
+ .replace('Compile(checkable(schema) as never)', 'compile(checkable(schema) as never)')
+ .replace('validator(schema).Check(value)', 'validator(schema).check(value)'));
 for (const [name, text] of outputs) {
  const path = new URL('../src/' + name, import.meta.url);
  if (process.argv.includes('--check')) { if (await readFile(path, 'utf8') !== text) throw new Error(name + ' has source drift'); }

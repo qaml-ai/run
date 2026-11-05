@@ -20,7 +20,6 @@ import { stream as streamResponses, streamSimple as simpleResponses } from "@ear
 import { stream as streamAnthropic, streamSimple as simpleAnthropic } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { stream as streamGoogle, streamSimple as simpleGoogle } from "@earendil-works/pi-ai/api/google-generative-ai";
 import { stream as streamBedrock, streamSimple as simpleBedrock } from "@earendil-works/pi-ai/api/bedrock-converse-stream";
-import { getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import { getModels, callSettings, withOpenRouterHosts } from "./model-catalog.ts";
 import { resolveModel, virtualChain, routeModel, virtualModelReferences, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
 import { deepseekContext } from "./deepseek-policy.ts";
@@ -28,9 +27,11 @@ import { forcedToolChoice, OUTPUT_INSTRUCTIONS } from "./output-policy.ts";
 import { normalizeContext, getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
 import { boundedModel } from "./model-context.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
+import { sourceUrl } from "./tool-sources.ts";
+import { listModels } from "./catalog-policy.ts";
 
 export type ModelRequestSettings = AgentConfiguration & { output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
-export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string };
+export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true };
 export type ModelHooks = {
   settings?: () => Promise<ModelRequestSettings>;
   credentials?: (provider: string) => Promise<ModelCredentials | undefined>;
@@ -38,7 +39,7 @@ export type ModelHooks = {
   customProviders?: CustomProviders;
 };
 
-function withSettings(provider: Provider, hooks: ModelHooks): Provider {
+function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: string }): Provider {
   let routing: { user: number; previous?: Model<Api>; failed?: Model<Api> } | undefined;
   const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}) => {
     const config = await hooks.settings?.() ?? {};
@@ -63,17 +64,31 @@ function withSettings(provider: Provider, hooks: ModelHooks): Provider {
     if (model.provider === "amazon-bedrock" && !credential?.apiKey && !options.apiKey)
       throw Object.assign(new Error("Bedrock requires an API key"), { code: "model_key_missing" });
     const onPayload = options.onPayload;
+    let transportError: string | undefined;
+    const tenantFetch: typeof fetch | undefined = credential?.baseUrl ? async (input, init) => {
+      try {
+        const target = sourceUrl(input instanceof Request ? input.url : String(input), env);
+        if (target.origin !== new URL(credential.baseUrl!).origin) throw new Error("Custom provider request changed origin");
+        const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+        if (!credential.apiKey) { headers.delete("authorization"); headers.delete("x-api-key"); }
+        if (credential.bearer && credential.apiKey) { headers.set("authorization", `Bearer ${credential.apiKey}`); headers.delete("x-api-key"); }
+        const response = await (options.fetch ?? fetch)(input, { ...init, headers, redirect:"manual" });
+        if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); throw new Error("Custom provider redirects are not allowed"); }
+        return response;
+      } catch (error) { transportError = error instanceof Error ? error.message : String(error); throw error; }
+    } : undefined;
     const prepared = {
       ...options, ...(toolChoice !== undefined ? { toolChoice: toolChoice as SimpleStreamOptions["toolChoice"] } : {}), ...callSettings(model, config, config.thinkingLevel),
-      ...(credential?.apiKey ? { apiKey: credential.apiKey } : {}),
+      ...(credential ? { apiKey: credential.bearer ? "runtime-bearer" : credential.apiKey ?? "keyless" } : {}),
+      ...(tenantFetch ? { fetch:tenantFetch } : {}),
       ...(model.provider === "amazon-bedrock" ? { bearerToken: credential?.apiKey ?? options.apiKey, region: credential?.region } : {}),
-      headers: { ...credential?.headers, ...options.headers, ...config.modelHeaders },
+      headers: { ...credential?.headers, ...options.headers, ...config.modelHeaders, ...(credential?.bearer && credential.apiKey ? { Authorization: `Bearer ${credential.apiKey}`, "x-api-key": null } : {}) },
       onPayload: async (payload: unknown, target: Model<Api>) => {
         const adjusted = withOpenRouterHosts(target, payload, config.dataCollection ?? undefined);
         return await onPayload?.(adjusted, target) ?? adjusted;
       },
     };
-    return { model: credential?.baseUrl ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared };
+    return { model: credential?.baseUrl ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, transportError: () => transportError };
   };
   const wrap = (simple: boolean) => (model: Model<Api>, context: TranscriptContext, options?: StreamOptions) => {
     const output = createAssistantMessageEventStream();
@@ -82,6 +97,7 @@ function withSettings(provider: Provider, hooks: ModelHooks): Provider {
         const prepared = await prepare(model, context, options);
         const stream = simple ? provider.streamSimple(prepared.model, prepared.context, prepared.options as SimpleStreamOptions) : provider.stream(prepared.model, prepared.context, prepared.options);
         for await (const event of stream) {
+          if (event.type === "error" && prepared.transportError()) event.error.errorMessage = prepared.transportError();
           if (routing && event.type === "error") routing.failed = prepared.model;
           if (routing && event.type === "done") { routing.previous = prepared.model; routing.failed = undefined; }
           output.push(event);
@@ -104,6 +120,7 @@ export function modelRuntime(
     MODEL: string;
     TEST_MODEL?: string;
     TEST_MODEL_BASE_URL?: string;
+    TEST_MODE?: string;
   } & ImageBindings,
   getTenant: () => Promise<string>,
   hooks: ModelHooks = {},
@@ -118,8 +135,8 @@ export function modelRuntime(
     return selected;
   };
   if (env.TEST_MODEL !== "1") {
-    const ai = createAI({ binding: env.AI });
-    models.setProvider(withSettings(withImageReferences(ai.provider, env, getTenant), hooks));
+    const ai = env.AI ? createAI({ binding: env.AI }) : undefined;
+    if (ai) models.setProvider(withSettings(withImageReferences(ai.provider, env, getTenant), hooks, env));
     const catalog = new Map<string, Map<string, Model<Api>>>();
     const api = (model: Model<Api>, simple: boolean, context: TranscriptContext, options: StreamOptions | undefined) => {
       switch (model.api) {
@@ -145,11 +162,14 @@ export function modelRuntime(
         stream: (model, context, options) => api(model, false, context, options),
         streamSimple: (model, context, options) => api(model, true, context, options),
       };
-      models.setProvider(withSettings(withImageReferences(provider, env, getTenant), hooks));
+      models.setProvider(withSettings(withImageReferences(provider, env, getTenant), hooks, env));
     };
-    const resolve = (name = env.MODEL, contextTokens?: number): Model<Api> => {
-      if (name.startsWith("cloudflare/") || name.startsWith("@cf/")) return bounded(ai(name.replace(/^cloudflare\//, "")), contextTokens);
-      const selected = resolveModel(name, hooks.endpoints, hooks.customProviders);
+    const resolve = (name = env.MODEL, contextTokens?: number, customProviders?: CustomProviders): Model<Api> => {
+      if (name.startsWith("cloudflare/") || name.startsWith("@cf/")) {
+        if (!ai) throw new Error("Workers AI is not configured");
+        return bounded(ai(name.replace(/^cloudflare\//, "")), contextTokens);
+      }
+      const selected = resolveModel(name, hooks.endpoints, customProviders ?? hooks.customProviders);
       for (const target of virtualChain(name) ?? [selected]) { install(target.provider); catalog.get(target.provider)!.set(target.id, target); }
       return bounded(selected, contextTokens);
     };
@@ -175,7 +195,7 @@ export function modelRuntime(
     )
       throw new Error("Test model URL must be loopback HTTP");
     const catalog = new Map<string, Model<"openai-completions">>();
-    const resolve = (name = "test/echo", contextTokens?: number) => {
+    const resolve = (name = "test/echo", contextTokens?: number, _customProviders?: CustomProviders) => {
       let selected = catalog.get(name);
       if (!selected) {
         selected = { ...model, id: name, baseUrl: endpoint.href };
@@ -197,7 +217,7 @@ export function modelRuntime(
       stream: streamOpenAI,
       streamSimple: streamOpenAISimple,
     };
-    models.setProvider(withSettings(withImageReferences(provider, env, getTenant), hooks));
+    models.setProvider(withSettings(withImageReferences(provider, env, getTenant), hooks, env));
     return { models, model: resolve(env.MODEL), resolve };
   }
   const stream = (
@@ -358,11 +378,11 @@ export function modelRuntime(
     stream,
     streamSimple: stream,
   };
-  models.setProvider(withSettings(withImageReferences(provider, env, getTenant), hooks));
+  models.setProvider(withSettings(withImageReferences(provider, env, getTenant), hooks, env));
   return {
     models,
     model,
-    resolve: (name?: string, contextTokens?: number) => {
+    resolve: (name?: string, contextTokens?: number, _customProviders?: CustomProviders) => {
       if (name && !["test/echo", "camel-test/deterministic"].includes(name))
         throw Object.assign(new Error("Unsupported test model"), {
           status: 400,
@@ -375,7 +395,5 @@ export function modelRuntime(
 /** The same model metadata as ECS; credentials are resolved only when a request executes. */
 export function modelCatalog(env: { MODEL: string; TEST_MODEL?: string }, provider?: string) {
   if (env.TEST_MODEL === "1") return [{ id: env.MODEL, modelId: env.MODEL, name: env.MODEL, provider: "fixture", input: ["text", "image"], contextWindow: 32768, maxTokens: 2048 }];
-  const physical = (provider ? [provider] : getBuiltinProviders()).flatMap(name => getModels(name));
-  const virtual = !provider || provider === "camelrun" ? virtualModelReferences().map(ref => resolveModel(ref)) : [];
-  return [...virtual, ...physical].map(model => ({ id: "virtual" in model ? model.virtual : `${model.provider}/${model.id}`, provider: "virtual" in model ? "camelrun" : model.provider, modelId: model.id, name: model.name, api: model.api, reasoning: model.reasoning, input: model.input, contextWindow: model.contextWindow, maxTokens: model.maxTokens, cost: model.cost }));
+  return listModels(provider);
 }

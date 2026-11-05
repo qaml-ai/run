@@ -5,6 +5,9 @@ import { resolveModel, routeModel, modelHeadersInput, runLimitsInput } from "../
 import { callSettings } from "../src/model-catalog.ts";
 import { boundedModel } from "../src/model-context.ts";
 import { importedHistory } from "../src/history-policy.ts";
+import { providerInput, providerName } from "../src/provider-policy.ts";
+import { outputInput, schemaAccepts } from "../src/output-validation.ts";
+import { openProviderSecret, sealProviderSecret } from "../src/model-credentials.ts";
 
 test("configuration retains provider settings, imports history and rejects reserved headers", () => {
   const { config } = configuration({ maxOutputTokens: 300, temperature: 0.3, dataCollection: "deny", language: "pt-br", modelHeaders: { "cf-aig-metadata": "fixture" }, runLimits: { contextTokens: 24000, maxResponses: 3 }, importMessages: { format: "openai-chat", messages: [{ role: "user", content: "Remember Ada" }, { role: "assistant", content: "Hello" }] } }, "test/echo");
@@ -24,6 +27,33 @@ test("configuration keeps attached tools, normalizes delegation, and clears opti
   assert.deepEqual(config.delegate?.agents, [{ name: "helper", definition: "helper" }]);
   assert.ok(config.builtins?.includes("delegate"));
   assert.equal(config.temperature, null);
+  const limited = configuration({delegate:{maxParallel:3,maxDepth:1}},"test/echo").config;
+  assert.equal(limited.builtins, undefined);
+  assert.deepEqual(limited.delegate,{maxParallel:3,maxDepth:1});
+  assert.throws(() => configuration({builtins:["agents"],delegate:{maxParallel:3}},"test/echo"), /needs delegate/);
+});
+
+test("custom providers use the exact declaration and credential policy", async () => {
+  const input = {type:"openai-completions",baseUrl:"https://example.com/v1/",models:[{id:"mine",contextWindow:32768}]};
+  assert.equal(providerInput(input).baseUrl,"https://example.com/v1");
+  assert.throws(() => providerName("openai"), /already a provider/);
+  assert.throws(() => providerInput({...input,headers:{Authorization:"untrusted"}}), /cannot set/);
+  assert.throws(() => providerInput({...input,models:[{id:"mine",contextWindow:32768,maxOutputTokens:40000}]}), /at most its context/);
+  const env = {API_TOKEN:"disposable-unit-fixture",TEST_MODE:"1"} as never;
+  const secret = await sealProviderSecret(env,"tenant:provider","test-value");
+  assert.equal(await openProviderSecret(env,"tenant:provider",secret),"test-value");
+  await assert.rejects(openProviderSecret(env,"another-tenant:provider",secret));
+  await assert.rejects(sealProviderSecret({API_TOKEN:"not-test"} as never,"scope","x"), /not configured/);
+});
+
+test("structured output checks shapes while refusing unsafe schema input", () => {
+  const output = outputInput({schema:{$schema:"https://json-schema.org/draft/2020-12/schema",type:"object",properties:{answer:{type:"string",pattern:"^(a+)+$"}},required:["answer"],additionalProperties:false}});
+  assert.equal(output.schema.$schema,undefined);
+  assert.equal(schemaAccepts(output.schema,{answer:"a".repeat(10000)+"!"}),true, "tenant regex is never run on a model answer");
+  assert.equal(schemaAccepts(output.schema,{answer:1}),false);
+  assert.equal(schemaAccepts(output.schema,{answer:"a",extra:1}),false);
+  assert.throws(() => outputInput({schema:{type:"array"}}), /must describe an object/);
+  assert.throws(() => outputInput({schema:{type:"object",properties:{answer:{type:"string",pattern:"("}}}}), /not a JSON Schema/);
 });
 test("OpenRouter pass-through and virtual routes use shared ECS policy", () => {
   const novel = resolveModel("openrouter/new-vendor/future-model");
