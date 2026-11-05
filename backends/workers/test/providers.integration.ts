@@ -4,6 +4,21 @@ import { createServer } from "node:http";
 import { Agents } from "../../../clients/agents.ts";
 import { startFixture } from "./fixture.ts";
 
+test("context admission refuses the request before opening the provider stream", {timeout:60000}, async t => {
+  let calls = 0;
+  const provider = createServer((_req, res) => { calls++; res.writeHead(500).end("Unexpected provider call"); });
+  await new Promise<void>(resolve => provider.listen(0,"127.0.0.1",resolve));
+  t.after(() => new Promise<void>(resolve => { provider.closeAllConnections(); provider.close(() => resolve()); }));
+  const fixture = await startFixture({ modelURL: `http://127.0.0.1:${(provider.address() as {port:number}).port}/v1`, vars: { AGENT_CONTEXT_RANGE_MAX_BYTES:"1" } });
+  t.after(() => fixture.stop());
+  const agents = new Agents({url:fixture.url,apiKey:fixture.token,connection:"lazy",pollMs:10});
+  t.after(() => agents.close());
+  const agent = await agents.upsert("bounded-context", {codeMode:false,fileTools:false});
+  const result = await agent.run("This input cannot fit the configured context range", {timeoutMs:15000,throwOnError:false});
+  assert.equal(result.error?.code,"context_too_large",JSON.stringify(result));
+  assert.equal(calls,0,"a best-effort Pi hook must not allow the rejected call to reach the provider");
+});
+
 test("custom provider declarations, credentials, scopes and live routing", {timeout:180000}, async t => {
   const calls: {headers:Record<string,unknown>;body:any}[] = [];
   const provider = createServer(async (req,res) => {
