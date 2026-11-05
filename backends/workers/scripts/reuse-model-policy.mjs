@@ -29,6 +29,8 @@ const validFileRef = (part: Record<string, unknown>) => part.type === 'file' && 
 ` + history.slice(history.indexOf('/** An imported compaction'), history.indexOf('export function validateUserMessages')));
 outputs.set('deepseek-policy.ts', banner + await source('src/deepseek-replay.ts'));
 outputs.set('history-formats.ts', banner + (await source('clients/history-formats.ts')).replace('import type { Message } from \"./types.ts\";', 'import type { Message } from \"@earendil-works/pi-ai\";'));
+const prompt = await source('src/system-prompt.ts');
+outputs.set('output-policy.ts', banner + await source('src/tool-choice.ts') + '\n' + prompt.slice(prompt.indexOf('export const OUTPUT_TOOL'), prompt.indexOf('export function applicationInstructions')));
 for (const [name, text] of outputs) {
  const path = new URL('../src/' + name, import.meta.url);
  if (process.argv.includes('--check')) { if (await readFile(path, 'utf8') !== text) throw new Error(name + ' has source drift'); }

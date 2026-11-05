@@ -24,7 +24,9 @@ import { getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import { getModels, callSettings, withOpenRouterHosts } from "./model-catalog.ts";
 import { resolveModel, virtualChain, routeModel, virtualModelReferences, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
 import { deepseekContext } from "./deepseek-policy.ts";
-import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
+import { forcedToolChoice, OUTPUT_INSTRUCTIONS } from "./output-policy.ts";
+import { normalizeContext, getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
+import { boundedModel } from "./model-context.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 
 export type ModelRequestSettings = AgentConfiguration & { output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
@@ -45,14 +47,24 @@ function withSettings(provider: Provider, hooks: ModelHooks): Provider {
       if (!routing || routing.user !== user) routing = { user };
       const selected = routeModel(resolveModel(config.model), { reason: routing.failed ? "retry" : routing.previous ? "continuation" : "user", failed: routing.failed, previous: routing.previous });
       if (!selected) throw new Error("Virtual model fallback chain is exhausted");
-      model = selected;
+      model = boundedModel(selected, config.runLimits?.contextTokens);
+    }
+    const outputSchema = config.output?.schema;
+    const currentTools = getCurrentTools(context.messages).filter(tool => tool.name !== "final_output");
+    let toolChoice: unknown;
+    if (outputSchema) {
+      const finalTool = { name: "final_output", description: "Give the final answer as the arguments of this tool. The turn ends when the answer is accepted.", parameters: outputSchema };
+      context = normalizeContext({ messages: [...context.messages, { role: "system", content: "", sections: { structured_output: OUTPUT_INSTRUCTIONS }, toolsAdded: [finalTool], timestamp: Date.now() }] });
+      if (!currentTools.length) toolChoice = forcedToolChoice(model, "final_output", { sole: true, thinking: (config.thinkingLevel ?? "off") !== "off" });
+    } else {
+      context = normalizeContext({ messages: [...context.messages, { role: "system", content: "", toolsRemoved: [{ name: "final_output" }], timestamp: Date.now() }] });
     }
     const credential = await hooks.credentials?.(model.provider);
     if (model.provider === "amazon-bedrock" && !credential?.apiKey && !options.apiKey)
       throw Object.assign(new Error("Bedrock requires an API key"), { code: "model_key_missing" });
     const onPayload = options.onPayload;
     const prepared = {
-      ...options, ...callSettings(model, config, config.thinkingLevel),
+      ...options, ...(toolChoice !== undefined ? { toolChoice: toolChoice as SimpleStreamOptions["toolChoice"] } : {}), ...callSettings(model, config, config.thinkingLevel),
       ...(credential?.apiKey ? { apiKey: credential.apiKey } : {}),
       ...(model.provider === "amazon-bedrock" ? { bearerToken: credential?.apiKey ?? options.apiKey, region: credential?.region } : {}),
       headers: { ...credential?.headers, ...options.headers, ...config.modelHeaders },
@@ -97,6 +109,14 @@ export function modelRuntime(
   hooks: ModelHooks = {},
 ) {
   const models = createModels();
+  const contextModels = new Map<string, Model<Api>>();
+  const catalogModel = models.getModel.bind(models);
+  models.getModel = (provider, id) => contextModels.get(`${provider}/${id}`) ?? catalogModel(provider, id);
+  const bounded = <T extends Model<Api>>(model: T, contextTokens?: number): T => {
+    const selected = boundedModel(model, contextTokens);
+    contextModels.set(`${model.provider}/${model.id}`, selected);
+    return selected;
+  };
   if (env.TEST_MODEL !== "1") {
     const ai = createAI({ binding: env.AI });
     models.setProvider(withSettings(withImageReferences(ai.provider, env, getTenant), hooks));
@@ -127,11 +147,11 @@ export function modelRuntime(
       };
       models.setProvider(withSettings(withImageReferences(provider, env, getTenant), hooks));
     };
-    const resolve = (name = env.MODEL): Model<Api> => {
-      if (name.startsWith("cloudflare/") || name.startsWith("@cf/")) return ai(name.replace(/^cloudflare\//, ""));
+    const resolve = (name = env.MODEL, contextTokens?: number): Model<Api> => {
+      if (name.startsWith("cloudflare/") || name.startsWith("@cf/")) return bounded(ai(name.replace(/^cloudflare\//, "")), contextTokens);
       const selected = resolveModel(name, hooks.endpoints, hooks.customProviders);
       for (const target of virtualChain(name) ?? [selected]) { install(target.provider); catalog.get(target.provider)!.set(target.id, target); }
-      return selected;
+      return bounded(selected, contextTokens);
     };
     return { models, model: resolve(), resolve };
   }
@@ -155,13 +175,13 @@ export function modelRuntime(
     )
       throw new Error("Test model URL must be loopback HTTP");
     const catalog = new Map<string, Model<"openai-completions">>();
-    const resolve = (name = "test/echo") => {
+    const resolve = (name = "test/echo", contextTokens?: number) => {
       let selected = catalog.get(name);
       if (!selected) {
         selected = { ...model, id: name, baseUrl: endpoint.href };
         catalog.set(name, selected);
       }
-      return selected;
+      return bounded(selected, contextTokens);
     };
     const provider: Provider<"openai-completions"> = {
       id: model.provider,
@@ -342,12 +362,12 @@ export function modelRuntime(
   return {
     models,
     model,
-    resolve: (name?: string) => {
+    resolve: (name?: string, contextTokens?: number) => {
       if (name && !["test/echo", "camel-test/deterministic"].includes(name))
         throw Object.assign(new Error("Unsupported test model"), {
           status: 400,
         });
-      return model;
+      return bounded(model, contextTokens);
     },
   };
 }

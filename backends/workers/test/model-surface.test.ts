@@ -3,6 +3,7 @@ import test from "node:test";
 import { configuration } from "../src/api-contract.ts";
 import { resolveModel, routeModel, modelHeadersInput, runLimitsInput } from "../src/model-policy.ts";
 import { callSettings } from "../src/model-catalog.ts";
+import { boundedModel } from "../src/model-context.ts";
 import { importedHistory } from "../src/history-policy.ts";
 
 test("configuration retains provider settings, imports history and rejects reserved headers", () => {
@@ -36,4 +37,11 @@ test("OpenRouter pass-through and virtual routes use shared ECS policy", () => {
   assert.equal(routeModel(selection, { reason: "continuation", previous: { provider: next.provider, id: next.id } })?.id, next.id);
   assert.throws(() => resolveModel("unknown/model"), /Unknown model/);
   assert.deepEqual(callSettings({ ...novel, reasoning:false, maxTokens:1024 }, { maxOutputTokens:2048, temperature:0.3 }, "off"), {maxTokens:1024,temperature:0.3});
+});
+
+test("native Pi compaction sees the agent context cap without mutating the catalog", () => {
+  const model = resolveModel("openrouter/new-vendor/future-model");
+  assert.equal(boundedModel(model, 24000).contextWindow, 24000);
+  assert.equal(boundedModel(model, model.contextWindow * 2).contextWindow, model.contextWindow);
+  assert.equal(model.contextWindow, 128000);
 });
