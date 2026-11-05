@@ -27,6 +27,8 @@ test("configuration keeps attached tools, normalizes delegation, and clears opti
   assert.deepEqual(config.delegate?.agents, [{ name: "helper", definition: "helper" }]);
   assert.ok(config.builtins?.includes("delegate"));
   assert.equal(config.temperature, null);
+  assert.deepEqual(configuration({webSearch:{providers:["brave","exa"]}},"test/echo").config.webSearch,{providers:["brave","exa"]});
+  assert.throws(() => configuration({webSearch:{providers:["brave","brave"]}},"test/echo"), /each once/);
   const limited = configuration({delegate:{maxParallel:3,maxDepth:1}},"test/echo").config;
   assert.equal(limited.builtins, undefined);
   assert.deepEqual(limited.delegate,{maxParallel:3,maxDepth:1});

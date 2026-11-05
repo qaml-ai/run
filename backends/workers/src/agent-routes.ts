@@ -45,7 +45,7 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
     else {
       const noTools = !given.definition && !given.builtins?.length && !given.delegate && !given.mcpServers?.length && !given.fileTools && !given.mounts?.length;
       const config = await provisionDefinition(env, auth.tenantId, { ...(noTools ? { codeMode:false, fileTools:false, decide:false } : {}), ...given, type: "run", ttlSeconds: 604800 + retentionSeconds });
-      entry = result(await directory.upsert(config, directoryKey));
+      entry = result(await directory.upsert(config, directoryKey, url.origin));
     }
     if (entry.config.type !== "run") throw new ApiError(409, "Key belongs to an agent", "IDEMPOTENCY_CONFLICT");
     if (!entry.run) {
@@ -88,7 +88,7 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
   if (!Number.isInteger(at) || at < -1 || at >= history.messages.length) throw new ApiError(400, "Invalid fork point");
   const initialMessages = history.messages.slice(0, at + 1);
   const { key: _key, atMessage: _at, ...settings } = input;
-  const created = result(await directory.upsert({ ...entry.config, ...settings, initialMessages, ttlSeconds: input.ttlSeconds === undefined ? (key ? null : 86400) : input.ttlSeconds }, key as string | undefined));
+  const created = result(await directory.upsert({ ...entry.config, ...settings, initialMessages, ttlSeconds: input.ttlSeconds === undefined ? (key ? null : 86400) : input.ttlSeconds }, key as string | undefined, new URL(request.url).origin));
   await copyAgentWorkspace(env, entry.tenantId, entry.id, created.id);
   const forkedFrom = {agentId:entry.id,atMessage:at};
   await withSql(env, sql => sql.query("update agents set header=$3 where tenant=$1 and id=$2", [entry.tenantId,created.id,JSON.stringify({...created,forkedFrom})]));

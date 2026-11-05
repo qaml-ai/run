@@ -6,6 +6,7 @@ import { delegateInput, delegateSettings, limitsOnly, startsChildren, type Deleg
 import { toPiMessages } from "./history-formats.ts";
 import { validateInitialMessages } from "./history-policy.ts";
 import type { ToolDefinition } from "./attached-tools.ts";
+import { searchOrder } from "./web-search-policy.ts";
 
 export interface AgentConfiguration {
   model?: string;
@@ -23,6 +24,7 @@ export interface AgentConfiguration {
   modelHeaders?: Record<string, string> | null;
   runLimits?: RunLimits | null;
   builtins?: string[];
+  webSearch?: { providers: string[] };
   delegate?: DelegateSettings;
   workflow?: Record<string, unknown>;
   decide?: boolean;
@@ -80,7 +82,7 @@ export async function agentToken(secret: string, id: string): Promise<string> {
 
 const BUILTINS = ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "ask_human", "delegate", "generate_image", "agents", "decide", "workflow"];
 export function configuration(input: unknown, defaultModel: string): { config: AgentConfiguration; ttlSeconds?: number | null } {
-  const fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "delegate", "workflow", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides"]);
+  const fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "workflow", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides"]);
   const config: AgentConfiguration = { model: defaultModel };
   for (const field of ["model", "systemPrompt", "systemPromptAppend", "name", "type", "thinkingLevel", "definition", "subject", "keyScope", "bucket"] as const) {
     if (fields[field] === undefined) continue;
@@ -104,6 +106,11 @@ export function configuration(input: unknown, defaultModel: string): { config: A
   if (fields.builtins !== undefined) {
     if (!Array.isArray(fields.builtins) || fields.builtins.length > BUILTINS.length || fields.builtins.some(x => typeof x !== "string" || !BUILTINS.includes(x))) throw new BadRequest("Unsupported builtin");
     config.builtins = fields.builtins as string[];
+  }
+  if (fields.webSearch !== undefined) {
+    const search = object(fields.webSearch, ["providers"]);
+    try { config.webSearch = { providers: searchOrder(search.providers, "webSearch.providers") }; }
+    catch(error) { throw new ApiError(400, (error as Error).message); }
   }
   if (fields.delegate !== undefined) {
     config.delegate = delegateInput(fields.delegate);

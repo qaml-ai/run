@@ -7,6 +7,21 @@ import { prepareSources, sourceView, type RemoteSource } from "./tool-sources.ts
 
 export type Definition = { id: string; tenant: string; name: string; revision: number; spec: AgentConfiguration & { description?: string; applyOnUpdate?: boolean; limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; webSearch?: { providers: string[] } }; createdAt: number; updatedAt: number };
 const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "runLimits"] as const;
+/** A later agent configuration becomes its own choice when a new definition revision is applied. */
+export function configurationOverrides(config: AgentConfiguration, params: object): AgentConfiguration {
+  return { ...config, ...params, ...(config.definition ? { definitionOverrides:[...new Set([...(config.definitionOverrides ?? []), ...OVERRIDES.filter(field=>Object.hasOwn(params,field))])] } : {}) } as AgentConfiguration;
+}
+/** Agent source updates are checked like creation; credentials can only be introduced by a definition. */
+export async function configurationPatch(env: ControlEnv, tenant: string, config: AgentConfiguration, params: object): Promise<AgentConfiguration> {
+  const fields=params as Record<string,unknown>, checked = { ...fields };
+  for (const field of ["mcpServers", "openApi"] as const) if (Object.hasOwn(fields,field)) {
+    checked[field] = await prepareSources(env,tenant,undefined,field,fields[field],config[field] as RemoteSource[] | undefined);
+  }
+  const updated=configurationOverrides(config,checked);
+  const duplicate=updated.mcpServers?.find(source=>updated.openApi?.some(other=>other.name===source.name));
+  if(duplicate) throw new ApiError(400,`${duplicate.name} names both an MCP server and an OpenAPI source`);
+  return updated;
+}
 const reply = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
 const fromRow = (row: Record<string, any>): Definition => ({ id: row.id, tenant: row.tenant, name: row.name, revision: Number(row.revision), spec: row.spec, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) });
 const view = ({ tenant, spec, ...definition }: Definition) => ({ ...definition, ...spec, ...(spec.mcpServers ? { mcpServers: spec.mcpServers.map(x => sourceView(x as RemoteSource)) } : {}), ...(spec.openApi ? { openApi: spec.openApi.map(x => sourceView(x as RemoteSource)) } : {}) });
@@ -28,7 +43,7 @@ export async function provisionDefinition(env: ControlEnv, tenant: string, input
   }
   if (input.systemPrompt !== undefined) throw new ApiError(400, "Use systemPromptAppend with a definition");
   const definition = await resolveDefinition(env, tenant, input.definition);
-  const { description, applyOnUpdate, limits, webSearch, ...spec } = definition.spec;
+  const { description, applyOnUpdate, limits, ...spec } = definition.spec;
   return { ...limits, ...spec, ...input, definition: definition.id, definitionRevision: definition.revision, definitionOverrides: OVERRIDES.filter(field => Object.hasOwn(input, field)) };
 }
 export async function definitionRoutes(request: Request, env: ControlEnv, auth: AuthContext): Promise<Response | undefined> {
@@ -62,10 +77,10 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
   if (input.revision !== undefined && (request.method === "POST" || input.revision !== existing?.revision)) throw new ApiError(409, "Definition revision changed", "CONFLICT");
   const name = input.name ?? existing?.name;
   if (typeof name !== "string" || !name.trim() || name.length > 200) throw new ApiError(400, "A definition needs a name");
-  const changes = Object.fromEntries(Object.entries(input).filter(([key]) => !["name", "revision", "apply", "applyOnUpdate", "description", "limits", "webSearch"].includes(key)));
+  const changes = Object.fromEntries(Object.entries(input).filter(([key]) => !["name", "revision", "apply", "applyOnUpdate", "description", "limits"].includes(key)));
   const raw = request.method === "PATCH" ? { ...existing?.spec, ...changes } : changes;
   for (const [field, value] of Object.entries(raw)) if (value === null) delete raw[field];
-  const { mcpServers, openApi, description: _description, applyOnUpdate: _applyOnUpdate, limits: _limits, webSearch: _webSearch, ...rest } = raw;
+  const { mcpServers, openApi, description: _description, applyOnUpdate: _applyOnUpdate, limits: _limits, ...rest } = raw;
   const spec = configuration(rest, env.MODEL).config as Definition["spec"];
   if (raw.model === undefined) delete spec.model;
   for (const field of ["mcpServers", "openApi"] as const) {
@@ -95,7 +110,7 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
   });
   const applied: { agent: string; status: string; error?: string }[] = [];
   if (input.apply === "all" || saved.spec.applyOnUpdate && existing && !unchanged) for (const agent of (await directory.list()).filter(x => x.config.definition === saved.id)) {
-    const { description, applyOnUpdate, limits, webSearch, ...updates } = saved.spec;
+    const { description, applyOnUpdate, limits, ...updates } = saved.spec;
     const own = Object.fromEntries((agent.config.definitionOverrides ?? []).map(field => [field, agent.config[field as keyof AgentConfiguration]]));
     const result = await directory.upsert({ ...agent.config, ...updates, ...own, definition: saved.id, definitionRevision: saved.revision }, agent.key ?? agent.id);
     applied.push({ agent: agent.id, status: typeof result === "object" && "failed" in result ? "failed" : "updated", ...(typeof result === "object" && "failed" in result ? { error: result.error } : {}) });

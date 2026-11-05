@@ -11,20 +11,26 @@ test("definition revisions, imported history, forks and hidden stateless session
     assert.ok(response.ok, `${method} ${path}: ${response.status} ${JSON.stringify(value)}`);
     return value;
   }
-  const definition = await request("/v1/definitions", { name: "Helper", systemPrompt: "Reply simply.", fileTools: false, codeMode: false }, "POST", { "Idempotency-Key": "helper" });
+  const definition = await request("/v1/definitions", { name: "Helper", webSearch:{providers:["brave","exa"]}, systemPrompt: "Reply simply.", fileTools: false, codeMode: false }, "POST", { "Idempotency-Key": "helper" });
   assert.equal(definition.revision, 1);
   assert.equal((await request("/v1/definitions/helper")).id, definition.id);
   const revised = await request(`/v1/definitions/${definition.id}`, { revision: 1, systemPrompt: "Reply briefly." }, "PATCH");
   assert.equal(revised.revision, 2);
   const agent = await request("/v1/agents", { definition: "helper", importMessages: { format: "openai-chat", messages: [{role:"user",content:"My name is Ada."}] } }, "POST", { "Idempotency-Key": "imported" });
+  assert.deepEqual((await request(`/v1/agents/${agent.id}/configuration`)).webSearch,{providers:["brave","exa"]});
   assert.equal((await request(`/v1/agents/${agent.id}/history`)).messages[0].content, "My name is Ada.");
   const write = await fetch(fixture.url + `/v1/agents/${agent.id}/files/workspace/note.txt`, {method:"PUT",headers:{Authorization:`Bearer ${fixture.token}`,"content-type":"text/plain"},body:"Before fork"});
   assert.equal(write.status,201);
   const own = await request("/v1/agents", { definition: "helper", maxOutputTokens: 150 }, "POST", { "Idempotency-Key": "own-override" });
+  const configured = await request("/v1/agents", { definition: "helper" }, "POST", { "Idempotency-Key": "later-override" });
+  await request(`/v1/agents/${configured.id}/configuration`, { maxOutputTokens:175 }, "PATCH");
+  const credentialPatch=await fetch(fixture.url+`/v1/agents/${configured.id}/configuration`,{method:"PATCH",headers:{Authorization:`Bearer ${fixture.token}`,"content-type":"application/json"},body:JSON.stringify({mcpServers:[{name:"private",url:"http://127.0.0.1:9/mcp",auth:{type:"bearer",token:"local-test-not-a-real-credential"}}]})});
+  assert.equal(credentialPatch.status,400,"agent updates cannot bypass definition credential sealing");
   const applied = await request(`/v1/definitions/${definition.id}`, { revision: 2, maxOutputTokens: 200, apply: "all" }, "PATCH");
   assert.ok(applied.applied.every((item:any) => item.status === "updated"));
   assert.equal((await request(`/v1/agents/${agent.id}/configuration`)).maxOutputTokens, 200);
   assert.equal((await request(`/v1/agents/${own.id}/configuration`)).maxOutputTokens, 150);
+  assert.equal((await request(`/v1/agents/${configured.id}/configuration`)).maxOutputTokens, 175);
   const fork = await request(`/v1/agents/${agent.id}/fork`, { key:"forked", atMessage:0 });
   assert.equal(fork.forkedFrom.agentId, agent.id);
   const cloned = await fetch(fixture.url + `/v1/agents/${fork.id}/files/workspace/note.txt`, {headers:{Authorization:`Bearer ${fixture.token}`}});
