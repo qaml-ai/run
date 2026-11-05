@@ -180,6 +180,20 @@ export async function startFixture(
   cleanups.push(() => worker.stop());
   await worker.start();
   finishStartup();
+  if (config.vars.MAIL_TEST_URL) {
+    // Wrangler does not advance Cron Triggers itself. Tick the production job
+    // for local mail fixtures, including notifications enqueued directly by SQL.
+    let pending: Promise<void> | undefined;
+    let failed: unknown;
+    const timer = setInterval(() => {
+      if (!pending) pending = worker.scheduled().catch(error => { failed = error; }).finally(() => { pending = undefined; });
+    }, 1000).unref();
+    cleanups.push(async () => {
+      clearInterval(timer);
+      await pending;
+      if (failed) throw failed;
+    });
+  }
   return { url: worker.url, databaseUrl, db, worker, token, stop,
     async restart(vars: Record<string, string> = {}, crash = false) {
       await worker.stop(crash);

@@ -24,7 +24,7 @@ const worker = await unstable_dev(undefined, {
   port: Number(port),
   inspectorPort: Number(inspectorPort),
   persistTo,
-  experimental: { disableExperimentalWarning: true, showInteractiveDevSession: false },
+  experimental: { disableExperimentalWarning: true, showInteractiveDevSession: false, testScheduled: true },
 });
 const stop = async () => { await worker.stop(); process.exit(0); };
 process.once("SIGTERM", stop);
