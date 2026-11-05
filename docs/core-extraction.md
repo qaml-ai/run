@@ -572,4 +572,3 @@ Swaps outbound/session-state imports to `web-policy-host.ts`, error metrics to `
 | `web-fetch-policy.ts` | 42 | `webFetch` |
 | `public-address-policy.ts` | 107 | `Cidr`, `Resolve`, `OutboundPolicy`, `exactOrigin`, `BLOCKED_V4`, `BLOCKED_V6`, `addressBytes`, `cidr`, `within`, `BUILT_IN`, `MAPPED`, `embedded`, `PublicAddressPolicy`; methods: `blocked` |
 | `web-transfer-policy.ts` | 25 | `textual`, `readCapped`, `download` |
-

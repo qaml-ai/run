@@ -1,8 +1,8 @@
-import { readdir, readFile, realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import ts from "typescript";
+import { parse } from "@babel/parser";
 
 const PURE_PACKAGES = new Set(["zod"]);
 const NODE_GLOBALS = new Set(["Buffer", "process", "global", "NodeJS", "require", "__dirname", "__filename", "setImmediate", "clearImmediate"]);
@@ -11,29 +11,48 @@ const within = (root: string, path: string) => {
   return !isAbsolute(part) && part !== ".." && !part.startsWith(`..${sep}`);
 };
 
+type AstNode = { type?: unknown; loc?: { start: { line: number } }; [key: string]: unknown };
+const astNode = (value: unknown): AstNode | undefined => value !== null && typeof value === "object" ? value as AstNode : undefined;
+
+async function relativeModule(file: string, specifier: string): Promise<string | undefined> {
+  const target = resolve(dirname(file), specifier);
+  const suffixes = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+  const mapped = target.replace(/\.([cm]?)js(x?)$/, ".$1ts$2");
+  const candidates = /\.[cm]?[jt]sx?$/.test(target)
+    ? [...new Set([target, mapped])]
+    : [target, ...suffixes.map(suffix => target + suffix), ...suffixes.map(suffix => resolve(target, "index" + suffix))];
+  for (const candidate of candidates) {
+    try { if ((await stat(candidate)).isFile()) return await realpath(candidate); }
+    catch (error) { if ((error as { code?: string }).code !== "ENOENT" && (error as { code?: string }).code !== "ENOTDIR") throw error; }
+  }
+}
+
 /** Check all syntax, including imports that TypeScript erases and esbuild would tree-shake away. */
 export async function coreViolations(file: string, text: string, root: string): Promise<string[]> {
-  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
-  const errors: string[] = [], imports: { node: ts.Node; specifier: string }[] = [];
-  const fail = (node: ts.Node, message: string) => {
-    const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
-    errors.push(`${file}:${line + 1}: ${message}`);
-  };
-  const module = (node: ts.Node, value: ts.Node | undefined) => {
-    if (value && ts.isStringLiteralLike(value)) imports.push({ node, specifier: value.text });
+  const source = parse(text, { sourceType: "module", plugins: /\.[jt]sx$/.test(file) ? ["typescript", "jsx"] : ["typescript"], createImportExpressions: true });
+  const errors: string[] = [], imports: { node: AstNode; specifier: string }[] = [];
+  const fail = (node: AstNode, message: string) => errors.push(`${file}:${node.loc?.start.line ?? 1}: ${message}`);
+  const module = (node: AstNode, value: unknown) => {
+    const literal = astNode(value);
+    if (literal?.type === "StringLiteral" && typeof literal.value === "string") imports.push({ node, specifier: literal.value });
     else fail(node, "core imports must be string literals");
   };
-  if (source.typeReferenceDirectives.length || source.referencedFiles.length || source.libReferenceDirectives.length)
+  if (source.comments?.some(comment => comment.type === "CommentLine" && /^\/\s*<reference\b/.test(comment.value)))
     errors.push(`${file}: triple-slash references are not allowed in core`);
-  const visit = (node: ts.Node) => {
-    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node) && node.moduleSpecifier) module(node, node.moduleSpecifier);
-    if (ts.isImportEqualsDeclaration(node)) fail(node, "import assignments are not allowed in core");
-    if (ts.isImportTypeNode(node)) module(node, ts.isLiteralTypeNode(node.argument) ? node.argument.literal : undefined);
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) module(node, node.arguments[0]);
-    if (ts.isIdentifier(node) && NODE_GLOBALS.has(node.text)) fail(node, `${node.text} is not allowed in core`);
-    if (ts.isElementAccessExpression(node) && node.argumentExpression && ts.isStringLiteralLike(node.argumentExpression) && NODE_GLOBALS.has(node.argumentExpression.text))
-      fail(node, `${node.argumentExpression.text} is not allowed in core`);
-    ts.forEachChild(node, visit);
+  const visit = (value: unknown) => {
+    if (Array.isArray(value)) { for (const child of value) visit(child); return; }
+    const node = astNode(value);
+    if (!node) return;
+    if (node.type === "ImportDeclaration" || (node.type === "ExportNamedDeclaration" || node.type === "ExportAllDeclaration") && node.source) module(node, node.source);
+    if (node.type === "TSImportEqualsDeclaration") fail(node, "import assignments are not allowed in core");
+    if (node.type === "TSImportType") module(node, node.argument);
+    if (node.type === "ImportExpression") module(node, node.source);
+    if (node.type === "CallExpression" && astNode(node.callee)?.type === "Import") module(node, (node.arguments as unknown[])[0]);
+    if (node.type === "Identifier" && typeof node.name === "string" && NODE_GLOBALS.has(node.name)) fail(node, `${node.name} is not allowed in core`);
+    const property = astNode(node.property);
+    if ((node.type === "MemberExpression" || node.type === "OptionalMemberExpression") && node.computed && property?.type === "StringLiteral" && typeof property.value === "string" && NODE_GLOBALS.has(property.value))
+      fail(node, `${property.value} is not allowed in core`);
+    for (const child of Object.values(node)) visit(child);
   };
   visit(source);
   const realRoot = await realpath(root);
@@ -43,8 +62,8 @@ export async function coreViolations(file: string, text: string, root: string): 
       fail(node, `disallowed core import: ${specifier}`);
       continue;
     }
-    const found = ts.resolveModuleName(specifier, file, { moduleResolution: ts.ModuleResolutionKind.Bundler }, ts.sys).resolvedModule;
-    if (!found || !within(realRoot, await realpath(found.resolvedFileName))) fail(node, `import leaves core or does not resolve: ${specifier}`);
+    const found = await relativeModule(file, specifier);
+    if (!found || !within(realRoot, found)) fail(node, `import leaves core or does not resolve: ${specifier}`);
   }
   return errors;
 }
