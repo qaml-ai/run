@@ -68,6 +68,19 @@ async function readFixtureConfiguration(env: Env): Promise<string> {
   }
 }
 
+// A deployment keeps its environment identity between requests. Preserve that
+// identity until the fixture's tenant configuration actually changes, while
+// still reading every request so configuration reload assertions stay live.
+const configuredEnvironments = new WeakMap<Env, { configuration: string; env: Env }>();
+async function configuredEnvironment(env: Env): Promise<Env> {
+  const configuration = await fixtureConfiguration(env);
+  const previous = configuredEnvironments.get(env);
+  if (previous?.configuration === configuration) return previous.env;
+  const configured = { ...env, AGENT_TENANTS_JSON: configuration };
+  configuredEnvironments.set(env, { configuration, env: configured });
+  return configured;
+}
+
 /** Clock preparation only: execution still runs through the original DO alarm/job. */
 export class CamelAgent extends RuntimeAgent {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -135,10 +148,8 @@ export default {
     if (new URL(request.url).pathname === "/__test/image-resize-failures")
       return Response.json({ count: await env.BUCKET.head(resizeFailureKey) ? 1 : 0 });
     if (new URL(request.url).pathname === "/healthz") return application.fetch(request, env, context);
-    const configuration = fixtureConfiguration(env);
-    context.waitUntil(configuration.catch(() => {}));
-    return application.fetch(request, {
-      ...env, AGENT_TENANTS_JSON: await configuration,
-    }, context);
+    const configuration = configuredEnvironment(env);
+    context.waitUntil(configuration.then(() => {}, () => {}));
+    return application.fetch(request, await configuration, context);
   },
 };
