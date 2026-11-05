@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { tar } from "../../../src/tar.ts";
 import { HttpError } from "./errors.ts";
+import type { SecurityEnv } from "./security-services.ts";
 import { createVolume, workspaceId } from "./file-mounts.ts";
 import {
   declaredType,
@@ -54,7 +55,7 @@ export async function handleSignedFileRequest(
     return fileFailure(error);
   }
 }
-export interface FileBindings extends ImageBindings {
+export interface FileBindings extends ImageBindings, SecurityEnv {
   VOLUMES: DurableObjectNamespace<Volume>;
   HYPERDRIVE: {
     connectionString: string;
@@ -238,6 +239,7 @@ const fileFailure = (error: unknown) => {
       error:
         coded?.[2] ??
         (error instanceof HttpError ? error.message : "File operation failed"),
+      ...(error instanceof HttpError ? { code: error.code, ...error.details } : {}),
     },
     coded ? Number(coded[1]) : error instanceof HttpError ? error.status : 500,
   );

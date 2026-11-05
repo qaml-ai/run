@@ -3,6 +3,7 @@ import { FileError } from "./volume.ts";
 import { declaredType, sniffContentType } from "./file-policy.ts";
 import { VOLUME_LIMITS } from "./volume-policy.ts";
 import type { FileBindings } from "./files.ts";
+import { storageFull, storageQuota } from "./storage-quota.ts";
 /** Upload with at most one 5 MiB part buffered, including requests without Content-Length. */
 export async function uploadFile(
   env: FileBindings,
@@ -14,6 +15,8 @@ export async function uploadFile(
   expectedVersion?: number,
   maxBytes = VOLUME_LIMITS.fileBytes,
 ) {
+  const quota = await storageQuota(env, tenant);
+  if (quota && quota.used >= quota.limit) throw storageFull(quota);
   const v = env.VOLUMES.getByName(`${tenant}:${id}`),
     key = await v.beginUpload(),
     hash = createHash("sha256");
@@ -42,6 +45,7 @@ export async function uploadFile(
         size += bytes.length;
         if (size > Math.min(maxBytes, VOLUME_LIMITS.fileBytes))
           throw new FileError("File exceeds byte limit", 413);
+        if (quota && quota.used + size > quota.limit) throw storageFull(quota);
         hash.update(bytes);
         const headCount = Math.min(bytes.length, 512 - head.length);
         for (let i = 0; i < headCount; i++) head.push(bytes[i]);
