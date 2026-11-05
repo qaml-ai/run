@@ -224,9 +224,11 @@ export class Volume extends DurableObject<VolumeBindings> {
       ...(snapshot ? { snapshot } : {}),
     };
   }
-  async read(path: string, snapshot?: string) {
-    const file = this.stat(path, snapshot),
-      object = await this.env.BUCKET.get(file.key);
+  async read(path: string, snapshot?: string, maxBytes?: number) {
+    const file = this.stat(path, snapshot);
+    if (maxBytes !== undefined && file.size > maxBytes)
+      throw new FileError("Tool file exceeds byte limit", 413);
+    const object = await this.env.BUCKET.get(file.key);
     if (!object) throw new FileError("File object missing", 503);
     const bytes = new Uint8Array(await object.arrayBuffer());
     if ((await digest(bytes)) !== (file.sha256 ?? file.key.split("/").at(-1)))

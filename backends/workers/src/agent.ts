@@ -1,3 +1,4 @@
+import { withMoneyMetrics } from "./money-metrics.ts";
 import { DurableObject } from "cloudflare:workers";
 import { type Message, type AssistantMessage } from "@earendil-works/pi-ai";
 import {
@@ -68,6 +69,7 @@ import type { BillingEnv } from "./billing-routes.ts";
 import { runAdmission } from "./admission.ts";
 import { actorInput, bucketInput, spendInput } from "./security-policy.ts";
 import { writtenFile, presentedFile, fileOutputs, releasePresentedFiles } from "./file-output.ts";
+import { DurableFileVersions } from "./file-versions.ts";
 
 type Config = {
   id: string;
@@ -189,6 +191,7 @@ export class CamelAgent extends DurableObject<Env> {
     await root.configure({ tools: enabled, modelTools: enabled }, BACKGROUND_CONTEXT);
   }
   private workspaceToolNames: string[] = [];
+  private fileVersions = new DurableFileVersions(this.ctx.storage);
   // Pi can reopen its Harness after a storage failure without replacing this
   // agent. Keep admission here so old remote work still occupies its slots.
   private readonly sandboxRemote = isolatedSandboxRemote({
@@ -223,6 +226,7 @@ export class CamelAgent extends DurableObject<Env> {
               }, file, volumePath, event => this.emit(event));
             },
             async file => writtenFile(this.ctx.storage, await this.fileRequestId(), file),
+            this.fileVersions,
           )[index];
           return impl.execute(args as never, api, context);
         },
@@ -782,6 +786,9 @@ export class CamelAgent extends DurableObject<Env> {
     };
   }
   async fetch(request: Request): Promise<Response> {
+    return withMoneyMetrics(this.env, () => this.fetchRequest(request));
+  }
+  private async fetchRequest(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url),
         path = url.pathname;
@@ -1209,6 +1216,9 @@ export class CamelAgent extends DurableObject<Env> {
       });
   }
   async onStart() {
+    return withMoneyMetrics(this.env, () => this.restorePending());
+  }
+  private async restorePending() {
     // Pi restores its own work on startup. Restore the adapter's result/receipt
     // waiters too, so completion is billed without requiring a client poll.
     for (const record of await this.records())
@@ -1218,7 +1228,9 @@ export class CamelAgent extends DurableObject<Env> {
       this.ctx.waitUntil(this.flushBilling());
   }
   async onJob(context: { job: { fn: string } }) {
-    if (context.job.fn === "camel-wake") await this.wake();
+    return withMoneyMetrics(this.env, async () => {
+      if (context.job.fn === "camel-wake") await this.wake();
+    });
   }
   private async wake() {
     const conf = await this.ctx.storage.get<Config>("configuration");

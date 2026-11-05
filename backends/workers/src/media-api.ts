@@ -5,21 +5,21 @@ import { openaiImages } from './media/images.ts';
 import { Synthesizer, openaiSpeech, DEFAULT_VOICE } from './media/speech.ts';
 import { speechRequest, speechInput, speechChoiceInput } from './media/speech-api.ts';
 import { speechProvider, DEFAULT_VOICES } from './media/voice-providers/tts.ts';
-import { DEFAULT_PRICING } from '../../../src/pricing.ts';
 import { speechPrices, ttsCost } from '../../../src/voice-providers/prices.ts';
 import { boundedBytes } from './images.ts';
 import { volume, type FileBindings } from './files.ts';
 import { normalizePath } from './volume.ts';
 import { HttpError } from './errors.ts';
-import { digest, type ApiError } from './api-contract.ts';
 import { withSql, transaction, database } from './postgres.ts';
-import { accrueUsage } from './billing-sql.ts';
 import { EndUserCredits } from './end-user-credits.ts';
-import { enqueueEvents, webhookEvent, publishPending, type WebhookEnv, unseal } from './webhooks.ts';
+import { publishPending, type WebhookEnv } from './webhooks.ts';
+import { keyServices, type KeyServices } from './security-services.ts';
+import { runAdmission, type AdmissionEnv } from './admission.ts';
 import { metric } from './observability.ts';
+import { mediaAzure, azureCredentials, type MediaAzureEnv } from './media-azure.ts';
 import type { AuthContext } from './control.ts';
 
-export interface MediaBindings extends FileBindings, WebhookEnv {
+export type MediaBindings = Omit<FileBindings, 'HYPERDRIVE'> & WebhookEnv & Omit<AdmissionEnv, 'HYPERDRIVE'> & MediaAzureEnv & {
   PLATFORM_OPENAI_KEY?: string;
   MEDIA_BASE_URL?: string;
   MEDIA_PRICING?: string;
@@ -34,24 +34,33 @@ const json = (value: unknown) => Response.json(value, { headers: { 'cache-contro
 const testConfig = (env: MediaBindings) => env.TEST_MODE === '1' ? JSON.parse(env.TEST_MEDIA_TENANTS ?? '{}') : {};
 
 /** Credentials resolve at call time; they never enter agent history or public responses. */
-export async function mediaKey(env: MediaBindings, tenant: string, scope: string | undefined, provider: string) {
-  const fixture = testConfig(env), configured = fixture.tenants?.[tenant];
-  const row = (await withSql(env, async sql => {
-    const scoped = scope && (await sql.query('select sealed from key_scope_providers where tenant=$1 and provider=$2 and scope=$3', [tenant,provider,scope])).rows[0];
-    return scoped || (await sql.query('select sealed from provider_keys where tenant=$1 and provider=$2', [tenant,provider])).rows[0];
-  }));
-  if (row) {
-    const saved = JSON.parse(await unseal(row.sealed, env));
-    return { ...(typeof saved === 'string' ? { apiKey: saved } : saved), platform: false };
+export async function mediaKey(env: MediaBindings, tenant: string, scope: string | undefined, provider: string, services?: KeyServices, azureDeployment?: string) {
+  const { accounts, keyScopes } = services ?? await keyServices(env);
+  // Match src/node.ts's standalone media resolution: an address-only scope is
+  // a gateway that needs no key, while an absent entry falls back to the account.
+  const entry = scope ? await keyScopes.entry(tenant, scope, provider) : undefined;
+  if (entry?.apiKey || entry?.baseUrl) return {
+    apiKey: entry.apiKey ?? '', ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}),
+    ...(entry.headers ? { headers: entry.headers } : {}), platform: false,
+  };
+  const resolved = await accounts.providerKey(tenant, provider);
+  if (resolved) {
+    if (resolved.source === 'platform') { const limited = await accounts.billing.creditLimit(tenant); if (limited) throw limited; }
+    const azure = resolved.source === 'platform' && provider === 'openai' && azureDeployment ? mediaAzure(env) : undefined;
+    if (azure && azureDeployment) return { ...azureCredentials(azure, azureDeployment, { apiKey: resolved.key }), platform: true };
+    return { apiKey: resolved.key, platform: resolved.source !== 'tenant' };
   }
+  // Keep old local fixtures usable; production keys come from the shared store.
+  const configured = testConfig(env).tenants?.[tenant];
   if (configured?.apiKeys?.[provider]) return { apiKey: configured.apiKeys[provider], platform: false };
   if (configured?.platformKeys === false) return undefined;
-  const key = provider === 'openai' ? env.PLATFORM_OPENAI_KEY : undefined;
+  const key = env.TEST_MODE === '1' && provider === 'openai' ? env.PLATFORM_OPENAI_KEY : undefined;
   return key ? { apiKey: key, platform: true } : undefined;
 }
 
 /** Stream with bounded bytes; redirect destinations receive a fresh allowlist check. */
 export function mediaOutbound(env: MediaBindings) {
+  const azure = mediaAzure(env);
   return { fetch: async (address: string | URL, options: any = {}) => {
     let url = new URL(address);
     const base = env.MEDIA_BASE_URL ? new URL(env.MEDIA_BASE_URL) : undefined;
@@ -66,10 +75,10 @@ export function mediaOutbound(env: MediaBindings) {
     refresh();
     try {
       for (let n = 0; n <= (options.maxRedirects ?? 0); n++) {
-        const fixture = env.TEST_MODE === '1' && base?.origin === url.origin && ['127.0.0.1','localhost','[::1]'].includes(url.hostname);
+        const fixture = env.TEST_MODE === '1' && (base?.origin === url.origin || azure?.endpoint === url.origin) && ['127.0.0.1','localhost','[::1]'].includes(url.hostname);
         // Workers cannot resolve and pin arbitrary DNS. An operator allowlist is
         // required for source URLs; this closes DNS rebinding as well as literal IPs.
-        const provider = !!options.secrets && (['https://api.openai.com','https://api.elevenlabs.io','https://api.cartesia.ai','https://api.deepgram.com'].includes(url.origin) || base?.origin === url.origin);
+        const provider = !!options.secrets && (['https://api.openai.com','https://api.elevenlabs.io','https://api.cartesia.ai','https://api.deepgram.com'].includes(url.origin) || base?.origin === url.origin || azure?.endpoint === url.origin);
         const allowed = env.MEDIA_ALLOWED_HOSTS?.split(',').map(host => host.trim().toLowerCase()).includes(url.hostname);
         if (url.username || url.password || (!fixture && (url.protocol !== 'https:' || (!provider && !allowed)))) throw new HttpError(400, 'Media URL must use an operator-allowlisted HTTPS hostname');
         const response = await fetch(url, { method: options.method, body: options.body, headers: { ...options.headers, ...options.secrets }, signal: controller.signal, redirect: 'manual' });
@@ -106,7 +115,12 @@ export function mediaOutbound(env: MediaBindings) {
   } } as any;
 }
 
-async function admit(env: MediaBindings, tenant: string) {
+async function admit(env: MediaBindings, tenant: string, services: KeyServices) {
+  const refused = await services.accounts.runLimit(tenant);
+  if (refused) throw typeof refused === 'string' ? new HttpError(402, refused, 'SPEND_LIMIT') : refused;
+  await runAdmission(env, tenant);
+  // Compatibility for pre-money-track synthetic fixture settings only.
+  if (env.TEST_MODE !== '1') return;
   const configured = testConfig(env).tenants?.[tenant];
   const row = (await withSql(env, sql => sql.query('select t.billing,t.limits,a.balance,coalesce((select sum(amount) from credit_holds where tenant=t.id),0) held from tenants t left join credit_accounts a on a.tenant=t.id where t.id=$1', [tenant]))).rows[0];
   if (!row) throw new HttpError(401, 'Unknown account');
@@ -121,18 +135,10 @@ async function admit(env: MediaBindings, tenant: string) {
 }
 
 /** Known provider usage and its event are committed together. No prompt, image or transcript enters SQL. */
-async function record(env: MediaBindings, tenant: string, usage: any) {
-  const id = crypto.randomUUID(), amount = Math.round(usage.usage.cost.total * 1e6), kind = usage.kind;
-  const counts: Record<string,number> = kind === 'image' ? { image: amount, images: usage.images } : kind === 'speech' ? { speech: amount, speeches: 1, speechSeconds: usage.audioSeconds } : { transcription: amount, transcriptions: 1, audioSeconds: usage.audioSeconds };
-  await transaction(env, async sql => {
-    const account = (await sql.query('select billing from tenants where id=$1 for update',[tenant])).rows[0];
-    if (usage.platform && account.billing !== 'none' && amount) await accrueUsage(sql, [{ tenant, amount, metadata: counts }]);
-    const model = `${kind}:${usage.provider}/${usage.model}`, count = usage.images ?? usage.transcriptions ?? usage.speeches ?? 1;
-    await sql.query(`insert into usage(tenant,day,model,responses,input,output,cost,platform_responses,platform_cost) values($1,$2,$3,$4,$5,$6,$7,$8,$9)
-      on conflict(tenant,day,model) do update set responses=usage.responses+excluded.responses,input=usage.input+excluded.input,output=usage.output+excluded.output,cost=usage.cost+excluded.cost,platform_responses=usage.platform_responses+excluded.platform_responses,platform_cost=usage.platform_cost+excluded.platform_cost`,
-      [tenant,new Date().toISOString().slice(0,10),model,count,usage.usage.input??0,usage.usage.output??0,usage.usage.cost.total,usage.platform?count:0,usage.platform?usage.usage.cost.total:0]);
-    await enqueueEvents(sql, [webhookEvent('usage.recorded',tenant,{ agentId:null,requestId:null,subject:usage.identity?.subject??null,actor:usage.actor??null,context:usage.identity?.context??{},keyScope:usage.keyScope??null,provider:usage.provider,model:usage.model,kind,input:usage.usage.input??0,output:usage.usage.output??0,cacheRead:0,cacheWrite:0,...(usage.images?{images:usage.images}:{}),...(usage.audioSeconds!==undefined?{audioSeconds:usage.audioSeconds}:{}),cost:{usd:usage.usage.cost.total,source:'catalog'},at:usage.timestamp },id)]);
-  });
+async function record(env: MediaBindings, services: KeyServices, tenant: string, usage: any) {
+  const amount = Math.round(usage.usage.cost.total * 1e6);
+  await transaction(env, sql => services.accounts.recordUsageIn(sql, tenant, '', usage));
+  await services.accounts.usageCommitted(tenant);
   await publishPending(env);
   metric(env,'media_usage',{MediaRequests:1,MediaCostMicros:amount},{Provider:usage.provider,Model:usage.model});
 }
@@ -172,10 +178,12 @@ export async function handleMediaRequest(request: Request, env: MediaBindings, a
   if (input.path?.length>1000 || (kind==='transcriptions' && input.prompt?.length>2000)) throw new HttpError(400,'Request field is too long');
   if (kind==='speech' && typeof input.text!=='string') throw new HttpError(400,'text must be a string');
   const tenant=auth.tenantId, pending: Promise<void>[]=[];
+  const services=await keyServices(env);
   const drain = async <T>(task: Promise<T>) => { try { return await task; } finally { await Promise.all(pending); } };
-  const common={outbound:mediaOutbound(env),admit:()=>admit(env,tenant),record:(_tenant:string,usage:any)=>{ const write=record(env,tenant,usage); void write.catch(()=>{}); pending.push(write); }};
-  const prices={...DEFAULT_PRICING,...JSON.parse(env.MEDIA_PRICING??'{}')};
-  const key=(_tenant:string,scope:string|undefined,provider:string)=>mediaKey(env,tenant,scope,provider);
+  const common={outbound:mediaOutbound(env),admit:()=>admit(env,tenant,services),record:(_tenant:string,usage:any)=>{ const write=record(env,services,tenant,usage); void write.catch(()=>{}); pending.push(write); }};
+  const prices={...services.accounts.billing.pricing,...(env.TEST_MODE==='1'?JSON.parse(env.MEDIA_PRICING??'{}'):{})};
+  const key=(_tenant:string,scope:string|undefined,provider:string)=>mediaKey(env,tenant,scope,provider,services);
+  const azure=mediaAzure(env);
   const identity=input.subject!==undefined || input.context!==undefined ? {subject:input.subject,context:input.context}:undefined;
   const facts={...(input.keyScope?{keyScope:input.keyScope}:{}),...(input.actor?{actor:input.actor}:{}),...(identity?{identity}:{})};
   const hold=input.subject ? (usd:number)=>new EndUserCredits(database(env)).hold(tenant,input.subject,input.bucket??'default',usd,kind==='images'?'image':kind==='transcriptions'?'transcription':'speech') : undefined;
@@ -183,12 +191,12 @@ export async function handleMediaRequest(request: Request, env: MediaBindings, a
     if (typeof input.prompt!=='string' || !input.prompt.trim() || input.prompt.length>32000) throw new HttpError(400,'prompt must contain 1–32000 characters');
     if (!multipart) { if(input.images!==undefined && !Array.isArray(input.images)) throw new HttpError(400,'images must be an array'); const checked=(value:any)=>{if (value && Object.keys(value).some(k=>k!=='data' && k!=='url')) throw new HttpError(400,'Unknown image source field');return source(value);}; images=(input.images??[]).map(checked); mask=input.mask!==undefined?checked(input.mask):undefined; }
     if (input.path!==undefined && input.volumeId===undefined) throw new HttpError(400,'path requires volumeId');
-    const made=await drain(imageRequest({...common,imager:new Imager({provider:openaiImages({outbound:common.outbound,baseUrl:env.MEDIA_BASE_URL}),key,price:()=>prices.image}), owns:async(t,id)=>!!await volume(env,t,id),save:async(t,id,p,b,ct)=>{const {key,...saved}=await (await volume(env,t,id)).write(p,b,ct);return saved;}},tenant,{prompt:input.prompt,images,mask,options:imageOptions(input),...facts,...(hold?{hold}:{}),...(input.volumeId!==undefined?{volume:{id:input.volumeId,path:normalizePath(input.path??'/images')}}:{})},request.signal));
+    const made=await drain(imageRequest({...common,imager:new Imager({provider:openaiImages({outbound:common.outbound,baseUrl:env.MEDIA_BASE_URL}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.imageDeployment),price:()=>prices.image}), owns:async(t,id)=>!!await volume(env,t,id),save:async(t,id,p,b,ct)=>{const {key,...saved}=await (await volume(env,t,id)).write(p,b,ct);return saved;}},tenant,{prompt:input.prompt,images,mask,options:imageOptions(input),...facts,...(hold?{hold}:{}),...(input.volumeId!==undefined?{volume:{id:input.volumeId,path:normalizePath(input.path??'/images')}}:{})},request.signal));
     return json(made);
   }
   if(kind==='transcriptions') {
     audio??=source(input);
-    const made=await drain(transcribeRequest({...common,transcriber:new Transcriber({provider:openaiTranscription({outbound:common.outbound,baseUrl:env.MEDIA_BASE_URL}),key,price:()=>prices.transcription})},tenant,{audio,language:languageInput(input.language),prompt:input.prompt,...facts,...(hold?{hold}:{})},request.signal));
+    const made=await drain(transcribeRequest({...common,transcriber:new Transcriber({provider:openaiTranscription({outbound:common.outbound,baseUrl:env.MEDIA_BASE_URL}),key:(t,s,p)=>mediaKey(env,t,s,p,services,azure?.transcriptionDeployment),price:()=>prices.transcription})},tenant,{audio,language:languageInput(input.language),prompt:input.prompt,...facts,...(hold?{hold}:{})},request.signal));
     return json(made);
   }
   const tts = speechPrices({AGENT_SPEECH_PRICES:env.AGENT_SPEECH_PRICES});

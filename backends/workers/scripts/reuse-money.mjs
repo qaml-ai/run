@@ -49,3 +49,4 @@ const protocol = ts.createSourceFile('protocol.ts', await readFile(new URL('src/
 const persistenceFailed = protocol.statements.find(node => ts.isVariableStatement(node) && node.declarationList.declarations.some(declaration => declaration.name.getText(protocol) === 'PERSISTENCE_FAILED'));
 if (!persistenceFailed || !(await readFile(new URL('money-host.ts', out), 'utf8')).includes(persistenceFailed.getText(protocol))) throw new Error('money-host PERSISTENCE_FAILED differs from src/');
 console.log('Money policy modules match src/');
+await import('./reuse-money-metrics.mjs');

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PLATFORM_ALARMS, evaluateAlarm, type AlarmRule, type MetricBucket, type MetricPoint } from '../src/alarm-policy.ts';
+import { recordEventMetrics, withMoneyMetrics } from '../src/money-metrics.ts';
 
 const named = (id: string) => PLATFORM_ALARMS.find(rule => rule.id === id)!;
 const window = (rule: AlarmRule, points: MetricPoint[][]): MetricBucket[] => points.map((points,index) => ({ start: index * rule.periodSeconds * 1000, periodSeconds: rule.periodSeconds, points }));
@@ -74,11 +75,25 @@ test('unwired policy can be tested with synthetic signals without claiming produ
   const first = { ...named('first_token_slow'), wired: true };
   const points = Array.from({length:10},(_,i)=>({metric:'TimeToFirstTokenMs',value:i>=8?60001:100}));
   assert.equal(evaluate(first,[points,points,points]).state,'firing');
-  const tenant = { ...named('tenant_model_spend'), wired: true };
-  assert.equal(evaluate(tenant,[[
-    {metric:'ModelCostUsd',value:30,dimensions:{Tenant:'one'}},
-    {metric:'ModelCostUsd',value:21,dimensions:{Tenant:'one'}},
-    {metric:'ModelCostUsd',value:40,dimensions:{Tenant:'two'}},
-  ]]).state,'firing');
-  assert.equal(named('tenant_model_spend').wired,false);
+});
+
+test('source usage metrics feed global and per-tenant spend alarm selectors', () => {
+  const points: MetricPoint[] = [];
+  const env = { METRICS: { writeDataPoint(point: { indexes: string[]; doubles: number[]; blobs: string[] }) {
+    points.push({ metric: point.indexes[0], value: point.doubles[0], dimensions: { Tenant: point.blobs[7] } });
+  } } as unknown as AnalyticsEngineDataset };
+  const log = console.log;
+  console.log = () => {};
+  try {
+    withMoneyMetrics(env, () => recordEventMetrics([
+      { id: 'one', type: 'usage.recorded', tenant: 'one', created: 1, data: { provider: 'fixture', model: 'test/model', cost: { usd: 60 } } },
+      { id: 'two', type: 'usage.recorded', tenant: 'two', created: 2, data: { provider: 'fixture', model: 'test/model', cost: { usd: 50 } } },
+    ]));
+  } finally { console.log = log; }
+  assert.equal(named('model_spend').wired, true);
+  assert.equal(named('tenant_model_spend').wired, true);
+  assert.equal(evaluate(named('model_spend'), [points]).state, 'firing');
+  assert.equal(evaluate(named('tenant_model_spend'), [points]).state, 'firing');
+  assert.equal(named('runs_uncertain').wired, false, 'a formatter alone does not prove restart instrumentation');
+  assert.equal(named('webhook_failed').wired, false, 'scan failures also need an Analytics observation');
 });

@@ -1,3 +1,4 @@
+import { withMoneyMetrics } from "./money-metrics.ts";
 import { sweepComputers } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
 import {
@@ -82,7 +83,7 @@ export default {
     env: Env,
     ctx: ExecutionContext,
   ): Promise<Response> {
-    return corsResponse(request, await (async () => {
+    return withMoneyMetrics(env, async () => corsResponse(request, await (async () => {
     try {
       request = websocketAuthorization(request);
       const preflight = corsPreflight(request);
@@ -203,6 +204,10 @@ export default {
       }
       if (!entry) throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
       const tail = match[3] || "/";
+      // Internal computer operations are reachable only through the service
+      // binding. Public cleanup must use the account-scoped confirmation route.
+      if (tail === "/__computer" && env.TEST_MODE !== "1")
+        throw new ApiError(404, "Not found", "NOT_FOUND");
       const directory = new Directory(env, entry.tenantId);
       if (entry.deleted) {
         if (auth && tail === "/" && request.method === "DELETE") {
@@ -274,6 +279,13 @@ export default {
         const selected = negotiateEvents(request);
         if (selected) return selected;
       }
+      // Browser grants retain Node's read-only SSE policy. The internal agent
+      // endpoint also negotiates transports, so strip the WebSocket offer here.
+      if (browser && tail === "/events") {
+        const headers = new Headers(request.headers);
+        headers.set("accept", "text/event-stream");
+        request = new Request(request, { headers });
+      }
       const response = await forward(request, env, entry.id, tail);
       return browser ? browserResponse(response, browser, tail) : response;
     } catch (error) {
@@ -288,9 +300,10 @@ export default {
       return Response.json({ error: "Backend operation failed", code: errorCode(error, status) },
         { status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
     }
-    })());
+    })()));
   },
   async queue(batch: MessageBatch<DeliveryMessage>, env: Env) {
+    return withMoneyMetrics(env, async () => {
     await sendMoneyWebhooks(env);
     for (const message of batch.messages.filter(message => message.body.kind === "schedule")) {
       try { if (await deliverScheduleEmail(env, message.body.id)) message.ack(); else message.retry({ delaySeconds: 10 }); }
@@ -298,8 +311,10 @@ export default {
     }
     await consumeWebhooks({ ...batch, messages: batch.messages.filter(message => message.body.kind === "email") } as MessageBatch<DeliveryMessage>, env);
     for (const message of batch.messages) if (message.body.kind !== "email" && message.body.kind !== "schedule") message.ack();
+    });
   },
   async scheduled(_controller: ScheduledController, env: Env) {
+    return withMoneyMetrics(env, async () => {
     try {
       await maintenance(env);
       await moneyMaintenance(env);
@@ -307,5 +322,6 @@ export default {
       await sweepComputers(env);
       metric(env, "maintenance", { MaintenanceRuns: 1 });
     } catch (error) { failure(env, "maintenance_failed", error); throw error; }
+    });
   },
 } satisfies ExportedHandler<Env, DeliveryMessage>;

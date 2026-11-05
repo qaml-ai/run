@@ -101,7 +101,7 @@ export class ComputerService {
     if (old) { if (old.input_hash !== hash) throw new HttpError(409, 'Retried computer operation changed'); if (old.state !== 'completed') throw new HttpError(409, 'Previous operation has an uncertain outcome; inspect status before retrying'); return old.result; }
     // Validate before writing an uncertain intent.
     const command = fileCommand(name, args) ?? args.command, timeout = args.timeoutSeconds ?? 60;
-    if (!['computer_start','computer_stop'].includes(name) && (typeof command !== 'string' || !command || command.length > 32000 || !Number.isInteger(timeout) || timeout < 1 || timeout > 120)) throw new HttpError(400, 'Invalid computer command or timeout');
+    if (!['computer_start','computer_stop'].includes(name) && ((!isBrowserProvider(c.provider) && (typeof command !== 'string' || !command || command.length > 32000)) || !Number.isInteger(timeout) || timeout < 1 || timeout > 120)) throw new HttpError(400, 'Invalid computer command or timeout');
     await withSql(this.env, sql => sql.query("insert into computer_operations(connection,key,input_hash,state,tenant) values($1,$2,$3,'pending',$4)", [c.id, key, hash, this.tenant]));
     try {
       let result: unknown;
@@ -131,7 +131,8 @@ export class ComputerService {
         } else {
           if (!lease || lease.state !== 'active') throw new HttpError(409, 'Call computer_start before using the computer');
           const ref = JSON.parse(await unseal(lease.reference, this.env));
-          result = storable(await (await this.driver(c)).call(ref, name, { ...args, command, requestKey: key, timeoutSeconds: Math.max(1, Math.min(timeout, Math.floor((Number(lease.expires_at)-Date.now())/1000))) }));
+          const remainingSeconds = Math.max(1, Math.floor((Number(lease.expires_at)-Date.now())/1000));
+          result = storable(await (await this.driver(c)).call(ref, name, { ...args, command, requestKey: key, timeoutSeconds: Math.min(timeout, remainingSeconds), remainingSeconds }));
         }
       }
       await withSql(this.env, sql => sql.query("update computer_operations set state='completed',result=$3 where connection=$1 and key=$2", [c.id, key, JSON.stringify(result)]));

@@ -9,6 +9,7 @@ import {
   safeName,
 } from "./file-policy.ts";
 import { uploadFile } from "./file-upload.ts";
+import type { FileVersions } from "./file-versions.ts";
 import { signVolumeLink, verifyVolumeLink } from "./file-links.ts";
 import { ARCHIVE_LIMITS, READ_ALL_LIMITS } from "./volume-policy.ts";
 import { defineTool } from "@earendil-works/pi-durable";
@@ -748,6 +749,7 @@ export function volumeTools(
   ],
   onPresent?: (file: PresentedVolumeFile, volumePath: string) => Promise<void>,
   onWrite?: (file: WrittenVolumeFile) => Promise<void>,
+  seen?: FileVersions,
 ) {
   const target = async (raw: string, write = false) => {
     const mounts = await getMounts();
@@ -785,6 +787,16 @@ export function volumeTools(
       },
     ],
   });
+  const seenKey = (target: { mount: Mount; path: string }) => `${target.mount.volumeId}:${target.path}`;
+  const stale = (target: { path: string; show(path: string): string }) =>
+    new FileError(`${target.show(target.path)} changed since you last read it; read it again, then retry against its current content`, 412);
+  const guard = async <T>(target: { path: string; show(path: string): string }, run: () => Promise<T>): Promise<T> => {
+    try { return await run(); }
+    catch (error) {
+      if ((error as { status?: number }).status === 412 || /FILE_412:/.test(String(error))) throw stale(target);
+      throw error;
+    }
+  };
   return [
     defineTool({
       name: "read",
@@ -803,7 +815,8 @@ export function volumeTools(
           entry = await t.v.stat(t.path);
         if (entry.size > 1024 * 1024)
           throw new FileError("Tool file exceeds 1 MiB", 413);
-        const { bytes } = await t.v.read(t.path);
+        const { file, bytes } = await t.v.read(t.path, undefined, 1024 * 1024);
+        seen?.remember(seenKey(t), file.version);
         if (encoding === "base64") {
           const start = offset ?? 0,
             end = Math.min(bytes.length, start + (length ?? 16384));
@@ -811,8 +824,8 @@ export function volumeTools(
             throw new FileError("Invalid offset");
           return output({
             path,
-            size: entry.size,
-            contentType: entry.contentType,
+            size: file.size,
+            contentType: file.contentType,
             offset: start,
             data: Buffer.from(bytes.subarray(start, end)).toString("base64"),
             ...(end < bytes.length ? { nextOffset: end } : {}),
@@ -847,7 +860,7 @@ export function volumeTools(
         if (content === undefined && text === undefined)
           throw new FileError("content is required");
         const t = await target(path, true);
-        const entry = await t.v.write(
+        const entry = await guard(t, () => t.v.write(
           t.path,
           encoding === "base64"
             ? Buffer.from(content ?? text!, "base64")
@@ -857,7 +870,9 @@ export function volumeTools(
               new TextEncoder().encode(content ?? text).subarray(0, 512),
               t.path,
             ),
-        );
+          seen?.get(seenKey(t)),
+        ));
+        seen?.remember(seenKey(t), entry.version);
         await onWrite?.({ path: t.show(entry.path), version: entry.version, size: entry.size, contentType: entry.contentType });
         return { output: [{ type: "text", text: JSON.stringify(entry) }] };
       },
@@ -944,7 +959,10 @@ export function volumeTools(
       }),
       async execute({ path, edits }) {
         const t = await target(path, true),
-          { file, bytes } = await t.v.read(t.path);
+          { file, bytes } = await t.v.read(t.path, undefined, 1024 * 1024);
+        const expected = seen?.get(seenKey(t));
+        if (expected !== undefined && expected !== file.version) throw stale(t);
+        seen?.remember(seenKey(t), file.version);
         if (bytes.length > 1024 * 1024)
           throw new FileError("Tool file exceeds 1 MiB", 413);
         let text = new TextDecoder().decode(bytes);
@@ -953,12 +971,13 @@ export function volumeTools(
             throw new FileError("oldText must occur exactly once");
           text = text.replace(edit.oldText, edit.newText);
         }
-        const written = await t.v.write(
+        const written = await guard(t, () => t.v.write(
             t.path,
             new TextEncoder().encode(text),
             file.contentType,
             file.version,
-          );
+          ));
+        seen?.remember(seenKey(t), written.version);
         await onWrite?.({ path: t.show(written.path), version: written.version, size: written.size, contentType: written.contentType });
         return output(written);
       },
@@ -1090,6 +1109,7 @@ export function volumeTools(
               entry.file.contentType,
               entry.version,
             );
+            seen?.remember(`${destination.mount.volumeId}:${entry.path}`, written.version);
             await onWrite?.({ path: destination.show(written.path), version: written.version, size: written.size, contentType: written.contentType });
           }
           if (name === "mv")

@@ -108,3 +108,36 @@ test('official E2B SDK creates and deletes only through the loopback fake endpoi
   const reference = await driver.create('once', 60); assert.equal(reference.id, 'e2b-fixture');
   await driver.close(reference); assert.deepEqual(methods, ['POST', 'DELETE']);
 });
+
+test('browser tools need no shell command and provider calls retain the remaining lease', async t => {
+  const { ComputerService } = await import('../src/computers/service.ts');
+  const fixture = await startFixture(); t.after(() => fixture.stop());
+  const env = { HYPERDRIVE: { connectionString: fixture.databaseUrl }, API_TOKEN: fixture.token } as any;
+  const calls: { operation: string; args: Record<string, any> }[] = [];
+  const service = new ComputerService(env, 'camelrun-proto-local', () => ({
+    create: async () => ({ id: 'fixture-session' }),
+    call: async (_ref, operation, args) => { calls.push({ operation, args }); return { ok: true }; },
+    close: async () => {},
+  }));
+  const createAgent = async () => {
+    const response = await fetch(fixture.url + '/v1/agents', { method: 'POST', headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ codeMode: false, fileTools: false }) });
+    assert.equal(response.status, 201); return (await response.json() as any).id as string;
+  };
+  for (const provider of ['browserbase', 'browser-use'] as const) {
+    const agent = await createAgent();
+    await service.create({ agent, provider, credentials: { apiKey: 'fixture-browser' }, leaseSeconds: 600 });
+    await service.call(agent, 'computer_start', {}, 'start');
+    for (const [operation, args] of Object.entries({ browser_navigate: { url: 'https://example.com' }, browser_read: {}, browser_click: { selector: 'button' }, browser_fill: { selector: 'input', text: 'fixture' }, browser_evaluate: { expression: 'document.title' } })) {
+      assert.deepEqual(await service.call(agent, operation, args, operation), { ok: true });
+      assert.equal(calls.at(-1)?.operation, operation);
+      assert.equal(calls.at(-1)?.args.command, undefined);
+    }
+  }
+  const agent = await createAgent();
+  await service.create({ agent, provider: 'e2b', credentials: { apiKey: 'fixture-e2b' }, leaseSeconds: 600 });
+  await service.call(agent, 'computer_start', {}, 'start');
+  await service.call(agent, 'computer_exec', { command: 'true', timeoutSeconds: 5 }, 'exec');
+  assert.equal(calls.at(-1)?.args.timeoutSeconds, 5);
+  assert.ok(calls.at(-1)!.args.remainingSeconds > 590, 'connect keeps the fixed lease instead of shortening it to the command timeout');
+  await assert.rejects(service.call(agent, 'computer_exec', {}, 'invalid'), /Invalid computer command/);
+});

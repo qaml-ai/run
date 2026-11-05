@@ -25,6 +25,8 @@ export async function compatibilityRuntime(
       ([id, value]: [string, any]) => ({
         id,
         tokenSha256: value.tokenSha256,
+        billing: value.billing ?? 'none',
+        seedCredit: false,
       }),
     ),
   ];
