@@ -200,6 +200,7 @@ export function toolResult(result: McpResult): ToolExecutionResult {
   if (structuredOutput === undefined && output.length === 1 && output[0].type === "text") {
     try { structuredOutput = JSON.parse(output[0].text); } catch { structuredOutput = output[0].text; }
   }
+  if (structuredOutput === undefined) structuredOutput = output.length ? output : "";
   return { output, ...(details !== undefined ? { details: details as never } : {}), ...(result.isError ? { isError: true } : structuredOutput !== undefined ? { structuredOutput: structuredOutput as never } : {}) };
 }
 
@@ -213,6 +214,13 @@ export function registration(definition: ToolDefinition, call: (args: unknown, a
     ...(definition.judged ? { judged: true } : {}),
     replay: "unsafe", ...(definition.executionMode ? { executionMode: definition.executionMode } : {}),
     ...(exposure === "codemode" ? { callers: ["tools"] as const } : exposure === "direct" ? { callers: ["model"] as const } : {}),
-    execute: async (args, api, context) => toolResult(await call(args, api, context)),
+    execute: async (args, api, context) => {
+      try { return toolResult(await call(args, api, context)); }
+      catch (error) {
+        const failure = error as { code?: string; message?: string; outcomeUnknown?: boolean };
+        if (!failure.code) throw error;
+        return toolResult({ isError: true, content: [{ type: "text", text: JSON.stringify({ code: failure.code, message: failure.message ?? String(error), ...(failure.outcomeUnknown ? { outcomeUnknown: true } : {}) }) }] });
+      }
+    },
   };
 }

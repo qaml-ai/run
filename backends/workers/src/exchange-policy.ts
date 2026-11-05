@@ -18,3 +18,17 @@ export const EXCHANGE_LIMITS = Object.freeze({
 });
 /** A token as it goes in an Authorization header: printable ASCII without spaces, as a stored bearer token is. */
 export const TOKEN = /^[\x21-\x7e]{1,8192}$/;
+
+/** An endpoint as errors and people name it: its origin and path, never its query (which a tenant may have put a key in). */
+export function describe(url: string) {
+  try { const { origin, pathname } = new URL(url); return `${origin}${pathname}`; } catch { return "its url"; }
+}
+
+/** Why an endpoint says it refused: its JSON answer's `error` (or `message`), shortened; nothing else of its body. */
+export function reasonGiven(text: string) {
+  try {
+    const body = JSON.parse(text) as { error?: unknown; message?: unknown };
+    const reason = typeof body?.error === "string" ? body.error : typeof body?.message === "string" ? body.message : undefined;
+    return reason ? `: ${reason.replace(/\s+/g, " ").slice(0, 200)}` : "";
+  } catch { return ""; }
+}

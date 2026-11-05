@@ -11,7 +11,7 @@ test("MCP exchanges verify runtime identity, cache per agent and refresh once on
   const secret = "33".repeat(32), fixture = await startFixture({ vars: { AGENT_SECRETS_KEY: secret } });
   t.after(() => fixture.stop());
   const env = { API_TOKEN: fixture.token, AGENT_SECRETS_KEY: secret, HYPERDRIVE: { connectionString: fixture.databaseUrl }, TEST_MODE: "1" };
-  let exchanges = 0, accepted = 0, refused = false;
+  let exchanges = 0, accepted = 0, refused = false, deny = false;
   const server = createServer(async (request, response) => {
     try {
       let text = ""; for await (const chunk of request) text += chunk;
@@ -24,7 +24,7 @@ test("MCP exchanges verify runtime identity, cache per agent and refresh once on
         exchanges++; response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ token: `fixture-token-${exchanges}`, expiresIn: 3600 })); return;
       }
       const message = JSON.parse(text);
-      if (message.method === "tools/call" && !refused) { refused = true; response.writeHead(401).end(); return; }
+      if (message.method === "tools/call" && (deny || !refused)) { refused = true; response.writeHead(401).end(); return; }
       assert.equal(request.headers.authorization, `Bearer fixture-token-${exchanges}`);
       if (!message.id) { response.writeHead(202).end(); return; }
       if (message.method === "tools/call") accepted++;
@@ -41,4 +41,11 @@ test("MCP exchanges verify runtime identity, cache per agent and refresh once on
   assert.deepEqual((await tool.execute({}, undefined as never, undefined as never)).output, [{ type: "text", text: "value" }]);
   assert.equal(exchanges, 2);
   assert.equal(accepted, 1);
+  deny = true;
+  const rejection = await tool.execute({}, undefined as never, undefined as never);
+  assert.equal(rejection.isError, true);
+  const problem = JSON.parse((rejection.output![0] as { text: string }).text);
+  assert.equal(problem.code, "source_unavailable");
+  assert.match(problem.message, /refused the credential from its exchange.*second one fetched after/);
+  assert.equal(exchanges, 3, "a rejected credential refreshes once");
 });

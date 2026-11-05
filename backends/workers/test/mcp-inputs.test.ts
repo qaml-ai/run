@@ -37,3 +37,9 @@ test('an approval annotation does not remove a host script tool result', () => {
   assert.equal(result.structuredOutput, 'saved');
   assert.deepEqual(result.output, [{ type: 'text', text: 'saved' }, { type: 'text', text: '(Approved by Operator.)' }]);
 });
+
+test('unstructured multi-block and empty MCP replies always have a code value', () => {
+  const blocks = [{ type: 'text', text: 'first' }, { type: 'text', text: 'second' }];
+  assert.deepEqual(toolResult({ content: blocks }).structuredOutput, blocks);
+  assert.equal(toolResult({ content: [] }).structuredOutput, '');
+});

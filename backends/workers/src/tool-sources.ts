@@ -330,6 +330,10 @@ class RemoteMcp {
     }
     if ([404, 405].includes(result.response.status)) { this.legacy = true; return await legacy(); }
     if (!result.response.ok) {
+      if (this.refused && [401, 403].includes(result.response.status)) {
+        const { origin, pathname } = new URL((this.source.auth as ExchangeAuth).url);
+        throw new CredentialExchangeError("rejected", `MCP server ${this.source.name} refused the credential from its exchange (HTTP ${result.response.status}), and a second one fetched after: check what ${origin}${pathname} issues for it`, result.response.status);
+      }
       let detail = result.text.slice(0, 1000);
       try { detail = String(JSON.parse(result.text).error ?? detail).slice(0, 1000); } catch {}
       throw Object.assign(new Error(`MCP source ${this.source.name} answered HTTP ${result.response.status}${detail ? `: ${detail}` : ""}`), { status: result.response.status });
@@ -390,7 +394,7 @@ export async function discoverSources(env: Env, tenant: string, definition: stri
       return { ...source, discovery: { tools: await client.list() } };
     } catch (error) {
       const message = sourceError(error, headers, source.url);
-      if ([401, 403].includes((error as { status?: number }).status ?? 0) || error instanceof CredentialExchangeError && !["unreachable", "unavailable"].includes(error.reason)) throw bad(message);
+      if ([401, 403].includes((error as { status?: number }).status ?? 0) || error instanceof CredentialExchangeError && !["unreachable", "unavailable"].includes(error.reason)) throw bad(error instanceof CredentialExchangeError ? message + ". Saving lists the server's tools as the definition (its token's agent and sub are the definition's id, and the request's body names no agent)" : message);
       return { ...source, discovery: { error: message } };
     }
   }));
@@ -401,7 +405,7 @@ export function sourceDefinitionViews(config: { mcpServers?: RemoteSource[]; ope
     ...(config.mcpServers ?? []).map(source => ({ kind: "mcp", name: source.name, url: source.url,
       status: source.discovery?.error ? "error" : source.discovery?.tools ? "listed" : "unlisted",
       ...(source.discovery?.error ? { error: source.discovery.error } : {}),
-      ...(source.discovery?.tools ? { tools: source.discovery.tools.filter(tool => (!source.allowTools || source.allowTools.includes(tool.name)) && !source.denyTools?.includes(tool.name)).map(tool => ({ description: tool.description, inputSchema: tool.inputSchema ?? tool.parameters, name: mcpToolName(source.name, tool.name), exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] ?? source.exposure ?? "both" })) } : {}),
+      ...(source.discovery?.error ? { tools: [] } : source.discovery?.tools ? { tools: source.discovery.tools.filter(tool => (!source.allowTools || source.allowTools.includes(tool.name)) && !source.denyTools?.includes(tool.name)).map(tool => ({ description: tool.description, inputSchema: tool.inputSchema ?? tool.parameters, name: mcpToolName(source.name, tool.name), exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] ?? source.exposure ?? "both" })) } : {}),
     })),
     ...(config.openApi ?? []).map(source => ({ kind: "openapi", name: source.name, url: source.baseUrl, status: "listed", tools: (source.operations ?? []).map(operation => ({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: operation.inputSchema, exposure: source.exposure ?? "both" })) })),
   ];

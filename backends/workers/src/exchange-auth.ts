@@ -1,6 +1,6 @@
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { signRuntimeIdentity, type IdentityEnv, type RuntimeIdentity } from "./tool-identity.ts";
-import { EXCHANGE_LIMITS, TOKEN } from "./exchange-policy.ts";
+import { EXCHANGE_LIMITS, TOKEN, describe, reasonGiven } from "./exchange-policy.ts";
 
 export class CredentialExchangeError extends Error {
   readonly code = "source_unavailable";
@@ -15,7 +15,7 @@ type FetchExchange = (url: string, init: RequestInit, max: number) => Promise<{ 
 export function credentialExchange(env: IdentityEnv, source: { name: string; url: string; auth: ExchangeAuth }, identity: (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity }>, fetcher: FetchExchange) {
   let cached: { token: string; refreshAt: number } | undefined, pending: Promise<{ token: string; refreshAt: number }> | undefined;
   const load = async (api?: ToolExecutionApi) => {
-    const { issuer, claims } = await identity(api), where = `MCP server ${source.name}'s credential exchange`;
+    const { issuer, claims } = await identity(api), where = `MCP server ${source.name}'s credential exchange (${describe(source.auth.url)})`;
     const token = await signRuntimeIdentity(env, issuer, source.auth.audience ?? source.auth.url, {
       tenant: claims.tenant, agent: claims.agent, ...(claims.definition ? { definition: claims.definition } : {}),
       ...(claims.sub ? { sub: claims.sub } : {}), ...(claims.ctx ? { ctx: claims.ctx } : {}), exchange: { server: source.name, url: source.url },
@@ -38,12 +38,12 @@ export function credentialExchange(env: IdentityEnv, source: { name: string; url
       if (Date.now() - started + delay >= EXCHANGE_LIMITS.totalMs) break;
       await new Promise(resolve => setTimeout(resolve, delay));
     }
-    if (!response?.ok) throw new CredentialExchangeError(response && (response.status >= 500 || [408, 429].includes(response.status)) ? "unavailable" : "refused", `${where} answered HTTP ${response?.status ?? "unavailable"}`, response?.status);
+    if (!response?.ok) throw new CredentialExchangeError(response && (response.status >= 500 || [408, 429].includes(response.status)) ? "unavailable" : "refused", `${where} answered HTTP ${response?.status ?? "unavailable"}${reasonGiven(text)}`, response?.status);
     let body: { token?: unknown; expiresAt?: unknown; expiresIn?: unknown };
     try { body = JSON.parse(text); } catch { throw new CredentialExchangeError("invalid_response", `${where} did not answer with JSON`); }
     if (!body || typeof body !== "object" || typeof body.token !== "string" || !TOKEN.test(body.token)) throw new CredentialExchangeError("invalid_response", `${where} answered without a usable token`);
     const now = Date.now(), expiresAt = typeof body.expiresAt === "string" ? Date.parse(body.expiresAt) : typeof body.expiresIn === "number" && Number.isFinite(body.expiresIn) ? now + body.expiresIn * 1000 : NaN;
-    if (!Number.isFinite(expiresAt)) throw new CredentialExchangeError("invalid_response", `${where} must say when the token expires`);
+    if (!Number.isFinite(expiresAt)) throw new CredentialExchangeError("invalid_response", `${where} must say when the token expires: expiresAt (an RFC 3339 time) or expiresIn (seconds)`);
     if (expiresAt <= now) throw new CredentialExchangeError("expired", `${where} answered a token that has already expired`);
     const lifeMs = Math.min(expiresAt - now, EXCHANGE_LIMITS.maxLifeMs);
     return { token: body.token, refreshAt: now + Math.max(EXCHANGE_LIMITS.minLifeMs, lifeMs - Math.min(EXCHANGE_LIMITS.refreshMs, lifeMs / 5)) };
