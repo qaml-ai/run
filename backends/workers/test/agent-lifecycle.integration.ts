@@ -18,8 +18,22 @@ test("definition revisions, imported history, forks and hidden stateless session
   assert.equal(revised.revision, 2);
   const agent = await request("/v1/agents", { definition: "helper", importMessages: { format: "openai-chat", messages: [{role:"user",content:"My name is Ada."}] } }, "POST", { "Idempotency-Key": "imported" });
   assert.equal((await request(`/v1/agents/${agent.id}/history`)).messages[0].content, "My name is Ada.");
+  const write = await fetch(fixture.url + `/v1/agents/${agent.id}/files/workspace/note.txt`, {method:"PUT",headers:{Authorization:`Bearer ${fixture.token}`,"content-type":"text/plain"},body:"Before fork"});
+  assert.equal(write.status,201);
+  const own = await request("/v1/agents", { definition: "helper", maxOutputTokens: 150 }, "POST", { "Idempotency-Key": "own-override" });
+  const applied = await request(`/v1/definitions/${definition.id}`, { revision: 2, maxOutputTokens: 200, apply: "all" }, "PATCH");
+  assert.ok(applied.applied.every((item:any) => item.status === "updated"));
+  assert.equal((await request(`/v1/agents/${agent.id}/configuration`)).maxOutputTokens, 200);
+  assert.equal((await request(`/v1/agents/${own.id}/configuration`)).maxOutputTokens, 150);
   const fork = await request(`/v1/agents/${agent.id}/fork`, { key:"forked", atMessage:0 });
   assert.equal(fork.forkedFrom.agentId, agent.id);
+  const cloned = await fetch(fixture.url + `/v1/agents/${fork.id}/files/workspace/note.txt`, {headers:{Authorization:`Bearer ${fixture.token}`}});
+  assert.equal(await cloned.text(),"Before fork");
+  await fetch(fixture.url + `/v1/agents/${fork.id}/files/workspace/note.txt`, {method:"PUT",headers:{Authorization:`Bearer ${fixture.token}`,"content-type":"text/plain"},body:"After fork"});
+  const original = await fetch(fixture.url + `/v1/agents/${agent.id}/files/workspace/note.txt`, {headers:{Authorization:`Bearer ${fixture.token}`}});
+  assert.equal(await original.text(),"Before fork");
+
+
   assert.equal((await request(`/v1/agents/${fork.id}/history`)).messages.length, 1);
   assert.equal((await request(`/v1/agents/${agent.id}/fork`, { key:"forked", atMessage:0 })).id, fork.id);
   const run = await request("/v1/runs", { input: "once", wait:true }, "POST", { "Idempotency-Key":"once" });

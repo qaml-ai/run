@@ -2,7 +2,7 @@ import { BadRequest, object } from "./validation.ts";
 
 import { languageInput } from "../../../src/language.ts";
 import { dataCollectionInput, maxOutputTokensInput, modelHeadersInput, runLimitsInput, temperatureInput, type RunLimits } from "./model-policy.ts";
-import { delegateInput, type DelegateSettings } from "./multi-agent-policy.ts";
+import { delegateInput, delegateSettings, limitsOnly, startsChildren, type DelegateSettings } from "./multi-agent-policy.ts";
 import { toPiMessages } from "./history-formats.ts";
 import { validateInitialMessages } from "./history-policy.ts";
 import type { ToolDefinition } from "./attached-tools.ts";
@@ -31,6 +31,8 @@ export interface AgentConfiguration {
   openApi?: Record<string, unknown>[];
   initialMessages?: unknown[];
   definition?: string;
+  definitionRevision?: number;
+  definitionOverrides?: string[];
   subject?: string;
   context?: Record<string, unknown>;
   keyScope?: string;
@@ -78,13 +80,15 @@ export async function agentToken(secret: string, id: string): Promise<string> {
 
 const BUILTINS = ["file_link", "file_import", "web_fetch", "web_search", "x_search", "schedule", "ask_user", "ask_human", "delegate", "generate_image", "agents", "decide", "workflow"];
 export function configuration(input: unknown, defaultModel: string): { config: AgentConfiguration; ttlSeconds?: number | null } {
-  const fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "delegate", "workflow", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi"]);
+  const fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "delegate", "workflow", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides"]);
   const config: AgentConfiguration = { model: defaultModel };
   for (const field of ["model", "systemPrompt", "systemPromptAppend", "name", "type", "thinkingLevel", "definition", "subject", "keyScope", "bucket"] as const) {
     if (fields[field] === undefined) continue;
     if (typeof fields[field] !== "string" || new TextEncoder().encode(fields[field] as string).length > 100_000) throw new BadRequest(`${field} must be bounded text`);
     config[field] = fields[field] as string;
   }
+  if (fields.definitionRevision !== undefined) config.definitionRevision = Number(fields.definitionRevision);
+  if (Array.isArray(fields.definitionOverrides)) config.definitionOverrides = fields.definitionOverrides as string[];
   if (!config.model?.trim()) throw new BadRequest("model must be nonempty");
   for (const field of ["fileTools", "codeMode", "decide"] as const) {
     if (fields[field] !== undefined && typeof fields[field] !== "boolean") throw new BadRequest(`${field} must be a boolean`);
@@ -103,8 +107,9 @@ export function configuration(input: unknown, defaultModel: string): { config: A
   }
   if (fields.delegate !== undefined) {
     config.delegate = delegateInput(fields.delegate);
-    config.builtins = [...new Set([...(config.builtins ?? []), "delegate"])];
+    if (!limitsOnly(config.delegate) && !startsChildren(config.builtins)) config.builtins = [...(config.builtins ?? []), "delegate"];
   }
+  delegateSettings(config.builtins, config.delegate);
   if (fields.mcp !== undefined) {
     const mcp = object(fields.mcp, ["tools"]);
     if (!Array.isArray(mcp.tools) || mcp.tools.length > 10000) throw new BadRequest("mcp.tools must be an array");

@@ -2,6 +2,8 @@ import { Directory, type AuthContext, type ControlEnv, type DirectoryEntry, type
 import { agentToken, ApiError, digest } from "./api-contract.ts";
 import { body, object } from "./validation.ts";
 import { withSql } from "./postgres.ts";
+import { copyAgentWorkspace } from "./agent-workspace.ts";
+import type { FileBindings } from "./files.ts";
 import { provisionDefinition, visibleConfiguration } from "./definitions.ts";
 import { canonical } from "../../../shared/durable-json.ts";
 
@@ -72,7 +74,7 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
   throw new ApiError(405, "Method not allowed");
 }
 
-export async function agentLifecycleRoutes(request: Request, env: ControlEnv, entry: DirectoryEntry, tail: string): Promise<Response | undefined> {
+export async function agentLifecycleRoutes(request: Request, env: ControlEnv & FileBindings, entry: DirectoryEntry, tail: string): Promise<Response | undefined> {
   if (tail === "/export" && request.method === "GET") return json({ config: visibleConfiguration(entry.config), ...(await payload(await call(env, entry.id, "/history"))) });
   if (tail !== "/fork" || request.method !== "POST") return;
   const input = object(await body(request), ["key", "name", "atMessage", "ttlSeconds", "subject", "context", "systemPromptAppend", "modelHeaders"]);
@@ -86,7 +88,8 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv, en
   if (!Number.isInteger(at) || at < -1 || at >= history.messages.length) throw new ApiError(400, "Invalid fork point");
   const initialMessages = history.messages.slice(0, at + 1);
   const { key: _key, atMessage: _at, ...settings } = input;
-  const created = result(await directory.upsert({ ...entry.config, ...settings, initialMessages, ttlSeconds: input.ttlSeconds ?? (key ? null : 86400) }, key as string | undefined));
+  const created = result(await directory.upsert({ ...entry.config, ...settings, initialMessages, ttlSeconds: input.ttlSeconds === undefined ? (key ? null : 86400) : input.ttlSeconds }, key as string | undefined));
+  await copyAgentWorkspace(env, entry.tenantId, entry.id, created.id);
   const forkedFrom = {agentId:entry.id,atMessage:at};
   await withSql(env, sql => sql.query("update agents set header=$3 where tenant=$1 and id=$2", [entry.tenantId,created.id,JSON.stringify({...created,forkedFrom})]));
   return json({id:created.id,token:await agentToken(env.API_TOKEN,created.id),expiresAt:created.expiresAt,forkedFrom},201);
