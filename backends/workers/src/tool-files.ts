@@ -72,7 +72,7 @@ export class ToolFiles {
       return { uri: await this.signed({ volume: target.mount.volumeId, path: target.path, agentPath: target.shown, kind: 'manifest', snapshot: snapshot.id }, `${nameOf(target.shown)}.json`) };
     }
     const file = await this.open(path);
-    if (spec.accept && !spec.accept.some(pattern => { const [a,b] = pattern.split(';')[0].trim().toLowerCase().split('/'); const [c,d] = file.contentType.split('/'); return (a === '*' || a === c) && (b === '*' || b === d); })) throw new Error(`${file.shown} is ${file.contentType}; this argument takes ${spec.accept.join(', ')}`);
+    if (spec.accept && !spec.accept.some(pattern => { const [a,b] = pattern.split(';')[0].trim().toLowerCase().split('/'); const [c,d] = file.contentType.toLowerCase().split('/'); return (a === '*' || a === c) && (b === '*' || b === d); })) throw new Error(`${file.shown} is ${file.contentType}; this argument takes ${spec.accept.join(', ')}`);
     if (spec.maxSize !== undefined && file.size > spec.maxSize) throw new Error(`${file.shown} is ${file.size} bytes; this argument takes at most ${spec.maxSize}`);
     const inline = spec.transferModes?.includes('inline'), url = !spec.transferModes || spec.transferModes.includes('url');
     let uri: string;
@@ -126,12 +126,12 @@ export async function serveToolFile(request: Request, env: Env): Promise<Respons
   catch (error) { if (status(error) === 404) throw new HttpError(410, grant.snapshot ? "The call's files are no longer kept" : `${grant.agentPath} no longer exists`); throw error; }
   if (grant.kind === 'manifest') {
     const entries = await Promise.all(files.map(async file => ({ path: relative(file.path, grant.path), uri: await fileUrl(env, url.origin, { ...grant, kind: 'file', path: file.path, agentPath: `${grant.agentPath}/${relative(file.path, grant.path)}` }, nameOf(file.path), grant.exp * 1000), name: nameOf(file.path), mimeType: file.contentType, size: file.size, ...(file.sha256 ? { digest: { algorithm: 'sha-256', value: file.sha256 } } : {}) })));
-    return Response.json({ snapshot: grant.snapshot, root: grant.agentPath, files: entries, archive: { uri: await fileUrl(env,url.origin,{...grant,kind:'archive'},`${nameOf(grant.path)}.tar.gz`,grant.exp * 1000), mimeType:'application/gzip' } });
+    return Response.json({ snapshot: grant.snapshot, root: grant.agentPath, files: entries, archive: { uri: await fileUrl(env,url.origin,{...grant,kind:'archive'},`${nameOf(grant.path)}.tar.gz`,grant.exp * 1000), mimeType:'application/gzip' } }, { headers: { 'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff' } });
   }
   if (grant.kind === 'archive') {
     const archive = tar(files.map(file => ({ name: relative(file.path,grant.path), size:file.size, mtime:file.updatedAt, stream: async function* () { const object = await env.BUCKET.get(file.key); if (!object) throw new Error('File object missing'); for await (const chunk of object.body) yield chunk; } })));
     const body = new ReadableStream<Uint8Array>({ async pull(controller) { const next = await archive.next(); if (next.done) controller.close(); else controller.enqueue(new Uint8Array(next.value)); }, async cancel() { await archive.return(undefined); } }).pipeThrough(new CompressionStream('gzip'));
-    return new Response(body, { headers: downloadHeaders('application/gzip',`${nameOf(grant.path)}.tar.gz`) });
+    return new Response(body, { headers: { ...downloadHeaders('application/gzip',`${nameOf(grant.path)}.tar.gz`), 'Cache-Control':'no-store' } });
   }
   const file = files[0];
   if (grant.version !== undefined && grant.version !== file.version) throw new HttpError(410, `${grant.agentPath} changed since the call`);
