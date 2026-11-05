@@ -133,7 +133,6 @@ import { PromptPreparations } from "./prompt-admission.ts";
 import { actorInput, bucketInput } from "./security-policy.ts";
 import { MessageProjection } from "./message-projection.ts";
 import { runtimePromptSections } from "./prompt-sections.ts";
-import { toolResultFiles } from "./tool-output-files.ts";
 import { projectRunFailure } from "./run-failure.ts";
 import { RunProjection } from "./run-projection.ts";
 import { requestView } from "./request-view.ts";
@@ -944,7 +943,7 @@ export class CamelAgent extends DurableObject<Env> {
             builtins: conf.config.builtins,
             webSearch: conf.config.webSearch,
             keyScope: conf.config.keyScope,
-            files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
+            files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
           };
         }, { schedules: this.scheduleTools() }),
       });
@@ -2521,7 +2520,7 @@ export class CamelAgent extends DurableObject<Env> {
                 builtins: conf.config.builtins,
                 webSearch: conf.config.webSearch,
                 keyScope: conf.config.keyScope,
-                files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
+                files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
               };
             }, { schedules: this.scheduleTools() }),
           });

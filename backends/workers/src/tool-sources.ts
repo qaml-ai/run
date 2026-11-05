@@ -521,7 +521,8 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
         const contentType = response.headers.get('content-type')?.split(';')[0] ?? 'application/octet-stream';
         if (response.ok && !textual(contentType) && files) {
           const name = /filename\*?=(?:UTF-8''|"?)([^";]+)/i.exec(response.headers.get('content-disposition') ?? '')?.[1] ?? url.pathname.split('/').pop() ?? 'output';
-          return withInputNote({ content: [await files.save(decodeURIComponent(name), response.body as any, contentType)] }, approval.reply);
+          const file = await files.save(decodeURIComponent(name), response.body as any, contentType);
+          return withInputNote({ content: [file], structuredContent: file }, approval.reply);
         }
         let responseText: string;
         try { responseText = await readText(response, MAX_BYTES); } catch { throw new Error(`Response larger than ${MAX_BYTES} bytes`); }

@@ -117,7 +117,7 @@ async function fileUrl(env: Env, origin: string, grant: FileGrant, name: string,
 /** Call-bound tokens use the runtime's EdDSA identity key, not the browser upload-link secret. */
 export async function serveToolFile(request: Request, env: Env): Promise<Response | undefined> {
   const url = new URL(request.url), match = /^\/v1\/files\/([^/]+)\/[^/]+$/.exec(url.pathname);
-  if (!match) return;
+  if (!match || match[1].split('.').length === 2) return;
   if (request.method !== 'GET') throw new HttpError(405, 'Method not allowed');
   const grant = await (await runtimeSigner(env, url.origin)).verifyFileToken(match[1]);
   const v = await volume(env, grant.tenant, grant.volume);

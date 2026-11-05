@@ -18,8 +18,8 @@ export function toolOutputExtension(env: FileBindings, scope: (api: HookApi, cal
       if (call.name === 'codemode') return;
       const current = await scope(api, call.id);
       const prefix = call.name.split('__')[0];
-      if (current.fileArguments?.[prefix] === false && hasFileArgument(call.args) && result.isError) {
-        return { ...result, output: [{ type: 'text', text: `${call.name} is not sent files: file arguments ({"$file": path}) are off for this tool. Pass what it needs in its own parameters (text, or a URL it can fetch), or use a tool that takes files` }] };
+      if (current.fileArguments?.[prefix] === false && hasFileArgument(call.arguments) && result.diagnostics?.some(value => value.code === 'invalid_arguments')) {
+        return { ...result, diagnostics: result.diagnostics.map(value => value.code === 'invalid_arguments' ? { ...value, message: `${call.name} is not sent files: file arguments ({"$file": path}) are off for this tool. Pass what it needs in its own parameters (text, or a URL it can fetch), or use a tool that takes files` } : value) };
       }
       const materialized = await saveToolImages(result.output ?? [], await toolResultFiles(env, { ...current, tool: call.name, call: String(api.taskId) }));
       if (call.parent) return { ...result, output: materialized };
