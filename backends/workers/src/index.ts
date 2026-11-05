@@ -42,6 +42,8 @@ import { apiRequest, admissionError, errorFields, errorHeaders } from "./admissi
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
 import { browserResponse } from "./browser-response.ts";
 import { browserUrl } from "./selfhost-policy.ts";
+import { createJourney, sendJourney } from "./journey.ts";
+import { keyServices } from "./security-services.ts";
 import { decisionService, type DecisionEnv } from "./decision-service.ts";
 import { decisionRoute } from "./decision-runtime.ts";
 import {
@@ -83,6 +85,7 @@ function credentials(entry: DirectoryEntry, token?: string) {
     ...(token === undefined ? {} : { token }),
     expiresAt: entry.expiresAt,
     configHash: entry.configHash,
+    ...(entry.reconfigured ? { reconfigured: true } : {}),
   };
 }
 function summary(entry: DirectoryEntry) {
@@ -312,6 +315,17 @@ const worker = {
             const key = request.headers.get("Idempotency-Key") ?? undefined;
             const upsert = await upsertAgent(env, auth.tenantId, input, key, url.origin);
             const created = result(upsert.entry);
+            if (env.AGENT_JOURNEY_URL) {
+              const { accounts } = await keyServices(env);
+              const journey = createJourney(env, accounts, env.AGENT_PUBLIC_URL || url.origin);
+              if (journey) {
+                // A reused key has a configuration update, not another creation.
+                if (!upsert.reconfigured && !created.reconfigured) {
+                  await journey.agentCreated({ tenant: auth.tenantId, via: auth.kind === 'console' ? 'console' : auth.kind === 'oauth' ? 'mcp' : 'api', ...(auth.kind === 'console' ? { browser: journey.browser(request) } : {}) });
+                }
+                ctx.waitUntil(journey.send());
+              }
+            }
             if (Object.hasOwn(raw, "spendLimit"))
               await setAgentSpendLimit(
                 env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,
@@ -523,6 +537,7 @@ const worker = {
       await moneyMaintenance(env);
       await publishScheduleEmails(env);
       await sweepComputers(env);
+      await sendJourney(env);
       metric(env, "maintenance", { MaintenanceRuns: 1 });
     } catch (error) { failure(env, "maintenance_failed", error); throw error; }
     });

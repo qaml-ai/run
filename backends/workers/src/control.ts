@@ -74,6 +74,8 @@ export interface DirectoryEntry {
   pendingFork?: { sourceId: string; fingerprint: string };
   parentAgentId?: string;
   parentRunId?: string;
+  /** Returned for an upsert of an existing agent; never persisted in its header. */
+  reconfigured?: true;
 }
 export interface DirectoryFailure {
   failed: true;
@@ -278,7 +280,7 @@ export class Directory {
       }
     }
     if (config.workspaceId !== undefined) await workspaces.assign(this.tenantId, "agent", id, config.workspaceId);
-    return entry;
+    return previousEntry ? { ...entry, reconfigured: true } : entry;
   }
   async remove(id: string): Promise<boolean | DirectoryFailure> {
     const entry = await this.get(id);

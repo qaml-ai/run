@@ -58,7 +58,13 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
     if (managed) return managed;
   } finally { if (s.account.mail) ctx.waitUntil(s.account.mail.stop()); }
   const keys = await keyRoutes(request, env, auth, s.keys);
-  if (keys) return keys;
+  if (keys) {
+    if (keys.ok && request.method === 'POST' && ['/v1/tokens', '/v1/api-keys'].includes(path) && s.account.journey) {
+      await s.account.journey.tokenCreated({ tenant, ...(principal.via === 'console' ? { browser: s.account.journey.browser(request) } : {}) });
+      ctx.waitUntil(s.account.journey.send());
+    }
+    return keys;
+  }
   const billed = await billingRoutes(request, env, auth, s.billing);
   if (billed) return billed;
   const endUser = await modelEndUserRoutes(request, new EndUserCredits(s.keys.accounts.db), tenant);

@@ -11,9 +11,11 @@ import { HttpError, readText } from "./account-http.ts";
 import type { Webhooks } from "./webhook-policy.ts";
 import { RuntimeSigner } from "./runtime-identity.ts";
 import { defaultModelFor, type DefaultModelEnv } from "./default-model.ts";
+import { createJourney, publicJourneyRoutes, type JourneyEnv } from "./journey.ts";
+import type { Journey } from "../../../src/journey.ts";
 export { oauthAllows } from "./account-access.ts";
 
-export type AccountEnv = MailEnv & {
+export type AccountEnv = MailEnv & JourneyEnv & {
   API_TOKEN: string;
   AGENT_PUBLIC_URL?: string;
   AGENT_BROWSER_URL?: string;
@@ -46,6 +48,7 @@ export interface AccountServices {
   signer: RuntimeSigner;
   billingAdmins: ReadonlySet<string>;
   defaultModel: string;
+  journey?: Journey;
 }
 const cache = new WeakMap<AccountEnv, Map<string, AccountServices>>();
 
@@ -80,8 +83,9 @@ export function accountServices(env: AccountEnv, accounts: Accounts, fallbackOri
   });
   const client = (c: Context) => limits.client(name => c.req.header(name), undefined).key;
   const test = env.TEST_MODE === "1";
+  const journey = createJourney(env, accounts, origin);
   const auth = new ConsoleAuth({
-    accounts, publicUrl: origin, passwords,
+    accounts, publicUrl: origin, passwords, journey,
     ...(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET ? { github: {
       clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET, org: env.GITHUB_ORG ?? "qaml-ai",
       open: openSignup, minAccountDays,
@@ -107,7 +111,7 @@ export function accountServices(env: AccountEnv, accounts: Accounts, fallbackOri
     return c.json({ error: "Account operation failed", code: "BACKEND_ERROR" }, 500);
   });
   const signer = new RuntimeSigner({ db: accounts.db, accounts, issuer: origins.issuer });
-  const result = { environment: env as unknown as DefaultModelEnv, accounts, auth, oauth, passwords, mail, limits, origin, origins, signer,
+  const result = { environment: env as unknown as DefaultModelEnv, accounts, auth, oauth, passwords, mail, limits, origin, origins, signer, journey,
     defaultModel: (env as AccountEnv & { MODEL?: string }).MODEL ?? "",
     billingAdmins: new Set((env.AGENT_BILLING_ADMINS ?? "").split(",").filter(Boolean)) };
   const originsCache = cache.get(env) ?? new Map();
@@ -121,6 +125,11 @@ export async function publicAccountRoutes(request: Request, service: AccountServ
   if (["GET", "HEAD"].includes(request.method) && /^\/(?:$|console(?:\/|$)|oauth\/authorize$)/.test(path) && service.origins.alias(request.headers)) {
     return Response.redirect(`${service.origins.canonical}${path}${url.search}`, 302);
   }
+  const page = await publicJourneyRoutes(request, service.environment as AccountEnv, service.journey, service.auth);
+  if (page) {
+    if (service.journey) ctx?.waitUntil(service.journey.send());
+    return page;
+  }
   if (path === "/.well-known/jwks.json" && request.method === "GET") {
     return Response.json(await service.signer.jwks(), { headers: { "Cache-Control": "public, max-age=300" } });
   }
@@ -133,7 +142,10 @@ export async function publicAccountRoutes(request: Request, service: AccountServ
   if (!app) return null;
   await service.limits.request(path, service.limits.client(name => request.headers.get(name) ?? undefined, undefined).key);
   try { return await app.fetch(request); }
-  finally { if (service.mail) ctx?.waitUntil(service.mail.stop()); }
+  finally {
+    if (service.mail) ctx?.waitUntil(service.mail.stop());
+    if (service.journey) ctx?.waitUntil(service.journey.send());
+  }
 }
 
 export async function accountPrincipal(request: Request, service: AccountServices) {

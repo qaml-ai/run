@@ -141,6 +141,7 @@ import { AgentHistory } from "./history.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { digest, configuration } from "./api-contract.ts";
 import { configurationModelError } from "./default-model.ts";
+import { journeyRunEnded } from "./journey.ts";
 import { MAX_OPEN_REQUESTS } from "./access-policy.ts";
 import { follow as followLiveTurn, replay as replayEvents, type LiveTurn } from "./live-event-policy.ts";
 import { AttachedTools } from "./attached-tools.ts";
@@ -1573,6 +1574,8 @@ export class CamelAgent extends DurableObject<Env> {
       // only replays this immutable receipt; money remains one PG transaction.
       await this.flushBilling();
       if (changed) {
+        const conf = await this.ctx.storage.get<Config>("configuration");
+        if (conf) await journeyRunEnded(this.env, conf.tenantId, { completed: terminal.status === 'completed', at: terminal.endedAt });
         metric(
           this.env,
           "turn_metrics",
