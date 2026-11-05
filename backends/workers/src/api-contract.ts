@@ -134,7 +134,7 @@ export function configuration(input: unknown, defaultModel: string): { config: A
   if (fields.runLimits !== undefined) config.runLimits = runLimitsInput(fields.runLimits);
   if (fields.language !== undefined) { try { config.language = languageInput(fields.language); } catch (error) { throw new ApiError(400, (error as Error).message); } }
   if (fields.builtins !== undefined) {
-    if (!Array.isArray(fields.builtins) || fields.builtins.length > BUILTINS.length || fields.builtins.some(x => typeof x !== "string" || !BUILTINS.includes(x))) throw new BadRequest("Unsupported builtin");
+    if (!Array.isArray(fields.builtins) || fields.builtins.length > BUILTINS.length || new Set(fields.builtins).size !== fields.builtins.length || fields.builtins.some(x => typeof x !== "string" || !BUILTINS.includes(x))) throw new BadRequest("Unsupported or repeated builtin");
     config.builtins = fields.builtins as string[];
   }
   if (fields.webSearch !== undefined) {

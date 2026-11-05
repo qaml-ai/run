@@ -18,6 +18,10 @@ export function configurationOverrides(config: AgentConfiguration, params: objec
 /** Agent source updates are checked like creation; credentials can only be introduced by a definition. */
 export async function configurationPatch(env: ControlEnv, tenant: string, config: AgentConfiguration, params: object): Promise<AgentConfiguration> {
   const fields=params as Record<string,unknown>, checked = { ...fields };
+  if (config.definition) {
+    if (fields.mcpServers !== undefined || fields.openApi !== undefined) throw new ApiError(400, "This agent's MCP servers come from its definition; change them there");
+    if (["builtins", "delegate", "workflow", "decide"].some(field => fields[field] !== undefined)) throw new ApiError(400, "This agent's builtins come from its definition; change them there");
+  }
   for (const field of ["mcpServers", "openApi"] as const) if (Object.hasOwn(fields,field)) {
     checked[field] = await prepareSources(env,tenant,undefined,field,fields[field],config[field] as RemoteSource[] | undefined);
   }
@@ -47,6 +51,8 @@ export async function provisionDefinition(env: ControlEnv, tenant: string, input
   }
   if (input.systemPrompt !== undefined) throw new ApiError(400, "Use systemPromptAppend with a definition");
   if (input.decide !== undefined) throw new ApiError(400, "decide is set by the definition");
+  if (["builtins", "delegate", "workflow"].some(field => input[field] !== undefined)) throw new ApiError(400, "builtins come from the definition; change them there");
+  if (input.mcpServers !== undefined || input.openApi !== undefined) throw new ApiError(400, "MCP servers come from the definition; change them there");
   const definition = await resolveDefinition(env, tenant, input.definition);
   const { description, applyOnUpdate, limits, ...spec } = definition.spec;
   const lifetime = input.ttlSeconds !== undefined || input.idleTtlSeconds !== undefined;

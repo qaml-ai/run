@@ -56,6 +56,7 @@ test("configuration keeps attached tools, normalizes delegation, and clears opti
   assert.equal(limited.builtins, undefined);
   assert.deepEqual(limited.delegate,{maxParallel:3,maxDepth:1});
   assert.throws(() => configuration({ delegate: { agents: ["helper"] } }, "test/echo"), /need the delegate or agents builtin/);
+  assert.throws(() => configuration({ builtins: ["schedule", "schedule"] }, "test/echo"), /repeated builtin/);
   assert.throws(() => configuration({builtins:["agents"],delegate:{maxParallel:3}},"test/echo"), /needs delegate/);
 });
 
