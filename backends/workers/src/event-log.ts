@@ -1,3 +1,5 @@
+import { visibleEvent } from './event-visibility.ts';
+
 export type TerminalEvents = { events: unknown[]; next: number };
 export type TerminalDelivery = { key: string; index: number };
 export const TERMINAL_EVENTS_PREFIX = "terminal-events:";
@@ -69,6 +71,7 @@ export function runEventStream(request:Request, id:string, log:DurableEventLog, 
         const row=page.shift();
         if(row){
           cursor=row.cursor;
+          if (!visibleEvent(JSON.parse(row.body), new URL(request.url).searchParams.get('subagents') === '1')) continue;
           controller.enqueue(encoder.encode(`id: ${row.cursor}\ndata: ${row.body}\n\n`));
           if((JSON.parse(row.body) as {type?:string}).type==="response"){cleanup();controller.close();}
           return;

@@ -6,7 +6,7 @@ import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts
 import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
 import { publicDocs } from "./public-docs.ts";
-import { resolveDefinition } from "./definitions.ts";
+import { resolveDefinition, definitionUpsert } from "./definitions.ts";
 import { sweepComputers } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
 import {
@@ -131,9 +131,9 @@ function scopedConfiguration(input: unknown) {
   ])
     if (Object.hasOwn(input, key))
       throw new ApiError(
-        403,
+        key === "definition" ? 400 : 403,
         `Only the tenant can change an agent's ${key}`,
-        "FORBIDDEN",
+        key === "definition" ? "INVALID_REQUEST" : "FORBIDDEN",
       );
 }
 
@@ -306,13 +306,16 @@ const worker = {
               throw new BadRequest("Expected configuration object");
             const first = firstPrompt((raw as { prompt?: unknown }).prompt);
             const { prompt: _prompt, ...settings } = raw as Record<string, unknown>;
-            const input = await provisionDefinition(
+            const provisioned = await provisionDefinition(
               env,
               auth.tenantId,
               settings,
             );
-            configuration(input, env.MODEL);
             const key = request.headers.get("Idempotency-Key") ?? undefined;
+            const input = key && typeof provisioned.definition === "string"
+              ? definitionUpsert(provisioned, (await directory.get(key))?.config)
+              : provisioned;
+            configuration(input, env.MODEL);
             const upsert = await upsertAgent(env, auth.tenantId, input, key, url.origin);
             const created = result(upsert.entry);
             if (env.AGENT_JOURNEY_URL) {
@@ -343,6 +346,8 @@ const worker = {
       }
       if (!entry || entry.config.type === "run") throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
       const tail = match[3] || "/";
+      if (tail === "/configuration-target")
+        throw new ApiError(404, "Not found", "NOT_FOUND");
       // Internal computer operations are reachable only through the service
       // binding. Public cleanup must use the account-scoped confirmation route.
       if (tail === "/__computer" && env.TEST_MODE !== "1")
@@ -405,11 +410,11 @@ const worker = {
           new Request(request.url, { headers: request.headers }), env, entry.id, "/state",
         );
         if (!stateResponse.ok) return stateResponse;
-        const state = await stateResponse.json() as { requests: { state: string }[]; cursor: number; running: boolean };
+        const state = await stateResponse.json() as { requests: { state: string }[]; cursor: number; running: boolean; spendLimit?: unknown };
         return json({
           ...summary(entry),
           ...state,
-          spendLimit: agentSpendView(
+          spendLimit: state.spendLimit ?? agentSpendView(
             await readAgentSpendLimit(env, entry.tenantId, entry.id),
           ),
           toolSources: await response.json(),
@@ -446,15 +451,25 @@ const worker = {
         const next = await body(request);
         if (!next || typeof next !== "object" || Array.isArray(next))
           throw new BadRequest("Expected configuration object");
-        const { requestId, ...changes } = next as Record<string, unknown>;
-        if (!auth) scopedConfiguration(changes);
-        const patched = configuration({ ...entry.config, ...changes }, entry.config.model ?? env.MODEL).config;
-        const modelError = (Object.hasOwn(changes, "model") || Object.hasOwn(changes, "keyScope"))
-          ? await configurationModelError(env, entry.tenantId, patched) : undefined;
-        if (modelError) throw new ApiError(400, modelError);
+        const { requestId, ...params } = next as Record<string, unknown>;
+        if (!auth) scopedConfiguration(params);
+        if (auth) {
+          const allowed = new Set(["model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "workflow", "mcpServers"]);
+          const unknown = Object.keys(params).find(field => !allowed.has(field));
+          if (unknown) throw new BadRequest(`Unsupported field: ${unknown}`);
+        }
+        if (requestId !== undefined && (typeof requestId !== "string" || !requestId.length))
+          throw new BadRequest("requestId must be a nonempty string");
+        const patched = configuration({ ...entry.config, ...params }, entry.config.model ?? env.MODEL).config;
+        if (Object.hasOwn(params, "model") || Object.hasOwn(params, "keyScope")) {
+          try {
+            const modelError = await configurationModelError(env, entry.tenantId, patched);
+            if (modelError) throw new Error(modelError);
+          } catch (error) { throw new ApiError(400, (error as Error).message); }
+        }
         return forward(new Request(request.url, {
           method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ id: requestId ?? crypto.randomUUID(), method: "configure", params: changes }),
+          body: JSON.stringify({ id: requestId ?? request.headers.get("Idempotency-Key") ?? crypto.randomUUID(), method: "configure", params }),
         }), env, entry.id, "/requests");
       }
       if (tail === "/mounts") {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runCaps, runLimit } from "../src/run-limits.ts";
+import { AgentRunLimits, runCaps, runLimit } from "../src/run-limits.ts";
 import { ADMIN_RUN_LIMITS, RUN_LIMITS } from "../src/run-caps-policy.ts";
 test("run caps lower runtime defaults and preserve response, duration and spend classes", () => {
   const config = {
@@ -44,4 +44,19 @@ test("tenant and admin caps bound explicit agent and request limits", () => {
   const run = { id: "run", began: 0, params: { runLimits: { maxResponses: 50, maxSeconds: 300 } } };
   assert.deepEqual(runCaps({ runLimits: { maxResponses: 20 } }, run, { maxResponses: 5, maxSeconds: 60 }), { maxResponses: 5, maxSeconds: 60, spendUsd: Infinity });
   assert.match(runLimit({}, run, { responses: 0, costUsd: 0 }, 60_000, { maxResponses: 5, maxSeconds: 60 })!.error, /time limit of 1 minute/);
+});
+
+test("a child's settled cost stops its parent before another model request", async () => {
+  const values = new Map<string, unknown>([['run-usage:parent', { responses: 1, costUsd: 0.15 }]]);
+  const storage = {
+    get: async (key: string) => values.get(key),
+    put: async (key: string, value: unknown) => { values.set(key, value); },
+  } as unknown as DurableObjectStorage;
+  const limits = new AgentRunLimits(storage, async () => ({
+    config: {}, run: { id: 'parent', state: 'running', params: { spendLimit: { usd: 0.4 } } }, childCost: 0.3,
+  }));
+  assert.deepEqual(await limits.check(), {
+    error: 'This run has reached its spend limit of $0.4 ($0.45 spent)',
+    limit: 'run', code: 'spend_limit', stopped: 'spend_limit',
+  });
 });

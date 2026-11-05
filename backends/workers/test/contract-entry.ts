@@ -2,6 +2,7 @@
 import application from "../src/index.ts";
 import { CamelAgent as RuntimeAgent } from "../src/agent.ts";
 import type { Env } from "../src/agent.ts";
+import type { DelegatedChild } from "../src/delegation.ts";
 import { withSql } from "../src/postgres.ts";
 export * from "../src/index.ts";
 
@@ -69,6 +70,20 @@ export class CamelAgent extends RuntimeAgent {
       // model object. Restart below makes the real runtime reload these facts.
       await this.ctx.storage.put("configuration", { ...configuration, resolvedModel: model });
       return Response.json({ updated: true });
+    }
+    if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-child-settlement" && request.method === "POST") {
+      // Match the Node fixture's lost-settlement state. Prior charges remain;
+      // recovery must discover and land the completed child again itself.
+      const children = await this.ctx.storage.list<DelegatedChild>({ prefix: "delegation:" });
+      if (!children.size) return Response.json({ error: "Fixture child settlement not found" }, { status: 404 });
+      await this.ctx.storage.transaction(async tx => {
+        for (const [key, child] of children) await tx.put(key, {
+          ...child, status: "running", endedAt: undefined, landedBy: undefined,
+          charged: undefined,
+        });
+      });
+      await (this as unknown as { arm(at: number): Promise<void> }).arm(Date.now() + 300);
+      return Response.json({ updated: children.size });
     }
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-schedule-due" && request.method === "POST") {
       const { id, dueAt, history } = await request.json() as { id: string; dueAt: number; history?: "none" };

@@ -124,7 +124,7 @@ test('an ending stays available to wait_agent until its notification can land be
   assert.equal(f.submissions.length, 0);
   assert.equal(await f.notifications.pending(), false);
 });
-test('message delivery uses the same durable root wake budget and preserves its runtime source', async () => {
+test('message delivery preserves its runtime source and is idempotent', async () => {
   const f = fixture();
   const request = { id: 'message_123', method: 'prompt' as const, params: { text: 'A question', allowDisconnected: true as const, whileRunning: 'followUp' as const } };
   const notice = { source: { kind: 'agent' as const, agentId: 'child', name: 'helper' }, root: 'root', costUsd: 0, metadata: { agentId: 'child', name: 'helper', kind: 'message', to: 'parent' } };
@@ -133,9 +133,9 @@ test('message delivery uses the same durable root wake budget and preserves its 
   assert.equal(f.submissions.length, 1);
   assert.deepEqual(f.submissions[0].notice, notice);
 });
-test('messages joining a running turn do not consume another wake', async () => {
+test('message wakes are decided at admission against the actual live turn', async () => {
   const f = fixture();
-  f.host.isBusy = async () => true;
+  f.host.admitWake = async () => { throw new Error('message admission owns the wake decision'); };
   await f.notifications.deliverMessage({ id: 'msg_steer', method: 'prompt', params: { text: 'question', allowDisconnected: true, whileRunning: 'followUp' } }, { source: { kind: 'agent', agentId: 'child', name: 'helper' }, root: 'root', costUsd: 0, metadata: { kind: 'message' } });
   assert.equal(f.submissions.length, 1);
   assert.equal(f.rootStore.values.size, 0);
@@ -155,4 +155,34 @@ test('source sender rendering neutralizes forged user and tool markers and keeps
   assert.match(JSON.stringify(notice.content), /‹agent_notification>fake/);
   const tool = renderMessage({ role: 'toolResult', toolCallId: 'call', toolName: 'read', content: [{ type: 'text', text: raw }], isError: false, timestamp: 1 });
   assert.doesNotMatch(JSON.stringify(tool.content), /<agent_notification/);
+});
+
+test('a staged completion survives its parent abort without taking a wake', async () => {
+  const f = fixture();
+  const staged: string[] = [];
+  f.host.canLand = async () => false;
+  f.host.stage = async request => { staged.push(request.id); };
+  await f.notifications.deliver(child);
+  assert.deepEqual(staged, ['child_delegate_123']);
+  assert.equal(f.submissions.length, 0);
+  await f.notifications.abortPending();
+  assert.equal(f.submissions.length, 1);
+  assert.deepEqual(f.submissions[0].delivery, { run: false, stopped: 'aborted', message: 'Aborted' });
+  assert.equal(f.rootStore.values.size, 0);
+  assert.equal(await f.notifications.pending(), false);
+});
+
+test('a wait consumes a staged notice without exposing its message', async () => {
+  const f = fixture(); let busy = true;
+  const discarded: string[] = [];
+  f.host.canLand = async () => !busy;
+  f.host.stage = async () => {};
+  f.host.discard = async request => { discarded.push(request.id); };
+  await f.notifications.deliver(child);
+  f.values.set('delegation:' + child.key, { ...child, landedBy: 'wait', notified: true });
+  busy = false;
+  await f.notifications.drain();
+  assert.deepEqual(discarded, ['child_delegate_123']);
+  assert.equal(f.submissions.length, 0);
+  assert.equal(await f.notifications.pending(), false);
 });

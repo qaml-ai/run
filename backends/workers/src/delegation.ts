@@ -12,16 +12,17 @@ import { escapeMarkers } from './sender.ts';
 import { outputInput } from './output-validation.ts';
 import type { Context } from '@earendil-works/chord';
 import type { McpResult } from './attached-tools.ts';
+import { waitsForProgress } from './delegation-progress.ts';
 
 type Configuration = { model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
 export type ParentRun = { id: string; piId?: string; startedAt?: number; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: unknown };
 export type ChildUsage = { costUsd?: number; subagentCostUsd?: number; imageCostUsd?: number; decisionCostUsd?: number; webCostUsd?: number; transcriptionCostUsd?: number };
-export type ChildRun = { state: string; status?: string; error?: string; outcome?: { result?: { reply?: string; output?: unknown; code?: string; usage?: ChildUsage }; error?: string } };
+export type ChildRun = { state: string; status?: string; error?: string; steeredInto?: string; outcome?: { result?: { reply?: string; output?: unknown; code?: string; stopped?: string; steeredInto?: string; usage?: ChildUsage }; error?: string } };
 export function childUsageCost(usage?: ChildUsage) {
   return (usage?.costUsd ?? 0) + (usage?.subagentCostUsd ?? 0) + (usage?.imageCostUsd ?? 0) + (usage?.decisionCostUsd ?? 0) + (usage?.webCostUsd ?? 0) + (usage?.transcriptionCostUsd ?? 0);
 }
 export type ChildProgressReport = { agentId: string; requestId: string; text: string; callId: string };
-export type DelegatedChild = { id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; task: string; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; folded?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
+export type DelegatedChild = { id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; task: string; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; folded?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; charged?: boolean; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
 export interface DelegationHost {
   storage: DurableObjectStorage;
   secret: string;
@@ -47,6 +48,8 @@ export interface DelegationHost {
 }
 type ChildRelay = { abort(): void; drained: Promise<void> };
 const prefix = 'delegation:';
+type ChildCharge = { requestId: string; usd: number; at: number };
+const chargePrefix = 'delegation-charge:';
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
   if (signal?.aborted) return reject(signal.reason);
   const stop = () => { clearTimeout(timer); reject(signal?.reason); };
@@ -65,11 +68,28 @@ async function signature(secret: string, agent: string, run: string, depth: stri
 /** Durable child lifecycle; Pi owns invocation replay, and the child request is idempotent. */
 export class Delegation {
   private readonly following = new Set<string>();
+  private readonly starting = new Set<Promise<DelegatedChild>>();
   private readonly host: DelegationHost;
   constructor(host: DelegationHost) { this.host = host; }
   async children() { return [...(await this.host.storage.list<DelegatedChild>({ prefix })).values()].sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key)); }
-  async cost(requestId: string) { return (await this.children()).filter(child => child.parentRequestId === requestId).reduce((sum, child) => sum + (child.spent ?? 0), 0); }
-  async costSince(startedAt: number) { return (await this.children()).filter(child => child.createdAt >= startedAt).reduce((sum, child) => sum + (child.spent ?? 0), 0); }
+  async cost(requestId: string) { return [...(await this.host.storage.list<ChildCharge>({ prefix: chargePrefix })).values()].filter(charge => charge.requestId === requestId).reduce((sum, charge) => sum + charge.usd, 0); }
+  async costSince(startedAt: number) { return [...(await this.host.storage.list<ChildCharge>({ prefix: chargePrefix })).values()].filter(charge => charge.at >= startedAt).reduce((sum, charge) => sum + charge.usd, 0); }
+  /** A child's ending is charged when a call, notification or recovery takes it. */
+  async settleInTransaction(tx: DurableObjectTransaction, child: DelegatedChild, requestId: string) {
+    if (child.charged || child.folded) return child;
+    const sequence = (await tx.get<number>('delegation-charge-sequence') ?? 0) + 1;
+    await tx.put('delegation-charge-sequence', sequence);
+    await tx.put(`${chargePrefix}${sequence}`, { requestId, usd: child.spent ?? childUsageCost(child.outcome?.result?.usage), at: Date.now() } satisfies ChildCharge);
+    const charged = { ...child, charged: true };
+    await tx.put(prefix + child.key, charged);
+    return charged;
+  }
+  async landNotice(requestId: string, costUsd: number) {
+    return this.host.storage.transaction(async tx => {
+      const child = [...(await tx.list<DelegatedChild>({ prefix })).values()].find(child => `child_${child.requestId}` === requestId);
+      if (child) return this.settleInTransaction(tx, { ...child, spent: costUsd }, requestId);
+    });
+  }
   private async update(child: DelegatedChild, patch: Partial<DelegatedChild>) {
     return this.host.storage.transaction(async tx => {
       const current = await tx.get<DelegatedChild>(prefix + child.key) ?? child;
@@ -157,7 +177,7 @@ export class Delegation {
         if (args.name && running.some(child => child.name === args.name)) throw new HttpError(400, 'A sub-agent with this name is already running');
         if (available !== undefined) {
           const reserved = this.host.remainingBudget
-            ? all.filter(child => child.status === 'running').reduce((sum, child) => sum + (child.held ?? 0), 0)
+            ? all.filter(child => !child.charged && !child.folded).reduce((sum, child) => sum + (child.status === 'running' ? child.held ?? 0 : child.spent ?? 0), 0)
             : children.reduce((sum, child) => sum + (child.spent ?? child.held ?? 0), 0);
           const remaining = available - reserved;
           if (remaining <= 0) throw new HttpError(402, 'This run has no budget left for a sub-agent', 'SPEND_LIMIT');
@@ -192,7 +212,7 @@ export class Delegation {
           const relay = await this.relay(admitted);
           try { await this.checkCancellation(admitted, signal); }
           catch (error) { relay.abort(); throw error; }
-          const response = await this.host.fetch(admitted.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: admitted.requestId, method: 'prompt', params: { text: admitted.task, metadata: signed, ...(run.params?.actor ? { actor: run.params.actor } : {}), ...(held !== undefined ? { spendLimit: { usd: held } } : {}), ...(args.output !== undefined ? { output: { schema: args.output } } : {}) } }) }));
+          const response = await this.host.fetch(admitted.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: admitted.requestId, method: 'prompt', params: { text: admitted.task, metadata: signed, whileRunning: 'queue', ...(run.params?.actor ? { actor: run.params.actor } : {}), ...(held !== undefined ? { spendLimit: { usd: held } } : {}), ...(args.output !== undefined ? { output: { schema: args.output } } : {}) } }) }));
           if (!response.ok) {
             relay.abort();
             const detail = await response.json().catch(() => undefined) as { error?: unknown } | undefined;
@@ -223,7 +243,7 @@ export class Delegation {
     const abort = new AbortController();
     let drain!: () => void;
     const drained = new Promise<void>(resolve => { drain = resolve; });
-    const response = await this.host.fetch(child.id, new Request('https://agent/events?watch=1', { signal: abort.signal }));
+    const response = await this.host.fetch(child.id, new Request('https://agent/events?watch=1&subagents=1', { signal: abort.signal }));
     const read = async () => {
       const reader = response.body?.getReader(); if (!reader) return;
       let buffer = ''; const decoder = new TextDecoder();
@@ -283,9 +303,11 @@ export class Delegation {
           const current = await tx.get<DelegatedChild>(prefix + child.key) ?? child;
           if (current.status !== 'running') return { child: current, changed: false };
           const usage = record.outcome?.result?.usage;
-          const value = { ...current, status: record.outcome?.result?.code === 'aborted' ? 'aborted' : record.status ?? (record.outcome?.error ? 'failed' : 'completed'), endedAt: Date.now(), outcome: record.outcome, error: record.error ?? record.outcome?.error, spent: childUsageCost(usage), held: undefined };
+          const folded = !!(record.steeredInto || record.outcome?.result?.steeredInto);
+          let value: DelegatedChild = { ...current, folded, ...(folded ? { notified: true } : {}), status: record.outcome?.result?.code === 'aborted' ? 'aborted' : record.status ?? (record.outcome?.error ? 'failed' : 'completed'), endedAt: Date.now(), outcome: record.outcome, error: record.error ?? record.outcome?.error, spent: folded ? 0 : childUsageCost(usage), held: undefined };
           await tx.put(prefix + child.key, value);
-          return { child: value, changed: true };
+          if (!value.background) value = await this.settleInTransaction(tx, value, value.parentRequestId);
+          return { child: value, changed: !folded };
         });
         if (finished.changed) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_end', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, name: child.name, status: finished.child.status, ...(child.background ? { background: true } : {}), ...(finished.child.error ? { error: finished.child.error } : {}) } });
         return finished.child;
@@ -293,7 +315,7 @@ export class Delegation {
       await sleep(25, signal);
     }
   }
-  answer(child: DelegatedChild) { return { agentId: child.id, requestId: child.requestId, name: child.name, status: child.status, ...(child.outcome?.result?.reply ? { text: child.outcome.result.reply } : {}), ...(child.outcome?.result?.output !== undefined ? { output: child.outcome.result.output } : {}), ...(child.error ? { error: child.error } : {}) }; }
+  answer(child: DelegatedChild) { return { agentId: child.id, requestId: child.requestId, name: child.name, status: child.status, ...(child.outcome?.result?.reply ? { text: child.outcome.result.reply } : {}), ...(child.outcome?.result?.output !== undefined ? { output: child.outcome.result.output } : {}), ...(child.outcome?.result?.stopped ? { stopped: child.outcome.result.stopped } : {}), ...(child.error ? { error: child.error } : {}) }; }
   async cancel(requestId?: string, callPrefix?: string) {
     const children = await this.host.storage.transaction(async tx => {
       const children = [...(await tx.list<DelegatedChild>({ prefix })).values()].filter(child => child.status === 'running' && (!requestId || child.parentRequestId === requestId) && (!callPrefix || child.toolCallId.startsWith(callPrefix)));
@@ -301,6 +323,15 @@ export class Delegation {
       return children;
     });
     await Promise.all(children.map(child => this.cancelRemote(child)));
+    // A stop answers once its delegate children have ended and their usage is
+    // available to the parent's terminal outcome. Background children notify.
+    const stop = AbortSignal.timeout(10_000);
+    await Promise.all(children.filter(child => !child.background && child.id && child.accepted).map(child => this.wait(child, stop).catch(() => {})));
+  }
+  async settleStopped(requestId: string) {
+    const stop = AbortSignal.timeout(10_000);
+    const children = (await this.children()).filter(child => child.parentRequestId === requestId && child.cancelRequested && !child.background && child.id && child.accepted);
+    await Promise.all(children.map(child => this.wait(child, stop).catch(() => {})));
   }
   async destroy() {
     await this.cancel();
@@ -346,21 +377,23 @@ export class Delegation {
     }
     return { reported: true };
   }
-  private async takeProgress() {
+  private async takeProgress(api?: ToolExecutionApi) {
+    const site = api ? await toolCallSite(api) : undefined;
+    const entry = site?.assistant !== undefined ? await api!.commit(tx => tx.entry(site.assistant as never), BACKGROUND_CONTEXT) : undefined;
     return this.host.storage.transaction(async tx => {
       const reports = [];
-      for (const child of (await tx.list<DelegatedChild>({ prefix })).values()) if (child.status === 'running' && child.progress && child.progress.sequence > (child.progressShown ?? 0)) {
+      for (const child of (await tx.list<DelegatedChild>({ prefix })).values()) if (child.status === 'running' && child.progress && child.progress.sequence > (child.progressShown ?? 0) && !waitsForProgress(entry?.model ?? [], child)) {
         reports.push({ name: child.name, text: child.progress.text, at: child.progress.at });
         await tx.put(prefix + child.key, { ...child, progressShown: child.progress.sequence });
       }
       return reports;
     });
   }
-  private async toolResult(value: unknown) {
-    const reports = await this.takeProgress();
+  private async toolResult(value: unknown, api?: ToolExecutionApi) {
+    const reports = await this.takeProgress(api);
     return { output: [{ type: 'text' as const, text: JSON.stringify(value) }, ...(reports.length ? [agentUpdates(reports)] : [])] };
   }
-  private async send(args: Record<string, unknown>, callId: string, api?: ToolExecutionApi) {
+  private async send(args: Record<string, unknown>, callId: string, api?: ToolExecutionApi, signal?: AbortSignal) {
     if (!this.host.sendMessage) throw new HttpError(400, 'Agent messages are unavailable');
     if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > MULTI_AGENT_LIMITS.taskChars || typeof args.to !== 'string') throw new HttpError(400, 'Invalid message');
     const { id, config, run } = await this.host.context(api), lineage = await this.lineage(id, run);
@@ -369,29 +402,36 @@ export class Delegation {
     if (args.to === 'parent') {
       if (!lineage?.parent) throw new HttpError(400, 'This run has no parent');
       const message = agentMessage({ agentId: id, name: typeof config.name === 'string' ? config.name : 'subagent', root: lineage.root }, args.text, 'parent');
-      await this.host.sendMessage(lineage.parent, { id: requestId, method: 'prompt', params: { text: args.text, allowDisconnected: true, whileRunning: 'followUp' } }, message.notice);
-      return { sent: true, to: 'parent' };
+      const response = await this.host.sendMessage(lineage.parent, { id: requestId, method: 'prompt', params: { text: args.text, allowDisconnected: true, whileRunning: 'followUp' } }, message.notice) as { steer?: string; steeredInto?: string } | undefined;
+      return { sent: true, to: 'parent', into: response?.steer === 'accepted' || response?.steeredInto ? 'its running turn' : 'a new turn of its own' };
     }
     const children = await this.children();
     const child = [...children].reverse().find(child => child.id === args.to || child.name === args.to);
     if (!child) throw new HttpError(404, 'Unknown sub-agent');
+    // A spawn accepted beside this call may not have started its model turn yet.
+    // Let it begin so the message joins that turn instead of waiting behind it.
+    if (child.status === 'running') for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
+      signal?.throwIfAborted();
+      const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`));
+      const record = response.ok ? await response.json() as { began?: number; state?: string } : undefined;
+      if (!record || record.began || record.state === 'completed') break;
+      await sleep(100, signal);
+    }
     const key = `message-${identity.slice(0, 48)}`, existing = await this.host.storage.get<DelegatedChild>(prefix + key);
     const answer = (value: DelegatedChild) => ({ sent: true, to: child.name, agentId: child.id, into: value.folded ? 'its running turn' : 'a new turn: its answer comes as a notification' });
     if (existing?.accepted) { this.follow(existing); return answer(existing); }
-    const next: DelegatedChild = existing ?? { ...child, key, requestId, parentRequestId: run.id, toolCallId: callId, task: args.text, background: true, createdAt: Date.now(), endedAt: undefined, status: 'running', held: undefined, spent: undefined, outcome: undefined, error: undefined, notified: undefined, landedBy: undefined, accepted: false, cancelRequested: undefined, folded: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
+    const next: DelegatedChild = existing ?? { ...child, key, requestId, parentRequestId: run.id, toolCallId: callId, task: args.text, background: true, createdAt: Date.now(), endedAt: undefined, status: 'running', held: undefined, spent: undefined, charged: undefined, outcome: undefined, error: undefined, notified: undefined, landedBy: undefined, accepted: false, cancelRequested: undefined, folded: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
     await this.host.storage.put(prefix + key, next);
     const chain = child.chain ?? [...lineage?.chain ?? [], id], maxDepth = child.maxDepth ?? config.delegate?.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth;
     const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: callId, [PARENT_KEYS.depth]: String(child.depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(','), [PARENT_KEYS.signature]: await signature(this.host.secret, child.id, requestId, String(child.depth), String(maxDepth), chain.join(',')) };
-    const message = agentMessage({ agentId: id, name: typeof config.name === 'string' ? config.name : 'parent', root: child.root ?? lineage?.root ?? id }, args.text, 'child');
+    const message = agentMessage({ agentId: id, name: 'parent', root: child.root ?? lineage?.root ?? id }, args.text, 'child');
     await this.host.sendMessage(child.id, { id: requestId, method: 'prompt', params: { text: args.text, allowDisconnected: true, whileRunning: 'followUp', metadata } }, message.notice);
     const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${requestId}`));
     const record = response.ok ? await response.json() as { steer?: string; steeredInto?: string } : undefined;
     if (record?.steer === 'accepted' || record?.steeredInto) {
-      // A steer belongs to the existing child's answer, not a second ending.
+      // Keep waits on the original child while Pi places the message. The final
+      // receipt decides whether it joined that turn or began another one.
       next.folded = true;
-      next.status = 'completed';
-      next.endedAt = Date.now();
-      next.notified = true;
     }
     next.accepted = true;
     await this.host.storage.put(prefix + key, next);
@@ -432,7 +472,7 @@ export class Delegation {
       return;
     }
     if (!response.ok) return;
-    const resumed: DelegatedChild = { ...child, key, requestId, createdAt: Date.now(), status: 'running', endedAt: undefined, outcome: undefined, error: undefined, spent: undefined, held: undefined, notified: undefined, landedBy: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
+    const resumed: DelegatedChild = { ...child, key, requestId, createdAt: Date.now(), status: 'running', endedAt: undefined, outcome: undefined, error: undefined, spent: undefined, held: undefined, charged: undefined, notified: undefined, landedBy: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
     await this.host.storage.put(prefix + key, resumed);
     this.follow(resumed);
   }
@@ -471,19 +511,29 @@ export class Delegation {
     if (subagent) definitions.push(REPORT_PROGRESS, ...(!definitions.some(tool => tool.name === 'send_message') ? [SEND_MESSAGE] : []));
     return definitions.map(definition => defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, replay: 'safe', execute: async (args: Record<string, unknown>, api, context) => {
       const signal = context.abortSignal ?? new AbortController().signal;
-      if (definition.name === 'delegate') return this.toolResult(this.answer(await this.wait(await this.start(args, api.callId, signal, false, api), signal)));
-      if (definition.name === 'spawn_agent') return this.toolResult(this.answer(await this.start(args, api.callId, signal, true, api)));
-      if (definition.name === 'send_message') return this.toolResult(await this.send(args, api.callId, api));
-      if (definition.name === 'report_progress') return this.toolResult(await this.progress(args, api.callId, api));
+      if (definition.name === 'delegate') {
+        const child = await this.wait(await this.start(args, api.callId, signal, false, api), signal);
+        return { ...await this.toolResult(this.answer(child), api), ...(child.status === 'completed' ? {} : { isError: true }) };
+      }
+      if (definition.name === 'spawn_agent') {
+        const work = this.start(args, api.callId, signal, true, api);
+        this.starting.add(work);
+        try { return this.toolResult(this.answer(await work), api); }
+        finally { this.starting.delete(work); }
+      }
+      if (['wait_agent', 'list_agents', 'send_message', 'interrupt_agent'].includes(definition.name))
+        await Promise.allSettled([...this.starting]);
+      if (definition.name === 'send_message') return this.toolResult(await this.send(args, api.callId, api, signal), api);
+      if (definition.name === 'report_progress') return this.toolResult(await this.progress(args, api.callId, api), api);
       const children = await this.children();
-      if (definition.name === 'list_agents') return this.toolResult({ agents: [...new Map(children.filter(child => child.background && !child.folded).map(child => [child.id, child])).values()].map(child => ({ agentId: child.id, name: child.name, status: child.status, startedAt: child.createdAt, ...(child.endedAt ? { endedAt: child.endedAt } : {}), ...(child.progress ? { progress: escapeMarkers(child.progress.text), progressAt: child.progress.at } : {}) })) });
+      if (definition.name === 'list_agents') return this.toolResult({ agents: [...new Map(children.filter(child => child.background && !child.folded).map(child => [child.id, child])).values()].map(child => ({ agentId: child.id, name: child.name, status: child.status, startedAt: child.createdAt, ...(child.endedAt ? { endedAt: child.endedAt } : {}), ...(child.progress ? { progress: escapeMarkers(child.progress.text), progressAt: child.progress.at } : {}) })) }, api);
       if (definition.name === 'wait_agent') {
         if (args.agents !== undefined && (!Array.isArray(args.agents) || args.agents.some(name => typeof name !== 'string'))) throw new HttpError(400, 'agents is a list of names or agentIds');
         if (args.timeoutMs !== undefined && (!Number.isInteger(args.timeoutMs) || Number(args.timeoutMs) < 1000 || Number(args.timeoutMs) > MULTI_AGENT_LIMITS.maxWaitMs)) throw new HttpError(400, `timeoutMs is an integer from 1000 to ${MULTI_AGENT_LIMITS.maxWaitMs}`);
         const background = [...new Map(children.filter(child => child.background && !child.folded).map(child => [child.id, child])).values()];
         const selected = background.filter(child => Array.isArray(args.agents) ? args.agents.includes(child.id) || args.agents.includes(child.name) : !child.landedBy);
         if (Array.isArray(args.agents)) for (const name of args.agents) if (!selected.some(child => child.id === name || child.name === name)) throw new HttpError(400, `You have no sub-agent ${name}`);
-        if (!selected.length) return this.toolResult({ agents: [] });
+        if (!selected.length) return this.toolResult({ agents: [] }, api);
         if (args.untilProgress !== undefined && typeof args.untilProgress !== 'boolean') throw new HttpError(400, 'untilProgress is true or false');
         const stop = new AbortController(), wait = AbortSignal.any([signal, stop.signal]);
         const deadline = Date.now() + Number(args.timeoutMs ?? MULTI_AGENT_LIMITS.waitMs), earliestProgress = Date.now() + MULTI_AGENT_LIMITS.progressWaitMs;
@@ -496,8 +546,10 @@ export class Delegation {
             if (latest.some(child => child.status !== 'running' && !child.landedBy) || latest.every(child => child.status !== 'running')) break;
             for (const notice of (await this.host.storage.list<{ request: { id: string }; notice: RuntimeNotice }>({ prefix: 'delegation-notice:' })).values()) {
               if (notice.notice.metadata.kind !== 'message') continue;
-              const record = await this.host.storage.get<{ state: string }>(`request:${notice.request.id}`);
-              if (record && record.state !== 'completed') messaged.add(notice.notice.source.name);
+              const record = await this.host.storage.get<{ state: string; accepted?: boolean }>(`request:${notice.request.id}`);
+              // Admission writes the request before Pi queues its steering input. A wait may
+              // return only after that input is durable, so the next step sees the message.
+              if (record?.accepted && record.state !== 'completed') messaged.add(notice.notice.source.name);
             }
             if (messaged.size) break;
             if (args.untilProgress && Date.now() >= earliestProgress) for (const child of latest) if (child.progress && child.progress.sequence > (child.progressShown ?? 0)) updated.add(child.name);
@@ -505,6 +557,7 @@ export class Delegation {
             await sleep(Math.min(25, Math.max(1, deadline - Date.now())), signal);
           }
         } finally { stop.abort(); await Promise.all(watches); }
+        const { run } = await this.host.context(api);
         const answers = await this.host.storage.transaction(async tx => {
           const answers: (ReturnType<Delegation['answer']> | { agentId: string; name: string; status: string; note: string })[] = [];
           for (const old of selected) {
@@ -512,17 +565,17 @@ export class Delegation {
             if (child.status !== 'running' && child.landedBy) answers.push({ agentId: child.id, name: child.name, status: child.status, note: 'Its answer comes (or came) as a notification' });
             else {
               answers.push({ ...this.answer(child), ...(child.status === 'running' && child.progress ? { progress: child.progress.text, progressAt: child.progress.at } : {}) });
-              if (child.status !== 'running') await tx.put(prefix + child.key, { ...child, notified: true, landedBy: 'wait' });
+              if (child.status !== 'running') await this.settleInTransaction(tx, { ...child, notified: true, landedBy: 'wait' }, run.id);
               else if (child.progress) await tx.put(prefix + child.key, { ...child, progressShown: child.progress.sequence });
             }
           }
           return answers;
         });
-        return this.toolResult({ agents: answers, ...(messaged.size ? { messaged: [...messaged], message: `${[...messaged].join(', ')} sent you a message, which follows this result: read it, then wait again if you need to` } : {}), ...(updated.size ? { updated: [...updated] } : {}), ...(!messaged.size && !updated.size && answers.every(child => child.status === 'running') ? { timedOut: true } : {}) });
+        return this.toolResult({ agents: answers, ...(messaged.size ? { messaged: [...messaged], message: `${[...messaged].join(', ')} sent you a message, which follows this result: read it, then wait again if you need to` } : {}), ...(updated.size ? { updated: [...updated] } : {}), ...(!messaged.size && !updated.size && answers.every(child => child.status === 'running') ? { timedOut: true } : {}) }, api);
       }
       const child = children.find(child => child.id === args.agent || child.name === args.agent || child.id === args.to || child.name === args.to);
       if (!child) throw new HttpError(404, 'Unknown sub-agent');
-      if (definition.name === 'interrupt_agent') { await this.host.fetch(child.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: `interrupt-${api.callId}`, method: 'abort', params: {} }) })); return this.toolResult({ agentId: child.id, interrupted: true }); }
+      if (definition.name === 'interrupt_agent') { await this.host.fetch(child.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: `interrupt-${api.callId}`, method: 'abort', params: {} }) })); return this.toolResult({ agentId: child.id, interrupted: true }, api); }
       throw new HttpError(400, 'Unknown delegation tool');
     } }));
   }

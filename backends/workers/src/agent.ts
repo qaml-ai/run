@@ -4,6 +4,11 @@ import { withCompactionPrompt } from "./model-compaction.ts";
 import { takesFiles } from './tool-file-schema.ts';
 import { ToolFiles } from './tool-files.ts';
 import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
+import { steeringCanJoin, steeringJoined } from "./steering-placement.ts";
+import { admitAgentMessage } from "./message-admission.ts";
+import { MULTI_AGENT_LIMITS } from "./multi-agent-policy.ts";
+import { ConfigurationTargets } from "./configuration-targets.ts";
+import { visibleEvent, visibleReplay } from "./event-visibility.ts";
 import { toolOutputExtension } from "./tool-output.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
@@ -23,6 +28,7 @@ import {
   type ToolRegistration,
   type ConversationView,
   type LiveState,
+  LiveDoc,
   type Extension,
   defineTool,
   hook,
@@ -230,6 +236,8 @@ type RequestRecord = {
   task?: number;
   steer?: "queued" | "accepted";
   steeredInto?: string;
+  /** Accepted while its logical turn was live, which may span native Pi runs. */
+  steerCommitted?: true;
   metadata?: unknown;
   actor?: string;
   fingerprint: string;
@@ -241,6 +249,7 @@ type RequestRecord = {
   began?: number;
   accepted?: boolean;
   admitted?: boolean;
+  noticeQueued?: true;
   outcome?: { result?: unknown; error?: string };
   status?: string;
   error?: string;
@@ -331,10 +340,27 @@ export class CamelAgent extends DurableObject<Env> {
   private notifications = new DelegationNotifications({
     storage: this.ctx.storage,
     canLand: async () => !(await this.activity()).busy,
-    isBusy: async () => (await this.activity()).busy,
+    stage: async (request, notice) => {
+      if (await this.ctx.storage.get(reqKey(request.id))) return;
+      const params = { ...request.params, whileRunning: 'queue' };
+      await this.ctx.storage.put(reqKey(request.id), {
+        id: request.id, method: 'prompt', params, fingerprint: canonical({ method: 'prompt', params }),
+        state: 'running', startedAt: Date.now(), accepted: false, noticeQueued: true,
+      } satisfies RequestRecord);
+    },
+    discard: async request => {
+      const record = await this.ctx.storage.get<RequestRecord>(reqKey(request.id));
+      if (!record?.noticeQueued) return;
+      const done: RequestRecord = { ...record, state: 'completed', status: 'completed', endedAt: Date.now(),
+        outcome: { result: { error: null, skipped: 'wait_agent answered this sub-agent\'s ending already' } } };
+      await this.ctx.storage.put(reqKey(request.id), done);
+      await this.emit({ type: 'response', id: request.id, outcome: done.outcome });
+    },
     wakeLimit: this.delegateWakeLimit ? Number(this.delegateWakeLimit) : undefined,
     submit: (request, notice, delivery) =>
-      this.submit(request, notice, delivery),
+      !delivery.run && delivery.stopped === 'aborted'
+        ? this.admit(request, notice, delivery)
+        : this.submit(request, notice, delivery),
     admitWake: (root, id) =>
       root === this.ctx.id.name
         ? this.admitDelegateWake(id)
@@ -458,11 +484,13 @@ export class CamelAgent extends DurableObject<Env> {
   );
   private limits = new AgentRunLimits(this.ctx.storage, async () => {
     const conf = await this.config();
+    const run = await this.currentRun();
     return {
       config: conf.config,
-      run: await this.currentRun(),
+      run,
       agentId: conf.id,
       spend: await this.agentSpend(conf),
+      childCost: await this.delegation.cost(run.id),
       most: await tenantRunCaps(this.env, conf.tenantId),
     };
   });
@@ -1041,6 +1069,22 @@ export class CamelAgent extends DurableObject<Env> {
   private readonly initialCursor = Date.now() * 1000;
   private pendingWaits = new Set<string>();
   private admission: Promise<unknown> = Promise.resolve();
+  private configurationTargets = new ConfigurationTargets(this.ctx.storage, {
+    busy: async () => this.harness.session().busy(),
+    apply: async target => {
+      const conf = await this.config();
+      const directory = new Directory(this.env, conf.tenantId);
+      const before = await directory.get(conf.id);
+      if (!before) throw Object.assign(new Error("Unknown agent"), { status: 404 });
+      const config = target.config ?? (target.replace ? target.params ?? {} : await configurationPatch(this.env, conf.tenantId, before.config, target.params ?? {}));
+      const updated = await directory.upsert(config, before.key ?? before.id, target.origin ?? conf.runtimeOrigin);
+      if ("failed" in updated) throw Object.assign(new Error(updated.error), { status: updated.status });
+      if (target.params && Object.hasOwn(target.params, "spendLimit"))
+        await setAgentSpendLimit(this.env, conf.tenantId, conf.id, target.params.spendLimit);
+      return { changed: before.configHash !== updated.configHash, configHash: updated.configHash };
+    },
+    emit: async record => { await this.emit({ type: "response", id: record.id, outcome: record.outcome }); },
+  });
   private eventsProcessed: Promise<void> = Promise.resolve();
 
   private async records() {
@@ -1082,6 +1126,7 @@ export class CamelAgent extends DurableObject<Env> {
       for (const listener of this.listeners) listener(cursor, event);
       for (const socket of this.ctx.getWebSockets()) {
         try {
+          if (!visibleEvent(event, socket.deserializeAttachment()?.subagents === true)) continue;
           socket.send(eventFrame(event, cursor));
         } catch {
           socket.close(1011, "Send failed");
@@ -1111,8 +1156,15 @@ export class CamelAgent extends DurableObject<Env> {
   private async markBegan(id: string) {
     const started = await this.ctx.storage.transaction(async (tx) => {
       const record = await tx.get<RequestRecord>(reqKey(id));
-      if (!record || record.began) return false;
+      if (!record || record.began || record.state === 'completed') return false;
       record.began = Date.now();
+      // Pi can start the next queued turn before the previous public outcome
+      // finishes projection. Preserve that boundary instead of dating its end
+      // after the next turn has already begun.
+      if (!record.steeredInto && record.method !== 'execute') for (const previous of (await tx.list<RequestRecord>({ prefix: 'request:' })).values()) {
+        if (previous.id !== id && previous.method !== 'execute' && previous.began && !previous.steeredInto && previous.state !== 'completed' && previous.startedAt <= record.startedAt)
+          await tx.put(`turn-ended:${previous.id}`, record.began);
+      }
       record.state = "running";
       await tx.put(reqKey(id), record);
       return true;
@@ -1177,6 +1229,7 @@ export class CamelAgent extends DurableObject<Env> {
         const record = await this.ctx.storage.get<RequestRecord>(
           reqKey(status.requestId),
         );
+        if (record) await this.reconcileSteering(record, inputs);
         return (
           (await this.ctx.storage.get<string>(
             `resume-for:${status.requestId}`,
@@ -1186,6 +1239,25 @@ export class CamelAgent extends DurableObject<Env> {
         );
       }
     }
+  }
+  private async runningRequest(): Promise<{ owner: string; nativeRequest: string; resumeOwner?: string } | undefined> {
+    const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
+    const live = await pi.snapshot(LiveDoc, root.id, BACKGROUND_CONTEXT);
+    for (const input of live?.run?.inputs ?? []) {
+      const submission = await pi.submission(input, BACKGROUND_CONTEXT);
+      const status = await submission?.status(BACKGROUND_CONTEXT);
+      // A watch can still show an input after its final answer committed. The
+      // submission is authoritative about whether this native run can take it.
+      if (!status?.requestId || !steeringCanJoin(status)) continue;
+      const record = await this.ctx.storage.get<RequestRecord>(reqKey(status.requestId));
+      const resumeOwner = await this.ctx.storage.get<string>(`resume-for:${status.requestId}`);
+      const id = resumeOwner ?? record?.steeredInto ?? status.requestId;
+      const owner = id === record?.id ? record : await this.ctx.storage.get<RequestRecord>(reqKey(id));
+      if (owner && owner.state !== 'completed') {
+        return { owner: id, nativeRequest: status.requestId, ...(resumeOwner ? { resumeOwner } : {}) };
+      }
+    }
+    return undefined;
   }
   private async fileRequestId(
     conversationId?: Parameters<typeof hostExecutionRequest>[1],
@@ -1226,7 +1298,42 @@ export class CamelAgent extends DurableObject<Env> {
       await this.emit({ type: "event", requestId: id, event });
     if (ended) this.nextMessage++;
   }
+  private async reconcileSteering(record: RequestRecord, inputs: readonly number[]) {
+    // The Node host keeps its logical turn open while draining steers, even if
+    // the preceding native run just answered. Preserve that accepted ownership.
+    const parent = record.steeredInto ? await this.ctx.storage.get<RequestRecord>(reqKey(record.steeredInto)) : undefined;
+    const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
+    const placement = await root.commit(async tx => {
+      const current = await tx.submissionByRequest(root.id, record.piId ?? record.id);
+      const previous = record.steeredInto ? await tx.submissionByRequest(root.id, parent?.piId ?? record.steeredInto) : undefined;
+      const entry = current?.entry === undefined ? undefined : await tx.entry(current.entry);
+      if (entry?.data && typeof entry.data === 'object' && Object.hasOwn(entry.data, 'logicalOwner')) return { owner: (entry.data as { logicalOwner: string | null }).logicalOwner };
+      const joined = steeringJoined(current, previous, inputs.map(id => ({ id })), record.steerCommitted);
+      return { joined };
+    }, BACKGROUND_CONTEXT);
+    if ('owner' in placement && placement.owner !== undefined) {
+      await this.steeringOwner(record, placement.owner);
+    } else if (placement.joined === false) {
+      delete record.steeredInto;
+      record.steer = 'queued';
+      record.state = 'running';
+      await this.ctx.storage.put(reqKey(record.id), record);
+    }
+  }
+  private async steeringOwner(record: RequestRecord, owner: string | null) {
+    if (owner) {
+      record.steeredInto = owner;
+      record.steerCommitted = true;
+      record.steer = 'accepted';
+    } else {
+      delete record.steeredInto;
+      delete record.steerCommitted;
+      record.steer = 'queued';
+    }
+    await this.ctx.storage.put(reqKey(record.id), record);
+  }
   private async onView(view: ConversationView) {
+    const live = view.docs["pi.live"] as LiveState | undefined;
     // A paused Pi turn keeps its original input ID. New output belongs to its
     // admitted resume alias, including snapshots delivered just after answer().
     if (this.active)
@@ -1244,6 +1351,11 @@ export class CamelAgent extends DurableObject<Env> {
         this.lastEntry = Number(entry.id);
         continue;
       }
+      if ((entry.kind === 'camel.prompt' || entry.kind === 'camel.steer') && entry.data && typeof entry.data === 'object' && Object.hasOwn(entry.data, 'logicalOwner')) {
+        const data = entry.data as { requestId: string; logicalOwner: string | null };
+        const record = await this.ctx.storage.get<RequestRecord>(reqKey(data.requestId));
+        if (record) await this.steeringOwner(record, data.logicalOwner);
+      }
       if (entry.kind === "camel.prompt") {
         const original = (entry.data as { requestId: string }).requestId;
         this.active =
@@ -1254,6 +1366,7 @@ export class CamelAgent extends DurableObject<Env> {
       if (entry.kind === "camel.steer") {
         const id = (entry.data as { requestId: string }).requestId;
         const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
+        if (record && record.state !== 'completed') await this.reconcileSteering(record, live?.run?.inputs ?? []);
         if (record && record.state !== 'completed' && !record.steeredInto) {
           this.active = id;
           await this.markBegan(id);
@@ -1279,12 +1392,17 @@ export class CamelAgent extends DurableObject<Env> {
           );
         }
       }
+      const stamp = entry.data as { requestId?: string; source?: RuntimeNotice['source']; metadata?: Record<string, unknown> };
+      if ((entry.kind === 'camel.prompt' || entry.kind === 'camel.steer') && stamp.source?.kind === 'agent' && stamp.metadata?.kind === 'message' && stamp.metadata.to === 'parent') {
+        const record = stamp.requestId ? await this.ctx.storage.get<RequestRecord>(reqKey(stamp.requestId)) : undefined;
+        await this.emit({ type: 'event', requestId: record?.steeredInto ?? stamp.requestId ?? this.active,
+          event: { type: 'subagent_message', agentId: stamp.source.agentId, name: stamp.source.name, text: record?.params?.text ?? '' } });
+      }
       if (this.active)
         for (const message of entry.model ?? [])
           await this.projectMessage(this.active, message, true);
       this.lastEntry = Number(entry.id);
     }
-    const live = view.docs["pi.live"] as LiveState | undefined;
     const id = await this.requestForInputs(live?.run?.inputs ?? []);
     this.partial = (live?.generation?.message as AssistantMessage) ?? null;
     if (id) {
@@ -1404,7 +1522,10 @@ export class CamelAgent extends DurableObject<Env> {
     this.ctx.waitUntil(
       this.settle(id, 0)
         .catch(() => {})
-        .finally(() => this.pendingWaits.delete(id)),
+        .finally(() => {
+          this.pendingWaits.delete(id);
+          this.ctx.waitUntil(this.configurationTargets.drain());
+        }),
     );
   }
   private async settle(id: string, waitMs: number): Promise<RequestRecord> {
@@ -1478,6 +1599,7 @@ export class CamelAgent extends DurableObject<Env> {
       }
       const current = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (current?.state === "completed") return current;
+      if (await this.ctx.storage.get(`cancelled-request:${id}`)) await this.delegation.settleStopped(id);
       const usage = await this.usageForRequest(record.piId ?? id);
       const stored = await this.ctx.storage.get<Config>("configuration");
       const requestedOutput = record.params?.output;
@@ -1519,7 +1641,11 @@ export class CamelAgent extends DurableObject<Env> {
                 "Model operation failed",
               last: usage.last,
             }) ?? { error: "Model operation failed" });
-      if ("result" in outcome && outcome.result) Object.assign(outcome.result, { usage: runUsage });
+      if ("result" in outcome && outcome.result) Object.assign(outcome.result, {
+        usage: runUsage,
+        ...(usage.toolCalls?.length ? { toolCalls: usage.toolCalls } : {}),
+        ...(usage.toolErrors?.length ? { toolErrors: usage.toolErrors } : {}),
+      });
       let changed = false;
       const terminal = await this.ctx.storage.transaction(async (tx) => {
         const latest = await tx.get<RequestRecord>(reqKey(id));
@@ -1529,7 +1655,7 @@ export class CamelAgent extends DurableObject<Env> {
         const completed: RequestRecord = {
           ...(latest ?? current ?? record),
           state: "completed",
-          endedAt: Date.now(),
+          endedAt: await tx.get<number>(`turn-ended:${id}`) ?? Date.now(),
           outcome,
           status:
             !limit &&
@@ -1644,10 +1770,15 @@ export class CamelAgent extends DurableObject<Env> {
       if (keepTask !== undefined) await tx.put('resume-kept-queue', { taskId: keepTask });
     });
     if (queued === 'cancel') {
-      if (!keepChildren) await this.delegation.cancel();
-      await this.cancelHumanInputs();
-      await this.abortExecutions();
-      await this.harness.session().abort();
+      await Promise.all([
+        keepChildren ? Promise.resolve() : this.delegation.cancel(),
+        (async () => {
+          await this.cancelHumanInputs();
+          await this.abortExecutions();
+          await this.harness.session().abort();
+        })(),
+      ]);
+      await this.notifications.abortPending();
     } else {
       for (const queued of pending.filter(item => item.status === 'queued')) {
         const record = await this.ctx.storage.get<RequestRecord>(reqKey(queued.operationId));
@@ -1736,6 +1867,10 @@ export class CamelAgent extends DurableObject<Env> {
     for (const record of await this.records()) {
       if (record.state === "completed" && record.status !== "input_required") continue;
       const cancelled = await this.ctx.storage.get(`cancelled-request:${record.id}`);
+      if (cancelled && record.noticeQueued) {
+        await this.notifications.abortPending();
+        continue;
+      }
       if (cancelled === 'keep-queue') this.track(record.id);
       else if (cancelled) this.resumeCancellation(record);
     }
@@ -1799,78 +1934,28 @@ export class CamelAgent extends DurableObject<Env> {
   private async configureRequest(input: unknown, replace = false) {
     const request = object(input, ["id", "method", "params"]);
     const id = boundedText(request.id, "id", 80);
-    if (!/^[A-Za-z0-9_-]+$/.test(id))
-      throw new BadRequest("Invalid request id");
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new BadRequest("Invalid request id");
     if (await this.ctx.storage.get(`cancelled-request:${id}`))
-      throw Object.assign(new Error("Request cancelled"), {
-        status: 409,
-        code: "aborted",
-      });
+      throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
     if (!request.params || typeof request.params !== "object" || Array.isArray(request.params))
       throw new BadRequest("Expected configuration object");
-    const conf = await this.config();
     const params = request.params as Record<string, unknown>;
-    const patched = configuration(replace ? params : { ...conf.config, ...params }, conf.config.model ?? this.env.MODEL).config;
-    const modelError = (params.model !== undefined || params.keyScope !== undefined)
-      ? await configurationModelError(this.env, conf.tenantId, patched) : undefined;
-    const fingerprint = canonical(request);
-    const previous = await this.ctx.storage.transaction(async (tx) => {
-      const old = await tx.get<RequestRecord>(reqKey(id));
-      if (old && old.fingerprint !== fingerprint)
-        throw Object.assign(
-          new Error("Request id reused with different input"),
-          { status: 409 },
-        );
-      if (!old)
-        await tx.put(reqKey(id), {
-          id,
-          method: "configure",
-          fingerprint,
-          state: "running",
-          startedAt: Date.now(),
-        } satisfies RequestRecord);
-      return old;
-    });
-    if (previous?.state === "completed") return previous;
-    if (modelError) {
-      const failed: RequestRecord = { id, method: "configure", fingerprint, state: "completed", startedAt: previous?.startedAt ?? Date.now(), endedAt: Date.now(), outcome: { error: modelError } };
-      await this.ctx.storage.put(reqKey(id), failed);
-      await this.emit({ type: "response", id, outcome: failed.outcome });
-      return failed;
+    if (!replace && !Object.keys(params).length) throw new BadRequest("Give at least one configuration field");
+    const conf = await this.config();
+    const patched = replace ? configuration(params, conf.config.model ?? this.env.MODEL).config : await configurationPatch(this.env, conf.tenantId, conf.config, params);
+    configuration(patched, conf.config.model ?? this.env.MODEL);
+    if (params.model !== undefined || params.keyScope !== undefined) {
+      try {
+        const error = await configurationModelError(this.env, conf.tenantId, patched);
+        if (error) throw new BadRequest(error);
+      } catch (error) { throw new BadRequest(error instanceof Error ? error.message : String(error)); }
     }
-    const directory = new Directory(this.env, conf.tenantId);
-    const current = await directory.get(conf.id);
-    if (!current)
-      throw Object.assign(new Error("Unknown agent"), { status: 404 });
-    const updated = await directory.upsert(
-      replace ? params : await configurationPatch(this.env, conf.tenantId, current.config, params),
-      current.key ?? current.id,
-      conf.runtimeOrigin,
-    );
-    if ("failed" in updated)
-      throw Object.assign(new Error(updated.error), {
-        status: updated.status,
-        code: updated.code,
-      });
-    if (Object.hasOwn(params, "spendLimit"))
-      await setAgentSpendLimit(
-        this.env,
-        conf.tenantId,
-        conf.id,
-        params.spendLimit,
-      );
-    const record: RequestRecord = {
-      id,
-      method: "configure",
-      fingerprint,
-      state: "completed",
-      startedAt: previous?.startedAt ?? Date.now(),
-      endedAt: Date.now(),
-      outcome: { result: { configured: true, changed: current.configHash !== updated.configHash, configHash: updated.configHash } },
-    };
-    await this.ctx.storage.put(reqKey(id), record);
-    await this.emit({ type: "response", id, outcome: record.outcome });
-    return record;
+    const record = await this.configurationTargets.enqueue({ id, params, ...(replace ? { replace: true } : {}) });
+    // An idle agent applies this before the caller can submit its next prompt.
+    // A busy agent returns with the durable target waiting behind its turn.
+    await this.configurationTargets.drain();
+    await this.arm();
+    return await this.ctx.storage.get<RequestRecord>(reqKey(id)) ?? record;
   }
   private async requireApplication(allowDisconnected: unknown) {
     if (allowDisconnected !== undefined && typeof allowDisconnected !== "boolean")
@@ -1892,7 +1977,7 @@ export class CamelAgent extends DurableObject<Env> {
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id))
       throw new BadRequest("Invalid request id");
-    if (await this.ctx.storage.get(`cancelled-request:${id}`))
+    if (!(notice && delivery && !delivery.run) && await this.ctx.storage.get(`cancelled-request:${id}`))
       throw Object.assign(new Error("Request cancelled"), {
         status: 409,
         code: "aborted",
@@ -2103,16 +2188,31 @@ export class CamelAgent extends DurableObject<Env> {
     const conf = await this.config();
     if (!old) await refreshIdleLifetime(this.env, this.ctx.storage, conf);
     if (conf.config.spendLimit) await this.flushBilling(true);
+    if (notice) await this.delegation.landNotice(id, notice.costUsd);
     const spend = await this.agentSpend(conf);
     const refusal = agentSpendRefusal(conf.id, spend);
-    if (refusal)
+    if (refusal && !notice)
       throw Object.assign(new Error(refusal.error), {
         status: 402,
         code: "SPEND_LIMIT",
       });
-    const running = (await this.harness.pending()).find(
+    const pending = (await this.harness.pending()).find(
       (item) => item.status === "running",
     );
+    // Pending operation receipts can outlive their native run. Only a live
+    // turn can take a steer; its accepted steers remain part of that logical
+    // turn when Pi drains them after a final answer.
+    const candidate = params.whileRunning === 'steer' ? await this.runningRequest() : undefined;
+    const running = old?.steerCommitted ? old.steeredInto : candidate?.owner;
+    const messageWake = async () => {
+      const wake = notice!.root === conf.id
+        ? await this.admitDelegateWake(id)
+        : await this.env.AGENTS.getByName(notice!.root).admitDelegateWake(id);
+      return wake.allowed ? undefined : { error: `This agent's chain has had ${this.delegateWakeLimit ? Number(this.delegateWakeLimit) : MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on`, code: 'agent_loop_limit', stopped: 'agent_loop_limit' };
+    };
+    const noTurn = notice
+      ? refusal ?? (delivery && !delivery.run ? { error: delivery.message, code: delivery.stopped, stopped: delivery.stopped } : undefined)
+      : undefined;
     await this.requireApplication(params.allowDisconnected);
     const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
     if (preparing) {
@@ -2147,7 +2247,7 @@ export class CamelAgent extends DurableObject<Env> {
           );
     if (request.method !== "continue" && !text.trim() && !files?.some(file => file.transcript))
       throw new BadRequest("Give the agent some text, or audio to transcribe");
-    if (await this.ctx.storage.get(`cancelled-request:${id}`))
+    if (!noTurn && await this.ctx.storage.get(`cancelled-request:${id}`))
       throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
     if (files) params.files = attachmentFiles(files);
     } catch (error) {
@@ -2156,7 +2256,7 @@ export class CamelAgent extends DurableObject<Env> {
     }
     if (request.method === "prompt" && !notice && !old?.accepted)
       await this.closeHumanInputs("superseded");
-    const record: RequestRecord = old ?? {
+    const record: RequestRecord = old && !old.noticeQueued ? old : {
       id,
       method: String(request.method),
       billing: {
@@ -2169,14 +2269,15 @@ export class CamelAgent extends DurableObject<Env> {
       ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
       ...((params.actor ?? (params.from as { id?: string } | undefined)?.id) ? { actor: String(params.actor ?? (params.from as { id: string }).id) } : {}),
       fingerprint,
-      state: running ? "queued" : "running",
+      state: pending ? "queued" : "running",
       ...(params.whileRunning === "steer"
         ? running
-          ? { steer: "accepted" as const, steeredInto: running.operationId }
+          ? { steer: "accepted" as const, ...(notice?.metadata.kind === 'message' ? {} : { steeredInto: running, steerCommitted: true as const }) }
           : { steer: "queued" as const }
         : {}),
-      startedAt: Date.now(),
+      startedAt: old?.startedAt ?? Date.now(),
     };
+    delete record.noticeQueued;
     const prompt = files
       ? attachmentInput(text, files)
       : params.images
@@ -2200,7 +2301,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (preparing) record.admitted = true;
     await this.ctx.storage.put(reqKey(id), record);
     if (preparing) await this.promptPreparations.finish(id);
-    if (delivery && !delivery.run && notice) {
+    const landWithoutTurn = async (stop: { error: string; code?: string; stopped?: string }) => {
       const pi = await this.harness.pi(),
         root = await pi.root(BACKGROUND_CONTEXT);
       const saved = await root.submit(
@@ -2209,7 +2310,7 @@ export class CamelAgent extends DurableObject<Env> {
           requestId: id,
           entry: {
             kind: "camel.prompt",
-            data: { requestId: id, ...notice } as never,
+            data: { requestId: id, ...notice, ...(params.whileRunning === 'steer' ? { logicalOwner: null } : {}) } as never,
             model: [
               { role: "user", content: text, timestamp: Date.now() },
             ] as never,
@@ -2219,14 +2320,23 @@ export class CamelAgent extends DurableObject<Env> {
       );
       await saved.wait(BACKGROUND_CONTEXT);
       record.state = "completed";
+      record.status = "failed";
+      delete record.steeredInto;
+      delete record.steerCommitted;
+      if (params.whileRunning === 'steer') record.steer = 'queued';
       record.endedAt = Date.now();
       record.outcome = {
-        result: { error: delivery.message, code: delivery.stopped },
+        result: { ...stop, usage: this.usageView(await this.usageForRequest(id)) },
       };
       await this.ctx.storage.put(reqKey(id), record);
       await this.emit({ type: "response", id, outcome: record.outcome });
+      if (record.admitted) {
+        await releaseTurn(this.env, conf.tenantId, conf.id, id);
+        await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${id}`);
+      }
       return record;
-    }
+    };
+    if (noTurn && notice) return landWithoutTurn(noTurn);
     await this.arm(Date.now() + 1000);
     if (!record.admitted) {
       await this.admitRequest(conf, id);
@@ -2240,7 +2350,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (request.method === "continue")
       await this.harness.continue({ operationId: id });
     else {
-      const held = !running ? await this.ctx.storage.list<{ id: string; prompt: typeof prompt; startedAt: number }>({ prefix: 'held-steer:' }) : new Map();
+      const held = !pending ? await this.ctx.storage.list<{ id: string; prompt: typeof prompt; startedAt: number }>({ prefix: 'held-steer:' }) : new Map();
       const submission = {
         operationId: id,
         whenBusy: params.whileRunning === "steer" ? "steer" as const : "followUp" as const,
@@ -2256,7 +2366,24 @@ export class CamelAgent extends DurableObject<Env> {
           } as never,
         },
       };
-      if (!held.size) await this.harness.submit(prompt, submission);
+      if (notice?.metadata.kind === 'message') {
+        const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
+        const input = { requestId: id, content: prompt, entry: submission.entry, candidate, held: [...held.values()],
+          ...(record.steerCommitted ? { legacyOwner: record.steeredInto } : {}) };
+        // The candidate is only a hint until this transaction queues its input.
+        // If its turn ended meanwhile, take a wake before exposing an own turn.
+        let admitted = await admitAgentMessage(root, input, 'join');
+        if (!admitted.submitted) {
+          const refusal = await messageWake();
+          if (refusal) return landWithoutTurn(refusal);
+          admitted = await admitAgentMessage(root, input, 'own');
+        }
+        if (admitted.submitted && admitted.owner !== undefined) {
+          const latest = (await this.ctx.storage.get<RequestRecord>(reqKey(id))) ?? record;
+          await this.steeringOwner(latest, admitted.owner);
+        }
+        if (held.size) await this.ctx.storage.delete([...held.keys()]);
+      } else if (!held.size) await this.harness.submit(prompt, submission);
       else {
         const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
         await root.commit(async tx => {
@@ -2279,7 +2406,7 @@ export class CamelAgent extends DurableObject<Env> {
     return accepted;
   }
   private async activity() {
-    const records = (await this.records()).filter(record => ["prompt", "continue", "resume"].includes(record.method) && record.state !== "completed");
+    const records = (await this.records()).filter(record => !record.noticeQueued && ["prompt", "continue", "resume"].includes(record.method) && record.state !== "completed");
     const active = records.find(record => record.state === "running" && !record.steeredInto);
     return { busy: records.length > 0, activeRun: active?.id ?? null, queuedRuns: records.filter(record => record !== active).length };
   }
@@ -2297,10 +2424,12 @@ export class CamelAgent extends DurableObject<Env> {
         .map((record) => this.settle(record.id, 1)),
     );
     const activity = await this.activity();
+    const spend = await this.agentSpend(await this.config());
     const lastActive = Math.max(this.recentEvents.lastActivity() ?? 0, (await this.ctx.storage.get<number>("last-active")) ?? 0);
     return {
       cursor: (await this.ctx.storage.get<number>("cursor")) ?? this.initialCursor,
       connected: this.attached.connected,
+      spendLimit: spend ? { usd: spend.usd, spent: spend.spent } : null,
       ...activity,
       running: activity.busy || Date.now() - lastActive < Number((this.env as Env & { AGENT_IDLE_MS?: string }).AGENT_IDLE_MS ?? 60_000),
       events: this.recentEvents.read(),
@@ -2441,6 +2570,14 @@ export class CamelAgent extends DurableObject<Env> {
       // already-provisioned replacement for an existing keyed agent.
       if (path === "/configuration" && request.method === "POST")
         return json(await requestView(await this.configureRequest(await body(request, 17 * 1024 * 1024), true)), 202);
+      if (path === "/configuration-target" && request.method === "POST") {
+        const target = await body(request) as { id: string; config: AgentConfiguration; origin?: string };
+        configuration(target.config, this.env.MODEL);
+        const record = await this.configurationTargets.enqueue(target);
+        this.ctx.waitUntil(this.configurationTargets.drain());
+        await this.arm();
+        return json(record, 202);
+      }
       if (path === "/configuration" && request.method === "PUT") {
         const incoming = (await body(request, 17 * 1024 * 1024)) as Config;
         const mutation = this.admission.then(async () => {
@@ -2879,7 +3016,7 @@ export class CamelAgent extends DurableObject<Env> {
         return json(batch ? { inputs: answered.inputs, requests: answered.requests } : { input: answered.inputs[0], request: answered.requests[0] ?? null }, answered.status);
       }
       if (path === "/abort" && request.method === "POST") {
-        const params = object(request.body ? await body(request) : {}, ['queued', 'children']);
+        const params = object(await body(request, 32 * 1024, true), ['queued', 'children']);
         if (params.queued !== undefined && !['cancel', 'keep'].includes(String(params.queued))) throw new BadRequest('queued is cancel or keep');
         if (params.children !== undefined && !['cancel', 'keep'].includes(String(params.children))) throw new BadRequest('children is cancel or keep');
         const aborting = this.admission.then(async () => {
@@ -3249,6 +3386,7 @@ export class CamelAgent extends DurableObject<Env> {
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
       pendingRun ? Date.now() + 1000 : Infinity,
+      await this.configurationTargets.pending() ? Date.now() + 1000 : Infinity,
       await this.promptPreparations.deadline(),
       await this.ctx.storage.get<number>("human-input-deadline") ?? Infinity,
       await this.limits.deadline(),
@@ -3264,6 +3402,7 @@ export class CamelAgent extends DurableObject<Env> {
     return withMoneyMetrics(this.env, () => this.restorePending());
   }
   private async restorePending() {
+    this.ctx.waitUntil(this.configurationTargets.drain());
     await this.promptPreparations.sweep(Date.now(), true);
     await this.resumeKeptQueue();
     await this.restoreCancellations();
@@ -3292,6 +3431,7 @@ export class CamelAgent extends DurableObject<Env> {
     });
   }
   private async wake() {
+    await this.configurationTargets.drain();
     await this.promptPreparations.sweep();
     await this.resumeKeptQueue();
     await this.restoreCancellations();
@@ -3328,7 +3468,7 @@ export class CamelAgent extends DurableObject<Env> {
     for (const record of await this.records()) {
       if (record.accepted && record.state !== "completed")
         this.track(record.id);
-      if (record.method === "prompt" && !record.accepted) {
+      if (record.method === "prompt" && !record.accepted && !record.noticeQueued) {
         try {
           await this.submit({
             id: record.id,
@@ -3449,10 +3589,13 @@ export class CamelAgent extends DurableObject<Env> {
       }
       socket.serializeAttachment({
         type: "camel.application",
+        subagents: url.searchParams.get("subagents") === "1",
         connection: connection.id,
         serving: true,
         initialized: false,
       });
+    } else {
+      socket.serializeAttachment({ type: "camel.watcher", subagents: url.searchParams.get("subagents") === "1" });
     }
     socket.send(
       eventFrame(
@@ -3578,10 +3721,11 @@ export class CamelAgent extends DurableObject<Env> {
     const state = await this.state();
     const watch = new URL(request.url).searchParams.get("watch") === "1";
     const asked = new URL(request.url).searchParams.get("snapshot");
-    return replayEvents({ cursor: state.cursor, events: state.events,
+    const replay = replayEvents({ cursor: state.cursor, events: state.events,
       turn: await this.ctx.storage.get<LiveTurn>("live-turn"), partial: this.partial },
       request.headers.get("Last-Event-ID") ?? "0", watch ? asked !== "0" : asked === "1",
       Number((this.env as Env & { AGENT_SNAPSHOT_BYTES?: string }).AGENT_SNAPSHOT_BYTES) || undefined);
+    return visibleReplay(replay, new URL(request.url).searchParams.get("subagents") === "1");
   }
   private async events(request: Request): Promise<Response> {
     const runId = new URL(request.url).searchParams.get("runId");
@@ -3606,7 +3750,7 @@ export class CamelAgent extends DurableObject<Env> {
         });
         replay = await this.replayEvents(request);
       }
-      return json({ cursor: replay.events.at(-1)?.id ?? (replay.cursor || state.cursor), events: [...(replay.snapshot ? [{ id: replay.snapshot.cursor, data: replay.snapshot }] : []), ...replay.events] });
+      return json({ cursor: replay.cursor || state.cursor, events: [...(replay.snapshot ? [{ id: replay.snapshot.cursor, data: replay.snapshot }] : []), ...replay.events] });
     }
     const encoder = new TextEncoder();
     const conf = await this.config();
@@ -3628,6 +3772,7 @@ export class CamelAgent extends DurableObject<Env> {
           let closed = false;
           const send = (cursor: number, event: unknown) => {
             if (closed) return;
+            if (!visibleEvent(event, new URL(request.url).searchParams.get("subagents") === "1")) return;
             if (cursor === 0 || (controller.desiredSize ?? 0) <= 0) {
               cleanup();
               controller.close();

@@ -5,8 +5,8 @@ import type { MessageSource } from './sender.ts';
 export type RuntimeNotice = { source: MessageSource; root: string; costUsd: number; metadata: Record<string, unknown> };
 export type NoticeRequest = { id: string; method: 'prompt'; params: { text: string; allowDisconnected: true; whileRunning: 'followUp'; metadata?: Record<string, string> } };
 export type WakeDecision = { allowed: boolean; hour: number };
-export type NoticeDelivery = { run: true } | { run: false; stopped: 'agent_loop_limit'; message: string };
-type PendingNotice = { request: NoticeRequest; notice: RuntimeNotice; childKey?: string; delivered?: true; wake?: WakeDecision };
+export type NoticeDelivery = { run: true } | { run: false; stopped: 'agent_loop_limit' | 'aborted'; message: string };
+type PendingNotice = { request: NoticeRequest; notice: RuntimeNotice; childKey?: string; delivered?: true; wake?: WakeDecision; receipt?: unknown; delivery?: NoticeDelivery };
 const prefix = 'delegation-notice:';
 
 /** The chain root owns this counter. Repeating an admitted request never takes another wake. */
@@ -36,7 +36,10 @@ export interface NotificationHost {
   humanPending?(): Promise<boolean>;
   /** Completion notices land between turns; a running wait may take the ending first. */
   canLand?(): Promise<boolean>;
-  isBusy?(): Promise<boolean>;
+  /** Expose a queued notice as a pending request while a wait may still take it. */
+  stage?(request: NoticeRequest, notice: RuntimeNotice): Promise<void>;
+  /** A wait consumed a staged ending before it reached the model. */
+  discard?(request: NoticeRequest): Promise<void>;
   wakeLimit?: number;
   /** Uses the agent's existing alarm, preserving any earlier work. */
   retry(at: number): Promise<void>;
@@ -44,7 +47,7 @@ export interface NotificationHost {
 
 /** Durable outbox plus idempotent admission covers eviction before or after the parent's submit. */
 export class DelegationNotifications {
-  private active = new Map<string, Promise<void>>();
+  private active = new Map<string, Promise<unknown>>();
   private host: NotificationHost;
   constructor(host: NotificationHost) { this.host = host; }
   async deliver(child: DelegatedChild): Promise<void> {
@@ -54,14 +57,14 @@ export class DelegationNotifications {
       notice.costUsd = child.spent ?? childUsageCost(child.outcome?.result?.usage);
       await this.host.storage.put(key, { request: { id: `child_${child.requestId}`, method: 'prompt', params: { text, allowDisconnected: true, whileRunning: 'followUp' } }, notice, childKey: child.key } satisfies PendingNotice);
     }
-    return this.send(key);
+    await this.send(key);
   }
-  async deliverMessage(request: NoticeRequest, notice: RuntimeNotice): Promise<void> {
+  async deliverMessage(request: NoticeRequest, notice: RuntimeNotice): Promise<unknown> {
     const key = prefix + request.id;
     if (!await this.host.storage.get(key)) await this.host.storage.put(key, { request, notice } satisfies PendingNotice);
     return this.send(key);
   }
-  private send(key: string): Promise<void> {
+  private send(key: string): Promise<unknown> {
     const previous = this.active.get(key);
     if (previous) return previous;
     const sending = this.sendPending(key).finally(() => { this.active.delete(key); });
@@ -70,35 +73,56 @@ export class DelegationNotifications {
   }
   private async sendPending(key: string) {
     const pending = await this.host.storage.get<PendingNotice>(key);
-    if (!pending || pending.delivered) return;
+    if (!pending || pending.delivered) return pending?.receipt;
     try {
-      if (await this.host.humanPending?.()) { await this.host.retry(Date.now() + MULTI_AGENT_LIMITS.sweepMs); return; }
-      if (pending.childKey && this.host.canLand && !await this.host.canLand()) { await this.host.retry(Date.now() + 1000); return; }
+      if (!pending.delivery && await this.host.humanPending?.()) { await this.host.retry(Date.now() + MULTI_AGENT_LIMITS.sweepMs); return; }
+      if (!pending.delivery && pending.childKey && this.host.canLand && !await this.host.canLand()) {
+        await this.host.stage?.(pending.request, pending.notice);
+        await this.host.retry(Date.now() + 1000);
+        return;
+      }
       // Compete with wait_agent in the same transaction, before either can
       // expose the answer. A durable outbox owns a notice claim through retry.
       const claimed = await this.host.storage.transaction(async tx => {
         const child = pending.childKey ? await tx.get<DelegatedChild>(`delegation:${pending.childKey}`) : undefined;
-        if (child?.landedBy === 'wait') { await tx.put(key, { ...pending, delivered: true }); return false; }
+        if (child?.landedBy === 'wait') return false;
         if (child && !child.landedBy) await tx.put(`delegation:${pending.childKey}`, { ...child, landedBy: 'notice' });
         return true;
       });
-      if (!claimed) return;
-      if (!pending.wake) {
-        // A message steered into existing work starts no turn and takes no wake.
-        pending.wake = pending.notice.metadata.kind === 'message' && await this.host.isBusy?.()
+      if (!claimed) {
+        await this.host.discard?.(pending.request);
+        await this.host.storage.put(key, { ...pending, delivered: true });
+        return;
+      }
+      if (!pending.delivery && !pending.wake) {
+        // Message admission decides against the live logical turn. A pending
+        // operation receipt alone does not prove that it can still take a steer.
+        pending.wake = pending.notice.metadata.kind === 'message'
           ? { allowed: true, hour: Math.floor(Date.now() / 3_600_000) }
           : await this.host.admitWake(pending.notice.root, pending.request.id);
         await this.host.storage.put(key, pending);
       }
-      const delivery: NoticeDelivery = pending.wake.allowed ? { run: true } : { run: false, stopped: 'agent_loop_limit', message: `This agent's chain has had ${this.host.wakeLimit ?? MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on` };
-      await this.host.submit(pending.request, pending.notice, delivery);
-      await this.host.storage.put(key, { ...pending, delivered: true });
+      const delivery: NoticeDelivery = pending.delivery ?? (pending.wake!.allowed ? { run: true } : { run: false, stopped: 'agent_loop_limit', message: `This agent's chain has had ${this.host.wakeLimit ?? MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on` });
+      const receipt = await this.host.submit(pending.request, pending.notice, delivery);
+      await this.host.storage.put(key, { ...pending, delivered: true, receipt });
+      return receipt;
     } catch (error) {
       const status = (error as { status?: number })?.status;
       // Gone parents cannot accept a notification. Other failures stay durable.
       if (status === 404 || status === 410) { await this.host.storage.put(key, { ...pending, delivered: true }); return; }
       await this.host.retry(Date.now() + 1000);
       throw error;
+    }
+  }
+  /** An aborted parent still records queued child endings, without starting another turn. */
+  async abortPending() {
+    for (const [key, notice] of await this.host.storage.list<PendingNotice>({ prefix })) {
+      if (notice.delivered) continue;
+      await this.active.get(key);
+      const pending = await this.host.storage.get<PendingNotice>(key);
+      if (!pending || pending.delivered) continue;
+      await this.host.storage.put(key, { ...pending, delivery: { run: false, stopped: 'aborted', message: 'Aborted' } });
+      await this.send(key);
     }
   }
   async drain() {
