@@ -284,7 +284,6 @@ export interface Env
   TENANT_MAX_ACTIVE?: string;
   SCHEDULE_EMAIL_FROM?: string;
   SCHEDULE_OPERATOR_TENANTS?: string;
-  CONSOLE_ASSETS?: Fetcher;
 }
 export const json = (value: unknown, status = 200) =>
   Response.json(value, { status, headers: { "cache-control": "no-store" } });

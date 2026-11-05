@@ -175,17 +175,6 @@ const worker = {
       const publicMoney = await publicMoneyRoutes(request, env, ctx);
       if (publicMoney) return publicMoney;
       if (path === "/console" || path.startsWith("/console/")) {
-        if (env.CONSOLE_ASSETS && ["GET", "HEAD"].includes(request.method)) {
-          const asset = new URL(request.url);
-          // Asset HTML handling canonicalizes /index.html to /. Fetch that
-          // canonical path so its redirect cannot escape back into API auth.
-          asset.pathname = "/";
-          const response = await env.CONSOLE_ASSETS.fetch(new Request(asset, request));
-          const headers = new Headers(response.headers);
-          headers.set("Content-Type", "text/html; charset=UTF-8");
-          headers.delete("Content-Disposition");
-          return new Response(response.body, { status: response.status, headers });
-        }
         return new Response("The console is not built on this host", { status: 404, headers: { "Content-Type": "text/plain; charset=UTF-8" } });
       }
       if (path.startsWith("/api/"))
