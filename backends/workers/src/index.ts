@@ -178,7 +178,9 @@ const worker = {
       if (path === "/console" || path.startsWith("/console/")) {
         if (env.CONSOLE_ASSETS && ["GET", "HEAD"].includes(request.method)) {
           const asset = new URL(request.url);
-          asset.pathname = "/index.html";
+          // Asset HTML handling canonicalizes /index.html to /. Fetch that
+          // canonical path so its redirect cannot escape back into API auth.
+          asset.pathname = "/";
           const response = await env.CONSOLE_ASSETS.fetch(new Request(asset, request));
           const headers = new Headers(response.headers);
           headers.set("Content-Type", "text/html; charset=UTF-8");
