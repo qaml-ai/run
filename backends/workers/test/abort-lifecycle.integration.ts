@@ -31,13 +31,13 @@ test('abort cancels queued runs, keep preserves them, and idle legacy steer join
   await submit('kept', 'kept');
   assert.equal((await call(`${base}/abort`, { queued: 'invalid' })).status, 400);
   assert.deepEqual((await call(`${base}/abort`, { queued: 'keep' })).body, { aborted: true, cancelled: [] });
-  assert.equal((await until('kept')).outcome.result.reply, 'kept');
+  assert.equal((await until('kept')).outcome.result.reply, 'Echo: kept');
 
   const before = (await call(`${base}/history`)).body.messages.length;
   assert.equal((await call(`${base}/requests`, { id: 'legacy', method: 'steer', params: { text: 'held second' } })).status, 202);
   assert.equal((await call(`${base}/history`)).body.messages.length, before, 'an idle legacy steer writes no history and makes no model request');
   await submit('starts', 'starts first');
-  assert.equal((await until('starts')).outcome.result.reply, 'held second');
+  assert.equal((await until('starts')).outcome.result.reply, 'Echo: held second');
   const messages = (await call(`${base}/history`)).body.messages.slice(before);
   assert.deepEqual(messages.map((message: any) => [message.role, message.requestId]), [['user', 'starts'], ['user', 'legacy'], ['assistant', undefined]]);
   await call(`${base}/requests`, { id: 'discard', method: 'steer', params: { text: 'must not reach history' } });

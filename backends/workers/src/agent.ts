@@ -313,6 +313,7 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private notifications = new DelegationNotifications({
     storage: this.ctx.storage,
+    canLand: async () => !(await this.activity()).busy,
     submit: (request, notice, delivery) =>
       this.submit(request, notice, delivery),
     admitWake: (root, id) =>

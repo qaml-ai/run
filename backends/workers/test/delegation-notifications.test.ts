@@ -111,6 +111,19 @@ test('a wait that takes the ending wins over a postponed notification', async ()
   assert.equal(f.rootStore.values.size, 0);
   assert.equal(await f.notifications.pending(), false);
 });
+test('an ending stays available to wait_agent until its notification can land between turns', async () => {
+  const f = fixture(); let idle = false;
+  f.host.canLand = async () => idle;
+  f.values.set('delegation:' + child.key, child);
+  await f.notifications.deliver(child);
+  assert.equal(f.submissions.length, 0);
+  assert.equal((f.values.get('delegation:' + child.key) as DelegatedChild).landedBy, undefined);
+  f.values.set('delegation:' + child.key, { ...child, landedBy: 'wait', notified: true });
+  idle = true;
+  await f.notifications.drain();
+  assert.equal(f.submissions.length, 0);
+  assert.equal(await f.notifications.pending(), false);
+});
 test('message delivery uses the same durable root wake budget and preserves its runtime source', async () => {
   const f = fixture();
   const request = { id: 'message_123', method: 'prompt' as const, params: { text: 'A question', allowDisconnected: true as const, whileRunning: 'followUp' as const } };

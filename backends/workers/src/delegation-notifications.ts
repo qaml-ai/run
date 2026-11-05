@@ -34,6 +34,8 @@ export interface NotificationHost {
   admitWake(root: string, requestId: string): Promise<WakeDecision>;
   /** A human prompt must remain pending; a child finishing cannot supersede it. */
   humanPending?(): Promise<boolean>;
+  /** Completion notices land between turns; a running wait may take the ending first. */
+  canLand?(): Promise<boolean>;
   /** Uses the agent's existing alarm, preserving any earlier work. */
   retry(at: number): Promise<void>;
 }
@@ -69,6 +71,7 @@ export class DelegationNotifications {
     if (!pending || pending.delivered) return;
     try {
       if (await this.host.humanPending?.()) { await this.host.retry(Date.now() + MULTI_AGENT_LIMITS.sweepMs); return; }
+      if (pending.childKey && this.host.canLand && !await this.host.canLand()) { await this.host.retry(Date.now() + 1000); return; }
       // Compete with wait_agent in the same transaction, before either can
       // expose the answer. A durable outbox owns a notice claim through retry.
       const claimed = await this.host.storage.transaction(async tx => {

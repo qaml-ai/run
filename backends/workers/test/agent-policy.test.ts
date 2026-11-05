@@ -315,6 +315,23 @@ test('public metadata cannot forge a parent for agent messages or progress', asy
   }
   assert.equal(sent, false);
 });
+test('a message folded into a running child keeps its original answer for wait_agent', async () => {
+  const f = fixture();
+  f.values.set('delegation:original', { id: 'child', key: 'original', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'work', name: 'worker', depth: 1, createdAt: 1, status: 'completed', background: true, accepted: true, made: true, outcome: { result: { reply: 'the full answer' } } });
+  let submitted = '';
+  f.host.sendMessage = async (_id, request) => { submitted = request.id; };
+  f.host.fetch = async () => Response.json({ state: 'queued', steer: 'accepted', steeredInto: 'child-run' });
+  const tools = f.delegation.tools({ instructions: true }, ['agents']);
+  const send = tools.find(tool => tool.name === 'send_message')!;
+  const result = await (send.execute as any)({ to: 'worker', text: 'also this' }, { callId: 'send' }, { abortSignal: signal() });
+  assert.match(submitted, /^msg_/);
+  assert.match(result.output[0].text, /^\{"sent":true/);
+  assert.equal(JSON.parse(result.output[0].text).into, 'its running turn');
+  const wait = tools.find(tool => tool.name === 'wait_agent')!;
+  const waited = await (wait.execute as any)({ agents: ['worker'] }, { callId: 'wait' }, { abortSignal: signal() });
+  assert.equal(JSON.parse(waited.output[0].text).agents[0].text, 'the full answer');
+  await Promise.all(f.tasks);
+});
 test('progress is idempotent, shown once in tool results, and never starts a turn', async () => {
   const parent = fixture(), child = await childFixture();
   parent.values.set('delegation:live', { id: 'child', key: 'live', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'running', made: true, background: true, accepted: true });

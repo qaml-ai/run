@@ -8,6 +8,7 @@ import { childConfig } from './child-config.ts';
 import { holdBudget, type DelegateResponse, type Session as BudgetSession } from './delegation-policy.ts';
 import { toolCallSite } from './tool-call-context.ts';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
+import { escapeMarkers } from './sender.ts';
 
 type Configuration = { model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
 export type ParentRun = { id: string; piId?: string; startedAt?: number; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: unknown };
@@ -17,7 +18,7 @@ export function childUsageCost(usage?: ChildUsage) {
   return (usage?.costUsd ?? 0) + (usage?.subagentCostUsd ?? 0) + (usage?.imageCostUsd ?? 0) + (usage?.decisionCostUsd ?? 0) + (usage?.webCostUsd ?? 0) + (usage?.transcriptionCostUsd ?? 0);
 }
 export type ChildProgressReport = { agentId: string; requestId: string; text: string; callId: string };
-export type DelegatedChild = { id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; task: string; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
+export type DelegatedChild = { id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; task: string; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; folded?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
 export interface DelegationHost {
   storage: DurableObjectStorage;
   secret: string;
@@ -187,7 +188,11 @@ export class Delegation {
           try { await this.checkCancellation(admitted, signal); }
           catch (error) { relay.abort(); throw error; }
           const response = await this.host.fetch(admitted.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: admitted.requestId, method: 'prompt', params: { text: admitted.task, metadata: signed, ...(run.params?.actor ? { actor: run.params.actor } : {}), ...(held !== undefined ? { spendLimit: { usd: held } } : {}), ...(args.output !== undefined ? { output: args.output } : {}) } }) }));
-          if (!response.ok) { relay.abort(); throw new HttpError(response.status, 'Child submission failed'); }
+          if (!response.ok) {
+            relay.abort();
+            const detail = await response.json().catch(() => undefined) as { error?: unknown } | undefined;
+            throw new HttpError(response.status, typeof detail?.error === 'string' ? detail.error : 'Child submission failed');
+          }
           Object.assign(admitted, await this.update(admitted, { accepted: true }));
           this.follow(admitted, relay);
           if (signal.aborted || admitted.cancelRequested) {
@@ -349,28 +354,38 @@ export class Delegation {
     if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > MULTI_AGENT_LIMITS.taskChars || typeof args.to !== 'string') throw new HttpError(400, 'Invalid message');
     const { id, config, run } = await this.host.context(api), lineage = await this.lineage(id, run);
     await this.countCall('messages', run.id, callId, MULTI_AGENT_LIMITS.messagesPerRun);
-    const identity = await digest(`${id}:${run.id}:${callId}`), requestId = `message_${identity.slice(0, 48)}`;
+    const identity = await digest(`${id}:${run.id}:${callId}`), requestId = `msg_${identity.slice(0, 48)}`;
     if (args.to === 'parent') {
       if (!lineage?.parent) throw new HttpError(400, 'This run has no parent');
       const message = agentMessage({ agentId: id, name: typeof config.name === 'string' ? config.name : 'subagent', root: lineage.root }, args.text, 'parent');
       await this.host.sendMessage(lineage.parent, { id: requestId, method: 'prompt', params: { text: args.text, allowDisconnected: true, whileRunning: 'followUp' } }, message.notice);
-      return { agentId: lineage.parent, sent: true };
+      return { sent: true, to: 'parent' };
     }
     const children = await this.children();
     const child = [...children].reverse().find(child => child.id === args.to || child.name === args.to);
     if (!child) throw new HttpError(404, 'Unknown sub-agent');
     const key = `message-${identity.slice(0, 48)}`, existing = await this.host.storage.get<DelegatedChild>(prefix + key);
-    if (existing?.accepted) { this.follow(existing); return { agentId: child.id, sent: true }; }
-    const next: DelegatedChild = existing ?? { ...child, key, requestId, parentRequestId: run.id, toolCallId: callId, task: args.text, background: true, createdAt: Date.now(), endedAt: undefined, status: 'running', held: undefined, spent: undefined, outcome: undefined, error: undefined, notified: undefined, landedBy: undefined, accepted: false, progress: undefined, progressCalls: undefined, progressShown: undefined };
+    const answer = (value: DelegatedChild) => ({ sent: true, to: child.name, agentId: child.id, into: value.folded ? 'its running turn' : 'a new turn: its answer comes as a notification' });
+    if (existing?.accepted) { this.follow(existing); return answer(existing); }
+    const next: DelegatedChild = existing ?? { ...child, key, requestId, parentRequestId: run.id, toolCallId: callId, task: args.text, background: true, createdAt: Date.now(), endedAt: undefined, status: 'running', held: undefined, spent: undefined, outcome: undefined, error: undefined, notified: undefined, landedBy: undefined, accepted: false, cancelRequested: undefined, folded: undefined, progress: undefined, progressCalls: undefined, progressShown: undefined };
     await this.host.storage.put(prefix + key, next);
     const chain = child.chain ?? [...lineage?.chain ?? [], id], maxDepth = child.maxDepth ?? config.delegate?.maxDepth ?? MULTI_AGENT_LIMITS.maxDepth;
     const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: callId, [PARENT_KEYS.depth]: String(child.depth), [PARENT_KEYS.maxDepth]: String(maxDepth), [PARENT_KEYS.chain]: chain.join(','), [PARENT_KEYS.signature]: await signature(this.host.secret, child.id, requestId, String(child.depth), String(maxDepth), chain.join(',')) };
     const message = agentMessage({ agentId: id, name: typeof config.name === 'string' ? config.name : 'parent', root: child.root ?? lineage?.root ?? id }, args.text, 'child');
     await this.host.sendMessage(child.id, { id: requestId, method: 'prompt', params: { text: args.text, allowDisconnected: true, whileRunning: 'followUp', metadata } }, message.notice);
+    const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${requestId}`));
+    const record = response.ok ? await response.json() as { steer?: string; steeredInto?: string } : undefined;
+    if (record?.steer === 'accepted' || record?.steeredInto) {
+      // A steer belongs to the existing child's answer, not a second ending.
+      next.folded = true;
+      next.status = 'completed';
+      next.endedAt = Date.now();
+      next.notified = true;
+    }
     next.accepted = true;
     await this.host.storage.put(prefix + key, next);
     this.follow(next);
-    return { agentId: child.id, sent: true };
+    return answer(next);
   }
   private async progress(args: Record<string, unknown>, callId: string, api?: ToolExecutionApi) {
     if (!this.host.reportProgress) throw new HttpError(400, 'Progress reports are unavailable');
@@ -415,11 +430,11 @@ export class Delegation {
       if (definition.name === 'send_message') return this.toolResult(await this.send(args, api.callId, api));
       if (definition.name === 'report_progress') return this.toolResult(await this.progress(args, api.callId, api));
       const children = await this.children();
-      if (definition.name === 'list_agents') return this.toolResult({ agents: [...new Map(children.filter(child => child.background).map(child => [child.id, child])).values()].map(child => ({ agentId: child.id, name: child.name, status: child.status, startedAt: child.createdAt, ...(child.endedAt ? { endedAt: child.endedAt } : {}), ...(child.progress ? { progress: child.progress.text, progressAt: child.progress.at } : {}) })) });
+      if (definition.name === 'list_agents') return this.toolResult({ agents: [...new Map(children.filter(child => child.background && !child.folded).map(child => [child.id, child])).values()].map(child => ({ agentId: child.id, name: child.name, status: child.status, startedAt: child.createdAt, ...(child.endedAt ? { endedAt: child.endedAt } : {}), ...(child.progress ? { progress: escapeMarkers(child.progress.text), progressAt: child.progress.at } : {}) })) });
       if (definition.name === 'wait_agent') {
         if (args.agents !== undefined && (!Array.isArray(args.agents) || args.agents.some(name => typeof name !== 'string'))) throw new HttpError(400, 'agents is a list of names or agentIds');
         if (args.timeoutMs !== undefined && (!Number.isInteger(args.timeoutMs) || Number(args.timeoutMs) < 1000 || Number(args.timeoutMs) > MULTI_AGENT_LIMITS.maxWaitMs)) throw new HttpError(400, `timeoutMs is an integer from 1000 to ${MULTI_AGENT_LIMITS.maxWaitMs}`);
-        const background = [...new Map(children.filter(child => child.background).map(child => [child.id, child])).values()];
+        const background = [...new Map(children.filter(child => child.background && !child.folded).map(child => [child.id, child])).values()];
         const selected = background.filter(child => Array.isArray(args.agents) ? args.agents.includes(child.id) || args.agents.includes(child.name) : !child.landedBy);
         if (Array.isArray(args.agents)) for (const name of args.agents) if (!selected.some(child => child.id === name || child.name === name)) throw new HttpError(400, `You have no sub-agent ${name}`);
         if (!selected.length) return this.toolResult({ agents: [] });
@@ -433,7 +448,8 @@ export class Delegation {
             signal.throwIfAborted();
             const latest = (await this.children()).filter(child => selected.some(old => old.key === child.key));
             if (latest.some(child => child.status !== 'running' && !child.landedBy) || latest.every(child => child.status !== 'running')) break;
-            for (const notice of (await this.host.storage.list<{ request: { id: string }; notice: RuntimeNotice }>({ prefix: 'delegation-notice:message_' })).values()) {
+            for (const notice of (await this.host.storage.list<{ request: { id: string }; notice: RuntimeNotice }>({ prefix: 'delegation-notice:' })).values()) {
+              if (notice.notice.metadata.kind !== 'message') continue;
               const record = await this.host.storage.get<{ state: string }>(`request:${notice.request.id}`);
               if (record && record.state !== 'completed') messaged.add(notice.notice.source.name);
             }
@@ -455,7 +471,7 @@ export class Delegation {
           }
           return answers;
         });
-        return this.toolResult({ agents: answers, ...(messaged.size ? { messaged: [...messaged] } : {}), ...(updated.size ? { updated: [...updated] } : {}), ...(!messaged.size && !updated.size && answers.every(child => child.status === 'running') ? { timedOut: true } : {}) });
+        return this.toolResult({ agents: answers, ...(messaged.size ? { messaged: [...messaged], message: `${[...messaged].join(', ')} sent you a message, which follows this result: read it, then wait again if you need to` } : {}), ...(updated.size ? { updated: [...updated] } : {}), ...(!messaged.size && !updated.size && answers.every(child => child.status === 'running') ? { timedOut: true } : {}) });
       }
       const child = children.find(child => child.id === args.agent || child.name === args.agent || child.id === args.to || child.name === args.to);
       if (!child) throw new HttpError(404, 'Unknown sub-agent');
