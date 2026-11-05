@@ -48,12 +48,11 @@ export async function validateAgentModel(env: DefaultModelEnv, tenant: string, c
     let resolved = resolveModel(reference, services.tenants.modelEndpoints(tenant), await services.modelProviders.resolvable(tenant, config.keyScope));
     // src/model.ts takes the configured default directly from the catalog.
     // Explicit model names go through resolveModel's provider API selection.
-    if (previous?.defaultModel) {
-      if (previous.reference === reference && previous.model) resolved = previous.model;
-      else if (reference === env.MODEL) {
-        const configured = getModel(resolved.provider, resolved.id);
-        if (configured) resolved = { ...resolved, api: configured.api };
-      }
+    if (reference === env.MODEL && previous?.reference === reference && previous.model) {
+      resolved = previous.model;
+    } else if (previous?.defaultModel && reference === env.MODEL) {
+      const configured = getModel(resolved.provider, resolved.id);
+      if (configured) resolved = { ...resolved, api: configured.api };
     }
     const model = (resolved as { passthrough?: true }).passthrough && previous?.reference === reference && previous.model
       ? previous.model
