@@ -3,8 +3,11 @@ import { fileURLToPath } from "node:url";
 import { EndUserCredits } from "../../../src/end-user-credits.ts";
 import { configuredModel } from "../../../src/model.ts";
 import { modelReference } from "../../../src/virtual-models.ts";
+import { tenantsFromEnvironment } from "../../../src/tenants.ts";
+import { seedJourneyAccount } from "./journey-state.ts";
 import { fakeModel, OPERATOR, OTHER_OPERATOR, until, type T } from "../http.ts";
 import type { ContractFixture, FixtureOptions, TenantSeed } from "../fixture.ts";
+import { fixtureSigner } from "./signing.ts";
 
 /** A real workerd process and an isolated local Postgres database. No production bindings. */
 export async function createWorkersFixture(t: T, options: FixtureOptions = {}): Promise<ContractFixture> {
@@ -23,6 +26,8 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
   };
   t.after(close);
   try {
+  if (options.failImageResizeOnce) throw new Error("Unsupported fixture state: Workers has no parse-job resize boundary to fail and retry");
+  if (options.anthropicFederationEndpoint) throw new Error("Unsupported fixture state: Workers has no Anthropic federation STS/token exchange adapter");
   const model = await fakeModel({ after: fn => cleanups.push(fn) }, (body, index) => respond(body, index - replyStart));
   // Dynamic import keeps workerd's binding types out of the Node TypeScript project.
   const fixtureModule = new URL("../../../backends/workers/test/fixture.ts", import.meta.url).href;
@@ -34,7 +39,18 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url,
     ...options.env,
   };
-  const tenants: any = structuredClone(options.tenants ?? { tenants: {
+  let configuredTenants = options.tenants;
+  if (env.AGENT_TENANTS_FILE === "" && env.AGENT_TENANT) {
+    // Use the source parser, then express the same seeded tenant through the
+    // Worker's supported JSON configuration input.
+    const source = await tenantsFromEnvironment(env);
+    const id = env.AGENT_TENANT;
+    configuredTenants = { tenants: { [id]: {
+      tokenSha256: createHash("sha256").update(env.AGENT_OPERATOR_TOKEN).digest("hex"),
+      apiKeys: Object.fromEntries(source.providers(id).map(provider => [provider, source.apiKey(id, provider)])),
+    } } };
+  }
+  const tenants: any = structuredClone(configuredTenants ?? { tenants: {
     alice: { tokenSha256: createHash("sha256").update(OPERATOR).digest("hex"), apiKeys: { openrouter: "fixture-model-key" } },
     bob: { tokenSha256: createHash("sha256").update(OTHER_OPERATOR).digest("hex"), apiKeys: { openrouter: "fixture-model-key" } },
   } });
@@ -143,6 +159,10 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
   };
   return {
     base: server.url, call, prompt, model, seedTenant, close,
+    stop: () => server.worker.stop(),
+    restart: settings => server.restart(settings?.env, settings?.crash),
+    signFileToken: (grant, expiresAt) => fixtureSigner(server.db, env.AGENT_SECRETS_KEY, server.url).fileToken(grant, expiresAt),
+    signIdentityToken: (audience, claims) => fixtureSigner(server.db, env.AGENT_SECRETS_KEY, server.url).token(audience, claims),
     get logs() { return server.worker.logs().split("\n"); },
     async setScheduleDueAt(agent, schedule, dueAt) {
       const result = await call(`/v1/agents/${agent}/__test/contract-schedule-due`, { body: { id: schedule, dueAt } });
@@ -185,12 +205,23 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       await server.db.query("insert into billing_stripe_customers(tenant,livemode,request_id,customer,created_at) values($1,false,$2,$3,$4)", [tenant, randomUUID(), customer, Date.now()]);
       if (legacyCustomer) await server.db.query("insert into credit_accounts(tenant,balance,stripe_customer) values($1,0,$2) on conflict(tenant) do update set stripe_customer=excluded.stripe_customer", [tenant, legacyCustomer]);
     },
+    async setRejectRunEvents(enabled) {
+      if (enabled) await server.db.query(`create function reject_run_event() returns trigger language plpgsql as $$ begin
+        if new.body->>'type' = 'run.completed' then raise exception 'run event unavailable'; end if;
+        return new; end $$;
+        create trigger reject_run_event before insert on webhook_deliveries for each row execute function reject_run_event()`);
+      else await server.db.query("drop trigger reject_run_event on webhook_deliveries; drop function reject_run_event()");
+    },
+    async updateLegacyUsageWebhook(url) { await server.db.query("update usage_webhooks set url=$1 where tenant='alice'", [url]); },
+    seedJourneyAccount: input => seedJourneyAccount(server.db, input),
+    async drain() { throw new Error("Unsupported fixture lifecycle: deployed Workers have no Node SIGTERM/HTTP server drain boundary"); },
     async waitForAgentIdle(_agent) { throw new Error("Unsupported fixture state: Workers agents have no actor_owners idle lease"); },
     async failAgentLoad(_agent) { throw new Error("Unsupported fixture state: Workers agents do not resume from versioned Postgres agent headers"); },
     async agentRecovery(_agent) { throw new Error("Unsupported fixture state: Workers agents have no Postgres resume_failures or resume_after"); },
     async setAgentRecovery(_agent, _state) { throw new Error("Unsupported fixture state: Workers agents have no Postgres resume_failures or resume_after"); },
     async failNextAdmissionWrite(_agent) { throw new Error("Unsupported fixture state: Workers request admission does not update Postgres pending_runs"); },
     setModel(next) { respond = next; replyStart = model.bodies.length; },
+    async imageResizeFailureCount() { throw new Error("Unsupported fixture state: Workers has no parse-job resize boundary"); },
     async restartWithLegacyModel(_agent, _model) {
       throw new Error("Unsupported fixture state: Workers agents have no legacy stored Node model configuration to restore at restart");
     },

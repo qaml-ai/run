@@ -1,19 +1,26 @@
 import { createHash, randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { migrate } from "../../../src/db.ts";
 import { EndUserCredits } from "../../../src/end-user-credits.ts";
+import { seedJourneyAccount } from "./journey-state.ts";
 import { runtime } from "../../runtime-server.ts";
+import { fakeLauncher } from "../../fake-launcher.ts";
 import { OPERATOR, OTHER_OPERATOR, sleep, until, type T } from "../http.ts";
 import type { ContractFixture, FixtureOptions, ModelReply, TenantSeed } from "../fixture.ts";
+import { fixtureSigner } from "./signing.ts";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
 export async function createNodeFixture(t: T, options: FixtureOptions = {}): Promise<ContractFixture> {
+  const runtimeEnv: Record<string, string> = { AGENT_SECRETS_KEY: randomBytes(32).toString("hex"), ...options.env };
   let respond: ModelReply = options.respond ?? (() => ({ role: "assistant", content: "ok" }));
   let index = 0;
+  let imageResizeFailures = 0;
   const cleanups: Array<() => Promise<void> | void> = [];
   let closed = false;
   const close = async () => {
@@ -33,6 +40,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     bob: { tokenSha256: hash(OTHER_OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
   } });
   let r: Awaited<ReturnType<typeof runtime>>;
+  const priorModels: ContractFixture["model"][] = [];
   let db: pg.Pool;
   try {
     const databaseUrl = new URL(process.env.AGENT_TEST_DATABASE_URL ?? "postgres://postgres:test@127.0.0.1:55432/postgres");
@@ -48,8 +56,30 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     db = new pg.Pool({ connectionString: databaseUrl.href, max: 5 });
     cleanups.push(() => db.end());
     await migrate(db);
-    r = await runtime({ after: fn => cleanups.push(fn) }, (body) => respond(body, index++), options.env,
-      tenants, { databaseUrl: databaseUrl.href });
+    if (options.failImageResizeOnce) {
+      const launcher = await fakeLauncher({ after: fn => cleanups.push(async () => { await fn(); }) }, (kind, client) => {
+        if (kind !== "parse") return false;
+        client.resume(); let head = Buffer.alloc(0);
+        const first = (chunk: Buffer) => {
+          head = Buffer.concat([head, chunk]);
+          if (head.length < 4 || head.length < 4 + head.readUInt32BE(0)) return;
+          client.off("data", first);
+          if (head.subarray(4, 4 + head.readUInt32BE(0)).toString().includes('"fit":true') && !imageResizeFailures++) return void client.destroy();
+          const job = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", fileURLToPath(new URL("../../../src/parse-job.ts", import.meta.url))], { stdio: ["pipe", "pipe", "inherit"], env: {} });
+          client.on("close", () => job.kill("SIGKILL"));
+          job.stdin.on("error", () => {});
+          job.stdin.write(head); client.pipe(job.stdin); job.stdout.pipe(client);
+        };
+        client.on("data", first);
+        return true;
+      });
+      runtimeEnv.AGENT_SANDBOX_DIR = launcher.dir;
+    }
+    if (options.anthropicFederationEndpoint) runtimeEnv.TEST_ANTHROPIC_FEDERATION_ENDPOINT = options.anthropicFederationEndpoint;
+    r = await runtime({ after: fn => cleanups.push(fn) }, (body) => respond(body, index++), runtimeEnv,
+      tenants, { databaseUrl: databaseUrl.href, ...(options.anthropicFederationEndpoint ? {
+        execArgv: ["--import", new URL("../../fixtures/anthropic-federation.mjs", import.meta.url).href],
+      } : {}) });
   } catch (error) {
     try { await close(); }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], "Node fixture startup and cleanup failed"); }
@@ -67,23 +97,41 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     try { json = JSON.parse(text); } catch { /* non-JSON HTTP response */ }
     return { status: response.status, json, text, headers: response.headers };
   };
+  const stop = async (crash = false) => {
+    if (r.child.exitCode === null && r.child.signalCode === null) {
+      const stopped = once(r.child, "exit");
+      r.child.kill(crash ? "SIGKILL" : "SIGTERM");
+      await stopped;
+    }
+  };
+  const restart: ContractFixture["restart"] = async (settings = {}) => {
+    const previous = r;
+    await stop(settings.crash);
+    priorModels.push(previous.model);
+    Object.assign(runtimeEnv, settings.env);
+    index = 0;
+    r = await runtime({ after: fn => cleanups.push(fn) }, body => respond(body, index++), runtimeEnv,
+      tenants, { databaseUrl: previous.databaseUrl });
+  };
+  const model: ContractFixture["model"] = {
+    get url() { return r.model.url; },
+    get bodies() { return priorModels.length ? [...priorModels.flatMap(m => m.bodies), ...r.model.bodies] : r.model.bodies; },
+    get keys() { return priorModels.length ? [...priorModels.flatMap(m => m.keys), ...r.model.keys] : r.model.keys; },
+    get headers() { return priorModels.length ? [...priorModels.flatMap(m => m.headers), ...r.model.headers] : r.model.headers; },
+  };
   return {
     get base() { return r.base; },
     get logs() { return r.logs; },
-    get model() { return r.model; },
+    model,
+    stop: () => stop(), restart,
+    signFileToken: (grant, expiresAt) => fixtureSigner(db, runtimeEnv.AGENT_SECRETS_KEY, r.base).fileToken(grant, expiresAt),
+    signIdentityToken: (audience, claims) => fixtureSigner(db, runtimeEnv.AGENT_SECRETS_KEY, r.base).token(audience, claims),
     call,
     prompt: (agent, text, token, extra) => r.prompt(agent, text, token, extra),
     setModel(next) { respond = next; index = 0; },
+    async imageResizeFailureCount() { return imageResizeFailures; },
     async restartWithLegacyModel(agent, model) {
-      const previous = r;
-      if (previous.child.exitCode === null && previous.child.signalCode === null) {
-        const stopped = once(previous.child, "exit");
-        previous.child.kill("SIGTERM");
-        await stopped;
-      }
-      index = 0;
-      r = await runtime({ after: fn => cleanups.push(fn) }, body => respond(body, index++), options.env,
-        tenants, { databaseUrl: previous.databaseUrl });
+      await restart();
       const stored = { ...model, baseUrl: r.model.url };
       const updated = await db.query("update agents set header=jsonb_set(header::jsonb,'{config,model}',$2::jsonb)::json where id=$1", [agent, JSON.stringify(stored)]);
       if (updated.rowCount !== 1) throw new Error("Fixture legacy agent not found");
@@ -153,6 +201,20 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     async seedStripeCustomer(tenant, { customer, legacyCustomer }) {
       await db.query("insert into billing_stripe_customers(tenant,livemode,request_id,customer,created_at) values($1,false,$2,$3,$4)", [tenant, crypto.randomUUID(), customer, Date.now()]);
       if (legacyCustomer) await db.query("insert into credit_accounts(tenant,balance,stripe_customer) values($1,0,$2) on conflict(tenant) do update set stripe_customer=excluded.stripe_customer", [tenant, legacyCustomer]);
+    },
+    async setRejectRunEvents(enabled) {
+      if (enabled) await db.query(`create function reject_run_event() returns trigger language plpgsql as $$ begin
+        if new.body->>'type' = 'run.completed' then raise exception 'run event unavailable'; end if;
+        return new; end $$;
+        create trigger reject_run_event before insert on webhook_deliveries for each row execute function reject_run_event()`);
+      else await db.query("drop trigger reject_run_event on webhook_deliveries; drop function reject_run_event()");
+    },
+    async updateLegacyUsageWebhook(url) { await db.query("update usage_webhooks set url=$1 where tenant='alice'", [url]); },
+    seedJourneyAccount: input => seedJourneyAccount(db, input),
+    async drain() {
+      const exited = once(r.child, "exit");
+      r.child.kill("SIGTERM");
+      await exited;
     },
     async waitForAgentIdle(agent) {
       await until(async () => !(await db.query("select node from actor_owners where actor=$1", [agent])).rows[0]?.node, "the idle agent to be released", 20_000);

@@ -15,7 +15,19 @@ function assertions(node, text, found = []) {
   }
   return found;
 }
+function calls(node, found = []) {
+  if (!node || typeof node !== "object") return found;
+  if (node.type === "CallExpression") found.push(node);
+  for (const [key, value] of Object.entries(node)) if (key !== "loc") {
+    if (Array.isArray(value)) for (const child of value) calls(child, found);
+    else calls(value, found);
+  }
+  return found;
+}
 const sources = new Set([
+  "deploy-drain.test.ts", "http-drain.test.ts", "journey-server.test.ts", "loop-reliability.test.ts", "selfhost.test.ts",
+  "pi-durable-context-guard.test.ts", "pi-durable-accounting.test.ts", "chatgpt-plugin.test.ts", "anthropic-federation.test.ts", "images.test.ts",
+  "added-models.test.ts", "azure-models.test.ts", "openrouter-hosts.test.ts", "openrouter-model.test.ts", "outbound-origins.test.ts", "code-engine.test.ts",
   "docs.test.ts", "webmcp.test.ts", "ops-mcp.test.ts", "admin-site.test.ts",
   "data-collection.test.ts", "judged-approval.test.ts", "reasoning.test.ts", "deepseek-replay.test.ts", "content-filter-fallback.test.ts", "runs-stall.test.ts", "runs-busy-limit.test.ts", "runs-messages-at-end.test.ts", "end-user-usage.test.ts",
   "workflows.test.ts", "default-model.test.ts", "model-endpoints.test.ts", "model-pricing-trust.test.ts", "inline-mcp-servers.test.ts", "mcp.test.ts", "virtual-models.test.ts",
@@ -26,22 +38,24 @@ const sources = new Set([
 ]);
 // These checks observe implementation storage or pure Node policy, not the public HTTP contract.
 const implementationOnly = expectation => [
-  "r.logs.some(", "mayAnswer(input,", "r.db.query(", "slow.db.query(", "Number(cursor.reserved_cursor)",
+  "accountRef.signup_visitor", "r.logs.some(", "mayAnswer(input,", "r.db.query(", "slow.db.query(", "Number(cursor.reserved_cursor)",
   "await identity(", "await thinking(", "existsSync(", "assert.deepEqual(row,", "saved.config.initialMessages",
   "'requests' in saved", "readFile(join(f.root", "JSON.stringify(saved)", "header.tenant", "JSON.stringify(header)",
   "ignored(r.logs,", "rows.map((row: any) => row.child)", "Math.abs(row.budget", "kept.rows[0].count",
   "assert.deepEqual(rows,", "assert.equal(entries.length", "entries[0].model[0].content", "await owner()",
   "fallback?.From", "attemptRows.", "await holds()", "rows.map(row => [row.model", "assert.equal(superseded,",
   "assert.equal(usage[0].Model,",
+  "[stored.contextWindow,", "[stored2.id,", "new Set(lines.map(line => line.Engine))", "booted.sandbox.mode",
+  '!logs.includes("sk-ant-oat01")',
 ].some(fragment => expectation.includes(fragment));
 // The decisions webhook is delivered to a local HTTP receiver instead of reading Node's SQL outbox.
-const normalize = expectation => expectation.replace('url: "https://hooks.example.test/usage"', 'url: webhook + "/usage"').replaceAll('saved.config.systemPrompt', 'saved.systemPrompt').replaceAll('saved.config.thinkingLevel', 'r.model.bodies.at(-1).reasoning?.effort').replaceAll('saved.definitions', 'saved.tools');
+const normalize = expectation => expectation.replace('url: "https://hooks.example.test/usage"', 'url: webhook + "/usage"').replaceAll('saved.config.systemPrompt', 'saved.systemPrompt').replaceAll('saved.config.thinkingLevel', 'r.model.bodies.at(-1).reasoning?.effort').replaceAll('saved.definitions', 'saved.tools')
+  .replace('Number((await r.db.query("select coalesce(sum(responses), 0) as n from usage")).rows[0].n)', 'Number((await r.call("/v1/usage")).json.totals.responses)');
 let cases = 0, checked = 0;
 for (const file of await readdir(resolve(root, "tests/contract/areas"))) {
   if (!file.endsWith(".contract.test.ts")) continue;
   const text = await readFile(resolve(root, "tests/contract/areas", file), "utf8");
-  for (const statement of parseFile(text).program.body) {
-    const call = statement.expression;
+  for (const call of calls(parseFile(text).program)) {
     const direct = call?.callee?.name === "contractTest";
     const ported = call?.callee?.type === "CallExpression" && call.callee.callee?.name === "portedTest";
     if (!direct && !ported) continue;
@@ -51,11 +65,11 @@ for (const file of await readdir(resolve(root, "tests/contract/areas"))) {
     const split = source.lastIndexOf(":"), path = source.slice(0, split), line = Number(source.slice(split + 1));
     if (!sources.has(path.replace(/^tests\//, "")) || !Number.isFinite(line)) continue;
     const original = await readFile(resolve(root, path), "utf8");
-    const originalTest = parseFile(original).program.body.find(node => node.loc.start.line === line && node.expression?.callee?.name === "test");
+    const originalTest = calls(parseFile(original).program).find(node => node.loc.start.line === line && node.callee?.name === "test");
     if (!originalTest) throw new Error(`${file}: missing source case ${source}`);
     // This corruption-recovery case deliberately retains its original diagnostic-derived estimate checks.
     const keepDiagnostics = source === "tests/model-pricing-trust.test.ts:51";
-    const expected = assertions(originalTest.expression.arguments.at(-1), original).filter(value => keepDiagnostics || !implementationOnly(value)).map(normalize);
+    const expected = assertions(originalTest.arguments.at(-1), original).map(normalize).filter(value => keepDiagnostics || !implementationOnly(value));
     const actual = assertions(direct ? call.arguments[3] : call.arguments.at(-1), text);
     if (JSON.stringify(expected) !== JSON.stringify(actual)) throw new Error(`${file}: assertions differ from ${source}`);
     cases++; checked += actual.length;

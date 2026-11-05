@@ -2,6 +2,13 @@ import { portedTest } from '../ported.ts';
 const test = portedTest("files", "tests/file-arguments.test.ts");
 
 import assert from "node:assert/strict";
+import { createHash, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { verifyFileUrl } from "../../../clients/server.ts";
+import { TOOL_FILE_LIMITS } from "../../../src/limits.ts";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 
@@ -9,7 +16,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-import { pdfBytes } from "../../file-fixtures.ts";
+import { PNG, pdfBytes } from "../../file-fixtures.ts";
 
 import { listen, OPERATOR, runtime, toolCall, toolResults, type T } from "../support.ts";
 
@@ -20,6 +27,8 @@ const auth = { Authorization: `Bearer ${OPERATOR}` };
 const REPORT = Buffer.concat([pdfBytes(["Quarterly report"]), Buffer.alloc(1536 * 1024, 0x20)]);
 
 const MAX_SIZE = 2 * 1024 * 1024;
+const LONG_NAME = `long/${"n".repeat(120)}.txt`;
+const sha256 = (data: Uint8Array | string) => createHash("sha256").update(data).digest("hex");
 
 const put = (base: string, volume: string, path: string, body: Uint8Array | string) =>
   fetch(`${base}/v1/volumes/${volume}/files/${path}`, { method: "PUT", body: body as BodyInit, headers: auth }).then(response => response.json());
@@ -111,4 +120,118 @@ test("fileArguments: other parties' servers are not offered or sent files unless
   const second = (await r.call("/v1/agents", { body: { definition: definition.id, mounts: [{ volumeId: workspace, path: "/workspace", mode: "rw" }] } })).json;
   await r.prompt(second.id, "send it");
   assert.deepEqual(app.calls[0]?.got?.bytes, REPORT);
+});
+
+test("files reach a tool as URLs bound to the call: a file at its version, a directory as a snapshot, small ones inline", async t => {
+  const state = { base: "", workspace: "", pages: "" };
+  state.pages = await listen(t, (req, res) => {
+    if (req.url === "/doc.pdf") return res.writeHead(200, { "Content-Type": "application/pdf" }).end(pdfBytes(["Linked"]));
+    res.writeHead(404).end();
+  });
+  const app = await appServer(t, state);
+  const secretsKey = randomBytes(32).toString("hex");
+  const steps = [
+    toolCall("app__attach", { attachment: { $file: "/workspace/report.pdf" } }),
+    toolCall("app__attach", { attachment: { $file: "/workspace/a.png" } }),
+    toolCall("app__attach", { attachment: { $file: "/workspace/big.pdf" } }),
+    toolCall("app__inline", { image: { $file: "/workspace/a.png" } }),
+    toolCall("app__inline", { image: { $file: "/workspace/huge.png" } }),
+    toolCall("app__site", { dir: { $file: "/workspace/site" } }),
+    toolCall("app__site", { dir: { $file: "/workspace/report.pdf" } }),
+    toolCall("app__attach", { attachment: { $file: "/workspace/site" } }),
+    toolCall("app__links", {}),
+  ];
+  const r = await runtime(t, (_body, index) => steps[index] ?? { role: "assistant", content: "done" }, { ...LOCAL, AGENT_PUBLIC_URL: "", AGENT_SECRETS_KEY: secretsKey });
+  state.base = r.base;
+  // The tenant's own server (auth runtime) takes files without saying so.
+  const definition = (await r.call("/v1/definitions", { body: { name: "App", mcpServers: [{ name: "app", url: app.url, auth: { type: "runtime" }, exposure: "direct" }] } })).json;
+  const agent = (await r.call("/v1/agents", { body: { definition: definition.id } })).json;
+  state.workspace = (await r.call(`/v1/agents/${agent.id}/mounts`)).json[0].volumeId;
+  await put(r.base, state.workspace, "report.pdf", REPORT);
+  await put(r.base, state.workspace, "a.png", PNG);
+  await put(r.base, state.workspace, "big.pdf", Buffer.concat([REPORT, Buffer.alloc(MAX_SIZE)]));
+  await put(r.base, state.workspace, "huge.png", Buffer.concat([PNG, Buffer.alloc(TOOL_FILE_LIMITS.inlineBytes)]));
+  await put(r.base, state.workspace, "site/index.html", "<h1>v1</h1>");
+  await put(r.base, state.workspace, "site/assets/app.js", "console.log(1)");
+  await put(r.base, state.workspace, `site/${LONG_NAME}`, "deep");
+  await r.prompt(agent.id, "send the files");
+
+  const tools = r.model.bodies[0].tools.map((tool: any) => tool.function);
+  const described = (tool: string, field: string) => tools.find((entry: any) => entry.name === tool).parameters.properties[field].anyOf[1].properties.$file.description;
+  assert.match(described("app__attach", "attachment"), /a link to it is sent, valid for 5 minutes \(types application\/pdf; at most 2097152 bytes\)/);
+  assert.match(described("app__inline", "image"), /its content is sent \(types image\/\*\)/);
+  assert.match(described("app__site", "dir"), /^A directory in your files/);
+
+  // A file: a URL to it at this version, described in _meta with its digest.
+  const [attach, inline, site, links] = ["attach", "inline", "site", "links"].map(name => app.calls.find(call => call.name === name)!);
+  assert.equal(attach.got.status, 200);
+  assert.equal(attach.got.type, "application/pdf");
+  assert.deepEqual(attach.got.bytes, REPORT);
+  const url = attach.args.attachment as string;
+  assert.match(url, new RegExp(`^${r.base}/v1/files/[^/]+/report\\.pdf$`));
+  assert.deepEqual(attach.meta["camelrun/files"], { "/attachment": { uri: url, name: "report.pdf", mimeType: "application/pdf", size: REPORT.length, digest: { algorithm: "sha-256", value: sha256(REPORT) } } });
+  assert.match(toolResults(r.model.bodies[2]).at(-1), /a\.png is image\/png; this argument takes application\/pdf/);
+  assert.match(toolResults(r.model.bodies[3]).at(-1), /big\.pdf is \d+ bytes; this argument takes at most 2097152/);
+
+  // Inline: a data: URI.
+  assert.equal(inline.args.image, `data:image/png;base64,${PNG.toString("base64")}`);
+  assert.equal(inline.meta["camelrun/files"]["/image"].digest.value, sha256(PNG));
+  assert.match(toolResults(r.model.bodies[5]).at(-1), /huge\.png is \d+ bytes; this argument takes files inline only/);
+
+  // A directory: a manifest of a snapshot made for the call, which the agent's later writes do not change.
+  const { manifest } = site.got;
+  assert.equal(manifest.root, "/workspace/site");
+  assert.deepEqual(manifest.files.map((file: any) => file.path).sort(), ["assets/app.js", "index.html", LONG_NAME].sort());
+  const index = manifest.files.find((file: any) => file.path === "index.html");
+  assert.deepEqual({ ...index, uri: undefined }, { path: "index.html", uri: undefined, name: "index.html", mimeType: "text/plain", size: 11, digest: { algorithm: "sha-256", value: sha256("<h1>v1</h1>") } });
+  assert.equal(site.got.index, "<h1>v1</h1>", "the file as it was at the call");
+  assert.equal(manifest.archive.mimeType, "application/gzip");
+  const directory = mkdtempSync(join(tmpdir(), "file-arguments-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  writeFileSync(join(directory, "site.tar.gz"), site.got.archive);
+  const listing = execFileSync("tar", ["-tzf", join(directory, "site.tar.gz")], { encoding: "utf8" }).trim().split("\n").sort();
+  assert.deepEqual(listing, ["assets/app.js", "index.html", LONG_NAME].sort(), "the archive has the snapshot's files, a long name included");
+  assert.equal(execFileSync("tar", ["-xzOf", join(directory, "site.tar.gz"), "index.html"], { encoding: "utf8" }), "<h1>v1</h1>");
+  assert.equal(site.meta?.["camelrun/files"], undefined, "a directory is described by its manifest");
+  assert.match(toolResults(r.model.bodies[7]).at(-1), /\/workspace\/report\.pdf is a file; this argument takes a directory/);
+  assert.match(toolResults(r.model.bodies[8]).at(-1), /\/workspace\/site is a directory/);
+  assert.deepEqual((await r.call(`/v1/volumes/${state.workspace}/snapshots`)).json, [], "the call's snapshot is not the tenant's to list");
+
+  // Files a tool links to are saved, and the transcript keeps their paths.
+  const saved = toolResults(r.model.bodies[9]).at(-1);
+  assert.match(saved, /\[File \/workspace\/tool-outputs\/app__links\/[a-f0-9]{8}\/doc\.pdf \(application\/pdf/);
+  assert.match(saved, /\[File \/workspace\/tool-outputs\/app__links\/[a-f0-9]{8}\/hello\.txt \(text\/plain/);
+  assert.match(saved, /\[missing\.txt not saved: fetching it answered HTTP 404\]/);
+  assert.doesNotMatch(JSON.stringify(r.model.bodies.at(-1).messages), /127\.0\.0\.1|data:text/, "never their URLs");
+  assert.ok(links);
+
+  // The URL: a Range, then checked as a tool would check it.
+  const range = await fetch(url, { headers: { Range: "bytes=0-4" } });
+  assert.equal(range.status, 206);
+  assert.equal(await range.text(), "%PDF-");
+  const claims = await verifyFileUrl(url, { runtime: r.base, tenant: "alice", agent: agent.id });
+  assert.deepEqual([claims.kind, claims.tool, claims.path, claims.agentPath, claims.volume, typeof claims.version, claims.exp - claims.iat], ["file", "app__attach", "/report.pdf", "/workspace/report.pdf", state.workspace, "number", 300]);
+  assert.ok(claims.call);
+  await assert.rejects(verifyFileUrl(url, { runtime: r.base, agent: "client_other" }), /another agent/);
+  await assert.rejects(verifyFileUrl(url, { runtime: r.base, tenant: "bob" }), /another tenant/);
+  await assert.rejects(verifyFileUrl(url.replace("127.0.0.1", "localhost"), { runtime: r.base }), /not at the runtime/);
+
+  // Only the runtime's tokens for files, unexpired and unaltered, read anything.
+  const token = url.split("/").at(-2)!;
+  const tampered = `${token.slice(0, -4)}${token.slice(-4) === "AAAA" ? "BBBB" : "AAAA"}`;
+  assert.equal((await fetch(url.replace(token, tampered))).status, 403);
+  assert.equal((await fetch(`${r.base}/v1/files/not-a-token/x`)).status, 403);
+  const signer = { fileToken: r.signFileToken, token: r.signIdentityToken };
+  const grant = { tenant: "alice", agent: agent.id, call: "c", tool: "app__attach", volume: state.workspace, path: "/report.pdf", agentPath: "/workspace/report.pdf", kind: "file" as const, version: claims.version };
+  const expired = await fetch(`${r.base}/v1/files/${await signer.fileToken(grant, Date.now() - 1000)}/report.pdf`);
+  assert.deepEqual([expired.status, (await expired.json()).error], [403, "This link has expired"]);
+  const identity = await signer.token(`${r.base}/v1/files`, { tenant: "alice", agent: agent.id });
+  assert.equal((await fetch(`${r.base}/v1/files/${identity}/report.pdf`)).status, 403, "an identity token is not a file's");
+  const other = await fetch(`${r.base}/v1/files/${await signer.fileToken({ ...grant, tenant: "bob" }, Date.now() + 60_000)}/report.pdf`);
+  assert.equal(other.status, 404, "a grant names its tenant, which must own the volume");
+
+  // Once the file changes, its URL no longer serves it: never a mix of versions.
+  await put(r.base, state.workspace, "report.pdf", "changed");
+  const changed = await fetch(url);
+  assert.deepEqual([changed.status, (await changed.json()).error], [410, "/workspace/report.pdf changed since the call"]);
 });

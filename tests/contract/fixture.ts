@@ -1,5 +1,6 @@
 import type { T } from "./http.ts";
 import { observeBackend } from "./evidence.ts";
+import type { FileGrant, TokenClaims } from "../../src/identity.ts";
 
 export type ModelReply = (body: any, index: number) => object;
 export type CallOptions = { method?: string; body?: unknown; headers?: Record<string, string>; token?: string | null };
@@ -9,6 +10,10 @@ export type FixtureOptions = {
   respond?: ModelReply;
   env?: Record<string, string>;
   tenants?: object;
+  /** Fail the first real image resize job, then allow normal retries. */
+  failImageResizeOnce?: boolean;
+  /** Local STS/token endpoint used by the real Anthropic federation adapter. */
+  anthropicFederationEndpoint?: string;
   /** Create additional local fake endpoints before starting either backend. */
   prepare?: (t: T) => Promise<Record<string, string>>;
 };
@@ -22,6 +27,7 @@ export interface ContractFixture {
   prompt(agent: string, text: string, token?: string, extra?: Record<string, unknown>): Promise<any>;
   model: { url: string; bodies: any[]; keys: string[]; headers: any[] };
   setModel(respond: ModelReply): void;
+  imageResizeFailureCount(): Promise<number>;
   /** Reproduce a legacy stored model at restart; adapters must not emulate its billing behavior. */
   restartWithLegacyModel(agent: string, model: Record<string, unknown>): Promise<void>;
   seedTenant(id: string, options?: TenantSeed): Promise<{ id: string; token: string }>;
@@ -37,6 +43,10 @@ export interface ContractFixture {
   seedConsoleIdentity(tenant: string, identity: { method: "google" | "github"; subject: string | number; email?: string; login: string }): Promise<string>;
   seedEndUserUsage(usage: { tenant: string; endUser: string; bucket: string; amount: number; key: string; metadata?: Record<string, unknown>; at: number }): Promise<void>;
   seedStripeCustomer(tenant: string, customer: { customer: string; legacyCustomer?: string }): Promise<void>;
+  setRejectRunEvents(enabled: boolean): Promise<void>;
+  updateLegacyUsageWebhook(url: string): Promise<void>;
+  seedJourneyAccount(input: { login: string; githubId: number; startingGrant: number; accountRef?: string }): Promise<{ tenant: string; token: string }>;
+  drain(): Promise<void>;
   waitForAgentIdle(agent: string): Promise<void>;
   failAgentLoad(agent: string): Promise<void>;
   agentRecovery(agent: string): Promise<{ failures: number; retryAt: number }>;
@@ -46,6 +56,10 @@ export interface ContractFixture {
   /** Wait for real backend time; does not pretend the backend clock advanced. */
   advanceTime(ms: number): Promise<void>;
   close(): Promise<void>;
+  stop(): Promise<void>;
+  restart(options?: { env?: Record<string, string>; crash?: boolean }): Promise<void>;
+  signFileToken(grant: FileGrant, expiresAt: number): Promise<string>;
+  signIdentityToken(audience: string, claims: TokenClaims): Promise<string>;
 }
 
 export async function createFixture(t: T, options: FixtureOptions = {}): Promise<ContractFixture> {

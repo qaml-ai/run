@@ -1,0 +1,79 @@
+import { portedTest } from "../ported.ts";
+import assert from "node:assert/strict";
+import {getModel,openRouterHosts,openRouterIgnoredHosts,withOpenRouterHosts} from "../../../src/pi-catalog.ts";
+import {platformUsage} from "../../../src/platform-pricing.ts";
+import {resolveModel} from "../../../src/session-config.ts";
+import {fakeModel,runtime,toolCall} from "../support.ts";
+const LOCAL = { AGENT_OUTBOUND_ALLOW_HTTP: "true", AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.1/32" };
+const HOSTS = ["fireworks", "together", "parasail", "coreweave", "nebius"];
+/** 1017's hosts it is never served by: they drop tool-call arguments (2026-10-27). */
+const IGNORED = ["inference-net", "wafer", "relace"];
+const FLASH = getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
+const FLASH_1017 = getModel("openrouter", "deepseek/deepseek-v4.1-flash-1017")!;
+/** Never an order or sort: either turns off OpenRouter's load balancing. An only or an ignore, never both; nor a quantization or anything else. */
+const onlyOnly = (bodies: any[]) => {
+  for (const body of bodies) assert.ok(!body.provider || ['["only"]', '["ignore"]'].includes(JSON.stringify(Object.keys(body.provider))), JSON.stringify(body.provider));
+};
+
+
+portedTest("models","tests/openrouter-hosts.test.ts:37")("an agent's calls send their model's hosts: V4.1 Flash five, 1017 two ignored with at most 131,072 tokens; nothing else", async t => {
+  const host = await fakeModel(t, (_body, index) => index % 2 === 0 ? toolCall("codemode", { code: "return 1 + 1;" }, `call_${index}`) : { role: "assistant", content: "2." });
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: host.url } });
+  for (const [model, provider] of [[FLASH.id, { only: HOSTS }], [FLASH_1017.id, { ignore: IGNORED }]] as const) {
+    const from = host.bodies.length;
+    const agent = (await r.call("/v1/agents", { body: { model: `openrouter/${model}`, keyScope: "hosted", thinkingLevel: "high" } })).json.id;
+    assert.equal((await r.prompt(agent, "1 + 1?")).outcome.result.reply, "2.");
+    const sent = host.bodies.slice(from);
+    assert.equal(sent.length, 2, "a tool call and the answer");
+    for (const body of sent) {
+      assert.deepEqual(body.provider, provider, model);
+      assert.ok(Array.isArray(body.messages), "Chat Completions (deepseek-replay.ts)");
+    }
+    const most = sent[0].max_completion_tokens ?? sent[0].max_tokens;
+    assert.ok(most <= 131_072, `${model}: ${most}`);
+  }
+  onlyOnly(host.bodies);
+});
+
+portedTest("models","tests/openrouter-hosts.test.ts:57")("1017:nitro resolves as 1017 does (catalog, price, 131,072, Chat Completions, no hosts, two ignored) and is sent with its variant", async t => {
+  const nitro = resolveModel(`openrouter/${FLASH_1017.id}:nitro`);
+  assert.deepEqual([nitro.id, nitro.api, nitro.maxTokens, nitro.contextWindow], [`${FLASH_1017.id}:nitro`, "openai-completions", 131_072, 1_048_576]);
+  assert.deepEqual(nitro.cost, FLASH_1017.cost);
+  assert.equal(platformUsage({ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 } as never, "openrouter", nitro.id).known, true);
+  assert.equal(openRouterHosts(nitro.id), undefined);
+  assert.deepEqual(openRouterIgnoredHosts(nitro.id), IGNORED);
+
+  const host = await fakeModel(t, () => ({ role: "assistant", content: "Fast." }));
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: host.url } });
+  const agent = (await r.call("/v1/agents", { body: { model: `openrouter/${FLASH_1017.id}:nitro`, keyScope: "hosted", thinkingLevel: "high" } })).json.id;
+  assert.equal((await r.prompt(agent, "Hi")).outcome.result.reply, "Fast.");
+  const [sent] = host.bodies;
+  assert.equal(sent.model, `${FLASH_1017.id}:nitro`, "the variant goes to OpenRouter as given: its throughput sort");
+  assert.deepEqual(sent.provider, { ignore: IGNORED }, "and of ours only the hosts it is never served by");
+  assert.equal(sent.reasoning?.effort, "high");
+  assert.ok((sent.max_completion_tokens ?? sent.max_tokens) <= 131_072);
+});
+
+portedTest("models","tests/openrouter-hosts.test.ts:77")("1017:morph is 1017 served by Morph alone: sent as 1017 with provider.only morph, priced and resolved as 1017", async t => {
+  const morph = resolveModel(`openrouter/${FLASH_1017.id}:morph`);
+  assert.deepEqual([morph.id, morph.api, morph.maxTokens], [`${FLASH_1017.id}:morph`, "openai-completions", 131_072]);
+  assert.deepEqual(morph.cost, FLASH_1017.cost);
+  assert.deepEqual(openRouterHosts(morph.id), ["morph"]);
+  assert.equal(openRouterHosts(`${FLASH_1017.id}:nitro`), undefined, ":nitro is untouched");
+  const request = { model: morph.id, messages: [] };
+  assert.deepEqual(withOpenRouterHosts(morph, request), { model: FLASH_1017.id, messages: [], provider: { only: ["morph"] } });
+  assert.deepEqual((withOpenRouterHosts(morph, request, "deny") as any).provider, { only: ["morph"], data_collection: "deny" });
+
+  const host = await fakeModel(t, () => ({ role: "assistant", content: "Morph." }));
+  const r = await runtime(t, () => ({ role: "assistant", content: "unused" }), LOCAL);
+  await r.call("/v1/key-scopes/hosted/providers/openrouter", { method: "PUT", body: { apiKey: "sk-or", baseUrl: host.url } });
+  const agent = (await r.call("/v1/agents", { body: { model: `openrouter/${FLASH_1017.id}:morph`, keyScope: "hosted", thinkingLevel: "high" } })).json.id;
+  assert.equal((await r.prompt(agent, "Hi")).outcome.result.reply, "Morph.");
+  const [sent] = host.bodies;
+  assert.equal(sent.model, FLASH_1017.id, "OpenRouter knows no :morph suffix");
+  assert.deepEqual(sent.provider, { only: ["morph"] });
+  assert.ok(Array.isArray(sent.messages), "Chat Completions (deepseek-replay.ts)");
+  onlyOnly(host.bodies);
+});

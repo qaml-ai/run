@@ -132,7 +132,14 @@ export async function startFixture(
   );
   cleanups.push(() => worker.stop());
   await worker.start();
-  return { url: worker.url, databaseUrl, db, worker, token, stop };
+  return { url: worker.url, databaseUrl, db, worker, token, stop,
+    async restart(vars: Record<string, string> = {}, crash = false) {
+      await worker.stop(crash);
+      Object.assign(config.vars, vars);
+      await writeFile(configPath, JSON.stringify(config));
+      await worker.start();
+    },
+  };
   } catch (error) {
     try { await stop(); }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], "Local Worker fixture startup and cleanup failed"); }
