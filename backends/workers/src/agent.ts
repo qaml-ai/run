@@ -2422,7 +2422,7 @@ export class CamelAgent extends DurableObject<Env> {
       // Public configuration edits become /requests; POST is the directory's
       // already-provisioned replacement for an existing keyed agent.
       if (path === "/configuration" && request.method === "POST")
-        return json(await this.configureRequest(await body(request, 17 * 1024 * 1024), true), 202);
+        return json(await requestView(await this.configureRequest(await body(request, 17 * 1024 * 1024), true)), 202);
       if (path === "/configuration" && request.method === "PUT") {
         const incoming = (await body(request, 17 * 1024 * 1024)) as Config;
         const mutation = this.admission.then(async () => {
