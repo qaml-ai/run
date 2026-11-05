@@ -191,3 +191,12 @@ export function humanInputSettings(value: unknown): HumanInputSettings {
   if (approvers !== undefined && (!Array.isArray(approvers) || approvers.length > 100 || approvers.some(entry => typeof entry !== "string" || !entry.trim() || entry.length > 200))) throw new HttpError(400, "humanInput.approvers is a list of at most 100 ids (an actor, or a channel sender like slack:U0123)");
   return value as HumanInputSettings;
 }
+
+/** A batch of answers from a request: `{ answers: [{ id, action, content?, from?, actor? }] }`. */
+export const answerList = (body: any) => {
+  // Each answer an object, and its id not one: a null in the list, or an id like {"toString": null}, is the caller's
+  // mistake (400), not a TypeError (500).
+  const valid = (answer: any) => !!answer && typeof answer === "object" && !Array.isArray(answer) && (answer.id === null || typeof answer.id !== "object");
+  if (!Array.isArray(body?.answers) || !body.answers.every(valid)) throw new HttpError(400, "Send { answers: [{ id, action, content?, from?, actor? }] }");
+  return body.answers.map(({ id, ...answer }: any) => ({ id: String(id), body: answer }));
+};

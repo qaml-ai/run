@@ -45,6 +45,7 @@ import {
   HumanInputs,
   type HumanInput,
 } from "./human.ts";
+import { answerList } from "./input-policy.ts";
 import { obj, str, opt } from "@earendil-works/pi-schema";
 import {
   Directory,
@@ -2090,6 +2091,95 @@ export class CamelAgent extends DurableObject<Env> {
     return this.historyIndex.read(url);
   }
 
+  private async answerHumanInputs(answers: Array<{ id: string; body: unknown }>, via: "api" | "agent") {
+    if (!answers.length || answers.length > 100 || new Set(answers.map(entry => entry.id)).size !== answers.length)
+      throw Object.assign(new Error("Answer 1 to 100 different inputs"), { status: 400 });
+    // Pi can resume a tool during this commit. Install all resume records first,
+    // and hold projection until the whole answer batch has committed.
+    let releaseProjection!: () => void;
+    const gate = new Promise<void>(resolve => { releaseProjection = resolve; });
+    const before = this.eventsProcessed;
+    this.eventsProcessed = before.then(() => gate);
+    await before;
+    const created: RequestRecord[] = [];
+    let conf: Config | undefined;
+    try {
+      const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
+      conf = await this.config();
+      const snapshot = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
+      const checked: Array<{ id: string; body: unknown; pending: HumanInput; owner: string | undefined; answer: ReturnType<typeof answerHuman> }> = [];
+      for (const entry of answers) {
+        const pending = snapshot?.requests[entry.id];
+        if (!pending) throw Object.assign(new Error(`Unknown input ${entry.id}`), { status: 404 });
+        const owner = pending.requestId ?? await this.ctx.storage.get<string>(`input-owner:${entry.id}`) ?? this.active;
+        const view = humanInputView(entry.id, pending, conf.id, owner);
+        if (owner && await this.ctx.storage.get(`cancelled-request:${owner}`))
+          throw Object.assign(new Error("This input is cancelled"), { status: 409, input: view });
+        checked.push({ ...entry, pending, owner, answer: answerHuman(pending, entry.body, via, conf.config.humanInput?.approvers as string[] | undefined) });
+      }
+      const fresh = checked.every(entry => entry.pending.answer === undefined);
+      if (!fresh && !checked.every(entry => sameHumanAnswer(entry.pending, entry.answer)))
+        throw Object.assign(new Error("An input is already settled"), { status: 409, input: checked.length === 1 ? humanInputView(checked[0].id, checked[0].pending, conf.id, checked[0].owner) : checked.map(entry => humanInputView(entry.id, entry.pending, conf!.id, entry.owner)) });
+      const selected = new Set(answers.map(entry => entry.id));
+      const unresolved = new Set(await Promise.all(Object.entries(snapshot?.requests ?? {})
+        .filter(([key, input]) => !selected.has(key) && input.answer === undefined)
+        .map(async ([key, input]) => input.requestId ?? await this.ctx.storage.get<string>(`input-owner:${key}`))));
+      const requests: RequestRecord[] = [];
+      for (const owner of new Set(checked.map(entry => entry.owner))) {
+        if (!owner || unresolved.has(owner)) continue;
+        const old = await this.ctx.storage.get<RequestRecord>(reqKey(owner));
+        if (!old) throw Object.assign(new Error("The input's request is unavailable"), { status: 409 });
+        if (old.method === "execute") {
+          if (old.state === "completed" && fresh) throw Object.assign(new Error("The script has already ended"), { status: 409 });
+          const resumed = old.state === "completed" ? old : { ...old, status: undefined };
+          if (old.state !== "completed") await this.ctx.storage.put(reqKey(owner), resumed);
+          requests.push(resumed);
+          continue;
+        }
+        const piId = old.piId ?? owner, resumeId = `resume_${(await digest(owner)).slice(0, 40)}`;
+        let resumed = await this.ctx.storage.get<RequestRecord>(reqKey(resumeId));
+        if (!resumed) {
+          await this.flushBilling(true);
+          await this.admitRequest(conf, resumeId);
+          resumed = { ...old, id: resumeId, piId, method: "resume", state: "running", status: undefined,
+            outcome: undefined, startedAt: Date.now(), began: Date.now(), endedAt: undefined };
+          await this.ctx.storage.put(reqKey(resumeId), resumed);
+          await this.ctx.storage.put(`resume-for:${piId}`, resumeId);
+          created.push(resumed);
+        }
+        this.active = resumeId;
+        requests.push(resumed);
+      }
+      const inputs: ReturnType<typeof humanInputView>[] = [];
+      await root.commit(async tx => {
+        const doc = await tx.doc(HumanInputs);
+        for (const entry of checked) {
+          const current = doc.requests[entry.id];
+          if (current.answer !== undefined && !sameHumanAnswer(current, entry.answer))
+            throw Object.assign(new Error("An input is already settled"), { status: 409, input: humanInputView(entry.id, current, conf!.id, entry.owner) });
+        }
+        for (const entry of checked) {
+          const current = doc.requests[entry.id];
+          if (current.answer === undefined) Object.assign(current, entry.answer);
+          inputs.push(humanInputView(entry.id, JSON.parse(JSON.stringify(current)), conf!.id, entry.owner));
+        }
+      }, BACKGROUND_CONTEXT);
+      if (fresh) for (const entry of checked)
+        await this.emit({ type: "event", requestId: entry.owner, event: { type: "input_resolved", id: entry.id } });
+      for (const request of requests) this.track(request.id);
+      if (requests.length) await this.arm();
+      return { status: fresh ? 202 : 200, inputs, requests };
+    } catch (error) {
+      for (const resume of created) {
+        await this.ctx.storage.delete(reqKey(resume.id));
+        await this.ctx.storage.delete(`resume-for:${resume.piId}`);
+        await releaseTurn(this.env, conf!.tenantId, conf!.id, resume.id);
+        await this.env.TENANTS.getByName(conf!.tenantId).release(`${conf!.id}:${resume.id}`);
+      }
+      throw error;
+    } finally { releaseProjection(); }
+  }
+
   async fetch(request: Request): Promise<Response> {
     return withMoneyMetrics(this.env, () => this.fetchRequest(request));
   }
@@ -2502,132 +2592,16 @@ export class CamelAgent extends DurableObject<Env> {
                   this.active,
               ),
             );
-        return json(values);
+        return json(values.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, 100));
       }
-      if (path.startsWith("/inputs/") && request.method === "POST") {
-        const answering = this.admission.then(async () => {
-        // Answering a native Pi document can resume the tool immediately. Hold
-        // projection until its durable resume alias exists, so its result is
-        // streamed to the resumed request even when the remote tool is fast.
-        let releaseProjection!: () => void;
-        const gate = new Promise<void>((resolve) => {
-          releaseProjection = resolve;
-        });
-        const before = this.eventsProcessed;
-        this.eventsProcessed = before.then(() => gate);
-        await before;
-        try {
-          const id = decodeURIComponent(path.slice(8)),
-            input = await body(request);
-          const pi = await this.harness.pi(),
-            root = await pi.root(BACKGROUND_CONTEXT),
-            conf = await this.config();
-          const snapshot = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
-          const pending = snapshot?.requests[id];
-          if (!pending)
-            throw Object.assign(new Error("Unknown input"), { status: 404 });
-          const owner =
-            pending.requestId ?? (await this.ctx.storage.get<string>(`input-owner:${id}`)) ??
-            this.active;
-          if (owner && await this.ctx.storage.get(`cancelled-request:${owner}`))
-            throw Object.assign(new Error("This input is cancelled"), { status: 409 });
-          const answer = answerHuman(pending, input, request.headers.get("x-camel-input-via") === "agent" ? "agent" : "api", conf.config.humanInput?.approvers as string[] | undefined);
-          const fresh = pending.answer === undefined;
-          if (!fresh && !sameHumanAnswer(pending, answer))
-            throw Object.assign(new Error(`This input is already ${pending.state}`), { status: 409, input: humanInputView(id, pending, conf.id, owner) });
-          const otherOwners = await Promise.all(Object.entries(snapshot?.requests ?? {})
-            .filter(([key, input]) => key !== id && input.answer === undefined)
-            .map(async ([key, input]) => input.requestId ?? await this.ctx.storage.get<string>(`input-owner:${key}`)));
-          let resume: RequestRecord | undefined;
-          let created = false;
-          if (
-            owner &&
-            !otherOwners.includes(owner)
-          ) {
-            const old = (await this.ctx.storage.get<RequestRecord>(
-              reqKey(owner),
-            ))!;
-            if (!old) throw Object.assign(new Error("The input's request is unavailable"), { status: 409 });
-            if (old.method === "execute") {
-              if (old.state === "completed" && pending.answer === undefined)
-                throw Object.assign(new Error("The script has already ended"), { status: 409 });
-              resume = old.state === "completed" ? old : { ...old, status: undefined };
-              if (old.state !== "completed") await this.ctx.storage.put(reqKey(owner), resume);
-            } else {
-            const piId = old.piId ?? owner;
-            const resumeId = `resume-${id}`.slice(0, 80);
-            resume = await this.ctx.storage.get<RequestRecord>(
-              reqKey(resumeId),
-            );
-            if (!resume) {
-              await this.flushBilling(true);
-              await this.admitRequest(conf, resumeId);
-              resume = {
-                ...old,
-                id: resumeId,
-                piId,
-                method: "resume",
-                state: "running",
-                status: undefined,
-                outcome: undefined,
-                startedAt: Date.now(),
-                began: Date.now(),
-                endedAt: undefined,
-              };
-              await this.ctx.storage.put(reqKey(resumeId), resume);
-              await this.ctx.storage.put(`resume-for:${piId}`, resumeId);
-              created = true;
-            }
-            this.active = resumeId;
-            }
-          }
-          let item!: HumanInput;
-          try {
-            await root.commit(async (tx) => {
-              const doc = await tx.doc(HumanInputs),
-                current = doc.requests[id];
-              if (
-                current.answer !== undefined &&
-                !sameHumanAnswer(current, answer)
-              )
-                throw Object.assign(new Error("Already answered"), {
-                  status: 409, input: humanInputView(id, current, conf.id, owner),
-                });
-              if (current.answer === undefined) Object.assign(current, answer);
-              item = JSON.parse(JSON.stringify(current));
-            }, BACKGROUND_CONTEXT);
-          } catch (error) {
-            if (created && resume) {
-              await this.ctx.storage.delete(reqKey(resume.id));
-              await this.ctx.storage.delete(`resume-for:${resume.piId}`);
-              await releaseTurn(this.env, conf.tenantId, conf.id, resume.id);
-              await this.env.TENANTS.getByName(conf.tenantId).release(
-                `${conf.id}:${resume.id}`,
-              );
-              this.active = owner;
-            }
-            throw error;
-          }
-          if (fresh) await this.emit({
-            type: "event",
-            requestId: owner,
-            event: { type: "input_resolved", id },
-          });
-          if (resume) {
-            this.track(resume.id);
-            await this.arm();
-          }
-          return json({
-            answered: true,
-            input: humanInputView(id, item, conf.id, owner),
-            request: resume ?? null,
-          }, fresh ? 202 : 200);
-        } finally {
-          releaseProjection();
-        }
-        });
+      if ((path === "/inputs" || path.startsWith("/inputs/")) && request.method === "POST") {
+        const input = await body(request, 1024 * 1024);
+        const batch = path === "/inputs";
+        const answers = batch ? answerList(input) : [{ id: decodeURIComponent(path.slice(8)), body: input }];
+        const answering = this.admission.then(() => this.answerHumanInputs(answers, request.headers.get("x-camel-input-via") === "agent" ? "agent" : "api"));
         this.admission = answering.catch(() => {});
-        return answering;
+        const answered = await answering;
+        return json(batch ? { inputs: answered.inputs, requests: answered.requests } : { input: answered.inputs[0], request: answered.requests[0] ?? null }, answered.status);
       }
       if (path === "/abort" && request.method === "POST") {
         const aborting = this.admission.then(async () => {

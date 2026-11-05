@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { answerHuman, bindHumanInput, cancelledHumanInput, humanInputResult, humanInputView, sameHumanAnswer } from "../src/human.ts";
-import { humanInputSettings, questionsInput } from "../src/input-policy.ts";
+import { answerList, humanInputSettings, questionsInput } from "../src/input-policy.ts";
 
 const questions = questionsInput([{ question: "Where?", header: "Region", options: [{ label: "EU" }, { label: "US" }] }]);
 const input = { question: "Where?", kind: "question" as const, detail: { questions }, createdAt: 1000 };
@@ -39,4 +39,9 @@ test("human answers enforce source identity and produce source question metadata
 test("legacy ask_human keeps its unstructured reply", () => {
   const answer = answerHuman({ question: "Continue?" }, { answer: "yes" });
   assert.equal(humanInputResult({ question: "Continue?", ...answer }).output[0].text, "yes");
+});
+
+test("batch answers reuse source validation", () => {
+  assert.deepEqual(answerList({ answers: [{ id: "input-a", ...accept }] }), [{ id: "input-a", body: accept }]);
+  for (const body of [{}, { answers: [null] }, { answers: [{ id: {} }] }]) assert.throws(() => answerList(body), /Send/);
 });

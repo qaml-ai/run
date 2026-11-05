@@ -222,6 +222,16 @@ export default {
         }
         const control = await controlRoutes(request, env, auth);
         if (control) return control;
+        if (path === "/v1/inputs" && request.method === "GET") {
+          const entries = await new Directory(env, auth.tenantId).list();
+          const inputs = [];
+          for (const entry of entries) {
+            const response = await forward(request, env, entry.id, "/inputs");
+            if (!response.ok) return response;
+            inputs.push(...await response.json() as Array<{ id: string; createdAt: number }>);
+          }
+          return json(inputs.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, 100));
+        }
         const media = await handleMediaRequest(request, env, auth);
         if (media) return media;
         const files = await handleFileRequest(request, env, auth);
@@ -268,7 +278,7 @@ export default {
         }
         throw new ApiError(404, "Unknown API route", "NOT_FOUND");
       }
-      if (!entry) throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
+      if (!entry || entry.config.type === "run") throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
       const tail = match[3] || "/";
       // Internal computer operations are reachable only through the service
       // binding. Public cleanup must use the account-scoped confirmation route.

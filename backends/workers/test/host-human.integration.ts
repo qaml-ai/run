@@ -52,6 +52,21 @@ test("HTTP host scripts keep separate human inputs across restart and cancellati
   }
   assert.equal((await call(`${base}/history`)).value.messages.length, 2, "host scripts do not append to model history");
 
+  await call(`${base}/requests`, { id: "batch-host", method: "execute", params: { code: 'return await Promise.all([tools.ask_human({question:"First?"}), tools.ask_human({question:"Second?"})])' } });
+  const batchInputs = (await inputs(2)).sort((a, b) => a.question.localeCompare(b.question));
+  assert.deepEqual((await call("/v1/inputs?state=pending")).value.map((item: any) => item.id).sort(), batchInputs.map(item => item.id).sort());
+  const batch = { answers: batchInputs.map((item, index) => ({ id: item.id, answer: `answer-${index}` })) };
+  assert.equal((await call(`${base}/inputs`, { answers: [batch.answers[0], { id: batchInputs[1].id, action: "invalid" }] })).status, 400);
+  assert.equal((await inputs(2)).length, 2, "a bad batch does not record its valid first answer");
+  const batchAnswer = await call(`${base}/inputs`, batch);
+  assert.equal(batchAnswer.status, 202, JSON.stringify(batchAnswer.value));
+  assert.deepEqual(batchAnswer.value.requests.map((item: any) => item.id), ["batch-host"]);
+  assert.deepEqual((await result("batch-host")).outcome.result.output, ['["answer-0","answer-1"]']);
+  const retry = await call(`${base}/inputs`, batch);
+  assert.equal(retry.status, 200);
+  assert.deepEqual(retry.value.inputs.map((item: any) => item.answer.at), batchAnswer.value.inputs.map((item: any) => item.answer.at));
+  assert.deepEqual((await call("/v1/inputs?state=pending")).value, []);
+
   await call(`${base}/requests`, { id: "abort-host", method: "execute", params: { code: 'return await tools.ask_human({question:"Cancel host?"})' } });
   const [hostInput] = await inputs(1);
   await call(`${base}/requests`, { id: "abort-host-now", method: "abort", params: {} });
