@@ -1450,6 +1450,7 @@ export class CamelAgent extends DurableObject<Env> {
         return completed;
       });
       await this.flushTerminalEvents();
+      this.toolFileBudgets.delete(id);
       return terminal;
     }
     try {
@@ -1593,6 +1594,7 @@ export class CamelAgent extends DurableObject<Env> {
         await this.flushTerminalEvents();
         if (id.startsWith("schedule-")) await publishScheduleEmails(this.env);
       }
+      this.toolFileBudgets.delete(id);
       return terminal;
     } catch (error) {
       if (
