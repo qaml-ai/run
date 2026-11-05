@@ -1,10 +1,10 @@
 {
   "group": "delegation-config",
-  "testedRevision": "21135743",
-  "integrationBase": "8db58007",
-  "sprite": "rt-pool-20",
-  "spriteRun": "20261105-164052-37073-1",
-  "command": "scripts/sprite-test HEAD env CONTRACT_REVISION=21135743 bash backends/workers/scripts/check-delegation-config.sh",
+  "testedRevision": "543403aa",
+  "integrationBase": "5370128b",
+  "sprite": "rt-pool-1",
+  "spriteRun": "20261105-164901-56809-1",
+  "command": "scripts/sprite-test HEAD env CONTRACT_REVISION=543403aa bash backends/workers/scripts/check-delegation-config.sh",
   "checks": {
     "rootTypecheck": "pass",
     "workersTypecheck": "pass",
@@ -18,7 +18,7 @@
     }
   },
   "contract": {
-    "suiteHash": "9af2f6f7895f6d8dbb6911cfd1e80cee771b612502ed7d11cf01e41399a9a650",
+    "suiteHash": "53b711772a495f726b3665f47e4255eb60c7cd94660a3a0782155f01ca852525",
     "area": "definitions,delegation",
     "node": {
       "pass": 49,
@@ -29,7 +29,9 @@
       "pass": 49,
       "fail": 0,
       "report": "parity-workers-definitions_delegation.json"
-    }
+    },
+    "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+    "runner": "npm run parity -- --local --area=definitions,delegation"
   },
   "reportedFailuresNowPassing": [
     {
