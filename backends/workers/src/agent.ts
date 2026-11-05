@@ -1871,9 +1871,11 @@ export class CamelAgent extends DurableObject<Env> {
       await this.ctx.storage.delete([...held.keys()]);
     }
     const pending = await this.harness.pending();
-    const cancelled = queued === 'keep' ? [] : pending
-      .filter((item) => item.status === "queued")
-      .map((item) => item.operationId);
+    const deferred = (await this.records()).filter(record => record.state !== 'completed' && record.configurationWait !== undefined);
+    const cancelled = queued === 'keep' ? [] : [...new Set([
+      ...pending.filter(item => item.status === 'queued').map(item => item.operationId),
+      ...deferred.map(record => record.id),
+    ])];
     const running = pending.filter(item => item.status === 'running').map(item => item.operationId);
     const keepTask = queued === 'keep'
       ? ((await this.harness.session().watch()).value.docs['pi.live'] as LiveState | undefined)?.run?.taskId
@@ -1926,6 +1928,7 @@ export class CamelAgent extends DurableObject<Env> {
       await this.emit({ type: 'event', requestId: id, event: { type: 'run_cancelled', reason: 'stopped' } });
       await this.emit({ type: "response", id, outcome: record.outcome });
     }
+    this.configurationQueue.kick();
     return { aborted: true, cancelled };
   }
   private async resumeKeptQueue() {

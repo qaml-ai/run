@@ -69,3 +69,37 @@ test('spend configuration applies before a queued turn and a retry preserves con
   gate.resolve();
   await until(async () => (await fixture.call(`${path}/requests/${held.json.id}`)).json.state === 'completed', 'held turn completion');
 });
+
+test('aborting configuration waiters completes them and releases their attachment admission', { timeout: 90_000 }, async t => {
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  const fixture = await createWorkersFixture(t, {
+    env: { TENANT_MAX_ACTIVE: '1' },
+    respond: body => ({ role: 'assistant', content: 'ok', ...(lastUser(body) === 'hold' ? { wait: gate.promise } : {}) }),
+  });
+  const agent = (await fixture.call('/v1/agents', { body: {} })).json;
+  const path = `/v1/agents/${agent.id}`;
+  const held = await fixture.call(`${path}/prompt`, { body: { text: 'hold' } });
+  assert.equal(held.status, 202);
+  await until(() => fixture.model.bodies.length === 1, 'held turn');
+  assert.equal((await fixture.call(`${path}/configuration`, { method: 'PATCH', body: { systemPrompt: 'queued configuration' } })).status, 202);
+  const waiter = await fixture.call(`${path}/prompt`, { body: {
+    text: 'must not run', requestId: 'waiting-file', files: [{ name: 'queued.txt', data: Buffer.from('queued attachment').toString('base64') }],
+  } });
+  assert.equal(waiter.status, 202, waiter.text);
+  const other = (await fixture.call('/v1/agents', { body: {} })).json;
+  assert.equal((await fixture.call(`/v1/agents/${other.id}/prompt`, { body: { text: 'other' } })).status, 429);
+
+  const aborted = await fixture.call(`${path}/abort`, { body: {} });
+  assert.equal(aborted.status, 200, aborted.text);
+  assert.ok(aborted.json.cancelled.includes('waiting-file'));
+  const cancelled = (await fixture.call(`${path}/requests/waiting-file`)).json;
+  assert.equal(cancelled.state, 'completed');
+  assert.equal(cancelled.outcome.result.code, 'cancelled');
+  gate.resolve();
+  await until(async () => (await fixture.call(`${path}/requests/${held.json.id}`)).json.state === 'completed', 'aborted running turn');
+  await fixture.prompt(other.id, 'other');
+  assert.equal((await fixture.call(`${path}/configuration`, { method: 'PATCH', body: { systemPrompt: 'after abort' } })).status, 202);
+  await fixture.prompt(agent.id, 'after');
+  assert.deepEqual(fixture.model.bodies.map(lastUser), ['hold', 'other', 'after']);
+});
