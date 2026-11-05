@@ -103,3 +103,30 @@ test('aborting configuration waiters completes them and releases their attachmen
   await fixture.prompt(agent.id, 'after');
   assert.deepEqual(fixture.model.bodies.map(lastUser), ['hold', 'other', 'after']);
 });
+
+test('queued upserts preserve omitted model and language from the preceding configuration', { timeout: 90_000 }, async t => {
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  const fixture = await createWorkersFixture(t, {
+    respond: body => ({ role: 'assistant', content: 'ok', ...(lastUser(body) === 'hold' ? { wait: gate.promise } : {}) }),
+  });
+  const upsert = async (body: object) => {
+    const response = await fixture.call('/v1/agents', { body, headers: { 'Idempotency-Key': 'omitted-configuration' } });
+    assert.equal(response.status, 201, response.text);
+    return response.json;
+  };
+  const agent = await upsert({});
+  assert.equal((await fixture.call(`/v1/agents/${agent.id}/prompt`, { body: { text: 'hold' } })).status, 202);
+  await until(() => fixture.model.bodies.length === 1, 'held turn');
+  const model = 'openrouter/openai/gpt-4.1';
+  await upsert({ model, language: 'fr', systemPrompt: 'first queued configuration' });
+  const last = await upsert({ systemPrompt: 'last queued configuration' });
+  gate.resolve();
+  await until(async () => (await fixture.call(`/v1/agents/${agent.id}/requests/${last.reconfigured.id}`)).json.state === 'completed', 'last queued configuration');
+  const saved = (await fixture.call(`/v1/agents/${agent.id}`)).json;
+  assert.equal(saved.model, model);
+  assert.equal(saved.language, 'fr');
+  assert.equal(saved.systemPrompt, 'last queued configuration');
+  await fixture.prompt(agent.id, 'after');
+  assert.equal(fixture.model.bodies.at(-1).model, 'openai/gpt-4.1');
+});

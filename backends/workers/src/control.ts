@@ -187,8 +187,13 @@ export class Directory {
     const resolvedModel = await validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined });
     if (queueConfiguration && previousEntry) {
       for (const field of ['subject', 'context', 'definition'] as const)
-        if (fields[field] !== undefined && JSON.stringify(fields[field]) !== JSON.stringify(previousEntry.config[field]))
+        if (canonical(config[field] ?? null) !== canonical(previousEntry.config[field] ?? null))
           throw new ApiError(409, `An agent's ${field} cannot change`);
+      if (fields.mounts !== undefined && fields.remount !== true) {
+        const mounts = await (await import('./file-mounts.ts')).prepareMounts(this.env, this.tenantId, id, fields.mounts);
+        if (mountIdentity(mounts) !== mountIdentity(previousEntry.config.mounts))
+          throw new ApiError(409, 'Agent mounts differ; set remount: true to change them');
+      }
       const target: Record<string, unknown> = { ...config };
       // Resolve omitted fields when this target reaches the head of the queue.
       if (fields.model === undefined) delete target.model;
