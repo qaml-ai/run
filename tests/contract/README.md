@@ -77,7 +77,7 @@ rejects stale, duplicate, missing, or unexpected results.
 Node keeps its 90-second default. Every explicit original case/poll timeout is
 preserved. For cases with no explicit timeout, Workers uses three times that
 case's observed Node p99 duration, with a 30-second floor for startup/scheduling.
-The Node baseline's overall p99 was about 23 seconds. Concurrent Wrangler
+The Node baselines' overall p99 ranged from 23 to 27 seconds. Concurrent Wrangler
 startup exhausted the first 10-second floor before assertions began; the
 30-second floor includes that setup. Explicit case and polling timeouts stay
 unchanged.
@@ -87,6 +87,11 @@ Unsatisfied polls fail immediately on a required route returning 404, 405, 501,
 or an explicit unsupported body. A predicate which expects that status still
 succeeds. Request-state waits also reject incompatible terminal states, and
 closed event streams cannot wait forever for another event.
+
+The measured full comparison fell from 43m 22s on one Sprite to 14m 35s on six,
+including a Node shard retry. The cached Workers phase took 9m 22s; the
+Workers-only delegation group took 1m 49s. All 590 in-scope case statuses were
+unchanged. See [timing and result evidence](../../backends/workers/measurements/parity-speed.md).
 
 ## Reports and local debugging
 
