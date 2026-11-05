@@ -1,6 +1,10 @@
 import type { CodemodeRemoteExchange, CodemodeRemoteMessage } from "@earendil-works/pi-codemode/portable";
 import { SANDBOX_LIMITS } from "../../../src/limits.ts";
 
+// QuickJS counts interrupt polls because Workers clocks freeze during synchronous code.
+// Keep non-yielding scripts below the isolate CPU reset threshold. This is not a wall-clock CPU limit.
+export const SANDBOX_INTERRUPT_BUDGET = 10_000;
+
 /** Enforce the existing v8 bridge budgets at the remote boundary, before invoking host capabilities. */
 export function boundedExchange(exchange: CodemodeRemoteExchange, workflow = false): CodemodeRemoteExchange {
   const maxCalls = workflow ? SANDBOX_LIMITS.workflowToolCalls : SANDBOX_LIMITS.toolCalls;
