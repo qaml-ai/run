@@ -73,10 +73,10 @@ function result<T>(value: T | DirectoryFailure): T {
   }
   return value as T;
 }
-function credentials(entry: DirectoryEntry, token: string) {
+function credentials(entry: DirectoryEntry, token?: string) {
   return {
     id: entry.id,
-    token,
+    ...(token === undefined ? {} : { token }),
     expiresAt: entry.expiresAt,
     configHash: entry.configHash,
   };
@@ -308,7 +308,7 @@ const worker = {
               await setAgentSpendLimit(
                 env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,
               );
-            const answer = { ...credentials(created, await agentToken(env.API_TOKEN, created.id)), ...(upsert.reconfigured ? { reconfigured: upsert.reconfigured } : {}) };
+            const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id)), ...(upsert.reconfigured ? { reconfigured: upsert.reconfigured } : {}) };
             if (!first) return json(answer, 201);
             const submitted = await env.AGENTS.getByName(created.id).fetch(new Request("https://agent/requests", {
               method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(first),
@@ -455,7 +455,7 @@ const worker = {
       )
         throw new ApiError(404, "Not found");
       const lifecycle = !browser
-        ? await agentLifecycleRoutes(request, env, entry, tail)
+        ? await agentLifecycleRoutes(request, env, entry, tail, auth?.kind !== "oauth")
         : undefined;
       if (lifecycle) return lifecycle;
       if (!auth && tail === "/requests" && request.method === "POST") {

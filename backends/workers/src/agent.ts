@@ -188,6 +188,7 @@ import {
   type TerminalDelivery,
 } from "./event-log.ts";
 import { agentBuiltins } from "./agent-builtins.ts";
+import { scheduleError, type ScheduleToolsHost } from "./agent-schedules.ts";
 import { auxiliaryRunCosts } from "./auxiliary-usage.ts";
 import { resetContext } from "./context-reset.ts";
 import {
@@ -930,7 +931,7 @@ export class CamelAgent extends DurableObject<Env> {
             keyScope: conf.config.keyScope,
             files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
           };
-        }),
+        }, { schedules: this.scheduleTools() }),
       });
       registry.install({
         name: "camel.decisions",
@@ -1847,7 +1848,7 @@ export class CamelAgent extends DurableObject<Env> {
       state: "completed",
       startedAt: previous?.startedAt ?? Date.now(),
       endedAt: Date.now(),
-      outcome: { result: { configured: true, configHash: updated.configHash } },
+      outcome: { result: { configured: true, changed: current.configHash !== updated.configHash, configHash: updated.configHash } },
     };
     await this.ctx.storage.put(reqKey(id), record);
     await this.emit({ type: "response", id, outcome: record.outcome });
@@ -2498,7 +2499,7 @@ export class CamelAgent extends DurableObject<Env> {
                 keyScope: conf.config.keyScope,
                 files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
               };
-            }),
+            }, { schedules: this.scheduleTools() }),
           });
           this.registry.install({
             name: "camel.decisions",
@@ -2799,7 +2800,7 @@ export class CamelAgent extends DurableObject<Env> {
         return json(await forkSnapshot(await pi.root(BACKGROUND_CONTEXT), this.historyIndex, input.atMessage as number | string | undefined, running));
       }
       if (path === "/context/import" && request.method === "POST") {
-        const input = object(await body(request), ["model", "pinnedVolumes"]);
+        const input = object(await body(request, 17 * 1024 * 1024), ["model", "pinnedVolumes"]);
         if (!Array.isArray(input.model)) throw new BadRequest("Expected model context");
         if (Array.isArray(input.pinnedVolumes)) {
           const pinned = await this.ctx.storage.get<string[]>("file-pin-volumes") ?? [];
@@ -3167,6 +3168,17 @@ export class CamelAgent extends DurableObject<Env> {
       });
     return child;
   }
+  private scheduleTools(): ScheduleToolsHost {
+    return {
+      create: input => this.createSchedule(input),
+      list: async () => [...(await this.ctx.storage.list<Schedule>({ prefix: "schedule:", limit: 100 })).values()],
+      cancel: async id => {
+        const cancelled = await this.ctx.storage.delete(`schedule:${id}`);
+        await this.arm();
+        return cancelled;
+      },
+    };
+  }
   private async createSchedule(raw: unknown): Promise<Schedule> {
     if (
       (await this.ctx.storage.list({ prefix: "schedule:", limit: 100 })).size >=
@@ -3344,7 +3356,7 @@ export class CamelAgent extends DurableObject<Env> {
           schedule.calendar || schedule.everySeconds
             ? nextOccurrence(schedule)
             : undefined;
-        schedule.lastError = safeError(error);
+          schedule.lastError = scheduleError(error);
         schedule.lastErrorAt = Date.now();
         if (status === 404 || status === 410)
           await this.ctx.storage.delete(key);
