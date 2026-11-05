@@ -150,7 +150,7 @@ export class Directory {
     if (!response.ok) return entry;
     const current = await response.json() as Pick<DirectoryEntry, "id" | "tenantId" | "config" | "revision" | "expiresAt">;
     if (current.id !== entry.id || current.tenantId !== this.tenantId) return entry;
-    return { ...entry, ...current, configHash: await digest(JSON.stringify(current.config)), initialized: true };
+    return { ...entry, ...current, configHash: await digest(canonical(current.config)), initialized: true };
   }
   async list(): Promise<DirectoryEntry[]> {
     const { rows } = await withSql(this.env, (sql) =>

@@ -159,7 +159,7 @@ import { prioritizedTools } from "./tool-priority.ts";
 import { compatibleFileTools } from "./fs-tools.ts";
 import { sourceTools, toolSourceViews, type SourceFailure } from "./tool-sources.ts";
 import { Delegation } from "./delegation.ts";
-import { resolveDefinition, provisionDefinition, configurationPatch } from "./definitions.ts";
+import { resolveDefinition, provisionDefinition, configurationPatch, definitionUpsert } from "./definitions.ts";
 import {
   resolveProviderKey,
   resolveCustomProviders,
@@ -2168,7 +2168,11 @@ export class CamelAgent extends DurableObject<Env> {
     const params = request.params as Record<string, unknown>;
     const conf = await this.config();
     const replacement = (await this.ctx.storage.get<RequestRecord>(reqKey(id)))?.replaceConfiguration === true;
-    const replacementParams = replacement ? replacementConfiguration(conf.config, params) : params;
+    // Definition applications carry their target; keyed upserts inherit the
+    // definition revision that is applied when they reach the queue's head.
+    const replacementInput = replacement && params.definition !== undefined && origin === undefined
+      ? definitionUpsert(params, conf.config) : params;
+    const replacementParams = replacement ? replacementConfiguration(conf.config, replacementInput) : params;
     const patched = configuration(replacement ? replacementParams : { ...conf.config, ...params }, conf.config.model ?? this.env.MODEL).config;
     const modelError = (params.model !== undefined || params.keyScope !== undefined)
       ? await configurationModelError(this.env, conf.tenantId, patched) : undefined;
