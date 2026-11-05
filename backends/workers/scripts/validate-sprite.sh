@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run through the repo's leased scripts/sprite-test, one validation job per sprite.
 set -euo pipefail
-mode=${1:?Expected unit, integration, compat, python or checks}
+mode=${1:?Expected unit, integration, compat, python, contract or checks}
 cd "$(dirname "$0")/.."
 repo=$(cd ../.. && pwd)
 artifact="$HOME/runs/workers-agents-$mode-$(date +%Y%m%d-%H%M%S)"
@@ -10,6 +10,9 @@ finish() {
   code=$?
   trap - EXIT
   cp measurements/compat*.tap measurements/compatibility.json measurements/python-compat.json "$artifact/" 2>/dev/null || true
+  if [[ $mode == contract ]]; then
+    cp measurements/parity-*.json measurements/parity-*.log "$artifact/" 2>/dev/null || true
+  fi
   printf '%s\n' "$code" > "$artifact/exit"
   tar -czf "$artifact.tgz" -C "$artifact" .
   echo "SPRITE_ARTIFACT=$artifact.tgz"
@@ -43,7 +46,7 @@ if [[ $mode == integration || $mode == compat ]]; then
   fi
   docker info >/dev/null
 fi
-if [[ $mode == python ]]; then
+if [[ $mode == python || $mode == contract ]]; then
   if [[ ! -x "$HOME/.workers-python/bin/python3" ]]; then
     python3 -m venv "$HOME/.workers-python"
   fi
@@ -55,6 +58,10 @@ case "$mode" in
   integration) npm run test:integration 2>&1 | tee "$artifact/integration.tap" ;;
   compat) npm run test:compat 2>&1 | tee "$artifact/compatibility-run.log" ;;
   python) npm run test:python 2>&1 | tee "$artifact/python-compat.log" ;;
+  contract)
+    cd "$repo"
+    CONTRACT_CONCURRENCY=${CONTRACT_CONCURRENCY:-4} npm run parity -- --area="${2:?Expected contract areas}" 2>&1 | tee "$artifact/contract.log"
+    ;;
   checks)
     {
     npm run typecheck
