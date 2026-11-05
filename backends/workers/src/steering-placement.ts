@@ -1,5 +1,10 @@
 type Submission = { id: number; status: string; answer?: number };
 
+/** A live view may outlast its native input's final settlement. */
+export function steeringCanJoin(input: Pick<Submission, 'status' | 'answer'> | undefined): boolean {
+  return input?.status === 'placed' && input.answer === undefined;
+}
+
 /** Pi can place a queued steer at a tool boundary or start its own run after a final answer. */
 export function steeringJoined(
   current: Submission | undefined,

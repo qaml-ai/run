@@ -1,9 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { steeringJoined } from '../src/steering-placement.ts';
+import { steeringCanJoin, steeringJoined } from '../src/steering-placement.ts';
 
 const old = { id: 1, status: 'placed' };
 const steer = { id: 2, status: 'placed' };
+
+test('only a native input still placed can accept a logical steer', () => {
+  assert.equal(steeringCanJoin(old), true);
+  assert.equal(steeringCanJoin({ status: 'done', answer: 8 }), false);
+  assert.equal(steeringCanJoin({ status: 'unanswered' }), false);
+  assert.equal(steeringCanJoin({ status: 'queued' }), false);
+  assert.equal(steeringCanJoin(undefined), false);
+});
 
 test('steering placed after tools belongs to the running turn', () => {
   assert.equal(steeringJoined(steer, old, [old, steer]), true);

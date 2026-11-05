@@ -4,7 +4,7 @@ import { withCompactionPrompt } from "./model-compaction.ts";
 import { takesFiles } from './tool-file-schema.ts';
 import { ToolFiles } from './tool-files.ts';
 import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
-import { steeringJoined } from "./steering-placement.ts";
+import { steeringCanJoin, steeringJoined } from "./steering-placement.ts";
 import { MULTI_AGENT_LIMITS } from "./multi-agent-policy.ts";
 import { ConfigurationTargets } from "./configuration-targets.ts";
 import { visibleEvent, visibleReplay } from "./event-visibility.ts";
@@ -27,6 +27,7 @@ import {
   type ToolRegistration,
   type ConversationView,
   type LiveState,
+  LiveDoc,
   type Extension,
   defineTool,
   hook,
@@ -1239,12 +1240,20 @@ export class CamelAgent extends DurableObject<Env> {
     }
   }
   private async runningRequest(): Promise<string | undefined> {
-    const view = (await this.harness.session().watch()).value;
-    const live = view.docs["pi.live"] as LiveState | undefined;
-    const id = await this.requestForInputs(live?.run?.inputs ?? []);
-    if (!id) return undefined;
-    const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
-    return record && record.state !== 'completed' ? id : undefined;
+    const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
+    const live = await pi.snapshot(LiveDoc, root.id, BACKGROUND_CONTEXT);
+    for (const input of live?.run?.inputs ?? []) {
+      const submission = await pi.submission(input, BACKGROUND_CONTEXT);
+      const status = await submission?.status(BACKGROUND_CONTEXT);
+      // A watch can still show an input after its final answer committed. The
+      // submission is authoritative about whether this native run can take it.
+      if (!status?.requestId || !steeringCanJoin(status)) continue;
+      const record = await this.ctx.storage.get<RequestRecord>(reqKey(status.requestId));
+      const id = (await this.ctx.storage.get<string>(`resume-for:${status.requestId}`)) ?? record?.steeredInto ?? status.requestId;
+      const owner = id === record?.id ? record : await this.ctx.storage.get<RequestRecord>(reqKey(id));
+      if (owner && owner.state !== 'completed') return id;
+    }
+    return undefined;
   }
   private async fileRequestId(
     conversationId?: Parameters<typeof hostExecutionRequest>[1],
