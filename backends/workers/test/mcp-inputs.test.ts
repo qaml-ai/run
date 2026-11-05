@@ -23,3 +23,10 @@ test('multiple elicitation replies preserve keyed form content and opaque state'
   assert.deepEqual(resolved.reply.inputResponses, { name: { action: 'accept', content: { name: 'new' } }, login: { action: 'accept' } });
   assert.equal(resolved.reply.requestState, 'opaque-state');
 });
+
+test('approval proof carries sender ids while its note retains the display name', () => {
+  const resolved = resolveToolInputs([{ id: 'approval-2', input: { ...approved, answerDetail: { action: 'accept', by: { via: 'agent', from: { id: 'agent-1', name: 'Operator' }, actor: 'ops' }, at: 4000 } } }]);
+  assert.ok('reply' in resolved);
+  assert.deepEqual(resolved.reply.approval?.by, { via: 'agent', from: 'agent-1', actor: 'ops' });
+  assert.match(resolved.reply.note!, /Operator/);
+});

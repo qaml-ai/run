@@ -2,7 +2,7 @@ import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import type { McpResult } from "./attached-tools.ts";
 import { toolCallSite } from "./tool-call-context.ts";
-import { inputRequests, resolution, type InputRow } from "./input-policy.ts";
+import { approver, inputRequests, resolution, type InputRow } from "./input-policy.ts";
 import { HumanInputs, humanInputView, waitForHuman, type HumanInput } from "./human.ts";
 
 export type ToolInputReply = {
@@ -22,7 +22,7 @@ export function resolveToolInputs(inputs: { id: string; input: HumanInput; key?:
   const answer = resolution(rows, () => requestState);
   if ("result" in answer) return answer;
   const { argumentsHash: _hash, ...reply } = answer.retry;
-  return { reply };
+  return { reply: { ...reply, ...(reply.approval ? { approval: { ...reply.approval, by: approver(reply.approval.by) } } : {}) } };
 }
 
 export function withInputNote(result: McpResult, reply: ToolInputReply): McpResult {

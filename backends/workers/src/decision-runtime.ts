@@ -4,6 +4,7 @@ import { openrouterDecisions } from './decision-providers.ts';
 import { HttpError } from './errors.ts';
 import type { UsageRecord } from './policy-host.ts';
 import { body } from './validation.ts';
+import { toolJudge, UNJUDGED, type JudgeInput } from './tool-judge.ts';
 
 export interface DecisionContext {
   tenant: string;
@@ -76,6 +77,21 @@ export class DecisionRuntime {
     const decided: Decided = await this.decider.decide(context, request, signal);
     if (decided.usage) await this.options.record?.(context, { ...decided.usage, ...(context.identity ? { identity: context.identity } : {}), ...(context.actor ? { actor: context.actor } : {}), ...(context.keyScope ? { keyScope: context.keyScope } : {}) });
     return decisionsAnswer(decided, request.batch);
+  }
+  /** Use the source judge policy and the same admission, scope and receipts as decide. */
+  async judge(input: JudgeInput, signal: AbortSignal, api: ToolExecutionApi) {
+    const context = { ...await this.options.context(api), callId: `judge:${api.taskId}`, startedAt: Date.now() };
+    if (context.dataCollection === 'deny' && !this.decider.options.provider.dataPolicy) return { ...UNJUDGED, reason: 'unjudgeable' as const };
+    const records: UsageRecord[] = [];
+    const judge = toolJudge(this.decider, {
+      ...context,
+      budget: async () => context.budget,
+      hold: async () => { await this.options.admit?.(context); return undefined; },
+      record: usage => { records.push(usage); },
+    });
+    const result = await judge(input, signal);
+    for (const usage of records) await this.options.record?.(context, usage);
+    return result;
   }
   tool(): ToolRegistration {
     return defineTool({ name: DECIDE.name, description: DECIDE.description, parameters: DECIDE.parameters as never, structuredOutputSchema: {}, replay: 'unsafe', execute: async (args: Record<string, unknown>, api, context) => {

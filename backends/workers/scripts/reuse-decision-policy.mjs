@@ -17,6 +17,12 @@ const replacements = {
     ['"./limits.ts"', '"../../../src/limits.ts"'],
     ['"./metrics.ts"', '"./policy-host.ts"'],
   ],
+  'tool-judge.ts': [
+    ['"./decisions.ts"', '"./decision-policy.ts"'],
+    ['"./http.ts"', '"./errors.ts"'],
+    ['"./limits.ts"', '"../../../src/limits.ts"'],
+    ['"./client-sessions/state.ts"', '"./policy-host.ts"'],
+  ],
   'decision-providers.ts': [
     ['"./outbound.ts"', '"./policy-host.ts"'],
     ['"./decisions.ts"', '"./decision-policy.ts"'],

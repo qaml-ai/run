@@ -1,3 +1,4 @@
+import { DENIED_PERMISSION, type JudgeInput, type Judged } from "./tool-judge.ts";
 import { approvalFor } from "./tool-call-policy.ts";
 import { toolCallMeta, toolCallSite, type ToolCallSite } from "./tool-call-context.ts";
 import type { ToolRegistration, ToolExecutionApi } from "@earendil-works/pi-durable";
@@ -359,10 +360,10 @@ export function sourceDefinitionViews(config: { mcpServers?: RemoteSource[]; ope
 }
 
 export type SourceApproval = (input: { name: string; args: unknown; kind: "approval"; message: string; detail: Record<string, unknown> }) => Promise<void>;
-export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity; call?: ToolCallSite; elicit?: boolean }>;
+export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity; call?: ToolCallSite; elicit?: boolean; intent?: string }>;
 
 /** Resolve only this agent's configured sources; credentials never enter model context. */
-export async function sourceTools(env: Env, tenant: string, definition: string | undefined, config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[] }, approve?: SourceApproval, identity?: SourceIdentity, report?: (failures: SourceFailure[]) => void): Promise<ToolRegistration[]> {
+export async function sourceTools(env: Env, tenant: string, definition: string | undefined, config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[] }, approve?: SourceApproval, identity?: SourceIdentity, report?: (failures: SourceFailure[]) => void, judge?: (input: JudgeInput, api: ToolExecutionApi, context: Context) => Promise<Judged>): Promise<ToolRegistration[]> {
   const result: ToolRegistration[] = [];
   const failures: SourceFailure[] = [];
   for (const kind of ["mcpServers", "openApi"] as const) for (const source of config[kind] ?? []) {
@@ -376,9 +377,16 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       const value = await identity(api);
       return { Authorization: `Bearer ${await signRuntimeIdentity(env as IdentityEnv, value.issuer, source.audience ?? source.url ?? source.baseUrl!, { ...value.claims, ...(approval ? { approval } : {}) })}` };
     };
-    const needsApproval = async (tool: string, args: unknown, destructive: boolean, api: ToolExecutionApi, context: Context, method?: string): Promise<{ result: McpResult } | { reply: ToolInputReply }> => {
+    const needsApproval = async (tool: string, args: unknown, destructive: boolean, api: ToolExecutionApi, context: Context, method?: string, description = ""): Promise<{ result: McpResult } | { reply: ToolInputReply }> => {
       const mode = approvalFor(source.approval, tool, destructive, method);
       if (mode !== "never") {
+        const identityValue = mode === "judged" ? await identity?.(api) : undefined;
+        if (mode === "judged" && judge && identityValue?.intent?.trim()) {
+          const verdict = await judge({ tool: `${source.name}__${tool}`, args: args as Record<string, unknown>, description: description.slice(0, 4000), ...(identityValue?.intent ? { intent: identityValue.intent } : {}) }, api, context);
+          context.abortSignal?.throwIfAborted();
+          if (verdict.decision === "allow") return { reply: {} };
+          if (verdict.decision === "deny") return { result: { isError: true, content: [{ type: "text", text: DENIED_PERMISSION(`${source.name}__${tool}`) }] } };
+        }
         if ((await toolCallSite(api, context)).innerCallId) throw new Error(`${source.name}__${tool} needs the user's approval: call ${source.name}__${tool} directly`);
         const input = { name: `${source.name}__${tool}`, args, kind: "approval" as const, message: `Allow ${source.name}__${tool} to run?`, detail: { tool: `${source.name}__${tool}`, source: source.name, arguments: args } };
         if (approve) await approve(input);
@@ -399,8 +407,8 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
         if (source.allowTools && !source.allowTools.includes(tool.name) || source.denyTools?.includes(tool.name)) continue;
         const { name } = tool;
         const mode = approvalFor(source.approval, name, (tool as any).annotations?.destructiveHint === true);
-        result.push(registration({ ...tool, needsApproval: mode === "always", judged: mode === "judged", name: `${source.name}__${name}`, exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] as ToolDefinition["exposure"] ?? source.exposure }, async (args, api, context) => {
-          const approval = await needsApproval(name, args, (tool as any).annotations?.destructiveHint === true, api, context);
+        result.push(registration({ ...tool, description: (tool.description ?? name).slice(0, 4000), needsApproval: mode === "always", judged: mode === "judged", name: `${source.name}__${name}`, exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] as ToolDefinition["exposure"] ?? source.exposure }, async (args, api, context) => {
+          const approval = await needsApproval(name, args, (tool as any).annotations?.destructiveHint === true, api, context, undefined, tool.description);
           if ("result" in approval) return approval.result;
           return api ? withToolInputs(reply => client.call(name, args, context?.abortSignal, api, reply), api, context, { name: `${source.name}__${name}`, args }, approval.reply) : client.call(name, args, context?.abortSignal);
         }));
@@ -408,7 +416,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
     } else {
       for (const operation of source.operations ?? []) result.push(registration({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: operation.inputSchema, needsApproval: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "always", judged: approvalFor(source.approval, operation.name, !operation.readOnly, operation.method) === "judged", exposure: source.exposure, executionMode: operation.readOnly ? "parallel" : "sequential" }, async (input, api, context) => {
         const args = input as Record<string, unknown>;
-        const approval = await needsApproval(operation.name, args, !operation.readOnly, api, context, operation.method);
+        const approval = await needsApproval(operation.name, args, !operation.readOnly, api, context, operation.method, operation.description);
         if ("result" in approval) return approval.result;
         const text = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value);
         const path = operation.path.replace(/\{([^}]+)\}/g, (_, name: string) => {
