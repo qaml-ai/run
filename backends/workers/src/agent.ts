@@ -866,7 +866,7 @@ export class CamelAgent extends DurableObject<Env> {
         ...record,
         state: "completed",
         endedAt: Date.now(),
-        outcome: { result },
+        outcome: result.error ? {error:result.error.message,...(/may or may not have taken effect|connection lost|outcome may be unknown/i.test(result.error.message)?{code:"connection_lost",uncertain:true}:{code:result.error.kind})} : { result },
       };
       await this.ctx.storage.put(reqKey(id), completed);
       await this.emit({ type: "response", id, outcome: completed.outcome });
@@ -1466,9 +1466,10 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private async state() {
     const records = await this.records();
+    for(const record of records) if(record.method==="execute" && record.state!=="completed") this.track(record.id);
     await Promise.all(
       records
-        .filter((record) => record.state === "running")
+        .filter((record) => record.state === "running" && record.method!=="execute")
         .slice(0, 100)
         .map((record) => this.settle(record.id, 1)),
     );
