@@ -3,18 +3,24 @@ import { MAX_OPEN_REQUESTS } from './access-policy.ts';
 const canonical = (value: unknown): string => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
 
 type Record = { id: string; method: string; params?: { [key: string]: unknown }; fingerprint: string; state: 'queued' | 'running' | 'completed'; startedAt: number; configurationOrder?: number; replaceConfiguration?: boolean };
+type Host<T extends Record> = {
+  busy(order: number): Promise<boolean>;
+  released(order: number): Promise<void>;
+  apply(record: T): Promise<unknown>;
+  failed(record: T, error: unknown): Promise<void>;
+  background(work: Promise<void>): void;
+  wake(): Promise<void>;
+};
 
 /** Configuration shares the agent's durable queue and is applied between turns. */
 export class ConfigurationQueue<T extends Record> {
   private working?: Promise<void>;
-  constructor(private readonly storage: DurableObjectStorage, private readonly host: {
-    busy(order: number): Promise<boolean>;
-    released(order: number): Promise<void>;
-    apply(record: T): Promise<unknown>;
-    failed(record: T, error: unknown): Promise<void>;
-    background(work: Promise<void>): void;
-    wake(): Promise<void>;
-  }) {}
+  private readonly storage: DurableObjectStorage;
+  private readonly host: Host<T>;
+  constructor(storage: DurableObjectStorage, host: Host<T>) {
+    this.storage = storage;
+    this.host = host;
+  }
   async enqueue(input: { id: string; method: string; params: { [key: string]: unknown } }, replaceConfiguration = false, configurationOrigin?: string) {
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(input.id)) throw new BadRequest('Invalid request id');
     const fingerprint = canonical(input);

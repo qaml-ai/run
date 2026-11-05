@@ -2250,11 +2250,6 @@ export class CamelAgent extends DurableObject<Env> {
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id))
       throw new BadRequest("Invalid request id");
-    if (!(notice && delivery && !delivery.run) && await this.ctx.storage.get(`cancelled-request:${id}`))
-      throw Object.assign(new Error("Request cancelled"), {
-        status: 409,
-        code: "aborted",
-      });
     if (request.method === "execute") {
       let params;
       const raw = object(request.params, [

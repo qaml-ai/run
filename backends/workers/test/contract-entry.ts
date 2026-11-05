@@ -7,6 +7,7 @@ import { databaseUnavailable, withSql } from "../src/postgres.ts";
 export * from "../src/index.ts";
 
 const resizeFailureKey = "contract-fixture/image-resize-failures";
+const pendingQueues = new Set<Promise<void>>();
 function imageFailureEnvironment(env: Env): Env {
   if ((env as Env & { TEST_IMAGE_RESIZE_FAILURE_ONCE?: string }).TEST_IMAGE_RESIZE_FAILURE_ONCE !== "1") return env;
   // Fail the real Images transform once, at its external-service boundary. The
@@ -143,8 +144,20 @@ export class CamelAgent extends RuntimeAgent {
 
 export default {
   ...application,
+  async queue(batch: Parameters<typeof application.queue>[0], env: Parameters<typeof application.queue>[1]) {
+    const pending = application.queue(batch, env);
+    pendingQueues.add(pending);
+    try { await pending; }
+    finally { pendingQueues.delete(pending); }
+  },
   async fetch(request: Request, env: Env, context: ExecutionContext) {
     if (env.TEST_MODE !== "1") return new Response("Test fixture disabled", { status: 404 });
+    if (request.method === "POST" && new URL(request.url).pathname === "/__test/drain") {
+      // Miniflare.dispose() kills workerd. A graceful source-host stop lets
+      // admitted deliveries finish their SQL writes before the process exits.
+      await Promise.allSettled([...pendingQueues]);
+      return new Response(null, { status: 204 });
+    }
     if (new URL(request.url).pathname === "/__test/image-resize-failures")
       return Response.json({ count: await env.BUCKET.head(resizeFailureKey) ? 1 : 0 });
     if (new URL(request.url).pathname === "/healthz") return application.fetch(request, env, context);
