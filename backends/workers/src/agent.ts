@@ -1778,7 +1778,7 @@ export class CamelAgent extends DurableObject<Env> {
       if (record.method === "execute" && !record.accepted && record.state !== "completed")
         await this.startHostRequest(record);
   }
-  private async configureRequest(input: unknown) {
+  private async configureRequest(input: unknown, replace = false) {
     const request = object(input, ["id", "method", "params"]);
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id))
@@ -1792,7 +1792,7 @@ export class CamelAgent extends DurableObject<Env> {
       throw new BadRequest("Expected configuration object");
     const conf = await this.config();
     const params = request.params as Record<string, unknown>;
-    const patched = configuration({ ...conf.config, ...params }, conf.config.model ?? this.env.MODEL).config;
+    const patched = configuration(replace ? params : { ...conf.config, ...params }, conf.config.model ?? this.env.MODEL).config;
     const modelError = (params.model !== undefined || params.keyScope !== undefined)
       ? await configurationModelError(this.env, conf.tenantId, patched) : undefined;
     const fingerprint = canonical(request);
@@ -1825,7 +1825,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (!current)
       throw Object.assign(new Error("Unknown agent"), { status: 404 });
     const updated = await directory.upsert(
-      await configurationPatch(this.env, conf.tenantId, current.config, params),
+      replace ? params : await configurationPatch(this.env, conf.tenantId, current.config, params),
       current.key ?? current.id,
       conf.runtimeOrigin,
     );
@@ -2419,6 +2419,10 @@ export class CamelAgent extends DurableObject<Env> {
     try {
       const url = new URL(request.url),
         path = url.pathname;
+      // Public configuration edits become /requests; POST is the directory's
+      // already-provisioned replacement for an existing keyed agent.
+      if (path === "/configuration" && request.method === "POST")
+        return json(await this.configureRequest(await body(request, 17 * 1024 * 1024), true), 202);
       if (path === "/configuration" && request.method === "PUT") {
         const incoming = (await body(request, 17 * 1024 * 1024)) as Config;
         const mutation = this.admission.then(async () => {
@@ -3174,7 +3178,8 @@ export class CamelAgent extends DurableObject<Env> {
   private scheduleTools(): ScheduleToolsHost {
     return {
       create: input => this.createSchedule(input),
-      list: async () => [...(await this.ctx.storage.list<Schedule>({ prefix: "schedule:", limit: 100 })).values()],
+      list: async () => [...(await this.ctx.storage.list<Schedule>({ prefix: "schedule:", limit: 100 })).values()]
+        .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id)),
       cancel: async id => {
         const cancelled = await this.ctx.storage.delete(`schedule:${id}`);
         await this.arm();
