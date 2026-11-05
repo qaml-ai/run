@@ -52,6 +52,8 @@ test('workerd resumes background child after eviction and delivers one trusted n
   const started = await call(`/v1/agents/${agent.id}/prompt`, { text: 'start' });
   await until(async () => (await call(`/v1/agents/${agent.id}/requests/${started.id}`)).state === 'completed', 'parent completed');
   await until(() => model.bodies.some(body => textOf(body).includes('BACKGROUND_HELPER')), 'child reached model');
+  const linked = await fixture.db.query("select header->>'parentAgentId' as parent, header->>'parentRunId' as run from agents where header->'config'->>'type' = 'subagent'");
+  assert.deepEqual(linked.rows, [{ parent: agent.id, run: started.id }]);
   await fixture.worker.stop(true);
   await fixture.worker.start();
   await call(`/v1/agents/${agent.id}/history`);
@@ -83,6 +85,10 @@ test('workerd cancels a delegated child when its parent run is aborted', { timeo
   const parent = await call(`/v1/agents/${agent.id}/requests/${started.id}`);
   assert.equal(parent.state, 'completed');
   assert.ok(['aborted', 'cancelled'].includes(parent.outcome?.result?.code), JSON.stringify(parent));
+  const removed = await fetch(`${fixture.url}/v1/agents/${agent.id}`, { method: 'DELETE', headers: { authorization: `Bearer ${fixture.token}` } });
+  assert.equal(removed.status, 200, await removed.text());
+  const missing = await fetch(`${fixture.url}/v1/agents/${child}`, { headers: { authorization: `Bearer ${fixture.token}` } });
+  assert.equal(missing.status, 404);
 });
 
 test('workerd child reports progress and messages its signed parent without ending its task', { timeout: 90_000 }, async t => {
