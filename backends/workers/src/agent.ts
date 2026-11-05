@@ -28,6 +28,7 @@ import {
   type ConversationView,
   type LiveState,
   LiveDoc,
+  InboxDoc,
   type Extension,
   defineTool,
   hook,
@@ -1228,7 +1229,7 @@ export class CamelAgent extends DurableObject<Env> {
         const record = await this.ctx.storage.get<RequestRecord>(
           reqKey(status.requestId),
         );
-        if (record?.steeredInto) await this.reconcileSteering(record, inputs);
+        if (record) await this.reconcileSteering(record, inputs);
         return (
           (await this.ctx.storage.get<string>(
             `resume-for:${status.requestId}`,
@@ -1239,7 +1240,7 @@ export class CamelAgent extends DurableObject<Env> {
       }
     }
   }
-  private async runningRequest(): Promise<string | undefined> {
+  private async runningRequest(): Promise<{ owner: string; nativeRequest: string; resumeOwner?: string } | undefined> {
     const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
     const live = await pi.snapshot(LiveDoc, root.id, BACKGROUND_CONTEXT);
     for (const input of live?.run?.inputs ?? []) {
@@ -1249,9 +1250,12 @@ export class CamelAgent extends DurableObject<Env> {
       // submission is authoritative about whether this native run can take it.
       if (!status?.requestId || !steeringCanJoin(status)) continue;
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(status.requestId));
-      const id = (await this.ctx.storage.get<string>(`resume-for:${status.requestId}`)) ?? record?.steeredInto ?? status.requestId;
+      const resumeOwner = await this.ctx.storage.get<string>(`resume-for:${status.requestId}`);
+      const id = resumeOwner ?? record?.steeredInto ?? status.requestId;
       const owner = id === record?.id ? record : await this.ctx.storage.get<RequestRecord>(reqKey(id));
-      if (owner && owner.state !== 'completed') return id;
+      if (owner && owner.state !== 'completed') {
+        return { owner: id, nativeRequest: status.requestId, ...(resumeOwner ? { resumeOwner } : {}) };
+      }
     }
     return undefined;
   }
@@ -1297,20 +1301,36 @@ export class CamelAgent extends DurableObject<Env> {
   private async reconcileSteering(record: RequestRecord, inputs: readonly number[]) {
     // The Node host keeps its logical turn open while draining steers, even if
     // the preceding native run just answered. Preserve that accepted ownership.
-    if (!record.steeredInto) return;
-    const parent = await this.ctx.storage.get<RequestRecord>(reqKey(record.steeredInto));
+    const parent = record.steeredInto ? await this.ctx.storage.get<RequestRecord>(reqKey(record.steeredInto)) : undefined;
     const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
-    const joined = await root.commit(async tx => {
+    const placement = await root.commit(async tx => {
       const current = await tx.submissionByRequest(root.id, record.piId ?? record.id);
-      const previous = await tx.submissionByRequest(root.id, parent?.piId ?? record.steeredInto!);
-      return steeringJoined(current, previous, inputs.map(id => ({ id })), record.steerCommitted);
+      const previous = record.steeredInto ? await tx.submissionByRequest(root.id, parent?.piId ?? record.steeredInto) : undefined;
+      const entry = current?.entry === undefined ? undefined : await tx.entry(current.entry);
+      if (entry?.data && typeof entry.data === 'object' && Object.hasOwn(entry.data, 'logicalOwner')) return { owner: (entry.data as { logicalOwner: string | null }).logicalOwner };
+      const joined = steeringJoined(current, previous, inputs.map(id => ({ id })), record.steerCommitted);
+      return { joined };
     }, BACKGROUND_CONTEXT);
-    if (joined === false) {
+    if ('owner' in placement && placement.owner !== undefined) {
+      await this.steeringOwner(record, placement.owner);
+    } else if (placement.joined === false) {
       delete record.steeredInto;
       record.steer = 'queued';
       record.state = 'running';
       await this.ctx.storage.put(reqKey(record.id), record);
     }
+  }
+  private async steeringOwner(record: RequestRecord, owner: string | null) {
+    if (owner) {
+      record.steeredInto = owner;
+      record.steerCommitted = true;
+      record.steer = 'accepted';
+    } else {
+      delete record.steeredInto;
+      delete record.steerCommitted;
+      record.steer = 'queued';
+    }
+    await this.ctx.storage.put(reqKey(record.id), record);
   }
   private async onView(view: ConversationView) {
     const live = view.docs["pi.live"] as LiveState | undefined;
@@ -1330,6 +1350,11 @@ export class CamelAgent extends DurableObject<Env> {
       if (entry.kind === "camel.context" || entry.kind === "pi.reset") {
         this.lastEntry = Number(entry.id);
         continue;
+      }
+      if ((entry.kind === 'camel.prompt' || entry.kind === 'camel.steer') && entry.data && typeof entry.data === 'object' && Object.hasOwn(entry.data, 'logicalOwner')) {
+        const data = entry.data as { requestId: string; logicalOwner: string | null };
+        const record = await this.ctx.storage.get<RequestRecord>(reqKey(data.requestId));
+        if (record) await this.steeringOwner(record, data.logicalOwner);
       }
       if (entry.kind === "camel.prompt") {
         const original = (entry.data as { requestId: string }).requestId;
@@ -2177,13 +2202,14 @@ export class CamelAgent extends DurableObject<Env> {
     // Pending operation receipts can outlive their native run. Only a live
     // turn can take a steer; its accepted steers remain part of that logical
     // turn when Pi drains them after a final answer.
-    const running = old?.steerCommitted ? old.steeredInto : params.whileRunning === 'steer' ? await this.runningRequest() : undefined;
-    if (notice?.metadata.kind === 'message' && !running && !refusal && (!delivery || delivery.run)) {
-      const wake = notice.root === conf.id
+    const candidate = params.whileRunning === 'steer' ? await this.runningRequest() : undefined;
+    const running = old?.steerCommitted ? old.steeredInto : candidate?.owner;
+    const messageWake = async () => {
+      const wake = notice!.root === conf.id
         ? await this.admitDelegateWake(id)
-        : await this.env.AGENTS.getByName(notice.root).admitDelegateWake(id);
-      if (!wake.allowed) delivery = { run: false, stopped: 'agent_loop_limit', message: `This agent's chain has had ${this.delegateWakeLimit ? Number(this.delegateWakeLimit) : MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on` };
-    }
+        : await this.env.AGENTS.getByName(notice!.root).admitDelegateWake(id);
+      return wake.allowed ? undefined : { error: `This agent's chain has had ${this.delegateWakeLimit ? Number(this.delegateWakeLimit) : MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on`, code: 'agent_loop_limit', stopped: 'agent_loop_limit' };
+    };
     const noTurn = notice
       ? refusal ?? (delivery && !delivery.run ? { error: delivery.message, code: delivery.stopped, stopped: delivery.stopped } : undefined)
       : undefined;
@@ -2246,7 +2272,7 @@ export class CamelAgent extends DurableObject<Env> {
       state: pending ? "queued" : "running",
       ...(params.whileRunning === "steer"
         ? running
-          ? { steer: "accepted" as const, steeredInto: running, steerCommitted: true as const }
+          ? { steer: "accepted" as const, ...(notice?.metadata.kind === 'message' ? {} : { steeredInto: running, steerCommitted: true as const }) }
           : { steer: "queued" as const }
         : {}),
       startedAt: old?.startedAt ?? Date.now(),
@@ -2275,7 +2301,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (preparing) record.admitted = true;
     await this.ctx.storage.put(reqKey(id), record);
     if (preparing) await this.promptPreparations.finish(id);
-    if (noTurn && notice) {
+    const landWithoutTurn = async (stop: { error: string; code?: string; stopped?: string }) => {
       const pi = await this.harness.pi(),
         root = await pi.root(BACKGROUND_CONTEXT);
       const saved = await root.submit(
@@ -2284,7 +2310,7 @@ export class CamelAgent extends DurableObject<Env> {
           requestId: id,
           entry: {
             kind: "camel.prompt",
-            data: { requestId: id, ...notice } as never,
+            data: { requestId: id, ...notice, ...(params.whileRunning === 'steer' ? { logicalOwner: null } : {}) } as never,
             model: [
               { role: "user", content: text, timestamp: Date.now() },
             ] as never,
@@ -2295,14 +2321,22 @@ export class CamelAgent extends DurableObject<Env> {
       await saved.wait(BACKGROUND_CONTEXT);
       record.state = "completed";
       record.status = "failed";
+      delete record.steeredInto;
+      delete record.steerCommitted;
+      if (params.whileRunning === 'steer') record.steer = 'queued';
       record.endedAt = Date.now();
       record.outcome = {
-        result: { ...noTurn, usage: this.usageView(await this.usageForRequest(id)) },
+        result: { ...stop, usage: this.usageView(await this.usageForRequest(id)) },
       };
       await this.ctx.storage.put(reqKey(id), record);
       await this.emit({ type: "response", id, outcome: record.outcome });
+      if (record.admitted) {
+        await releaseTurn(this.env, conf.tenantId, conf.id, id);
+        await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${id}`);
+      }
       return record;
-    }
+    };
+    if (noTurn && notice) return landWithoutTurn(noTurn);
     await this.arm(Date.now() + 1000);
     if (!record.admitted) {
       await this.admitRequest(conf, id);
@@ -2332,7 +2366,46 @@ export class CamelAgent extends DurableObject<Env> {
           } as never,
         },
       };
-      if (!held.size) await this.harness.submit(prompt, submission);
+      if (notice?.metadata.kind === 'message') {
+        const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
+        const admitMessage = (owner: string | null, nativeRequest?: string, joinOnly = false) => root.commit(async tx => {
+          const existing = await tx.submissionByRequest(root.id, id);
+          if (existing) {
+            const entry = existing.entry === undefined
+              ? (await tx.doc(InboxDoc, root.id)).items.find(item => item.id === existing.id)?.entry
+              : await tx.entry(existing.entry);
+            const data = entry?.data as { logicalOwner?: string | null } | undefined;
+            return { submitted: true as const, owner: data && Object.hasOwn(data, 'logicalOwner') ? data.logicalOwner ?? null : record.steerCommitted ? record.steeredInto : undefined };
+          }
+          if (joinOnly && !nativeRequest) return { submitted: false as const };
+          if (nativeRequest) {
+            const live = await tx.doc(LiveDoc, root.id);
+            const native = await tx.submissionByRequest(root.id, nativeRequest);
+            if (!steeringCanJoin(native) || !native || !live.run?.inputs.includes(native.id)) return { submitted: false as const };
+            const entry = native.entry === undefined ? undefined : await tx.entry(native.entry);
+            const data = entry?.data as { logicalOwner?: string | null } | undefined;
+            if (data && Object.hasOwn(data, 'logicalOwner')) owner = data.logicalOwner ?? candidate?.resumeOwner ?? nativeRequest;
+          }
+          await root.submit(tx, { type: 'input', requestId: id, content: prompt, whenBusy: owner ? 'steer' : 'followUp',
+            entry: { kind: owner ? 'camel.steer' : 'camel.prompt', data: { ...(submission.entry.data as Record<string, unknown>), logicalOwner: owner } as never } });
+          for (const value of [...held.values()].sort((a, b) => a.startedAt - b.startedAt))
+            await tx.appendEntry(root.id, { kind: 'camel.steer', data: { requestId: value.id }, model: [{ role: 'user', content: value.prompt, timestamp: Date.now() }] });
+          return { submitted: true as const, owner };
+        }, BACKGROUND_CONTEXT);
+        // The candidate is only a hint until this transaction queues its input.
+        // If its turn ended meanwhile, take a wake before exposing an own turn.
+        let admitted = await admitMessage(candidate?.owner ?? null, candidate?.nativeRequest, true);
+        if (!admitted.submitted) {
+          const refusal = await messageWake();
+          if (refusal) return landWithoutTurn(refusal);
+          admitted = await admitMessage(null);
+        }
+        if (admitted.submitted && admitted.owner !== undefined) {
+          const latest = (await this.ctx.storage.get<RequestRecord>(reqKey(id))) ?? record;
+          await this.steeringOwner(latest, admitted.owner);
+        }
+        if (held.size) await this.ctx.storage.delete([...held.keys()]);
+      } else if (!held.size) await this.harness.submit(prompt, submission);
       else {
         const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
         await root.commit(async tx => {
