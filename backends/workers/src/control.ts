@@ -51,6 +51,7 @@ export type ControlBindings = PostgresEnv & {
 export type ControlEnv = WebhookEnv & Omit<FileBindings,"HYPERDRIVE"> & {
   AGENTS: AgentNamespace;
   API_TOKEN: string;
+  AGENT_PUBLIC_URL?: string;
   MODEL: string;
   DEFAULT_TENANT?: string;
   TEST_MODE?: string;
