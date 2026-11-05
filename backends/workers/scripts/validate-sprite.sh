@@ -11,7 +11,7 @@ finish() {
   trap - EXIT
   cp measurements/compat*.tap measurements/compatibility.json measurements/python-compat.json "$artifact/" 2>/dev/null || true
   if [[ $mode == contract ]]; then
-    cp measurements/parity-*.json measurements/parity-*.log "$artifact/" 2>/dev/null || true
+    cp "$repo"/backends/workers/measurements/parity-*.json "$repo"/backends/workers/measurements/parity-*.log "$artifact/" 2>/dev/null || true
   fi
   printf '%s\n' "$code" > "$artifact/exit"
   tar -czf "$artifact.tgz" -C "$artifact" .

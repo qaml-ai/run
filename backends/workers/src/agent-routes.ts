@@ -7,6 +7,7 @@ import type { FileBindings } from "./files.ts";
 import { provisionDefinition, visibleConfiguration } from "./definitions.ts";
 import { canonical } from "../../../shared/durable-json.ts";
 import { runInput } from "./run-input.ts";
+import { inheritHistoryPins } from "./history-pins.ts";
 
 type Record = { id: string; state: string; outcome?: { result?: any; error?: string; uncertain?: boolean }; metadata?: unknown; startedAt?: number; began?: number; endedAt?: number };
 type RunInfo = { fingerprint: string; retentionMs: number };
@@ -130,7 +131,10 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
     const created = result(await directory.upsert(claim.config, key, claim.origin, { sourceId: claim.sourceId, fingerprint: claim.fingerprint }));
     if (fail === "created") throw new ApiError(503, "Injected fork interruption after creation");
     if (claim.copyPrivate) await copyAgentWorkspace(env, entry.tenantId, claim.sourceId, targetId, captured, fail === "copied" ? 1 : undefined);
-    if (claim.model) await payload(await call(env, created.id, "/context/import", { model: claim.model }));
+    if (claim.model) {
+      const pinnedVolumes = await inheritHistoryPins(env, entry.tenantId, claim.sourceId, created.id, claim.config.initialMessages ?? []);
+      await payload(await call(env, created.id, "/context/import", { model: claim.model, pinnedVolumes }));
+    }
     const forkedFrom = { agentId: claim.sourceId, atMessage: claim.atMessage };
     const updated = await withSql(env, sql => sql.query("update agents set header=(jsonb_set(header::jsonb,'{forkedFrom}',$3::jsonb)-'pendingFork')::json where tenant=$1 and id=$2 and not revoked returning header", [entry.tenantId, created.id, JSON.stringify(forkedFrom)]));
     if (!updated.rows.length) throw new ApiError(410, "Fork was deleted", "AGENT_GONE");

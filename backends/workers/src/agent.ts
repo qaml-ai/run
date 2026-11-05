@@ -137,6 +137,7 @@ import {
   resolveProviderKey,
   resolveCustomProviders,
 } from "./model-credentials.ts";
+import { resolveModelCredentials } from "./model-endpoints.ts";
 import { decisionService, recordDecision } from "./decision-service.ts";
 import { offersDecisions } from "./decision-runtime.ts";
 import {
@@ -631,10 +632,11 @@ export class CamelAgent extends DurableObject<Env> {
       },
       credentials: async (provider) => {
         const conf = await this.config();
-        return resolveProviderKey(
+        return resolveModelCredentials(
           this.env,
           conf.tenantId,
           provider,
+          await this.sourceIdentity(),
           conf.config.keyScope,
         );
       },
@@ -702,6 +704,7 @@ export class CamelAgent extends DurableObject<Env> {
           conf.tenantId,
           conf.config.keyScope,
         ),
+        (await keyServices(this.env)).tenants.modelEndpoints(conf.tenantId),
       );
       registry.install(
         runtimePromptSections(
@@ -1183,6 +1186,12 @@ export class CamelAgent extends DurableObject<Env> {
       if (record?.state === "completed" && record.status !== "input_required")
         this.active = undefined;
     }
+    if (live?.tools?.length) {
+      const pi = await this.harness.pi();
+      const inputs = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
+      if (inputs && Object.values(inputs.requests).some(input => input.answer === undefined))
+        await this.onHuman(inputs);
+    }
   }
   private async onHuman(doc: { requests: Record<string, HumanInput> }) {
     const pending = Object.entries(doc?.requests ?? {}).filter(
@@ -1234,6 +1243,9 @@ export class CamelAgent extends DurableObject<Env> {
           await this.ctx.storage.put(reqKey(id), record);
           continue;
         }
+        const live = (await this.harness.session().watch()).value.docs["pi.live"] as LiveState | undefined;
+        const waiting = new Set(bound.map(([, input]) => input.toolCallId));
+        if (live?.tools?.some(tool => tool.status !== "done" && !waiting.has(tool.callId))) continue;
         const conf = await this.config();
         record.state = "completed";
         record.status = "input_required";
@@ -2156,6 +2168,9 @@ export class CamelAgent extends DurableObject<Env> {
           requests.push(resumed);
           continue;
         }
+        // An answer can arrive while sibling calls are still starting. Pi is
+        // already running that turn; only a published suspension needs an alias.
+        if (old.status !== "input_required") continue;
         const piId = old.piId ?? owner, resumeId = `resume_${(await digest(owner)).slice(0, 40)}`;
         let resumed = await this.ctx.storage.get<RequestRecord>(reqKey(resumeId));
         if (!resumed) {
@@ -2240,6 +2255,7 @@ export class CamelAgent extends DurableObject<Env> {
             incoming.config.model,
             incoming.config.runLimits?.contextTokens,
             providers,
+            (await keyServices(this.env)).tenants.modelEndpoints(incoming.tenantId),
           );
           const refusal = modelSettingsRefusal(model, incoming.config as never);
           if (refusal) throw new BadRequest(refusal);
@@ -2601,8 +2617,12 @@ export class CamelAgent extends DurableObject<Env> {
         return json(await forkSnapshot(await pi.root(BACKGROUND_CONTEXT), this.historyIndex, input.atMessage as number | string | undefined, running));
       }
       if (path === "/context/import" && request.method === "POST") {
-        const input = object(await body(request), ["model"]);
+        const input = object(await body(request), ["model", "pinnedVolumes"]);
         if (!Array.isArray(input.model)) throw new BadRequest("Expected model context");
+        if (Array.isArray(input.pinnedVolumes)) {
+          const pinned = await this.ctx.storage.get<string[]>("file-pin-volumes") ?? [];
+          await this.ctx.storage.put("file-pin-volumes", [...new Set([...pinned, ...input.pinnedVolumes])]);
+        }
         if (!await this.ctx.storage.get("fork-context-imported")) {
           await writeModelContext(await (await this.harness.pi()).root(BACKGROUND_CONTEXT), input.model as Message[]);
           await this.ctx.storage.put("fork-context-imported", true);
