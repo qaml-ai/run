@@ -92,4 +92,3 @@ export function applicationInstructions(applicationPrompt?: string, append?: str
 export function runtimeRules(config: Pick<AgentConfig, "codeMode" | "tools">): string {
   return config.codeMode !== false ? runtimeInstructions : bare(config) ? bareInstructions : directInstructions;
 }
-

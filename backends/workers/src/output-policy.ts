@@ -41,4 +41,3 @@ The application reads your answer to each message as data, not as text: a progra
 </structured_output>`;
 /** Added to the output section when a structured run's model ends its turn in text, once per run. */
 export const OUTPUT_REMINDER = `<structured_output_reminder>Your previous answer, in text, was discarded: the application can only read an answer given as a ${OUTPUT_TOOL} call. Answer this message by calling ${OUTPUT_TOOL} now.</structured_output_reminder>`;
-

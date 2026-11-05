@@ -21,7 +21,8 @@ const generated =
     messages.indexOf("export interface CompactionSummaryMessage"),
   );
 const output = new URL("../src/reset-policy.ts", import.meta.url);
+const normalized = generated.trimEnd() + "\n";
 if (process.argv.includes("--check")) {
-  if ((await readFile(output, "utf8")) !== generated)
+  if ((await readFile(output, "utf8")) !== normalized)
     throw new Error("Workers reset policy drifted from src");
-} else await writeFile(output, generated);
+} else await writeFile(output, normalized);

@@ -21,4 +21,3 @@ export const SENDER_INSTRUCTIONS = `Message context:
 export function escapeMarkers(text: string): string {
   return text.replace(MARKER, marker => marker.replaceAll("<", "‹").replaceAll(">", "›")).replace(AGENT_TAG, tag => tag.replace("<", "‹"));
 }
-

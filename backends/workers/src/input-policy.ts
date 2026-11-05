@@ -79,4 +79,3 @@ export function answerInput(input: Pick<Input, "kind" | "detail">, body: any): {
   }
   return { action, content: { answers: checked } };
 }
-

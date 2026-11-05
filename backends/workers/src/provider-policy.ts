@@ -101,4 +101,3 @@ export const shownModel = (entry: CustomModel) => ({
   pricing: { input: entry.pricing?.input ?? 0, output: entry.pricing?.output ?? 0, cacheRead: entry.pricing?.cacheRead ?? 0, cacheWrite: entry.pricing?.cacheWrite ?? 0 },
   ...(entry.compat ? { compat: entry.compat } : {}),
 });
-

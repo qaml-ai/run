@@ -22,4 +22,3 @@ export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this p
 
 export const COMPACTION_SUMMARY_SUFFIX = `
 </summary>`;
-

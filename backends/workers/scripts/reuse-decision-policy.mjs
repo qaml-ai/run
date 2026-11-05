@@ -34,7 +34,7 @@ for (const [name, edits] of Object.entries(replacements)) {
   } else await writeFile(target, text);
 }
 const sender = await readFile(new URL('sender.ts', source), 'utf8');
-const markers = header + sender.slice(sender.indexOf('export const CONTEXT_OPEN'), sender.indexOf('/** A sender from a request:'));
+const markers = (header + sender.slice(sender.indexOf('export const CONTEXT_OPEN'), sender.indexOf('/** A sender from a request:'))).trimEnd() + '\n';
 const markerPath = new URL('sender-markers.ts', output);
 if (process.argv.includes('--check')) {
   if (await readFile(markerPath, 'utf8') !== markers) throw new Error('sender markers drifted');

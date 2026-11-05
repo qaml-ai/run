@@ -42,4 +42,3 @@ export function errorClass(message: string | null | undefined, rawStopReason?: s
   if (!message) return "none";
   return CLASSES.find(([, pattern]) => pattern.test(message))?.[0] ?? "other";
 }
-

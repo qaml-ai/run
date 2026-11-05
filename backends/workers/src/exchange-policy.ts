@@ -18,4 +18,3 @@ export const EXCHANGE_LIMITS = Object.freeze({
 });
 /** A token as it goes in an Authorization header: printable ASCII without spaces, as a stored bearer token is. */
 export const TOKEN = /^[\x21-\x7e]{1,8192}$/;
-

@@ -62,7 +62,8 @@ const jsonWithinLimit = (value: unknown, limit: number, label: string) => {
 ` + toolPolicy.slice(toolPolicy.indexOf('/** Compiled once per schema'), toolPolicy.indexOf('const namesFile ='))
  .replace('Compile(checkable(schema) as never)', 'compile(checkable(schema) as never)')
  .replace('validator(schema).Check(value)', 'validator(schema).check(value)'));
-for (const [name, text] of outputs) {
+for (const [name, raw] of outputs) {
+ const text = raw.trimEnd() + '\n';
  const path = new URL('../src/' + name, import.meta.url);
  if (process.argv.includes('--check')) { if (await readFile(path, 'utf8') !== text) throw new Error(name + ' has source drift'); }
  else await writeFile(path, text);

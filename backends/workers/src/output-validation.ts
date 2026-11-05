@@ -74,4 +74,3 @@ export function outputInput(value: unknown): { schema: Record<string, unknown> }
 export function schemaAccepts(schema: object, value: unknown) {
   try { return validator(schema).check(value); } catch { return false; }
 }
-

@@ -122,4 +122,3 @@ export function formEncode(value: unknown): string {
   add("", value);
   return form.toString();
 }
-

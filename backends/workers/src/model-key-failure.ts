@@ -4,4 +4,3 @@ export function modelKeyFailure(error: string, model: { provider: string; id: st
   if (/^401\b/.test(error)) return { code: "model_key_invalid", error: `${model.provider} refused the API key for ${model.provider}/${model.id} (401): set a working one with PUT /v1/providers/${model.provider}/key (or the key scope's entry), or move the agent to a model you can use (GET /v1/models?available=true). ${model.provider} said: ${error}` };
   return undefined;
 }
-
