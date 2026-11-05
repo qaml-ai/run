@@ -1318,6 +1318,9 @@ export class CamelAgent extends DurableObject<Env> {
                   ...(usage.imageCostUsd > 0
                     ? { imageCostUsd: usage.imageCostUsd }
                     : {}),
+                  ...(usage.transcriptionCostUsd > 0
+                    ? { transcriptionCostUsd: usage.transcriptionCostUsd }
+                    : {}),
                   ...(usage.decisionCostUsd > 0
                     ? { decisionCostUsd: usage.decisionCostUsd }
                     : {}),
@@ -1887,6 +1890,12 @@ export class CamelAgent extends DurableObject<Env> {
         new Error("No process is connected to serve this agent's tools"),
         { status: 409, code: "APPLICATION_NOT_CONNECTED" },
       );
+    const audioRunLimit = (params.spendLimit as { usd?: number } | undefined)?.usd;
+    const audioBudget = params.files === undefined ? Infinity : Math.min(
+      spend ? Math.max(0, spend.usd - spend.spent) : Infinity,
+      audioRunLimit === undefined ? Infinity : Math.max(0,
+        audioRunLimit - await withSql(this.env, sql => runSpend(sql, conf.tenantId, conf.id, id)) - await this.delegation.cost(id)),
+    );
     const files =
       params.files === undefined
         ? undefined
@@ -1897,6 +1906,7 @@ export class CamelAgent extends DurableObject<Env> {
               requestId: id,
               mounts: (conf.config.mounts ?? []) as Mount[],
               spendLimit: (params.spendLimit as { usd?: number } | undefined)?.usd,
+              ...(Number.isFinite(audioBudget) ? { budget: audioBudget } : {}),
               keyScope: conf.config.keyScope,
               identity: { subject: conf.config.subject, context: conf.config.context },
               actor: params.actor as string | undefined,
@@ -2860,6 +2870,8 @@ export class CamelAgent extends DurableObject<Env> {
       (await this.ctx.storage.list({ prefix: "billing:", limit: 1 })).size ||
       (await this.ctx.storage.list({ prefix: "image-billing:", limit: 1 }))
         .size ||
+      (await this.ctx.storage.list({ prefix: "transcription-billing:", limit: 1 }))
+        .size ||
       (await this.ctx.storage.list({ prefix: "model-billing:", limit: 1 }))
         .size;
     const pendingEvents = (
@@ -2906,6 +2918,8 @@ export class CamelAgent extends DurableObject<Env> {
     if (
       (await this.ctx.storage.list({ prefix: "billing:", limit: 1 })).size ||
       (await this.ctx.storage.list({ prefix: "image-billing:", limit: 1 }))
+        .size ||
+      (await this.ctx.storage.list({ prefix: "transcription-billing:", limit: 1 }))
         .size ||
       (await this.ctx.storage.list({ prefix: "model-billing:", limit: 1 })).size
     )

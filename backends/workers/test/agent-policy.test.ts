@@ -108,15 +108,15 @@ test('delegation to an existing agent preserves its computer connection', async 
   assert.equal((await f.delegation.start({ agent: 'helper', task: 'help' }, 'existing', signal())).id, 'existing');
   await Promise.all(f.tasks);
 });
-test('child spending includes decisions, web tools, images and its own children', async () => {
+test('child spending includes decisions, web tools, images, transcription and its own children', async () => {
   const f = fixture(), fetch = f.host.fetch;
   f.host.fetch = async (id, request) => request.method === 'GET' && new URL(request.url).pathname.startsWith('/requests/')
-    ? Response.json({ state: 'completed', status: 'completed', outcome: { result: { usage: { costUsd: 0.01, subagentCostUsd: 0.02, imageCostUsd: 0.03, decisionCostUsd: 0.04, webCostUsd: 0.05 } } } })
+    ? Response.json({ state: 'completed', status: 'completed', outcome: { result: { usage: { costUsd: 0.01, subagentCostUsd: 0.02, imageCostUsd: 0.03, decisionCostUsd: 0.04, webCostUsd: 0.05, transcriptionCostUsd: 0.06 } } } })
     : fetch(id, request);
   const child = await f.delegation.start({ instructions: 'helper', task: 'help' }, 'all-costs', signal());
   const done = await f.delegation.wait(child);
-  assert.ok(Math.abs(done.spent! - 0.15) < 1e-12);
-  assert.ok(Math.abs(await f.delegation.costSince(child.createdAt) - 0.15) < 1e-12);
+  assert.ok(Math.abs(done.spent! - 0.21) < 1e-12);
+  assert.ok(Math.abs(await f.delegation.costSince(child.createdAt) - 0.21) < 1e-12);
   await Promise.all(f.tasks);
 });
 test('authoritative remaining budget reserves shares held by background children from earlier runs', async () => {

@@ -22,9 +22,9 @@ if [[ ! -x node_modules/.bin/wrangler || $(cat "$HOME/.workers-lock" 2>/dev/null
   printf '%s' "$lock" > "$HOME/.workers-lock"
 fi
 if [[ $mode == integration || $mode == compat ]]; then
-  if ! command -v docker >/dev/null; then
+  if ! command -v docker >/dev/null || ! docker buildx version >/dev/null 2>&1; then
     sudo apt-get update -qq
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-buildx
   fi
   if ! docker info >/dev/null 2>&1; then
     if ! sudo service docker start; then
