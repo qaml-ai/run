@@ -13,7 +13,7 @@ export type HumanInput = {
   kind?: "question" | "approval" | "form" | "url";
   detail?: Record<string, any>; createdAt?: number; expiresAt?: number;
   state?: "pending" | "answered" | "declined" | "cancelled" | "expired" | "superseded";
-  answerDetail?: Answer;
+  answerDetail?: Omit<Answer, "content"> & { content?: any };
   responders?: { audience?: string[] };
   policyBound?: boolean;
   requestId?: string;
