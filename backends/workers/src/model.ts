@@ -27,7 +27,7 @@ import { stream as streamAzure, streamSimple as simpleAzure } from "@earendil-wo
 import { getModels, getModel, callSettings, withOpenRouterHosts, reasoningFloor } from "./model-catalog.ts";
 import { resolveModel, virtualChain, routeModel, virtualModelReferences, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
 import { deepseekContext } from "./deepseek-policy.ts";
-import { forcedToolChoice, OUTPUT_INSTRUCTIONS } from "./output-policy.ts";
+import { forcedToolChoice, OUTPUT_INSTRUCTIONS, OUTPUT_REMINDER } from "./output-policy.ts";
 import { normalizeContext, getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
 import { boundedModel } from "./model-context.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
@@ -39,7 +39,7 @@ import { PREPARED_MODEL_CREDENTIALS } from "./model-request-auth.ts";
 import { contentFilterFallbacks } from "./default-model-policy.ts";
 import { isContentFilterBlock, isModelUnavailable } from "./model-errors.ts";
 
-export type ModelRequestSettings = AgentConfiguration & { requestId?: string; output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
+export type ModelRequestSettings = AgentConfiguration & { requestId?: string; outputReminded?: boolean; output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
 export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true; deployments?: Record<string, string> };
 export type ModelHooks = {
   agentId?: () => Promise<string>;
@@ -79,8 +79,8 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
     let toolChoice: unknown;
     if (outputSchema) {
       const finalTool = { name: "final_output", description: "Give the final answer as the arguments of this tool. The turn ends when the answer is accepted.", parameters: outputSchema };
-      context = normalizeContext({ messages: [...context.messages, { role: "system", content: "", sections: { structured_output: OUTPUT_INSTRUCTIONS }, toolsAdded: [finalTool], timestamp: Date.now() }] });
-      const reminded = context.messages.some(message => message.role === "user" && JSON.stringify(message.content).includes("<structured_output_reminder>"));
+      const reminded = !!config.outputReminded || context.messages.some(message => message.role === "user" && JSON.stringify(message.content).includes("<structured_output_reminder>"));
+      context = normalizeContext({ messages: [...context.messages, { role: "system", content: "", sections: { structured_output: OUTPUT_INSTRUCTIONS + (reminded ? `\n${OUTPUT_REMINDER}` : "") }, toolsAdded: [finalTool], timestamp: Date.now() }] });
       if ((!currentTools.length || reminded) && !forcing.refused && forcing.count < 3) toolChoice = forcedToolChoice(model, "final_output", { sole: !currentTools.length, thinking: (config.thinkingLevel ?? "off") !== "off" });
       if (toolChoice !== undefined) forcing.count++;
     } else {
