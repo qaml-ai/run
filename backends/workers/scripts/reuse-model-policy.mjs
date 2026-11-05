@@ -19,6 +19,14 @@ outputs.set('openrouter-details.ts', banner + pass
  .replace('    console.error(JSON.stringify({ type: "openrouter_model_lookup_failed", model: model.id, error: safeError(error) }));\n', ''));
 const catalog = await source('src/catalog.ts');
 const defaults = await source('src/model.ts');
+outputs.set('anthropic-federation-policy.ts', banner + (await source('src/anthropic-federation.ts'))
+ .replace('import { GetWebIdentityTokenCommand, STSClient } from "@aws-sdk/client-sts";', 'class GetWebIdentityTokenCommand { constructor(readonly input: { Audience: string[]; SigningAlgorithm: string; DurationSeconds: number }) {} }')
+ .replace('import { metricLine } from "./metrics.ts";\n', '')
+ .replace('import type { Credentials } from "./protocol.ts";', 'type Credentials = { apiKey: string; bearer?: true };')
+ .replace('env: NodeJS.ProcessEnv)', 'env: Record<string, string | undefined>, options: Options = {})')
+ .replace('region: env.AGENT_ANTHROPIC_FEDERATION_STS_REGION?.trim() || env.AWS_REGION?.trim() || "us-west-2" });', 'region: env.AGENT_ANTHROPIC_FEDERATION_STS_REGION?.trim() || env.AWS_REGION?.trim() || "us-west-2" }, options);')
+ .replace(/const emit = \(event: Event\) => console\.log\(metricLine[\s\S]*?\n\}\)\);/, 'const emit = (event: Event) => console.log(JSON.stringify(event));')
+ .replace('this.sts ??= new STSClient({ region, endpoint: `https://sts.${region}.amazonaws.com`, maxAttempts: 1 });', 'if (!this.sts) throw new FederationError("StsConfigurationError");'));
 outputs.set('default-model-policy.ts', banner + defaults
  .replace('from "./pi-catalog.ts"', 'from "./model-catalog.ts"')
  .replace('from "./openrouter-model.ts"', 'from "./model-policy.ts"')

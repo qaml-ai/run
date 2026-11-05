@@ -27,7 +27,6 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
   t.after(close);
   try {
   if (options.failImageResizeOnce) throw new Error("Unsupported fixture state: Workers has no parse-job resize boundary to fail and retry");
-  if (options.anthropicFederationEndpoint) throw new Error("Unsupported fixture state: Workers has no Anthropic federation STS/token exchange adapter");
   const model = await fakeModel({ after: fn => cleanups.push(fn) }, (body, index) => respond(body, index - replyStart));
   // Dynamic import keeps workerd's binding types out of the Node TypeScript project.
   const fixtureModule = new URL("../../../backends/workers/test/fixture.ts", import.meta.url).href;

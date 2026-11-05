@@ -35,6 +35,7 @@ import { sourceUrl } from "./tool-sources.ts";
 import { listModels } from "./catalog-policy.ts";
 import { streamTimeouts, watchedStream, isStalled, type Stall } from "./model-stream.ts";
 import { runtimeStreamTimeouts, type ModelTimeoutEnv } from "./model-runtime-options.ts";
+import { PREPARED_MODEL_CREDENTIALS } from "./model-request-auth.ts";
 import { contentFilterFallbacks } from "./default-model-policy.ts";
 import { isContentFilterBlock, isModelUnavailable } from "./model-errors.ts";
 
@@ -109,6 +110,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
       } catch (error) { transportError = error instanceof Error ? error.message : String(error); throw error; }
     } : undefined;
     const prepared = {
+      [PREPARED_MODEL_CREDENTIALS]: credential,
       ...options, ...(toolChoice !== undefined ? { toolChoice: toolChoice as SimpleStreamOptions["toolChoice"] } : {}), ...callSettings(model, config, config.thinkingLevel),
       ...(reasoning ? { reasoning } : {}),
       ...(fallback || virtualNext ? { supersede: (message: AssistantMessage) => fallback && isContentFilterBlock(message) ? "content_filter" as const : virtualNext && !message.content.length && isModelUnavailable(message) ? "unavailable" as const : undefined } : {}),

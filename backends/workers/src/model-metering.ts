@@ -8,6 +8,7 @@ import { estimateModelAttempt } from './model-estimate.ts';
 import { modelSpendLimit } from './agent-spend.ts';
 import type { ModelAttemptEvent, ModelAttemptHook } from './model-attempt.ts';
 import { keyServices, providerCredentials, type KeyEnv } from './security-services.ts';
+import { PREPARED_MODEL_CREDENTIALS } from './model-request-auth.ts';
 
 export type ModelReceipt = { tenant: string; agent: string; platform: boolean; event: ModelAttemptEvent };
 export type ModelBillingContext = {
@@ -34,7 +35,9 @@ export function meterProvider<P extends Provider<any>>(
     void (async () => {
       const identity = await context();
       const service = await modelAttempts(env);
-      const credentials = await providerCredentials(await keyServices(env), identity.tenant, model.provider, identity.keyScope);
+      const credentials = Object.hasOwn(options, PREPARED_MODEL_CREDENTIALS)
+        ? options[PREPARED_MODEL_CREDENTIALS]
+        : await providerCredentials(await keyServices(env), identity.tenant, model.provider, identity.keyScope);
       // withSettings has already prepared provider-specific request auth. Its
       // sentinels keep anonymous endpoints valid and bearer keys out of Pi's
       // API-key/OAuth heuristics; accounting still fingerprints the real key.
