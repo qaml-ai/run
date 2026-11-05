@@ -8,14 +8,12 @@ import { runtimeSigner, type IdentityEnv } from './tool-identity.ts';
 import type { FileGrant } from './runtime-identity.ts';
 import { HttpError } from './errors.ts';
 import type { AttachedFile } from './attachment-markers.ts';
-import type { McpResult } from './attached-tools.ts';
 import { isFileArgument, fileMode, resolveFiles, type FileSpec, type FileValue } from './tool-file-schema.ts';
 
 type Env = FileBindings & IdentityEnv;
 type Scope = { tenant: string; agent: string; mounts: Mount[]; tool: string; call: string; origin: string; refuse?: string; reference(path: string): Promise<AttachedFile>; onWrite(file: { path: string; version: number; size: number; contentType: string }): Promise<void>; budget?: { left: number } };
 const nameOf = (path: string) => path.slice(path.lastIndexOf('/') + 1);
 const relative = (path: string, root: string) => path.slice(root === '/' ? 1 : root.length + 1);
-const errorText = (error: unknown) => error instanceof Error ? error.message.replace(/^FILE_\d{3}:/, '') : String(error);
 const status = (error: unknown) => error instanceof HttpError ? error.status : Number(/FILE_(\d{3}):/.exec(String(error))?.[1]);
 
 /** One call's mount-limited transport. The volume owns ordering; R2 owns immutable bytes. */
@@ -144,30 +142,7 @@ export async function serveToolFile(request: Request, env: Env): Promise<Respons
   return new Response(object.body, { status: range ? 206 : 200, headers: { ...downloadHeaders(file.contentType, nameOf(file.path)), 'Content-Length': String(end - start + 1), 'Accept-Ranges': 'bytes', 'X-File-Version': String(file.version), 'ETag': `"${file.version}"`, 'Cache-Control':'no-store', ...(range ? {'Content-Range':`bytes ${start}-${end}/${file.size}`} : {}) } });
 }
 
-const named = (kind: string, index: number, type: unknown) => `${kind}-${index}${typeof type === 'string' && /^[a-z]+\/[a-z0-9]+/i.test(type) ? '.' + /^[a-z]+\/([a-z0-9]+)/i.exec(type)![1].toLowerCase() : ''}`;
-const resourceName = (uri: unknown, index: number, type: unknown) => { try { return decodeURIComponent(new URL(String(uri)).pathname.split('/').pop()!) || named('resource',index,type); } catch { return named('resource',index,type); } };
-export async function savedContent(result: McpResult, files?: ToolFiles, fetcher?: (url: string) => Promise<Response>): Promise<McpResult> {
-  if (!Array.isArray(result.content)) return result;
-  const content: any[] = []; let index=0;
-  for (const part of result.content as any[]) {
-    if (part?.type === 'file') { content.push({type:'text',text:'[file content omitted]'}); continue; }
-    if (fetcher && files && part?.type === 'resource_link' && typeof part.uri === 'string' && /^(https?|data):/i.test(part.uri)) {
-      const label = typeof part.name === 'string' ? part.name : 'linked file'; index++;
-      try { const inline = /^data:([^,;]*)((?:;[^,;]*)*),(.*)$/is.exec(part.uri); const response = inline ? undefined : await fetcher(part.uri); if (response && !response.ok) throw new Error(`fetching it answered HTTP ${response.status}`); content.push(await files.save(typeof part.name === 'string' ? part.name : resourceName(part.uri,index,part.mimeType), inline ? (inline[2].split(';').includes('base64') ? Buffer.from(inline[3], 'base64') : Buffer.from(decodeURIComponent(inline[3]))) : response!.body as any, part.mimeType ?? inline?.[1] ?? response?.headers.get('content-type') ?? undefined)); }
-      catch (error) { content.push({type:'text',text:`[${label} not saved: ${errorText(error)}]`}); }
-      continue;
-    }
-    const resource = part?.type === 'resource' ? part.resource : undefined;
-    let output: {name:string;bytes:Buffer;type?:string}|undefined;
-    if ((part?.type === 'image' || part?.type === 'audio') && typeof part.data === 'string') output={name:named(part.type,++index,part.mimeType),bytes:Buffer.from(part.data,'base64'),type:part.mimeType};
-    else if (typeof resource?.blob === 'string') output={name:resourceName(resource.uri,++index,resource.mimeType),bytes:Buffer.from(resource.blob,'base64'),type:resource.mimeType};
-    else if (typeof resource?.text === 'string' && Buffer.byteLength(resource.text)>TOOL_FILE_LIMITS.textBytes) output={name:resourceName(resource.uri,++index,resource.mimeType),bytes:Buffer.from(resource.text),type:resource.mimeType??'text/plain'};
-    if (!output || !files) { content.push(part); continue; }
-    try { content.push(await files.save(output.name,output.bytes,output.type)); }
-    catch (error) { content.push(part.type==='image'||typeof resource?.text==='string'?part:{type:'text',text:`[${part.type} content not saved: ${errorText(error)}]`}); }
-  }
-  return {...result,content};
-}
+export { savedContent } from "./tool-content.ts";
 
 /** Stream multipart bodies with a known length, retaining each file's name and MIME. */
 export async function multipartBody(value: unknown, files: ToolFiles | undefined, schema: any) {
