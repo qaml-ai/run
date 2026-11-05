@@ -9,6 +9,7 @@ import { Workspaces } from './workspaces.ts';
 import { HttpError } from './errors.ts';
 import { modelAttempts } from './model-metering.ts';
 import { EndUserCredits } from './end-user-credits.ts';
+import { modelEndUserRoutes } from './model-end-user-routes.ts';
 import type { AuthContext } from './control.ts';
 import { sweepAdmission } from './admission.ts';
 import { withMoneyIdempotency, expireMoneyIdempotency } from './money-idempotency.ts';
@@ -40,7 +41,7 @@ export async function authenticateMoney(request: Request, env: MoneyEnv): Promis
 }
 export async function moneyRoutes(request: Request, env: MoneyEnv, auth: AuthContext, ctx: ExecutionContext): Promise<Response | undefined> {
   const path = new URL(request.url).pathname;
-  if (!/^\/v1\/(?:me|limits|billing|providers|key-scopes|api-keys|tokens|tenants|sessions|oauth|account|usage|webhooks|usage-webhook|workspaces|workspace-memberships)/.test(path)) return;
+  if (!/^\/v1\/(?:me|limits|billing|providers|key-scopes|api-keys|tokens|tenants|sessions|oauth|account|usage|webhooks|usage-webhook|workspaces|workspace-memberships|end-user-settings|end-users)/.test(path)) return;
   return withMoneyIdempotency(request, env, auth.tenantId, request => routeMoney(request, env, auth, ctx));
 }
 async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ctx: ExecutionContext): Promise<Response | undefined> {
@@ -56,6 +57,8 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
   if (keys) return keys;
   const billed = await billingRoutes(request, env, auth, s.billing);
   if (billed) return billed;
+  const endUser = await modelEndUserRoutes(request, new EndUserCredits(s.keys.accounts.db), tenant);
+  if (endUser) return endUser;
   const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
   const setter = principal.tokenId ? `token:${principal.tokenId}` : principal.via === 'oauth' ? `oauth:${'grantId' in principal ? principal.grantId : undefined}` : principal.via;
   if (path === '/v1/usage' && request.method === 'GET') {
