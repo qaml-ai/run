@@ -31,3 +31,15 @@ test('definition discovery rejects refused credentials and retains temporary sou
   assert.deepEqual(failures.map(value => [value.kind, value.source]), [['mcp', 'down']]);
   assert.match(failures[0].message, /down for maintenance/);
 });
+
+
+test('source auth and audience validation keeps the source public contract', async () => {
+  const env = { API_TOKEN: 'test', TEST_MODE: '1', AGENT_SECRETS_KEY: '22'.repeat(32), AGENT_OUTBOUND_ALLOW_HTTP: 'true', AGENT_OUTBOUND_ALLOW_CIDRS: '127.0.0.1/32' };
+  const source = { name: 'app', url: 'http://127.0.0.1:1/mcp' };
+  await assert.rejects(prepareSources(env, 'tenant', 'definition', 'mcpServers', [{ ...source, auth: { type: 'exchange' } }]), /auth is \{ type: "exchange", url, audience\? \}/);
+  await assert.rejects(prepareSources(env, 'tenant', undefined, 'mcpServers', [{ ...source, auth: { type: 'runtime', token: 'secret' } }]), /no credentials.*definition/);
+  await assert.rejects(prepareSources(env, 'tenant', 'definition', 'mcpServers', [{ ...source, auth: { type: 'runtime' }, audience: 'urn:camelrun:tenant:' }]), /own origin/);
+  await assert.rejects(prepareSources(env, 'tenant', 'definition', 'mcpServers', [{ ...source, approval: { default: 'invalid' } }]), /Invalid option: expected one of/);
+  const [prepared] = await prepareSources(env, 'tenant', 'definition', 'mcpServers', [{ ...source, auth: { type: 'bearer', token: 'secret' } }]);
+  assert.equal(prepared.headerNames, undefined);
+});

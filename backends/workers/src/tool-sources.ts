@@ -1,3 +1,5 @@
+import { Outbound } from "./security-outbound.ts";
+import { ownAudience, mcpToolName } from "./source-input-policy.ts";
 import { DENIED_PERMISSION, type JudgeInput, type Judged } from "./tool-judge.ts";
 import { approvalFor } from "./tool-call-policy.ts";
 import { toolCallMeta, toolCallSite, type ToolCallSite } from "./tool-call-context.ts";
@@ -32,28 +34,27 @@ const forbiddenHeaders = new Set(["host", "content-length", "content-type", "acc
 const bad = (message: string) => new HttpError(400, message);
 
 /** Every redirect is checked before fetching, including local test fixtures. */
-export function sourceUrl(value: unknown, env: Pick<Env, "TEST_MODE">): URL {
+function outbound(env: Pick<Env, "TEST_MODE" | "AGENT_OUTBOUND_ALLOW_HTTP" | "AGENT_OUTBOUND_ALLOW_CIDRS" | "AGENT_OUTBOUND_BLOCK_CIDRS">) {
+  const split = (value?: string) => value?.split(",").map(value => value.trim()).filter(Boolean);
+  return new Outbound({ allowHttp: env.TEST_MODE === "1" && env.AGENT_OUTBOUND_ALLOW_HTTP !== "false",
+    allow: env.TEST_MODE === "1" ? split(env.AGENT_OUTBOUND_ALLOW_CIDRS ?? "127.0.0.1/32,::1/128") : [], block: split(env.AGENT_OUTBOUND_BLOCK_CIDRS) });
+}
+export function sourceUrl(value: unknown, env: Pick<Env, "TEST_MODE" | "AGENT_OUTBOUND_ALLOW_HTTP" | "AGENT_OUTBOUND_ALLOW_CIDRS" | "AGENT_OUTBOUND_BLOCK_CIDRS">): URL {
   if (typeof value !== "string" || value.length > 2048) throw bad("Source URL must be a bounded URL");
-  let url: URL;
-  try { url = new URL(value); } catch { throw bad("Invalid source URL"); }
-  const host = url.hostname.toLowerCase();
-  const local = ["localhost", "127.0.0.1", "[::1]"].includes(host);
-  if (local && env.TEST_MODE === "1" && url.protocol === "http:") return url;
-  if (url.protocol !== "https:" || url.username || url.password || url.hash || local ||
-    /(^|\.)(internal|local|localhost)$/.test(host) || /^\[|^\d+(?:\.\d+){3}$/.test(host))
-    throw bad("Source URL must be public HTTPS without credentials");
-  return url;
+  try { const url = outbound(env).check(value); if (url.hash) throw bad("Source URLs take no fragment"); return url; }
+  catch (error) { throw bad(error instanceof Error ? error.message : String(error)); }
 }
 
 async function fetchSource(env: Pick<Env, "TEST_MODE">, url: string | URL, init: RequestInit, max = MAX_BYTES, complete?: (text: string) => boolean) {
   let current = sourceUrl(String(url), env);
+  await outbound(env).reachable(current);
   for (let count = 0; count < 6; count++) {
     const response = await fetch(current, { ...init, redirect: "manual" });
     if (response.status >= 300 && response.status < 400 && response.headers.has("location")) {
       const next = sourceUrl(new URL(response.headers.get("location")!, current).href, env);
       await response.body?.cancel();
       if (next.origin !== current.origin) throw bad("Source redirects may not change origin");
-      current = next;
+      current = await outbound(env).reachable(next);
       continue;
     }
     const text = await readText(response, max, complete);
@@ -124,10 +125,10 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
     const value = raw as Record<string, any>, name = value.name;
     if (typeof name !== "string" || name.length > 32 || !NAME.test(name) || used.has(name)) throw bad("Source names must be unique, 1–32 letters and digits with single underscores");
     used.add(name);
-    if (!definition && (value.headers !== undefined || value.auth !== undefined && value.auth?.type !== "runtime")) throw bad("An agent's or run's own MCP servers carry no credentials; put credentials in a definition");
+    if (!definition && (value.headers !== undefined || value.auth !== undefined && (value.auth?.type !== "runtime" || Object.keys(value.auth).length !== 1))) throw bad("An agent's or run's own MCP servers carry no credentials; put credentials in a definition");
     const kept = previous.find(x => x.name === name);
     const url = kind === "mcpServers" ? sourceUrl(value.url, env).href : undefined;
-    if (value.timeoutMs !== undefined && (!Number.isInteger(value.timeoutMs) || value.timeoutMs < 1000 || value.timeoutMs > 600_000)) throw bad("timeoutMs must be 1000..600000");
+    if (value.timeoutMs !== undefined && (!Number.isInteger(value.timeoutMs) || value.timeoutMs < 1000 || value.timeoutMs > 1_200_000)) throw bad("timeoutMs must be 1000..1200000");
     if (value.exposure !== undefined && !["direct", "codemode", "both"].includes(value.exposure)) throw bad("Invalid tool exposure");
     const headers: Record<string, string> = {};
     if (value.headers !== undefined) {
@@ -142,11 +143,15 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
       if (value.auth?.type !== "runtime" && value.auth?.type !== "exchange" && (value.auth?.type !== "bearer" || typeof value.auth.token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(value.auth.token))) throw bad("Source auth must be runtime, exchange, or a bearer credential in a definition");
       if (value.auth?.type === "runtime" && Object.keys(value.auth).length !== 1) throw bad("Runtime auth takes no credentials");
       if (value.auth?.type === "exchange") {
-        if (kind !== "mcpServers" || Object.keys(value.auth).some(key => !["type", "url", "audience"].includes(key))) throw bad("Credential exchange is for MCP servers and takes only url and audience");
-        const exchange = sourceUrl(value.auth.url, env);
-        if (value.auth.audience !== undefined && (typeof value.auth.audience !== "string" || !value.auth.audience.startsWith(`urn:camelrun:${tenant}:`) && sourceUrl(value.auth.audience, env).origin !== exchange.origin)) throw bad("auth.audience must name the exchange origin or this tenant's urn");
+        if (kind !== "mcpServers") throw bad('auth { type: "exchange" } is for MCP servers');
+        const extra = Object.keys(value.auth).find(key => !["type", "url", "audience"].includes(key));
+        if (extra) throw bad(`auth: Unrecognized key: "${extra}"`);
+        if (typeof value.auth.url !== "string" || !value.auth.url) throw bad('auth is { type: "exchange", url, audience? }');
+        let exchange: URL;
+        try { exchange = sourceUrl(value.auth.url, env); } catch (error) { throw bad(`auth.url: ${(error as Error).message}`); }
+        if (value.auth.audience !== undefined && (typeof value.auth.audience !== "string" || !ownAudience(value.auth.audience, exchange, tenant))) throw bad("auth.audience must be a URL on the exchange's own origin or a name of your tenant's own");
       }
-      if (Object.keys(headers).some(x => x.toLowerCase() === "authorization")) throw bad("Use an Authorization header or auth, not both");
+      if (Object.keys(headers).some(x => x.toLowerCase() === "authorization")) throw bad("Give an Authorization header or auth, not both");
       if (value.auth.type === "bearer") headers.Authorization = `Bearer ${value.auth.token}`;
     }
     const source: RemoteSource = {
@@ -160,6 +165,8 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
     };
     if (value.approval !== undefined) {
       const approval = value.approval;
+      if (approval?.default !== undefined && !["never", "always", "destructive", "judged"].includes(approval.default))
+        throw bad('Invalid option: expected one of "never"|"always"|"destructive"|"judged"');
       if (!approval || typeof approval !== "object" || Array.isArray(approval) ||
         (approval.default !== undefined && !["never", "always", "destructive", "judged"].includes(approval.default)) ||
         (approval.tools !== undefined && (!approval.tools || typeof approval.tools !== "object" || Array.isArray(approval.tools) || Object.values(approval.tools).some(x => !["never", "always", "judged"].includes(String(x)))))) throw bad("Invalid approval policy");
@@ -184,13 +191,14 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
     }
     const origin = new URL(source.url ?? source.baseUrl!).origin, keptOrigin = kept && new URL(kept.url ?? kept.baseUrl!).origin;
     if (value.audience !== undefined) {
+      if (source.auth?.type === "exchange") throw bad("with auth { type: \"exchange\" } the audience goes in auth (auth.audience)");
       if (source.auth?.type !== "runtime" || typeof value.audience !== "string" || value.audience.length > 2048) throw bad("audience is for runtime auth");
-      if (value.audience !== `urn:camelrun:${tenant}:${name}` && sourceUrl(value.audience, env).origin !== origin) throw bad("audience must name the source's origin or its tenant-qualified urn");
+      if (!ownAudience(value.audience, origin, tenant)) throw bad("audience must be a URL on the source's own origin or a name of your tenant's own");
       source.audience = value.audience;
     }
     if (Object.keys(headers).length) {
       source.sealed = await seal(env, aad(tenant, definition!, kind, name), headers);
-      source.headerNames = Object.keys(headers);
+      if (value.headers && Object.keys(value.headers).length) source.headerNames = Object.keys(value.headers);
       if (value.auth?.type === "bearer") source.auth = { type: "bearer" };
     } else if (kept && origin === keptOrigin && value.headers === undefined && value.auth === undefined) {
       if (kept.sealed) source.sealed = kept.sealed;
@@ -354,7 +362,7 @@ export function sourceDefinitionViews(config: { mcpServers?: RemoteSource[]; ope
     ...(config.mcpServers ?? []).map(source => ({ kind: "mcp", name: source.name, url: source.url,
       status: source.discovery?.error ? "error" : source.discovery?.tools ? "listed" : "unlisted",
       ...(source.discovery?.error ? { error: source.discovery.error } : {}),
-      ...(source.discovery?.tools ? { tools: source.discovery.tools.filter(tool => (!source.allowTools || source.allowTools.includes(tool.name)) && !source.denyTools?.includes(tool.name)).map(tool => ({ description: tool.description, inputSchema: tool.inputSchema ?? tool.parameters, name: `${source.name}__${tool.name}`, exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] ?? source.exposure ?? "both" })) } : {}),
+      ...(source.discovery?.tools ? { tools: source.discovery.tools.filter(tool => (!source.allowTools || source.allowTools.includes(tool.name)) && !source.denyTools?.includes(tool.name)).map(tool => ({ description: tool.description, inputSchema: tool.inputSchema ?? tool.parameters, name: mcpToolName(source.name, tool.name), exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] ?? source.exposure ?? "both" })) } : {}),
     })),
     ...(config.openApi ?? []).map(source => ({ kind: "openapi", name: source.name, url: source.baseUrl, status: "listed", tools: (source.operations ?? []).map(operation => ({ name: `${source.name}__${operation.name}`, description: operation.description, inputSchema: operation.inputSchema, exposure: source.exposure ?? "both" })) })),
   ];
@@ -408,7 +416,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
         if (source.allowTools && !source.allowTools.includes(tool.name) || source.denyTools?.includes(tool.name)) continue;
         const { name } = tool;
         const mode = approvalFor(source.approval, name, (tool as any).annotations?.destructiveHint === true);
-        result.push(registration({ ...tool, description: (tool.description ?? name).slice(0, 4000), needsApproval: mode === "always", judged: mode === "judged", name: `${source.name}__${name}`, exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] as ToolDefinition["exposure"] ?? source.exposure }, async (args, api, context) => {
+        result.push(registration({ ...tool, description: (tool.description ?? name).slice(0, 4000), needsApproval: mode === "always", judged: mode === "judged", name: mcpToolName(source.name, name), exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] as ToolDefinition["exposure"] ?? source.exposure }, async (args, api, context) => {
           const approval = await needsApproval(name, args, (tool as any).annotations?.destructiveHint === true, api, context, undefined, tool.description);
           if ("result" in approval) return approval.result;
           return api ? withToolInputs(reply => client.call(name, args, context?.abortSignal, api, reply), api, context, { name: `${source.name}__${name}`, args }, approval.reply) : client.call(name, args, context?.abortSignal);
