@@ -16,7 +16,7 @@ import {
 } from "./postgres.ts";
 import { postLedger, accrueUsage, BillingSpendable } from "./billing-sql.ts";
 import { EndUserCredits, lastCallMin, settleUsage, utcDay } from "./end-user-credits.ts";
-import { endUserRoutes } from "./end-user-routes.ts";
+import { endUserRoutes } from "./model-end-user-routes.ts";
 import { CreditHolds } from "./credit-holds.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import { defaultModelFor, validateAgentModel } from "./default-model.ts";
@@ -183,6 +183,7 @@ export class Directory {
     if (owner?.revoked) throw new ApiError(410,'Agent is deleted','AGENT_GONE');
     const previousEntry = await this.get(id), previousConfig = previousEntry?.config;
     if (fields.model === undefined && previousConfig?.model) config.model = previousConfig.model;
+    if (fields.language === undefined && previousConfig?.language !== undefined) config.language = previousConfig.language;
     const resolvedModel = await validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined });
     if (queueConfiguration && previousEntry) {
       for (const field of ['subject', 'context', 'definition'] as const)
@@ -190,7 +191,9 @@ export class Directory {
           throw new ApiError(409, `An agent's ${field} cannot change`);
       const response = await this.env.AGENTS.getByName(id).fetch(new Request('https://agent/upsert', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: crypto.randomUUID(), method: 'configure', params: config }),
+        body: JSON.stringify({ id: crypto.randomUUID(), method: 'configure', params: {
+          ...config, ...(fields.remount !== undefined ? { remount: fields.remount } : {}),
+        } }),
       }));
       const reconfigured = await response.json() as Record<string, unknown>;
       if (!response.ok) return { failed: true, status: response.status, error: String(reconfigured.error ?? 'Agent configuration was refused'), code: String(reconfigured.code ?? 'CONFIGURATION_FAILED') };
