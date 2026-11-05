@@ -32,6 +32,23 @@ test("attached tools initialize on their connection and preserve a tool result",
   assert.equal(attached.connected, false);
 });
 
+test("attached progress notifications preserve their message and final result", async () => {
+  const attached = new AttachedTools(), updates: unknown[] = [];
+  const handle = attached.attach(frame => {
+    const message = (frame as any).message;
+    if (!message.id) return;
+    queueMicrotask(() => {
+      if (message.method === 'tools/call') attached.receive({ method: 'notifications/progress', params: { progressToken: message.params._meta.progressToken, progress: 1, total: 2, message: 'halfway' } }, handle.id);
+      attached.receive({ id: message.id, result: message.method === 'initialize' ? {} : { content: [{ type: 'text', text: 'done' }] } }, handle.id);
+    });
+  });
+  await handle.start();
+  const answer = await attached.call('lookup', {}, 1000, undefined, { onProgress: value => updates.push(value) });
+  assert.deepEqual(updates, [{ progress: 1, total: 2, message: 'halfway' }]);
+  assert.deepEqual(answer.content, [{ type: 'text', text: 'done' }]);
+  handle.close();
+});
+
 test("failed tool discovery is unlisted when the agent is idle and refresh exposes the error", () => {
   const config = { mcpServers: [{ name: "gone", url: "https://gone.example/mcp" }] };
   const failures = [{ kind: "mcp" as const, source: "gone", message: "Could not connect" }];
