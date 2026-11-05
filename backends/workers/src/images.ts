@@ -330,7 +330,9 @@ export function withImageReferences<A extends Api>(
     let bytes = 0,
       count = 0;
     for (const location of locations.reverse()) {
+      if (count >= requestImageLimit(model)) continue;
       const ref = location.ref;
+      if (ref && bytes + 4 * Math.ceil(ref.size / 3) > IMAGE_LIMITS.requestBase64Bytes) continue;
       let block: any;
       if (location.inline) {
         const inline = location.inline;

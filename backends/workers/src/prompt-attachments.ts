@@ -19,7 +19,8 @@ import {
   describeFile,
   documentPayload,
   firstLines,
-  supportsDocuments,
+  nativeBlock,
+  unseen,
   textual,
   type FileRef,
 } from "./attachment-policy.ts";
@@ -286,9 +287,7 @@ export function withAttachmentReferences<A extends Api>(
         const ref = attachmentMarker(part.text);
         if (!ref) continue;
         if (
-          ref.contentType === "application/pdf" &&
-          supportsDocuments(model) &&
-          ref.size <= FILE_LIMITS.documentBytes &&
+          nativeBlock(ref, model) === "document" &&
           documentBytes + ref.size <= FILE_LIMITS.requestFileBytes
         ) {
           documents.add(`${m}:${p}`);
@@ -333,11 +332,7 @@ export function withAttachmentReferences<A extends Api>(
           type: "text",
           text: describeFile(
             ref,
-            ref.contentType === "application/pdf"
-              ? undefined
-              : ref.media?.kind === "none"
-                ? ref.media.reason
-                : undefined,
+            unseen(ref, model),
           ),
         });
         let image = ref.image;
