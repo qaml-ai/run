@@ -248,4 +248,25 @@ test("shared fs shim reads UTF-8 windows and round-trips typed bytes through fil
   assert.equal(reads, 3, "reads retain the native size limit and remembered version");
   const direct = await wrapped[0].execute({ path: "/workspace/unicode.txt" }, undefined as never, undefined as never);
   assert.equal(direct.output?.[0]?.type === "text" && direct.output[0].text, "héllo", "direct model reads remain plain text");
+  assert.deepEqual(direct.structuredOutput, { path: "/workspace/unicode.txt", content: "héllo" });
+});
+
+test("direct file reads expose source-compatible content without changing native output or line windows", async () => {
+  const output = [{ type: "text" as const, text: '{"changed":true}' }];
+  const diagnostics = [{ severity: "info" as const, message: "native diagnostic" }];
+  const args = { path: "/docs/readme.md", offset: 2, limit: 1 };
+  let reads = 0;
+  const [read] = compatibleFileTools([{
+    name: "read",
+    execute: async input => {
+      reads++;
+      assert.strictEqual(input, args, "native read retains its line window and version callback");
+      return { output, diagnostics };
+    },
+  } as ToolRegistration]);
+  const result = await read.execute(args, undefined as never, undefined as never);
+  assert.deepEqual(result.structuredOutput, { path: "/docs/readme.md", content: '{"changed":true}' });
+  assert.strictEqual(result.output, output);
+  assert.strictEqual(result.diagnostics, diagnostics);
+  assert.equal(reads, 1);
 });

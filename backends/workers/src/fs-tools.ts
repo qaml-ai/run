@@ -25,8 +25,10 @@ export function compatibleFileTools(tools: ToolRegistration[]): ToolRegistration
             throw new Error(`File ${path} does not exist`);
           throw error;
         }
-        if (encoding === undefined && !("length" in (input as object)))
-          return { ...result, structuredOutput: result.output?.find(part => part.type === "text")?.text ?? "" };
+        if (encoding === undefined && !("length" in (input as object))) {
+          const content = result.output?.find(part => part.type === "text")?.text ?? "";
+          return { ...result, structuredOutput: { path, content } };
+        }
         const read = valueOf(result) as { data: string; nextOffset?: number };
         const data = encoding === "utf8" ? new TextDecoder().decode(Uint8Array.from(atob(read.data), char => char.charCodeAt(0))) : read.data;
         const value = { ...read, path, data, content: data, encoding: encoding ?? "base64" };
