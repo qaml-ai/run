@@ -27,6 +27,15 @@ test('run summary includes failed and nested calls without arguments', () => {
   assert.equal(result.toolErrors?.length, 2);
   assert.ok(!JSON.stringify(result).includes('private source'));
 });
+test('reply index skips system entries exactly as public history does', () => {
+  const value = projectRunEntries('r', [
+    entry([{ role: 'system', content: 'private rules', timestamp: 0 }]),
+    { kind: 'camel.prompt', data: { requestId: 'r' }, model: [{ role: 'user', content: 'question', timestamp: 1 }] },
+    entry([{ role: 'system', content: 'updated rules', timestamp: 2 }]),
+    entry([assistant([{ type: 'text', text: 'answer' }])]),
+  ]);
+  assert.equal(value.replyIndex, 1);
+});
 test('run projection bounds tool call summaries at the public 100-call limit', () => {
   const result = projectRunEntries('r', [{ kind: 'camel.prompt', data: { requestId: 'r' } }, entry([assistant(Array.from({ length: 120 }, (_, i) => ({ type: 'toolCall' as const, id: String(i), name: 'test', arguments: {} })))])]);
   assert.equal(result.toolCalls?.length, 100);

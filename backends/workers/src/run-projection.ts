@@ -20,6 +20,7 @@ export class RunProjection {
   add(entry: Pick<EntryRecord, 'kind' | 'data' | 'model'>) {
     if (entry.kind === 'camel.prompt') this.active = (entry.data as { requestId?: string })?.requestId;
     for (const message of entry.model ?? []) {
+      if (message.role === 'system') continue;
       const index = this.index++;
       if (this.active !== this.requestId) continue;
       if (message.role === 'assistant') {

@@ -96,3 +96,90 @@ test('a depleted parent budget refuses a child before creation or submission', a
   assert.equal(f.submitted.length, 0);
   assert.equal((await f.delegation.children()).length, 0);
 });
+test('recovery notifies completed background children but never direct delegates', async () => {
+  const f = fixture(), notified: string[] = [];
+  f.host.notify = async child => { notified.push(child.key); };
+  const base = { id: 'child', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'call', task: 'go', name: 'helper', depth: 1, root: 'parent', createdAt: 1, endedAt: 2, status: 'completed', made: true, accepted: true };
+  f.values.set('delegation:background', { ...base, key: 'background', background: true });
+  f.values.set('delegation:direct', { ...base, key: 'direct', background: false });
+  await f.delegation.recover();
+  await Promise.all(f.tasks);
+  assert.deepEqual(notified, ['background']);
+  assert.equal((f.values.get('delegation:background') as { notified: boolean }).notified, true);
+  await new Delegation(f.host).recover();
+  await Promise.all(f.tasks);
+  assert.deepEqual(notified, ['background']);
+});
+test('parent cancellation aborts made children and only its actively running named child', async () => {
+  const f = fixture(), aborted: string[] = [];
+  const base = { requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'call', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'running', accepted: true };
+  f.values.set('delegation:made', { ...base, id: 'made', key: 'made', made: true });
+  f.values.set('delegation:named', { ...base, id: 'named', key: 'named', made: false });
+  f.values.set('delegation:queued', { ...base, id: 'queued', key: 'queued', made: false });
+  f.host.fetch = async (id, request) => {
+    if (request.method === 'POST') { aborted.push(id); return Response.json({}); }
+    return Response.json(id === 'named' ? { state: 'running', began: 1 } : { state: 'running' });
+  };
+  await f.delegation.cancel('parent-run');
+  assert.deepEqual(aborted.sort(), ['made', 'named']);
+});
+async function childFixture() {
+  const f = fixture(), secret = f.host.secret;
+  const bytes = await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), new TextEncoder().encode('delegation-v1:child:child-run:1:2:parent'));
+  f.setId('child');
+  f.setRun({ id: 'child-run', metadata: { parentAgentId: 'parent', delegationDepth: '1', delegationMaxDepth: '2', delegationChain: 'parent', delegationSignature: [...new Uint8Array(bytes)].map(x => x.toString(16).padStart(2, '0')).join('') } });
+  return f;
+}
+test('signed children can message their parent with bounded idempotent request ids', async () => {
+  const f = await childFixture(), sent: any[] = [];
+  f.host.sendMessage = async (...args) => { sent.push(args); };
+  const send = f.delegation.tools({}, [], true).find(tool => tool.name === 'send_message')!;
+  const invoke = (callId: string) => (send.execute as any)({ to: 'parent', text: 'Need a choice' }, { callId }, { abortSignal: signal() });
+  await invoke('first'); await invoke('first');
+  assert.equal(sent[0][0], 'parent');
+  assert.equal(sent[0][1].id, sent[1][1].id);
+  assert.equal(sent[0][2].source.agentId, 'child');
+  assert.equal(sent[0][2].metadata.kind, 'message');
+  for (let i = 1; i < 20; i++) await invoke('call-' + i);
+  await assert.rejects(invoke('over-limit'), /20 messages/);
+});
+test('public metadata cannot forge a parent for agent messages or progress', async () => {
+  const f = fixture(); let sent = false;
+  f.setRun({ id: 'fake', metadata: { parentAgentId: 'somebody', delegationDepth: '1', delegationMaxDepth: '5', delegationChain: 'somebody', delegationSignature: 'fake' } });
+  f.host.sendMessage = f.host.reportProgress = async () => { sent = true; };
+  for (const name of ['send_message', 'report_progress']) {
+    const tool = f.delegation.tools({}, [], true).find(tool => tool.name === name)!;
+    await assert.rejects((tool.execute as any)({ to: 'parent', text: 'fake' }, { callId: name }, { abortSignal: signal() }), /no parent/);
+  }
+  assert.equal(sent, false);
+});
+test('progress is idempotent, shown once in tool results, and never starts a turn', async () => {
+  const parent = fixture(), child = await childFixture();
+  parent.values.set('delegation:live', { id: 'child', key: 'live', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'spawn', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'running', made: true, background: true, accepted: true });
+  child.host.reportProgress = async (id, report) => { assert.equal(id, 'parent'); await parent.delegation.recordProgress(report); };
+  const progress = child.delegation.tools({}, [], true).find(tool => tool.name === 'report_progress')!;
+  await (progress.execute as any)({ text: 'Read the first source' }, { callId: 'progress' }, { abortSignal: signal() });
+  await (progress.execute as any)({ text: 'Read the first source' }, { callId: 'progress' }, { abortSignal: signal() });
+  assert.equal(parent.events.length, 1);
+  assert.equal((parent.events[0] as any).event.type, 'subagent_progress');
+  assert.equal(parent.submitted.length, 0);
+  const list = parent.delegation.tools({ instructions: true }, ['agents']).find(tool => tool.name === 'list_agents')!;
+  const first = await (list.execute as any)({}, { callId: 'list' }, { abortSignal: signal() });
+  assert.equal(first.output[1].agentUpdates, true);
+  assert.match(first.output[1].text, /Read the first source/);
+  const second = await (list.execute as any)({}, { callId: 'list2' }, { abortSignal: signal() });
+  assert.equal(second.output.length, 1);
+  await assert.rejects(parent.delegation.recordProgress({ agentId: 'stranger', requestId: 'child-run', callId: 'fake', text: 'fake' }), /Unknown sub-agent/);
+});
+test('wait_agent takes a background ending exactly once and excludes direct delegates', async () => {
+  const f = fixture();
+  const base = { id: 'child', requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'call', task: 'go', name: 'helper', depth: 1, root: 'parent', createdAt: 1, endedAt: 2, status: 'completed', made: true, accepted: true, outcome: { result: { reply: 'done' } } };
+  f.values.set('delegation:background', { ...base, key: 'background', background: true });
+  f.values.set('delegation:direct', { ...base, id: 'direct', key: 'direct', background: false });
+  const wait = f.delegation.tools({ instructions: true }, ['agents']).find(tool => tool.name === 'wait_agent')!;
+  const first = await (wait.execute as any)({}, { callId: 'wait' }, { abortSignal: signal() });
+  assert.deepEqual(JSON.parse(first.output[0].text).agents.map((entry: any) => entry.text), ['done']);
+  assert.equal((f.values.get('delegation:background') as any).landedBy, 'wait');
+  const second = await (wait.execute as any)({}, { callId: 'again' }, { abortSignal: signal() });
+  assert.deepEqual(JSON.parse(second.output[0].text).agents, []);
+});

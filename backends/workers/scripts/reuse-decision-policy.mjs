@@ -39,4 +39,9 @@ const markerPath = new URL('sender-markers.ts', output);
 if (process.argv.includes('--check')) {
   if (await readFile(markerPath, 'utf8') !== markers) throw new Error('sender markers drifted');
 } else await writeFile(markerPath, markers);
+const portableSender = header + sender.replace('import type { AgentMessage } from "@earendil-works/pi-agent-core";', 'import type { Message as AgentMessage } from "@earendil-works/pi-ai";').replace('"./http-error.ts"', '"./errors.ts"');
+const senderPath = new URL('sender.ts', output);
+if (process.argv.includes('--check')) {
+  if (await readFile(senderPath, 'utf8') !== portableSender) throw new Error('sender policy drifted');
+} else await writeFile(senderPath, portableSender);
 console.log('Decision and multi-agent policy matches src/');
