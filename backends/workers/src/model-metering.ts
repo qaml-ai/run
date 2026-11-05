@@ -10,6 +10,7 @@ import type { CreditStop, ModelAttemptEvent, ModelAttemptHook } from './model-at
 import { keyServices, providerCredentials, type KeyEnv } from './security-services.ts';
 import { PREPARED_MODEL_CREDENTIALS } from './model-request-auth.ts';
 import { accountingModel, modelCallKind } from './model-call-context.ts';
+import { logUntrustedModelUsage } from './model-usage-log.ts';
 
 export type ModelReceipt = { tenant: string; agent: string; platform: boolean; event: ModelAttemptEvent };
 export type ModelBillingContext = {
@@ -62,6 +63,7 @@ export function meterProvider<P extends Provider<any>>(
         const next = pending.then(async () => {
           if (event.type === 'finish') {
             await commit({ tenant: identity.tenant, agent: identity.agent, platform, event });
+            if (platform) logUntrustedModelUsage(identity.tenant, identity.agent, model, event.usage, estimate, event.chars, event.completed);
             return true;
           }
           const attributed = event.type === 'begin' ? { ...event,

@@ -1,5 +1,6 @@
 import { retriesModelError } from "./model-errors.ts";
 import { modelCompactionSettings } from "./model-context.ts";
+import { withCompactionPrompt } from "./model-compaction.ts";
 import { toolOutputExtension } from "./tool-output.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
@@ -621,12 +622,15 @@ export class CamelAgent extends DurableObject<Env> {
     };
   }
   private retryModelFailure = true;
-  private modelCompaction?: ReturnType<typeof modelCompactionSettings>;
+  private modelCompaction?: (fixedTokens: number) => ReturnType<typeof modelCompactionSettings>;
   private models = modelRuntime(
     this.env,
     async () => (await this.config()).tenantId,
     {
       agentId: async () => (await this.config()).id,
+      onRetryEvent: async (event) => {
+        await this.emit({ type: "event", requestId: (await this.currentRun()).id, event });
+      },
       // Pi batches its live document. Project the provider's individual deltas
       // through the same projection so short chunks remain observable.
       onStreamEvent: async (event) => {
@@ -794,7 +798,7 @@ export class CamelAgent extends DurableObject<Env> {
         (await keyServices(this.env)).tenants.modelEndpoints(conf.tenantId),
         conf.resolvedModel,
       );
-      this.modelCompaction = modelCompactionSettings(model, conf.config.maxOutputTokens);
+      this.modelCompaction = fixed => modelCompactionSettings(model, conf.config.maxOutputTokens, fixed);
       registry.install(
         runtimePromptSections(
           async () => {
@@ -1000,11 +1004,11 @@ export class CamelAgent extends DurableObject<Env> {
         storage,
         {
           models: this.models.models,
-          registry,
+          registry: withCompactionPrompt(registry, fixed => this.modelCompaction?.(fixed)),
           onWake,
           settings: () => ({
             afterFailedRun: "withdraw",
-            compaction: this.modelCompaction,
+            compaction: this.modelCompaction?.(0),
             retry: { enabled: this.retryModelFailure, maxRetries: 2, baseDelayMs: 500 },
           }),
         },
@@ -1994,10 +1998,10 @@ export class CamelAgent extends DurableObject<Env> {
       request.method === "continue"
         ? ""
         : (params.text === undefined || (typeof params.text === "string" && !params.text.trim() &&
-            new TextEncoder().encode(params.text).length <= 100_000)) &&
+            new TextEncoder().encode(params.text).length <= 6 * 1024 * 1024)) &&
             Array.isArray(params.files) && params.files.length > 0
           ? ""
-        : boundedText(params.text, "text", 100_000);
+        : boundedText(params.text, "text", 6 * 1024 * 1024);
     if (notice) {
       params.whileRunning =
         notice.metadata.kind === "message" ? "steer" : "queue";
@@ -2431,7 +2435,7 @@ export class CamelAgent extends DurableObject<Env> {
             (await keyServices(this.env)).tenants.modelEndpoints(incoming.tenantId),
             incoming.resolvedModel,
           );
-          this.modelCompaction = modelCompactionSettings(model, incoming.config.maxOutputTokens);
+          this.modelCompaction = fixed => modelCompactionSettings(model, incoming.config.maxOutputTokens, fixed);
           const refusal = modelSettingsRefusal(model, incoming.config as never);
           if (refusal) throw new BadRequest(refusal);
           if (

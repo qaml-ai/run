@@ -41,6 +41,7 @@ import { PREPARED_MODEL_CREDENTIALS } from "./model-request-auth.ts";
 import { modelCallKind } from "./model-call-context.ts";
 import { contentFilterFallbacks } from "./default-model-policy.ts";
 import { isContentFilterBlock, isModelUnavailable } from "./model-errors.ts";
+import { ModelReplayRetry, type ModelRetryEvent } from "./model-replay-retry.ts";
 
 export type ModelRequestSettings = AgentConfiguration & { requestId?: string; outputReminded?: boolean; output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
 export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true; deployments?: Record<string, string> };
@@ -49,6 +50,7 @@ export type ModelHooks = {
   beforeRequest?: () => Promise<void>;
   onStreamEvent?: (event: AssistantMessageEvent) => void | Promise<void>;
   onDiscardedOutput?: (message: AssistantMessage) => void | Promise<void>;
+  onRetryEvent?: (event: ModelRetryEvent) => void | Promise<void>;
   onStall?: (stall: Stall & { provider: string; model: string }) => void | Promise<void>;
   wrapProvider?: (provider: Provider) => Provider;
   settings?: () => Promise<ModelRequestSettings>;
@@ -61,6 +63,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
   const timeouts = runtimeStreamTimeouts(env);
   let routing: { user: string; previous?: Model<Api>; failed?: Model<Api> } | undefined;
   const outputRequest = new OutputRequest();
+  const replayRetry = new ModelReplayRetry(hooks.onRetryEvent);
   const filterFallbacks = contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS);
   const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}) => {
     const callKind = modelCallKind(context);
@@ -129,8 +132,8 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
     void (async () => {
       try {
         let prepared = await prepare(model, context, options);
+        replayRetry.begin(prepared.config.requestId ?? String(context.messages.findLast(message => message.role === "user")?.timestamp ?? 0));
         let retry = false;
-        let reasoningRetries = 0;
         do {
         retry = false;
         let stalled: Promise<void> | undefined;
@@ -149,7 +152,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
           // context and payload unchanged, and never retry a tenant endpoint.
           if (event.type === "error" && event.reason !== "aborted" && prepared.model.provider === "openrouter" &&
               !prepared.options.endpointIdentity && refusedReasoningReplay(event.error.errorMessage) &&
-              reasoningRetries++ < 2 && !options?.signal?.aborted) {
+              !options?.signal?.aborted && await replayRetry.retry(event.error, options?.signal)) {
             retry = true;
             continue;
           }
@@ -177,6 +180,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
           }
           if (routing && event.type === "error") routing.failed = prepared.model;
           if (routing && event.type === "done") { routing.previous = prepared.model; routing.failed = undefined; }
+          if (event.type === "done") await replayRetry.success();
           await hooks.onStreamEvent?.(event);
           output.push(event);
         }
@@ -185,8 +189,9 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
         else output.end(result);
         } while (retry);
       } catch (error) {
-        const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [], stopReason: "error", errorMessage: error instanceof Error ? error.message : String(error), timestamp: Date.now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
-        output.push({ type: "error", reason: "error", error: message }); output.end(message);
+        const reason = options?.signal?.aborted ? "aborted" : "error";
+        const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [], stopReason: reason, errorMessage: error instanceof Error ? error.message : String(error), timestamp: Date.now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+        output.push({ type: "error", reason, error: message }); output.end(message);
       }
     })();
     return output;
