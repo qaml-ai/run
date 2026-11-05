@@ -70,7 +70,6 @@ import { providerRoutes } from "./provider-routes.ts";
 import { TENANT_CONFIGURATION_KEYS } from "./access-policy.ts";
 import {
   readAgentSpendLimit,
-  setAgentSpendLimit,
   agentSpendView,
 } from "./agent-spend.ts";
 export { CamelAgent };
@@ -376,17 +375,13 @@ const worker = {
               const journey = createJourney(env, accounts, env.AGENT_PUBLIC_URL || url.origin);
               if (journey) {
                 // A reused key has a configuration update, not another creation.
-                if (!upsert.reconfigured && !created.reconfigured) {
+                if (!created.reconfigured) {
                   await journey.agentCreated({ tenant: auth.tenantId, via: auth.kind === 'console' ? 'console' : auth.kind === 'oauth' ? 'mcp' : 'api', ...(auth.kind === 'console' ? { browser: journey.browser(request) } : {}) });
                 }
                 ctx.waitUntil(journey.send());
               }
             }
-            if (Object.hasOwn(raw, "spendLimit"))
-              await setAgentSpendLimit(
-                env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,
-              );
-            const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id, created.tokenVersion)), ...(upsert.reconfigured ? { reconfigured: upsert.reconfigured } : {}), ...await builtinWarnings(env, auth.tenantId, created.config) };
+            const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id, created.tokenVersion)), ...(created.reconfigured ? { reconfigured: created.reconfigured } : {}), ...await builtinWarnings(env, auth.tenantId, created.config) };
             const headers = admissionHeaders(creationRate(created) ?? await createAdmission(env, auth.tenantId, false));
             if (!first) return Response.json(answer, { status: 201, headers });
             const submitted = await env.AGENTS.getByName(created.id).fetch(new Request("https://agent/requests", {
