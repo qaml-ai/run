@@ -12,7 +12,7 @@
     "test:affected": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/test-select.ts --run",
     "test:shard": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/test-shard.ts",
     "test:python": "python3 tests/python_sdk.py",
-    "typecheck": "tsc -p tsconfig.json && tsc -p studio/tsconfig.json && tsc -p console/tsconfig.json && tsc -p packages/react/tsconfig.json && tsc -p packages/registry/tsconfig.json && tsc -p packages/bindings.tsconfig.json && tsc -p packages/cli/tsconfig.json",
+    "typecheck": "npm run check:core && tsc -p tsconfig.json && tsc -p studio/tsconfig.json && tsc -p console/tsconfig.json && tsc -p packages/react/tsconfig.json && tsc -p packages/registry/tsconfig.json && tsc -p packages/bindings.tsconfig.json && tsc -p packages/cli/tsconfig.json",
     "test:ui": "vitest run --config packages/react/vitest.config.ts && vitest run --config packages/registry/vitest.config.ts && vitest run --config packages/bindings.vitest.config.ts && npm run test:console",
     "test:console": "vitest run --config console/vitest.config.ts",
     "registry": "node --experimental-strip-types --disable-warning=ExperimentalWarning packages/registry/build.ts",
@@ -29,7 +29,8 @@
     "sim:mcp": "node --experimental-strip-types --disable-warning=ExperimentalWarning tests/sim/mcp.ts",
     "bench:sim-hooks": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-sim-hooks.ts",
     "bench:search": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-search.ts",
-    "test:studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/smoke.ts"
+    "test:studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/smoke.ts",
+    "check:core": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/check-core.ts && tsc -p tsconfig.core.json"
   },
   "version": "0.1.0",
   "description": "Hosted agent runtime: supervisor, durable agent state, V8 codemode sandbox, SDKs, console and Studio",
@@ -103,6 +104,7 @@
     "axe-core": "^4.13.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "esbuild": "0.28.2",
     "express": "^5.2.1",
     "fast-check": "^4.10.2",
     "jsdom": "^26.1.0",
