@@ -6,6 +6,7 @@ import { ToolFiles } from './tool-files.ts';
 import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
 import { steeringJoined } from "./steering-placement.ts";
 import { ConfigurationTargets } from "./configuration-targets.ts";
+import { visibleEvent } from "./event-visibility.ts";
 import { toolOutputExtension } from "./tool-output.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
@@ -1121,6 +1122,7 @@ export class CamelAgent extends DurableObject<Env> {
       for (const listener of this.listeners) listener(cursor, event);
       for (const socket of this.ctx.getWebSockets()) {
         try {
+          if (!visibleEvent(event, socket.deserializeAttachment()?.subagents === true)) continue;
           socket.send(eventFrame(event, cursor));
         } catch {
           socket.close(1011, "Send failed");
@@ -3505,10 +3507,13 @@ export class CamelAgent extends DurableObject<Env> {
       }
       socket.serializeAttachment({
         type: "camel.application",
+        subagents: url.searchParams.get("subagents") === "1",
         connection: connection.id,
         serving: true,
         initialized: false,
       });
+    } else {
+      socket.serializeAttachment({ type: "camel.watcher", subagents: url.searchParams.get("subagents") === "1" });
     }
     socket.send(
       eventFrame(
@@ -3634,10 +3639,12 @@ export class CamelAgent extends DurableObject<Env> {
     const state = await this.state();
     const watch = new URL(request.url).searchParams.get("watch") === "1";
     const asked = new URL(request.url).searchParams.get("snapshot");
-    return replayEvents({ cursor: state.cursor, events: state.events,
+    const replay = replayEvents({ cursor: state.cursor, events: state.events,
       turn: await this.ctx.storage.get<LiveTurn>("live-turn"), partial: this.partial },
       request.headers.get("Last-Event-ID") ?? "0", watch ? asked !== "0" : asked === "1",
       Number((this.env as Env & { AGENT_SNAPSHOT_BYTES?: string }).AGENT_SNAPSHOT_BYTES) || undefined);
+    return { ...replay, cursor: replay.events.at(-1)?.id ?? replay.cursor,
+      events: replay.events.filter(row => visibleEvent(row.data, new URL(request.url).searchParams.get("subagents") === "1")) };
   }
   private async events(request: Request): Promise<Response> {
     const runId = new URL(request.url).searchParams.get("runId");
@@ -3684,6 +3691,7 @@ export class CamelAgent extends DurableObject<Env> {
           let closed = false;
           const send = (cursor: number, event: unknown) => {
             if (closed) return;
+            if (!visibleEvent(event, new URL(request.url).searchParams.get("subagents") === "1")) return;
             if (cursor === 0 || (controller.desiredSize ?? 0) <= 0) {
               cleanup();
               controller.close();

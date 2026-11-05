@@ -242,7 +242,7 @@ export class Delegation {
     const abort = new AbortController();
     let drain!: () => void;
     const drained = new Promise<void>(resolve => { drain = resolve; });
-    const response = await this.host.fetch(child.id, new Request('https://agent/events?watch=1', { signal: abort.signal }));
+    const response = await this.host.fetch(child.id, new Request('https://agent/events?watch=1&subagents=1', { signal: abort.signal }));
     const read = async () => {
       const reader = response.body?.getReader(); if (!reader) return;
       let buffer = ''; const decoder = new TextDecoder();
