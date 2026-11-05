@@ -24,8 +24,17 @@ test('fake provider hashes fragmented OpenAI, Responses and Anthropic bodies', a
   const payloads = [chat(), { input: [{ role: 'user', content: [{ type: 'input_image', image_url: `data:image/png;base64,${base64}` }] }] }, { messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64 } }] }] }];
   for (const payload of payloads) {
     const result = await verifyImageBody(request(payload));
-    assert.deepEqual(result.images, [{ sha256: expected, bytes: bytes.length, source: 'base64' }]);
+    assert.deepEqual(result.images.map(({sha256,bytes,source})=>({sha256,bytes,source})), [{ sha256: expected, bytes: bytes.length, source: 'base64' }]);
   }
+});
+
+test('receiver checks JPEG/WebP magic against declared data-URL MIME', async () => {
+  const jpeg = Buffer.from([255,216,255,224,0,4,1,2,3,4,5,6]);
+  await assert.rejects(verifyImageBody(request(chat(jpeg.toString('base64')))), /MIME does not match/);
+  const payload = JSON.stringify(chat(jpeg.toString('base64'))).replace('image/png','image/jpeg');
+  const result = await verifyImageBody(request(payload));
+  assert.equal(result.images[0].mimeType,'image/jpeg');
+  assert.equal(result.images[0].declaredMimeType,'image/jpeg');
 });
 
 test('parser handles large chunks without retaining a whole image', async () => {

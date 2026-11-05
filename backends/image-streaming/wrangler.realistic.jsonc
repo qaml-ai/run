@@ -1,0 +1,60 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "camelrun-proto-image-realistic",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-05",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "limits": {
+    "cpu_ms": 30000
+  },
+  "observability": {
+    "enabled": true,
+    "redact_query_string": true,
+    "head_sampling_rate": 1,
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CASES",
+        "class_name": "ImageAgent"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ImageAgent"
+      ]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "camelrun-proto-image-realistic"
+    }
+  ],
+  "images": {
+    "binding": "IMAGES"
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "services": [
+    {
+      "binding": "PROVIDER",
+      "service": "camelrun-proto-image-realistic-provider"
+    }
+  ],
+  "vars": {
+    "PUBLIC_ORIGIN": "https://camelrun-proto-image-realistic.miguel-85b.workers.dev",
+    "IMAGE_PROFILE": "realistic",
+    "CPU_LIMIT_MS": "30000"
+  }
+}

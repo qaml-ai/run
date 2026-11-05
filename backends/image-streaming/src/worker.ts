@@ -15,6 +15,7 @@ import { streamingFetch } from './stream.ts';
 import { substituteSignedUrls, serveSignedImage, createSignedImageUrl } from './signed.ts';
 import { authorized } from './fake-provider.ts';
 import { runPiProbe } from './pi-probe.ts';
+import { runVisionCheck } from './vision.ts';
 
 interface Env {
   CASES: DurableObjectNamespace<ImageAgent>;
@@ -25,6 +26,8 @@ interface Env {
   PROXY: Fetcher;
   EXPERIMENT_TOKEN: string;
   PUBLIC_ORIGIN: string;
+  IMAGE_PROFILE?: string;
+  CPU_LIMIT_MS?: string;
 }
 type Mode = 'A' | 'B' | 'C' | 'D';
 type RequestOptions = {api?: string; failAfter?: number; abortMs?: number; missing?: boolean; holdMs?: number};
@@ -46,7 +49,8 @@ export class ImageAgent extends DurableObject<Env> {
   status() {
     return {constructorId: this.constructorId, objectId: this.ctx.id.toString(),
       mode: this.mode, databaseBytes: this.ctx.storage.sql.databaseSize,
-      messages: this.loaded?.messages.length ?? 0, images: this.expected.length, at: Date.now()};
+      messages: this.loaded?.messages.length ?? 0, images: this.expected.length,
+      cpuLimitMs: Number(this.env.CPU_LIMIT_MS ?? 300000), at: Date.now()};
   }
   async seed(mode: Mode, count: number) {
     this.mode = mode;
@@ -138,15 +142,20 @@ export class ImageAgent extends DurableObject<Env> {
           error: (result.errorMessage??'Provider request failed').replace(/([?&]signature=)[^&\s"']+/g,'$1[redacted]')};
       }
       const text = result.content.filter(p=>p.type==='text').map(p=>p.text).join('');
-      const summary = JSON.parse(text) as {images: {sha256: string;bytes: number}[]; imageCount: number;bytesRead: number};
+      const summary = JSON.parse(text) as {images: {sha256: string;bytes: number;mimeType?:string;declaredMimeType?:string}[]; imageCount: number;bytesRead: number};
       const match = summary.images.length === this.expected.length && summary.images.every((image,index)=>
         image.sha256 === this.expected[index]?.sha256 && image.bytes === this.expected[index]?.size);
+      const mimeMatch = summary.images.every((image,index)=>image.mimeType===this.expected[index]?.mimeType &&
+        (api==='anthropic-messages'||image.declaredMimeType===this.expected[index]?.mimeType));
       const elapsedMs = performance.now() - started;
       if (options.holdMs) await new Promise(resolve=>setTimeout(resolve, Math.min(options.holdMs!,45000)));
-      return {...this.status(), calls, elapsedMs, match, summary};
+      return {...this.status(), calls, elapsedMs, match, mimeMatch, summary};
     } finally {if (timer !== undefined) clearTimeout(timer);}
   }
   async evict() {this.ctx.abort('Intentional experiment eviction');}
+  async vision() {
+    return {...await runVisionCheck(this.env), location:'ImageAgent Durable Object', ...this.status()};
+  }
   async probe(): Promise<unknown> {
     return runPiProbe(this.ctx.storage, async image => {
       const bytes = Buffer.from(image.data, 'base64');
@@ -159,30 +168,42 @@ export class ImageAgent extends DurableObject<Env> {
   }
 }
 
-async function deriveImage(key: string,env: Env) {
-  const original = await env.BUCKET.get(key);
-  if (!original) throw Error('Upload failed');
-  const image = await env.IMAGES.input(original.body).transform({width:1568,height:1568,fit:'scale-down'})
-    .output({format:'image/png',anim:false});
-  const response = image.response();
-  const reader = response.body!.getReader();
-  const chunks: Uint8Array[] = []; let size = 0;
-  try {while (true) {const item=await reader.read();if(item.done)break;
-    size+=item.value.byteLength; if(size>5*1024*1024)throw Error('Derivative exceeds 5 MiB');chunks.push(item.value);
-  }} finally {await reader.cancel();reader.releaseLock();}
-  const bytes = Buffer.concat(chunks);
-  const sha256 = hash(bytes), derivativeKey = `${derivativePrefix}${sha256}.png`;
-  await env.BUCKET.put(derivativeKey, bytes, {httpMetadata:{contentType:'image/png'},customMetadata:{sha256}});
-  const ref: ImageReference = {key:derivativeKey,size:bytes.length,mimeType:'image/png',sha256};
-  return {ref,originalBytes:original.size};
+async function deriveImage(key: string,env: Env,realistic=false) {
+  const format = realistic ? 'image/jpeg' : 'image/png';
+  const qualities = realistic ? [82,72,90] : [undefined];
+  let selected: {bytes: Buffer;quality: number|undefined;originalBytes: number}|undefined;
+  const attempts: {quality?:number;bytes:number}[] = [];
+  for (const quality of qualities) {
+    const original = await env.BUCKET.get(key);
+    if (!original) throw Error('Upload failed');
+    const image = await env.IMAGES.input(original.body).transform({width:1568,height:1568,fit:'scale-down'})
+      .output({format,anim:false,...(quality===undefined?{}:{quality})});
+    const reader = image.response().body!.getReader();
+    const chunks: Uint8Array[] = []; let size = 0;
+    try {while (true) {const item=await reader.read();if(item.done)break;
+      size+=item.value.byteLength; if(size>5*1024*1024)throw Error('Derivative exceeds 5 MiB');chunks.push(item.value);
+    }} finally {await reader.cancel().catch(()=>{});reader.releaseLock();}
+    selected={bytes:Buffer.concat(chunks),quality,originalBytes:original.size};
+    attempts.push({quality,bytes:size});
+    if (!realistic || (size>=200000&&size<=400000)) break;
+  }
+  const {bytes,quality,originalBytes}=selected!;
+  const info = await env.IMAGES.info(new Response(bytes).body!);
+  if ('width' in info && (info.width>1568||info.height>1568)) throw Error('Derivative dimensions exceed 1568 pixels');
+  const sha256 = hash(bytes), derivativeKey = `${derivativePrefix}${sha256}.${realistic?'jpg':'png'}`;
+  await env.BUCKET.put(derivativeKey, bytes, {httpMetadata:{contentType:format},customMetadata:{sha256}});
+  const ref: ImageReference = {key:derivativeKey,size:bytes.length,mimeType:format,sha256};
+  return {ref,originalBytes,output:{...info,quality},attempts};
 }
 
 async function upload(index: number, request: Request, env: Env) {
-  const key = `original/${index}.png`;
+  const key = `original/${index}`;
   await env.BUCKET.put(key, request.body);
-  const result=await deriveImage(key,env), {ref}=result;
-  await env.BUCKET.put(`ref/${index}.json`,JSON.stringify(ref));
-  return json(result);
+  const realistic=env.IMAGE_PROFILE==='realistic';
+  const result=await deriveImage(key,env,realistic), {ref}=result;
+  const accepted=!realistic || (ref.size>=200000&&ref.size<=400000);
+  if (accepted) await env.BUCKET.put(`ref/${index}.json`,JSON.stringify(ref));
+  return json({...result,accepted});
 }
 
 export default {async fetch(request: Request, env: Env) {
@@ -190,7 +211,7 @@ export default {async fetch(request: Request, env: Env) {
   if (path === '/signed-image') return serveSignedImage(request,env.BUCKET,{secret:env.EXPERIMENT_TOKEN,keyPrefix:derivativePrefix});
   if (!authorized(request,env.EXPERIMENT_TOKEN)) return new Response('Unauthorized',{status:401});
   const fixture = /^\/fixture\/(\d+)$/.exec(path);
-  if (fixture && request.method === 'PUT' && Number(fixture[1])<100) {
+  if (fixture && request.method === 'PUT' && Number(fixture[1])<500) {
     try{return await upload(Number(fixture[1]),request,env);}
     catch(error){return json({error:String(error)},500);}
   }
@@ -204,6 +225,10 @@ export default {async fetch(request: Request, env: Env) {
     return json({refs});
   }
   if (path === '/vision' && request.method === 'POST') {
+    if (env.IMAGE_PROFILE==='realistic') {
+      try{return json(await env.CASES.getByName('vision-b').vision());}
+      catch(error){return json({error:String(error).replace(/https:\/\/[^\s"']+/g,'[url redacted]')},502);}
+    }
     const manifest=await env.BUCKET.get('manifest.json');
     if(!manifest)return json({error:'Missing corpus'},400);
     const refs=await manifest.json<ImageReference[]>();

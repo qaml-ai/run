@@ -53,17 +53,22 @@ model.
 
 ## Bedrock, Google and integrity limits
 
-The tested pi-ai 1.5.0 Bedrock adapter does not consume `options.fetch`. Its AWS
-SDK signs a serialized body before its request handler sends it. A marker-body
-signature is invalid after expansion. `tests/bedrock.test.ts` uses the actual
-Smithy signer with a synthetic credential and no network: a first streamed SHA256
-pass plus a second fresh send pass produces the same signature as a materialized
-expanded body. This proves the byte/signature construction, not that the stock
-adapter exposes the needed hook. Integration still needs an application-owned
-Bedrock transport or AWS SDK middleware before signing, plus request-handler
-support for the stream. Pin immutable object versions across both passes; the
-same length alone does not prove the same content. Expect double object reads
-and encoding CPU for each attempt.
+Use Bedrock API keys over bearer HTTPS; request signing and two-pass hashing are
+outside the proposed integration. Pi 1.5.0's native Bedrock adapter already
+supports bearer tokens, but still does not consume `options.fetch`. For native
+Converse, add an application-owned adapter that builds small marker JSON, posts
+it with bearer auth, and expands `image.source.bytes` into base64 once per
+attempt. Preserve the trusted image `format`. Native Converse accepts bytes
+or supported S3 references, not arbitrary signed HTTP image URLs. See the
+[Bedrock source and API audit](provider-audit.md#bedrock-api-key-http-transport).
+
+The adapter must preserve system messages, tools, reasoning, cache metadata,
+usage, errors and cancellation while decoding the native response event stream.
+The shared stream builder covers the request-byte transformation only. The
+bearer request-shape fixture is not a complete Pi adapter or AWS acceptance
+test. Where the exact Bedrock model supports its OpenAI-compatible API and
+image inputs, routing through the existing OpenAI adapter may avoid that native
+response implementation; verify those capabilities before selecting it.
 
 The tested Google adapters explicitly reject a custom fetch. Their request path
 needs an application transport or a supported provider-specific file reference;
@@ -72,10 +77,11 @@ unsupported adapter: a valid PNG marker could otherwise reach a real model as a
 blank 1x1 image without an obvious protocol error.
 
 The current marker is itself a small PNG so Pi's image-header checks accept it.
-The experiment stores PNG derivatives, which keeps the marker MIME and actual
-payload MIME aligned. If ECS keeps JPEG derivatives, substitution must also
-replace the provider MIME/data-URL prefix from trusted derivative metadata;
-retaining `image/png` while sending JPEG bytes is incorrect.
+The experiment stores PNG derivatives. The stream builder also restores JPEG
+and WebP MIME/data-URL prefixes and native image formats from reference metadata,
+with synthetic unit coverage. An ECS integration must retain that translation
+and validate the metadata against the stored derivative; its hash and format
+cannot be trusted merely because they appear in a marker.
 
 Marker metadata is not authorization. Before expanding or signing it, resolve
 an opaque reference under the current tenant/agent's retained-image capability;

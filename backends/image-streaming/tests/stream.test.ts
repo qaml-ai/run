@@ -116,6 +116,31 @@ test("missing and changed objects fail before any body read; scope is checked fi
   assert.equal(stats.gets, 0);
 });
 
+test("PNG markers restore JPEG and WebP MIME metadata in every supported JSON shape", async () => {
+  for (const mimeType of ["image/jpeg", "image/webp"]) {
+    const bytes = randomBytes(17);
+    const { ref: original, bucket } = fixture(bytes);
+    const marker = makeMarker({ ...original, mimeType });
+    const body = JSON.stringify({ content: [
+      { type: "image", source: { type: "base64", media_type: "image/png", data: marker } },
+      { type: "image_url", image_url: { url: `data:image/png;base64,${marker}` } },
+      { type: "input_image", image_url: `data:image/png;base64,${marker}` },
+      { inlineData: { mimeType: "image/png", data: marker } },
+      { inline_data: { mime_type: "image/png", data: marker } },
+      { image: { format: "png", source: { bytes: marker } } },
+    ] });
+    const prepared = await prepareBody(body, bucket, { createFixedLengthStream: fixed });
+    const output = JSON.parse(await new Response(prepared.body).text()).content;
+    await prepared.done;
+    assert.equal(output[0].source.media_type, mimeType);
+    assert.ok(output[1].image_url.url.startsWith(`data:${mimeType};base64,`));
+    assert.ok(output[2].image_url.startsWith(`data:${mimeType};base64,`));
+    assert.equal(output[3].inlineData.mimeType, mimeType);
+    assert.equal(output[4].inline_data.mime_type, mimeType);
+    assert.equal(output[5].image.format, mimeType.slice(6));
+  }
+});
+
 test("retry after mid-stream failure reopens R2 and never reuses a consumed request", async () => {
   const bytes = randomBytes(10000);
   const { ref, bucket, stats } = fixture(bytes, 29);

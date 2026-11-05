@@ -12,9 +12,10 @@ const report=JSON.parse((reportFile.endsWith('.gz')?gunzipSync(bytes):bytes).toS
 if(!report.finishedMeasurementsAt&&!report.cleanup?.at)throw Error('Wait for the measurement matrix to finish before querying phase telemetry');
 const account=report.account??process.env.CLOUDFLARE_ACCOUNT_ID;
 if(!/^[a-f0-9]{32}$/i.test(account??''))throw Error('Report must identify a valid Cloudflare account');
-const names=['camelrun-proto-image-streaming','camelrun-proto-image-proxy'];
-if(process.argv.includes('--include-provider'))names.push('camelrun-proto-image-provider');
-const output=resolve(dirname(resolve(reportFile)),'phase-telemetry.json');
+const resources=report.resources??['camelrun-proto-image-streaming','camelrun-proto-image-proxy','camelrun-proto-image-provider'];
+const names=[resources[0],resources.find(name=>name.endsWith('-proxy'))].filter(Boolean);
+if(process.argv.includes('--include-provider'))names.push(resources.find(name=>name.endsWith('-provider'))??'camelrun-proto-image-provider');
+const output=resolve(dirname(resolve(reportFile)),report.profile==='realistic'?'phase-telemetry-realistic.json':'phase-telemetry.json');
 const phases=[];
 for(const row of report.cases??[]) {
   if(row.request?.startedAt&&row.request?.endedAt)phases.push({kind:'single',id:row.id,mode:row.mode,count:row.count,api:row.api,

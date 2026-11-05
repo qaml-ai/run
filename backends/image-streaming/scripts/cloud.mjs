@@ -4,10 +4,19 @@ import { mkdir,mkdtemp,readFile,writeFile,rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { fixture,digest } from './fixture.mjs';
+import { realisticFixture,REALISTIC_SOURCES } from './realistic-fixtures.mjs';
 
 const cwd=resolve(import.meta.dirname,'..');
 const account=process.env.CLOUDFLARE_ACCOUNT_ID??'85bbd288051330fb51ee1c86031a299b';
-const names=['camelrun-proto-image-streaming','camelrun-proto-image-proxy','camelrun-proto-image-provider'];
+const realistic=process.argv.includes('--realistic');
+const visionOnly=process.argv.includes('--vision-only');
+if(visionOnly&&!realistic)throw Error('--vision-only requires --realistic');
+const names=realistic?['camelrun-proto-image-realistic','camelrun-proto-image-realistic-provider']:
+  ['camelrun-proto-image-streaming','camelrun-proto-image-proxy','camelrun-proto-image-provider'];
+const primaryConfig=realistic?'wrangler.realistic.jsonc':'wrangler.jsonc';
+const configs=realistic?['wrangler.realistic-provider.jsonc',primaryConfig]:['wrangler.provider.jsonc','wrangler.proxy.jsonc',primaryConfig];
+const modes=realistic?['B','D']:['A','B','C','D'];
+const referenceModes=realistic?['B','D']:['B','C','D'];
 const name=names[0], domain=process.env.IMAGE_EXPERIMENT_WORKERS_DOMAIN??'miguel-85b.workers.dev';
 const base=`https://${name}.${domain}`;
 const token=process.env.CLOUDFLARE_API_TOKEN;
@@ -17,9 +26,9 @@ const lock=resolve(cwd,'.cloud-lock');
 await mkdir(lock); // Refuse concurrent runs on this worktree; cloud preflight catches other hosts.
 const state=await mkdtemp(resolve(cwd,'.cloud-state-'));
 const bearer=randomBytes(32).toString('hex');
-const reportPath=resolve(cwd,'measurements',`cloud-${smoke?'smoke-':''}${new Date().toISOString().replace(/[:.]/g,'-')}.json`);
+const reportPath=resolve(cwd,'measurements',`cloud-${realistic?'realistic-':''}${visionOnly?'vision-':''}${smoke?'smoke-':''}${new Date().toISOString().replace(/[:.]/g,'-')}.json`);
 await mkdir(resolve(cwd,'measurements'),{recursive:true});
-const report={startedAt:new Date().toISOString(),smoke,account,resources:names,fixture:{},cases:[],concurrency:[],events:[],telemetry:[],cleanup:{}};
+const report={startedAt:new Date().toISOString(),smoke,profile:realistic?'realistic':'large-png',visionOnly,account,resources:names,fixture:{},cases:[],concurrency:[],events:[],telemetry:[],cleanup:{}};
 const stop=new AbortController();
 const signalHandler=()=>stop.abort(new Error('Experiment interrupted; cleaning disposable resources'));
 process.on('SIGINT',signalHandler);process.on('SIGTERM',signalHandler);
@@ -145,7 +154,7 @@ async function concurrent(mode,count) {
 }
 async function faults() {
   report.faults=[];
-  for(const mode of ['B','C','D'])for(const fault of ['retry','abort','missing']) {
+  for(const mode of referenceModes)for(const fault of ['retry','abort','missing']) {
     const id=`fault-${mode.toLowerCase()}-${fault}`,row={mode,fault,id};report.faults.push(row);
     row.seed=await call(`/case/${id}/seed`,{mode,count:smoke?1:20});
     const options={api:'openai-completions',...(fault==='retry'?{failAfter:50000}:fault==='abort'?{abortMs:20}:{missing:true})};
@@ -156,7 +165,7 @@ async function faults() {
 }
 async function replay() {
   report.replay=[];
-  for(const mode of ['B','C','D']) {
+  for(const mode of referenceModes) {
     const id=`replay-${mode.toLowerCase()}`,row={mode,id};report.replay.push(row);
     row.seed=await call(`/case/${id}/seed`,{mode,count:smoke?1:20});
     row.before=await call(`/case/${id}/status`);row.evict=await call(`/case/${id}/evict`);
@@ -172,17 +181,30 @@ try {
   if(report.baseline.workers.length||report.baseline.namespaces.length||await bucketExists())throw Error('An exact experiment resource already exists; refusing adoption or deletion');
   ownsResources=true;
   await api('/r2/buckets','POST',{name});await save();
-  for(const config of ['wrangler.provider.jsonc','wrangler.proxy.jsonc','wrangler.jsonc']) {
+  for(const config of configs) {
     await wrangler(['deploy','-c',config]);
     await wrangler(['secret','put','EXPERIMENT_TOKEN','-c',config],bearer+'\n');
   }
   namespace=(await namespaces()).find(x=>x.script===name);if(!namespace)throw Error('Deployed DO namespace missing');report.namespace=namespace;await save();
   telemetryTask=(async()=>{let index=0;while(!telemetryStop){await telemetry(`during-${index++}`);for(let part=0;part<9&&!telemetryStop;part++)await delay(5000);}})();
   void telemetryTask.catch(()=>{}); // SIGINT still reaches finally without an unhandled rejection.
+  if(realistic) {
+    for(let attempt=0;attempt<5;attempt++) {
+      const result=await call('/vision',{}, {timeout:150000});
+      if(result.status===401||result.status===404){await delay(2000);continue;}
+      report.workersAiVision=result;await save();break;
+    }
+    event({vision:report.workersAiVision?.data?.response,match:report.workersAiVision?.data?.match,error:report.workersAiVision?.data?.error});
+  }
+  if(!visionOnly) {
   let min=Infinity,max=0,total=0;const hashes=new Set(),fixtures=[];
-  for(let index=0;index<(smoke?1:100);index++) {
+  const wanted=smoke?1:100;
+  for(let index=0;index<(realistic?REALISTIC_SOURCES.length:wanted)&&fixtures.length<wanted;index++) {
     if(stop.signal.aborted)throw stop.signal.reason;
-    const bytes=fixture(index);const sha256=digest(bytes);hashes.add(sha256);min=Math.min(min,bytes.length);max=Math.max(max,bytes.length);total+=bytes.length;
+    let downloaded;
+    try{downloaded=realistic?await realisticFixture(index,{signal:stop.signal}):{bytes:fixture(index)};}
+    catch(error){report.fixtureAttempts??=[];report.fixtureAttempts.push({index,downloadError:String(error)});await save();continue;}
+    const {bytes,source}=downloaded;const sha256=digest(bytes);
     let response,data;
     for(let attempt=0;attempt<5;attempt++) {
       const started=performance.now();
@@ -196,20 +218,27 @@ try {
       if(attempt<4)await delay(2000);
     }
     if(!response.ok)throw Error(`fixture ${index}: HTTP ${response.status}: ${safe(data)}`);
-    fixtures.push({index,originalBytes:bytes.length,originalSha256:sha256,...data});
-    if(index%10===9)event({fixtureUploads:index+1});
+    if(realistic&&!data.accepted){
+      report.fixtureRejections??=[];report.fixtureRejections.push({index,source,...data});await save();
+      event({candidate:index,accepted:false,bytes:data.ref?.size});continue;
+    }
+    hashes.add(sha256);min=Math.min(min,bytes.length);max=Math.max(max,bytes.length);total+=bytes.length;
+    fixtures.push({index,originalBytes:bytes.length,originalSha256:sha256,...(source?{source}:{}),...data});
+    if(fixtures.length%10===0)event({fixtureUploads:fixtures.length,candidates:index+1});
   }
-  report.fixture={count:fixtures.length,distinctContents:hashes.size,width:1600,height:1200,minBytes:min,maxBytes:max,totalBytes:total,images:fixtures};await save();
+  report.fixture={count:fixtures.length,distinctContents:hashes.size,...(realistic?{profile:'JPEG 1568px maximum, quality 72/82/90, selected 200–400 KB'}:{width:1600,height:1200}),minBytes:min,maxBytes:max,totalBytes:total,images:fixtures};await save();
+  if(fixtures.length!==wanted)throw Error(`Only ${fixtures.length}/${wanted} fixtures met the required derivative bounds`);
   if(hashes.size!==fixtures.length)throw Error('Fixture corpus is not distinct');
-  if(fixtures.some(x=>x.ref&&x.ref.size<2*1024*1024))throw Error('Derivative below required 2 MiB; adjust fixture before measuring');
+  if(fixtures.some(x=>x.ref&&(realistic?(x.ref.size<200000||x.ref.size>400000):x.ref.size<2*1024*1024)))throw Error('Derivative outside required bounds');
   report.manifest=await call('/manifest',{}, {method:'GET'});await save();
   if(report.manifest.status!==200||report.manifest.data?.refs?.length!==fixtures.length)throw Error('Corpus manifest did not match uploads');
-  if(!smoke) {report.workersAiVision=await call('/vision',{}, {timeout:120000});await save();}
-  for(const mode of ['A','B','C','D'])for(const count of smoke?[1]:[1,20,100])await single(mode,count);
-  for(const mode of ['A','B','C','D'])for(const apiName of ['openai-responses','anthropic-messages'])await single(mode,1,apiName);
+  if(!smoke&&!realistic) {report.workersAiVision=await call('/vision',{}, {timeout:120000});await save();}
+  for(const mode of modes)for(const count of smoke?[1]:[1,20,100])await single(mode,count);
+  for(const mode of modes)for(const apiName of ['openai-responses','anthropic-messages'])await single(mode,1,apiName);
   await faults();await replay();
   if(!smoke) {
-    for(const mode of ['A','B','C','D'])for(const count of [1,20,100])await concurrent(mode,count);
+    for(const mode of modes)for(const count of [1,20,100])await concurrent(mode,count);
+  }
   }
   report.finishedMeasurementsAt=new Date().toISOString();await save();
   telemetryStop=true;await telemetryTask;telemetryTask=undefined;
@@ -233,7 +262,7 @@ finally {
     });
     const existingNamespaces=await attempt('namespaces before cleanup',namespaces);
     const matchingNamespaces=existingNamespaces?.filter(x=>x.script===name)??[];
-    const sourceConfig=JSON.parse(await readFile(resolve(cwd,'wrangler.jsonc'),'utf8'));
+    const sourceConfig=JSON.parse(await readFile(resolve(cwd,primaryConfig),'utf8'));
     const classes=matchingNamespaces.length?[...new Set(matchingNamespaces.map(x=>x.class??x.class_name).filter(Boolean)
       .concat(sourceConfig.migrations.flatMap(x=>x.new_sqlite_classes??[])))]:[];
     if(classes.length)await attempt('delete DO classes',async()=>{

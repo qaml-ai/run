@@ -35,16 +35,17 @@ function imageParts(body: string): Part[] {
   const parsed: unknown = JSON.parse(body);
   const replacements: { token: string; ref: ImageReference }[] = [];
   const nonce = crypto.randomUUID();
-  const replace = (value: unknown, dataUrl = false): unknown => {
+  const replace = (value: unknown, dataUrl = false, onReference?: (ref: ImageReference) => void): unknown => {
     if (typeof value !== "string") return value;
     const match = dataUrl ? /^data:image\/[a-zA-Z0-9.+-]+;base64,(.*)$/.exec(value) : null;
     const data = dataUrl ? match?.[1] : value;
     if (!data) return value;
     const ref = parseMarker(data);
     if (!ref) return value;
+    onReference?.(ref);
     const token = `__camelrun_stream_${nonce}_${replacements.length}__`;
     replacements.push({ token, ref });
-    return dataUrl ? value.slice(0, value.length - data.length) + token : token;
+    return dataUrl ? `data:${ref.mimeType};base64,${token}` : token;
   };
   const visit = (value: unknown): void => {
     if (!value || typeof value !== "object") return;
@@ -53,7 +54,7 @@ function imageParts(body: string): Part[] {
     // Anthropic Messages, including its tool result image blocks.
     if (obj.type === "image" && obj.source && typeof obj.source === "object") {
       const source = obj.source as Record<string, unknown>;
-      if (source.type === "base64") source.data = replace(source.data);
+      if (source.type === "base64") source.data = replace(source.data, false, ref => { source.media_type = ref.mimeType; });
     }
     // OpenAI Chat Completions and Responses (OpenRouter uses the former).
     if (obj.type === "image_url" && obj.image_url && typeof obj.image_url === "object") {
@@ -66,15 +67,18 @@ function imageParts(body: string): Part[] {
       if (obj[key] && typeof obj[key] === "object") {
         const data = obj[key] as Record<string, unknown>;
         const mime = data.mimeType ?? data.mime_type;
-        if (typeof mime === "string" && mime.startsWith("image/")) data.data = replace(data.data);
+        if (typeof mime === "string" && mime.startsWith("image/")) data.data = replace(data.data, false, ref => {
+          if ("mimeType" in data) data.mimeType = ref.mimeType;
+          else data.mime_type = ref.mimeType;
+        });
       }
     }
-    // Bedrock Converse; its SigV4 signature must be recomputed after this change.
+    // Bedrock Converse over the application-owned HTTPS bearer transport.
     if (obj.image && typeof obj.image === "object") {
       const image = obj.image as Record<string, unknown>;
       if (typeof image.format === "string" && image.source && typeof image.source === "object") {
         const source = image.source as Record<string, unknown>;
-        source.bytes = replace(source.bytes);
+        source.bytes = replace(source.bytes, false, ref => { image.format = ref.mimeType.slice("image/".length); });
       }
     }
     for (const child of Object.values(obj)) visit(child);
@@ -216,7 +220,7 @@ export function streamingFetch(
   return async (input, init) => {
     if (typeof init?.body !== "string") throw new Error("Image transport requires pi-ai's JSON string body");
     const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
-    // Changing an already signed body invalidates SigV4. The Bedrock audit tests this separately.
+    // Defensive rejection only. The selected Bedrock path uses an HTTPS bearer token.
     if (headers.get("authorization")?.startsWith("AWS4-HMAC-SHA256")) {
       throw new Error("Streaming substitution must run before Bedrock SigV4 signing");
     }

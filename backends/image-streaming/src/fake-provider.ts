@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
-export interface ImageDigest { sha256: string; bytes: number; source: 'base64' | 'url' }
+export interface ImageDigest { sha256: string; bytes: number; source: 'base64' | 'url'; mimeType?: string; declaredMimeType?: string }
 export interface Verification {
   images: ImageDigest[];
   bytesRead: number;
@@ -29,10 +29,17 @@ export function authorized(request: Request, token: string): boolean {
   return token.length > 0 && actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
+function imageMime(bytes: Uint8Array): string | undefined {
+  if (bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71) return 'image/png';
+  if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return 'image/jpeg';
+  if (Buffer.from(bytes.subarray(0,4)).toString() === 'RIFF' && Buffer.from(bytes.subarray(8,12)).toString() === 'WEBP') return 'image/webp';
+}
+
 class Base64Digest {
   private tail = '';
   private hash = createHash('sha256');
   bytes = 0;
+  private prefix = Buffer.alloc(0);
   private limit: number;
   constructor(limit: number) { this.limit = limit; }
   write(value: string): void {
@@ -46,6 +53,7 @@ class Base64Digest {
     this.tail = input.slice(amount);
   }
   private update(bytes: Uint8Array): void {
+    if (this.prefix.length < 12) this.prefix = Buffer.concat([this.prefix, bytes.subarray(0,12-this.prefix.length)]);
     this.bytes += bytes.byteLength;
     if (this.bytes > this.limit) throw new Error('Image exceeds fake-provider limit');
     this.hash.update(bytes);
@@ -57,7 +65,8 @@ class Base64Digest {
     const final = Buffer.from(this.tail, 'base64');
     if (final.toString('base64') !== this.tail) throw new Error('Noncanonical base64 padding');
     this.update(final);
-    return { sha256: this.hash.digest('hex'), bytes: this.bytes, source: 'base64' };
+    const mimeType = imageMime(this.prefix);
+    return { sha256: this.hash.digest('hex'), bytes: this.bytes, source: 'base64', ...(mimeType ? {mimeType} : {}) };
   }
 }
 
@@ -92,6 +101,7 @@ export async function verifyImageBody(request: Request, options: VerifyOptions =
   let bytesRead = 0;
   let urlIsBase64 = false;
   let urlIsRemote = false;
+  let declaredMimeType: string | undefined;
   const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false });
   const reader = request.body.getReader();
 
@@ -126,7 +136,9 @@ export async function verifyImageBody(request: Request, options: VerifyOptions =
           if (captured.length > 256) throw new Error('Invalid data URL prefix');
           return;
         }
-        if (!/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(captured.slice(0, comma + 1))) throw new Error('Expected base64 image data URL');
+        const prefix = /^data:(image\/[a-zA-Z0-9.+-]+);base64,/.exec(captured.slice(0, comma + 1));
+        if (!prefix) throw new Error('Expected base64 image data URL');
+        declaredMimeType = prefix[1];
         digest = new Base64Digest(maxImageBytes);
         digest.write(captured.slice(comma + 1));
         captured = '';
@@ -145,7 +157,14 @@ export async function verifyImageBody(request: Request, options: VerifyOptions =
       parent.state = 'colon';
       return;
     }
-    if (stringKind === 'base64' || urlIsBase64) images.push(digest!.finish());
+    if (stringKind === 'base64' || urlIsBase64) {
+      const result = digest!.finish();
+      if (declaredMimeType) {
+        if (result.mimeType && result.mimeType !== declaredMimeType) throw new Error('Declared image MIME does not match bytes');
+        result.declaredMimeType = declaredMimeType;
+      }
+      images.push(result);
+    }
     else if (stringKind === 'url') {
       if (!options.allowUrls) throw new Error('This fake provider accepts base64 only');
       if (!urlIsRemote || !options.fetchUrl) throw new Error('Missing URL fetch policy');
@@ -154,16 +173,20 @@ export async function verifyImageBody(request: Request, options: VerifyOptions =
       const hash = createHash('sha256');
       const imageReader = response.body.getReader();
       let bytes = 0;
+      let prefix = Buffer.alloc(0);
       try {
         while (true) {
           const item = await imageReader.read();
           if (item.done) break;
           bytes += item.value.byteLength;
+          if (prefix.length < 12) prefix = Buffer.concat([prefix,item.value.subarray(0,12-prefix.length)]);
           if (bytes > maxImageBytes) throw new Error('URL image exceeds fake-provider limit');
           hash.update(item.value);
         }
       } finally { await imageReader.cancel().catch(() => {}); }
-      images.push({ sha256: hash.digest('hex'), bytes, source: 'url' });
+      const mimeType = imageMime(prefix), declaredMimeType = response.headers.get('content-type')?.split(';')[0];
+      if (mimeType && declaredMimeType && mimeType !== declaredMimeType) throw new Error('URL image MIME does not match bytes');
+      images.push({ sha256: hash.digest('hex'), bytes, source: 'url', ...(mimeType ? {mimeType} : {}), ...(declaredMimeType ? {declaredMimeType} : {}) });
     }
     if (images.length > maxImages) throw new Error('Too many images');
     completeValue();
@@ -216,6 +239,7 @@ export async function verifyImageBody(request: Request, options: VerifyOptions =
         digest = stringKind === 'base64' ? new Base64Digest(maxImageBytes) : null;
         urlIsBase64 = false;
         urlIsRemote = false;
+        declaredMimeType = undefined;
         mode = 'string';
       } else if (character === '{' || character === '[') {
         const path = valuePath();

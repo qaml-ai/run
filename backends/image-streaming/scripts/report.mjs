@@ -7,7 +7,7 @@ const cwd=resolve(import.meta.dirname,'..');
 let files=process.argv.slice(2);
 if(!files.length) {
   const candidates=(await readdir(resolve(cwd,'measurements'))).filter(name=>/^cloud-.*\.json(?:\.gz)?$/.test(name)).sort();
-  const complete=candidates.filter(name=>!name.startsWith('cloud-smoke-'));
+  const complete=candidates.filter(name=>!/(?:^|-)smoke-/.test(name)&&!/-vision-/.test(name));
   files=[resolve(cwd,'measurements',(complete.length?complete:candidates).at(-1)??'missing-cloud-report.json')];
 }
 const median=values=>quantile(values,0.5);
@@ -76,7 +76,7 @@ for(const file of files) {
       groupWallMs:group.endedAt&&group.startedAt?Date.parse(group.endedAt)-Date.parse(group.startedAt):null,
       telemetry:metrics(matching),objects};
   });
-  runs.push({source:basename(file),startedAt:report.startedAt,smoke:report.smoke,
+  runs.push({source:basename(file),startedAt:report.startedAt,smoke:report.smoke,profile:report.profile??'large-png',
     fixture:{count:report.fixture?.count,distinctContents:report.fixture?.distinctContents,
       derivativeMinBytes:Math.min(...(report.fixture?.images??[]).map(row=>row.ref?.size).filter(Number.isFinite)),
       derivativeMaxBytes:Math.max(...(report.fixture?.images??[]).map(row=>row.ref?.size).filter(Number.isFinite))},
@@ -100,6 +100,6 @@ const summary={generatedAt:new Date().toISOString(),units:{memory:'MiB (2^20 byt
     'CPU and memory rows include seed, request, hold and status work for each named object.',
     'Worker and DO metrics overlap; do not sum both datasets as a bill. Latencies include all attempted requests only where a value exists.',
   ],codeSize,runs};
-const output=resolve(cwd,'measurements','comparison.json');
+const output=resolve(cwd,'measurements',runs.some(run=>run.profile==='realistic')?'comparison-realistic.json':'comparison.json');
 await writeFile(output,JSON.stringify(summary,null,2)+'\n');
 console.log(JSON.stringify({output,runs:runs.map(run=>({source:run.source,cases:run.cases,concurrency:run.concurrency.map(({objects,...row})=>row),telemetry:run.telemetry,cleanup:run.cleanup,error:run.error})),codeSize},null,2));

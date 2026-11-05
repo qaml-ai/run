@@ -17,29 +17,53 @@ in its own lockfile. Source paths below are relative to the installed package's
 | `azure-openai-responses` | Yes. `api/azure-openai-responses.js` passes `fetch: options.fetch` to `AzureOpenAI`. | Same Responses image shape; deployment must support vision. |
 | `google-generative-ai` | Explicitly rejects non-default fetch before constructing the client. | This technique cannot transparently attach at the requested seam. |
 | `google-vertex` | Explicitly rejects non-default fetch before constructing the client. | Same limitation. |
-| `bedrock-converse-stream` | Ignores `options.fetch`, constructs `BedrockRuntimeClient`. Its image converter decodes data to bytes before SDK serialization. | The wrapper never sees this request. Keeping Pi unmodified requires a different supported seam or transport; merely passing fetch cannot work. |
+| `bedrock-converse-stream` | Ignores `options.fetch`, constructs `BedrockRuntimeClient`. Its image converter decodes data to bytes before SDK serialization. | API-key bearer auth is already supported, but does not expose a fetch seam. Use an application-owned bearer HTTP adapter for native Converse, or a verified compatible API/model through an existing HTTP adapter. |
 
 The declared `ProviderRequestOptions.fetch` documentation explicitly allows
 adapters that cannot inject it to reject it. Its presence in a TypeScript
 interface does not prove support for every provider.
 
-## Bedrock body hashing
+## Bedrock API-key HTTP transport
 
-Ordinary SigV4 covers the SHA-256 hash of the exact serialized request payload.
-Substituting images **after** the AWS SDK signs a marker body invalidates that
-signature. A two-pass algorithm is mechanically possible: hash the complete
-expanded stream, sign that hash, then recreate the same stream and send it. It
-needs immutable objects, deterministic JSON/base64 bytes, stable Content-Length,
-retry reconstruction, and a signing seam that accepts the precomputed hash.
-It doubles image reads and base64 encoding for each attempt. It does **not**
-make this Pi adapter honor custom fetch, or undo its earlier base64-to-bytes
-conversion. This experiment does not claim a live AWS/SigV4 result and never
-uses AWS credentials. A local test (`tests/bedrock.test.ts`) uses deliberately
-synthetic credentials and the actual Smithy signer: the signature from the
-first-pass expanded-body hash matches the signature over fully materialized
-expanded bytes, while the marker-body signature differs. Two independent
-streams produced equal hashes and exact lengths. This proves the algorithm,
-not reachability through Pi or live Bedrock acceptance. See [AWS canonical request signing](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_sigv-create-signed-request.html).
+The intended Bedrock integration uses **API keys and bearer HTTPS only**.
+There is no request-signing or two-pass hashing requirement. AWS documents
+`Authorization: Bearer` for Bedrock API keys and gives a direct HTTPS Converse
+example. See [AWS API-key authentication](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html).
+
+The pinned `api/bedrock-converse-stream.js` already resolves
+`options.bearerToken`, then `options.apiKey`, then `AWS_BEARER_TOKEN_BEDROCK`;
+it configures the SDK token and `httpBearerAuth` preference. However,
+`createImageBlock` decodes `data` into a `Uint8Array`, and the adapter calls
+`client.send(new ConverseStreamCommand(...))`. It never consumes
+`options.fetch`. Changing the authentication mode alone therefore cannot
+attach this experiment's transport to the stock adapter.
+
+For native Converse, an application-owned adapter can POST marker JSON to
+`/model/{modelId}/converse-stream`, set the bearer header, then expand
+`messages[].content[].image.source.bytes` while writing the request. The image
+block also needs its trusted `format` (`png`, `jpeg`, `gif`, or `webp`). The
+native image-source union accepts base64 bytes or a supported S3 location;
+it has no generic HTTP URL member, so D is not a native Converse transport.
+See [ConverseStream](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html),
+[ImageBlock](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ImageBlock.html), and
+[ImageSource](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ImageSource.html).
+
+AWS also documents OpenAI-compatible
+`/openai/v1/chat/completions` and `/openai/v1/responses` on its runtime endpoint.
+These provide a potentially smaller integration through Pi's existing OpenAI
+HTTP adapters. This is an inference from the documented API compatibility and
+the tested fetch seam, not a Bedrock test. Select the API, region and model
+explicitly; compatible endpoint availability does not prove image or URL
+support. See [AWS Chat Completions](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html)
+and [AWS Responses](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-responses-api.html).
+
+`tests/bedrock.test.ts` checks a synthetic bearer request and native Converse
+image JSON through the shared stream builder, with no AWS access. It does not
+implement a Pi adapter, decode native response events, or establish AWS
+acceptance. Native integration still needs Pi message/tool conversion,
+response-event decoding, usage/error mapping, retry/abort behavior and live
+vision verification. The historical SigV4 test was removed when the experiment
+scope became bearer-only.
 
 ## Validation and limits
 
