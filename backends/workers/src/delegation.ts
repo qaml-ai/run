@@ -184,8 +184,8 @@ export class Delegation {
     const definitions: ToolDefinition[] = [...(builtins.includes('delegate') ? [delegateTool(settings, () => undefined)] : []), ...(builtins.includes('agents') ? agentsTools(settings, () => undefined) : [])];
     return definitions.map(definition => defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, replay: 'safe', execute: async (args: Record<string, unknown>, api, context) => {
       const signal = context.abortSignal ?? new AbortController().signal;
-      if (definition.name === 'delegate') return result(this.answer(await this.wait(await this.start(args, String(api.taskId), signal), signal)));
-      if (definition.name === 'spawn_agent') return result(this.answer(await this.start(args, String(api.taskId), signal, true)));
+      if (definition.name === 'delegate') return result(this.answer(await this.wait(await this.start(args, api.callId, signal), signal)));
+      if (definition.name === 'spawn_agent') return result(this.answer(await this.start(args, api.callId, signal, true)));
       const children = await this.children();
       if (definition.name === 'list_agents') return result(children.map(child => this.answer(child)));
       if (definition.name === 'wait_agent') {
@@ -198,10 +198,10 @@ export class Delegation {
       }
       const child = children.find(child => child.id === args.agent || child.name === args.agent || child.id === args.to || child.name === args.to);
       if (!child) throw new HttpError(404, 'Unknown sub-agent');
-      if (definition.name === 'interrupt_agent') { await this.host.fetch(child.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: `interrupt-${String(api.taskId)}`, method: 'abort', params: {} }) })); return result({ agentId: child.id, interrupted: true }); }
+      if (definition.name === 'interrupt_agent') { await this.host.fetch(child.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: `interrupt-${api.callId}`, method: 'abort', params: {} }) })); return result({ agentId: child.id, interrupted: true }); }
       if (definition.name === 'send_message') {
         if (typeof args.text !== 'string' || args.text.length > MULTI_AGENT_LIMITS.taskChars) throw new HttpError(400, 'Invalid message');
-        await this.host.fetch(child.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: `message-${String(api.taskId)}`, method: 'prompt', params: { text: args.text } }) }));
+        await this.host.fetch(child.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: `message-${api.callId}`, method: 'prompt', params: { text: args.text } }) }));
         return result({ agentId: child.id, sent: true });
       }
       throw new HttpError(400, 'Unknown delegation tool');
