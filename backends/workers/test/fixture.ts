@@ -135,7 +135,11 @@ export async function startFixture(
       ],
     );
   }
-  const port = await unusedPort();
+  // Public OAuth discovery tests select the listening port before building
+  // their issuer and callback origins, as the Node fixture does.
+  const requestedPort = options.vars?.PORT;
+  const port = requestedPort === undefined ? await unusedPort() : Number(requestedPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("Invalid fixture PORT");
   const config = JSON.parse(
     await readFile(join(root, options.config ?? "wrangler.test.jsonc"), "utf8"),
   );
