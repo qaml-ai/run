@@ -170,6 +170,7 @@ export async function startFixture(
     AGENT_SECRETS_KEY: "0".repeat(64),
     AGENT_OUTBOUND_ALLOW_HTTP: "true",
     AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.0/8,::1/128",
+    ...(options.vars?.AGENT_ACCOUNT_EMAIL_FROM ? { SCHEDULE_EMAIL_FROM: options.vars.AGENT_ACCOUNT_EMAIL_FROM } : {}),
     ...options.vars,
     ...(options.vars?.AGENT_PUBLIC_URL === "" ? { AGENT_PUBLIC_URL: `http://127.0.0.1:${port}`, PUBLIC_URL: `http://127.0.0.1:${port}` } : {}),
     ...(options.modelURL ? { TEST_MODEL_BASE_URL: options.modelURL } : {}),
