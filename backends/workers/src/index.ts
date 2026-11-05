@@ -195,6 +195,8 @@ const worker = {
       let browser: BrowserClaims | undefined;
       if (BrowserTokens.carries(bearer)) {
         browser = browserTokens.verify(bearer!);
+        if (path.startsWith("/clients/") || path.startsWith("/registry/"))
+          throw new ApiError(401, "An agent token is required", "UNAUTHORIZED");
         const scope = path.slice(path.lastIndexOf("/") + 1);
         if (request.method !== "GET" || !BROWSER_READS.test(path) || !browser.scopes.includes(scope as never) || request.headers.get("upgrade"))
           throw new ApiError(403, "This browser token does not grant this read", "FORBIDDEN");
