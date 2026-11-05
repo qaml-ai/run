@@ -28,7 +28,8 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
   const outbound = host.outbound ?? new PublicOutbound({ allowHttp: testMode && env.AGENT_OUTBOUND_ALLOW_HTTP === 'true', allow: testMode ? cidrs(env.AGENT_OUTBOUND_ALLOW_CIDRS) ?? [] : [], block: cidrs(env.AGENT_OUTBOUND_BLOCK_CIDRS) });
   const settings = testMode ? env : { AGENT_WEB_SEARCH_PROVIDERS: env.AGENT_WEB_SEARCH_PROVIDERS };
   const providers = searchProvidersFromEnvironment(settings as never);
-  const pricing = pricingFromEnvironment(Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === 'string')));
+  const pricingEnv = Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === 'string')) as NodeJS.ProcessEnv;
+  const pricing = pricingFromEnvironment(pricingEnv);
   return [...agentScheduleTools(initial.builtins, host.schedules), ...builtinDefinitions(initial.builtins).map(definition => {
     const check = compile(definition.parameters as never);
     return defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, structuredOutputSchema: {}, replay: 'safe', execute: async (args: Record<string, unknown>, api, call) => {
