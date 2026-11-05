@@ -123,7 +123,7 @@ async function admit(env: MediaBindings, tenant: string, services: KeyServices) 
   if (refused) throw typeof refused === 'string' ? new HttpError(402, refused, 'SPEND_LIMIT') : refused;
   await runAdmission(env, tenant);
   // Compatibility for pre-money-track synthetic fixture settings only.
-  if (env.TEST_MODE !== '1' || !env.TEST_MEDIA_TENANTS) return;
+  if (env.TEST_MODE !== '1' || !env.TEST_MEDIA_TENANTS || services.accounts.tenants.has(tenant)) return;
   const configured = testConfig(env).tenants?.[tenant];
   const row = (await withSql(env, sql => sql.query('select t.billing,t.limits,a.balance,coalesce((select sum(amount) from credit_holds where tenant=t.id),0) held from tenants t left join credit_accounts a on a.tenant=t.id where t.id=$1', [tenant]))).rows[0];
   if (!row) throw new HttpError(401, 'Unknown account');
