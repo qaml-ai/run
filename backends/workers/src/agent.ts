@@ -36,6 +36,7 @@ import {
   settleTurn,
   releaseTurn,
   type ControlEnv,
+  type TurnReceipt,
 } from "./control.ts";
 import {
   volumeTools,
@@ -51,6 +52,12 @@ import {
 import type { TenantAdmission } from "./tenant.ts";
 import { imageReferenceInput, type ImageRef } from "./images.ts";
 import { modelRuntime } from "./model.ts";
+import { meterProvider, applyModelReceipt, type ModelReceipt } from "./model-metering.ts";
+import { keyServices, type KeyEnv } from "./security-services.ts";
+import type { AccountEnv } from "./account-services.ts";
+import type { BillingEnv } from "./billing-routes.ts";
+import { runAdmission } from "./admission.ts";
+import { actorInput, bucketInput, spendInput } from "./security-policy.ts";
 
 type Config = {
   id: string;
@@ -67,6 +74,11 @@ type Config = {
     builtins?: string[];
     delegate?: { agents?: string[] };
     mounts?: unknown[];
+    subject?: string;
+    context?: Record<string, unknown>;
+    bucket?: string;
+    keyScope?: string;
+    spendLimit?: number;
   };
 };
 type RequestRecord = {
@@ -85,7 +97,7 @@ type RequestRecord = {
   status?: string;
   error?: string;
 };
-export interface Env extends ComputerBindings, ControlEnv, FileBindings {
+export interface Env extends ComputerBindings, ControlEnv, FileBindings, KeyEnv, AccountEnv, BillingEnv {
   TENANTS: DurableObjectNamespace<TenantAdmission>;
   RATE_LIMITER?: RateLimit;
   CODEMODE_SANDBOX: DurableObjectNamespace<CodemodeSandboxDurableObject>;
@@ -112,15 +124,7 @@ const canonical = (value: unknown): string =>
           )
       : value,
   );
-type BillingReceipt = {
-  tenantId: string;
-  agentId: string;
-  requestId: string;
-  costMicros: number;
-  inputTokens: number;
-  outputTokens: number;
-  model?: string;
-};
+type BillingReceipt = TurnReceipt;
 type Schedule = {
   id: string;
   text: string;
@@ -146,6 +150,19 @@ export class CamelAgent extends DurableObject<Env> {
   private models = modelRuntime(
     this.env,
     async () => (await this.config()).tenantId,
+    provider => meterProvider(provider, this.env, async () => {
+      const conf = await this.config();
+      const request = this.active ? await this.ctx.storage.get<RequestRecord>(reqKey(this.active)) : undefined;
+      return { tenant: conf.tenantId, agent: conf.id, requestId: this.active,
+        subject: conf.config.subject, context: conf.config.context, bucket: request?.params?.bucket as string | undefined ?? conf.config.bucket,
+        actor: request?.params?.actor as string | undefined,
+        keyScope: conf.config.keyScope, spendLimit: (request?.params?.spendLimit as {usd?: number} | undefined)?.usd, platform: this.env.TEST_MODEL !== "1" };
+    }, async receipt => {
+      const key = `model-billing:${receipt.event.id}`;
+      await this.ctx.storage.put(key, receipt);
+      await applyModelReceipt(this.env, receipt);
+      await this.ctx.storage.delete(key);
+    }),
   );
   private availableTools: ToolRegistration[] = [];
   private workspaceToolNames: string[] = [];
@@ -477,12 +494,10 @@ export class CamelAgent extends DurableObject<Env> {
             tenantId: record.billing?.tenantId ?? conf.tenantId,
             agentId: record.billing?.agentId ?? conf.id,
             requestId: id,
-            costMicros:
-              this.env.TEST_MODEL === "1"
-                ? result.status === "done"
-                  ? Number(this.env.TEST_TURN_COST_MICROS ?? 7000)
-                  : 0
-                : usage.costMicros,
+            costMicros: 0,
+            modelMetered: true,
+            activeMs: Math.max(0, Date.now() - (latest?.began ?? record.began ?? Date.now())),
+            startedAt: record.startedAt,
             inputTokens: usage.inputTokens,
             outputTokens: usage.outputTokens,
             model: record.billing?.model ?? conf.config.model,
@@ -553,7 +568,11 @@ export class CamelAgent extends DurableObject<Env> {
       "from",
       "attachments",
       "images",
+      "bucket", "actor", "spendLimit",
     ]);
+    if (params.bucket !== undefined) bucketInput(params.bucket);
+    if (params.actor !== undefined) actorInput(params.actor);
+    if (params.spendLimit !== undefined && spendInput(params.spendLimit) === null) throw new BadRequest('A run spendLimit must be {usd}');
     const text = boundedText(params.text, "text", 24 * 1024);
     if (
       params.history !== undefined &&
@@ -597,10 +616,18 @@ export class CamelAgent extends DurableObject<Env> {
     await this.ctx.storage.put(reqKey(id), record);
     await this.arm(Date.now() + 1000);
     if (!old?.accepted) {
+      const { accounts } = await keyServices(this.env);
+      const limited = await accounts.runLimit(conf.tenantId);
+      if (limited) {
+        await this.ctx.storage.delete(reqKey(id));
+        throw typeof limited === 'string' ? Object.assign(new Error(limited), { status: 402 }) : limited;
+      }
+      const { limit } = await accounts.billing.busyLimit(conf.tenantId);
+      await runAdmission(this.env, conf.tenantId);
       if (
         !(await this.env.TENANTS.getByName(conf.tenantId).acquire(
           `${conf.id}:${id}`,
-          Number(this.env.TENANT_MAX_ACTIVE ?? 1000),
+          Math.min(limit, Number(this.env.TENANT_MAX_ACTIVE ?? Number.MAX_SAFE_INTEGER)),
         ))
       ) {
         await this.ctx.storage.delete(reqKey(id));
@@ -609,7 +636,9 @@ export class CamelAgent extends DurableObject<Env> {
         });
       }
       try {
-        await reserveTurn(this.env, conf.tenantId, conf.id, id, 10000);
+        // Each provider attempt reserves its estimate before dispatch. Queueing a
+        // request does not take a fixed-dollar hold.
+        await reserveTurn(this.env, conf.tenantId, conf.id, id);
       } catch (error) {
         await this.env.TENANTS.getByName(conf.tenantId).release(
           `${conf.id}:${id}`,
@@ -988,6 +1017,10 @@ export class CamelAgent extends DurableObject<Env> {
     };
   }
   private async flushBilling(propagate = false) {
+    for (const [key, receipt] of await this.ctx.storage.list<ModelReceipt>({ prefix: "model-billing:", limit: 100 })) {
+      await applyModelReceipt(this.env, receipt);
+      await this.ctx.storage.delete(key);
+    }
     for (const [key, receipt] of await this.ctx.storage.list<BillingReceipt>({
       prefix: "billing:",
       limit: 100,
@@ -1035,6 +1068,7 @@ export class CamelAgent extends DurableObject<Env> {
     const entry = await directory.upsert(
       {
         ...(base?.config ?? conf.config),
+        ...((base?.config ?? conf.config).spendLimit !== undefined ? { spendLimit: { usd: (base?.config ?? conf.config).spendLimit } } : {}),
         name: `Child of ${conf.id}`,
         ttlSeconds: null,
       },

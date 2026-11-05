@@ -1,25 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { LocalWorker, unusedPort } from "./local-worker.ts";
-const token = "local-integration-only-token-with-at-least-32-characters";
+import { startFixture } from "./fixture.ts";
 
 test(
   "optional native Container and Sandbox SDK providers in local Docker",
   { timeout: 240_000 },
   async (t) => {
-    const storage = await mkdtemp(
-      join(tmpdir(), "camelrun-workers-computers-"),
-    );
-    const server = new LocalWorker(
-      await unusedPort(),
-      storage,
-      "wrangler.computers.test.jsonc",
-    );
+    const fixture = await startFixture({ config: "wrangler.computers.test.jsonc" });
+    const { worker: server, token } = fixture;
     t.after(async () => {
       // Native Container local emulation can leave its Docker network proxy up
       // after destroy(). Remove only containers named in this test's own log.
@@ -32,7 +22,7 @@ test(
             ),
         ].map((match) => match[1]),
       );
-      await server.stop();
+      await fixture.stop();
       for (const name of names) {
         for (const target of [name, `${name}-proxy`]) {
           try {
@@ -49,10 +39,8 @@ test(
           }
         }
       }
-      await rm(storage, { recursive: true, force: true });
     });
     try {
-      await server.start();
       const create = await fetch(`${server.url}/v1/agents`, {
         method: "POST",
         headers: {

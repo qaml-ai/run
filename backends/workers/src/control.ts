@@ -14,7 +14,14 @@ import {
   type Sql,
 } from "./postgres.ts";
 import { postLedger, accrueUsage, BillingSpendable } from "./billing-sql.ts";
-import { EndUserCredits } from "./end-user-credits.ts";
+import { EndUserCredits, lastCallMin, settleUsage, utcDay } from "./end-user-credits.ts";
+import { CreditHolds } from "./credit-holds.ts";
+import { keyServices, type KeyEnv } from "./security-services.ts";
+import { createAdmission } from "./admission.ts";
+import { setAgentSpendLimit } from "./agent-spend.ts";
+import { applyUsageRows } from "./accounts.ts";
+import { applyWorkspaceUsage, Workspaces } from "./workspaces.ts";
+import { activeCharge } from "../../../src/pricing.ts";
 import {
   enqueueEvents,
   webhookEvent,
@@ -45,8 +52,9 @@ export type ControlEnv = WebhookEnv & {
 };
 export type AuthContext = {
   tenantId: string;
-  kind: "operator" | "api";
+  kind: "operator" | "api" | "console" | "oauth";
   scopes: string[];
+  principal?: import('./accounts.ts').Principal;
 };
 export interface DirectoryEntry {
   id: string;
@@ -131,6 +139,8 @@ export class Directory {
     suppliedKey?: string,
   ): Promise<DirectoryEntry | DirectoryFailure> {
     const { config, ttlSeconds } = configuration(input, this.env.MODEL);
+    const workspaces = new Workspaces(database(this.env));
+    if (config.workspaceId !== undefined) await workspaces.validate(this.tenantId, config.workspaceId);
     const key =
       suppliedKey === undefined
         ? null
@@ -153,6 +163,7 @@ export class Directory {
       if (previous?.revoked)
         throw new ApiError(410, "Agent is deleted", "AGENT_GONE");
       const old = previous?.header as DirectoryEntry | undefined;
+      await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
       if (old?.initialized && old.configHash === configHash) return old;
       const next: DirectoryEntry = {
         id,
@@ -187,6 +198,8 @@ export class Directory {
       );
       if (!written.rowCount)
         throw new ApiError(403, "Agent belongs to another tenant", "FORBIDDEN");
+      if (input && typeof input === 'object' && Object.hasOwn(input, 'spendLimit'))
+        await setAgentSpendLimit(sql, id, config.spendLimit ?? null);
       return next;
     });
     if (!entry.initialized) {
@@ -225,6 +238,7 @@ export class Directory {
           code: "CONFIGURATION_CHANGED",
         };
     }
+    if (config.workspaceId !== undefined) await workspaces.assign(this.tenantId, "agent", id, config.workspaceId);
     return entry;
   }
   async remove(id: string): Promise<boolean | DirectoryFailure> {
@@ -283,60 +297,17 @@ async function verifyAgent(sql: Sql, tenantId: string, agentId: string) {
     throw new ApiError(403, "Agent unavailable", "AGENT_GONE");
 }
 export async function reserveTurn(
-  env: PostgresEnv,
-  tenantId: string,
-  agentId: string,
-  requestId: string,
-  reserveMicros = 10_000,
+  env: KeyEnv, tenantId: string, agentId: string, requestId: string,
+  reserveMicros = 0, min = lastCallMin(reserveMicros),
 ): Promise<{ held: number }> {
-  if (!Number.isSafeInteger(reserveMicros) || reserveMicros <= 0)
-    throw new ApiError(400, "Invalid reservation");
+  if (!Number.isSafeInteger(reserveMicros) || reserveMicros < 0) throw new ApiError(400, "Invalid reservation");
   const id = await stableUuid(`turn:${tenantId}:${agentId}:${requestId}`);
-  return transaction(env, async (sql) => {
-    const account = await lockAccount(sql, tenantId);
-    await verifyAgent(sql, tenantId, agentId);
-    const existing = (
-      await sql.query("select tenant,amount from credit_holds where id=$1", [
-        id,
-      ])
-    ).rows[0];
-    if (existing) {
-      if (
-        existing.tenant !== tenantId ||
-        Number(existing.amount) !== reserveMicros
-      )
-        throw new ApiError(409, "Reservation changed", "IDEMPOTENCY_CONFLICT");
-      return { held: Number(existing.amount) };
-    }
-    const settled = (
-      await sql.query("select 1 from usage_flushes where id=$1", [id])
-    ).rowCount;
-    if (settled) return { held: 0 };
-    const held = Number(
-      (
-        await sql.query(
-          "select coalesce(sum(amount),0) held from credit_holds where tenant=$1",
-          [tenantId],
-        )
-      ).rows[0].held,
-    );
-    if (
-      account.billing !== "none" &&
-      (await new BillingSpendable().spendable(tenantId, sql)) - held <
-        reserveMicros
-    )
-      throw new ApiError(
-        402,
-        "Insufficient credit or hourly allowance",
-        "INSUFFICIENT_CREDIT",
-      );
-    // Expired/uncertain calls continue to hold credit until explicit settlement; no silent refund on expiry.
-    await sql.query(
-      "insert into credit_holds(id,tenant,amount,expires_at,created_at) values($1,$2,$3,$4,$5)",
-      [id, tenantId, reserveMicros, Date.now() + 600000, Date.now()],
-    );
-    return { held: reserveMicros };
-  });
+  await withSql(env, sql => verifyAgent(sql, tenantId, agentId));
+  const { accounts: { billing } } = await keyServices(env);
+  if (!reserveMicros || await billing.mode(tenantId) === "none") return { held: 0 };
+  const hold = await new CreditHolds(database(env), billing).reserve(tenantId, id, reserveMicros, min);
+  if (!hold) throw new ApiError(402, "Insufficient credit or hourly allowance", "INSUFFICIENT_CREDIT");
+  return { held: hold.held };
 }
 export type TurnReceipt = {
   tenantId: string;
@@ -347,9 +318,15 @@ export type TurnReceipt = {
   outputTokens?: number;
   model?: string;
   faultAfterCommit?: boolean;
+  modelMetered?: boolean;
+  activeMs?: number;
+  startedAt?: number;
+  responses?: number;
+  subject?: string;
+  bucket?: string;
 };
 export async function settleTurn(
-  env: PostgresEnv & {
+  env: KeyEnv & {
     TEST_MODE?: string;
     WEBHOOKS?: Queue<{ id: string }>;
     METRICS?: AnalyticsEngineDataset;
@@ -359,9 +336,9 @@ export async function settleTurn(
   if (
     !Number.isSafeInteger(receipt.costMicros) ||
     receipt.costMicros < 0 ||
-    ![receipt.inputTokens ?? 0, receipt.outputTokens ?? 0].every(
+    ![receipt.inputTokens ?? 0, receipt.outputTokens ?? 0, receipt.responses ?? 1, receipt.activeMs ?? 0, receipt.startedAt ?? 0].every(
       (n) => Number.isSafeInteger(n) && n >= 0,
-    )
+    ) || (receipt.modelMetered !== undefined && typeof receipt.modelMetered !== "boolean")
   )
     throw new ApiError(400, "Invalid charge");
   const { faultAfterCommit } = receipt;
@@ -373,15 +350,17 @@ export async function settleTurn(
       receipt.costMicros,
       receipt.inputTokens ?? 0,
       receipt.outputTokens ?? 0,
-      receipt.model ?? "local/fake",
+      receipt.model ?? "local/fake", receipt.modelMetered, receipt.activeMs, receipt.startedAt, receipt.subject, receipt.bucket, receipt.responses ?? 1,
     ]),
   );
   const id = await stableUuid(
       `turn:${receipt.tenantId}:${receipt.agentId}:${receipt.requestId}`,
     ),
     key = `workers:receipt:${id}`;
+  const { accounts: { billing } } = await keyServices(env);
+  const prepaid = await billing.mode(receipt.tenantId) === "prepaid";
   const result = await transaction(env, async (sql) => {
-    const account = await lockAccount(sql, receipt.tenantId);
+    await lockAccount(sql, receipt.tenantId);
     const prior = (
       await sql.query(
         "select fingerprint from idempotency_keys where tenant=$1 and key=$2",
@@ -393,41 +372,20 @@ export async function settleTurn(
         throw new ApiError(409, "Receipt changed", "IDEMPOTENCY_CONFLICT");
       return { duplicate: true };
     }
-    const hold = (
-      await sql.query("select tenant,amount from credit_holds where id=$1", [
-        id,
-      ])
-    ).rows[0];
-    if (
-      !hold ||
-      hold.tenant !== receipt.tenantId ||
-      Number(hold.amount) < receipt.costMicros
-    )
-      throw new ApiError(409, "Missing or insufficient hold", "MISSING_HOLD");
-    if (receipt.costMicros > 0 && account.billing !== "none")
-      await accrueUsage(sql, [
-        {
-          tenant: receipt.tenantId,
-          amount: receipt.costMicros,
-          metadata: {
-            responses: 1,
-            inputTokens: receipt.inputTokens ?? 0,
-            outputTokens: receipt.outputTokens ?? 0,
-          },
-        },
-      ]);
-    await sql.query(
-      `insert into usage(tenant,day,model,responses,input,output,cost,platform_responses,platform_cost) values($1,$2,$3,1,$4,$5,$6,1,$6)
-      on conflict(tenant,day,model) do update set responses=usage.responses+1,input=usage.input+excluded.input,output=usage.output+excluded.output,cost=usage.cost+excluded.cost,platform_responses=usage.platform_responses+1,platform_cost=usage.platform_cost+excluded.platform_cost`,
-      [
-        receipt.tenantId,
-        new Date().toISOString().slice(0, 10),
-        receipt.model ?? "local/fake",
-        receipt.inputTokens ?? 0,
-        receipt.outputTokens ?? 0,
-        receipt.costMicros / 1000000,
-      ],
-    );
+    // A receipt may arrive after its hold expires or after a lost acknowledgement.
+    // src/ permits a running response's bounded overdraft; expiry never drops its charge.
+    const charged = receipt.modelMetered ? activeCharge(billing.pricing, receipt.activeMs ?? 0) : receipt.costMicros;
+    if (charged > 0 && prepaid) await accrueUsage(sql, [{ tenant: receipt.tenantId, amount: charged,
+      metadata: receipt.modelMetered ? { activeMs: receipt.activeMs ?? 0 } : { responses: receipt.responses ?? 1, inputTokens: receipt.inputTokens ?? 0, outputTokens: receipt.outputTokens ?? 0 } }]);
+    if (!receipt.modelMetered) {
+      const totals = { tenant: receipt.tenantId, day: utcDay(receipt.startedAt ?? Date.now()), model: receipt.model ?? "local/fake",
+        responses: receipt.responses ?? 1, input: receipt.inputTokens ?? 0, output: receipt.outputTokens ?? 0, cacheRead: 0, cacheWrite: 0,
+        cost: receipt.costMicros / 1_000_000, platformResponses: receipt.responses ?? 1, platformCost: receipt.costMicros / 1_000_000 };
+      await applyUsageRows(sql, [totals]);
+      await applyWorkspaceUsage(sql, [{ ...totals, agent: receipt.agentId, timestamp: receipt.startedAt ?? Date.now() }]);
+      if (receipt.subject) await settleUsage(sql, { tenant: receipt.tenantId, endUser: receipt.subject, bucket: receipt.bucket ?? "default",
+        day: totals.day, raw: receipt.costMicros, key, metadata: { requestId: receipt.requestId, agent: receipt.agentId } });
+    }
     await sql.query("insert into usage_flushes(id) values($1)", [id]);
     await sql.query(
       "insert into idempotency_keys(tenant,key,fingerprint,status,body,content_type,created_at) values($1,$2,$3,200,$4,'application/json',$5)",
@@ -443,9 +401,9 @@ export async function settleTurn(
       id,
       receipt.tenantId,
     ]);
-    await enqueueEvents(sql, [
+    if (!receipt.modelMetered) await enqueueEvents(sql, [
       webhookEvent(
-        "usage",
+        "usage.recorded",
         receipt.tenantId,
         {
           agentId: receipt.agentId,
@@ -515,8 +473,8 @@ export async function transfer(
     const held = Number(
       (
         await sql.query(
-          "select coalesce(sum(amount),0) held from credit_holds where tenant=$1",
-          [from],
+          "select coalesce(sum(amount),0) held from credit_holds where tenant=$1 and expires_at > $2",
+          [from, Date.now()],
         )
       ).rows[0].held,
     );

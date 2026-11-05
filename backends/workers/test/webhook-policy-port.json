@@ -1,0 +1,82 @@
+[
+  {
+    "file": "tests/webhooks.test.ts",
+    "test": "webhook endpoints: registered with the event types they want, managed, and each sent its events in a signed envelope",
+    "included": false,
+    "reason": "ECS runtime/cluster fixture; generated service delivery coverage is in webhook-delivery.test.ts"
+  },
+  {
+    "file": "tests/webhooks.test.ts",
+    "test": "a run that ends with an error is sent as run.failed",
+    "included": false,
+    "reason": "ECS runtime/cluster fixture; generated service delivery coverage is in webhook-delivery.test.ts"
+  },
+  {
+    "file": "tests/webhooks.test.ts",
+    "test": "the usage webhook still works, apart from endpoints, and gets usage in its original body",
+    "included": false,
+    "reason": "ECS runtime/cluster fixture; generated service delivery coverage is in webhook-delivery.test.ts"
+  },
+  {
+    "file": "tests/webhooks.test.ts",
+    "test": "a run whose event could not be written when it ended has it written with the agent's next load or run, once",
+    "included": false,
+    "reason": "ECS runtime/cluster fixture; generated service delivery coverage is in webhook-delivery.test.ts"
+  },
+  {
+    "file": "tests/webhooks.test.ts",
+    "test": "runs of a tenant with no endpoint for run events write none, and journal no mark; an endpoint made on another node gets the next run's",
+    "included": false,
+    "reason": "ECS runtime/cluster fixture; generated service delivery coverage is in webhook-delivery.test.ts"
+  },
+  {
+    "file": "tests/webhooks.test.ts",
+    "test": "in a rolling deploy, nodes of the previous release see only usage webhook deliveries, and their usage webhook changes take effect",
+    "included": false,
+    "reason": "ECS runtime/cluster fixture; generated service delivery coverage is in webhook-delivery.test.ts"
+  },
+  {
+    "file": "tests/usage-webhooks.test.ts",
+    "test": "each model response's usage is POSTed, signed, to the tenant's webhook: retried after a failure, and kept across a restart",
+    "included": false,
+    "reason": "ECS runtime/cluster fixture; generated service delivery coverage is in webhook-delivery.test.ts"
+  },
+  {
+    "file": "tests/usage-webhooks.test.ts",
+    "test": "a rotated usage webhook secret signs beside the old one for a day, and removing the webhook stops events",
+    "included": false,
+    "reason": "ECS runtime/cluster fixture; generated service delivery coverage is in webhook-delivery.test.ts"
+  },
+  {
+    "file": "tests/usage-webhooks.test.ts",
+    "test": "calls through a tenant's own endpoint are sent too, named as the agent names its model",
+    "included": false,
+    "reason": "ECS runtime/cluster fixture; generated service delivery coverage is in webhook-delivery.test.ts"
+  },
+  {
+    "file": "tests/end-user-webhooks.test.ts",
+    "test": "balance.low fires as the balance falls below the threshold, once until a grant lifts it back",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-webhooks.test.ts",
+    "test": "a refund to zero is silent: no balance.low, no credit.exhausted (nothing to top up), until a grant re-arms them",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-webhooks.test.ts",
+    "test": "a spend is a debit: it fires balance.low and credit.exhausted as usage does, and end_user.credit.spent with its words",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-webhooks.test.ts",
+    "test": "credit.exhausted says why: a bucket's allowance used up (once a day), the balance at zero (once until credited), the daily limit (once a day)",
+    "included": true
+  },
+  {
+    "file": "tests/end-user-webhooks.test.ts",
+    "test": "end-user events reach an endpoint that selected them, signed",
+    "included": false,
+    "reason": "ECS runtime/cluster fixture; generated service delivery coverage is in webhook-delivery.test.ts"
+  }
+]

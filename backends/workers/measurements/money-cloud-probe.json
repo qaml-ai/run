@@ -1,0 +1,31 @@
+{
+  "completedAt": "2026-11-05T18:29:23Z",
+  "worker": "camelrun-proto-money-20261105-keys",
+  "accountId": "85bbd288051330fb51ee1c86031a299b",
+  "compatibilityDate": "2026-11-05",
+  "startupTimeMs": 9,
+  "scope": "Real deployed workerd, two SQLite Durable Objects, fake financial authority only. No Hyperdrive, Postgres, Stripe, AWS, models or real funds.",
+  "crypto": { "status": 200, "source": "src/accounts.ts seal/unseal unchanged", "roundTrip": true, "aadRejected": true, "ivBytes": 12, "tagBytes": 16 },
+  "password": {
+    "status": 200,
+    "source": "src/passwords.ts derive/hashPassword/verifyPassword unchanged",
+    "scheme": ["scrypt", "32768", "8", "1"],
+    "unicodeNormalizationVerified": true,
+    "clientWallMsIncludingNetwork": 519,
+    "workerDateNowHashMs": 0,
+    "workerDateNowVerifyMs": 0,
+    "note": "Date.now did not advance during native crypto; these zero readings do not measure CPU. The default hash and verify completed in one live request without memory/CPU errors. Larger stored hash parameters and concurrent password traffic were not load-tested."
+  },
+  "durability": {
+    "receiptId": "bf7c1dc0-897c-4e47-a632-0d6866d8f9c3",
+    "before": { "instance": "0cfc1a3e-ced3-4894-8c15-3494af53ac2d", "pending": true, "charges": 0, "charged": 0 },
+    "fault": { "httpStatus": 503, "method": "ctx.abort after fake-authority commit before local outbox deletion" },
+    "afterReset": { "instance": "b82198f2-ad0c-4579-b18a-e82f399c5b4c", "pending": true, "crashed": true, "charges": 1, "charged": 3750 },
+    "afterRetry": { "pending": false, "charges": 1, "charged": 3750 },
+    "afterSecondRetry": { "pending": false, "charges": 1, "charged": 3750 }
+  },
+  "requests": 8,
+  "deployments": 2,
+  "cleanup": { "workerDeleted": true, "workerSettingsReturned404": true, "remainingNamespaces": [] },
+  "cost": { "estimatedUsdUpperBound": 0.01, "invoicedCostAvailable": false, "note": "Eight bounded HTTP probes, two deployments and transient DO storage; estimate, not invoice. No resources retained." }
+}

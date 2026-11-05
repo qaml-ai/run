@@ -8,13 +8,7 @@ import { digest } from "./api-contract.ts";
 import { isIP } from "node:net";
 import { HttpError } from "./errors.ts";
 
-export type WebhookEvent = {
-  id: string;
-  type: string;
-  tenant: string;
-  timestamp: number;
-  data: Record<string, unknown>;
-};
+export { webhookEvent, enqueueEvents, usageEvent, usageCost } from "./webhook-policy.ts";
 export type DeliveryMessage = { id: string; kind?: "email" };
 export type WebhookEnv = PostgresEnv & {
   WEBHOOKS?: Queue<DeliveryMessage>;
@@ -25,37 +19,9 @@ export type WebhookEnv = PostgresEnv & {
   WEBHOOK_ALLOWED_HOSTS?: string;
   METRICS?: AnalyticsEngineDataset;
 };
-export function webhookEvent(
-  type: string,
-  tenant: string,
-  data: Record<string, unknown>,
-  id = crypto.randomUUID(),
-): WebhookEvent {
-  return { id, type, tenant, timestamp: Date.now(), data };
-}
 export async function stableUuid(value: string): Promise<string> {
   const h = await digest(value);
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
-}
-
-/** Insert immutable delivery intents in the financial transaction. Cron repairs lost Queue sends. */
-export async function enqueueEvents(
-  sql: Sql,
-  events: WebhookEvent[],
-): Promise<void> {
-  for (const event of events) {
-    const { rows } = await sql.query(
-      "select id from webhook_endpoints where tenant=$1 and ($2=any(events) or '*'=any(events))",
-      [event.tenant, event.type],
-    );
-    for (const endpoint of rows) {
-      const id = await stableUuid(`${event.id}:${endpoint.id}`);
-      await sql.query(
-        "insert into webhook_deliveries(id,tenant,endpoint,body,due,created_at) values($1,$2,$3,$4,$5,$5) on conflict(id) do nothing",
-        [id, event.tenant, endpoint.id, JSON.stringify(event), Date.now()],
-      );
-    }
-  }
 }
 
 export async function seal(secret: string, env: WebhookEnv) {
@@ -169,7 +135,7 @@ export async function publishPending(env: WebhookEnv): Promise<number> {
   if (!env.WEBHOOKS) return 0;
   const { rows } = await withSql(env, (sql) =>
     sql.query(
-      "select id from webhook_deliveries where due <= $1 order by due limit 100",
+      "select id from (select id,due from webhook_deliveries union all select id,due from usage_webhook_outbox) pending where due <= $1 order by due limit 100",
       [Date.now()],
     ),
   );

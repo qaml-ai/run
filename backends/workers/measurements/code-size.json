@@ -5,7 +5,7 @@
       "lines": 79
     }
   ],
-  "sourceCommit": "015854c581a46cb6e76e20698696293d557364fd",
+  "sourceCommit": "bbc6262e25cbfc9c26eee6e9906f80b5922c4fc4",
   "method": "Physical TypeScript lines, comments and blanks included; declarations, tests, dependencies and generated bindings excluded. Whole mixed-purpose source files counted. Not feature-equivalent.",
   "excluded": [
     "src/audio-header.ts",
@@ -68,9 +68,9 @@
         "nonblank": 9823
       },
       "workers": {
-        "files": 5,
-        "lines": 2504,
-        "nonblank": 2418
+        "files": 39,
+        "lines": 8803,
+        "nonblank": 8321
       }
     },
     {
@@ -81,9 +81,9 @@
         "nonblank": 4151
       },
       "workers": {
-        "files": 1,
-        "lines": 61,
-        "nonblank": 60
+        "files": 2,
+        "lines": 369,
+        "nonblank": 336
       }
     },
     {
@@ -94,9 +94,9 @@
         "nonblank": 14317
       },
       "workers": {
-        "files": 3,
-        "lines": 1606,
-        "nonblank": 1600
+        "files": 4,
+        "lines": 1899,
+        "nonblank": 1877
       }
     },
     {
@@ -107,9 +107,9 @@
         "nonblank": 12864
       },
       "workers": {
-        "files": 6,
-        "lines": 758,
-        "nonblank": 736
+        "files": 37,
+        "lines": 2923,
+        "nonblank": 2759
       }
     },
     {
@@ -133,9 +133,9 @@
         "nonblank": 5277
       },
       "workers": {
-        "files": 6,
-        "lines": 1662,
-        "nonblank": 1655
+        "files": 7,
+        "lines": 1839,
+        "nonblank": 1821
       }
     }
   ],
@@ -1465,17 +1465,199 @@
     },
     {
       "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-access.ts",
+      "lines": 15,
+      "nonblank": 15
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-common-passwords.ts",
+      "lines": 2,
+      "nonblank": 2
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-console-auth.ts",
+      "lines": 442,
+      "nonblank": 425
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-email-accounts.ts",
+      "lines": 193,
+      "nonblank": 179
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-http.ts",
+      "lines": 14,
+      "nonblank": 13
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-journey.ts",
+      "lines": 11,
+      "nonblank": 11
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-mail.ts",
+      "lines": 67,
+      "nonblank": 64
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-metrics.ts",
+      "lines": 2,
+      "nonblank": 2
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-network.ts",
+      "lines": 13,
+      "nonblank": 12
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-oauth.ts",
+      "lines": 544,
+      "nonblank": 508
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-origins.ts",
+      "lines": 57,
+      "nonblank": 51
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-passwords.ts",
+      "lines": 119,
+      "nonblank": 104
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-rate-limits.ts",
+      "lines": 416,
+      "nonblank": 381
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-services.ts",
+      "lines": 202,
+      "nonblank": 197
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/account-signup-source.ts",
+      "lines": 43,
+      "nonblank": 38
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/accounts.ts",
+      "lines": 735,
+      "nonblank": 681
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/admission-errors.ts",
+      "lines": 18,
+      "nonblank": 16
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/admission.ts",
+      "lines": 59,
+      "nonblank": 51
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/agent-spend.ts",
+      "lines": 46,
+      "nonblank": 41
+    },
+    {
+      "backend": "workers",
       "area": "Agents, history, schedules",
       "file": "backends/workers/src/agent.ts",
-      "lines": 1286,
-      "nonblank": 1283
+      "lines": 1320,
+      "nonblank": 1317
     },
     {
       "backend": "workers",
       "area": "HTTP, contracts, remaining policy",
       "file": "backends/workers/src/api-contract.ts",
-      "lines": 167,
-      "nonblank": 163
+      "lines": 187,
+      "nonblank": 183
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/auto-topup.ts",
+      "lines": 364,
+      "nonblank": 362
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing-alerts.ts",
+      "lines": 311,
+      "nonblank": 289
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing-host.ts",
+      "lines": 49,
+      "nonblank": 48
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing-inputs.ts",
+      "lines": 26,
+      "nonblank": 26
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing-mail.ts",
+      "lines": 36,
+      "nonblank": 34
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing-payments.ts",
+      "lines": 224,
+      "nonblank": 210
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing-routes.ts",
+      "lines": 214,
+      "nonblank": 209
     },
     {
       "backend": "workers",
@@ -1483,6 +1665,34 @@
       "file": "backends/workers/src/billing-sql.ts",
       "lines": 83,
       "nonblank": 78
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/billing.ts",
+      "lines": 778,
+      "nonblank": 732
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/browser-response.ts",
+      "lines": 50,
+      "nonblank": 49
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/browser-tokens.ts",
+      "lines": 135,
+      "nonblank": 123
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/card-credit.ts",
+      "lines": 110,
+      "nonblank": 102
     },
     {
       "backend": "workers",
@@ -1509,8 +1719,22 @@
       "backend": "workers",
       "area": "Accounts, money, webhooks",
       "file": "backends/workers/src/control.ts",
-      "lines": 897,
-      "nonblank": 891
+      "lines": 855,
+      "nonblank": 849
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/cors.ts",
+      "lines": 14,
+      "nonblank": 13
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/credit-holds.ts",
+      "lines": 59,
+      "nonblank": 52
     },
     {
       "backend": "workers",
@@ -1523,8 +1747,8 @@
       "backend": "workers",
       "area": "HTTP, contracts, remaining policy",
       "file": "backends/workers/src/errors.ts",
-      "lines": 16,
-      "nonblank": 16
+      "lines": 19,
+      "nonblank": 18
     },
     {
       "backend": "workers",
@@ -1535,10 +1759,31 @@
     },
     {
       "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/http-error-policy.ts",
+      "lines": 38,
+      "nonblank": 33
+    },
+    {
+      "backend": "workers",
       "area": "Agents, history, schedules",
       "file": "backends/workers/src/human.ts",
       "lines": 57,
       "nonblank": 55
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/idempotency-routes.ts",
+      "lines": 4,
+      "nonblank": 4
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/idempotency.ts",
+      "lines": 86,
+      "nonblank": 82
     },
     {
       "backend": "workers",
@@ -1551,22 +1796,232 @@
       "backend": "workers",
       "area": "HTTP, contracts, remaining policy",
       "file": "backends/workers/src/index.ts",
-      "lines": 246,
-      "nonblank": 244
+      "lines": 281,
+      "nonblank": 279
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/key-catalog.ts",
+      "lines": 65,
+      "nonblank": 58
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/key-check.ts",
+      "lines": 40,
+      "nonblank": 37
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/key-routes.ts",
+      "lines": 138,
+      "nonblank": 136
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/key-scopes.ts",
+      "lines": 163,
+      "nonblank": 149
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/model-attempt-stream.ts",
+      "lines": 119,
+      "nonblank": 116
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/model-attempt.ts",
+      "lines": 39,
+      "nonblank": 39
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/model-attempts.ts",
+      "lines": 400,
+      "nonblank": 388
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-call-fetch.ts",
+      "lines": 63,
+      "nonblank": 63
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-estimate.ts",
+      "lines": 12,
+      "nonblank": 12
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-metering.ts",
+      "lines": 87,
+      "nonblank": 85
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/model-providers.ts",
+      "lines": 218,
+      "nonblank": 199
     },
     {
       "backend": "workers",
       "area": "Agents, history, schedules",
       "file": "backends/workers/src/model.ts",
-      "lines": 263,
-      "nonblank": 262
+      "lines": 264,
+      "nonblank": 263
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-api.ts",
+      "lines": 128,
+      "nonblank": 128
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-host.ts",
+      "lines": 22,
+      "nonblank": 22
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-idempotency.ts",
+      "lines": 31,
+      "nonblank": 27
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/money-tokens.ts",
+      "lines": 90,
+      "nonblank": 82
+    },
+    {
+      "backend": "workers",
+      "area": "Agents, history, schedules",
+      "file": "backends/workers/src/pi-catalog.ts",
+      "lines": 258,
+      "nonblank": 242
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/platform-pricing.ts",
+      "lines": 104,
+      "nonblank": 92
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/postgres-policy.ts",
+      "lines": 74,
+      "nonblank": 60
     },
     {
       "backend": "workers",
       "area": "Accounts, money, webhooks",
       "file": "backends/workers/src/postgres.ts",
-      "lines": 93,
-      "nonblank": 89
+      "lines": 80,
+      "nonblank": 75
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/runtime-identity.ts",
+      "lines": 175,
+      "nonblank": 160
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-addresses.ts",
+      "lines": 64,
+      "nonblank": 57
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-deepseek.ts",
+      "lines": 74,
+      "nonblank": 68
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-fetch-policy.ts",
+      "lines": 54,
+      "nonblank": 51
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-host.ts",
+      "lines": 15,
+      "nonblank": 15
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-inputs.ts",
+      "lines": 25,
+      "nonblank": 25
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-outbound.ts",
+      "lines": 61,
+      "nonblank": 59
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-policy.ts",
+      "lines": 38,
+      "nonblank": 32
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-services.ts",
+      "lines": 72,
+      "nonblank": 69
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/security-types.ts",
+      "lines": 43,
+      "nonblank": 39
+    },
+    {
+      "backend": "workers",
+      "area": "Files, images, computers",
+      "file": "backends/workers/src/storage-usage.ts",
+      "lines": 177,
+      "nonblank": 166
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/stripe.ts",
+      "lines": 112,
+      "nonblank": 102
     },
     {
       "backend": "workers",
@@ -1574,6 +2029,13 @@
       "file": "backends/workers/src/tenant.ts",
       "lines": 61,
       "nonblank": 60
+    },
+    {
+      "backend": "workers",
+      "area": "Hosting, admission, tenancy",
+      "file": "backends/workers/src/tenants.ts",
+      "lines": 308,
+      "nonblank": 276
     },
     {
       "backend": "workers",
@@ -1592,9 +2054,23 @@
     {
       "backend": "workers",
       "area": "Accounts, money, webhooks",
+      "file": "backends/workers/src/webhook-policy.ts",
+      "lines": 395,
+      "nonblank": 354
+    },
+    {
+      "backend": "workers",
+      "area": "Accounts, money, webhooks",
       "file": "backends/workers/src/webhooks.ts",
-      "lines": 307,
-      "nonblank": 301
+      "lines": 273,
+      "nonblank": 268
+    },
+    {
+      "backend": "workers",
+      "area": "HTTP, contracts, remaining policy",
+      "file": "backends/workers/src/workspaces.ts",
+      "lines": 78,
+      "nonblank": 75
     },
     {
       "backend": "workers",

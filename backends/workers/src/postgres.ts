@@ -1,4 +1,9 @@
-import { Client } from "pg";
+import pg, { Client } from "pg";
+import { transaction as policyTransaction } from "./postgres-policy.ts";
+export { databaseRetryable, databaseUnavailable } from "./postgres-policy.ts";
+
+// Match src/db.ts: ledger amounts and millisecond timestamps are safe integers.
+pg.types.setTypeParser(pg.types.builtins.INT8, Number);
 
 export type Sql = {
   query<R = any>(
@@ -30,7 +35,7 @@ export async function withSql<T>(
     connectionString: env.HYPERDRIVE.connectionString,
     connectionTimeoutMillis: 5_000,
     query_timeout: 10_000,
-    application_name: "camelrun-proto-workers",
+    application_name: new URL(env.HYPERDRIVE.connectionString).searchParams.get("application_name") ?? "camelrun-proto-workers",
   });
   await client.connect();
   try {
@@ -69,25 +74,7 @@ export function database(env: PostgresEnv): Db {
 export async function transaction<T>(
   target: Db | PostgresEnv,
   run: (sql: Sql) => Promise<T>,
+  options: { rerun?: boolean } = {},
 ): Promise<T> {
-  const perform = async (sql: Sql) => {
-    await sql.query("begin");
-    try {
-      await sql.query("set local statement_timeout = '8s'");
-      const result = await run(sql);
-      await sql.query("commit");
-      return result;
-    } catch (error) {
-      await sql.query("rollback").catch(() => {});
-      throw error;
-    }
-  };
-  if ("HYPERDRIVE" in target) return withSql(target, perform);
-  const client = await target.connect();
-  try {
-    return await perform(client);
-  } finally {
-    if (client.close) await client.close();
-    else client.release();
-  }
+  return policyTransaction("HYPERDRIVE" in target ? database(target) : target, run, options);
 }

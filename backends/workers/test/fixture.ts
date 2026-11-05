@@ -13,6 +13,7 @@ export async function startFixture(
     tenant?: string;
     modelURL?: string;
     schema?: string;
+    config?: string;
     tenants?: { id: string; token?: string; tokenSha256?: string }[];
     vars?: Record<string, string>;
   } = {},
@@ -60,15 +61,21 @@ export async function startFixture(
     );
   }
   const config = JSON.parse(
-    await readFile(join(root, "wrangler.test.jsonc"), "utf8"),
+    await readFile(join(root, options.config ?? "wrangler.test.jsonc"), "utf8"),
   );
   config.main = join(root, "src/index.ts");
   config.$schema = join(root, "node_modules/wrangler/config-schema.json");
+  for (const container of config.containers ?? [])
+    for (const image of Object.values(container.images ?? {}) as { dockerfile?: string }[])
+      if (image.dockerfile) image.dockerfile = join(root, image.dockerfile);
   config.hyperdrive[0].localConnectionString = databaseUrl;
   config.vars = {
     ...config.vars,
     API_TOKEN: token,
     DEFAULT_TENANT: tenant,
+    AGENT_SECRETS_KEY: "0".repeat(64),
+    AGENT_OUTBOUND_ALLOW_HTTP: "true",
+    AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.0/8,::1/128",
     ...options.vars,
     ...(options.modelURL ? { TEST_MODEL_BASE_URL: options.modelURL } : {}),
   };

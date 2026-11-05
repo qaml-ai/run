@@ -1,0 +1,64 @@
+{
+  "codeCommit": "bbc6262e25cbfc9c26eee6e9906f80b5922c4fc4",
+  "status": "experimental; incomplete parity; see MONEY.md",
+  "unit": {
+    "command": "npm test",
+    "tests": 217,
+    "pass": 217,
+    "fail": 0
+  },
+  "lastChangedCoreFile": {
+    "command": "node --import ./test/sdk-deps.mjs --experimental-strip-types --test --test-concurrency=1 test/billing-core.test.ts",
+    "tests": 13,
+    "pass": 13,
+    "fail": 0
+  },
+  "integration": {
+    "command": "node --import ./test/sdk-deps.mjs --experimental-strip-types --test --test-concurrency=1 --test-timeout=90000 test/*.integration.ts",
+    "tests": 40,
+    "pass": 40,
+    "fail": 0
+  },
+  "compatibility": {
+    "command": "npm run test:compat",
+    "pass": 50,
+    "fail": 57,
+    "notApplicable": 39,
+    "workerPass": 5
+  },
+  "docs": {
+    "command": "node --experimental-strip-types --test --test-name-pattern=llms.txt tests/docs.test.ts",
+    "tests": 2,
+    "pass": 2,
+    "fail": 0
+  },
+  "ports": [
+    {
+      "manifest": "test/money-policy-port.json",
+      "included": 98,
+      "excluded": 12
+    },
+    {
+      "manifest": "test/billing-policy-port.json",
+      "included": 51,
+      "excluded": 4
+    },
+    {
+      "manifest": "test/billing-core-policy-port.json",
+      "included": 13,
+      "excluded": 13
+    },
+    {
+      "manifest": "test/webhook-policy-port.json",
+      "included": 4,
+      "excluded": 10
+    }
+  ],
+  "typecheck": "pass",
+  "build": "pass, dry run only",
+  "drift": "all six reuse and four port scripts pass",
+  "cloudEvidence": "money-cloud-probe.json",
+  "cloudSpendEstimateUsdUpperBound": 0.01,
+  "cloudResourcesRemaining": 0,
+  "validationNote": "One earlier integration run was interrupted by development hot reload while runtime-identity.ts was being created. Its exact local database and worker were removed. The frozen-tree rerun above passed."
+}
