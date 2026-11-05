@@ -13,7 +13,10 @@ export async function inspectDocument(bytes: Uint8Array): Promise<Media> {
     } as never);
     try {
       return { kind: "pdf", pages: document.numPages };
-    } finally { await document.destroy(); }
+    } finally {
+      if ("destroy" in document && typeof document.destroy === "function")
+        await document.destroy();
+    }
   } catch {
     return { kind: "none", reason: "could not be read (damaged or incomplete PDF)" };
   }
