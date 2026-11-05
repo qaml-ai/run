@@ -12,7 +12,8 @@
     "test:integration": "node --import ./test/sdk-deps.mjs --experimental-strip-types --test --test-concurrency=1 test/*.integration.ts",
     "test:compat": "node scripts/compatibility.mjs",
     "measure": "node scripts/measure.mjs",
-    "test:python": "python3 scripts/python-compat.py"
+    "test:python": "python3 scripts/python-compat.py",
+    "parity": "node ../../tests/contract/run.mjs"
   },
   "dependencies": {
     "@cloudflare/computer": "0.9.0",

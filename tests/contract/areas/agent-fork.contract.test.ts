@@ -1,0 +1,334 @@
+import { contractTest, OPERATOR, OTHER_OPERATOR, free, lastUser, toolCall, toolResults, until, sleep, listen, watchEvents, type T } from '../support.ts';
+import type { ContractFixture, ModelReply } from '../fixture.ts';
+
+async function useFixture(f: ContractFixture, respond?: ModelReply, _env?: Record<string,string>, _tenants?: object) { if(respond) f.setModel(respond); return f; }
+
+import assert from "node:assert/strict";
+
+import { createHash } from "node:crypto";
+
+import { Agents } from "../../../clients/node.ts";
+
+const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+
+const roomy = { AGENT_MAX_AGENTS: "40", AGENT_MAX_AGENTS_PER_TENANT: "40" };
+
+const said = (history: any[]) => history.map(message => `${message.role}:${typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? part.type).join("")}`);
+
+const answering = (delayMs = 0) => (body: any) => {
+  const asked = lastUser(body);
+  return { role: "assistant", content: `answer to ${asked}`, ...(asked.includes("slow") ? { delayMs } : {}) };
+};
+
+contractTest("history", "tests/agent-fork.test.ts:18", "a fork has the source's configuration, history and workspace, and from then on each goes its own way", async (t, f) => {
+  const r = await useFixture(f, answering(), roomy);
+  const put = (volume: string, path: string, text: string) => fetch(`${r.base}/v1/volumes/${volume}/files/${path}`, { method: "PUT", headers: { Authorization: `Bearer ${OPERATOR}` }, body: text });
+  const source = (await r.call("/v1/agents", { body: { name: "Support", systemPromptAppend: "APPEND-MARKER", spendLimit: { usd: 5 }, runLimits: { maxResponses: 7 } }, headers: { "Idempotency-Key": "source" } })).json.id as string;
+  await r.prompt(source, "first question");
+  const before = await r.call(`/v1/agents/${source}`);
+  const workspace = before.json.mounts[0].volumeId as string;
+  assert.equal((await put(workspace, "notes.txt", "source notes")).status, 201);
+
+  const forked = await r.call(`/v1/agents/${source}/fork`, { body: { key: "fork-1" } });
+  assert.equal(forked.status, 201, forked.text);
+  const fork = forked.json.id as string;
+  assert.deepEqual(forked.json.forkedFrom, { agentId: source, atMessage: 1 });
+  assert.equal(typeof forked.json.token, "string");
+  assert.equal(forked.json.expiresAt, null, "a fork made with a key lives until deleted");
+
+  const detail = (await r.call(`/v1/agents/${fork}`)).json;
+  assert.deepEqual(detail.forkedFrom, { agentId: source, atMessage: 1 });
+  assert.equal(detail.name, "Support (fork)");
+  assert.equal(detail.systemPromptAppend, "APPEND-MARKER");
+  assert.equal(detail.model, before.json.model);
+  assert.deepEqual(detail.spendLimit, { usd: 5, spent: 0 });
+  assert.deepEqual(detail.runLimits, before.json.runLimits);
+  assert.equal(detail.mounts.length, 1);
+  const forkWorkspace = detail.mounts[0].volumeId as string;
+  assert.notEqual(forkWorkspace, workspace, "the fork has a workspace of its own");
+  assert.equal((await r.call(`/v1/agents/${source}`)).json.forkedFrom, undefined);
+
+  const sourceHistory = (await r.call(`/v1/agents/${source}/history`)).json.messages;
+  assert.deepEqual((await r.call(`/v1/agents/${fork}/history`)).json.messages, sourceHistory);
+  const page = (await r.call(`/v1/agents/${fork}/history?limit=50`)).json;
+  assert.deepEqual(page.entries.map((entry: any) => entry.index), [0, 1]);
+  assert.equal(page.total, 2);
+  assert.equal((await r.call(`/v1/volumes/${forkWorkspace}/files/notes.txt`)).text, "source notes");
+
+  // Files: a write to either is the other's no longer.
+  await put(workspace, "notes.txt", "changed in source");
+  await put(forkWorkspace, "fork-only.txt", "fork's own");
+  assert.equal((await r.call(`/v1/volumes/${forkWorkspace}/files/notes.txt`)).text, "source notes");
+  assert.equal((await r.call(`/v1/volumes/${workspace}/files/fork-only.txt`)).status, 404);
+
+  // History: each agent's turns are its own; the fork's model sees the copied conversation.
+  const answered = await r.prompt(fork, "fork question");
+  assert.equal(answered.outcome.result.reply, "answer to fork question");
+  const sent = JSON.stringify(r.model.bodies.at(-1).messages);
+  assert.ok(sent.includes("first question") && sent.includes("answer to first question") && sent.includes("APPEND-MARKER"));
+  await r.prompt(source, "source question");
+  assert.deepEqual(said((await r.call(`/v1/agents/${source}/history`)).json.messages),
+    ["user:first question", "assistant:answer to first question", "user:source question", "assistant:answer to source question"]);
+  assert.deepEqual(said((await r.call(`/v1/agents/${fork}/history`)).json.messages),
+    ["user:first question", "assistant:answer to first question", "user:fork question", "assistant:answer to fork question"]);
+
+  // Deleting the source leaves the fork whole.
+  assert.equal((await r.call(`/v1/agents/${source}`, { method: "DELETE" })).status, 200);
+  assert.equal((await r.call(`/v1/agents/${fork}/history`)).json.messages.length, 4);
+  assert.equal((await r.call(`/v1/volumes/${forkWorkspace}/files/notes.txt`)).text, "source notes");
+
+}, {env:roomy});
+
+contractTest("history", "tests/agent-fork.test.ts:95", "a fork ends at a message: that message and the tool results answering it, or a request's whole turn", async (t, f) => {
+  const r = await useFixture(f, body => lastUser(body) === "use a tool" && !body.messages.some((message: any) => message.role === "tool")
+    ? toolCall("codemode", { code: "return 6 * 7" }) : answering()(body), roomy);
+  const source = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(source, "one");
+  const second = await r.prompt(source, "use a tool");
+  await r.prompt(source, "three");
+  const history = (await r.call(`/v1/agents/${source}/history`)).json.messages;
+  assert.deepEqual(history.map((message: any) => message.role), ["user", "assistant", "user", "assistant", "toolResult", "assistant", "user", "assistant"]);
+
+  const fork = async (atMessage: unknown) => {
+    const made = await r.call(`/v1/agents/${source}/fork`, { body: { atMessage } });
+    assert.equal(made.status, 201, made.text);
+    return { forkedFrom: made.json.forkedFrom, history: (await r.call(`/v1/agents/${made.json.id}/history`)).json.messages };
+  };
+  const atUser = await fork(0);
+  assert.deepEqual(atUser.history, history.slice(0, 1));
+  assert.deepEqual(atUser.forkedFrom, { agentId: source, atMessage: 0 });
+  const atCall = await fork(3);
+  assert.deepEqual(atCall.history, history.slice(0, 5), "the call's result comes along");
+  assert.deepEqual(atCall.forkedFrom.atMessage, 4);
+  const atTurn = await fork(second.id);
+  assert.deepEqual(atTurn.history, history.slice(0, 6), "a request id keeps its whole turn");
+  assert.equal(atTurn.forkedFrom.atMessage, 5);
+
+  // A fork that ends mid-conversation takes the next prompt as any agent does.
+  const made = (await r.call(`/v1/agents/${source}/fork`, { body: { atMessage: 1 } })).json.id as string;
+  assert.equal((await r.prompt(made, "after the fork")).outcome.result.reply, "answer to after the fork");
+  assert.deepEqual(said((await r.call(`/v1/agents/${made}/history`)).json.messages), ["user:one", "assistant:answer to one", "user:after the fork", "assistant:answer to after the fork"]);
+
+  for (const atMessage of [8, -1, 1.5, "no-such-request"]) {
+    const refused = await r.call(`/v1/agents/${source}/fork`, { body: { atMessage } });
+    assert.equal(refused.status, 400, `${atMessage}: ${refused.text}`);
+    if (atMessage !== 1.5) assert.equal(refused.json.code, "FORK_POINT_INVALID");
+  }
+
+}, {env:roomy});
+
+contractTest("history", "tests/agent-fork.test.ts:132", "a fork of an agent mid-turn ends before the running turn: no partial turn, and the fork loads idle", async (t, f) => {
+  const r = await useFixture(f, answering(3_000), roomy);
+  const source = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(source, "settled");
+  const running = await r.call(`/v1/agents/${source}/prompt`, { body: { text: "slow one" } });
+  assert.equal(running.status, 202);
+  await until(async () => (await r.call(`/v1/agents/${source}/history`)).json.messages.length === 3, "the running turn's prompt in the history");
+
+  const made = await r.call(`/v1/agents/${source}/fork`, { body: {} });
+  assert.equal(made.status, 201, made.text);
+  assert.deepEqual(made.json.forkedFrom, { agentId: source, atMessage: 1 });
+  const forked = (await r.call(`/v1/agents/${made.json.id}/history`)).json.messages;
+  assert.deepEqual(said(forked), ["user:settled", "assistant:answer to settled"]);
+  // A fork from a turn still running would be repaired as interrupted on load; this one is idle.
+  const state = (await r.call(`/v1/agents/${made.json.id}/state`)).json;
+  assert.deepEqual(state.requests, []);
+
+  for (const atMessage of [2, running.json.id]) {
+    const refused = await r.call(`/v1/agents/${source}/fork`, { body: { atMessage } });
+    assert.equal(refused.status, 409, refused.text);
+    assert.equal(refused.json.code, "FORK_POINT_RUNNING");
+  }
+  await until(async () => (await r.call(`/v1/agents/${source}/requests/${running.json.id}`)).json.state === "completed", "the slow turn");
+  const whole = await r.call(`/v1/agents/${source}/fork`, { body: { atMessage: running.json.id } });
+  assert.equal(whole.status, 201, whole.text);
+  assert.deepEqual(said((await r.call(`/v1/agents/${whole.json.id}/history`)).json.messages).slice(2), ["user:slow one", "assistant:answer to slow one"]);
+
+}, {env:roomy});
+
+contractTest("history", "tests/agent-fork.test.ts:160", "a fork of a compacted agent keeps its summary: the model sees the summary and what follows, history keeps every message", async (t, f) => {
+  const r = await useFixture(f, answering(), roomy);
+  const user = (text: string) => ({ role: "user", content: text, timestamp: 1 });
+  const assistant = (text: string) => ({ role: "assistant", content: [{ type: "text", text }], api: "openai-completions", provider: "openrouter", model: "openai/gpt-4o-mini", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 });
+  const source = (await r.call("/v1/agents", { body: { initialMessages: [
+    user("OLD-QUESTION"), assistant("OLD-ANSWER"), { role: "compactionSummary", summary: "SUMMARY-OF-EARLIER", tokensBefore: 100_000, timestamp: 3 }, user("KEPT-QUESTION"), assistant("KEPT-ANSWER"),
+  ] } })).json.id as string;
+  const fork = (await r.call(`/v1/agents/${source}/fork`, { body: {} })).json.id as string;
+  assert.deepEqual(said((await r.call(`/v1/agents/${fork}/history`)).json.messages), ["user:OLD-QUESTION", "assistant:OLD-ANSWER", "user:KEPT-QUESTION", "assistant:KEPT-ANSWER"]);
+  await r.prompt(fork, "NEW-QUESTION");
+  const sent = JSON.stringify(r.model.bodies.at(-1).messages);
+  for (const seen of ["SUMMARY-OF-EARLIER", "KEPT-QUESTION", "NEW-QUESTION"]) assert.ok(sent.includes(seen), seen);
+  for (const gone of ["OLD-QUESTION", "OLD-ANSWER"]) assert.ok(!sent.includes(gone), `${gone} is summarized`);
+
+  // Forked at its cut, it is the summary of everything the fork keeps.
+  const sentFor = async (atMessage: number) => {
+    const early = (await r.call(`/v1/agents/${source}/fork`, { body: { atMessage } })).json.id as string;
+    await r.prompt(early, `EARLY-${atMessage}`);
+    return JSON.stringify(r.model.bodies.at(-1).messages);
+  };
+  // Before the import cut, seed the fork from raw indexed history, without the summary.
+  const before = await r.call(`/v1/agents/${source}/fork`, { body: { atMessage: 0 } });
+  assert.equal(before.status, 201, before.text);
+  assert.deepEqual(before.json.forkedFrom, { agentId: source, atMessage: 0 });
+  assert.deepEqual(said((await r.call(`/v1/agents/${before.json.id}/history`)).json.messages), ["user:OLD-QUESTION"]);
+  await r.prompt(before.json.id, "EARLY-0");
+  const raw = r.model.bodies.at(-1).messages.filter((message: any) => message.role !== "system");
+  assert.deepEqual(said(raw), ["user:OLD-QUESTION", "user:EARLY-0"]);
+  // The implementation log assertion remains in tests/agent-fork.test.ts.
+  const at = await sentFor(1);
+  assert.ok(at.includes("SUMMARY-OF-EARLIER") && !at.includes("OLD-ANSWER") && !at.includes("KEPT-QUESTION"), at);
+
+}, {env:roomy});
+
+contractTest("history", "tests/agent-fork.test.ts:196", "a fork's key makes it idempotent: a retry returns the same fork, another source's fork with it is refused", async (t, f) => {
+  const r = await useFixture(f, answering(), roomy);
+  const source = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const other = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(source, "hello");
+  const first = await r.call(`/v1/agents/${source}/fork`, { body: { key: "same" } });
+  await r.prompt(source, "more");
+  const again = await r.call(`/v1/agents/${source}/fork`, { body: { key: "same", atMessage: 3 } });
+  assert.equal(again.status, 201);
+  assert.deepEqual(again.json, first.json, "the same fork, as it was made");
+  assert.equal((await r.call(`/v1/agents/${first.json.id}/history`)).json.messages.length, 2);
+  const header = await r.call(`/v1/agents/${source}/fork`, { body: {}, headers: { "Idempotency-Key": "by-header" } });
+  assert.equal((await r.call(`/v1/agents/${source}/fork`, { body: {}, headers: { "Idempotency-Key": "by-header" } })).json.id, header.json.id);
+  assert.equal((await r.call("/v1/agents/by-header/credentials")).json.id, header.json.id, "agents.get finds a fork by its key");
+  assert.notEqual((await r.call(`/v1/agents/${source}/fork`, { body: {} })).json.id, (await r.call(`/v1/agents/${source}/fork`, { body: {} })).json.id, "without a key, each fork is new");
+
+  const conflict = await r.call(`/v1/agents/${other}/fork`, { body: { key: "same" } });
+  assert.equal(conflict.status, 409, conflict.text);
+  const created = (await r.call("/v1/agents", { body: {}, headers: { "Idempotency-Key": "plain" } })).json.id;
+  assert.ok(created);
+  assert.equal((await r.call(`/v1/agents/${source}/fork`, { body: { key: "plain" } })).status, 409, "a key an agent was made with names that agent");
+  // A deleted fork's key makes a new one.
+  assert.equal((await r.call(`/v1/agents/${first.json.id}`, { method: "DELETE" })).status, 200);
+  const renewed = await r.call(`/v1/agents/${source}/fork`, { body: { key: "same" } });
+  assert.equal(renewed.status, 201, renewed.text);
+  assert.notEqual(renewed.json.id, first.json.id);
+  assert.equal(renewed.json.forkedFrom.atMessage, 3);
+
+}, {env:roomy});
+
+contractTest("history", "tests/agent-fork.test.ts:225", "only the source's tenant forks it, and never with a browser token", async (t, f) => {
+  const r = await useFixture(f, answering(), roomy);
+  const source = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const browser = (await r.call(`/v1/agents/${source}/browser-tokens`, { body: {} })).json.token as string;
+  const refused = await r.call(`/v1/agents/${source}/fork`, { body: {}, token: browser });
+  assert.equal(refused.status, 403, refused.text);
+  assert.equal((await r.call(`/v1/agents/${source}/fork`, { body: {}, token: OTHER_OPERATOR })).status, 404);
+  assert.equal((await r.call("/v1/agents")).json.length, 1, "no fork was made");
+
+}, {env:roomy});
+
+contractTest("history", "tests/agent-fork.test.ts:256", "the SDK's fork() makes a new agent from this one: its history, configuration and files; a key returns the same fork", async (t, f) => {
+  const r = await useFixture(f, body => ({ role: "assistant", content: `said: ${lastUser(body)}` }), roomy);
+  const agents = new Agents({ url: r.base, apiKey: OPERATOR });
+  t.after(() => agents.close());
+  const source = await agents.upsert("fork-source", { instructions: "Be terse." });
+  await source.run("hello");
+  await source.files.upload("/workspace/notes.txt", "kept");
+  const fork = await source.fork({ key: "fork-of-source" });
+  assert.notEqual(fork.id, source.id);
+  assert.deepEqual(fork.forkedFrom, { agentId: source.id, atMessage: 1 });
+  assert.deepEqual((await fork.history()).map(message => message.role), ["user", "assistant"]);
+  assert.equal(new TextDecoder().decode((await fork.files.download("/workspace/notes.txt")).data), "kept");
+  assert.equal((await r.call(`/v1/agents/${fork.id}`)).json.systemPrompt, "Be terse.");
+  assert.equal((await source.fork({ key: "fork-of-source" })).id, fork.id, "the same key is the same fork");
+  assert.equal((await agents.get("fork-of-source")).id, fork.id);
+  const early = await agents.fork(source.id, { atMessage: 0, instructionsAppend: "EARLY-APPEND" });
+  assert.equal((await r.call(`/v1/agents/${early.id}`)).json.systemPromptAppend, "EARLY-APPEND");
+  assert.equal((await early.history()).length, 1);
+  assert.ok(early.session.expiresAt! - Date.now() > 86_000_000, "a fork without a key of the caller's lives a day");
+  assert.equal((await fork.run("again")).text, "said: again");
+  assert.equal((await source.history()).length, 2, "the source's history is its own");
+
+}, {env:roomy});
+
+contractTest("history", "tests/agent-fork.test.ts:279", "a fork is cut from the source's journal: its history, and Pi's context as of the cut", async (t, f) => {
+  const r = await useFixture(f, answering(), roomy);
+  const source = (await r.call("/v1/agents", { body: { name: "Journal" } })).json.id as string;
+  await r.prompt(source, "first question");
+  await r.prompt(source, "second question");
+  const forked = await r.call(`/v1/agents/${source}/fork`, { body: { key: "journal-fork", atMessage: 1 } });
+  assert.equal(forked.status, 201, forked.text);
+  assert.deepEqual(forked.json.forkedFrom, { agentId: source, atMessage: 1 });
+  const fork = forked.json.id as string;
+  assert.deepEqual(said((await r.call(`/v1/agents/${fork}/history`)).json.messages), ["user:first question", "assistant:answer to first question"]);
+  await r.prompt(fork, "fork question");
+  const sent = JSON.stringify(r.model.bodies.at(-1).messages);
+  assert.ok(sent.includes("first question") && sent.includes("answer to first question"));
+  assert.ok(!sent.includes("second question"), "nothing after the cut");
+
+}, {env:roomy});
+
+contractTest("history", "tests/agent-fork.test.ts:295", "a fork after a context reset starts from the context the reset left, where the source stood and at a cut after the reset", async (t, f) => {
+  const r = await useFixture(f, answering(), { ...roomy, AGENT_IDLE_MS: "1000" });
+  const source = (await r.call("/v1/agents", { body: { name: "Reset" } })).json.id as string;
+  for (const text of ["Q1", "Q2", "Q3"]) await r.prompt(source, text);
+  const reset = await r.call(`/v1/agents/${source}/context/reset`, { body: { keepMessages: 2, summary: "RESET-SUMMARY" } });
+  assert.equal(reset.status, 200, reset.text);
+  await r.prompt(source, "Q4");
+  await r.prompt(source, "Q5");
+  // What the source sends next: its context as the reset left it, then the new prompt.
+  const context = (body: any) => body.messages.filter((message: any) => message.role !== "system").slice(0, -1);
+  await r.prompt(source, "S-NEXT");
+  const sourceContext = context(r.model.bodies.at(-1));
+  const text = JSON.stringify(sourceContext);
+  assert.ok(text.includes("RESET-SUMMARY") && text.includes("Q3") && !text.includes("Q1"), text);
+
+  const history = (await r.call(`/v1/agents/${source}/history`)).json.messages as any[];
+  const answerTo = (text: string) => history.findIndex(message => said([message])[0] === `assistant:answer to ${text}`);
+  // At Q5's answer, where the source stood before S-NEXT: the same context.
+  const atQ5 = (await r.call(`/v1/agents/${source}/fork`, { body: { atMessage: answerTo("Q5") } })).json.id as string;
+  await r.prompt(atQ5, "F-Q5");
+  assert.deepEqual(context(r.model.bodies.at(-1)), sourceContext);
+
+  // At Q4's answer (after the reset): the reset's context through Q4, without Q5.
+  const cut = (await r.call(`/v1/agents/${source}/fork`, { body: { atMessage: answerTo("Q4") } })).json.id as string;
+  await r.prompt(cut, "F-CUT");
+  const cutContext = context(r.model.bodies.at(-1));
+  assert.deepEqual(cutContext, sourceContext.slice(0, sourceContext.length - 2), JSON.stringify(cutContext));
+  assert.ok(JSON.stringify(cutContext).includes("RESET-SUMMARY"));
+
+}, {env:{ ...roomy, AGENT_IDLE_MS: "1000" }});
+
+contractTest("history", "tests/agent-fork.test.ts:76", "a fork may act for someone else and carry its own prompt addition and model headers: what a create fixes, the fork's create sets", async (t, f)=>{
+  const r = await useFixture(f, answering(), roomy);
+  const source = (await r.call("/v1/agents", { body: { subject: "user-1", context: { thread: "a" }, systemPromptAppend: "Thread a", modelHeaders: { "x-thread": "a" } } })).json.id as string;
+  await r.prompt(source, "hello");
+  const made = await r.call(`/v1/agents/${source}/fork`, { body: { context: { thread: "b" }, systemPromptAppend: "Thread b", modelHeaders: { "x-thread": "b" } } });
+  assert.equal(made.status, 201, made.text);
+  // Stored identity assertions remain in the original Node test.
+  assert.equal((await r.call(`/v1/agents/${made.json.id}`)).json.systemPromptAppend, "Thread b");
+  await r.prompt(made.json.id, "again");
+  const sent = JSON.stringify(r.model.bodies.at(-1).messages);
+  assert.ok(sent.includes("Thread b"), "the fork's model gets its own addition");
+  assert.equal(r.model.headers.at(-1)!["x-thread"], "b", "and its own headers");
+  assert.deepEqual((await r.call(`/v1/agents/${made.json.id}`)).json.modelHeaders, { "x-thread": "b" });
+  assert.equal((await r.call(`/v1/agents/${source}/fork`, { body: { context: "thread b" } })).status, 400);
+  assert.equal((await r.call(`/v1/agents/${source}/fork`, { body: { modelHeaders: { Authorization: "x" } } })).status, 400);
+
+}, {env:roomy});
+
+contractTest("history", "tests/agent-fork.test.ts:235", "a fork pins the files its history refers to: they stay stored after the source, its workspace and the fork's copy are gone", async (t, f)=>{
+  const r = await useFixture(f, answering(), { AGENT_GC_ENABLED: "true", AGENT_PURGE_INTERVAL_MS: "1000", AGENT_GC_GRACE_MS: "0", AGENT_GC_INTERVAL_MS: "0", AGENT_GC_POLL_MS: "200" });
+  const source = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const accepted = await r.call(`/v1/agents/${source}/prompt`, { body: { text: "keep this", files: [{ name: "kept.txt", data: Buffer.from("forked words").toString("base64") }] } });
+  await until(async () => (await r.call(`/v1/agents/${source}/requests/${accepted.json.id}`)).json.state === "completed", "the turn");
+  const forked = (await r.call(`/v1/agents/${source}/fork`, { body: {} })).json.id as string;
+  // Chunk pin storage assertions remain in the original Node test.
+
+  // The fork's workspace copy of the upload goes, and so does the source with its workspace: only the fork's pin holds the chunk.
+  const workspace = (await r.call(`/v1/agents/${forked}`)).json.mounts[0].volumeId;
+  const files = (await r.call(`/v1/volumes/${workspace}/files`)).json;
+  for (const file of files.files ?? files) assert.equal((await r.call(`/v1/volumes/${workspace}/files/${file.path.replace(/^\//, "")}`, { method: "DELETE" })).status, 200);
+  assert.equal((await r.call(`/v1/agents/${source}`, { method: "DELETE" })).status, 200);
+  await until(async () => (await r.call(`/v1/agents/${source}`)).status === 404, "the source's purge", 20_000);
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  // The model call below verifies the retained file through the public contract.
+  // And the fork's model still gets the file.
+  await r.prompt(forked, "what did I attach?");
+  assert.ok(JSON.stringify(r.model.bodies.at(-1).messages).includes("forked words"));
+
+}, {env:{ AGENT_GC_ENABLED: "true", AGENT_PURGE_INTERVAL_MS: "1000", AGENT_GC_GRACE_MS: "0", AGENT_GC_INTERVAL_MS: "0", AGENT_GC_POLL_MS: "200" }});

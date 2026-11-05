@@ -2,7 +2,7 @@
 import importlib.util, json, os, pathlib, subprocess, unittest, asyncio
 ROOT=pathlib.Path(__file__).resolve().parents[3]
 HERE=pathlib.Path(__file__).resolve().parents[1]
-os.environ['AGENT_TEST_DATABASE_URL']='postgresql://postgres:local-only-unused@127.0.0.1:55434/camelrun_proto'
+os.environ.setdefault('AGENT_TEST_DATABASE_URL', 'postgresql://postgres:local-only-unused@127.0.0.1:55434/camelrun_proto')
 spec=importlib.util.spec_from_file_location('upstream_python_sdk',ROOT/'tests/python_sdk.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 def database(sql):

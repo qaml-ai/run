@@ -1,0 +1,50 @@
+import { contractTest, OPERATOR, OTHER_OPERATOR, free, lastUser, toolCall, toolResults, until, sleep, listen, watchEvents, type T } from '../support.ts';
+import type { ContractFixture, ModelReply } from '../fixture.ts';
+
+async function useFixture(f: ContractFixture, respond?: ModelReply, _env?: Record<string,string>, _tenants?: object) { if(respond) f.setModel(respond); return f; }
+
+import assert from "node:assert/strict";
+
+import { Agents, type StreamPart } from "../../../clients/node.ts";
+
+import { watchAgent } from "../../../clients/watch.ts";
+
+const systemText = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer")
+  .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");
+
+const roleText = (body: any) => [systemText(body), ...body.messages.filter((message: any) => message.role === "user").slice(0, 1)
+  .map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join(""))].join("\n");
+
+contractTest("delegation", "tests/sdk-multi-agent.test.ts:13", "SDK: delegate settings on upsert bring their builtin; a run lists its child's id, and a stream with subagents shows it start and end", async (t, f) => {
+  const r = await useFixture(f, body => {
+    if (roleText(body).includes("HELPER")) return { role: "assistant", content: "helped" };
+    return body.messages.at(-1).role === "tool" ? { role: "assistant", content: `done: ${JSON.parse(toolResults(body).at(-1)).text}` } : toolCall("delegate", { instructions: "You are HELPER.", task: "help" }, `call_${body.messages.length}`);
+  });
+  const agents = new Agents({ url: r.base, apiKey: OPERATOR });
+  t.after(() => agents.close());
+  const agent = await agents.upsert("coordinator", { delegate: { instructions: true }, subagents: true });
+  assert.deepEqual((await r.call(`/v1/agents/${agent.id}`)).json.builtins, ["delegate"]);
+
+  const run = await agent.run("go");
+  assert.equal(run.text, "done: helped");
+  const call = run.toolCalls.find(entry => entry.tool === "delegate")!;
+  assert.match(call.agentId!, /^client_/);
+  assert.ok(run.usage);
+
+  // A browser's watcher follows the sub-agent too, under its delegate call.
+  const minted = (await r.call(`/v1/agents/${agent.id}/browser-tokens`, { body: {} })).json;
+  const watcher = watchAgent({ url: r.base, agentId: agent.id, token: minted.token, expiresAt: minted.expiresAt, subagents: true });
+  t.after(() => watcher.close());
+  await until(() => watcher.state.connected, "the watcher connected");
+
+  const parts: StreamPart[] = [];
+  for await (const part of agent.stream("again")) parts.push(part);
+  const followed = await until(() => [...watcher.state.subagents.values()].find(child => child.status === "completed"), "the watcher saw the sub-agent end");
+  assert.ok(followed.messages.some(message => message.role === "assistant" && JSON.stringify(message.content).includes("helped")));
+  const start = parts.find(part => part.type === "subagent_start") as Extract<StreamPart, { type: "subagent_start" }>;
+  const end = parts.find(part => part.type === "subagent_end") as Extract<StreamPart, { type: "subagent_end" }>;
+  assert.ok(start && end, JSON.stringify(parts.map(part => part.type)));
+  assert.equal(start.agentId, end.agentId);
+  assert.equal(end.status, "completed");
+
+});

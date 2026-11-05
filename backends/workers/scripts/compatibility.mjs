@@ -156,6 +156,7 @@ for (const file of candidates) {
         env: {
           ...process.env,
           AGENT_TEST_DATABASE_URL:
+            process.env.AGENT_TEST_DATABASE_URL ??
             "postgresql://postgres:local-only-unused@127.0.0.1:55434/camelrun_proto",
         },
         stdio: ["ignore", "pipe", "pipe"],

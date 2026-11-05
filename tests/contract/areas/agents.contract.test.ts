@@ -1,0 +1,233 @@
+import { contractTest, OPERATOR, OTHER_OPERATOR, free, lastUser, toolCall, toolResults, until, sleep, listen, watchEvents, type T } from '../support.ts';
+import type { ContractFixture, ModelReply } from '../fixture.ts';
+
+async function useFixture(f: ContractFixture, respond?: ModelReply, _env?: Record<string,string>, _tenants?: object) { if(respond) f.setModel(respond); return f; }
+
+import assert from "node:assert/strict";
+
+import { inspect } from "node:util";
+
+import { Agents, RunError, schema, tool, toolServer, type StreamPart } from "../../../clients/node.ts";
+
+async function setup(t: { after(fn: () => Promise<void> | void): void }, f: ContractFixture, respond: ModelReply, env: Record<string, string> = {}) {
+  const r = await useFixture(f, respond, env);
+  const agents = new Agents({ url: r.base, apiKey: OPERATOR });
+  t.after(() => agents.close());
+  /** An agent made over REST, then held by the simple API. */
+  const make = async (config: Parameters<Agents["agent"]>[1] = {}) => {
+    const created = await r.call("/v1/agents", { body: { ttlSeconds: null, ...(config.tools ? { mcp: { tools: await toolServer(config.tools).listTools() } } : {}) } });
+    assert.equal(created.status, 201, created.text);
+    return agents.agent({ id: created.json.id, token: created.json.token, expiresAt: null }, config);
+  };
+  return { r, agents, make };
+}
+
+const echo = (execute: (args: { value: string }, context: any) => unknown) => tool({
+  description: "Echo a value", input: schema.Object({ value: schema.String() }, { additionalProperties: false }), execute,
+});
+
+contractTest("agents", "tests/agents.test.ts:24", "run() resolves with a typed Run; the agent's id is public and its token stays out of logs", async (t, f) => {
+  const { make } = await setup(t, f, () => ({ role: "assistant", content: "Hello there." }));
+  const agent = await make();
+  const run = await agent.run("Hi", { user: "u1" });
+  assert.equal(run.status, "completed");
+  assert.equal(run.text, "Hello there.");
+  assert.deepEqual(run.inputs, []);
+  assert.equal(run.error, null);
+  assert.match(run.id, /^[0-9a-f-]{36}$/);
+  assert.match(agent.id, /^client_[a-f0-9]{40}$/);
+  const token = agent.session.token;
+  assert.ok(token.length > 20, "the token is still there for code that needs it");
+  for (const shown of [JSON.stringify(agent), JSON.stringify(agent.session), inspect(agent), inspect(agent.session), inspect(agent.client), JSON.stringify(agent.client)]) {
+    assert.ok(!shown.includes(token), `no token in ${shown}`);
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(agent)), { id: agent.id });
+
+});
+
+contractTest("agents", "tests/agents.test.ts:42", "a key the provider refuses fails the run as model_key_invalid, with where to set a working one", async (t, f) => {
+  const { make } = await setup(t, f, () => ({ httpStatus: 401, message: "Incorrect API key provided" }));
+  const error = await (await make()).run("Hi").then(() => assert.fail("expected a RunError"), error => error);
+  assert.ok(error instanceof RunError);
+  assert.equal(error.code, "model_key_invalid");
+  assert.match(error.message, /^openrouter refused the API key for openrouter\/openai\/gpt-4o-mini \(401\): set a working one with PUT \/v1\/providers\/openrouter\/key.*GET \/v1\/models\?available=true.*Incorrect API key provided/s);
+
+});
+
+contractTest("agents", "tests/agents.test.ts:50", "a failed run throws a RunError with the run, or resolves with it given throwOnError: false", async (t, f) => {
+  const { make } = await setup(t, f, () => ({ httpStatus: 400, message: "model says no" }));
+  const agent = await make();
+  const error = await agent.run("Hi").then(() => assert.fail("expected a RunError"), error => error);
+  assert.ok(error instanceof RunError);
+  assert.equal(error.run.status, "failed");
+  assert.equal(error.code, "model_error");
+  assert.match(error.message, /model says no/);
+  const run = await agent.run("Again", { throwOnError: false });
+  assert.equal(run.status, "failed");
+  assert.equal(run.error?.code, "model_error");
+
+});
+
+contractTest("agents", "tests/agents.test.ts:63", "stream() yields tool calls, results and text, then done with the run", async (t, f) => {
+  const { make } = await setup(t, f, (body, index) => index === 0 ? toolCall("echo", { value: "ping" }, "call_echo")
+    : { role: "assistant", content: `Echoed ${JSON.parse(toolResults(body).at(-1)).value}` });
+  const agent = await make({ tools: { echo: echo(({ value }) => ({ value })) } });
+  const parts: StreamPart[] = [];
+  const stream = agent.stream("Echo ping");
+  for await (const part of stream) parts.push(part);
+  assert.deepEqual(parts.map(part => part.type), ["tool_call", "tool_result", "text", "done"]);
+  const [call, result, text, done] = parts as any[];
+  assert.deepEqual([call.name, call.arguments], ["echo", { value: "ping" }]);
+  // The names run.toolCalls uses, beside name and id.
+  assert.deepEqual([call.tool, call.toolCallId, result.tool, result.toolCallId], ["echo", "call_echo", "echo", "call_echo"]);
+  assert.deepEqual(parts.at(-1)!.type === "done" && (parts.at(-1) as any).run.toolCalls.map((entry: any) => [entry.tool, entry.toolCallId]), [[call.tool, call.toolCallId]]);
+  assert.equal(result.isError, false);
+  assert.deepEqual(JSON.parse(result.output), { value: "ping" });
+  assert.equal(text.text, "Echoed ping");
+  assert.equal(done.run.text, "Echoed ping");
+  assert.equal((await stream.result()).id, stream.id);
+
+});
+
+contractTest("agents", "tests/agents.test.ts:83", "get() takes an existing agent by key or id without changing it; 404 for none, 409 for one made without a key", async (t, f) => {
+  const { r, agents } = await setup(t, f, body => ({ role: "assistant", content: `said: ${lastUser(body)}` }));
+  const made = await agents.upsert("kept", { instructions: "Be terse." });
+  const byKey = await agents.get("kept");
+  assert.equal(byKey.id, made.id);
+  assert.equal((await r.call(`/v1/agents/${made.id}`)).json.systemPrompt, "Be terse.", "the configuration is untouched");
+  assert.equal((await byKey.run("hello")).text, "said: hello");
+  assert.equal((await agents.get(made.id)).id, made.id, "by id too");
+  await assert.rejects(agents.get("never-made"), (error: any) => error.status === 404);
+  // A key's agent deleted and made again: get finds the new one.
+  await made.delete();
+  await assert.rejects(agents.get("kept"), (error: any) => error.status === 404);
+  const again = await agents.upsert("kept", {});
+  assert.notEqual(again.id, made.id);
+  assert.equal((await agents.get("kept")).id, again.id);
+  const keyless = (await r.call("/v1/agents", { body: {} })).json;
+  await assert.rejects(agents.get(keyless.id), (error: any) => error.status === 409 && error.code === "AGENT_KEYLESS");
+
+});
+
+contractTest("agents", "tests/agents.test.ts:102", "an agent's credentials are for the account's own tokens: a browser token gets 403, an agent's token 401, and no browser origin is allowed", async (t, f) => {
+  const { r } = await setup(t, f, () => ({ role: "assistant", content: "ok" }));
+  const made = (await r.call("/v1/agents", { body: {}, headers: { "Idempotency-Key": "guarded" } })).json;
+  assert.equal((await r.call("/v1/agents/guarded/credentials")).json.token, made.token, "the API token gets the token its create gave");
+  const browser = (await r.call(`/v1/agents/${made.id}/browser-tokens`, { body: {} })).json.token;
+  for (const ref of [made.id, "guarded"]) {
+    const refused = await r.call(`/v1/agents/${ref}/credentials`, { token: browser });
+    assert.equal(refused.status, 403, ref);
+    assert.doesNotMatch(refused.text, /[0-9a-f]{64}/, "no token in the refusal");
+  }
+  const agentToken = await r.call(`/v1/agents/${made.id}/credentials`, { token: made.token });
+  assert.equal(agentToken.status, 401, "an agent's own token is not an account token");
+  // Not one of the browser reads: no CORS headers, even asked from a page, preflight or not.
+  const preflight = await fetch(`${r.base}/v1/agents/${made.id}/credentials`, { method: "OPTIONS", headers: { Origin: "https://evil.example", "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "authorization" } });
+  assert.equal(preflight.headers.get("access-control-allow-origin"), null);
+  const fromPage = await fetch(`${r.base}/v1/agents/${made.id}/credentials`, { headers: { Origin: "https://evil.example", Authorization: `Bearer ${browser}` } });
+  assert.equal(fromPage.headers.get("access-control-allow-origin"), null);
+  const withKey = await fetch(`${r.base}/v1/agents/${made.id}/credentials`, { headers: { Origin: "https://evil.example", Authorization: `Bearer ${OPERATOR}` } });
+  assert.equal(withKey.status, 200);
+  assert.equal(withKey.headers.get("access-control-allow-origin"), null);
+
+});
+
+contractTest("agents", "tests/agents.test.ts:124", "a tool that returns nothing succeeds with null; its context has a stable idempotency key and reports progress", async (t, f) => {
+  const { make, r } = await setup(t, f, (body, index) => index === 0 ? toolCall("save", { value: "x" }, "call_save") : { role: "assistant", content: "Saved." });
+  const keys: string[] = [];
+  const events: any[] = [];
+  const save = echo(async (_args, context) => {
+    keys.push(context.idempotencyKey);
+    context.progress("halfway");
+    await sleep(300);
+  });
+  const agent = await make({ tools: { save }, onEvent: event => { events.push(event); } });
+  const run = await agent.run("Save x");
+  assert.equal(run.text, "Saved.");
+  assert.equal(toolResults(r.model.bodies[1]).at(-1), "null", "the model hears null, not a failure");
+  assert.equal(keys.length, 1);
+  assert.match(keys[0], /^[0-9a-f]{32}$/, "the runtime's key for this call");
+  await until(() => events.some(event => event.type === "tool_execution_update" && JSON.stringify(event.partialResult).includes("halfway")), "the progress event");
+
+});
+
+contractTest("agents", "tests/agents.test.ts:142", "a slow onEvent never holds up the agent's tool calls", async (t, f) => {
+  const { make } = await setup(t, f, (body, index) => index < 3 ? toolCall("echo", { value: `v${index}` }, `call_${index}`) : { role: "assistant", content: "Done." }, {});
+  let handled = 0;
+  const agent = await make({
+    tools: { echo: echo(({ value }) => value) },
+    // Far slower than the runtime's 15 s tool timeout, in all.
+    onEvent: async () => { await sleep(1000); handled++; },
+  });
+  const started = Date.now();
+  const run = await agent.run("Echo three times");
+  assert.equal(run.text, "Done.");
+  assert.ok(Date.now() - started < 10_000, "the run did not wait for onEvent");
+  assert.ok(handled < 10, "events were still being handled when the run ended");
+
+  // Closing stops onEvent: the call in progress finishes, and the backlog is dropped.
+  const closing = Date.now();
+  await agent.close();
+  assert.ok(Date.now() - closing < 1_500, "close waited only for the call in progress");
+  const atClose = handled;
+  await sleep(2_500);
+  assert.equal(handled, atClose, "no queued event reached onEvent after close");
+
+}, {env:{}});
+
+contractTest("agents", "tests/agents.test.ts:165", "an onEvent that throws is reported to onError, and the connection goes on", async (t, f) => {
+  const { make } = await setup(t, f, () => ({ role: "assistant", content: "Fine." }));
+  const errors: Error[] = [];
+  const agent = await make({ onEvent: () => { throw new Error("display broke"); }, onError: error => errors.push(error) });
+  assert.equal((await agent.run("One")).text, "Fine.");
+  assert.equal((await agent.run("Two")).text, "Fine.");
+  assert.ok(errors.some(error => /display broke/.test(error.message)));
+
+});
+
+contractTest("agents", "tests/agents.test.ts:174", "an approval: the run waits with its input, and answering it resolves with the resumed run", async (t, f) => {
+  const { make } = await setup(t, f, (body, index) => index === 0 ? toolCall("deploy", { value: "prod" }, "call_deploy") : { role: "assistant", content: `Result: ${toolResults(body).at(-1)}` });
+  let deployed = 0;
+  const deploy = tool({
+    description: "Deploy", input: schema.Object({ value: schema.String() }), needsApproval: true,
+    execute: () => { deployed++; return "deployed"; },
+  });
+  const agent = await make({ tools: { deploy } });
+  const run = await agent.run("Deploy");
+  assert.equal(run.status, "input_required");
+  assert.equal(run.inputs.length, 1);
+  assert.equal(run.inputs[0].kind, "approval");
+  assert.deepEqual(run.toolCalls, [{ tool: "deploy", toolCallId: "call_deploy", ok: false, code: "input_required" }]);
+  assert.equal(deployed, 0);
+  const resumed = await run.inputs[0].answer(true);
+  assert.equal(resumed.status, "completed");
+  assert.deepEqual(resumed.toolCalls, [{ tool: "deploy", toolCallId: "call_deploy", ok: true }]);
+  assert.equal(deployed, 1);
+  assert.match(resumed.text, /deployed/);
+
+});
+
+contractTest("agents", "tests/agents.test.ts:195", "a run's wait has no timeout, and an AbortSignal stops the wait without stopping the run", async (t, f) => {
+  const { make } = await setup(t, f, () => ({ role: "assistant", content: "Late.", delayMs: 1500 }));
+  const agent = await make();
+  await assert.rejects(agent.run("Slow", { signal: AbortSignal.timeout(100), idempotencyKey: "slow-1" }), (error: Error) => error.name === "TimeoutError");
+  // The same key observes the same run, which went on.
+  assert.equal((await agent.run("Slow", { idempotencyKey: "slow-1" })).text, "Late.");
+
+});
+
+contractTest("agents", "tests/agents.test.ts:203", "the same key sent again while its run goes on joins that run, and one caller's timeout leaves the other waiting", async (t, f) => {
+  const { make, r } = await setup(t, f, () => ({ role: "assistant", content: "Late.", delayMs: 1000 }));
+  const agent = await make();
+  const [first, again, impatient] = await Promise.allSettled([
+    agent.run("Slow", { idempotencyKey: "same-run" }),
+    agent.run("Slow", { idempotencyKey: "same-run" }),
+    agent.run("Slow", { idempotencyKey: "same-run", signal: AbortSignal.timeout(100) }),
+  ]);
+  assert.equal(first.status === "fulfilled" && first.value.text, "Late.");
+  assert.equal(again.status === "fulfilled" && again.value.text, "Late.");
+  assert.equal(impatient.status === "rejected" && impatient.reason.name, "TimeoutError");
+  assert.equal(r.model.bodies.length, 1, "one run");
+  assert.equal((await agent.client.waitForRequest("same-run")).reply, "Late.");
+
+});
