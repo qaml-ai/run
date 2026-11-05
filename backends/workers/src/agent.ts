@@ -2564,9 +2564,13 @@ export class CamelAgent extends DurableObject<Env> {
         return answering;
       }
       if (path === "/abort" && request.method === "POST") {
-        const stopped = await this.abortRequests();
-        await this.state();
-        return json(stopped);
+        const aborting = this.admission.then(async () => {
+          const stopped = await this.abortRequests();
+          await this.state();
+          return json(stopped);
+        });
+        this.admission = aborting.catch(() => {});
+        return aborting;
       }
       if (path === "/context/reset" && request.method === "POST") {
         const input = object(await body(request), ["summary", "keepMessages"]);
