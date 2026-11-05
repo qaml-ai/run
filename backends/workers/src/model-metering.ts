@@ -49,7 +49,7 @@ export function meterProvider<P extends Provider<any>>(
       }
       const limit = await modelSpendLimit(service.db, identity) ?? await service.accounts.runLimit(identity.tenant);
       if (limit) throw typeof limit === 'string' ? new Error(limit) : limit;
-      const platform = credentials ? credentials.platform : identity.platform !== false;
+      const platform = options.endpointIdentity ? false : credentials ? credentials.platform : identity.platform !== false;
       // Provider generation observations, renewal and settlement share the same
       // mutable holds. Finish must follow every preceding accounting write.
       let pending: Promise<unknown> = Promise.resolve();

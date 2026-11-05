@@ -22,6 +22,7 @@ import { stream as streamResponses, streamSimple as simpleResponses } from "@ear
 import { stream as streamAnthropic, streamSimple as simpleAnthropic } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { stream as streamGoogle, streamSimple as simpleGoogle } from "@earendil-works/pi-ai/api/google-generative-ai";
 import { stream as streamBedrock, streamSimple as simpleBedrock } from "@earendil-works/pi-ai/api/bedrock-converse-stream";
+import { stream as streamCodex, streamSimple as simpleCodex } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { getModels, callSettings, withOpenRouterHosts } from "./model-catalog.ts";
 import { resolveModel, virtualChain, routeModel, virtualModelReferences, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
 import { deepseekContext } from "./deepseek-policy.ts";
@@ -34,7 +35,7 @@ import { listModels } from "./catalog-policy.ts";
 import { streamTimeouts, watchedStream, isStalled } from "./model-stream.ts";
 
 export type ModelRequestSettings = AgentConfiguration & { output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
-export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true };
+export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true };
 export type ModelHooks = {
   agentId?: () => Promise<string>;
   wrapProvider?: (provider: Provider) => Provider;
@@ -87,9 +88,10 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
     const prepared = {
       ...options, ...(toolChoice !== undefined ? { toolChoice: toolChoice as SimpleStreamOptions["toolChoice"] } : {}), ...callSettings(model, config, config.thinkingLevel),
       ...(credential ? { apiKey: credential.bearer ? "runtime-bearer" : credential.apiKey ?? "keyless" } : {}),
+      ...(credential?.identity ? { endpointIdentity: true } : {}),
       ...(tenantFetch ? { fetch:tenantFetch } : {}),
-      ...(model.provider === "amazon-bedrock" ? { bearerToken: credential?.apiKey ?? options.apiKey, region: credential?.region } : {}),
-      headers: { ...credential?.headers, ...options.headers, ...config.modelHeaders, ...(credential?.bearer && credential.apiKey ? { Authorization: `Bearer ${credential.apiKey}`, "x-api-key": null } : {}) },
+      ...(model.api === "bedrock-converse-stream" ? { bearerToken: credential?.apiKey ?? options.apiKey, region: credential?.region } : {}),
+      headers: { ...credential?.headers, ...options.headers, ...config.modelHeaders, ...(credential?.identity ? { "X-Agent-Runtime-Identity": credential.apiKey } : {}), ...(credential?.bearer && credential.apiKey ? { Authorization: `Bearer ${credential.apiKey}`, "x-api-key": null } : {}) },
       onPayload: async (payload: unknown, target: Model<Api>) => {
         const adjusted = withOpenRouterHosts(target, payload, config.dataCollection ?? undefined);
         return await onPayload?.(adjusted, target) ?? adjusted;
@@ -125,12 +127,25 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
 }
 
 function streamApi(model: Model<Api>, simple: boolean, context: TranscriptContext, options: StreamOptions | undefined) {
+  if ((options as { endpointIdentity?: true })?.endpointIdentity) {
+    const [provider, ...id] = model.id.split("/");
+    const region = provider === "amazon-bedrock" ? id.shift() : undefined;
+    model = { ...model, provider, id: id.join("/") };
+    options = { ...options, ...(region ? { region, env: { AWS_REGION: region } } : {}) } as StreamOptions;
+    if (model.api === "openai-codex-responses") {
+      const token = options.apiKey;
+      const key = ["{}", JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "passthrough" } }), "passthrough"].map(value => btoa(value)).join(".");
+      const fetcher = options.fetch ?? fetch;
+      options = { ...options, apiKey: key, transport: "sse", maxRetries: 0, fetch: (input, init) => { const headers = new Headers(init?.headers); headers.set("Authorization", `Bearer ${token}`); return fetcher(input, { ...init, headers }); } } as StreamOptions;
+    }
+  }
   switch (model.api) {
     case "openai-completions": { const target = model as Model<"openai-completions">; return simple ? streamOpenAISimple(target, context, options as SimpleStreamOptions) : streamOpenAI(target, context, options); }
     case "openai-responses": { const target = model as Model<"openai-responses">; return simple ? simpleResponses(target, context, options as SimpleStreamOptions) : streamResponses(target, context, options); }
     case "anthropic-messages": { const target = model as Model<"anthropic-messages">; return simple ? simpleAnthropic(target, context, options as SimpleStreamOptions) : streamAnthropic(target, context, options); }
     case "google-generative-ai": { const target = model as Model<"google-generative-ai">; return simple ? simpleGoogle(target, context, options as SimpleStreamOptions) : streamGoogle(target, context, options); }
     case "bedrock-converse-stream": { const target = model as Model<"bedrock-converse-stream">; return simple ? simpleBedrock(target, context, options as SimpleStreamOptions) : streamBedrock(target, context, options); }
+    case "openai-codex-responses": { const target = model as Model<"openai-codex-responses">; return simple ? simpleCodex(target, context, options as SimpleStreamOptions) : streamCodex(target, context, options); }
     default: throw new Error(`Unsupported provider API ${model.api}`);
   }
 }
@@ -188,7 +203,8 @@ export function modelRuntime(
       };
       models.setProvider(decorate(provider));
     };
-    const resolve = (name = env.MODEL, contextTokens?: number, customProviders?: CustomProviders): Model<Api> => {
+    const resolve = (name = env.MODEL, contextTokens?: number, customProviders?: CustomProviders, endpoints?: ModelEndpoints): Model<Api> => {
+      if (endpoints) hooks.endpoints = endpoints;
       if (name.startsWith("cloudflare/") || name.startsWith("@cf/")) {
         if (!ai) throw new Error("Workers AI is not configured");
         return bounded(ai(name.replace(/^cloudflare\//, "")), contextTokens);
@@ -233,12 +249,13 @@ export function modelRuntime(
         streamSimple: (target, context, options) => serve(target, true, context, options),
       }));
     };
-    const resolve = (name = "test/echo", contextTokens?: number, customProviders?: CustomProviders) => {
+    const resolve = (name = "test/echo", contextTokens?: number, customProviders?: CustomProviders, endpoints?: ModelEndpoints) => {
+      if (endpoints) hooks.endpoints = endpoints;
       const custom = customProviders ?? hooks.customProviders;
       const selected = name.startsWith("test/") || name.startsWith("camel-test/")
         ? { ...model, provider: name.split("/")[0], id: name.slice(name.indexOf("/") + 1) }
         : resolveModel(name, hooks.endpoints, custom);
-      const transported = { ...selected, baseUrl: custom?.[selected.provider] ? selected.baseUrl : endpoint.href };
+      const transported = { ...selected, baseUrl: custom?.[selected.provider] || hooks.endpoints?.[selected.provider] ? selected.baseUrl : endpoint.href };
       catalog.set(name, transported);
       install(transported.provider);
       return bounded(transported, contextTokens);
@@ -407,7 +424,7 @@ export function modelRuntime(
   return {
     models,
     model,
-    resolve: (name?: string, contextTokens?: number, _customProviders?: CustomProviders) => {
+    resolve: (name?: string, contextTokens?: number, _customProviders?: CustomProviders, _endpoints?: ModelEndpoints) => {
       if (name && !["test/echo", "camel-test/deterministic"].includes(name))
         throw Object.assign(new Error("Unsupported test model"), {
           status: 400,
@@ -419,6 +436,5 @@ export function modelRuntime(
 
 /** The same model metadata as ECS; credentials are resolved only when a request executes. */
 export function modelCatalog(env: { MODEL: string; TEST_MODEL?: string }, provider?: string) {
-  if (env.TEST_MODEL === "1") return [{ id: env.MODEL, modelId: env.MODEL, name: env.MODEL, provider: "fixture", input: ["text", "image"], contextWindow: 32768, maxTokens: 2048 }];
   return listModels(provider);
 }

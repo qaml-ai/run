@@ -3,11 +3,12 @@ import { body } from "./validation.ts";
 import { transaction, withSql } from "./postgres.ts";
 import { providerInput, providerName, shownModel, MAX_PROVIDERS } from "./provider-policy.ts";
 import { openProviderSecret, sealProviderSecret, resolveCustomProviders, type ProviderKeyEnv, type Sealed } from "./model-credentials.ts";
-import { modelInfo, listProviders } from "./catalog-policy.ts";
+import { modelInfo, listProviders, toolCallStreaming } from "./catalog-policy.ts";
 import { resolveModel } from "./model-policy.ts";
 import { modelCatalog } from "./model.ts";
 import type { AuthContext } from "./control.ts";
 import { sourceUrl } from "./tool-sources.ts";
+import { keyServices, type KeyEnv } from "./security-services.ts";
 
 const reply = (value: unknown) => Response.json(value, { headers:{"cache-control":"no-store"} });
 const aad = (tenant: string, name: string, scope: string) => scope ? `model-provider:${tenant}:scope:${scope}:${name}` : `model-provider:${tenant}:${name}`;
@@ -27,12 +28,22 @@ export async function providerRoutes(request: Request, env: ProviderKeyEnv & {MO
   const tenant = auth.tenantId;
   if (path === "/v1/models" && request.method === "GET") {
     const provider = url.searchParams.get("provider") ?? undefined;
-    const custom = await resolveCustomProviders(env,tenant,url.searchParams.get("keyScope") ?? undefined);
+    const services = await keyServices(env as KeyEnv);
+    const custom = await services.modelProviders.resolvable(tenant,url.searchParams.get("keyScope") ?? undefined);
     const declared = Object.entries(custom ?? {}).filter(([name]) => !provider || name===provider).flatMap(([name,entry]) => entry.models.map(model => ({...modelInfo(resolveModel(`${name}/${model.id}`,undefined,custom)),available:true})));
-    const keys = new Set((await withSql(env,sql => sql.query("select provider from provider_keys where tenant=$1",[tenant]))).rows.map(row=>row.provider));
-    const catalog = modelCatalog(env,provider).map(model => ({...model,available: env.TEST_MODEL==="1" || keys.has("routes" in model && Array.isArray(model.routes) ? String(model.routes[0]).split("/")[0] : model.provider)}));
-    const models = [...declared,...catalog];
-    return reply(url.searchParams.get("available")==="true" ? models.filter(model=>model.available) : models);
+    const endpoints = services.tenants.modelEndpoints(tenant) ?? {};
+    const own = Object.entries(endpoints).filter(([name]) => !provider || name===provider).flatMap(([name, endpoint]) => Object.keys(endpoint.models ?? {}).map(id => ({...modelInfo(resolveModel(`${name}/${id}`,endpoints)),toolCallStreaming:toolCallStreaming(id),available:true})));
+    const keyed = await services.accounts.keyedProviders(tenant);
+    const supported = new Set(listProviders().filter(entry=>entry.apiKey).map(entry=>entry.id));
+    const catalog = modelCatalog(env,provider).map(model => {
+      const [name,...id] = model.routes?.[0]?.split("/") ?? [model.provider,model.modelId];
+      return {...model,available:(supported.has(name) || name==="azure") && keyed(name,id.join("/"))};
+    });
+    const models = [...own,...declared,...catalog];
+    const shown = url.searchParams.get("available")==="true" ? models.filter(model=>model.available) : models;
+    const response = reply(shown);
+    if (!shown.length && url.searchParams.get("available")==="true") response.headers.set("X-Camelrun-Hint", "No model is usable yet: no provider key is set for this account. Set one with PUT /v1/providers/<provider>/key (GET /v1/providers lists them), or on a self-hosted runtime in AGENT_TENANT_API_KEYS");
+    return response;
   }
   const custom = /^\/v1\/providers(?:\/([^/]+))?$/.exec(path);
   const scoped = /^\/v1\/key-scopes\/([^/]+)\/model-providers(?:\/([^/]+))?$/.exec(path);
