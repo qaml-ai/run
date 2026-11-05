@@ -2,6 +2,7 @@ import { defineDoc, defineTool, type ToolExecutionApi, type ToolRegistration } f
 import { obj, str } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord";
 import { answerInput, questionsInput } from "./input-policy.ts";
+import { HostExecutionRequest } from "./host-execution.ts";
 
 export type HumanInput = {
   question: string; answer?: string; toolCallId?: string;
@@ -9,6 +10,8 @@ export type HumanInput = {
   detail?: Record<string, any>; createdAt?: number; expiresAt?: number;
   state?: "pending" | "answered" | "declined" | "cancelled" | "expired";
   answerDetail?: { action: "accept" | "decline" | "cancel"; content?: any; by: Record<string, any>; at: number };
+  requestId?: string;
+  conversationId?: number;
 };
 
 export const HumanInputs = defineDoc<{
@@ -36,12 +39,15 @@ export const askHuman = defineTool({
 /** Pi journals and replays the wait, including a script parked on the tool. */
 export async function waitForHuman(input: HumanInput, api: ToolExecutionApi, context: Context, requestKey?: string) {
     const key = requestKey === undefined ? String(api.taskId) : `${api.taskId}:${requestKey}`;
+    const owner = await api.snapshot(HostExecutionRequest, api.conversationId, context);
     await api.commit(async (tx) => {
       const doc = await tx.doc(HumanInputs);
       if (!doc.requests[key]) {
         if (Object.keys(doc.requests).length >= 100)
           throw new Error("Human input retention limit reached");
-        doc.requests[key] = { ...input, toolCallId: api.callId, createdAt: api.now(), expiresAt: api.now() + 7 * 86400_000, state: "pending" };
+        doc.requests[key] = { ...input, toolCallId: api.callId, conversationId: api.conversationId,
+          ...(owner?.requestId ? { requestId: owner.requestId } : {}),
+          createdAt: api.now(), expiresAt: api.now() + 7 * 86400_000, state: "pending" };
       }
     }, context);
     const watch = (await api.watchDoc(
@@ -81,6 +87,8 @@ export function humanInputView(id: string, item: HumanInput, agent: string, requ
 }
 
 export function answerHuman(item: HumanInput, body: unknown) {
+  if (item.state === "cancelled" || item.state === "expired" || (item.answer === undefined && item.expiresAt !== undefined && item.expiresAt <= Date.now()))
+    throw Object.assign(new Error(`This input is ${item.state === "cancelled" ? "cancelled" : "expired"}`), { status: 409 });
   const value = body as Record<string, unknown>;
   const by: Record<string, unknown> = { via: "agent", ...(typeof value?.actor === "string" ? { actor: value.actor } : {}), ...(value?.from && typeof value.from === "object" ? { from: value.from } : {}) };
   if (typeof value?.answer === "string") {
@@ -93,6 +101,12 @@ export function answerHuman(item: HumanInput, body: unknown) {
     state: checked.action === "accept" ? "answered" as const : checked.action === "decline" ? "declined" as const : "cancelled" as const,
     answerDetail: { ...checked, by, at: Date.now() },
   };
+}
+
+export function cancelledHumanInput(item: HumanInput, now = Date.now()): HumanInput {
+  if (item.answer !== undefined) return item;
+  return { ...item, answer: '{"action":"cancel"}', state: "cancelled",
+    answerDetail: { action: "cancel", by: { system: "aborted" }, at: now } };
 }
 
 export const askUser: ToolRegistration = {

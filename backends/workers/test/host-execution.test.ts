@@ -5,7 +5,7 @@ import { Harness, createRegistry, type ToolRegistration } from "@earendil-works/
 import { MemoryStorage } from "@earendil-works/pi-durable/storage/memory";
 import { createModels } from "@earendil-works/pi-ai";
 import { InlineCodemodeSandbox, loadQuickJSWasm } from "@earendil-works/pi-codemode";
-import { abortHostExecution, executionOutput, executionParams, hostExecutionRequest, hostExecutionTool, startHostExecution, waitHostExecution } from "../src/host-execution.ts";
+import { abortHostExecution, admitHostExecution, executionOutput, executionParams, hostExecutionRequest, hostExecutionTool, startHostExecution, waitHostExecution } from "../src/host-execution.ts";
 import { AttachedTools } from "../src/attached-tools.ts";
 import { HumanInputs } from "../src/human.ts";
 
@@ -88,6 +88,7 @@ test("attached tools keep identity and the stable call key across a durable appr
       if (!pending) await new Promise(resolve => setTimeout(resolve, 5));
     }
     assert.ok(pending, "approval was recorded durably");
+    assert.equal((await pi.snapshot(HumanInputs, context))?.requests[pending].requestId, "approval");
     await pi.commit(async tx => { const request = (await tx.doc(HumanInputs)).requests[pending!]; request.answer = '{"approved":true}'; request.state = "answered"; }, context);
     assert.deepEqual((await result).output, ['{"approved":true}']);
     assert.equal(frames.length, 2);
@@ -95,4 +96,31 @@ test("attached tools keep identity and the stable call key across a durable appr
     assert.equal(frames[0].params._meta["agent-runtime/idempotencyKey"], frames[1].params._meta["agent-runtime/idempotencyKey"]);
     assert.equal(frames[1].params._meta["agent-runtime/identity"].act, "actor");
   } finally { attached.close(); await pi.close(context); await sandbox.close(); }
+});
+
+test("host admission persists identity before dispatch and rejoins after an interrupted acceptance", async () => {
+  const values = new Map<string, unknown>();
+  let failAcceptance = true, effects = 0, task: number | undefined;
+  const storage = {
+    async get<T>(key: string) { return values.get(key) as T | undefined; },
+    async put<T>(key: string, value: T) {
+      if ((value as any).accepted && failAcceptance) throw new Error("Interrupted after Pi committed");
+      values.set(key, structuredClone(value));
+    },
+  };
+  const candidate = { id: "recover", fingerprint: "same", accepted: false, state: "queued" };
+  const start = async () => {
+    assert.deepEqual(await storage.get("request:recover"), candidate, "identity is durable before dispatch");
+    if (task === undefined) { effects++; task = 17; }
+    return task;
+  };
+  await assert.rejects(admitHostExecution(storage, "request:recover", candidate, start), /Interrupted/);
+  assert.equal((await storage.get<any>("request:recover")).state, "queued");
+  failAcceptance = false;
+  const recovered = await admitHostExecution(storage, "request:recover", candidate, start);
+  assert.equal(recovered.task, 17);
+  assert.equal(recovered.accepted, true);
+  assert.equal(effects, 1, "recovery joins the already committed native task");
+  assert.deepEqual(await admitHostExecution(storage, "request:recover", candidate, async () => { throw new Error("dispatched twice"); }), recovered);
+  await assert.rejects(admitHostExecution(storage, "request:recover", { ...candidate, fingerprint: "different" }, start), /reused/);
 });

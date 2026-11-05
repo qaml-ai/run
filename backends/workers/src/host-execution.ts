@@ -21,7 +21,7 @@ const Executions = defineDocFamily<{ task?: number; fingerprint?: string }, null
 const CapturedOutput = defineDoc<{ result?: ExecutionResult }>({
   kind: "camel.host-output", version: 1, scope: "task", initial: () => ({}), checkpointWhen: () => false,
 });
-const HostExecutionRequest = defineDoc<{ requestId?: string }>({
+export const HostExecutionRequest = defineDoc<{ requestId?: string }>({
   kind: "camel.host-request", version: 1, scope: "conversation", history: "latest", fork: "initial",
   initial: () => ({}), checkpointWhen: () => true,
 });
@@ -29,6 +29,26 @@ const HostExecutionRequest = defineDoc<{ requestId?: string }>({
 /** Nested tool effects use the ownerless script conversation, independent of concurrent model runs. */
 export async function hostExecutionRequest(pi: Harness, conversationId: ConversationId, context: Context = BACKGROUND_CONTEXT): Promise<string | undefined> {
   return (await pi.snapshot(HostExecutionRequest, conversationId, context))?.requestId;
+}
+
+type Admission = { id: string; fingerprint: string; task?: number; accepted?: boolean; state: string };
+type AdmissionStorage = {
+  get<T>(key: string): Promise<T | undefined>;
+  put<T>(key: string, value: T): Promise<unknown>;
+};
+
+/** Persist identity before Pi can run a tool. Re-entry joins Pi's deterministic task after either commit fails. */
+export async function admitHostExecution<T extends Admission>(storage: AdmissionStorage, key: string, candidate: T, start: (intent: T) => Promise<number>): Promise<T> {
+  const prior = await storage.get<T>(key);
+  if (prior && prior.fingerprint !== candidate.fingerprint)
+    throw Object.assign(new Error("Request id reused with different input"), { status: 409 });
+  if (prior?.task !== undefined || prior?.state === "completed") return prior;
+  const intent = prior ?? candidate;
+  if (!prior) await storage.put(key, intent);
+  const task = await start(intent);
+  const admitted = { ...intent, task, accepted: true, state: "running" };
+  await storage.put(key, admitted);
+  return admitted;
 }
 
 export function executionParams(value: unknown): Required<ExecutionParams> {
