@@ -127,8 +127,12 @@ function scopedConfiguration(input: unknown) {
     throw new BadRequest("Expected configuration object");
   if (Object.hasOwn(input, "initialMessages") || Object.hasOwn(input, "importMessages"))
     throw new BadRequest("History can only be imported at creation");
+  if (Object.hasOwn(input, "subject") || Object.hasOwn(input, "context"))
+    throw new BadRequest("An agent's identity is set only at creation");
+  for (const key of TENANT_CONFIGURATION_KEYS)
+    if (Object.hasOwn(input, key))
+      throw new ApiError(403, `Only the tenant can change an agent's ${key}`, "FORBIDDEN");
   for (const key of [
-    ...TENANT_CONFIGURATION_KEYS,
     "definition",
     "openApi",
     "subject",

@@ -55,7 +55,7 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
     const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ input, files, retentionSeconds, output, actor, from, metadata, spendLimit, ...given }))));
     const old = await directory.get(directoryKey) as typeof entry | null;
     if (old?.run && old.run.fingerprint !== fingerprint) throw new ApiError(409, "Idempotency-Key was used for a different run", "IDEMPOTENCY_CONFLICT");
-    if (old) entry = old;
+    if (old) entry = old.initialized ? old : result(await directory.upsert(old.config, directoryKey, url.origin));
     else {
       const noTools = !given.definition && !given.builtins?.length && !given.delegate && !given.mcpServers?.length && !given.fileTools && !given.mounts?.length && !attached.length;
       const config = await provisionDefinition(env, auth.tenantId, { ...(noTools ? { codeMode:false, fileTools:false, decide:false } : {}), ...given, type: "run", ttlSeconds: 604800 + retentionSeconds });

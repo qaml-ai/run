@@ -264,7 +264,7 @@ export class Directory {
         [
           id,
           this.tenantId,
-          JSON.stringify(next),
+          JSON.stringify({ ...next, initialized: old?.initialized ?? false }),
           next.revision,
           config.name ?? "",
           config.type ?? "agent",

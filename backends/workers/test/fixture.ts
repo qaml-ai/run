@@ -119,7 +119,11 @@ export async function startFixture(
   const databaseUrl = parsed.toString(),
     db = new pg.Pool({ connectionString: databaseUrl });
   cleanups.push(() => closePool(db));
-  await migrate(db);
+  // Role settings belong to the cluster. The migration's advisory lock in each
+  // isolated database cannot serialize ALTER ROLE against another fixture.
+  await admin.query("select pg_advisory_lock(hashtext('agent-runtime:role-settings'))");
+  try { await migrate(db); }
+  finally { await admin.query("select pg_advisory_unlock(hashtext('agent-runtime:role-settings'))"); }
   for (const item of options.tenants ?? [{ id: tenant, token }]) {
     await db.query(
       "insert into tenants(id,created_at,billing) values($1,$2,$3) on conflict do nothing",

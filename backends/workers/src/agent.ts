@@ -2290,6 +2290,7 @@ export class CamelAgent extends DurableObject<Env> {
       return record;
     }
     if (["status", "compact"].includes(String(request.method))) {
+      object(request.params ?? {}, request.method === "status" ? [] : ["instructions"]);
       const pi = await this.harness.pi(),
         root = await pi.root(BACKGROUND_CONTEXT);
       if (request.method === "compact") {
@@ -2415,6 +2416,10 @@ export class CamelAgent extends DurableObject<Env> {
         status: 409,
       });
     if (old?.state === "completed" || old?.accepted) return this.replayedRequest(old);
+    if (!(notice && delivery && !delivery.run) && await this.ctx.storage.get(`cancelled-request:${id}`)) {
+      if (old) return old;
+      throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
+    }
     if (!old && request.method !== "steer" && (await this.records()).filter(record => record.state !== "completed").length >= MAX_OPEN_REQUESTS)
       throw Object.assign(new Error("Too many requests queued for this agent"), { status: 429 });
     const conf = await this.config();
@@ -4109,14 +4114,21 @@ export class CamelAgent extends DurableObject<Env> {
                   controller.close();
                 },
               );
+          const abort = () => {
+            cleanup();
+            try { controller.close(); } catch {}
+          };
           cleanup = () => {
             if (closed) return;
             closed = true;
             clearInterval(heartbeat);
+            request.signal.removeEventListener("abort", abort);
             this.listeners.delete(send);
             this.closeEventStreams.delete(retire);
             connection?.close();
           };
+          request.signal.addEventListener("abort", abort, { once: true });
+          if (request.signal.aborted) { abort(); return; }
           this.closeEventStreams.add(retire);
           this.listeners.add(send);
           controller.enqueue(
