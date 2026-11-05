@@ -106,6 +106,7 @@ export async function startFixture(
     await readFile(join(root, options.config ?? "wrangler.test.jsonc"), "utf8"),
   );
   config.main = options.entrypoint ?? join(root, "src/index.ts");
+  if (config.assets?.directory) config.assets.directory = join(root, config.assets.directory);
   config.$schema = join(root, "node_modules/wrangler/config-schema.json");
   for (const container of config.containers ?? [])
     for (const image of Object.values(container.images ?? {}) as {

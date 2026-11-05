@@ -22,7 +22,15 @@ export class PublicOutbound implements Outbound {
   withoutOrigins() { return this; }
   private transport(url: string | URL, options: RequestInit = {}) { return (this.options.transport ?? fetch)(url, options); }
   async reachable(value: string | URL): Promise<URL> {
-    return this.addressPolicy.reachable(value);
+    const url = this.addressPolicy.check(value);
+    // Workers DNS does not read /etc/hosts. Check localhost's loopback meaning
+    // through the same address policy before handing it to the transport.
+    if (/^(?:.*\.)?localhost\.?$/i.test(url.hostname)) {
+      const reason = this.addressPolicy.blocked('127.0.0.1');
+      if (reason) throw new HttpError(400, `${url.hostname} resolves to 127.0.0.1, ${reason}`);
+      return url;
+    }
+    return this.addressPolicy.reachable(url);
   }
   async fetch(input: string | URL, options: FetchOptions = {}): Promise<Response> {
     const { secrets, timeoutMs = 30_000, maxBytes = 4 * 1024 * 1024, maxRedirects = 0, signal, ...init } = options;

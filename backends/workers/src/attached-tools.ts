@@ -25,10 +25,14 @@ export class AttachedTools {
   get connected() { return !!this.current?.initialized && !this.current.draining; }
 
   async waitUntilReady() {
-    const connection = this.current;
-    if (!connection || connection.draining) return false;
-    try { await connection.ready; } catch { return false; }
-    return this.current === connection && connection.initialized && !connection.draining;
+    // A prompt can reach the runtime before the application's reconnect.
+    // Match the application admission grace without waiting for a stalled
+    // initialize request beyond it.
+    for (const until = Date.now() + 3_000; ;) {
+      if (this.connected) return true;
+      if (Date.now() >= until) return false;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
   }
 
   /** A lost HTTP stream may be noticed late by a Worker. Prove its owner still answers before refusing a new process. */

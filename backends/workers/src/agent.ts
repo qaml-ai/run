@@ -188,6 +188,7 @@ import {
   type TerminalDelivery,
 } from "./event-log.ts";
 import { agentBuiltins } from "./agent-builtins.ts";
+import { scheduleError, type ScheduleToolsHost } from "./agent-schedules.ts";
 import { auxiliaryRunCosts } from "./auxiliary-usage.ts";
 import { resetContext } from "./context-reset.ts";
 import {
@@ -930,7 +931,7 @@ export class CamelAgent extends DurableObject<Env> {
             keyScope: conf.config.keyScope,
             files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
           };
-        }),
+        }, { schedules: this.scheduleTools() }),
       });
       registry.install({
         name: "camel.decisions",
@@ -1777,7 +1778,7 @@ export class CamelAgent extends DurableObject<Env> {
       if (record.method === "execute" && !record.accepted && record.state !== "completed")
         await this.startHostRequest(record);
   }
-  private async configureRequest(input: unknown) {
+  private async configureRequest(input: unknown, replace = false) {
     const request = object(input, ["id", "method", "params"]);
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id))
@@ -1791,7 +1792,7 @@ export class CamelAgent extends DurableObject<Env> {
       throw new BadRequest("Expected configuration object");
     const conf = await this.config();
     const params = request.params as Record<string, unknown>;
-    const patched = configuration({ ...conf.config, ...params }, conf.config.model ?? this.env.MODEL).config;
+    const patched = configuration(replace ? params : { ...conf.config, ...params }, conf.config.model ?? this.env.MODEL).config;
     const modelError = (params.model !== undefined || params.keyScope !== undefined)
       ? await configurationModelError(this.env, conf.tenantId, patched) : undefined;
     const fingerprint = canonical(request);
@@ -1824,7 +1825,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (!current)
       throw Object.assign(new Error("Unknown agent"), { status: 404 });
     const updated = await directory.upsert(
-      await configurationPatch(this.env, conf.tenantId, current.config, params),
+      replace ? params : await configurationPatch(this.env, conf.tenantId, current.config, params),
       current.key ?? current.id,
       conf.runtimeOrigin,
     );
@@ -1847,11 +1848,21 @@ export class CamelAgent extends DurableObject<Env> {
       state: "completed",
       startedAt: previous?.startedAt ?? Date.now(),
       endedAt: Date.now(),
-      outcome: { result: { configured: true, configHash: updated.configHash } },
+      outcome: { result: { configured: true, changed: current.configHash !== updated.configHash, configHash: updated.configHash } },
     };
     await this.ctx.storage.put(reqKey(id), record);
     await this.emit({ type: "response", id, outcome: record.outcome });
     return record;
+  }
+  private async requireApplication(allowDisconnected: unknown) {
+    if (allowDisconnected !== undefined && typeof allowDisconnected !== "boolean")
+      throw new BadRequest("allowDisconnected must be a boolean");
+    if (allowDisconnected === true || !(await this.config()).config.mcp?.tools?.length) return;
+    if (await this.attached.waitUntilReady()) return;
+    throw Object.assign(
+      new Error("APPLICATION_NOT_CONNECTED: this agent's tools are answered by its application, and none is connected. Connect it: upsert the agent with its tools in a process that stays up (TypeScript agents.upsert(key, { tools }), Python agents.upsert(key, tools=[…]); lower down, connectAgent or connect_agent), or send allowDisconnected: true (allow_disconnected=True) to run anyway"),
+      { status: 409, code: "APPLICATION_NOT_CONNECTED" },
+    );
   }
   private async admit(
     input: unknown,
@@ -1901,6 +1912,7 @@ export class CamelAgent extends DurableObject<Env> {
           { status: 409 },
         );
       if (old) return old.accepted || old.state === "completed" ? old : this.startHostRequest(old);
+      await this.requireApplication(allowDisconnected);
       await refreshIdleLifetime(this.env, this.ctx.storage, await this.config());
       const record: RequestRecord = {
         id,
@@ -2083,15 +2095,7 @@ export class CamelAgent extends DurableObject<Env> {
     const running = (await this.harness.pending()).find(
       (item) => item.status === "running",
     );
-    if (
-      conf.config.mcp?.tools?.length &&
-      !(await this.attached.waitUntilReady()) &&
-      params.allowDisconnected !== true
-    )
-      throw Object.assign(
-        new Error("APPLICATION_NOT_CONNECTED: this agent's tools are answered by its application, and none is connected. Connect it: upsert the agent with its tools in a process that stays up (TypeScript agents.upsert(key, { tools }), Python agents.upsert(key, tools=[…]); lower down, connectAgent or connect_agent), or send allowDisconnected: true (allow_disconnected=True) to run anyway"),
-        { status: 409, code: "APPLICATION_NOT_CONNECTED" },
-      );
+    await this.requireApplication(params.allowDisconnected);
     const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
     if (preparing) {
       await this.promptPreparations.begin({ tenant: conf.tenantId, agent: conf.id, requestId: id, fingerprint }, () => this.admitRequest(conf, id));
@@ -2415,6 +2419,10 @@ export class CamelAgent extends DurableObject<Env> {
     try {
       const url = new URL(request.url),
         path = url.pathname;
+      // Public configuration edits become /requests; POST is the directory's
+      // already-provisioned replacement for an existing keyed agent.
+      if (path === "/configuration" && request.method === "POST")
+        return json(await requestView(await this.configureRequest(await body(request, 17 * 1024 * 1024), true)), 202);
       if (path === "/configuration" && request.method === "PUT") {
         const incoming = (await body(request, 17 * 1024 * 1024)) as Config;
         const mutation = this.admission.then(async () => {
@@ -2498,7 +2506,7 @@ export class CamelAgent extends DurableObject<Env> {
                 keyScope: conf.config.keyScope,
                 files: await toolResultFiles(this.env, { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], tool: "web_fetch", call: String(api?.taskId ?? run.id) }),
               };
-            }),
+            }, { schedules: this.scheduleTools() }),
           });
           this.registry.install({
             name: "camel.decisions",
@@ -2799,7 +2807,7 @@ export class CamelAgent extends DurableObject<Env> {
         return json(await forkSnapshot(await pi.root(BACKGROUND_CONTEXT), this.historyIndex, input.atMessage as number | string | undefined, running));
       }
       if (path === "/context/import" && request.method === "POST") {
-        const input = object(await body(request), ["model", "pinnedVolumes"]);
+        const input = object(await body(request, 17 * 1024 * 1024), ["model", "pinnedVolumes"]);
         if (!Array.isArray(input.model)) throw new BadRequest("Expected model context");
         if (Array.isArray(input.pinnedVolumes)) {
           const pinned = await this.ctx.storage.get<string[]>("file-pin-volumes") ?? [];
@@ -2901,8 +2909,8 @@ export class CamelAgent extends DurableObject<Env> {
         const selected = await this.negotiateAgentEvents(request);
         if (selected) return selected;
         return request.headers.get("upgrade")?.toLowerCase() === "websocket"
-          ? this.webSocketEvents(request)
-          : this.events(request);
+          ? await this.webSocketEvents(request)
+          : await this.events(request);
       }
       if (path === "/computer" && request.method === "POST") {
         const inputBody = await body(request, 1100 * 1024);
@@ -3167,6 +3175,18 @@ export class CamelAgent extends DurableObject<Env> {
       });
     return child;
   }
+  private scheduleTools(): ScheduleToolsHost {
+    return {
+      create: input => this.createSchedule(input),
+      list: async () => [...(await this.ctx.storage.list<Schedule>({ prefix: "schedule:", limit: 100 })).values()]
+        .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id)),
+      cancel: async id => {
+        const cancelled = await this.ctx.storage.delete(`schedule:${id}`);
+        await this.arm();
+        return cancelled;
+      },
+    };
+  }
   private async createSchedule(raw: unknown): Promise<Schedule> {
     if (
       (await this.ctx.storage.list({ prefix: "schedule:", limit: 100 })).size >=
@@ -3344,7 +3364,7 @@ export class CamelAgent extends DurableObject<Env> {
           schedule.calendar || schedule.everySeconds
             ? nextOccurrence(schedule)
             : undefined;
-        schedule.lastError = safeError(error);
+          schedule.lastError = scheduleError(error);
         schedule.lastErrorAt = Date.now();
         if (status === 404 || status === 410)
           await this.ctx.storage.delete(key);
@@ -3508,7 +3528,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (attachment?.type === "camel.application")
       socket.serializeAttachment({ ...attachment, serving: false });
     try {
-      socket.send(eventFrame({}, undefined, "closed"));
+      socket.send(eventFrame({ reason: "replaced" }, undefined, "closed"));
     } catch {}
     try {
       socket.close(1000, "Connection retired");
@@ -3621,7 +3641,7 @@ export class CamelAgent extends DurableObject<Env> {
                 () => {
                   if (closed) return;
                   controller.enqueue(
-                    encoder.encode("event: closed\ndata: {}\n\n"),
+                    encoder.encode('event: closed\ndata: {"reason":"replaced"}\n\n'),
                   );
                   cleanup();
                   controller.close();

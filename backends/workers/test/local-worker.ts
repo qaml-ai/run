@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { createServer } from "node:net";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
@@ -29,6 +29,8 @@ export class LocalWorker {
   private storage: string;
   private config: string;
   private readyToken: string;
+  private listener?: Server;
+  private sockets = new Set<Socket>();
   constructor(
     port: number,
     storage: string,
@@ -47,6 +49,8 @@ export class LocalWorker {
       ...process.env,
       CI: "1",
       WRANGLER_SEND_METRICS: "false",
+      // Production returns early refusals without waiting for the upload.
+      WRANGLER_DISABLE_REQUEST_BODY_DRAINING: "true",
       WRANGLER_LOG_PATH: join(this.storage, "logs"),
       CLOUDFLARE_DEV_REGISTRY_PATH: join(this.storage, "registry"),
     };
@@ -57,33 +61,37 @@ export class LocalWorker {
       "CLOUDFLARE_ACCOUNT_ID",
     ])
       delete env[key];
+    const proxyPort = await unusedPort();
     this.child = spawn(
       process.execPath,
-      [
-        "node_modules/wrangler/bin/wrangler.js",
-        "dev",
-        "--local",
-        "--config",
-        this.config,
-        "--config",
-        "codemode/wrangler.jsonc",
-        "--ip",
-        "127.0.0.1",
-        "--port",
-        String(this.port),
-        "--inspector-port",
-        String(this.inspectorPort),
-        "--persist-to",
-        this.storage,
-      ],
+      ["test/local-worker-process.mjs", this.config, String(proxyPort), String(this.inspectorPort), this.storage],
       {
         cwd: directory,
         env,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
         detached: true,
       },
     );
     this.output = "";
+    let directPort: number | undefined;
+    this.child.on("message", (message: unknown) => {
+      const direct = message as { type?: string; port?: number };
+      if (direct.type === "workerd" && Number.isInteger(direct.port)) directPort = direct.port;
+    });
+    this.listener = createServer(socket => {
+      if (!directPort) { socket.destroy(); return; }
+      const upstream = createConnection(directPort, "127.0.0.1");
+      for (const connection of [socket, upstream]) {
+        this.sockets.add(connection);
+        connection.on("close", () => this.sockets.delete(connection));
+        connection.on("error", () => { socket.destroy(); upstream.destroy(); });
+      }
+      socket.pipe(upstream).pipe(socket);
+    });
+    await new Promise<void>((resolve, reject) => {
+      this.listener!.once("error", reject);
+      this.listener!.listen(this.port, "127.0.0.1", resolve);
+    });
     const save = (data: Buffer) => {
       this.output = (this.output + data.toString()).slice(-16_000);
     };
@@ -106,6 +114,11 @@ export class LocalWorker {
   async stop(hard = false) {
     const child = this.child;
     this.child = undefined;
+    for (const socket of this.sockets) socket.destroy();
+    if (this.listener) {
+      await new Promise<void>(resolve => this.listener!.close(() => resolve()));
+      this.listener = undefined;
+    }
     if (!child || child.exitCode !== null) return;
     const done = once(child, "exit");
     try {

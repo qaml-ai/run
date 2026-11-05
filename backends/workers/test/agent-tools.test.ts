@@ -103,6 +103,20 @@ test("hibernation restores an initialized application connection with its existi
   assert.equal(attached.connected, false);
 });
 
+test("application admission waits for a reconnect and its initialization", async () => {
+  const attached = new AttachedTools();
+  const ready = attached.waitUntilReady();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const connection = attached.attach(frame => {
+    const message = (frame as any).message;
+    if (message.method === "initialize")
+      queueMicrotask(() => attached.receive({ id: message.id, result: {} }, connection.id));
+  });
+  await connection.start();
+  assert.equal(await ready, true);
+  connection.close();
+});
+
 test("takeover drains calls on the previous connection before retiring it", async () => {
   const attached = new AttachedTools(), oldCalls: any[] = [];
   let retired = false;

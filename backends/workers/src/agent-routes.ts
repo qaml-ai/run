@@ -82,7 +82,7 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
   throw new ApiError(405, "Method not allowed");
 }
 
-export async function agentLifecycleRoutes(request: Request, env: ControlEnv & FileBindings, entry: DirectoryEntry, tail: string): Promise<Response | undefined> {
+export async function agentLifecycleRoutes(request: Request, env: ControlEnv & FileBindings, entry: DirectoryEntry, tail: string, includeToken = true): Promise<Response | undefined> {
   if (tail === "/export" && request.method === "GET") return json({ config: visibleConfiguration(entry.config), ...(await payload(await call(env, entry.id, "/history"))) });
   if (tail !== "/fork" || request.method !== "POST") return;
   const input = object(await body(request), ["key", "name", "atMessage", "ttlSeconds", "subject", "context", "systemPromptAppend", "modelHeaders"]);
@@ -99,7 +99,7 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
   const answer = async (ready: NonNullable<typeof saved>) => {
     if (ready.forkedFrom?.agentId !== entry.id) throw new ApiError(409, "Key belongs to another agent");
     if (claim) await releaseForkClaim(env, entry.tenantId, claim);
-    return json({ id: ready.id, token: await agentToken(env.API_TOKEN, ready.id), expiresAt: ready.expiresAt, forkedFrom: ready.forkedFrom }, 201);
+    return json({ id: ready.id, ...(includeToken ? { token: await agentToken(env.API_TOKEN, ready.id) } : {}), expiresAt: ready.expiresAt, forkedFrom: ready.forkedFrom }, 201);
   };
   if (saved?.forkedFrom) return answer(saved);
   if (saved && !claim) throw new ApiError(409, "Key belongs to another agent");
