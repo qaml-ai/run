@@ -77,7 +77,6 @@ function credentials(entry: DirectoryEntry, token: string) {
     token,
     expiresAt: entry.expiresAt,
     configHash: entry.configHash,
-    ...(entry.reconfigured ? { reconfigured: entry.reconfigured } : {}),
   };
 }
 function summary(entry: DirectoryEntry) {
@@ -301,7 +300,7 @@ const worker = {
             );
             configuration(input, env.MODEL);
             const key = request.headers.get("Idempotency-Key") ?? undefined;
-            const created = result(await directory.upsert(input, key, url.origin, undefined, true));
+            const created = result(await directory.upsert(input, key, url.origin));
             if (Object.hasOwn(raw, "spendLimit"))
               await setAgentSpendLimit(
                 env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,

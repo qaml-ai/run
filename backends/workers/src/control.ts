@@ -74,7 +74,6 @@ export interface DirectoryEntry {
   pendingFork?: { sourceId: string; fingerprint: string };
   parentAgentId?: string;
   parentRunId?: string;
-  reconfigured?: { id: string; method: string; state: string };
 }
 export interface DirectoryFailure {
   failed: true;
@@ -144,8 +143,6 @@ export class Directory {
     suppliedKey?: string,
     runtimeOrigin?: string,
     pendingFork?: { sourceId: string; fingerprint: string },
-    queue = false,
-    admitted = false,
   ): Promise<DirectoryEntry | DirectoryFailure> {
     const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
     const defaultModel = fields.model === undefined
@@ -198,9 +195,8 @@ export class Directory {
         throw new ApiError(409,"Agent mounts differ; set remount: true to change them");
       const configHash=await digest(JSON.stringify(config));
       const sameModel = JSON.stringify(old?.resolvedModel) === JSON.stringify(resolvedModel);
-      if (config.type !== "run" && !admitted)
+      if (config.type !== "run")
         await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
-      if (queue && old?.initialized) return { ...old, targetConfig: config };
       if (old?.initialized && old.configHash === configHash && sameModel) return old;
       const next: DirectoryEntry = {
         id,
@@ -240,16 +236,6 @@ export class Directory {
         throw new ApiError(403, "Agent belongs to another tenant", "FORBIDDEN");
       return next;
     });
-    if ("targetConfig" in entry) {
-      const response = await this.env.AGENTS.getByName(id).fetch(new Request("https://agent/configuration-target", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: crypto.randomUUID(), config: entry.targetConfig, origin: runtimeOrigin }),
-      }));
-      const record = await response.json() as { id: string; method: string; state: string; error?: string };
-      if (!response.ok) return { failed: true, status: response.status, error: record.error ?? "Agent configuration was refused", code: "CONFIGURATION_FAILED" };
-      const { targetConfig, ...current } = entry;
-      return { ...current, configHash: await digest(JSON.stringify(targetConfig)), reconfigured: record };
-    }
     if (!entry.initialized) {
       const response = await this.env.AGENTS.getByName(id).fetch(
         new Request("https://agent/configuration", {
