@@ -80,6 +80,24 @@ test("attachment admission refuses a live owner before opening a replacement str
   attached.close();
 });
 
+test("reconnecting a lost stream reports its in-flight call as unknown without replay", async () => {
+  const attached = new AttachedTools();
+  let calls = 0;
+  const owner = attached.attach(frame => {
+    const message = (frame as any).message;
+    if (message.method === "initialize") queueMicrotask(() => attached.receive({ id: message.id, result: {} }, owner.id));
+    if (message.method === "tools/call") calls++;
+  });
+  owner.start(); await attached.waitUntilReady();
+  const pending = attached.call("save", {}), rejected = assert.rejects(pending, error => (error as any).code === "connection_lost" && (error as any).outcomeUnknown === true);
+  await Promise.resolve();
+  const replacement = attached.attach(() => {}, owner.id);
+  await rejected;
+  assert.equal(calls, 1);
+  assert.throws(() => attached.receive({ id: "late", result: {} }, owner.id), { code: "APPLICATION_REPLACED" });
+  replacement.close();
+});
+
 test("source validation seals definition credentials and rejects inline secrets/private URLs", async () => {
   const env = { API_TOKEN: "unit-test-key-with-32-characters-long", AGENT_SECRETS_KEY: "22".repeat(32), TEST_MODE: "1" };
   const sources = await prepareSources(env, "tenant", "definition", "mcpServers", [{ name: "shop", url: "https://example.com/mcp", auth: { type: "bearer", token: "test-value" } }]);

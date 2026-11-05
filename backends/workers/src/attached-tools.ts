@@ -42,10 +42,13 @@ export class AttachedTools {
     if (this.connected && !takeover && previous !== this.current?.id)
       throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools", "APPLICATION_CONNECTED");
     const old = this.current;
+    // A reconnect has already lost its receive stream. Never replay a call
+    // whose application-side effect may have happened on that connection.
+    if (old && previous === old.id) this.close(old.id);
     const connection: Connection = { id: crypto.randomUUID(), send, pending: new Map(), ready: Promise.resolve(), initialized: false, draining: false, retired };
     this.current = connection;
     this.connections.set(connection.id, connection);
-    if (old) { old.draining = true; this.retireIfIdle(old); }
+    if (old && previous !== old.id) { old.draining = true; this.retireIfIdle(old); }
     // Start after the ready frame so SDK replies can name the connection.
     const start = () => {
       connection.ready = this.request(connection, "initialize", {
@@ -89,7 +92,7 @@ export class AttachedTools {
       if (this.current === connection) this.current = undefined;
       this.connections.delete(connection.id);
       for (const pending of connection.pending.values())
-        pending.reject(Object.assign(new Error("Application connection lost; tool outcome may be unknown"), { code: "connection_lost", outcomeUnknown: true }));
+        pending.reject(Object.assign(new Error("Application connection lost; this tool call may or may not have taken effect"), { code: "connection_lost", outcomeUnknown: true }));
       connection.pending.clear();
     }
   }
