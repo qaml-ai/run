@@ -13,6 +13,7 @@ import { EndUserCredits } from './end-user-credits.ts';
 import { endUserRoutes } from './end-user-routes.ts';
 import type { AuthContext } from './control.ts';
 import { sweepAdmission } from './admission.ts';
+import { flushJourney } from './journey-delivery.ts';
 import { expireMoneyIdempotency } from './money-idempotency.ts';
 import { withSql } from './postgres.ts';
 import { publishPending, type WebhookEnv } from './webhooks.ts';
@@ -73,7 +74,7 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
   if (keys) {
     if (keys.ok && request.method === 'POST' && ['/v1/tokens', '/v1/api-keys'].includes(path) && s.account.journey) {
       await s.account.journey.tokenCreated({ tenant, ...(principal.via === 'console' ? { browser: s.account.journey.browser(request) } : {}) });
-      ctx.waitUntil(s.account.journey.send());
+      ctx.waitUntil(flushJourney(s.account.journey));
     }
     return keys;
   }

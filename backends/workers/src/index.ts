@@ -51,6 +51,7 @@ import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
 import { browserResponse } from "./browser-response.ts";
 import { browserUrl } from "./selfhost-policy.ts";
 import { createJourney, sendJourney } from "./journey.ts";
+import { flushJourney } from "./journey-delivery.ts";
 import { keyServices } from "./security-services.ts";
 import { eventRead } from "./event-reads.ts";
 import { relayEvents } from "./event-relay.ts";
@@ -377,7 +378,7 @@ const worker = {
                 if (!created.existingAgent && !created.reconfigured) {
                   await journey.agentCreated({ tenant: auth.tenantId, via: auth.kind === 'console' ? 'console' : auth.kind === 'oauth' ? 'mcp' : 'api', ...(auth.kind === 'console' ? { browser: journey.browser(request) } : {}) });
                 }
-                ctx.waitUntil(journey.send());
+                ctx.waitUntil(flushJourney(journey));
               }
             }
             const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id, created.tokenVersion)), ...(created.reconfigured ? { reconfigured: created.reconfigured } : {}), ...await builtinWarnings(env, auth.tenantId, created.config) };

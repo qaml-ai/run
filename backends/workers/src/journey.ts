@@ -7,6 +7,7 @@ import { readText } from "./account-http.ts";
 import { safeError } from "./metrics-policy.ts";
 import { signedHeaders } from "./webhook-policy.ts";
 import { network } from "./account-network.ts";
+import { flushJourney } from "./journey-delivery.ts";
 
 export type JourneyEnv = {
   AGENT_JOURNEY_URL?: string;
@@ -39,14 +40,14 @@ export async function sendJourney(env: JourneyEnv & KeyEnv) {
   if (!env.AGENT_JOURNEY_URL) return;
   const { accounts } = await keyServices(env);
   const journey = createJourney(env, accounts, env.AGENT_PUBLIC_URL ?? env.PUBLIC_URL ?? "https://localhost");
-  if (journey) await journey.send();
+  if (journey) await flushJourney(journey);
 }
 
 export async function journeyRunEnded(env: JourneyEnv & KeyEnv, tenant: string, run: { completed: boolean; at?: number }) {
   if (!env.AGENT_JOURNEY_URL) return;
   const { accounts } = await keyServices(env);
   const journey = createJourney(env, accounts, env.AGENT_PUBLIC_URL ?? env.PUBLIC_URL ?? "https://localhost");
-  if (journey) { await journey.runEnded(tenant, run); await journey.send(); }
+  if (journey) { await journey.runEnded(tenant, run); await flushJourney(journey); }
 }
 
 export async function publicJourneyRoutes(request: Request, env: JourneyEnv, journey: Journey | undefined, auth: ConsoleAuth) {
