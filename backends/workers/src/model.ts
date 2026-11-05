@@ -35,7 +35,7 @@ import { sourceUrl } from "./tool-sources.ts";
 import { listModels } from "./catalog-policy.ts";
 import { streamTimeouts, watchedStream, isStalled } from "./model-stream.ts";
 import { contentFilterFallbacks } from "./default-model-policy.ts";
-import { isContentFilterBlock } from "./model-errors.ts";
+import { isContentFilterBlock, isModelUnavailable } from "./model-errors.ts";
 
 export type ModelRequestSettings = AgentConfiguration & { requestId?: string; output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
 export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true; deployments?: Record<string, string> };
@@ -50,23 +50,24 @@ export type ModelHooks = {
 };
 
 function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: string; TEST_MODEL?: string; AGENT_CONTENT_FILTER_FALLBACKS?: string }): Provider {
-  let routing: { user: number; previous?: Model<Api>; failed?: Model<Api> } | undefined;
+  let routing: { user: string; previous?: Model<Api>; failed?: Model<Api> } | undefined;
   let forcing: { request: string; count: number; refused: boolean } | undefined;
   const filterFallbacks = contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS);
   const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}) => {
     await hooks.beforeRequest?.();
     const config = await hooks.settings?.() ?? {};
     if (config.model?.startsWith("camelrun/")) {
-      const user = [...context.messages].reverse().find(message => message.role === "user")?.timestamp ?? 0;
+      const user = config.requestId ?? String([...context.messages].reverse().find(message => message.role === "user")?.timestamp ?? 0);
       if (!routing || routing.user !== user) routing = { user };
       const selected = routeModel(resolveModel(config.model), { reason: routing.failed ? "retry" : routing.previous ? "continuation" : "user", failed: routing.failed, previous: routing.previous });
       if (!selected) throw new Error("Virtual model fallback chain is exhausted");
-      model = { ...boundedModel(selected, config.runLimits?.contextTokens), ...(env.TEST_MODEL === "1" ? { baseUrl: model.baseUrl } : {}) };
+      model = { ...boundedModel(selected, config.runLimits?.contextTokens), ...(env.TEST_MODEL === "1" ? { baseUrl: model.baseUrl, api: model.api, runtimeApi: selected.api } : {}) };
     }
     const credential = await hooks.credentials?.(model.provider);
     if (credential?.baseUrl) model = { ...model, api: (model as Model<Api> & { runtimeApi?: Api }).runtimeApi ?? getModel(model.provider, model.id)?.api ?? model.api };
     let fallback = filterFallbacks.get(`${model.provider}/${model.id}`);
     if (fallback && (credential?.identity || credential?.baseUrl && !credential.deployments || !(await hooks.credentials?.(fallback.provider))?.apiKey)) fallback = undefined;
+    const virtualNext = config.model?.startsWith("camelrun/") ? routeModel(resolveModel(config.model), { reason: "retry", failed: model }) : undefined;
     const outputSchema = config.output?.schema;
     const request = config.requestId ?? String(context.messages.find(message => message.role === "user")?.timestamp ?? 0);
     if (!forcing || forcing.request !== request) forcing = { request, count: 0, refused: false };
@@ -107,7 +108,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
     const prepared = {
       ...options, ...(toolChoice !== undefined ? { toolChoice: toolChoice as SimpleStreamOptions["toolChoice"] } : {}), ...callSettings(model, config, config.thinkingLevel),
       ...(reasoning ? { reasoning } : {}),
-      ...(fallback ? { supersede: (message: AssistantMessage) => isContentFilterBlock(message) ? "content_filter" as const : undefined } : {}),
+      ...(fallback || virtualNext ? { supersede: (message: AssistantMessage) => fallback && isContentFilterBlock(message) ? "content_filter" as const : virtualNext && !message.content.length && isModelUnavailable(message) ? "unavailable" as const : undefined } : {}),
       ...(credential ? { apiKey: credential.bearer ? "runtime-bearer" : credential.apiKey ?? "keyless" } : {}),
       ...(credential?.identity ? { endpointIdentity: true } : {}),
       ...(deployment ? { azureDeployment: deployment, env: { AZURE_OPENAI_BASE_URL: credential!.baseUrl!, AZURE_OPENAI_API_VERSION: "v1", AZURE_OPENAI_DEPLOYMENT_NAME_MAP: `${model.id}=${deployment}` } } : {}),
@@ -119,7 +120,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
         return await onPayload?.(adjusted, target) ?? adjusted;
       },
     };
-    return { model: credential?.baseUrl ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, fallback, transportError: () => transportError };
+    return { model: credential?.baseUrl ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, fallback, virtualNext, transportError: () => transportError };
   };
   const wrap = (simple: boolean) => (model: Model<Api>, context: TranscriptContext, options?: StreamOptions) => {
     const output = createAssistantMessageEventStream();
@@ -136,6 +137,12 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
         }, streamTimeouts(prepared.model, prepared.config.thinkingLevel, prepared.config.runLimits), options?.signal);
         for await (const event of stream) {
           if (event.type === "error" && event.reason !== "aborted" && !isStalled(event.error.errorMessage) && prepared.transportError()) event.error.errorMessage = prepared.transportError();
+          if (event.type === "error" && event.reason !== "aborted" && prepared.virtualNext && !event.error.content.length && isModelUnavailable(event.error) && !options?.signal?.aborted) {
+            routing!.failed = prepared.model;
+            prepared = await prepare(prepared.virtualNext, context, options);
+            retry = true;
+            continue;
+          }
           if (event.type === "error" && event.reason !== "aborted" && prepared.fallback && isContentFilterBlock(event.error) && !options?.signal?.aborted) {
             try { prepared = await prepare(prepared.fallback, context, options); retry = true; continue; }
             catch { /* If the fallback is unavailable, retain the provider's original refusal. */ }
