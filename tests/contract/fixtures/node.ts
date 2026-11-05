@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import pg from "pg";
+import { migrate } from "../../../src/db.ts";
 import { runtime } from "../../runtime-server.ts";
 import { OPERATOR, OTHER_OPERATOR, sleep, until, type T } from "../http.ts";
 import type { ContractFixture, FixtureOptions, ModelReply, TenantSeed } from "../fixture.ts";
@@ -11,16 +13,47 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
   let respond: ModelReply = options.respond ?? (() => ({ role: "assistant", content: "ok" }));
   let index = 0;
   const cleanups: Array<() => Promise<void> | void> = [];
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    const failures: unknown[] = [];
+    for (const cleanup of cleanups.reverse()) {
+      try { await cleanup(); } catch (error) { failures.push(error); }
+    }
+    if (failures.length) throw new AggregateError(failures, "Node fixture cleanup failed");
+  };
+  // Register before starting the fake provider or child, so failed startup also
+  // closes every resource the original runtime fixture has registered so far.
+  t.after(close);
   const tenants: any = structuredClone(options.tenants ?? { tenants: {
     alice: { tokenSha256: hash(OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
     bob: { tokenSha256: hash(OTHER_OPERATOR), apiKeys: { openrouter: "fixture-model-key" } },
   } });
-  const r = await runtime({ after: fn => cleanups.push(fn) }, (body) => respond(body, index++), {
-    AGENT_VERIFY_KEYS: "false", ...options.env,
-  }, tenants);
-  let closed = false;
-  const close = async () => { if (!closed) { closed = true; for (const fn of cleanups.reverse()) await fn(); } };
-  t.after(close);
+  let r: Awaited<ReturnType<typeof runtime>>;
+  let db: pg.Pool;
+  try {
+    const databaseUrl = new URL(process.env.AGENT_TEST_DATABASE_URL ?? "postgres://postgres:test@127.0.0.1:55432/postgres");
+    if (!["127.0.0.1", "localhost", "[::1]"].includes(databaseUrl.hostname)) throw new Error("Contract fixtures require local test Postgres");
+    const admin = new pg.Client({ connectionString: databaseUrl.href, connectionTimeoutMillis: 5_000 });
+    cleanups.push(() => admin.end());
+    await admin.connect();
+    const schema = `contract_${randomBytes(10).toString("hex")}`;
+    await admin.query(`create schema ${schema}`);
+    cleanups.push(async () => { await admin.query(`drop schema ${schema} cascade`); });
+    databaseUrl.searchParams.set("options", `-c search_path=${schema}`);
+    databaseUrl.searchParams.set("application_name", schema);
+    db = new pg.Pool({ connectionString: databaseUrl.href, max: 5 });
+    cleanups.push(() => db.end());
+    await migrate(db);
+    r = await runtime({ after: fn => cleanups.push(fn) }, (body) => respond(body, index++), {
+      AGENT_VERIFY_KEYS: "false", ...options.env,
+    }, tenants, { databaseUrl: databaseUrl.href });
+  } catch (error) {
+    try { await close(); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], "Node fixture startup and cleanup failed"); }
+    throw error;
+  }
   const call: ContractFixture["call"] = async (path, init = {}) => {
     const token = init.token === undefined ? OPERATOR : init.token;
     const response = await fetch(r.base + path, {
@@ -46,22 +79,22 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
         r.child.kill("SIGHUP");
         await until(() => r.logs.slice(before).some(line => line.includes("tenants_reloaded")), "tenant fixture reload");
       } else {
-        await r.db.query("insert into tenants(id,created_at,billing) values($1,$2,$3) on conflict(id) do nothing", [id, Date.now(), seed.billingMode ?? "prepaid"]);
-        await r.db.query("insert into api_tokens(sha256,id,tenant,name,prefix,created_at) values($1,$2,$3,'contract', 'fixture', $4) on conflict(sha256) do nothing", [hash(token), crypto.randomUUID(), id, Date.now()]);
+        await db.query("insert into tenants(id,created_at,billing) values($1,$2,$3) on conflict(id) do nothing", [id, Date.now(), seed.billingMode ?? "prepaid"]);
+        await db.query("insert into api_tokens(sha256,id,tenant,name,prefix,created_at) values($1,$2,$3,'contract', 'fixture', $4) on conflict(sha256) do nothing", [hash(token), crypto.randomUUID(), id, Date.now()]);
       }
       if (seed.email) {
-        await r.db.query("insert into tenant_passwords(tenant,email,hash,set_at) values($1,$2,'fixture',0) on conflict(tenant) do update set email=excluded.email", [id, seed.email]);
-        if (seed.suppressed) await r.db.query("insert into billing_email_suppressions(email_hash,created_at) values($1,0) on conflict do nothing", [hash(seed.email)]);
+        await db.query("insert into tenant_passwords(tenant,email,hash,set_at) values($1,$2,'fixture',0) on conflict(tenant) do update set email=excluded.email", [id, seed.email]);
+        if (seed.suppressed) await db.query("insert into billing_email_suppressions(email_hash,created_at) values($1,0) on conflict do nothing", [hash(seed.email)]);
       }
       if (seed.credits !== undefined) {
         if (!Number.isSafeInteger(seed.credits) || seed.credits < 0) throw new Error("Fixture credits must be nonnegative integer micro-USD");
-        await r.db.query("insert into tenants(id,created_at,billing) values($1,$2,$3) on conflict(id) do update set billing=excluded.billing", [id, Date.now(), seed.billingMode ?? "none"]);
-        if (seed.credits) await r.db.query("with input as (insert into credit_ledger(tenant,kind,amount,idempotency_key,created_at) values($1,'purchase',$2,$3,$4) returning tenant,amount) insert into credit_accounts(tenant,balance,purchased) select tenant,amount,amount from input on conflict(tenant) do update set balance=credit_accounts.balance+excluded.balance,purchased=credit_accounts.purchased+excluded.purchased", [id, seed.credits, `contract:${randomBytes(12).toString("hex")}`, Date.now()]);
+        await db.query("insert into tenants(id,created_at,billing) values($1,$2,$3) on conflict(id) do update set billing=excluded.billing", [id, Date.now(), seed.billingMode ?? (seed.operator === false ? "prepaid" : tenants.tenants[id]?.billing ?? "none")]);
+        if (seed.credits) await db.query("with input as (insert into credit_ledger(tenant,kind,amount,idempotency_key,created_at) values($1,'purchase',$2,$3,$4) returning tenant,amount) insert into credit_accounts(tenant,balance,purchased) select tenant,amount,amount from input on conflict(tenant) do update set balance=credit_accounts.balance+excluded.balance,purchased=credit_accounts.purchased+excluded.purchased", [id, seed.credits, `contract:${randomBytes(12).toString("hex")}`, Date.now()]);
       }
       return { id, token };
     },
     async setScheduleDueAt(agent, schedule, dueAt) {
-      const result = await r.db.query("update schedules set due_at=$3 where agent=$1 and id=$2", [agent, schedule, dueAt]);
+      const result = await db.query("update schedules set due_at=$3 where agent=$1 and id=$2", [agent, schedule, dueAt]);
       if (result.rowCount !== 1) throw new Error("Fixture schedule not found");
     },
     async now() { return Date.now(); },

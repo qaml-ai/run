@@ -20,14 +20,18 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
   const fixtureModule = new URL("../../../backends/workers/test/fixture.ts", import.meta.url).href;
   const { startFixture } = await import(fixtureModule);
   const env = options.env ?? {};
+  // This implementation-level operator is private to the fixture wrapper. Only
+  // explicitly seeded credentials may reach it; OPERATOR is not a hidden key.
+  const internalOperator = `contract-internal-${randomUUID()}`;
   const server = await startFixture({
-    token: OPERATOR,
+    token: internalOperator,
     tenant: "alice",
     tenants: [],
     entrypoint: fileURLToPath(new URL("../../../backends/workers/test/contract-entry.ts", import.meta.url)),
     modelURL: env.AGENT_BASE_URL ?? model.url,
     vars: {
       ...env,
+      API_TOKEN: internalOperator,
       TEST_MODE: "1", TEST_MODEL: "1", MODEL: env.AGENT_MODEL ?? "openai/gpt-4o-mini",
     },
   });
@@ -40,7 +44,7 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(id)) throw new Error("Invalid fixture tenant id");
     const token = seed.token ?? `contract-operator-${id}-${randomUUID()}`;
     const config = seed.config ?? {};
-    const billing = seed.billingMode ?? config.billing ?? "none";
+    const billing = seed.billingMode ?? config.billing ?? (seed.operator === false ? "prepaid" : "none");
     if (billing !== "none" && billing !== "prepaid") throw new Error("Invalid fixture billing mode");
     const credits = seed.credits ?? 0;
     if (!Number.isSafeInteger(credits) || credits < 0) throw new Error("Fixture credit must be nonnegative integer micro-USD");
@@ -50,10 +54,29 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       "insert into tenants(id,created_at,billing,limits,github,github_id) values($1,$2,$3,$4,$5,$6) on conflict(id) do update set billing=excluded.billing,limits=excluded.limits,github=excluded.github,github_id=excluded.github_id",
       [id, Date.now(), billing, JSON.stringify(limits), github ?? null, githubId ?? null],
     );
-    await server.db.query(
-      "insert into contract_fixture_operators(sha256,tenant) values($1,$2) on conflict(tenant) do update set sha256=excluded.sha256",
-      [hash, id],
-    );
+    if (seed.operator === false) {
+      await server.db.query("delete from contract_fixture_operators where tenant=$1", [id]);
+      await server.db.query(
+        "insert into api_tokens(sha256,id,tenant,name,prefix,created_at) values($1,$2,$3,'fixture','fixture',$4) on conflict(sha256) do update set tenant=excluded.tenant",
+        [hash, randomUUID(), id, Date.now()],
+      );
+    } else {
+      await server.db.query(
+        "insert into contract_fixture_operators(sha256,tenant) values($1,$2) on conflict(tenant) do update set sha256=excluded.sha256",
+        [hash, id],
+      );
+    }
+    if (seed.email) {
+      const email = seed.email.trim().toLowerCase();
+      await server.db.query(
+        "insert into tenant_passwords(tenant,email,hash,set_at) values($1,$2,'fixture-disabled-password',$3) on conflict(tenant) do update set email=excluded.email",
+        [id, email, Date.now()],
+      );
+      if (seed.suppressed) await server.db.query(
+        "insert into billing_email_suppressions(email_hash,created_at) values($1,$2) on conflict do nothing",
+        [createHash("sha256").update(email).digest("hex"), Date.now()],
+      );
+    }
     await server.db.query("insert into credit_accounts(tenant,balance,purchased) values($1,0,0) on conflict do nothing", [id]);
     if (credits) {
       await server.db.query(
@@ -101,6 +124,11 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
   };
   return {
     base: server.url, call, prompt, model, seedTenant, close,
+    get logs() { return server.worker.logs().split("\n"); },
+    async setScheduleDueAt(agent, schedule, dueAt) {
+      const result = await call(`/v1/agents/${agent}/__test/contract-schedule-due`, { body: { id: schedule, dueAt } });
+      if (result.status !== 200) throw new Error(`Schedule fixture: ${result.status} ${result.text}`);
+    },
     setModel(next) { respond = next; replyStart = model.bodies.length; },
     async now() { return Date.now(); },
     async advanceTime(milliseconds) {

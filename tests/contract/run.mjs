@@ -1,8 +1,9 @@
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, readdir, mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { excludedCases } from "./scopes.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const output = path.join(root, "backends/workers/measurements");
@@ -11,52 +12,94 @@ const option = name => args.find(value => value.startsWith(`--${name}=`))?.slice
 const backend = option("backend") ?? "both", area = option("area");
 if (!["node", "workers", "both"].includes(backend)) throw new Error("--backend must be node, workers, or both");
 const files = (await readdir(path.join(root, "tests/contract/areas"))).filter(file => file.endsWith(".test.ts")).sort();
-const suiteFiles = ["fixture.ts", "support.ts", "http.ts", "python.py", "fixtures/node.ts", ...files.map(file => `areas/${file}`)];
+async function walk(directory) {
+  const entries = await readdir(path.join(root, directory), { withFileTypes: true });
+  return (await Promise.all(entries.map(entry => entry.isDirectory() ? walk(`${directory}/${entry.name}`) : [`${directory}/${entry.name}`]))).flat();
+}
+const suiteFiles = [...await walk("src"), ...await walk("clients"), ...await walk("tests")]
+  .filter(file => /\.(ts|mjs|py)$/.test(file));
+suiteFiles.push("package.json", "package-lock.json", "backends/workers/package-lock.json", "backends/workers/test/fixture.ts", "backends/workers/test/local-worker.ts", "backends/workers/test/contract-entry.ts", "backends/workers/wrangler.test.jsonc");
 const hash = createHash("sha256");
-for (const file of suiteFiles) hash.update(file).update(await readFile(path.join(root, "tests/contract", file)));
+for (const file of suiteFiles.sort()) hash.update(file).update(await readFile(path.join(root, file)));
 const suiteHash = hash.digest("hex");
+const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
 await mkdir(output, { recursive: true });
 const suffix = area ? `-${area.replace(/[^a-z0-9-]/gi, "_")}` : "";
 const reportPath = backend => path.join(output, `parity-${backend}${suffix}.json`);
 const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-async function command(program, commandArgs, env) {
-  const rows = [], chunks = [];
-  const child = spawn(program, commandArgs, { cwd: root, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+async function command(program, commandArgs, env, expected = []) {
+  const rows = [], cases = [], chunks = [];
+  const child = spawn(program, commandArgs, { cwd: root, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  const stop = () => { try { process.kill(-child.pid, "SIGTERM"); } catch {} };
+  const deadline = setTimeout(stop, Math.max(120_000, expected.length * 120_000));
+  let cleanupDeadline;
   let pending = "";
+  const line = value => {
+    if (value.startsWith("@@CONTRACT_RESULT@@")) {
+      rows.push(JSON.parse(value.slice(19)));
+      if (expected.length && rows.length >= expected.length && !cleanupDeadline) cleanupDeadline = setTimeout(stop, 15_000);
+    } else if (value.startsWith("@@CONTRACT_CASE@@")) cases.push(JSON.parse(value.slice(17)));
+    else if (value) console.log(value);
+  };
   child.stdout.on("data", chunk => {
-    chunks.push(chunk);
-    pending += String(chunk);
-    const lines = pending.split("\n"); pending = lines.pop();
-    for (const line of lines) {
-      if (line.startsWith("@@CONTRACT_RESULT@@")) rows.push(JSON.parse(line.slice(19)));
-      else if (line) console.log(line);
-    }
+    chunks.push(chunk); pending += String(chunk);
+    const lines = pending.split("\n"); pending = lines.pop(); lines.forEach(line);
   });
-  child.stderr.on("data", chunk => { chunks.push(chunk); /* raw diagnostic details remain in the log */ });
+  child.stderr.on("data", chunk => { chunks.push(chunk); });
   const result = await new Promise((resolve, reject) => {
     child.on("error", reject);
-    child.on("exit", (code, signal) => resolve({ code, signal }));
+    child.on("close", (code, signal) => resolve({ code, signal }));
   });
-  return { ...result, rows, log: Buffer.concat(chunks).toString() };
+  clearTimeout(deadline); clearTimeout(cleanupDeadline);
+  if (pending) line(pending);
+  return { ...result, rows, cases, log: Buffer.concat(chunks).toString() };
+}
+
+const inventory = (await command(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "tests/contract/list.mjs"], {}));
+if (inventory.code !== 0) throw new Error(`Cannot load contract inventory: ${inventory.log.slice(-5000)}`);
+const pythonInventory = await command("python3", ["tests/contract/python.py", "--list"], {});
+if (pythonInventory.code !== 0) throw new Error(`Cannot load Python inventory: ${pythonInventory.log.slice(-5000)}`);
+const scope = await excludedCases();
+const manifest = [...inventory.cases, ...pythonInventory.cases, ...scope].filter(row => !area || area.split(",").includes(row.area));
+const key = row => `${row.area}\0${row.source}\0${row.name}`;
+if (new Set(manifest.map(key)).size !== manifest.length) throw new Error("Contract inventory contains duplicate case identities");
+if (!manifest.length) throw new Error(`No contract cases in area ${area}`);
+if (args.includes("--list")) { console.log(JSON.stringify(manifest, null, 2)); process.exit(0); }
+
+function complete(rows, expected, processResult) {
+  const seen = new Set();
+  for (const row of rows) {
+    const id = key(row);
+    if (seen.has(id)) throw new Error(`Duplicate result: ${row.name}`);
+    seen.add(id);
+  }
+  for (const row of expected) if (!seen.has(key(row))) rows.push({ ...row, status: "fail", backend: "fixture", reason: "Test process did not report this case; inspect raw log" });
+  if (processResult.signal || (processResult.code !== 0 && !rows.some(row => row.status === "fail"))) rows.push({ area: "harness", name: `process cleanup: ${expected[0]?.file}`, source: "tests/contract/run.mjs", status: "fail", backend: "fixture", reason: `Test process ended with ${processResult.signal ?? processResult.code}` });
+  return rows;
 }
 
 async function run(which) {
-  console.log(`Contract baseline: ${which}${area ? ` / ${area}` : ""}`);
-  const rows = [], logs = [];
-  let failed = false;
-  if (area !== "python") {
-    const result = await command(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--test", "--test-concurrency=1", "--test-timeout=180000", `--test-reporter=${path.join(root, "tests/contract/reporter.mjs")}`,
-      ...(area ? [`--test-name-pattern=^\\[(?:${area.split(",").map(escape).join("|")})\\]`] : []),
-      ...files.map(file => path.join(root, "tests/contract/areas", file))], { CONTRACT_BACKEND: which });
-    rows.push(...result.rows); logs.push(result.log); failed ||= result.code !== 0;
+  console.log(`Contract baseline: ${which}${area ? ` / ${area}` : ""} (${manifest.length} cases)`);
+  const rows = manifest.filter(row => row.file === "scope"), logs = [];
+  const jobs = [...new Set(manifest.filter(row => row.file !== "scope").map(row => row.file))];
+  const concurrency = Number(process.env.CONTRACT_CONCURRENCY ?? (which === "node" ? 2 : 1));
+  async function next() {
+    for (;;) {
+      const file = jobs.shift(); if (!file) return;
+      const expected = manifest.filter(row => row.file === file);
+      console.log(`START ${which} ${file} (${expected.length})`);
+      const result = file.endsWith(".py")
+        ? await command("python3", [file], { CONTRACT_BACKEND: which }, expected)
+        : await command(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--test", "--test-concurrency=1", `--test-reporter=${path.join(root, "tests/contract/reporter.mjs")}`,
+          ...(area ? [`--test-name-pattern=^\\[(?:${area.split(",").map(escape).join("|")})\\]`] : []), file], { CONTRACT_BACKEND: which }, expected);
+      rows.push(...complete(result.rows, expected, result)); logs.push(result.log);
+      await writeFile(path.join(output, `parity-${which}${suffix}.partial.json`), JSON.stringify({ backend: which, suiteHash, revision, rows }, null, 2) + "\n");
+    }
   }
-  if (!area || area.split(",").includes("python")) {
-    const result = await command("python3", ["tests/contract/python.py"], { CONTRACT_BACKEND: which });
-    rows.push(...result.rows); logs.push(result.log); failed ||= result.code !== 0;
-  }
-  if (!rows.length || (failed && !rows.some(row => row.status === "fail"))) rows.push({ area: "harness", name: "runner completed", source: "tests/contract/run.mjs", status: "fail", backend: "fixture", reason: "A test process failed before reporting its cases; inspect raw log" });
-  const report = { backend: which, area: area ?? "all", suiteHash, recordedAt: new Date().toISOString(), rows };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(8, concurrency)) }, next));
+  rows.sort((a, b) => key(a).localeCompare(key(b)));
+  const report = { backend: which, area: area ?? "all", suiteHash, revision, runtime: { node: process.version, platform: process.platform, arch: process.arch }, recordedAt: new Date().toISOString(), expectedCases: manifest.length, rows };
   await writeFile(reportPath(which), JSON.stringify(report, null, 2) + "\n");
   await writeFile(path.join(output, `parity-${which}${suffix}.log`), logs.join("\n"));
   const count = status => rows.filter(row => row.status === status).length;
@@ -67,7 +110,7 @@ async function run(which) {
 let node;
 if (backend !== "workers") node = await run("node");
 else node = JSON.parse(await readFile(reportPath("node"), "utf8").catch(() => { throw new Error("Run the Node baseline first with the same --area; no baseline report exists"); }));
-const nodeGreen = node.suiteHash === suiteHash && !node.rows.some(row => row.status === "fail");
+const nodeGreen = node.suiteHash === suiteHash && node.expectedCases === manifest.length && node.rows.length === manifest.length && manifest.every(row => node.rows.some(result => key(row) === key(result))) && !node.rows.some(row => row.status === "fail");
 if (backend !== "node" && !nodeGreen) throw new Error("Node baseline is not green for this exact suite. Fix the contract or Node fixture before running Workers.");
 let workers;
 if (backend !== "node") workers = await run("workers");

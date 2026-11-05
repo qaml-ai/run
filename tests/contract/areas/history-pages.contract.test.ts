@@ -143,3 +143,28 @@ contractTest("history", "tests/history-pages.test.ts:346", "history after pages 
   assert.deepEqual((await client.historyPage({ limit: 1, before: newest.next! })).entries.map(entry => entry.index), [0, 1]);
 
 });
+
+contractTest("history", "tests/history-pages.test.ts:400", "the newest page has the running turn's finished messages, at their indexes; purging removes the agent's history", async (t,f)=>{
+  const r = await useFixture(f, body => {
+    if (body.messages.at(-1).role === "tool") return { content: "finished", delayMs: lastUser(body) === "slow" ? 1500 : 0 };
+    return lastUser(body) === "slow" ? toolCall("codemode", { code: "return 2" }) : { content: `reply ${lastUser(body)}` };
+  }, { AGENT_IDLE_MS: "1000" });
+  const agent = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  await r.prompt(agent, "first");
+  await r.prompt(agent, "second");
+  const running = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "slow" } });
+  assert.equal(running.status, 202);
+  const newest = await until(async () => {
+    const page = (await r.call(`/v1/agents/${agent}/history?limit=1`)).json;
+    return page.total === 7 && page;
+  }, "the tool result of the running turn");
+  assert.deepEqual(newest.entries.map((entry: any) => [entry.index, entry.message.role]), [[4, "user"], [5, "assistant"], [6, "toolResult"]]);
+  assert.equal((await r.call(`/v1/agents/${agent}/requests/${running.json.id}`)).json.state, "running");
+  await until(async () => (await r.call(`/v1/agents/${agent}/requests/${running.json.id}`)).json.state === "completed", "the turn to end");
+  const settled = (await r.call(`/v1/agents/${agent}/history?limit=1`)).json;
+  assert.deepEqual(settled.entries.map((entry: any) => entry.index), [4, 5, 6, 7]);
+
+  assert.equal((await r.call(`/v1/agents/${agent}`, { method: "DELETE" })).status, 200);
+  // Database row and chunk-blob cleanup assertions remain in the original Node suite.
+
+}, {env:{AGENT_IDLE_MS:"1000"}});

@@ -292,3 +292,43 @@ contractTest("history", "tests/agent-fork.test.ts:295", "a fork after a context 
   assert.ok(JSON.stringify(cutContext).includes("RESET-SUMMARY"));
 
 }, {env:{ ...roomy, AGENT_IDLE_MS: "1000" }});
+
+contractTest("history", "tests/agent-fork.test.ts:76", "a fork may act for someone else and carry its own prompt addition and model headers: what a create fixes, the fork's create sets", async (t, f)=>{
+  const r = await useFixture(f, answering(), roomy);
+  const source = (await r.call("/v1/agents", { body: { subject: "user-1", context: { thread: "a" }, systemPromptAppend: "Thread a", modelHeaders: { "x-thread": "a" } } })).json.id as string;
+  await r.prompt(source, "hello");
+  const made = await r.call(`/v1/agents/${source}/fork`, { body: { context: { thread: "b" }, systemPromptAppend: "Thread b", modelHeaders: { "x-thread": "b" } } });
+  assert.equal(made.status, 201, made.text);
+  // Stored identity assertions remain in the original Node test.
+  assert.equal((await r.call(`/v1/agents/${made.json.id}`)).json.systemPromptAppend, "Thread b");
+  await r.prompt(made.json.id, "again");
+  const sent = JSON.stringify(r.model.bodies.at(-1).messages);
+  assert.ok(sent.includes("Thread b"), "the fork's model gets its own addition");
+  assert.equal(r.model.headers.at(-1)!["x-thread"], "b", "and its own headers");
+  assert.deepEqual((await r.call(`/v1/agents/${made.json.id}`)).json.modelHeaders, { "x-thread": "b" });
+  assert.equal((await r.call(`/v1/agents/${source}/fork`, { body: { context: "thread b" } })).status, 400);
+  assert.equal((await r.call(`/v1/agents/${source}/fork`, { body: { modelHeaders: { Authorization: "x" } } })).status, 400);
+
+}, {env:roomy});
+
+contractTest("history", "tests/agent-fork.test.ts:235", "a fork pins the files its history refers to: they stay stored after the source, its workspace and the fork's copy are gone", async (t, f)=>{
+  const r = await useFixture(f, answering(), { AGENT_GC_ENABLED: "true", AGENT_PURGE_INTERVAL_MS: "1000", AGENT_GC_GRACE_MS: "0", AGENT_GC_INTERVAL_MS: "0", AGENT_GC_POLL_MS: "200" });
+  const source = (await r.call("/v1/agents", { body: {} })).json.id as string;
+  const accepted = await r.call(`/v1/agents/${source}/prompt`, { body: { text: "keep this", files: [{ name: "kept.txt", data: Buffer.from("forked words").toString("base64") }] } });
+  await until(async () => (await r.call(`/v1/agents/${source}/requests/${accepted.json.id}`)).json.state === "completed", "the turn");
+  const forked = (await r.call(`/v1/agents/${source}/fork`, { body: {} })).json.id as string;
+  // Chunk pin storage assertions remain in the original Node test.
+
+  // The fork's workspace copy of the upload goes, and so does the source with its workspace: only the fork's pin holds the chunk.
+  const workspace = (await r.call(`/v1/agents/${forked}`)).json.mounts[0].volumeId;
+  const files = (await r.call(`/v1/volumes/${workspace}/files`)).json;
+  for (const file of files.files ?? files) assert.equal((await r.call(`/v1/volumes/${workspace}/files/${file.path.replace(/^\//, "")}`, { method: "DELETE" })).status, 200);
+  assert.equal((await r.call(`/v1/agents/${source}`, { method: "DELETE" })).status, 200);
+  await until(async () => (await r.call(`/v1/agents/${source}`)).status === 404, "the source's purge", 20_000);
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  // The model call below verifies the retained file through the public contract.
+  // And the fork's model still gets the file.
+  await r.prompt(forked, "what did I attach?");
+  assert.ok(JSON.stringify(r.model.bodies.at(-1).messages).includes("forked words"));
+
+}, {env:{ AGENT_GC_ENABLED: "true", AGENT_PURGE_INTERVAL_MS: "1000", AGENT_GC_GRACE_MS: "0", AGENT_GC_INTERVAL_MS: "0", AGENT_GC_POLL_MS: "200" }});

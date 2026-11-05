@@ -19,7 +19,69 @@ original = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(original)
 
 
+async def cleanup(self):
+    """Also registered before setup, because unittest skips tearDown on setup errors."""
+    if getattr(self, "_contract_closed", False):
+        return
+    self._contract_closed = True
+    errors = []
+    for name in ("agents", "runtime"):
+        client = getattr(self, name, None)
+        if client is not None:
+            try:
+                await asyncio.wait_for(client.close(), 10)
+            except Exception as error:
+                errors.append(error)
+    host = getattr(self, "host", None)
+    if host is not None:
+        # Drain both pipes even if readiness was never reported. Waiting for an
+        # unread pipe can otherwise block process termination indefinitely.
+        for name, stream in (("logs", host.stdout), ("host_errors", host.stderr)):
+            if getattr(self, name, None) is None and stream is not None:
+                setattr(self, name, asyncio.create_task(stream.read()))
+        if host.returncode is None:
+            try:
+                host.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(host.wait(), 20)
+            except asyncio.TimeoutError:
+                try:
+                    host.kill()
+                except ProcessLookupError:
+                    pass
+                try:
+                    await asyncio.wait_for(host.wait(), 5)
+                except Exception as error:
+                    errors.append(error)
+        for name in ("logs", "host_errors"):
+            task = getattr(self, name, None)
+            if task is not None:
+                try:
+                    await asyncio.wait_for(task, 5)
+                except Exception as error:
+                    errors.append(error)
+    for name in ("model", "transcriber"):
+        server = getattr(self, name, None)
+        if server is not None:
+            try:
+                await asyncio.to_thread(server.shutdown)
+                await asyncio.to_thread(server.server_close)
+            except Exception as error:
+                errors.append(error)
+    directory = getattr(self, "directory", None)
+    if directory is not None:
+        try:
+            directory.cleanup()
+        except Exception as error:
+            errors.append(error)
+    if errors:
+        raise RuntimeError(f"Python fixture cleanup failed ({len(errors)} resources)") from errors[0]
+
+
 async def setup(self):
+    self.addAsyncCleanup(cleanup, self)
     self.directory = tempfile.TemporaryDirectory(prefix="camelrun-contract-python-")
     self.token = "fixture-only-python-sdk-operator-token"
     self.bodies, self.script, self.transcribed = [], [], []
@@ -56,20 +118,7 @@ async def setup(self):
 
 
 async def teardown(self):
-    try:
-        await self.agents.close()
-        await self.runtime.close()
-    finally:
-        if self.host.returncode is None:
-            self.host.terminate()
-            await asyncio.wait_for(self.host.wait(), 20)
-        await self.logs
-        await self.host_errors
-        self.model.shutdown()
-        self.model.server_close()
-        self.transcriber.shutdown()
-        self.transcriber.server_close()
-        self.directory.cleanup()
+    await cleanup(self)
 
 
 original.PythonSDKTest.asyncSetUp = setup
@@ -112,5 +161,15 @@ class Result(unittest.TextTestResult):
 
 
 suite = unittest.defaultTestLoader.loadTestsFromModule(original)
+if "--list" in __import__("sys").argv:
+    def cases(value):
+        if isinstance(value, unittest.TestSuite):
+            for child in value:
+                yield from cases(child)
+        else:
+            yield value
+    for case in cases(suite):
+        print("@@CONTRACT_CASE@@" + json.dumps({"area": "python", "source": "tests/python_sdk.py", "name": f"{case.__class__.__name__}.{case._testMethodName}", "file": "tests/contract/python.py"}))
+    raise SystemExit(0)
 result = unittest.TextTestRunner(verbosity=1, resultclass=Result).run(suite)
 raise SystemExit(0 if result.wasSuccessful() else 1)

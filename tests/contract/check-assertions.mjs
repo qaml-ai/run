@@ -16,13 +16,19 @@ function assertions(node, text, found = []) {
   return found;
 }
 const sources = new Set([
+  "agent-language.test.ts", "agent-lifetime.test.ts", "agent-links.test.ts", "agent-mcp.test.ts", "agent-progress.test.ts", "background-agents.test.ts", "attach.test.ts", "browser-tokens.test.ts", "builtins.test.ts", "context-reset.test.ts", "history-formats.test.ts", "history-none-ignored.test.ts", "idempotency.test.ts", "model-settings.test.ts", "multi-agent.test.ts", "prompt-options.test.ts", "run-limits.test.ts", "sender.test.ts", "tool-calls.test.ts", "tool-spawn.test.ts", "tool-streaming.test.ts", "tenant-reads.test.ts",
   "agents-upsert.test.ts", "agents.test.ts", "agents-list.test.ts", "history-pages.test.ts", "structured-output.test.ts",
   "agent-fork.test.ts", "agent-messaging.test.ts", "sdk-multi-agent.test.ts", "errors.test.ts", "human-input.test.ts", "schedule-api.test.ts", "stream-deltas.test.ts",
-  "api.test.ts", "decisions-api.test.ts",
+  "history-import.test.ts", "api.test.ts", "decisions-api.test.ts", "runs.test.ts", "request-wait.test.ts", "definitions.test.ts", "service-api.test.ts",
 ]);
-const implementationOnly = expectation => expectation.startsWith("assert.ok(r.logs.some(") || expectation.startsWith("assert.ok(!r.logs.some(") || expectation.includes("mayAnswer(input,") || expectation.includes('r.db.query("select input from agent_inputs")');
+// These checks observe implementation storage or pure Node policy, not the public HTTP contract.
+const implementationOnly = expectation => [
+  "r.logs.some(", "mayAnswer(input,", "r.db.query(", "slow.db.query(", "Number(cursor.reserved_cursor)",
+  "await identity(", "await thinking(", "existsSync(", "assert.deepEqual(row,", "saved.config.initialMessages",
+  "'requests' in saved", "readFile(join(f.root", "JSON.stringify(saved)", "header.tenant", "JSON.stringify(header)",
+].some(fragment => expectation.includes(fragment));
 // The decisions webhook is delivered to a local HTTP receiver instead of reading Node's SQL outbox.
-const normalize = expectation => expectation.replace('url: "https://hooks.example.test/usage"', 'url: webhook + "/usage"');
+const normalize = expectation => expectation.replace('url: "https://hooks.example.test/usage"', 'url: webhook + "/usage"').replaceAll('saved.config.systemPrompt', 'saved.systemPrompt').replaceAll('saved.config.thinkingLevel', 'saved.thinkingLevel').replaceAll('saved.definitions', 'saved.tools');
 let cases = 0, checked = 0;
 for (const file of await readdir(resolve(root, "tests/contract/areas"))) {
   if (!file.endsWith(".contract.test.ts")) continue;
