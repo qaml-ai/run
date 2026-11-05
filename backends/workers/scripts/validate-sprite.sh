@@ -27,7 +27,17 @@ if [[ $mode == integration || $mode == compat ]]; then
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io
   fi
   if ! docker info >/dev/null 2>&1; then
-    sudo service docker start
+    if ! sudo service docker start; then
+      sudo sh -c 'nohup dockerd --storage-driver=vfs > /tmp/workers-dockerd.log 2>&1 < /dev/null &'
+      for _ in $(seq 60); do
+        if sudo docker info >/dev/null 2>&1; then break; fi
+        sleep 1
+      done
+      if ! sudo docker info >/dev/null 2>&1; then
+        tail -40 /tmp/workers-dockerd.log >&2
+        exit 1
+      fi
+    fi
     sudo chgrp "$(id -gn)" /var/run/docker.sock
     sudo chmod g+rw /var/run/docker.sock
   fi
@@ -47,7 +57,12 @@ case "$mode" in
   python) npm run test:python 2>&1 | tee "$artifact/python-compat.log" ;;
   checks)
     npm run typecheck
-    for file in scripts/reuse-*.mjs; do node "$file" --check; done
+    for file in scripts/reuse-*.mjs; do
+      # The fs shim compares to origin/main, which git archive does not include.
+      # Run that one sub-second check in the source checkout; the others use files.
+      if [[ $file == scripts/reuse-fs-shim.mjs ]]; then continue; fi
+      node "$file" --check
+    done
     npm run build 2>&1 | tee "$artifact/build.log"
     cd "$repo"
     npm run docs
