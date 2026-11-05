@@ -1,40 +1,28 @@
-import { sourceUrl } from './tool-sources.ts';
-import { PublicAddressPolicy } from './public-address-policy.ts';
-import { readCapped, type FetchOptions, type Outbound } from './web-policy-host.ts';
+import { Outbound as AddressGuard } from './security-outbound.ts';
+import type { FetchOptions, Outbound } from './web-policy-host.ts';
 import { HttpError } from './errors.ts';
 
 type Transport = (url: string | URL, options?: RequestInit) => Promise<Response>;
-type PublicOutboundOptions = { testMode?: boolean; transport?: Transport; resolve?: (hostname: string) => Promise<string[]> };
+type PublicOutboundOptions = { testMode?: boolean; allowHttp?: boolean; allow?: string[]; block?: string[]; transport?: Transport; resolve?: (hostname: string) => Promise<string[]> };
 
 /** DNS is checked before every hop. Workers fetch remains the connection transport;
  * unlike the Node guard, this API cannot pin a checked DNS answer to the connection. */
 export class PublicOutbound implements Outbound {
   readonly allowHttp: boolean;
   private options: PublicOutboundOptions;
-  private addressPolicy = new PublicAddressPolicy();
-  constructor(options: PublicOutboundOptions = {}) { this.options = options; this.allowHttp = options.testMode === true; }
+  private addressPolicy: AddressGuard;
+  constructor(options: PublicOutboundOptions = {}) {
+    this.options = options;
+    this.allowHttp = options.allowHttp ?? options.testMode === true;
+    this.addressPolicy = new AddressGuard({ allowHttp: this.allowHttp,
+      allow: options.allow ?? (options.testMode ? ['127.0.0.1/32', '::1/128'] : []), block: options.block,
+      ...(options.resolve ? { resolve: async hostname => (await options.resolve!(hostname)).map(address => ({ address, family: address.includes(':') ? 6 : 4 })) } : {}),
+    });
+  }
   withoutOrigins() { return this; }
   private transport(url: string | URL, options: RequestInit = {}) { return (this.options.transport ?? fetch)(url, options); }
-  private async addresses(hostname: string): Promise<string[]> {
-    if (this.options.resolve) return this.options.resolve(hostname);
-    const records = await Promise.all(['A', 'AAAA'].map(async type => {
-      const url = new URL('https://cloudflare-dns.com/dns-query'); url.searchParams.set('name', hostname); url.searchParams.set('type', type);
-      const response = await fetch(url, { headers: { accept: 'application/dns-json' }, signal: AbortSignal.timeout(3000), redirect: 'manual' });
-      if (!response.ok) throw new HttpError(502, 'Public DNS lookup failed');
-      const value = JSON.parse(new TextDecoder().decode(await readCapped(response, 64 * 1024))) as { Status?: number; Answer?: { type: number; data: string }[] };
-      if (value.Status !== 0) throw new HttpError(400, 'Public DNS lookup returned no address');
-      return (value.Answer ?? []).filter(answer => answer.type === 1 || answer.type === 28).map(answer => answer.data);
-    }));
-    return records.flat();
-  }
   async reachable(value: string | URL): Promise<URL> {
-    const url = sourceUrl(String(value), { TEST_MODE: this.allowHttp ? '1' : undefined });
-    const host = url.hostname.toLowerCase().replace(/\.$/, '');
-    if (this.allowHttp && url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(host)) return url;
-    if (!host.includes('.') || /(^|\.)(localhost|local|internal|localdomain|home|lan)$/.test(host)) throw new HttpError(400, 'Private host names are not allowed');
-    const addresses = await this.addresses(host);
-    if (!addresses.length || addresses.some(address => this.addressPolicy.blocked(address))) throw new HttpError(400, 'Host does not resolve exclusively to public addresses');
-    return url;
+    return this.addressPolicy.reachable(value);
   }
   async fetch(input: string | URL, options: FetchOptions = {}): Promise<Response> {
     const { secrets, timeoutMs = 30_000, maxBytes = 4 * 1024 * 1024, maxRedirects = 0, signal, ...init } = options;

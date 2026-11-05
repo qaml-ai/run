@@ -32,7 +32,11 @@ test('public redirects are rechecked and cross-origin secrets are stripped', asy
   assert.equal(headers[0].get('authorization'), 'fixture-secret');
   assert.equal(headers[1].get('authorization'), null);
   const blocked = new PublicOutbound({ resolve: async host => host === 'private.example' ? ['192.168.1.1'] : ['93.184.216.34'], transport: async () => new Response(null, { status: 302, headers: { location: 'https://private.example/' } }) });
-  await assert.rejects(blocked.fetch('https://public.example/', { maxRedirects: 1 }), /public addresses/);
+  await assert.rejects(blocked.fetch('https://public.example/', { maxRedirects: 1 }), /private.example resolves to 192.168.1.1, a private, local or reserved address/);
+});
+test('test mode alone does not grant web builtins access to private addresses', async () => {
+  const tools = await agentBuiltins({ TEST_MODE: '1', TEST_MODEL: '1' } as never, context(['web_fetch']));
+  await assert.rejects(invoke(tools[0], { url: 'http://127.0.0.1/' }), /127.0.0.1 is a private, local or reserved address/);
 });
 test('outbound streams stop at their byte budget', async () => {
   const guard = new PublicOutbound({ resolve: async () => ['93.184.216.34'], transport: async () => new Response('too much data') });

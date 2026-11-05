@@ -1,6 +1,7 @@
 import { Outbound } from "../src/security-outbound.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
+import { toolSourceViews } from "../src/tool-sources.ts";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { AttachedTools } from "../src/attached-tools.ts";
@@ -29,6 +30,18 @@ test("attached tools initialize on their connection and preserve a tool result",
   assert.throws(() => attached.receive({ id: "old", result: {} }, "old"), /APPLICATION_REPLACED/);
   handle.close();
   assert.equal(attached.connected, false);
+});
+
+test("failed tool discovery is unlisted when the agent is idle and refresh exposes the error", () => {
+  const config = { mcpServers: [{ name: "gone", url: "https://gone.example/mcp" }] };
+  const failures = [{ kind: "mcp" as const, source: "gone", message: "Could not connect" }];
+  const [idle] = toolSourceViews(config, [], false, failures, false);
+  assert.equal(idle.status, "unlisted");
+  assert.deepEqual(idle.tools, []);
+  assert.equal(idle.error, undefined);
+  const [active] = toolSourceViews(config, [], false, failures, true);
+  assert.equal(active.status, "error");
+  assert.equal(active.error, "Could not connect");
 });
 
 test("closing an attached connection fails in-flight calls without retrying them", async () => {

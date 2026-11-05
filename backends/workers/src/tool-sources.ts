@@ -229,7 +229,7 @@ const listedAt = new WeakMap<ToolRegistration, number>();
 const markListed = (tool: ToolRegistration) => { listedAt.set(tool, Date.now()); return tool; };
 
 /** Public catalog preserves source priority and makes duplicate exclusions explicit. */
-export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mcpServers?: RemoteSource[]; openApi?: RemoteSource[]; fileTools?: boolean; codeMode?: boolean; builtins?: string[] }, tools: ToolRegistration[], connected: boolean, failures: SourceFailure[] = []) {
+export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mcpServers?: RemoteSource[]; openApi?: RemoteSource[]; fileTools?: boolean; codeMode?: boolean; builtins?: string[] }, tools: ToolRegistration[], connected: boolean, failures: SourceFailure[] = [], loaded = true) {
   const view = (tool: ToolRegistration) => ({ name: tool.name, description: tool.description, parameters: tool.parameters, exposure: tool.callers?.length === 1 ? tool.callers[0] === "model" ? "direct" : "codemode" : "both", ...(tool.executionMode ? { executionMode: tool.executionMode } : {}) });
   const result: { kind: string; name: string; status: string; tools: any[]; connected?: boolean; url?: string; error?: string; listedAt?: number }[] = [];
   if (config.mcp?.tools?.length) result.push({ kind: "application", name: "application", status: "listed", connected, tools: config.mcp.tools.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters ?? tool.inputSchema, exposure: tool.exposure ?? tool._meta?.["agent-runtime/exposure"] ?? "both" })) });
@@ -246,7 +246,7 @@ export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mc
   for (const [kind, sources] of [["mcp", config.mcpServers], ["openapi", config.openApi]] as const) for (const source of sources ?? []) {
     const installed = tools.filter(tool => tool.name.startsWith(`${source.name}__`));
     const failure = failures.find(failure => failure.kind === kind && failure.source === source.name);
-    result.push({ kind, name: source.name, url: source.url ?? source.baseUrl, status: failure ? "error" : "listed", tools: installed.map(view), ...(!failure ? { listedAt: Math.max(0, ...installed.map(tool => listedAt.get(tool) ?? Date.now())) } : { error: failure.message }) });
+    result.push({ kind, name: source.name, url: source.url ?? source.baseUrl, status: failure ? loaded ? "error" : "unlisted" : "listed", tools: installed.map(view), ...(!failure ? { listedAt: Math.max(0, ...installed.map(tool => listedAt.get(tool) ?? Date.now())) } : loaded ? { error: failure.message } : {}) });
   }
   const claimed = new Set<string>();
   for (const source of result) source.tools = source.tools.map(tool => {

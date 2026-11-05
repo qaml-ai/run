@@ -6,6 +6,7 @@ import { workspaceId } from './file-mounts.ts';
 import { scratchMount } from './media/files-policy.ts';
 import { toolOutputPolicy } from './tool-output-policy.ts';
 import type { ToolCallSite } from './tool-call-context.ts';
+import { saveToolImages, toolResultFiles } from './tool-output-files.ts';
 
 type Scope = { tenant: string; agent: string; mounts: Mount[]; fileTools?: boolean; codeMode?: boolean; call: ToolCallSite };
 
@@ -13,8 +14,10 @@ type Scope = { tenant: string; agent: string; mounts: Mount[]; fileTools?: boole
 export function toolOutputExtension(env: FileBindings, scope: (api: HookApi, callId: string) => Promise<Scope>): Extension {
   return { name: 'camel.tool-output', hooks: [hook(ToolTask, {
     async afterTool(call, result, api) {
-      if (call.parent || call.name === 'codemode') return;
+      if (call.name === 'codemode') return;
       const current = await scope(api, call.id);
+      const materialized = await saveToolImages(result.output ?? [], await toolResultFiles(env, { ...current, tool: call.name, call: api.taskId }));
+      if (call.parent) return { ...result, output: materialized };
       const own = await workspaceId(current.agent);
       const mount = current.fileTools !== false || current.codeMode !== false
         ? scratchMount(current.mounts.map(value => ({ ...value, workspace: value.volumeId === own || value.volumeId === `agent:${current.agent}` }))) : undefined;
@@ -31,7 +34,7 @@ export function toolOutputExtension(env: FileBindings, scope: (api: HookApi, cal
         } catch { return; }
       };
       const policy = toolOutputPolicy({ ...current, id: current.agent }, save);
-      const output = await policy.capped(call.id, result.output ?? []);
+      const output = await policy.capped(call.id, materialized);
       const details = await policy.cappedDetails(call.id, call.name, result.details);
       return { ...result, output, ...(details === undefined ? {} : { details: details as ToolExecutionResult["details"] }) };
     },
