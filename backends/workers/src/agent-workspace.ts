@@ -8,9 +8,10 @@ export type ForkClaim = {
   targetId: string;
   key: string;
   fingerprint: string;
-  atMessage: number;
+  atMessage: number | null;
   copyPrivate: boolean;
   config: AgentConfiguration & { ttlSeconds?: unknown };
+  model?: unknown[];
   origin: string;
   expiresAt: number;
   expired?: boolean;

@@ -51,6 +51,7 @@ export class AgentHistory {
     return next;
   }
   messageIndex(entry: number) { return this.sql.exec<{ordinal:number}>("SELECT ordinal FROM camel_history WHERE entry=? ORDER BY ordinal LIMIT 1", entry).toArray()[0]?.ordinal; }
+  cursorAt(ordinal: number) { return this.sql.exec<{entry:number}>("SELECT entry FROM camel_history WHERE ordinal=?", ordinal).toArray()[0]; }
   total() { return this.sql.exec<{n:number}>("SELECT COALESCE(MAX(ordinal)+1,0) n FROM camel_history").one().n; }
   tail(count: number) {
     if (!Number.isSafeInteger(count) || count < 0) throw new BadRequest("keepMessages must be a nonnegative integer");

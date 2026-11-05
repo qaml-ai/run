@@ -89,7 +89,7 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
   if (suppliedKey !== undefined && typeof suppliedKey !== "string") throw new ApiError(400, "Invalid fork key");
   const key = boundedText(suppliedKey ?? crypto.randomUUID(), "Fork key", 80);
   const directory = new Directory(env, entry.tenantId), targetId = await directory.id(key);
-  let saved = await directory.get(key) as (DirectoryEntry & { forkedFrom?: { agentId: string; atMessage: number } }) | null;
+  let saved = await directory.get(key) as (DirectoryEntry & { forkedFrom?: { agentId: string; atMessage: number | null } }) | null;
   let claim = await readForkClaim(env, entry.tenantId, targetId);
   if (saved?.deleted) {
     if (claim) await releaseForkClaim(env, entry.tenantId, claim);
@@ -108,17 +108,16 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
     throw new ApiError(410, "Incomplete fork expired after 24 hours; use a new key", "FORK_EXPIRED");
   }
   if (!claim) {
-    const history = await payload(await call(env, entry.id, "/history"));
-    const at = input.atMessage === undefined ? history.messages.length - 1 : Number(input.atMessage);
-    if (!Number.isInteger(at) || at < -1 || at >= history.messages.length) throw new ApiError(400, "Invalid fork point");
-    const initialMessages = history.messages.slice(0, at + 1);
+    const snapshot = await payload(await call(env, entry.id, "/fork-snapshot", { atMessage: input.atMessage }));
+    const at = snapshot.through as number | null;
+    const initialMessages = snapshot.messages;
     const { key: _key, atMessage: _at, ...settings } = input;
     const workspace = await forkWorkspaceMounts(entry.config.mounts, entry.id, targetId);
-    const config = { ...entry.config, ...settings, mounts: workspace.mounts, initialMessages, ttlSeconds: input.ttlSeconds === undefined ? (suppliedKey ? null : 86400) : input.ttlSeconds };
+    const config = { ...entry.config, ...settings, name: input.name ?? (entry.config.name ? `${entry.config.name} (fork)`.slice(0, 120) : undefined), mounts: workspace.mounts, initialMessages, idleTtlSeconds: null, ttlSeconds: input.ttlSeconds === undefined ? (suppliedKey ? null : 86400) : input.ttlSeconds };
     configuration(config, env.MODEL);
     const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ sourceId: entry.id, atMessage: at, config }))));
     const ttl = env.TEST_MODE === "1" && request.headers.get("x-camel-test-fork-short-ttl") === "1" ? 1000 : 86400_000;
-    claim = await claimFork(env, entry.tenantId, { sourceId: entry.id, targetId, key, fingerprint, atMessage: at, copyPrivate: workspace.copyPrivate, config, origin: new URL(request.url).origin, expiresAt: Date.now() + ttl });
+    claim = await claimFork(env, entry.tenantId, { sourceId: entry.id, targetId, key, fingerprint, atMessage: at, copyPrivate: workspace.copyPrivate, config, model: snapshot.model, origin: new URL(request.url).origin, expiresAt: Date.now() + ttl });
   }
   try {
     // The plan predates Directory creation. Its source read set and pins are
@@ -131,6 +130,7 @@ export async function agentLifecycleRoutes(request: Request, env: ControlEnv & F
     const created = result(await directory.upsert(claim.config, key, claim.origin, { sourceId: claim.sourceId, fingerprint: claim.fingerprint }));
     if (fail === "created") throw new ApiError(503, "Injected fork interruption after creation");
     if (claim.copyPrivate) await copyAgentWorkspace(env, entry.tenantId, claim.sourceId, targetId, captured, fail === "copied" ? 1 : undefined);
+    if (claim.model) await payload(await call(env, created.id, "/context/import", { model: claim.model }));
     const forkedFrom = { agentId: claim.sourceId, atMessage: claim.atMessage };
     const updated = await withSql(env, sql => sql.query("update agents set header=(jsonb_set(header::jsonb,'{forkedFrom}',$3::jsonb)-'pendingFork')::json where tenant=$1 and id=$2 and not revoked returning header", [entry.tenantId, created.id, JSON.stringify(forkedFrom)]));
     if (!updated.rows.length) throw new ApiError(410, "Fork was deleted", "AGENT_GONE");

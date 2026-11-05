@@ -1,5 +1,8 @@
 import { toolOutputExtension } from "./tool-output.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
+import { forkSnapshot } from "./fork-snapshot.ts";
+import { seedHistory, writeModelContext } from "./history-seed.ts";
+import { contextRangeExtension, contextRangeLimit } from "./context-range.ts";
 import { toolCallSite } from "./tool-call-context.ts";
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { DurableObject } from "cloudflare:workers";
@@ -129,7 +132,7 @@ import { AttachedTools } from "./attached-tools.ts";
 import { compatibleFileTools } from "./fs-tools.ts";
 import { sourceTools, toolSourceViews, type SourceFailure } from "./tool-sources.ts";
 import { Delegation } from "./delegation.ts";
-import { resolveDefinition, configurationPatch } from "./definitions.ts";
+import { resolveDefinition, provisionDefinition, configurationPatch } from "./definitions.ts";
 import {
   resolveProviderKey,
   resolveCustomProviders,
@@ -188,7 +191,6 @@ import {
   releasePresentedFiles,
 } from "./file-output.ts";
 import { DurableFileVersions } from "./file-versions.ts";
-import { forkWorkspaceMounts } from "./agent-workspace.ts";
 import { agentMediaTools, flushAgentMediaUsage } from "./agent-media.ts";
 import { flushAttachmentTranscriptions } from "./attachment-transcription.ts";
 import { selectFileTools } from "./file-tool-selection.ts";
@@ -349,13 +351,8 @@ export class CamelAgent extends DurableObject<Env> {
     create: async (config, key) => {
       const conf = await this.config();
       const directory = new Directory(this.env, conf.tenantId);
-      const workspace = await forkWorkspaceMounts(
-        (config as AgentConfiguration).mounts,
-        conf.id,
-        await directory.id(key),
-      );
       const entry = await directory.upsert(
-        { ...config, mounts: workspace.mounts },
+        config,
         key,
         conf.runtimeOrigin,
       );
@@ -365,12 +362,11 @@ export class CamelAgent extends DurableObject<Env> {
     },
     target: async (ref) => {
       const conf = await this.config();
-      if (ref.definition)
-        return {
-          config: (
-            await resolveDefinition(this.env, conf.tenantId, ref.definition)
-          ).spec as never,
-        };
+      if (ref.definition) {
+        const definition = await resolveDefinition(this.env, conf.tenantId, ref.definition);
+        return { config: await provisionDefinition(this.env, conf.tenantId, { definition: definition.id }) as never,
+          description: definition.spec.description };
+      }
       const entry = await new Directory(this.env, conf.tenantId).get(
         ref.agent!,
       );
@@ -568,6 +564,7 @@ export class CamelAgent extends DurableObject<Env> {
     return {
       issuer,
       ...(call ? { call } : {}),
+      intent: typeof params?.text === "string" ? params.text : undefined,
       elicit: !!(conf.config.humanInput || conf.config.builtins?.includes("ask_user") || this.attached.connected),
       claims: {
         tenant: conf.tenantId,
@@ -723,6 +720,11 @@ export class CamelAgent extends DurableObject<Env> {
         return { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, call: site };
       }));
       registry.install(this.limits.extension());
+      registry.install(contextRangeExtension(
+        contextRangeLimit((this.env as Env & { AGENT_CONTEXT_RANGE_MAX_BYTES?: string }).AGENT_CONTEXT_RANGE_MAX_BYTES),
+        async () => (await this.harness.pi()).root(BACKGROUND_CONTEXT),
+        async failure => { await this.ctx.storage.put(`run-limit:${(await this.currentRun()).id}`, failure); },
+      ));
       // User files live in the volume DO/R2; code runs in the separate sandbox.
       const templates = volumeTools(
         this.env,
@@ -808,6 +810,7 @@ export class CamelAgent extends DurableObject<Env> {
           undefined,
           (api) => this.sourceIdentity(api),
           (failures) => { this.sourceFailures = failures; },
+          (input, api, context) => this.decisions.judge(input, context.abortSignal ?? new AbortController().signal, api),
         ),
       });
       registry.install({
@@ -885,7 +888,7 @@ export class CamelAgent extends DurableObject<Env> {
       });
       registry.install({
         name: "camel.delegation",
-        tools: this.delegation.tools(
+        tools: await this.delegation.toolsFor(
           conf.config.delegate ?? {},
           conf.config.builtins ?? [],
           conf.config.type === "subagent",
@@ -2260,16 +2263,7 @@ export class CamelAgent extends DurableObject<Env> {
           const pi = await this.harness.pi(),
             root = await pi.root(BACKGROUND_CONTEXT);
           if (!old && incoming.config.initialMessages?.length) {
-            for (const message of incoming.config.initialMessages) {
-              const imported = await root.submit(
-                {
-                  type: "write",
-                  entry: { kind: "camel.import", model: [message] as never },
-                },
-                BACKGROUND_CONTEXT,
-              );
-              await imported.wait(BACKGROUND_CONTEXT);
-            }
+            await seedHistory(root, incoming.config.initialMessages);
           }
           this.registry.install({
             name: "camel.application",
@@ -2288,6 +2282,7 @@ export class CamelAgent extends DurableObject<Env> {
               undefined,
               (api) => this.sourceIdentity(api),
           (failures) => { this.sourceFailures = failures; },
+          (input, api, context) => this.decisions.judge(input, context.abortSignal ?? new AbortController().signal, api),
             ),
           });
           this.registry.install({
@@ -2322,7 +2317,7 @@ export class CamelAgent extends DurableObject<Env> {
           });
           this.registry.install({
             name: "camel.delegation",
-            tools: this.delegation.tools(
+            tools: await this.delegation.toolsFor(
               incoming.config.delegate ?? {},
               incoming.config.builtins ?? [],
               incoming.config.type === "subagent",
@@ -2551,6 +2546,7 @@ export class CamelAgent extends DurableObject<Env> {
             undefined,
             (api) => this.sourceIdentity(api),
           (failures) => { this.sourceFailures = failures; },
+          (input, api, context) => this.decisions.judge(input, context.abortSignal ?? new AbortController().signal, api),
           );
           this.registry.install({ name: "camel.sources", tools });
           this.availableTools = this.registry
@@ -2598,6 +2594,21 @@ export class CamelAgent extends DurableObject<Env> {
       }
       if (path === "/history" && request.method === "GET")
         return json(await this.history(url));
+      if (path === "/fork-snapshot" && request.method === "POST") {
+        const input = object(await body(request), ["atMessage"]);
+        const pi = await this.harness.pi();
+        const running = new Set((await this.records()).filter(record => record.state !== "completed" || record.status === "input_required").map(record => record.id));
+        return json(await forkSnapshot(await pi.root(BACKGROUND_CONTEXT), this.historyIndex, input.atMessage as number | string | undefined, running));
+      }
+      if (path === "/context/import" && request.method === "POST") {
+        const input = object(await body(request), ["model"]);
+        if (!Array.isArray(input.model)) throw new BadRequest("Expected model context");
+        if (!await this.ctx.storage.get("fork-context-imported")) {
+          await writeModelContext(await (await this.harness.pi()).root(BACKGROUND_CONTEXT), input.model as Message[]);
+          await this.ctx.storage.put("fork-context-imported", true);
+        }
+        return json({ imported: true });
+      }
       if (path === "/inputs" && request.method === "GET") {
         const pi = await this.harness.pi(),
           root = await pi.root(BACKGROUND_CONTEXT);
@@ -2654,7 +2665,7 @@ export class CamelAgent extends DurableObject<Env> {
           const pi = await this.harness.pi(),
             root = await pi.root(BACKGROUND_CONTEXT);
           if (await this.harness.session().busy())
-            throw Object.assign(new Error("Agent is busy"), { status: 409 });
+            throw Object.assign(new Error("Agent is busy"), { status: 409, code: "AGENT_BUSY" });
           await this.historyIndex.sync(root);
           return resetContext(root, input, () =>
             this.historyIndex.tail(Number(input.keepMessages ?? 0)),
