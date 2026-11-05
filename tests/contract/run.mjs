@@ -30,8 +30,25 @@ const suffix = (selection ? `-${selection.replace(/[^a-z0-9-]/gi, "_")}` : "") +
 const reportPath = backend => path.join(output, `parity-${backend}${suffix}.json`);
 const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const title = row => `[${row.area}] ${row.source} :: ${row.name}`;
+const activeCommands = new Set();
+let stopping = false;
+function shutdown(signal) {
+  if (stopping) return;
+  stopping = true;
+  console.error(`Contract runner stopping: ${signal}`);
+  for (const command of activeCommands) command.stop();
+  // Fixtures get time to stop their separately owned workerd processes. The
+  // runner can then terminate only the process groups it started itself.
+  setTimeout(() => {
+    for (const command of activeCommands) command.kill();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  }, 5_000);
+}
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));
 
 async function command(program, commandArgs, env, expected = []) {
+  if (stopping) throw new Error("Contract runner was cancelled");
   const rows = [], cases = [], chunks = [];
   const child = spawn(program, commandArgs, { cwd: root, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"], detached: true });
   let killDeadline;
@@ -39,6 +56,8 @@ async function command(program, commandArgs, env, expected = []) {
     try { process.kill(-child.pid, "SIGTERM"); } catch {}
     killDeadline ??= setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 5_000);
   };
+  const owned = { stop, kill: () => { try { process.kill(-child.pid, "SIGKILL"); } catch {} } };
+  activeCommands.add(owned);
   const deadline = setTimeout(stop, Math.max(120_000, expected.length * 120_000));
   let cleanupDeadline;
   let pending = "";
@@ -61,6 +80,7 @@ async function command(program, commandArgs, env, expected = []) {
     child.on("close", (code, signal) => resolve({ code, signal }));
   });
   clearTimeout(deadline); clearTimeout(cleanupDeadline); clearTimeout(killDeadline);
+  activeCommands.delete(owned);
   if (pending) line(pending);
   return { ...result, rows, cases, log: Buffer.concat(chunks).toString() };
 }
@@ -106,15 +126,16 @@ async function run(which) {
   const files = [...new Set(manifest.filter(row => row.file !== "scope").map(row => row.file))].sort();
   const jobs = files.filter(file => !Object.hasOwn(serialFiles, file));
   const serial = files.filter(file => Object.hasOwn(serialFiles, file));
-  const concurrency = Number(process.env.CONTRACT_CONCURRENCY ?? 6);
+  const concurrency = Number(process.env.CONTRACT_CONCURRENCY ?? (which === "workers" ? 2 : 6));
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16) throw new Error("CONTRACT_CONCURRENCY must be an integer from 1 to 16");
   async function next() {
     for (;;) {
+      if (stopping) return;
       const file = jobs.shift(); if (!file) return;
       const expected = manifest.filter(row => row.file === file);
       console.log(`START ${which} ${file} (${expected.length})`);
       const result = file.endsWith(".py")
-        ? await command("python3", [file], { CONTRACT_BACKEND: which, ...(baseline ? { CONTRACT_NODE_BASELINE: baseline.filename } : {}) }, expected)
+        ? await command("python3", [file], { CONTRACT_BACKEND: which, CONTRACT_PYTHON_CONCURRENCY: process.env.CONTRACT_PYTHON_CONCURRENCY ?? (which === "workers" ? "2" : "4"), ...(baseline ? { CONTRACT_NODE_BASELINE: baseline.filename } : {}) }, expected)
         : await command(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--test", "--test-concurrency=1", `--test-reporter=${path.join(root, "tests/contract/reporter.mjs")}`,
           ...((area || group || selectedFiles) ? [`--test-name-pattern=^(?:${expected.map(row => escape(title(row))).join("|")})$`] : []), file], { CONTRACT_BACKEND: which, ...(baseline ? { CONTRACT_NODE_BASELINE: baseline.filename } : {}) }, expected);
       rows.push(...complete(result.rows, expected, result)); logs.set(file, result.log);

@@ -4,11 +4,14 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import signal
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
-from python_runner import checked_result, inventory, RESULT_MARKER, run_cases
+from python_runner import checked_result, inventory, OwnedCaseSignals, RESULT_MARKER, run_cases
 
 
 def case(name):
@@ -20,6 +23,31 @@ def result(selected, status="pass", code=0):
 
 
 class PythonRunnerTest(unittest.TestCase):
+    def test_signal_stops_only_the_active_cases_owned_session_and_runs_cleanup(self):
+        task = Mock()
+        task.done.return_value = False
+        active = SimpleNamespace(host=SimpleNamespace(pid=1234, returncode=None), _contract_active_task=task)
+        handler = OwnedCaseSignals(lambda: active)
+        with patch("python_runner.os.killpg") as killpg:
+            handler.handle(signal.SIGTERM, None)
+        killpg.assert_called_once_with(1234, signal.SIGTERM)
+        task.get_loop().call_soon_threadsafe.assert_called_once_with(task.cancel)
+
+    def test_signal_during_spawn_waits_for_the_owned_process_handle(self):
+        task = Mock()
+        task.done.return_value = False
+        active = SimpleNamespace(_contract_active_task=task, _contract_spawning=True)
+        handler = OwnedCaseSignals(lambda: active)
+        with patch("python_runner.os.killpg") as killpg:
+            handler.handle(signal.SIGINT, None)
+            killpg.assert_not_called()
+            task.get_loop.assert_not_called()
+            active.host = SimpleNamespace(pid=5678, returncode=None)
+            active._contract_spawning = False
+            handler.stop_if_requested(active)
+        killpg.assert_called_once_with(5678, signal.SIGTERM)
+        task.get_loop().call_soon_threadsafe.assert_called_once_with(task.cancel)
+
     def test_inventory_is_sorted_and_contains_only_unittest_methods(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "test_source.py"

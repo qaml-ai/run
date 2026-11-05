@@ -8,8 +8,8 @@ remain the same on Node and Workers. Original implementation tests stay in
 
 ## Run on the Sprite pool
 
-Run from a committed tree. The default is six leased Sprites, with six isolated
-files per Sprite. `scripts/sprite-test` handles leases, checkout sync, Postgres,
+Run from a committed tree. The default is six leased Sprites, with two Workers
+files or six Node files per Sprite. `scripts/sprite-test` handles leases, checkout sync, Postgres,
 root dependencies, and the v8-exec build. Contract setup also caches Workers
 node_modules and a private Python environment by dependency inputs.
 
@@ -30,11 +30,13 @@ whole files together. File weights come from the checked-in Node baseline, and
 assignment, merged rows, and raw-log order are deterministic.
 
 Use `CONTRACT_SPRITES` or `--shards=N` to change the pool size.
-`CONTRACT_CONCURRENCY` controls files per Sprite (default six, maximum sixteen).
+`CONTRACT_CONCURRENCY` controls files per Sprite (Workers default two, Node six,
+maximum sixteen). The lower Workers limit keeps wrangler's build and workerd
+processes within each Sprite's memory budget.
 Every Node fixture owns a random schema; every Workers fixture owns a random
 Postgres database and workerd directory. `serialFiles` in `groups.mjs` records
 exceptions and their reasons; there are currently none.
-The Python file runs four isolated case subprocesses on its assigned Sprite;
+The Python file runs two Workers or four Node case subprocesses on its assigned Sprite;
 `CONTRACT_PYTHON_CONCURRENCY` changes that limit. Its file is never split across
 Sprites, and every subprocess runs an original unittest case unchanged.
 
@@ -74,7 +76,11 @@ rejects stale, duplicate, missing, or unexpected results.
 
 Node keeps its 90-second default. Every explicit original case/poll timeout is
 preserved. For cases with no explicit timeout, Workers uses three times that
-case's observed Node p99 duration, with a 10-second floor for startup/scheduling.
+case's observed Node p99 duration, with a 30-second floor for startup/scheduling.
+The Node baseline's overall p99 was about 23 seconds. Concurrent Wrangler
+startup exhausted the first 10-second floor before assertions began; the
+30-second floor includes that setup. Explicit case and polling timeouts stay
+unchanged.
 One baseline observation is one sample; unknown durations retain 90 seconds.
 `CONTRACT_TIMEOUT_MS` overrides the default when explicitly supplied.
 Unsatisfied polls fail immediately on a required route returning 404, 405, 501,

@@ -29,6 +29,7 @@ export class LocalWorker {
   private storage: string;
   private config: string;
   private readyToken: string;
+  private stopping = false;
   constructor(
     port: number,
     storage: string,
@@ -42,8 +43,10 @@ export class LocalWorker {
     this.url = `http://127.0.0.1:${port}`;
   }
   async start() {
+    this.stopping = false;
     this.inspectorPort = await unusedPort();
-    const env = {
+    if (this.stopping) throw new Error("Local Worker startup was cancelled");
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       CI: "1",
       WRANGLER_SEND_METRICS: "false",
@@ -57,7 +60,7 @@ export class LocalWorker {
       "CLOUDFLARE_ACCOUNT_ID",
     ])
       delete env[key];
-    this.child = spawn(
+    const child = this.child = spawn(
       process.execPath,
       [
         "node_modules/wrangler/bin/wrangler.js",
@@ -87,10 +90,11 @@ export class LocalWorker {
     const save = (data: Buffer) => {
       this.output = (this.output + data.toString()).slice(-16_000);
     };
-    this.child.stdout!.on("data", save);
-    this.child.stderr!.on("data", save);
+    child.stdout!.on("data", save);
+    child.stderr!.on("data", save);
     for (let attempt = 0; attempt < 480; attempt++) {
-      if (this.child.exitCode !== null || this.child.signalCode !== null)
+      if (this.stopping) throw new Error("Local Worker startup was cancelled");
+      if (child.exitCode !== null || child.signalCode !== null)
         throw new Error(`workerd exited: ${this.output}`);
       try {
         const response = await fetch(`${this.url}/healthz`, {
@@ -104,19 +108,24 @@ export class LocalWorker {
     throw new Error(`workerd never became ready: ${this.output}`);
   }
   async stop(hard = false) {
+    this.stopping = true;
     const child = this.child;
     this.child = undefined;
-    if (!child || child.exitCode !== null) return;
-    const done = once(child, "exit");
+    if (!child?.pid) return;
+    // The wrangler parent may have exited while its detached workerd/esbuild
+    // group remains. Always stop the owned group, including that case.
+    const alive = () => { try { process.kill(-child.pid!, 0); return true; } catch { return false; } };
     try {
       process.kill(-child.pid!, hard ? "SIGKILL" : "SIGTERM");
     } catch {}
-    await Promise.race([done, delay(3000)]);
-    if (child.exitCode === null) {
+    const deadline = Date.now() + (hard ? 1000 : 3000);
+    while (alive() && Date.now() < deadline) await delay(50);
+    if (alive()) {
       try {
         process.kill(-child.pid!, "SIGKILL");
       } catch {}
-      await Promise.race([done, delay(1000)]);
+      const killedDeadline = Date.now() + 1000;
+      while (alive() && Date.now() < killedDeadline) await delay(50);
     }
   }
   async heap() {

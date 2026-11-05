@@ -22,7 +22,8 @@ export function caseTimeout(area: string, source: string, name: string): number 
     }
   }
   const observed = durations.get(key(area, source, name));
-  // The floor includes workerd startup and avoids turning subsecond Node cases
-  // into scheduler races. Slow Node cases keep three times their measured p99.
-  return observed === undefined ? 90_000 : Math.max(10_000, Math.ceil(observed * 3));
+  // The Node baseline's p99 is about 23 seconds. Measured concurrent Wrangler
+  // startup exhausted a 10-second floor before reaching assertions. Include
+  // that setup in a 30-second floor; slow cases keep three times their Node p99.
+  return observed === undefined ? 90_000 : Math.max(30_000, Math.ceil(observed * 3));
 }

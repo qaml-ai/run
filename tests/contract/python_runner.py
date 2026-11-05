@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 
@@ -15,6 +16,35 @@ OUT_OF_SCOPE = {
     ("VoiceLibraryTest", "test_search_async_and_sync"),
 }
 RESULT_MARKER = "@@CONTRACT_RESULT@@"
+
+
+class OwnedCaseSignals:
+    """Stop only the fixture session spawned by this case, then run its cleanup."""
+    def __init__(self, current_case):
+        self.current_case = current_case
+        self.requested = False
+
+    def handle(self, _signum, _frame):
+        self.requested = True
+        self.stop_if_requested(self.current_case())
+
+    def stop_if_requested(self, case):
+        if not self.requested or case is None:
+            return
+        host = getattr(case, "host", None)
+        if host is not None and host.returncode is None:
+            try:
+                # asyncio created this host with start_new_session=True. Its
+                # group contains only this case's fixture and descendants.
+                os.killpg(host.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        # Cancelling create_subprocess_exec can lose a just-created process
+        # before its handle is assigned. Defer until setup has that handle.
+        if not getattr(case, "_contract_spawning", False):
+            task = getattr(case, "_contract_active_task", None)
+            if task is not None and not task.done():
+                task.get_loop().call_soon_threadsafe(task.cancel)
 
 
 def inventory(source):

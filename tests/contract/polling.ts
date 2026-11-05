@@ -15,11 +15,14 @@ function pathname(value: string) {
 
 function unsupported(json: unknown): boolean {
   if (!json || typeof json !== "object") return false;
-  const error = (json as { error?: unknown }).error;
+  const marker = (value: unknown) => typeof value === "string" && /^(unsupported(?:[_ -].*)?|not[_ -]implemented)$/i.test(value);
+  const envelope = json as { error?: unknown; code?: unknown; type?: unknown };
+  if ([envelope.code, envelope.type].some(marker)) return true;
+  const error = envelope.error;
   if (typeof error === "string") return /^(unsupported\b|not[_ -]implemented\b)/i.test(error);
   if (!error || typeof error !== "object") return false;
   const { code, type, message } = error as { code?: unknown; type?: unknown; message?: unknown };
-  return [code, type].some(value => typeof value === "string" && /^(unsupported(?:[_ -].*)?|not[_ -]implemented)$/i.test(value))
+  return [code, type].some(marker)
     || (typeof message === "string" && /^(unsupported\b|not[_ -]implemented\b)/i.test(message));
 }
 

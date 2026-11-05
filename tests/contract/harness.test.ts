@@ -50,9 +50,17 @@ test("an explicit unsupported body fails a wait but an unrelated error does not"
     observePollingResponse("/v1/required", 400, { error: { code: "unsupported_operation" } });
     return false;
   }, "supported operation"), /explicit unsupported error/);
+  await assert.rejects(until(() => {
+    observePollingResponse("/v1/required", 400, { error: "Attached tools are not supported by the Cloudflare backend yet", code: "UNSUPPORTED_FEATURE" });
+    return false;
+  }, "attached tools"), /explicit unsupported error/);
+  await assert.rejects(until(() => {
+    observePollingResponse("/v1/required", 400, { type: "not_implemented", error: "The operation is unavailable" });
+    return false;
+  }, "implemented operation"), /explicit unsupported error/);
   let attempts = 0;
   assert.equal(await until(() => {
-    observePollingResponse("/v1/required", 429, { error: "rate limited" });
+    observePollingResponse("/v1/required", 429, { code: "RATE_LIMITED", error: "The description mentions unsupported behavior" });
     return ++attempts === 2;
   }, "rate limit to clear"), true);
   assert.equal(attempts, 2);
@@ -119,15 +127,15 @@ test("Workers defaults use measured per-case p99 and Node keeps its original def
     const baseline = join(directory, "node.json");
     await writeFile(baseline, JSON.stringify({ rows: [
       { area: "test", source: "test.ts", name: "fast", status: "pass", durationMs: 12 },
-      { area: "test", source: "test.ts", name: "slow", status: "pass", durationSamplesMs: [1000, 5000, 8000] },
+      { area: "test", source: "test.ts", name: "slow", status: "pass", durationSamplesMs: [1000, 5000, 12000] },
     ] }));
     delete process.env.CONTRACT_TIMEOUT_MS;
     process.env.CONTRACT_NODE_BASELINE = baseline;
     process.env.CONTRACT_BACKEND = "node";
     assert.equal(caseTimeout("test", "test.ts", "fast"), 90_000);
     process.env.CONTRACT_BACKEND = "workers";
-    assert.equal(caseTimeout("test", "test.ts", "fast"), 10_000);
-    assert.equal(caseTimeout("test", "test.ts", "slow"), 24_000);
+    assert.equal(caseTimeout("test", "test.ts", "fast"), 30_000);
+    assert.equal(caseTimeout("test", "test.ts", "slow"), 36_000);
     assert.equal(caseTimeout("test", "test.ts", "unknown"), 90_000);
     process.env.CONTRACT_TIMEOUT_MS = "120000";
     assert.equal(caseTimeout("test", "test.ts", "fast"), 120_000);

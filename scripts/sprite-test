@@ -201,7 +201,19 @@ finish() {
   exit 0
 }
 cmd=
-trap 'echo "== stopped"; [ -z "$cmd" ] || kill -TERM "$cmd" 2>/dev/null; finish 137' TERM INT HUP
+stop_job() {
+  trap '' TERM INT HUP
+  echo "== stopped"
+  if [ -n "$cmd" ]; then
+    # Give the harness time to close its separately owned fixture processes
+    # before the lease is released and a subsequent job resets the database.
+    kill -TERM "$cmd" 2>/dev/null
+    for _ in $(seq 70); do kill -0 "$cmd" 2>/dev/null || break; sleep 0.1; done
+    kill -KILL -- "-$cmd" 2>/dev/null || true
+  fi
+  finish 137
+}
+trap stop_job TERM INT HUP
 # Without a task the sprite pauses a few seconds after the last exec ends, and the job with it. The task lasts 5 minutes
 # and is renewed every minute, with the lock, until the job ends.
 job_pid=$$

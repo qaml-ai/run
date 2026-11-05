@@ -19,7 +19,7 @@ import unittest
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
-from python_runner import OUT_OF_SCOPE, inventory, run_cases
+from python_runner import OUT_OF_SCOPE, OwnedCaseSignals, inventory, run_cases
 
 manifest = inventory(ROOT / "tests/python_sdk.py")
 if "--list" in sys.argv:
@@ -28,7 +28,8 @@ if "--list" in sys.argv:
     raise SystemExit(0)
 selected_case = next((arg[len("--case="):] for arg in sys.argv[1:] if arg.startswith("--case=")), None)
 if selected_case is None:
-    raise SystemExit(run_cases(manifest, Path(__file__), int(os.environ.get("CONTRACT_PYTHON_CONCURRENCY", "4"))))
+    default_concurrency = "2" if os.environ.get("CONTRACT_BACKEND") == "workers" else "4"
+    raise SystemExit(run_cases(manifest, Path(__file__), int(os.environ.get("CONTRACT_PYTHON_CONCURRENCY", default_concurrency))))
 if selected_case not in {row["name"] for row in manifest}:
     raise ValueError(f"Unknown Python contract case: {selected_case}")
 
@@ -43,6 +44,7 @@ spec.loader.exec_module(original)
 # be attributed to the next case. Instrument both clients, including ones the
 # SDK constructs internally, without changing requests or response bodies.
 active_case = None
+case_signals = OwnedCaseSignals(lambda: active_case)
 
 
 def observe_response(test, response):
@@ -150,6 +152,13 @@ async def cleanup(self):
 
 async def setup(self):
     self.addAsyncCleanup(cleanup, self)
+    # Keep cancellation deferred across all preparation before the first await
+    # too: a queued cancellation must not race create_subprocess_exec.
+    self._contract_spawning = True
+    self._contract_active_task = asyncio.current_task()
+    if case_signals.requested:
+        self._contract_spawning = False
+        raise asyncio.CancelledError
     self.directory = tempfile.TemporaryDirectory(prefix="camelrun-contract-python-")
     self.token = "fixture-only-python-sdk-operator-token"
     self.bodies, self.script, self.transcribed = [], [], []
@@ -166,11 +175,15 @@ async def setup(self):
             "AGENT_IMAGES_URL": f"http://127.0.0.1:{self.transcriber.server_port}",
         },
     }
-    self.host = await asyncio.create_subprocess_exec(
-        "node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--test-reporter=spec", str(ROOT / "tests/contract/python-host.ts"),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "CONTRACT_FIXTURE_OPTIONS": json.dumps(options)}, cwd=ROOT, start_new_session=True,
-    )
+    try:
+        self.host = await asyncio.create_subprocess_exec(
+            "node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--test-reporter=spec", str(ROOT / "tests/contract/python-host.ts"),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "CONTRACT_FIXTURE_OPTIONS": json.dumps(options)}, cwd=ROOT, start_new_session=True,
+        )
+    finally:
+        self._contract_spawning = False
+    case_signals.stop_if_requested(self)
     self.host_errors = asyncio.create_task(self.host.stderr.read())
     while True:
         line = await asyncio.wait_for(self.host.stdout.readline(), 60)
@@ -208,7 +221,7 @@ def case_timeout_ms(name):
         if row.get("area") == "python" and row.get("source") == "tests/python_sdk.py" and row.get("name") == name and row.get("status") == "pass":
             samples = sorted(value for value in row.get("durationSamplesMs", [row.get("durationMs")]) if isinstance(value, (int, float)) and math.isfinite(value) and value > 0)
             if samples:
-                return max(10000, math.ceil(3 * samples[math.ceil(len(samples) * 0.99) - 1]))
+                return max(30000, math.ceil(3 * samples[math.ceil(len(samples) * 0.99) - 1]))
     return 90000
 
 
@@ -216,6 +229,8 @@ def bounded_case(method):
     """Keep the source method intact, but let a missing backend feature time out."""
     @functools.wraps(method)
     async def run(self):
+        self._contract_active_task = asyncio.current_task()
+        case_signals.stop_if_requested(self)
         timeout_ms = case_timeout_ms(f"{self.__class__.__name__}.{method.__name__}")
         task = asyncio.create_task(method(self))
         try:
@@ -306,5 +321,8 @@ def cases(value):
 discovered = {f"{case.__class__.__name__}.{case._testMethodName}": case for case in cases(suite)}
 if set(discovered) != {row["name"] for row in manifest}:
     raise RuntimeError("Python static inventory differs from unittest discovery; update python_runner.py before running parity")
+if selected_case.startswith("PythonSDKTest."):
+    signal.signal(signal.SIGTERM, case_signals.handle)
+    signal.signal(signal.SIGINT, case_signals.handle)
 result = unittest.TextTestRunner(verbosity=1, resultclass=Result).run(unittest.TestSuite([discovered[selected_case]]))
 raise SystemExit(0 if result.wasSuccessful() else 1)
