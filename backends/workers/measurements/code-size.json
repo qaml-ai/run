@@ -5,7 +5,7 @@
       "lines": 79
     }
   ],
-  "sourceCommit": "343b592301b48934dde56f6cde6f1e61de17bd2f",
+  "sourceCommit": "015854c581a46cb6e76e20698696293d557364fd",
   "method": "Physical TypeScript lines, comments and blanks included; declarations, tests, dependencies and generated bindings excluded. Whole mixed-purpose source files counted. Not feature-equivalent.",
   "excluded": [
     "src/audio-header.ts",

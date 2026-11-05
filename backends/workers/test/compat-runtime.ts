@@ -13,14 +13,21 @@ export async function compatibilityRuntime(
   _options?: any,
 ) {
   const model = await fakeModel(t, respond);
+  const tenants = [
+    { id: "alice", token: OPERATOR },
+    { id: "bob", token: OTHER_OPERATOR },
+    ...Object.entries(tenantsFile?.tenants ?? {}).map(
+      ([id, value]: [string, any]) => ({
+        id,
+        tokenSha256: value.tokenSha256,
+      }),
+    ),
+  ];
   const server = await startFixture({
     token: OPERATOR,
     tenant: "alice",
-    modelURL: model.url,
-    tenants: [
-      { id: "alice", token: OPERATOR },
-      { id: "bob", token: OTHER_OPERATOR },
-    ],
+    modelURL: env.AGENT_BASE_URL ?? model.url,
+    tenants,
     vars: { MODEL: env.AGENT_MODEL ?? "openai/gpt-4o-mini" },
   });
   t.after(() => server.stop());

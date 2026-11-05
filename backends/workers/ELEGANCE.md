@@ -62,17 +62,15 @@ is portable.
 ## Code size, measured rather than estimated
 
 <!-- SIZE_TABLE -->
-
-| Area                              | ECS lines / files | Workers lines / files |
-| --------------------------------- | ----------------: | --------------------: |
-| Accounts, money, webhooks         |       10,422 / 40 |             2,504 / 5 |
-| Hosting, admission, tenancy       |        4,374 / 14 |                61 / 1 |
-| Agents, history, schedules        |       15,107 / 33 |             1,606 / 3 |
-| HTTP, contracts, remaining policy |       13,677 / 69 |               758 / 6 |
-| Code execution                    |           797 / 6 |                38 / 2 |
-| Files, images, computers          |        5,579 / 27 |             1,662 / 6 |
-| Total                             |      49,956 / 189 |            6,629 / 23 |
-
+| Area | ECS lines / files | Workers lines / files |
+| --- | ---: | ---: |
+| Accounts, money, webhooks | 10,422 / 40 | 2,504 / 5 |
+| Hosting, admission, tenancy | 4,374 / 14 | 61 / 1 |
+| Agents, history, schedules | 15,107 / 33 | 1,606 / 3 |
+| HTTP, contracts, remaining policy | 13,677 / 69 | 758 / 6 |
+| Code execution | 797 / 6 | 38 / 2 |
+| Files, images, computers | 5,579 / 27 | 1,662 / 6 |
+| Total | 49,956 / 189 | 6,629 / 23 |
 <!-- /SIZE_TABLE -->
 
 Reproduce with `npm run measure`; inspect every path and count in
@@ -167,33 +165,30 @@ establish a maximum for every list, snapshot or model-context path.
 ## Public API compatibility scorecard
 
 <!-- SCORECARD -->
+The final inventory has **146 cases: 50 pass, 57 fail, 39 not applicable**. Of the passes, **5 reach workerd** and **45 are SDK-only unit checks**.
 
-The final inventory has **146 cases: 50 pass, 47 fail, 49 not applicable**. Of
-the passes, **5 reach workerd** and **45 are SDK-only unit checks**.
-
-| Original test file                   | Worker pass | SDK-only pass | Fail | N/A |
-| ------------------------------------ | ----------: | ------------: | ---: | --: |
-| `tests/api.test.ts`                  |           0 |             0 |    0 |  18 |
-| `tests/cli-api.test.ts`              |           0 |             1 |    0 |   0 |
-| `tests/computers-api.test.ts`        |           0 |             0 |    7 |   0 |
-| `tests/decisions-api.test.ts`        |           0 |             0 |    5 |   0 |
-| `tests/image-generation-api.test.ts` |           0 |             0 |    0 |   3 |
-| `tests/image-generation-sdk.test.ts` |           0 |             0 |    0 |   1 |
-| `tests/openapi-sources.test.ts`      |           0 |             0 |    2 |   0 |
-| `tests/openapi.test.ts`              |           0 |             0 |    0 |   1 |
-| `tests/python_sdk.py`                |           3 |            26 |   29 |   2 |
-| `tests/schedule-api.test.ts`         |           0 |             0 |    0 |   3 |
-| `tests/sdk-lazy-connections.test.ts` |           2 |             0 |    2 |   0 |
-| `tests/sdk-multi-agent.test.ts`      |           0 |             0 |    1 |   0 |
-| `tests/sdk-portable.test.ts`         |           0 |            10 |    0 |   0 |
-| `tests/sdk-server.test.ts`           |           0 |             8 |    1 |   0 |
-| `tests/service-api.test.ts`          |           0 |             0 |    0 |   4 |
-| `tests/speech-api.test.ts`           |           0 |             0 |    0 |   2 |
-| `tests/transcription-api.test.ts`    |           0 |             0 |    0 |   3 |
-| `tests/transcription-sdk.test.ts`    |           0 |             0 |    0 |   1 |
-| `tests/ui-ai-sdk.test.ts`            |           0 |             0 |    0 |   5 |
-| `tests/voice-api.test.ts`            |           0 |             0 |    0 |   6 |
-
+| Original test file | Worker pass | SDK-only pass | Fail | N/A |
+| --- | ---: | ---: | ---: | ---: |
+| `tests/api.test.ts` | 0 | 0 | 0 | 18 |
+| `tests/cli-api.test.ts` | 0 | 1 | 0 | 0 |
+| `tests/computers-api.test.ts` | 0 | 0 | 7 | 0 |
+| `tests/decisions-api.test.ts` | 0 | 0 | 5 | 0 |
+| `tests/image-generation-api.test.ts` | 0 | 0 | 3 | 0 |
+| `tests/image-generation-sdk.test.ts` | 0 | 0 | 1 | 0 |
+| `tests/openapi-sources.test.ts` | 0 | 0 | 2 | 0 |
+| `tests/openapi.test.ts` | 0 | 0 | 0 | 1 |
+| `tests/python_sdk.py` | 3 | 26 | 29 | 2 |
+| `tests/schedule-api.test.ts` | 0 | 0 | 1 | 2 |
+| `tests/sdk-lazy-connections.test.ts` | 2 | 0 | 2 | 0 |
+| `tests/sdk-multi-agent.test.ts` | 0 | 0 | 1 | 0 |
+| `tests/sdk-portable.test.ts` | 0 | 10 | 0 | 0 |
+| `tests/sdk-server.test.ts` | 0 | 8 | 1 | 0 |
+| `tests/service-api.test.ts` | 0 | 0 | 0 | 4 |
+| `tests/speech-api.test.ts` | 0 | 0 | 0 | 2 |
+| `tests/transcription-api.test.ts` | 0 | 0 | 0 | 3 |
+| `tests/transcription-sdk.test.ts` | 0 | 0 | 0 | 1 |
+| `tests/ui-ai-sdk.test.ts` | 0 | 0 | 5 | 0 |
+| `tests/voice-api.test.ts` | 0 | 0 | 0 | 6 |
 <!-- /SCORECARD -->
 
 [compatibility.json](measurements/compatibility.json) records pass, fail or
@@ -210,6 +205,14 @@ invoke their own ECS fixture cannot target a base URL unchanged; their rows
 explain that harness limitation. Voice/audio cases are outside the requested
 scope.
 
+The final pass also attempted the image-generation API/SDK, UI SDK, and the
+HTTP-only schedule case through that shared fixture. Their original test bodies
+and assertions are unchanged. The other two schedule cases remain N/A because
+they construct Node account services or mutate the Node scheduler's SQL table.
+Supplied fixture token hashes are seeded into local tenants, and loopback
+streaming-provider URLs are honored. The adapter does not reproduce every Node
+tenant-policy setting, so failure details can also expose fixture limitations.
+
 The main gaps are real work, not a hidden percentage of compatibility: attached
 SDK/MCP tools, general remote MCP/OpenAPI source management, definitions,
 stateless runs, fork/import/export parity, structured output and complete model
@@ -219,6 +222,13 @@ Account email here verifies an authenticated account's mailbox; it is not the
 whole signup/login system. Existing end-user SQL runs, but per-turn subject
 charging and workspace attribution are not wired through every agent path.
 Stripe funding/refunds and custom model-provider secrets remain unimplemented.
+Model-based image generation/editing and scheduled email delivery are also
+unimplemented in the source; stored image derivatives do not provide those
+APIs. The newly attempted schedule case rejects the email option. Three image
+cases stop at the missing `/v1/billing/adjustments` prerequisite (404), before
+generation; the other reaches `/v1/images` and receives 500 rather than the
+expected 400. The five UI cases receive no assembled assistant message; their
+TAP logs preserve the first failing assertions without assigning a root cause.
 Existing hourly free-credit spendability and dispute checks are reused at
 admission. These are within the broader core and prevent a claim of complete
 camelRun parity. Channels and voice are deliberately excluded.
@@ -340,21 +350,21 @@ operational savings justify lock-in.
 
 From `backends/workers/`, the final checks were:
 
-| Command                                                          | Result                                                                             |
-| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `npm install --no-audit --no-fund`                               | 303 dependencies installed from the isolated package/lockfile                      |
-| `node scripts/local-postgres.mjs`                                | 112 migrations applied to isolated local Postgres                                  |
-| `npm run types`                                                  | Wrangler binding declarations generated                                            |
-| `npm run typecheck`                                              | Pass                                                                               |
-| `node scripts/reuse-sql.mjs --check`                             | Exact financial source reuse confirmed                                             |
-| `npm test`                                                       | 4 passed                                                                           |
-| `npm run test:integration`                                       | 24 passed, including real workerd restarts and both Docker computers               |
-| `npm run build`                                                  | Both Worker dry-run bundles passed; nothing published                              |
-| `python3 scripts/python-compat.py`                               | 60 original tests: 29 passed, 29 failed/error, 2 excluded voice/audio cases        |
-| `npm run test:compat`                                            | 146-case scorecard; 50 pass, 47 fail, 49 N/A; exits nonzero for remaining failures |
-| `node scripts/report.mjs`                                        | Reproduced size and scorecard tables                                               |
-| Root `npm run docs` plus anchored `llms.txt` freshness/link test | Pass; no root documentation changes                                                |
-| `node scripts/local-postgres.mjs --stop`                         | Prototype Postgres removed                                                         |
+| Command                                                          | Result                                                                                    |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `npm install --no-audit --no-fund`                               | Isolated locked dependencies installed; UI SDK test dependency pinned to the root version |
+| `node scripts/local-postgres.mjs`                                | 112 migrations applied to isolated local Postgres                                         |
+| `npm run types`                                                  | Wrangler binding declarations generated                                                   |
+| `npm run typecheck`                                              | Pass                                                                                      |
+| `node scripts/reuse-sql.mjs --check`                             | Exact financial source reuse confirmed                                                    |
+| `npm test`                                                       | 4 passed                                                                                  |
+| `npm run test:integration`                                       | 24 passed, including real workerd restarts and both Docker computers                      |
+| `npm run build`                                                  | Both Worker dry-run bundles passed; nothing published                                     |
+| `python3 scripts/python-compat.py`                               | 60 original tests: 29 passed, 29 failed/error, 2 excluded voice/audio cases               |
+| `npm run test:compat`                                            | 146-case scorecard; 50 pass, 57 fail, 39 N/A; exits nonzero for remaining failures        |
+| `node scripts/report.mjs`                                        | Reproduced size and scorecard tables                                                      |
+| Root `npm run docs` plus anchored `llms.txt` freshness/link test | Pass; no root documentation changes                                                       |
+| `node scripts/local-postgres.mjs --stop`                         | Prototype Postgres removed                                                                |
 
 The final unit, integration, build and compatibility logs are in
 `measurements/`. The initial broken schema-isolation fixtures were replaced and

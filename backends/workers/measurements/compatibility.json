@@ -242,26 +242,42 @@
     {
       "file": "tests/image-generation-api.test.ts",
       "test": "POST /v1/images makes images on the platform's OpenAI key for a prepaid tenant, edits images given as base64, multipart or a URL, and is billed per token",
-      "status": "not-applicable",
-      "reason": "Fixture directly constructs Node runtime or services; cannot target a base URL unchanged"
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/image-generation-api.test.ts",
       "test": "POST /v1/images with volumeId saves the images to the volume and answers their paths",
-      "status": "not-applicable",
-      "reason": "Fixture directly constructs Node runtime or services; cannot target a base URL unchanged"
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/image-generation-api.test.ts",
       "test": "POST /v1/images needs an OpenAI key, and a monthly cap refuses it",
-      "status": "not-applicable",
-      "reason": "Fixture directly constructs Node runtime or services; cannot target a base URL unchanged"
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/image-generation-sdk.test.ts",
       "test": "the TypeScript SDK: images.generate and images.edit from bytes, a Blob or a URL, answered as base64 or saved to a volume",
-      "status": "not-applicable",
-      "reason": "Fixture directly constructs Node runtime or services; cannot target a base URL unchanged"
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/openapi-sources.test.ts",
@@ -292,20 +308,24 @@
     {
       "file": "tests/schedule-api.test.ts",
       "test": "calendar schedules and owner-configured email round trip through the API without crossing accounts",
-      "status": "not-applicable",
-      "reason": "Fixture directly constructs Node runtime or services; cannot target a base URL unchanged"
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/schedule-api.test.ts",
       "test": "public accounts can email their verified address and cannot email strangers or suppressed recipients",
       "status": "not-applicable",
-      "reason": "Fixture directly constructs Node runtime or services; cannot target a base URL unchanged"
+      "reason": "Constructs Node Accounts and Tenants services directly; cannot target a base URL unchanged"
     },
     {
       "file": "tests/schedule-api.test.ts",
       "test": "a calendar wake-up tells the model its fixed local edition date",
       "status": "not-applicable",
-      "reason": "Fixture directly constructs Node runtime or services; cannot target a base URL unchanged"
+      "reason": "Mutates the Node Postgres schedule table to trigger its scheduler; Workers schedules live in DO SQLite"
     },
     {
       "file": "tests/sdk-lazy-connections.test.ts",
@@ -610,32 +630,52 @@
     {
       "file": "tests/ui-ai-sdk.test.ts",
       "test": "useChat's transport sends the new message and streams the agent's reply, tool calls included",
-      "status": "not-applicable",
-      "reason": "Requires separate UI SDK package absent from isolated experiment"
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/ui-ai-sdk.test.ts",
       "test": "an approval the agent waits on is a tool approval request; answering it in the chat resumes the run",
-      "status": "not-applicable",
-      "reason": "Requires separate UI SDK package absent from isolated experiment"
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/ui-ai-sdk.test.ts",
       "test": "a question the agent asks arrives as a data part; answering it for the chat, then resuming, streams the rest",
-      "status": "not-applicable",
-      "reason": "Requires separate UI SDK package absent from isolated experiment"
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/ui-ai-sdk.test.ts",
       "test": "resumeStream() after the resumed run already finished still ends, with what the run said",
-      "status": "not-applicable",
-      "reason": "Requires separate UI SDK package absent from isolated experiment"
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/ui-ai-sdk.test.ts",
       "test": "resumeStream() joining a run mid-answer shows each word once, whatever arrived while it looked",
-      "status": "not-applicable",
-      "reason": "Requires separate UI SDK package absent from isolated experiment"
+      "status": "fail",
+      "kind": "worker",
+      "reason": "Original assertion result",
+      "process": {
+        "reused": true
+      }
     },
     {
       "file": "tests/voice-api.test.ts",

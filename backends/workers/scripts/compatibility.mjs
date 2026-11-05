@@ -18,7 +18,23 @@ const runSet = new Set([
   "computers-api.test.ts",
   "decisions-api.test.ts",
   "openapi-sources.test.ts",
+  "image-generation-api.test.ts",
+  "image-generation-sdk.test.ts",
+  "ui-ai-sdk.test.ts",
+  "schedule-api.test.ts",
 ]);
+const caseExclusions = {
+  "schedule-api.test.ts": new Map([
+    [
+      "public accounts can email their verified address and cannot email strangers or suppressed recipients",
+      "Constructs Node Accounts and Tenants services directly; cannot target a base URL unchanged",
+    ],
+    [
+      "a calendar wake-up tells the model its fixed local edition date",
+      "Mutates the Node Postgres schedule table to trigger its scheduler; Workers schedules live in DO SQLite",
+    ],
+  ]),
+};
 const rows = [];
 for (const file of candidates) {
   if (only && !only.includes(file)) continue;
@@ -72,8 +88,6 @@ for (const file of candidates) {
   let reason;
   if (/^(voice|speech|transcription)/.test(file))
     reason = "Voice/audio excluded by requested scope";
-  else if (file === "ui-ai-sdk.test.ts")
-    reason = "Requires separate UI SDK package absent from isolated experiment";
   else if (!runSet.has(file))
     reason = /openapi\.test/.test(file)
       ? "Source-generated Node API schema test; does not accept a base URL"
@@ -90,6 +104,8 @@ for (const file of candidates) {
     continue;
   }
   const log = [];
+  const eligible = names.filter((name) => !caseExclusions[file]?.has(name));
+  const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const args = [
     "--import",
     path.join(here, "test/compat-register.mjs"),
@@ -98,6 +114,9 @@ for (const file of candidates) {
     "--test",
     "--test-reporter=tap",
     "--test-timeout=45000",
+    ...(eligible.length === names.length
+      ? []
+      : ["--test-name-pattern", `^(?:${eligible.map(escape).join("|")})$`]),
     path.join(root, "tests", file),
   ];
   let result;
@@ -132,6 +151,15 @@ for (const file of candidates) {
     output,
   );
   for (const test of names) {
+    if (caseExclusions[file]?.has(test)) {
+      rows.push({
+        file: `tests/${file}`,
+        test,
+        status: "not-applicable",
+        reason: caseExclusions[file].get(test),
+      });
+      continue;
+    }
     const escaped = test.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const match = new RegExp(
       `^(not ok|ok) \\d+ - ${escaped}(?:\\n| \\#)`,
@@ -141,7 +169,13 @@ for (const file of candidates) {
       file: `tests/${file}`,
       test,
       status: match?.[1] === "ok" ? "pass" : "fail",
-      kind: kinds.get(test),
+      kind: [
+        "image-generation-api.test.ts",
+        "image-generation-sdk.test.ts",
+        "ui-ai-sdk.test.ts",
+      ].includes(file)
+        ? "worker"
+        : kinds.get(test),
       reason: match
         ? "Original assertion result"
         : "Test did not finish; see TAP log",
@@ -149,7 +183,7 @@ for (const file of candidates) {
     });
   }
   console.log(
-    `${file}: ${rows.filter((x) => x.file === `tests/${file}` && x.status === "pass").length}/${names.length} passed`,
+    `${file}: ${rows.filter((x) => x.file === `tests/${file}` && x.status === "pass").length}/${eligible.length} eligible passed`,
   );
 }
 if (only) {
@@ -199,4 +233,4 @@ console.log(
 );
 
 // Inventory is complete, but a failing contract is still a failing check.
-process.exitCode = rows.some(row => row.status === "fail") ? 1 : 0;
+process.exitCode = rows.some((row) => row.status === "fail") ? 1 : 0;

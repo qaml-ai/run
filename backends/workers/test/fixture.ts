@@ -13,7 +13,7 @@ export async function startFixture(
     tenant?: string;
     modelURL?: string;
     schema?: string;
-    tenants?: { id: string; token: string }[];
+    tenants?: { id: string; token?: string; tokenSha256?: string }[];
     vars?: Record<string, string>;
   } = {},
 ) {
@@ -51,7 +51,8 @@ export async function startFixture(
     await db.query(
       "insert into api_tokens(sha256,id,tenant,name,prefix,created_at) values($1,$2,$3,'fixture','fixture',$4) on conflict do nothing",
       [
-        createHash("sha256").update(item.token).digest("hex"),
+        item.tokenSha256 ??
+          createHash("sha256").update(item.token!).digest("hex"),
         crypto.randomUUID(),
         item.id,
         Date.now(),
