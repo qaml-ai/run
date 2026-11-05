@@ -21,7 +21,7 @@ export function accountRateLimits(env: PostgresEnv & Record<string, unknown>, ac
   const current = { accounts };
   const service = new RateLimits({
     db: accounts.db,
-    config: rateLimitConfig(env as NodeJS.ProcessEnv),
+    config: rateLimitConfig(env as unknown as NodeJS.ProcessEnv),
     hashKey: secret,
     nodes: () => 1,
     free: tenant => current.accounts.billing.onFreeCredit(tenant),
