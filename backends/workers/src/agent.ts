@@ -128,7 +128,6 @@ import { actorInput, bucketInput } from "./security-policy.ts";
 import { MessageProjection } from "./message-projection.ts";
 import { OUTPUT_REMINDER } from "./output-policy.ts";
 import { runtimePromptSections } from "./prompt-sections.ts";
-import { recordAgentActivity } from "./agent-list.ts";
 import { toolResultFiles } from "./tool-output-files.ts";
 import { projectRunFailure } from "./run-failure.ts";
 import { RunProjection } from "./run-projection.ts";
@@ -1560,7 +1559,6 @@ export class CamelAgent extends DurableObject<Env> {
       // only replays this immutable receipt; money remains one PG transaction.
       await this.flushBilling();
       if (changed) {
-        if (stored) await recordAgentActivity(this.env, stored.id, terminal.endedAt!, terminal.status === "failed" ? errorClass(terminal.error ?? String((terminal.outcome?.result as { error?: string } | undefined)?.error ?? "")) : undefined).catch(() => {});
         metric(
           this.env,
           "turn_metrics",
@@ -2807,7 +2805,7 @@ export class CamelAgent extends DurableObject<Env> {
         return json(await forkSnapshot(await pi.root(BACKGROUND_CONTEXT), this.historyIndex, input.atMessage as number | string | undefined, running));
       }
       if (path === "/context/import" && request.method === "POST") {
-        const input = object(await body(request, 17 * 1024 * 1024), ["model", "pinnedVolumes"]);
+        const input = object(await body(request), ["model", "pinnedVolumes"]);
         if (!Array.isArray(input.model)) throw new BadRequest("Expected model context");
         if (Array.isArray(input.pinnedVolumes)) {
           const pinned = await this.ctx.storage.get<string[]>("file-pin-volumes") ?? [];
@@ -2909,8 +2907,8 @@ export class CamelAgent extends DurableObject<Env> {
         const selected = await this.negotiateAgentEvents(request);
         if (selected) return selected;
         return request.headers.get("upgrade")?.toLowerCase() === "websocket"
-          ? await this.webSocketEvents(request)
-          : await this.events(request);
+          ? this.webSocketEvents(request)
+          : this.events(request);
       }
       if (path === "/computer" && request.method === "POST") {
         const inputBody = await body(request, 1100 * 1024);

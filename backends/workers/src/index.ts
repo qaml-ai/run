@@ -1,7 +1,6 @@
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { firstPrompt } from "./first-prompt.ts";
 import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
-import { withMoneyIdempotency } from "./money-idempotency.ts";
 import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
 import { resolveDefinition } from "./definitions.ts";
@@ -46,7 +45,6 @@ import {
   configurationPatch,
 } from "./definitions.ts";
 import { statelessRoutes, agentLifecycleRoutes } from "./agent-routes.ts";
-import { listAgentEntries } from "./agent-list.ts";
 import { modelCatalog } from "./model.ts";
 import { providerRoutes } from "./provider-routes.ts";
 import { TENANT_CONFIGURATION_KEYS } from "./access-policy.ts";
@@ -136,7 +134,6 @@ const worker = {
     request: Request,
     env: Env,
     ctx: ExecutionContext,
-    idempotencyApplied = false,
   ): Promise<Response> {
     return withMoneyMetrics(env, async () => corsResponse(request, await (async () => {
     try {
@@ -160,7 +157,7 @@ const worker = {
         });
       const publicMoney = await publicMoneyRoutes(request, env, ctx);
       if (publicMoney) return publicMoney;
-      if (!idempotencyApplied) await apiRequest(request, env);
+      await apiRequest(request, env);
       const bearer = request.headers.get("authorization") ?? undefined;
       const browserTokens = new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN);
       let browser: BrowserClaims | undefined;
@@ -227,8 +224,6 @@ const worker = {
         return agentMcpSignIn(request, env.AGENT_PUBLIC_URL || url.origin, match[2]);
       if (!auth && !entry)
         throw new ApiError(401, "Unauthorized", "UNAUTHORIZED");
-      if (auth && !idempotencyApplied && request.method === "POST" && request.headers.has("Idempotency-Key") && path.startsWith("/v1/") && !/^\/v1\/(?:me|limits|billing|providers|key-scopes|api-keys|tokens|tenants|sessions|oauth|account|usage|webhooks|usage-webhook|workspaces|workspace-memberships)(?:\/|$)/.test(path))
-        return (await withMoneyIdempotency(request, env, auth.tenantId, next => worker.fetch(next, env, ctx, true)))!;
       if (auth) {
         const computers = await handleComputerRequest(request, env, auth);
         if (computers) return computers;
@@ -287,18 +282,12 @@ const worker = {
           );
         if (path === "/v1/agents") {
           const directory = new Directory(env, auth.tenantId);
-          if (request.method === "GET") {
-            const listed = await listAgentEntries(env, auth.tenantId, url.searchParams);
-            let agents = listed.entries.map(entry => ({ ...summary(entry), workspaceId: entry.workspaceId, lastActiveAt: entry.lastActiveAt, lastError: entry.lastError }));
-            if (listed.status === "running") {
-              agents = (await Promise.all(agents.map(async agent => {
-                const response = await forward(request, env, agent.id, "/state");
-                const state = response.ok ? await response.json() as { running?: boolean } : {};
-                return { ...agent, running: state.running ?? false };
-              }))).filter(agent => agent.running);
-            }
-            return Response.json(agents, { headers: { "cache-control": "no-store", ...(listed.next ? { "X-Next-Cursor": listed.next } : {}) } });
-          }
+          if (request.method === "GET")
+            return json(
+              (await directory.list())
+                .filter((entry) => entry.config.type !== "run")
+                .map(summary),
+            );
           if (request.method === "POST") {
             const raw = await body(request, 17 * 1024 * 1024);
             if (!raw || typeof raw !== "object" || Array.isArray(raw))
@@ -392,10 +381,8 @@ const worker = {
         );
         if (!stateResponse.ok) return stateResponse;
         const state = await stateResponse.json() as { requests: { state: string }[]; cursor: number; running: boolean };
-        const listed = (await listAgentEntries(env, entry.tenantId, new URLSearchParams(), entry.id)).entries[0];
         return json({
           ...summary(entry),
-          ...(listed ? { workspaceId: listed.workspaceId, lastActiveAt: listed.lastActiveAt, lastError: listed.lastError } : {}),
           ...state,
           spendLimit: agentSpendView(
             await readAgentSpendLimit(env, entry.tenantId, entry.id),
