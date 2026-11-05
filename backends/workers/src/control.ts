@@ -72,6 +72,8 @@ export interface DirectoryEntry {
   deleted?: true;
   cleanupPending?: boolean;
   pendingFork?: { sourceId: string; fingerprint: string };
+  parentAgentId?: string;
+  parentRunId?: string;
 }
 export interface DirectoryFailure {
   failed: true;
@@ -208,6 +210,7 @@ export class Directory {
             ? old.revision
             : (old?.revision ?? 0) + 1,
         initialized: false,
+        ...(old?.parentAgentId ? { parentAgentId: old.parentAgentId, parentRunId: old.parentRunId } : {}),
         ...(pendingFork ? { pendingFork } : {}),
       };
       const written = await sql.query(

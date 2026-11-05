@@ -13,7 +13,7 @@ import { escapeMarkers } from './sender.ts';
 type Configuration = { model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
 export type ParentRun = { id: string; piId?: string; startedAt?: number; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: unknown };
 export type ChildUsage = { costUsd?: number; subagentCostUsd?: number; imageCostUsd?: number; decisionCostUsd?: number; webCostUsd?: number; transcriptionCostUsd?: number };
-export type ChildRun = { state: string; status?: string; error?: string; outcome?: { result?: { reply?: string; output?: unknown; usage?: ChildUsage }; error?: string } };
+export type ChildRun = { state: string; status?: string; error?: string; outcome?: { result?: { reply?: string; output?: unknown; code?: string; usage?: ChildUsage }; error?: string } };
 export function childUsageCost(usage?: ChildUsage) {
   return (usage?.costUsd ?? 0) + (usage?.subagentCostUsd ?? 0) + (usage?.imageCostUsd ?? 0) + (usage?.decisionCostUsd ?? 0) + (usage?.webCostUsd ?? 0) + (usage?.transcriptionCostUsd ?? 0);
 }
@@ -25,7 +25,7 @@ export interface DelegationHost {
   context(api?: ToolExecutionApi): Promise<{ id: string; config: Configuration; run: ParentRun }>;
   /** Authoritative remaining spend after completed work, before active child shares. */
   remainingBudget?(background: boolean, api?: ToolExecutionApi): Promise<number | undefined>;
-  create(config: Configuration, key: string): Promise<{ id: string }>;
+  create(config: Configuration, key: string, parent?: { agent: string; run: string }): Promise<{ id: string }>;
   /** Copy an eligible parent connection before a newly created child starts. */
   inheritComputer?(parent: string, child: string): Promise<void>;
   target(ref: { agent?: string; definition?: string }): Promise<{ id?: string; config: Configuration; description?: string }>;
@@ -168,7 +168,7 @@ export class Delegation {
             await tx.put(responseKey, { ...state.delegateResponse!, keys: [...new Set([...(prior?.keys ?? []), key])] });
           } else held = remaining / (maxParallel - running.length);
         }
-        const child: DelegatedChild = { id: '', key, requestId: `delegate_${identity.slice(0, 48)}`, parentRequestId: run.id, toolCallId: callId, task: args.instructions === undefined ? args.task as string : roleAndTask(args.instructions as string, args.task as string), name: typeof args.name === 'string' ? args.name : `${target?.name ?? 'subagent'}-${children.length + 1}`, depth: place.depth, maxDepth: place.maxDepth, chain: place.chain, root: place.chain[0], background, createdAt: Date.now(), status: 'running', made: target?.agent === undefined, ...(held !== undefined ? { held } : {}) };
+        const child: DelegatedChild = { id: '', key, requestId: `${background ? 'spawn' : 'delegate'}_${identity.slice(0, 48)}`, parentRequestId: run.id, toolCallId: callId, task: args.instructions === undefined ? args.task as string : roleAndTask(args.instructions as string, args.task as string), name: typeof args.name === 'string' ? args.name : `${target?.name ?? 'subagent'}-${children.length + 1}`, depth: place.depth, maxDepth: place.maxDepth, chain: place.chain, root: place.chain[0], background, createdAt: Date.now(), status: 'running', made: target?.agent === undefined, ...(held !== undefined ? { held } : {}) };
         await tx.put(prefix + key, child);
         return child;
       });
@@ -177,7 +177,7 @@ export class Delegation {
           await this.checkCancellation(admitted, signal);
           const resolved = target ? await this.host.target(target) : undefined;
           if (resolved?.id && place.chain.includes(resolved.id)) throw new HttpError(400, 'This agent is already working on the delegation chain');
-          const made = resolved?.id ? resolved : await this.host.create({ ...childConfig(config, resolved?.config, run.params), name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key);
+          const made = resolved?.id ? resolved : await this.host.create({ ...childConfig(config, resolved?.config, run.params), name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key, { agent: id, run: run.id });
           Object.assign(admitted, await this.update(admitted, { id: made.id! }));
           if (!resolved?.id) await this.host.inheritComputer?.(id, admitted.id);
           await this.checkCancellation(admitted, signal);
@@ -187,7 +187,7 @@ export class Delegation {
           const relay = await this.relay(admitted);
           try { await this.checkCancellation(admitted, signal); }
           catch (error) { relay.abort(); throw error; }
-          const response = await this.host.fetch(admitted.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: admitted.requestId, method: 'prompt', params: { text: admitted.task, metadata: signed, ...(run.params?.actor ? { actor: run.params.actor } : {}), ...(held !== undefined ? { spendLimit: { usd: held } } : {}), ...(args.output !== undefined ? { output: args.output } : {}) } }) }));
+          const response = await this.host.fetch(admitted.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: admitted.requestId, method: 'prompt', params: { text: admitted.task, metadata: signed, ...(run.params?.actor ? { actor: run.params.actor } : {}), ...(held !== undefined ? { spendLimit: { usd: held } } : {}), ...(args.output !== undefined ? { output: { schema: args.output } } : {}) } }) }));
           if (!response.ok) {
             relay.abort();
             const detail = await response.json().catch(() => undefined) as { error?: unknown } | undefined;
@@ -277,7 +277,7 @@ export class Delegation {
           const current = await tx.get<DelegatedChild>(prefix + child.key) ?? child;
           if (current.status !== 'running') return { child: current, changed: false };
           const usage = record.outcome?.result?.usage;
-          const value = { ...current, status: record.status ?? (record.outcome?.error ? 'failed' : 'completed'), endedAt: Date.now(), outcome: record.outcome, error: record.error ?? record.outcome?.error, spent: childUsageCost(usage), held: undefined };
+          const value = { ...current, status: record.outcome?.result?.code === 'aborted' ? 'aborted' : record.status ?? (record.outcome?.error ? 'failed' : 'completed'), endedAt: Date.now(), outcome: record.outcome, error: record.error ?? record.outcome?.error, spent: childUsageCost(usage), held: undefined };
           await tx.put(prefix + child.key, value);
           return { child: value, changed: true };
         });
@@ -467,6 +467,7 @@ export class Delegation {
             else {
               answers.push({ ...this.answer(child), ...(child.status === 'running' && child.progress ? { progress: child.progress.text, progressAt: child.progress.at } : {}) });
               if (child.status !== 'running') await tx.put(prefix + child.key, { ...child, notified: true, landedBy: 'wait' });
+              else if (child.progress) await tx.put(prefix + child.key, { ...child, progressShown: child.progress.sequence });
             }
           }
           return answers;

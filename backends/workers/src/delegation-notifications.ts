@@ -36,6 +36,7 @@ export interface NotificationHost {
   humanPending?(): Promise<boolean>;
   /** Completion notices land between turns; a running wait may take the ending first. */
   canLand?(): Promise<boolean>;
+  wakeLimit?: number;
   /** Uses the agent's existing alarm, preserving any earlier work. */
   retry(at: number): Promise<void>;
 }
@@ -85,7 +86,7 @@ export class DelegationNotifications {
         pending.wake = await this.host.admitWake(pending.notice.root, pending.request.id);
         await this.host.storage.put(key, pending);
       }
-      const delivery: NoticeDelivery = pending.wake.allowed ? { run: true } : { run: false, stopped: 'agent_loop_limit', message: `This agent's chain has had ${MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on` };
+      const delivery: NoticeDelivery = pending.wake.allowed ? { run: true } : { run: false, stopped: 'agent_loop_limit', message: `This agent's chain has had ${this.host.wakeLimit ?? MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on` };
       await this.host.submit(pending.request, pending.notice, delivery);
       await this.host.storage.put(key, { ...pending, delivered: true });
     } catch (error) {

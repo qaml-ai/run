@@ -34,7 +34,7 @@ test('configuration refreshes delegation tools and deletion cancels an ownerless
   const base = `/v1/agents/${agent.id}`;
   const hasDelegate = async () => (await call(base)).toolSources.some((source: any) => source.tools.some((tool: any) => tool.name === 'delegate'));
   assert.equal(await hasDelegate(), false);
-  await call(base + '/configuration', { delegate: { instructions: true } }, 'PATCH');
+  await call(base + '/configuration', { builtins: ['delegate'], delegate: { instructions: true } }, 'PATCH');
   assert.equal(await hasDelegate(), true, 'updated configuration installs delegation tools');
   await call(base + '/configuration', { builtins: [], delegate: { maxDepth: 2 } }, 'PATCH');
   assert.equal(await hasDelegate(), false, 'removing the builtin removes its registry tools');

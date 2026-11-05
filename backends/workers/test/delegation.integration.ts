@@ -70,7 +70,7 @@ test('workerd cancels a delegated child when its parent run is aborted', { timeo
   const { fixture, model, call } = await setup(t, body => textOf(body).includes('CANCEL_HELPER')
     ? { role: 'assistant', content: 'should-not-finish', wait: gate.promise }
     : toolCall('delegate', { instructions: 'CANCEL_HELPER', task: 'Wait for work' }, 'delegate-first'));
-  const agent = await call('/v1/agents', { codeMode: false, fileTools: false, delegate: { instructions: true } });
+  const agent = await call('/v1/agents', { codeMode: false, fileTools: false, builtins: ['delegate'], delegate: { instructions: true } });
   const started = await call(`/v1/agents/${agent.id}/prompt`, { text: 'start' });
   await until(() => model.bodies.some(body => textOf(body).includes('CANCEL_HELPER')), 'child reached model');
   const rows = await fixture.db.query("select id from agents where header->'config'->>'type' = 'subagent'");
