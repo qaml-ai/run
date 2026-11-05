@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { agentBuiltins, type BuiltinScope } from '../src/agent-builtins.ts';
 import { PublicOutbound } from '../src/public-outbound.ts';
 import { PublicAddressPolicy } from '../src/public-address-policy.ts';
+import { agentScheduleTools, scheduleError } from '../src/agent-schedules.ts';
 import type { Outbound, UsageRecord } from '../src/web-policy-host.ts';
 
 const context = (builtins: string[], extra: Partial<BuiltinScope> = {}) => async () => ({ tenant: 'fixture', agent: 'agent', builtins, ...extra });
@@ -50,8 +51,22 @@ test('web_fetch preserves source HTML conversion and truncation contract', async
   assert.equal(result.text.length, 100);
   assert.equal(result.truncated, true);
   assert.ok(result.totalCharacters > 100);
+  assert.deepEqual((await invoke(tools[0], { url: 'https://public.example/', maxCharacters: 100 })).structuredOutput, result);
   assert.doesNotMatch(result.text, /secret/);
   await assert.rejects(invoke(tools[0], { url: 'https://public.example/', maxCharacters: 100001 }), /Invalid web_fetch/);
+});
+test('schedule builtins expose structured values and ignore legacy history', async () => {
+  const schedule = { id: 'wake', agent: 'agent', tenant: 'fixture', text: 'check', dueAt: 1000, createdAt: 0, everySeconds: 60 };
+  let input: Record<string, unknown> | undefined;
+  const host = { create: async (value: Record<string, unknown>) => { input = value; return schedule; }, list: async () => [schedule], cancel: async (id: string) => id === schedule.id };
+  assert.deepEqual(agentScheduleTools([], host), []);
+  const tools = agentScheduleTools(['schedule'], host);
+  const made = await invoke(tools[0], { text: 'check', inSeconds: 1, everySeconds: 60, history: 'none' });
+  assert.equal(input?.history, 'none');
+  assert.deepEqual(made.structuredOutput, { id: 'wake', text: 'check', dueAt: '1970-01-01T00:00:01.000Z', everySeconds: 60 });
+  assert.deepEqual(value(await invoke(tools[1], {})), { schedules: [made.structuredOutput] });
+  assert.deepEqual(value(await invoke(tools[2], { id: 'wake' })), { cancelled: true });
+  assert.equal(scheduleError(Object.assign(new Error('spend limit'), { status: 402 })), 'HTTP 402: spend limit');
 });
 test('web search falls back only on retryable failures and records the answering provider', async () => {
   const calls: string[] = [], usages: UsageRecord[] = [];

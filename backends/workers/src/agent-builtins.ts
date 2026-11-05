@@ -12,10 +12,11 @@ import { transaction } from './postgres.ts';
 import { HttpError } from './errors.ts';
 import type { Outbound, UsageRecord, WebFiles } from './web-policy-host.ts';
 import { admitAuxiliaryUsage, recordAuxiliaryUsage } from './auxiliary-usage.ts';
+import { agentScheduleTools, type ScheduleToolsHost } from './agent-schedules.ts';
 
 export type BuiltinScope = { tenant: string; agent: string; requestId?: string; spendLimit?: number; callId?: string; startedAt?: number; builtins?: string[]; webSearch?: { providers: string[] }; keyScope?: string; files?: WebFiles };
 export type BuiltinEnv = ProviderKeyEnv & { TEST_MODEL?: string; AGENT_OUTBOUND_ALLOW_HTTP?: string; AGENT_OUTBOUND_ALLOW_CIDRS?: string; AGENT_OUTBOUND_BLOCK_CIDRS?: string; AGENT_EXA_SEARCH_URL?: string; AGENT_BRAVE_SEARCH_URL?: string; AGENT_PARALLEL_SEARCH_URL?: string; AGENT_WEB_SEARCH_PROVIDERS?: string; AGENT_X_SEARCH_URL?: string; AGENT_FIRECRAWL_SCRAPE_URL?: string };
-export type BuiltinHost = { outbound?: Outbound; key?: (scope: BuiltinScope, provider: string) => Promise<{ key: string; platform: boolean } | undefined>; admit?: (scope: BuiltinScope, platform: boolean) => Promise<void>; record?: (scope: BuiltinScope, usage: UsageRecord) => Promise<void> };
+export type BuiltinHost = { outbound?: Outbound; key?: (scope: BuiltinScope, provider: string) => Promise<{ key: string; platform: boolean } | undefined>; admit?: (scope: BuiltinScope, platform: boolean) => Promise<void>; record?: (scope: BuiltinScope, usage: UsageRecord) => Promise<void>; schedules?: ScheduleToolsHost };
 
 /** Own-key searches are usage, not a platform credit debit. */
 async function recordUsage(env: BuiltinEnv, scope: BuiltinScope, usage: UsageRecord) {
@@ -37,9 +38,9 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
   const outbound = host.outbound ?? new PublicOutbound({ allowHttp: testMode && env.AGENT_OUTBOUND_ALLOW_HTTP === 'true', allow: testMode ? cidrs(env.AGENT_OUTBOUND_ALLOW_CIDRS) ?? [] : [], block: cidrs(env.AGENT_OUTBOUND_BLOCK_CIDRS) });
   const settings = testMode ? env : { AGENT_WEB_SEARCH_PROVIDERS: env.AGENT_WEB_SEARCH_PROVIDERS };
   const providers = searchProvidersFromEnvironment(settings as never);
-  return builtinDefinitions(initial.builtins).map(definition => {
+  return [...agentScheduleTools(initial.builtins, host.schedules), ...builtinDefinitions(initial.builtins).map(definition => {
     const check = compile(definition.parameters as never);
-    return defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, replay: 'safe', execute: async (args: Record<string, unknown>, api, call) => {
+    return defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, structuredOutputSchema: {}, replay: 'safe', execute: async (args: Record<string, unknown>, api, call) => {
       if (!(check.check as (value: unknown) => boolean)(args)) throw new HttpError(400, `Invalid ${definition.name} arguments`);
       const scope = { ...await context(api), callId: `${api.conversationId}:${api.taskId}:${api.callId}`, startedAt: Date.now() }, usages: UsageRecord[] = [];
       const key = async (_tenant: string, provider: string) => {
@@ -54,15 +55,15 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
         if (definition.name === 'web_fetch') {
           const render = new WebRender({ outbound, key, price: DEFAULT_PRICING.webRender, ...(testMode && env.AGENT_FIRECRAWL_SCRAPE_URL ? { endpoint: env.AGENT_FIRECRAWL_SCRAPE_URL } : {}), onRender: record });
           const result = await webFetch({ outbound, render }, scope, String(args.url), args.maxCharacters as number ?? 20_000, signal);
-          return { output: result.content, details: result.structuredContent as never };
+          return { output: result.content, details: result.structuredContent as never, structuredOutput: result.structuredContent as never };
         }
         const value = definition.name === 'web_search'
           ? await new WebSearch({ outbound, ...providers, key, price: provider => DEFAULT_PRICING.webSearch[provider], onSearch: record }).search({ ...scope, providers: scope.webSearch?.providers }, args, signal)
           : await new XSearch({ outbound, key, ...(testMode && env.AGENT_X_SEARCH_URL ? { endpoint: env.AGENT_X_SEARCH_URL } : {}), onSearch: record }).search(scope, args, signal);
-        return { output: [{ type: 'text' as const, text: JSON.stringify(value) }], details: value };
+        return { output: [{ type: 'text' as const, text: JSON.stringify(value) }], details: value, structuredOutput: value };
       } finally {
         for (const [index, usage] of usages.entries()) await (host.record ?? ((scope, usage) => recordUsage(env, scope, usage)))({ ...scope, callId: `${scope.callId}:${index}` }, usage);
       }
     } });
-  });
+  })];
 }
