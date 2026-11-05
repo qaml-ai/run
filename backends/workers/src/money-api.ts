@@ -1,3 +1,4 @@
+import { accountLifecycleRoutes, accountDeletions, type AccountLifecycleEnv } from "./account-lifecycle.ts";
 import { keyServices, type KeyEnv } from './security-services.ts';
 import { keyRoutes } from './key-routes.ts';
 import { accountServices, publicAccountRoutes, accountPrincipal, accountManagementRoutes, oauthAllows, type AccountEnv } from './account-services.ts';
@@ -59,6 +60,8 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
   if (auth.kind === 'oauth' && !oauthAllows(request.method, path)) throw new HttpError(403, 'An OAuth access token works with agents only: use an API token or the console');
   const principal = auth.principal ?? { tenant, via: auth.kind === 'operator' ? 'operator' as const : 'token' as const };
   try {
+    const lifecycle = await accountLifecycleRoutes(request, env as unknown as AccountLifecycleEnv, s.account, principal, s.webhooks, ctx);
+    if (lifecycle) return lifecycle;
     const managed = await accountManagementRoutes(request, s.account, principal, s.webhooks);
     if (managed) return managed;
   } finally { if (s.account.mail) ctx.waitUntil(s.account.mail.stop()); }
@@ -149,4 +152,5 @@ export async function moneyMaintenance(env: MoneyEnv) {
   await new EndUserCredits(s.keys.accounts.db).expireDue();
   await s.webhooks.send();
   await pumpBillingMail(env, s.billing.alerts);
+  await accountDeletions(env as unknown as AccountLifecycleEnv, s.account).kick();
 }

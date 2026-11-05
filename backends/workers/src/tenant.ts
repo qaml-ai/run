@@ -68,6 +68,15 @@ export class TenantAdmission extends DurableObject<Record<string, unknown>> {
       return true;
     });
   }
+  /** Called after account deletion has stopped and purged every owned agent. */
+  async purgeAccountData() {
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+    // Keep the reusable object's empty schema: old delayed releases stay harmless.
+    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS admitted (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
+    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS creations (token TEXT PRIMARY KEY, id TEXT NOT NULL, expires_at INTEGER NOT NULL)");
+    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS counters (key TEXT NOT NULL, window INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (key,window))");
+  }
   async status() {
     return {
       active: this.ctx.storage.sql
