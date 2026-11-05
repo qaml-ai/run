@@ -1,6 +1,7 @@
 import type { Conversation } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { BadRequest } from "./validation.ts";
+import { attachmentMessage } from "./attachment-markers.ts";
 
 type Row = { ordinal: number; entry: number; message: string; bytes: number; turn: number };
 const PAGE_BYTES = 4_000_000;
@@ -31,8 +32,9 @@ export class AgentHistory {
             const messages = ["pi.reset", "camel.context"].includes(entry.kind) ? [] : entry.model ?? [];
             for (const original of messages) {
               if (original.role === "system") continue;
+              const projected = attachmentMessage(original);
               const message = original.role === "user" && data?.requestId
-                ? { ...original, ...data } : original;
+                ? { ...projected, ...data } : projected;
               const serialized = JSON.stringify(message);
               this.sql.exec("INSERT INTO camel_history (ordinal,entry,message,bytes,turn) VALUES (?,?,?,?,?)",
                 ordinal++, Number(entry.id), serialized, new TextEncoder().encode(serialized).length,

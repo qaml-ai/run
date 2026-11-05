@@ -11,6 +11,7 @@ import { spendInput } from "./agent-spend-policy.ts";
 import { identityInput, bucketInput } from "./security-policy.ts";
 import { checkScope } from "./key-scopes.ts";
 import { VOLUME_LIMITS } from "./volume-policy.ts";
+import { attachmentMessages } from "./attachment-markers.ts";
 
 export interface AgentConfiguration {
   model?: string;
@@ -154,7 +155,7 @@ export function configuration(input: unknown, defaultModel: string): { config: A
   if (fields.initialMessages !== undefined && fields.importMessages !== undefined) throw new ApiError(400, "Give initialMessages or importMessages, not both", "INVALID_HISTORY");
   if (fields.initialMessages !== undefined || fields.importMessages !== undefined) {
     try {
-      const messages = fields.importMessages !== undefined ? toPiMessages(fields.importMessages as never) : fields.initialMessages;
+      const messages = attachmentMessages(fields.importMessages !== undefined ? toPiMessages(fields.importMessages as never) : fields.initialMessages);
       validateInitialMessages(messages as never);
       config.initialMessages = messages as unknown[];
     } catch (error) { throw new ApiError((error as {status?: number}).status ?? 400, (error as Error).message, (error as Error).message.startsWith("HISTORY_TOO_LARGE") ? "HISTORY_TOO_LARGE" : "INVALID_HISTORY"); }

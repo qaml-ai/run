@@ -30,7 +30,7 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
   if (!runId && request.method === "POST") {
     const raw = await body(request, 7 * 1024 * 1024) as {[key:string]:any};
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ApiError(400, "Expected run configuration");
-    const { input, wait, retentionSeconds = 86400, output, actor, from, metadata, ...given } = raw;
+    const { input, files, wait, retentionSeconds = 86400, output, actor, from, metadata, ...given } = raw;
     const parts = typeof input === "string" ? [{ type: "text", text: input }] : input;
     if (!Array.isArray(parts) || !parts.length || parts.some((part:any) => part.type !== "text" || typeof part.text !== "string")) throw new ApiError(400, "Run input must contain text; upload files to a volume first");
     const text = parts.map((part:any) => part.text).join("\n\n");
@@ -38,12 +38,12 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
     if (!Number.isInteger(retentionSeconds) || retentionSeconds < 60 || retentionSeconds > 604800) throw new ApiError(400, "Invalid retentionSeconds");
     const key = request.headers.get("Idempotency-Key"), hash = await digest(key ?? crypto.randomUUID());
     const directoryKey = `run-${hash.slice(0, 40)}`;
-    const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ input, retentionSeconds, output, actor, from, metadata, ...given }))));
+    const fingerprint = await digest(canonical(JSON.parse(JSON.stringify({ input, files, retentionSeconds, output, actor, from, metadata, ...given }))));
     const old = await directory.get(directoryKey) as typeof entry | null;
     if (old?.run && old.run.fingerprint !== fingerprint) throw new ApiError(409, "Idempotency-Key was used for a different run", "IDEMPOTENCY_CONFLICT");
     if (old) entry = old;
     else {
-      const noTools = !given.definition && !given.builtins?.length && !given.delegate && !given.mcpServers?.length && !given.fileTools && !given.mounts?.length;
+      const noTools = !given.definition && !given.builtins?.length && !given.delegate && !given.mcpServers?.length && !given.fileTools && !given.mounts?.length && !files?.length;
       const config = await provisionDefinition(env, auth.tenantId, { ...(noTools ? { codeMode:false, fileTools:false, decide:false } : {}), ...given, type: "run", ttlSeconds: 604800 + retentionSeconds });
       entry = result(await directory.upsert(config, directoryKey, url.origin));
     }
@@ -55,7 +55,7 @@ export async function statelessRoutes(request: Request, env: ControlEnv, auth: A
       entry = saved.rows[0].header;
     }
     runId = `run_${entry.id.slice("client_".length)}`;
-    let record = await payload(await call(env, entry.id, "/requests", { id: runId, method:"prompt", params: { text, allowDisconnected:true, ...(output ? {output} : {}), ...(actor ? {actor} : {}), ...(from ? {from} : {}), ...(metadata ? {metadata} : {}) } })) as Record;
+    let record = await payload(await call(env, entry.id, "/requests", { id: runId, method:"prompt", params: { text, allowDisconnected:true, ...(files !== undefined ? {files} : {}), ...(output ? {output} : {}), ...(actor ? {actor} : {}), ...(from ? {from} : {}), ...(metadata ? {metadata} : {}) } })) as Record;
     const seconds = url.searchParams.get("wait") ?? (wait === true ? 60 : wait === false || wait === undefined ? 0 : Number(wait));
     if (!Number.isFinite(Number(seconds)) || Number(seconds) < 0) throw new ApiError(400, "Invalid wait");
     if (Number(seconds) > 0 && record.state !== "completed") record = await payload(await call(env, entry.id, `/requests/${runId}?wait=${Math.min(60,Number(seconds))}`));

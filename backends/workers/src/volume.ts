@@ -720,6 +720,9 @@ export class Volume extends DurableObject<VolumeBindings> {
     });
     await this.scheduleCollection();
   }
+  hasPin(owner: string, key: string) {
+    return [...this.sql().exec("SELECT 1 FROM pins WHERE owner=? AND key=? AND (expiresAt IS NULL OR expiresAt>?)", owner, key, Date.now())].length > 0;
+  }
   unpin(owner: string) {
     this.sql().exec("DELETE FROM pins WHERE owner=?", owner);
   }

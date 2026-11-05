@@ -14,6 +14,8 @@ import {
   streamSimple as streamOpenAISimple,
 } from "@earendil-works/pi-ai/api/openai-completions";
 import { withImageReferences, type ImageBindings } from "./images.ts";
+import { withAttachmentReferences } from "./prompt-attachments.ts";
+import type { FileBindings } from "./files.ts";
 import { createAI } from "agents/models/pi-ai";
 
 import { stream as streamResponses, streamSimple as simpleResponses } from "@earendil-works/pi-ai/api/openai-responses";
@@ -34,6 +36,7 @@ import { streamTimeouts, watchedStream, isStalled } from "./model-stream.ts";
 export type ModelRequestSettings = AgentConfiguration & { output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
 export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true };
 export type ModelHooks = {
+  agentId?: () => Promise<string>;
   wrapProvider?: (provider: Provider) => Provider;
   settings?: () => Promise<ModelRequestSettings>;
   credentials?: (provider: string) => Promise<ModelCredentials | undefined>;
@@ -127,13 +130,21 @@ export function modelRuntime(
     TEST_MODEL?: string;
     TEST_MODEL_BASE_URL?: string;
     TEST_MODE?: string;
-  } & ImageBindings,
+  } & ImageBindings & { VOLUMES?: FileBindings["VOLUMES"] },
   getTenant: () => Promise<string>,
   hooks: ModelHooks = {},
 ) {
   const models = createModels();
   const decorate = (provider: Provider) => {
-    const images = withImageReferences(provider, env, getTenant);
+    const authorizeFile = async (key: string) => {
+      const agent = await hooks.agentId?.();
+      if (!agent || !env.VOLUMES) return false;
+      const tenant = await getTenant();
+      if (!key.startsWith(`files/${encodeURIComponent(tenant)}/`)) return false;
+      const volume = decodeURIComponent(key.split("/")[2] ?? "");
+      return env.VOLUMES.getByName(`${tenant}:${volume}`).hasPin(`agent:${agent}`, key);
+    };
+    const images = withAttachmentReferences(withImageReferences(provider, env, getTenant, authorizeFile), env, getTenant, authorizeFile);
     return withSettings(hooks.wrapProvider ? hooks.wrapProvider(images) : images, hooks, env);
   };
   const contextModels = new Map<string, Model<Api>>();
@@ -191,7 +202,7 @@ export function modelRuntime(
     provider: "camel-test",
     api: "openai-completions",
     baseUrl: "https://invalid.test",
-    input: ["text"],
+    input: ["text", "image"],
     reasoning: false,
     contextWindow: 32768,
     maxTokens: 2048,
@@ -208,8 +219,10 @@ export function modelRuntime(
     const resolve = (name = "test/echo", contextTokens?: number, _customProviders?: CustomProviders) => {
       let selected = catalog.get(name);
       if (!selected) {
-        selected = { ...model, id: name, baseUrl: endpoint.href };
+        const logicalProvider = name.includes("/") ? name.slice(0, name.indexOf("/")) : model.provider;
+        selected = { ...model, provider: logicalProvider, id: name, baseUrl: endpoint.href };
         catalog.set(name, selected);
+        if (!models.getProvider(logicalProvider)) models.setProvider(decorate({ ...provider, id: logicalProvider }));
       }
       return bounded(selected, contextTokens);
     };
