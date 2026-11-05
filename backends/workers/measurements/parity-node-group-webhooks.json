@@ -1,0 +1,120 @@
+{
+  "backend": "node",
+  "area": "all",
+  "group": "webhooks",
+  "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+  "suiteHash": "65af56a1c957282a54d6e7d0512980e7d2f5c6e73ad9674d05b2a73235d4351c",
+  "revision": "0bdefc191d38f7653a4568135fb743457e8f9fcb",
+  "durationMs": 15857.943227,
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-05T23:10:20.707Z",
+  "expectedCases": 10,
+  "rows": [
+    {
+      "area": "credits",
+      "source": "tests/end-user-webhooks.test.ts",
+      "name": "end-user events reach an endpoint that selected them, signed",
+      "status": "pass",
+      "durationMs": 5613.926886,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "webhooks",
+      "source": "tests/billing-alerts.test.ts",
+      "name": "registered billing webhooks are delivered by the existing worker with valid signatures",
+      "status": "pass",
+      "durationMs": 4057.526828,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "webhooks",
+      "source": "tests/usage-webhooks.test.ts",
+      "name": "a rotated usage webhook secret signs beside the old one for a day, and removing the webhook stops events",
+      "status": "pass",
+      "durationMs": 3910.015668,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "webhooks",
+      "source": "tests/usage-webhooks.test.ts",
+      "name": "calls through a tenant's own endpoint are sent too, named as the agent names its model",
+      "status": "pass",
+      "durationMs": 5064.185949,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "webhooks",
+      "source": "tests/usage-webhooks.test.ts",
+      "name": "each model response's usage is POSTed, signed, to the tenant's webhook: retried after a failure, and kept across a restart",
+      "status": "pass",
+      "durationMs": 8502.849782,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "webhooks",
+      "source": "tests/webhooks.test.ts:103",
+      "name": "a run that ends with an error is sent as run.failed",
+      "status": "pass",
+      "durationMs": 3721.211652,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "webhooks",
+      "source": "tests/webhooks.test.ts:118",
+      "name": "the usage webhook still works, apart from endpoints, and gets usage in its original body",
+      "status": "pass",
+      "durationMs": 3724.85541,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "webhooks",
+      "source": "tests/webhooks.test.ts:25",
+      "name": "webhook endpoints: registered with the event types they want, managed, and each sent its events in a signed envelope",
+      "status": "pass",
+      "durationMs": 6433.046081,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "webhooks",
+      "source": "tests/webhooks.test.ts",
+      "name": "a run whose event could not be written when it ended has it written with the agent's next load or run, once",
+      "status": "pass",
+      "durationMs": 12166.970873,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "webhooks",
+      "source": "tests/webhooks.test.ts",
+      "name": "in a rolling deploy, nodes of the previous release see only usage webhook deliveries, and their usage webhook changes take effect",
+      "status": "pass",
+      "durationMs": 3446.298277,
+      "reason": "",
+      "backend": "node"
+    }
+  ],
+  "shards": [
+    {
+      "index": 1,
+      "total": 2,
+      "durationMs": 14140.711924
+    },
+    {
+      "index": 2,
+      "total": 2,
+      "durationMs": 15857.943227
+    }
+  ]
+}
