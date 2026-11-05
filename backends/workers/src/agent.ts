@@ -2822,6 +2822,8 @@ export class CamelAgent extends DurableObject<Env> {
           await this.cancelHumanInputs();
           // Settling still reads configuration and writes durable charge receipts.
           // Keep it available until every accepted operation has drained.
+          for (const record of await this.records())
+            if (record.accepted && record.state !== "completed") this.track(record.id);
           await Promise.all(this.pendingWaits.values());
           await this.eventsProcessed;
           if ((await this.records()).some(record => record.accepted && record.state !== "completed"))
