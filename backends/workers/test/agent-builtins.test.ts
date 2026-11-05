@@ -50,6 +50,7 @@ test('web_fetch preserves source HTML conversion and truncation contract', async
   assert.equal(result.text.length, 100);
   assert.equal(result.truncated, true);
   assert.ok(result.totalCharacters > 100);
+  assert.deepEqual((await invoke(tools[0], { url: 'https://public.example/', maxCharacters: 100 })).structuredOutput, result);
   assert.doesNotMatch(result.text, /secret/);
   await assert.rejects(invoke(tools[0], { url: 'https://public.example/', maxCharacters: 100001 }), /Invalid web_fetch/);
 });
