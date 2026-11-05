@@ -13,7 +13,19 @@ npm run typecheck
 npm run typecheck --prefix backends/workers
 export AGENT_TEST_DATABASE_URL=${AGENT_TEST_DATABASE_URL:-postgres://postgres:test@127.0.0.1:55432/postgres}
 export CONTRACT_CONCURRENCY=${CONTRACT_CONCURRENCY:-2}
-if [[ ${1:-} == --files ]]; then
+if [[ ${1:-} == --python ]]; then
+  shift
+  for contract_backend in node workers; do
+    CONTRACT_BACKEND=$contract_backend python3 - "$@" <<'PY'
+import runpy
+import sys
+import unittest
+
+unittest.defaultTestLoader.testNamePatterns = [f"*{name}" for name in sys.argv[1:]] or None
+runpy.run_path("tests/contract/python.py", run_name="__main__")
+PY
+  done
+elif [[ ${1:-} == --files ]]; then
   shift
   CONTRACT_BACKEND=workers node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-concurrency=2 "$@"
 else
