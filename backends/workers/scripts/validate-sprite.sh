@@ -56,6 +56,7 @@ case "$mode" in
   compat) npm run test:compat 2>&1 | tee "$artifact/compatibility-run.log" ;;
   python) npm run test:python 2>&1 | tee "$artifact/python-compat.log" ;;
   checks)
+    {
     npm run typecheck
     for file in scripts/reuse-*.mjs; do
       # The fs shim compares to origin/main, which git archive does not include.
@@ -64,10 +65,15 @@ case "$mode" in
       node "$file" --check
     done
     npm run build 2>&1 | tee "$artifact/build.log"
+    if [[ -n ${2:-} ]]; then
+      WORKERS_MEASURE_COMMIT="$2" node scripts/report.mjs
+      cp ELEGANCE.md measurements/code-size.json "$artifact/"
+    fi
     cd "$repo"
     npm run docs
     node --experimental-strip-types --test --test-name-pattern='^llms.txt' tests/docs.test.ts
     npm run openapi
+    } 2>&1 | tee "$artifact/checks.log"
     ;;
   *) echo "Unknown validation: $mode" >&2; exit 2 ;;
 esac
