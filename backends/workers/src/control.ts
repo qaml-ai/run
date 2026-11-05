@@ -16,6 +16,7 @@ import {
 } from "./postgres.ts";
 import { postLedger, accrueUsage, BillingSpendable } from "./billing-sql.ts";
 import { EndUserCredits, lastCallMin, settleUsage, utcDay } from "./end-user-credits.ts";
+import { endUserRoutes } from "./end-user-routes.ts";
 import { CreditHolds } from "./credit-holds.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import { defaultModelFor, validateAgentModel } from "./default-model.ts";
@@ -899,37 +900,8 @@ export async function controlRoutes(
         )
       ).rows[0],
     );
-  const credits = new EndUserCredits(database(env));
-  if (path === "/v1/end-users/settings")
-    return json(
-      request.method === "GET"
-        ? await credits.settings(tenant)
-        : await credits.setSettings(tenant, await input(), {
-            merge: request.method === "PATCH",
-          }),
-    );
-  if (path === "/v1/end-users") return json(await credits.list(tenant));
-  const userMatch =
-    /^\/v1\/end-users\/([^/]+)(?:\/(ledger|lots|usage|days))?$/.exec(path);
-  if (userMatch) {
-    const id = decodeURIComponent(userMatch[1]),
-      part = userMatch[2];
-    if (part === "ledger")
-      return json(
-        request.method === "GET"
-          ? await credits.ledger(tenant, id)
-          : await credits.post(tenant, id, await input()),
-      );
-    if (part === "lots" && request.method === "POST")
-      return json(await credits.markLot(tenant, id, await input()));
-    if (part === "usage") return json(await credits.usage(tenant, id));
-    if (part === "days") return json(await credits.days(tenant, id));
-    return json(
-      request.method === "GET"
-        ? await credits.get(tenant, id)
-        : await credits.update(tenant, id, await input()),
-    );
-  }
+  const endUser = await endUserRoutes(request, env, tenant);
+  if (endUser) return endUser;
   return null;
 }
 

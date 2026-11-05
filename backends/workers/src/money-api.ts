@@ -80,7 +80,7 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
   const billed = await billingRoutes(request, env, auth, s.billing);
   if (billed) { ctx.waitUntil(publishPending(env as WebhookEnv)); return billed; }
   const endUser = await endUserRoutes(request, tenant, new EndUserCredits(s.keys.accounts.db));
-  if (endUser) return endUser;
+  if (endUser) { if (request.method !== "GET") await publishPending(env as WebhookEnv); return endUser; }
   const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
   const setter = principal.tokenId ? `token:${principal.tokenId}` : principal.via === 'oauth' ? `oauth:${'grantId' in principal ? principal.grantId : undefined}` : principal.via;
   if (path === '/v1/usage' && request.method === 'GET') {

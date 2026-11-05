@@ -1,14 +1,24 @@
+import { outcomeEnding, type Outcome } from '../../../shared/client-protocol.ts';
 import { withSql } from './postgres.ts';
 import type { ControlEnv } from './control.ts';
 
 /** Retain only a safe failure classification in the account-wide directory. */
 export async function recordAgentActivity(env: ControlEnv, tenant: string, agent: string, record: { endedAt?: number; outcome?: { result?: unknown; error?: string; uncertain?: boolean } }) {
-  const result = record.outcome?.result as { error?: string; code?: string; stopped?: string } | undefined;
-  const failure = result?.error ? (/^[a-z][a-z0-9_]*$/.test(result.code ?? '') ? result.code : 'model_error')
-    : record.outcome?.error ? record.outcome.uncertain ? 'runtime_restart' : 'runtime_error' : null;
-  await withSql(env, sql => sql.query(`update agents set last_active_at=$3,
-    last_error_at=case when $4::text is null then null else $3 end, last_error_class=$4
-    where id=$1 and tenant=$2`, [agent, tenant, record.endedAt ?? Date.now(), failure]));
+  const ending = outcomeEnding(record.outcome as Outcome | undefined);
+  const code = (record.outcome?.result as { code?: unknown } | undefined)?.code;
+  const failure = ending.stopped && ending.stopped !== 'input_required' ? ending.stopped
+    : ending.error === undefined ? undefined
+      : typeof code === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(code) ? code
+        : record.outcome?.error !== undefined ? record.outcome.uncertain ? 'runtime_restart' : 'runtime_error' : 'model_error';
+  const at = record.endedAt ?? Date.now();
+  try {
+    await withSql(env, sql => sql.query(failure
+      ? `update agents set last_active_at=greatest(coalesce(last_active_at,0),$3),
+          last_error_at=greatest(coalesce(last_error_at,0),$3),
+          last_error_class=case when coalesce(last_error_at,0)<=$3 then $4 else last_error_class end where id=$1 and tenant=$2`
+      : 'update agents set last_active_at=greatest(coalesce(last_active_at,0),$3) where id=$1 and tenant=$2',
+      failure ? [agent, tenant, at, failure] : [agent, tenant, at]));
+  } catch { console.error(JSON.stringify({ type: 'agent_activity_failed', agent })); }
 }
 
 export async function agentActivity(env: ControlEnv, tenant: string, agent: string) {

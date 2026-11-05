@@ -408,7 +408,7 @@ const worker = {
       }
       if (entry.expiresAt && entry.expiresAt <= Date.now())
         throw new ApiError(410, "Agent expired", "AGENT_EXPIRED");
-      if (!entry.initialized)
+      if (!entry.initialized && !["/credentials", "/credentials/rotate"].includes(tail))
         throw new ApiError(
           503,
           "Agent initialization is pending; retry creation",
