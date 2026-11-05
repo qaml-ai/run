@@ -2,17 +2,431 @@
   "backend": "node",
   "area": "cached",
   "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
-  "suiteHash": "fabe683775fe343cc1c227f56f728a869eff7d15d2552fd4ee40db9c2129e413",
-  "revision": "3e2d2e618e8ee4b4eb4d047d905544d486e7e35b",
-  "durationMs": 27867.362084,
+  "suiteHash": "6141fce703b90a28e0c9c73b2a8963f902f7d758a3f799522ce9d77590eb999b",
+  "revision": "6b072bbeab6b198f654fc70889adb31c7b8c1002",
+  "durationMs": 76606.576471,
   "runtime": {
     "node": "v24.22.1",
     "platform": "linux",
     "arch": "x64"
   },
-  "recordedAt": "2026-11-05T22:41:57.130Z",
-  "expectedCases": 51,
+  "recordedAt": "2026-11-05T22:58:09.270Z",
+  "expectedCases": 139,
   "rows": [
+    {
+      "area": "access",
+      "source": "tests/browser-tokens.test.ts:119",
+      "name": "a snapshot shows a token's reader only what its scopes and event list let it read",
+      "status": "pass",
+      "durationMs": 3443.774468,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/browser-tokens.test.ts:154",
+      "name": "a token that redacts usage.cost reads no cost anywhere: the catalog's or the provider's, in events, snapshots, state, history and inputs",
+      "status": "pass",
+      "durationMs": 3557.777407,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/browser-tokens.test.ts:15",
+      "name": "a browser token reads its one agent's events, state, history and inputs, and nothing else",
+      "status": "pass",
+      "durationMs": 8245.538287,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/browser-tokens.test.ts:75",
+      "name": "a browser token's scopes, event list and redaction limit what it reads; a forged or expired one reads nothing",
+      "status": "pass",
+      "durationMs": 8664.1553,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/outbound-origins.test.ts:5",
+      "name": "an allowed origin serves a custom provider over http, while web_fetch still cannot reach it",
+      "status": "pass",
+      "durationMs": 7106.707831,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:117",
+      "name": "an agent with work left that cannot be loaded is tried again with capped backoff, never for good, and says so",
+      "status": "pass",
+      "durationMs": 8979.732254,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:144",
+      "name": "a request whose open-work mark could not be written is not taken, and its retry runs",
+      "status": "pass",
+      "durationMs": 3137.896862,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:44",
+      "name": "?request= keeps a stream or poll to one request's events and response",
+      "status": "pass",
+      "durationMs": 3548.982821,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:60",
+      "name": "a subscriber that goes away before its stream opens gives its place back",
+      "status": "pass",
+      "durationMs": 3727.978125,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:6",
+      "name": "a tenant reads its agent's events, state, history and inputs with its own token, and no other tenant can",
+      "status": "pass",
+      "durationMs": 5818.361803,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:82",
+      "name": "a tenant's own watcher bound, from the tenants file, replaces the default",
+      "status": "pass",
+      "durationMs": 3010.021229,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:95",
+      "name": "an idle agent's history, state and inputs are read without loading it",
+      "status": "pass",
+      "durationMs": 5623.911898,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "accounts",
+      "source": "tests/account.test.ts",
+      "name": "an account exports everything it stores, then deletes it all but the ledger, and its identity signs up afresh without new credit",
+      "status": "pass",
+      "durationMs": 7865.050368,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "accounts",
+      "source": "tests/operator-tenants.test.ts",
+      "name": "the platform operator makes a prepaid tenant like a sign-up's, with an API token, credits it and deletes it",
+      "status": "pass",
+      "durationMs": 6331.959859,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:261",
+      "name": "console sessions require same-origin mutations; an email and password an operator set sign in",
+      "status": "pass",
+      "durationMs": 4993.193692,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:306",
+      "name": "password sign-in: a person's session; unknown addresses fail like wrong passwords; setting, changing or clearing a password ends its sessions; token sign-in is gone",
+      "status": "pass",
+      "durationMs": 4723.552695,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:390",
+      "name": "failed password sign-ins are limited per address and per source; a success still counts nothing",
+      "status": "pass",
+      "durationMs": 3666.938263,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:411",
+      "name": "sign-ups per address per day: behind Cloudflare, a new account past the limit waits a day; existing accounts still sign in",
+      "status": "pass",
+      "durationMs": 5065.154657,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:434",
+      "name": "GitHub sign-in admits active org members, links admin tenants, and creates new tenants",
+      "status": "pass",
+      "durationMs": 2613.807753,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:468",
+      "name": "Google sign-in verifies the ID token, creates separate tenants, and returns to the consent page",
+      "status": "pass",
+      "durationMs": 2709.87714,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:562",
+      "name": "console routes serve the app shell as HTML, never as a download",
+      "status": "pass",
+      "durationMs": 2283.984633,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "adding a password: a Google account's own address at once, any other address through a link confirmed with the password",
+      "status": "pass",
+      "durationMs": 3137.680724,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "an address a Google account signed up with is not joined, taken over or given a second account: its owner is told to use Google",
+      "status": "pass",
+      "durationMs": 2756.714934,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "email sign-up: a link to finish it with the chosen password makes the tenant and signs in; nothing before that",
+      "status": "pass",
+      "durationMs": 5314.774455,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "mailing a link is limited per source and per address, whether or not the address has an account",
+      "status": "pass",
+      "durationMs": 2512.202303,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "password reset: the same answer for any address; the link sets a new password once and ends every password session",
+      "status": "pass",
+      "durationMs": 3379.703042,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "sign-up links: tampered, expired and used links fail alike; a second sign-up for an address with an account gets the same answer and a different mail",
+      "status": "pass",
+      "durationMs": 3317.396019,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "the MCP consent page: sign up there, follow the link, and come back signed in to consent",
+      "status": "pass",
+      "durationMs": 2689.265587,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "without account mail, or with sign-up closed, the forms are not offered and their routes refuse",
+      "status": "pass",
+      "durationMs": 4474.883599,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/auto-topup.test.ts",
+      "name": "auto top-up REST requires the exact quote version and explicit consent",
+      "status": "pass",
+      "durationMs": 5237.732239,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing-mail.test.ts",
+      "name": "billing recipient API, scanner-safe confirmation, and SES delivery work together",
+      "status": "pass",
+      "durationMs": 14921.88822,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing-mail.test.ts",
+      "name": "disabled email is explicit and never queues a recipient",
+      "status": "pass",
+      "durationMs": 2160.216763,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing-payments.test.ts",
+      "name": "billing REST routes bind portal ownership to authentication and reject caller-supplied redirects",
+      "status": "pass",
+      "durationMs": 5428.208763,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts:623",
+      "name": "without Stripe, checkout answers 503 and the webhook 404",
+      "status": "pass",
+      "durationMs": 2217.565628,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "a prepaid tenant pays the catalog fallback plus funding when actual cost is absent; spent credit stops runs",
+      "status": "pass",
+      "durationMs": 6395.815972,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "credit is bought through Stripe Checkout with the fee on top, added once the webhook reports payment, and refunds take it back",
+      "status": "pass",
+      "durationMs": 5226.056793,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "disabled card credit is absent from billing and its start endpoint refuses while GitHub grants remain",
+      "status": "pass",
+      "durationMs": 2200.046064,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "free credit brings fewer busy agents (its usage tier) and an hourly spend limit, both lifted by the first purchase",
+      "status": "pass",
+      "durationMs": 5355.928539,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "only a billing-admin operator can issue the one-time support grant",
+      "status": "pass",
+      "durationMs": 2467.681233,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "open sign-up admits any GitHub account; starting credit is once per account id and uses the configured signup policy; a renamed login keeps its tenant",
+      "status": "pass",
+      "durationMs": 2482.164011,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "responses on the tenant's own key cost no credit for tokens, but time in turns is charged",
+      "status": "pass",
+      "durationMs": 8932.954315,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "signup retries an incomplete profile before creating an account, and does not block an existing login",
+      "status": "pass",
+      "durationMs": 2456.41973,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "streamed OpenRouter actual cost reaches the credit ledger instead of the catalog estimate",
+      "status": "pass",
+      "durationMs": 3884.884662,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/credit-holds.test.ts:114",
+      "name": "a run on a tenant with too little credit stops before any call, as a spend limit; a small balance caps the call's max_tokens",
+      "status": "pass",
+      "durationMs": 6455.565613,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/pi-durable-accounting.test.ts:48",
+      "name": "imported usage and forks are free; the next real turn is billed once (inline)",
+      "status": "pass",
+      "durationMs": 5821.391091,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "billing",
+      "source": "tests/pi-durable-accounting.test.ts:48",
+      "name": "imported usage and forks are free; the next real turn is billed once (process)",
+      "status": "pass",
+      "durationMs": 5504.032517,
+      "reason": "",
+      "backend": "node"
+    },
     {
       "area": "cli",
       "source": "tests/cli.test.ts",
@@ -73,6 +487,168 @@
       "name": "the MCP server deploys and runs agents for a coding agent",
       "status": "pass",
       "durationMs": 4728.0093,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-balance-events.test.ts",
+      "name": "the API: a person's lowBalance, and the end users under their threshold",
+      "status": "pass",
+      "durationMs": 4941.363782,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-credits.test.ts:145",
+      "name": "the end-user API: settings, entries, an end user and their ledger, for the tenant only",
+      "status": "pass",
+      "durationMs": 2309.375298,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-history.test.ts",
+      "name": "the history API and the TypeScript SDK: ledger filters and per-day totals, for the tenant only",
+      "status": "pass",
+      "durationMs": 4131.130394,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-lots.test.ts",
+      "name": "the lots API and the TypeScript SDK: expiring grants, lots on the end user, marking, refunds by lot, for the tenant only",
+      "status": "pass",
+      "durationMs": 4948.792422,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for a bucket limit above 0 carries end_user_credit and bucket_limit: its record, request and run.failed",
+      "status": "pass",
+      "durationMs": 3321.627779,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for a bucket limit of 0 carries end_user_credit and bucket_limit: its record, request and run.failed",
+      "status": "pass",
+      "durationMs": 3585.881001,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for no balance carries end_user_credit and balance: its record, request and run.failed",
+      "status": "pass",
+      "durationMs": 3529.779031,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for the agent's spend limit carries spend_limit and which limit",
+      "status": "pass",
+      "durationMs": 7413.617932,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for the daily limit carries end_user_credit and daily_limit: its record, request and run.failed",
+      "status": "pass",
+      "durationMs": 3378.079526,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "the TypeScript SDK: a queued run refused as it starts is a failed run with code end_user_credit and its reason, not runtime_error",
+      "status": "pass",
+      "durationMs": 7586.811645,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "a long reply stops at the end of its end user's credit, mid-stream, and is not retried",
+      "status": "pass",
+      "durationMs": 4141.545732,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "a run's own bucket is what its start is checked against, and the runs after it that name none (the runtime's own too) inherit it, never \"default\"",
+      "status": "pass",
+      "durationMs": 7336.6116,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "a run's own bucket, the agent's bucket and a stateless run's each spend their own allowance",
+      "status": "pass",
+      "durationMs": 6613.808107,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "an end user's allowance pays first, then their balance; out of both, the turn stops and their next run is refused",
+      "status": "pass",
+      "durationMs": 7738.420718,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "concurrent replies for one end user share their credit: their holds never add up to more than it",
+      "status": "pass",
+      "durationMs": 4507.140433,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "the TypeScript SDK: endUsers configure, grant, get and ledger; an agent's bucket; a run out of credit fails with code end_user_credit",
+      "status": "pass",
+      "durationMs": 5457.273453,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-usage.test.ts:96",
+      "name": "usage API and TypeScript SDK parse times, group usage and isolate tenants",
+      "status": "pass",
+      "durationMs": 4929.571968,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-webhooks.test.ts",
+      "name": "end-user events reach an endpoint that selected them, signed",
+      "status": "pass",
+      "durationMs": 6111.003445,
       "reason": "",
       "backend": "node"
     },
@@ -302,6 +878,222 @@
       "backend": "node"
     },
     {
+      "area": "keys",
+      "source": "tests/api.test.ts:132",
+      "name": "tenants set provider keys over REST; keys are never returned by public endpoints",
+      "status": "pass",
+      "durationMs": 4911.452238,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "keys",
+      "source": "tests/api.test.ts:238",
+      "name": "tenants mint and revoke their own API tokens",
+      "status": "pass",
+      "durationMs": 2515.06713,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "keys",
+      "source": "tests/credential-exchange.test.ts",
+      "name": "through the API: saving lists the server with a credential for the definition, agents get their own, and nothing shows the credential",
+      "status": "pass",
+      "durationMs": 7553.989117,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "keys",
+      "source": "tests/key-scopes.test.ts:10",
+      "name": "key scopes store sealed entries, and an agent's calls use its scope's current key, gateway and headers, else the tenant's",
+      "status": "pass",
+      "durationMs": 4126.210136,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "keys",
+      "source": "tests/key-scopes.test.ts",
+      "name": "a scope's baseUrl is a public address the runtime may call, checked when saved and at every call",
+      "status": "pass",
+      "durationMs": 7930.385033,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "keys",
+      "source": "tests/key-scopes.test.ts",
+      "name": "a scope's baseUrl replaces the provider's root, a keyless entry sends only its gateway's headers, and an agent's modelHeaders come after them",
+      "status": "pass",
+      "durationMs": 4089.183308,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "keys",
+      "source": "tests/key-scopes.test.ts",
+      "name": "a scope's model provider need not be the tenant's: an agent may be created on it, and Bedrock takes its key as a bearer token",
+      "status": "pass",
+      "durationMs": 7186.000914,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "keys",
+      "source": "tests/key-scopes.test.ts",
+      "name": "Bedrock's region comes from the entry or its regional endpoint",
+      "status": "pass",
+      "durationMs": 2193.899073,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "oauth",
+      "source": "tests/chatgpt-plugin.test.ts:16",
+      "name": "the plugin's path works end to end, with the issuer on another origin than the MCP endpoint and sign-in pages: discovery, registration, email and password sign-in, consent, /v1/me, the review cases' tools, refresh, revocation",
+      "status": "pass",
+      "durationMs": 5547.977028,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "oauth",
+      "source": "tests/chatgpt-plugin.test.ts:16",
+      "name": "the plugin's path works end to end: discovery, registration, email and password sign-in, consent, /v1/me, the review cases' tools, refresh, revocation",
+      "status": "pass",
+      "durationMs": 9233.690941,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "ops",
+      "source": "tests/admin-site.test.ts:25",
+      "name": "the admin site answers only on its hostname, to people Cloudflare Access signed in, with every tenant's stats",
+      "status": "pass",
+      "durationMs": 7081.146549,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "ops",
+      "source": "tests/ops-mcp.test.ts:38",
+      "name": "the operations endpoint names its own protected resource, and answers nobody who is not signed in",
+      "status": "pass",
+      "durationMs": 4657.66274,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "ops",
+      "source": "tests/ops-mcp.test.ts:59",
+      "name": "only the tenants on AGENT_OPS_ADMINS connect: anyone else is refused at consent, and /mcp is untouched",
+      "status": "pass",
+      "durationMs": 2916.567256,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "ops",
+      "source": "tests/ops-mcp.test.ts:86",
+      "name": "the tools: read-only rows a dashboard charts, and a token that works here works nowhere else",
+      "status": "pass",
+      "durationMs": 3569.066183,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/api.test.ts:584",
+      "name": "a tenant at its agent quota gets 429 with Retry-After and nothing half-created; the same key succeeds once a slot frees",
+      "status": "pass",
+      "durationMs": 10377.532314,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/api.test.ts:615",
+      "name": "a tenant's own maxAgents replaces the default limit, and a change applies at the next tenants reload without a restart",
+      "status": "pass",
+      "durationMs": 3425.055291,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/api.test.ts:656",
+      "name": "a tenant's monthly spend cap ends a turn after the response that crosses it, refuses new runs, and a reload raising it lets the turn continue",
+      "status": "pass",
+      "durationMs": 3625.76498,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/rate-limits.test.ts",
+      "name": "an admin tenant's traffic (camelAI's servers behind a few Cloudflare egress addresses, its users' browser tokens) is never rate limited",
+      "status": "pass",
+      "durationMs": 4058.257463,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/rate-limits.test.ts",
+      "name": "creates and runs answer with X-RateLimit-* headers; an upsert that changes nothing is not a create, and gives the same configHash",
+      "status": "pass",
+      "durationMs": 9447.927565,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/rate-limits.test.ts",
+      "name": "the server answers 429 RATE_LIMITED with Retry-After and the limit: per address behind Cloudflare, per tenant for creates and runs",
+      "status": "pass",
+      "durationMs": 3499.107839,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/rate-limits.test.ts",
+      "name": "without AGENT_TRUST_CF_CONNECTING_IP, CF-Connecting-IP is ignored and the load balancer's X-Forwarded-For entry counts",
+      "status": "pass",
+      "durationMs": 2151.46241,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/spend-limits.test.ts",
+      "name": "a run's own spend limit ends that run once it crosses it, and leaves the agent's limit and later runs alone",
+      "status": "pass",
+      "durationMs": 3293.022945,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/spend-limits.test.ts",
+      "name": "an agent's spend limit ends the turn that crosses it and refuses new prompts until a new limit, which counts from zero",
+      "status": "pass",
+      "durationMs": 73026.989179,
+      "reason": "",
+      "backend": "node"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/storage-limits.test.ts",
+      "name": "over the API: uploads need credit, stop at the free limit with STORAGE_LIMIT, and the operator can raise a tenant's limit",
+      "status": "pass",
+      "durationMs": 5326.327761,
+      "reason": "",
+      "backend": "node"
+    },
+    {
       "area": "schedules",
       "source": "tests/schedule-api.test.ts:21",
       "name": "public accounts can email their verified address and cannot email strangers or suppressed recipients",
@@ -476,23 +1268,33 @@
   "shards": [
     {
       "index": 1,
-      "total": 4,
-      "durationMs": 24634.089396
+      "total": 6,
+      "durationMs": 27879.097999999998
     },
     {
       "index": 2,
-      "total": 4,
-      "durationMs": 17226.834182
+      "total": 6,
+      "durationMs": 27340.254751
     },
     {
       "index": 3,
-      "total": 4,
-      "durationMs": 26631.86794
+      "total": 6,
+      "durationMs": 76606.576471
     },
     {
       "index": 4,
-      "total": 4,
-      "durationMs": 27867.362084
+      "total": 6,
+      "durationMs": 20612.445602
+    },
+    {
+      "index": 5,
+      "total": 6,
+      "durationMs": 21999.391699
+    },
+    {
+      "index": 6,
+      "total": 6,
+      "durationMs": 24313.786025
     }
   ]
 }
