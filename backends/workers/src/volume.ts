@@ -476,7 +476,7 @@ export class Volume extends DurableObject<VolumeBindings> {
       ...(since < oldest - 1 ? { gap: true } : {}),
     };
   }
-  snapshot(
+  async snapshot(
     name?: string,
     options: {
       pinned?: boolean;
@@ -486,7 +486,7 @@ export class Volume extends DurableObject<VolumeBindings> {
     } = {},
   ) {
     this.alive();
-    return this.ctx.storage.transactionSync(() => {
+    const snapshot = this.ctx.storage.transactionSync(() => {
       name = name === undefined ? `seq ${this.sequence()}` : name;
       if (typeof name !== "string" || !name.trim() || name.length > 120)
         throw new FileError("name must be 1–120 characters");
@@ -496,7 +496,7 @@ export class Volume extends DurableObject<VolumeBindings> {
         labels =
           options.labels === undefined ? {} : labelsInput(options.labels),
         cap = pinned ? VOLUME_LIMITS.pinnedSnapshots : VOLUME_LIMITS.snapshots;
-      if (this.snapshots().filter((s) => s.pinned === pinned).length >= cap)
+      if (this.snapshots(undefined, true).filter((s) => s.pinned === pinned).length >= cap)
         throw new FileError(
           `A volume keeps at most ${cap} ${pinned ? "pinned " : ""}snapshots`,
           409,
@@ -525,6 +525,11 @@ export class Volume extends DurableObject<VolumeBindings> {
       if (options.expiresAt) this.sql().exec("INSERT INTO temporary_snapshots VALUES(?,?)", id, options.expiresAt);
       return this.snapshotSummary(id);
     });
+    if (options.expiresAt) {
+      const alarm = await this.ctx.storage.getAlarm();
+      if (alarm === null || alarm > options.expiresAt) await this.ctx.storage.setAlarm(options.expiresAt);
+    }
+    return snapshot;
   }
   private snapshotSummary(id: string): Snapshot {
     const row = [
