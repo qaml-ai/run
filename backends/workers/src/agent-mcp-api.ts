@@ -1,0 +1,123 @@
+// Generated from packages/cli/src/{api,ops}.ts by scripts/reuse-agent-mcp.mjs.
+/**
+ * A refused call: the runtime's `error` message, with the HTTP status and its `code` when it gave one. The message
+ * suits every surface; `cliHint` is what to do about it with the CLI, which only the CLI shows (an MCP client's model
+ * would try to run it).
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  readonly cliHint?: string;
+  constructor(status: number, message: string, code?: string, cliHint?: string) { super(message); this.status = status; this.code = code; this.cliHint = cliHint; }
+}
+
+export interface Credentials {
+  url: string;
+  /** An API or OAuth token; without one, requests go with `headers` alone (the console's session cookie). */
+  apiKey?: string;
+  /** Sent with every call, e.g. the console's X-Agent-Runtime-Console. */
+  headers?: Record<string, string>;
+}
+
+/** SHA-256 as hex, with Web Crypto: the same in Node and browsers. */
+async function sha256(text: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** The runtime's REST API, called with a tenant API key (`art_…`). */
+export class Api {
+  readonly url: string;
+  private readonly apiKey?: string;
+  private readonly headers: Record<string, string>;
+  private readonly fetch: typeof globalThis.fetch;
+  private tenant?: Promise<string>;
+  // Browser fetch requires the global receiver, even when stored on this client.
+  constructor(credentials: Credentials, fetch = globalThis.fetch.bind(globalThis)) {
+    this.url = credentials.url.replace(/\/+$/, "");
+    this.apiKey = credentials.apiKey;
+    this.headers = credentials.headers ?? {};
+    this.fetch = fetch;
+  }
+
+  async call<T = any>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
+    const response = await this.fetch(this.url + path, {
+      method,
+      headers: { ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}), ...this.headers, ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...headers },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await response.text();
+    let json: any;
+    try { json = text ? JSON.parse(text) : undefined; } catch { json = undefined; }
+    if (!response.ok) {
+      const message = json?.error ?? json?.message ?? (text.slice(0, 300) || response.statusText);
+      throw new ApiError(response.status, message, json?.code, response.status === 401 ? "check your API key: camelrun login" : undefined);
+    }
+    return json as T;
+  }
+  get<T = any>(path: string) { return this.call<T>("GET", path); }
+  /** A public document of the runtime's (its docs), as text. */
+  async text(path: string) {
+    const response = await this.fetch(this.url + path);
+    if (!response.ok) throw new ApiError(response.status, `${path}: ${response.status === 404 ? "no such page (read_docs with no path lists them)" : response.statusText}`);
+    return response.text();
+  }
+
+  me(): Promise<{ tenant: string; via: string; login?: string; defaultModel: string }> { return this.get("/v1/me"); }
+
+  /** A definition's id from its key: the runtime derives it from the tenant and the key. */
+  async definitionId(keyOrId: string) {
+    if (/^def_[a-f0-9]{20}$/.test(keyOrId)) return keyOrId;
+    this.tenant ??= this.me().then(me => me.tenant);
+    return `def_${(await sha256(`${await this.tenant}:${keyOrId}`)).slice(0, 20)}`;
+  }
+
+  /** An agent's id from its key or id (`client_…`). */
+  async agentId(keyOrId: string) {
+    if (keyOrId.startsWith("client_")) return keyOrId;
+    const agents = await this.get<{ id: string; key: string | null }[]>("/v1/agents");
+    const found = agents.find(agent => agent.key === keyOrId);
+    if (!found) throw new ApiError(404, `No agent with key ${JSON.stringify(keyOrId)} in this account`, undefined, "camelrun agents list shows them");
+    return found.id;
+  }
+}
+
+export const enc = encodeURIComponent;
+export interface RunSummary {
+  /** The agent's id; none for a stateless run, whose `requestId` is its run's id (run_…). */
+  agent?: string; requestId: string;
+  /** running: it has not ended yet (poll it with `camelrun runs get`, or the get_run tool). */
+  status: "running" | "completed" | "input_required" | "failed";
+  text?: string;
+  /** errorClass, providerStatus, retryable and model: how a model call failed it, where one did. */
+  error?: { code: string; message: string; errorClass?: string; providerStatus?: number; retryable?: boolean; model?: string };
+  inputs?: { id: string; kind: string; message?: string; detail?: unknown }[];
+  toolErrors?: unknown[];
+  files?: unknown[];
+  usage?: unknown;
+  /** A stateless run's structured output. */
+  output?: unknown;
+}
+
+/** A request record as a run: what it said, what it waits on, or why it failed. */
+export function summarize(agent: string, record: any): RunSummary {
+  const base = { agent, requestId: record.id };
+  if (record.state !== "completed") return { ...base, status: "running" };
+  const outcome = record.outcome ?? {};
+  const result = outcome.result ?? {};
+  const failure = outcome.error ? { code: outcome.uncertain ? "uncertain" : "runtime_error", message: outcome.error }
+    : result.error ? { code: result.code ?? "model_error", message: result.error, ...result.modelError }
+    : result.stopped === "spend_limit" ? { code: "spend_limit", message: "The agent reached its spend limit; raise it to go on" }
+    : result.stopped === "turn_limit" ? { code: "turn_limit", message: "The run reached its limit of model responses or time; send another message to continue" } : undefined;
+  const status = failure ? "failed" : result.stopped === "input_required" ? "input_required" : "completed";
+  return {
+    ...base, status,
+    ...(typeof result.reply === "string" ? { text: result.reply } : {}),
+    ...(failure ? { error: failure } : {}),
+    ...(result.inputs?.length ? { inputs: result.inputs.map((input: any) => ({ id: input.id, kind: input.kind, ...(input.message ? { message: input.message } : {}), detail: input.detail })) } : {}),
+    ...(result.toolErrors?.length ? { toolErrors: result.toolErrors } : {}),
+    ...(result.files?.length ? { files: result.files } : {}),
+    ...(result.usage ? { usage: result.usage } : {}),
+  };
+}
+

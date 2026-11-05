@@ -1,7 +1,6 @@
 // Generated from src/agent-mcp.ts by scripts/reuse-agent-mcp.mjs. Only host dependencies change.
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { Api, ApiError } from '../../../packages/cli/src/api.ts';
-import { summarize, type RunSummary } from '../../../packages/cli/src/ops.ts';
+import { Api, ApiError, summarize, type RunSummary } from './agent-mcp-api.ts';
 import { digest } from './api-contract.ts';
 const resumeId = async (id: string) => 'resume_' + (await digest(id)).slice(0, 40);
 
@@ -200,7 +199,7 @@ function follow(call: Call, inbox: Inbox, signal: AbortSignal): Promise<void> {
         const response = await call.fetch(call.events, { headers: { Authorization: call.authorization, Accept: "text/event-stream", ...(cursor ? { "Last-Event-ID": cursor } : {}) }, signal });
         if (response.status === 409) { cursor = undefined; await response.body?.cancel(); continue; }
         if (!response.ok) {
-          const error = new ApiError(response.status, (await response.json().catch(() => ({}))).error ?? response.statusText);
+          const error = new ApiError(response.status, (await response.json().catch(() => ({})) as { error?: string }).error ?? response.statusText);
           if (response.status !== 503) { opened.reject(error); inbox.push({ kind: "failed", error }); return; }
         } else {
           for await (const frame of frames(response.body!)) {

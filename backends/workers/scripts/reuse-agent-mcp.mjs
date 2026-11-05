@@ -10,8 +10,16 @@ content = content.replace('interface Call {', 'export interface Call {\n  fetch:
   .replaceAll('resumeId(current)', 'await resumeId(current)')
   .replace('function describe(', 'export function describe(')
   .replace('async function converse(', 'export async function converse(')
-  .replace('async function settle(', 'export async function settle(');
-const output = "// Generated from src/agent-mcp.ts by scripts/reuse-agent-mcp.mjs. Only host dependencies change.\nimport type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';\nimport { Api, ApiError } from '../../../packages/cli/src/api.ts';\nimport { summarize, type RunSummary } from '../../../packages/cli/src/ops.ts';\nimport { digest } from './api-contract.ts';\nconst resumeId = async (id: string) => 'resume_' + (await digest(id)).slice(0, 40);\n\n" + content;
+  .replace('async function settle(', 'export async function settle(')
+  .replace('(await response.json().catch(() => ({}))).error', '(await response.json().catch(() => ({})) as { error?: string }).error');
+const output = "// Generated from src/agent-mcp.ts by scripts/reuse-agent-mcp.mjs. Only host dependencies change.\nimport type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';\nimport { Api, ApiError, summarize, type RunSummary } from './agent-mcp-api.ts';\nimport { digest } from './api-contract.ts';\nconst resumeId = async (id: string) => 'resume_' + (await digest(id)).slice(0, 40);\n\n" + content;
 const path = new URL('../src/agent-mcp-core.ts', import.meta.url);
 if (process.argv.includes('--check')) { if (await readFile(path, 'utf8') !== output) throw new Error('Agent MCP source drifted'); }
 else await writeFile(path, output);
+
+const api = await readFile(new URL('../../../packages/cli/src/api.ts', import.meta.url), 'utf8');
+const ops = await readFile(new URL('../../../packages/cli/src/ops.ts', import.meta.url), 'utf8');
+const apiText = '// Generated from packages/cli/src/{api,ops}.ts by scripts/reuse-agent-mcp.mjs.\n' + api.replaceAll('globalThis.crypto', 'crypto') + ops.slice(ops.indexOf('export interface RunSummary'), ops.indexOf('/** Wait up to'));
+const apiPath = new URL('../src/agent-mcp-api.ts', import.meta.url);
+if (process.argv.includes('--check')) { if (await readFile(apiPath, 'utf8') !== apiText) throw new Error('Agent MCP REST adapter drifted'); }
+else await writeFile(apiPath, apiText);
