@@ -1,0 +1,13 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "camelrun-proto-platform-hibernation",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "durable_objects": { "bindings": [{ "name": "AGENTS", "class_name": "CamelAgent" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CamelAgent"] }],
+  "vars": { "TEST_MODEL": "1", "TEST_MODE": "1", "MODEL": "test/echo" }
+}

@@ -1,0 +1,2 @@
+{"phase":"idle-start","startedAt":"2026-11-05T18:25:06.249Z","objectId":"aeddd390650f56e6463e8056c3b4c2151969be9032516abd3c32a57405e956be","name":"idle-websocket","initialInstance":"0467a50f-b668-4bfc-b23c-a00407f13391"}
+{"phase":"idle-end","idleEndedAt":"2026-11-05T18:28:07.044Z","idleMs":180000,"finalInstance":"925365f0-7885-4418-b5e9-a60be26496cc","hibernated":true,"connected":true,"note":"Compare this objectId and idle window with Cloudflare duration metrics; instance replacement proves eviction only."}

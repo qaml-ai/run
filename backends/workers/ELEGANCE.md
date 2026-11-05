@@ -15,9 +15,11 @@ Built on the work from [#635](https://github.com/qaml-ai/run/pull/635) and
 [#644](https://github.com/qaml-ai/run/pull/644). Read the earlier
 [feasibility measurements](../cloudflare/docs/FEASIBILITY.md) and
 [hybrid study](../cloudflare/docs/HYBRID.md) for the cloud evidence this
-experiment builds on. Model and payment tests use local fake providers. The money track also ran a
+experiment builds on. Model and payment tests use local fake providers. The money track ran a
 bounded deployed crypto/DO crash probe; [MONEY.md](MONEY.md) records its scope and
-cleanup. There is no new production performance or cost claim.
+cleanup. The platform track ran scoped real Cloudflare volume and hibernation
+probes; [PLATFORM.md](PLATFORM.md) records cleanup and measured duration. These
+probes do not establish production performance or cost parity.
 
 ## Architecture actually implemented
 
@@ -85,9 +87,9 @@ and service policy that has no equivalent implementation here. The prior
 prototype was reused and adapted; it is not counted a second time.
 
 This is a footprint comparison, **not a feature-equivalent deletion estimate**.
-The source list explicitly excludes channels, Discord management, voice and
-audio transport. Workers counts include its unchanged imports of calendar and
-pricing logic. The Linux image additionally contains a 79-line JavaScript parser
+The source list excludes channels, Discord management and voice sessions.
+Standalone speech/transcription and their portable provider logic are included.
+Workers counts include unchanged runtime imports from `src/`, recursively. The Linux image additionally contains a 79-line JavaScript parser
 and a 5-line Dockerfile, outside the TypeScript table. Missing core features
 remain in the denominator and are listed below. In a migration, both
 implementations coexist before any old code can be removed.
@@ -160,34 +162,37 @@ versioned derivative in R2; signed URL delivery; a bounded fallback for a
 provider that requires base64. The stock Pi adapter currently uses that
 fallback. URL preparation and signed download are tested, but URL vision
 acceptance by a live provider is not. Input/derivative and aggregate limits
-reduce memory pressure. Uploads buffer up to 32 MiB; these bounds do not
-establish a maximum for every list, snapshot or model-context path.
+reduce memory pressure. Regular file uploads stream through bounded R2 multipart pieces. Existing
+image derivative input still buffers up to 32 MiB. These bounds do not establish
+a maximum for every list, snapshot or model-context path.
 
 ## Public API compatibility scorecard
 
 <!-- SCORECARD -->
-The final inventory has **146 cases: 50 pass, 57 fail, 39 not applicable**. Of the passes, **5 reach workerd** and **45 are SDK-only unit checks**.
+The current inventory has **162 cases: 59 pass, 61 fail, 42 not applicable**. Of the passes, **14 reach workerd** and **45 are SDK-only unit checks**.
 
 | Original test file | Worker pass | SDK-only pass | Fail | N/A |
 | --- | ---: | ---: | ---: | ---: |
 | `tests/api.test.ts` | 0 | 0 | 0 | 18 |
 | `tests/cli-api.test.ts` | 0 | 1 | 0 | 0 |
-| `tests/computers-api.test.ts` | 0 | 0 | 7 | 0 |
+| `tests/computers-api.test.ts` | 3 | 0 | 4 | 0 |
 | `tests/decisions-api.test.ts` | 0 | 0 | 5 | 0 |
+| `tests/files.test.ts` | 2 | 0 | 3 | 7 |
 | `tests/image-generation-api.test.ts` | 0 | 0 | 3 | 0 |
 | `tests/image-generation-sdk.test.ts` | 0 | 0 | 1 | 0 |
 | `tests/openapi-sources.test.ts` | 0 | 0 | 2 | 0 |
 | `tests/openapi.test.ts` | 0 | 0 | 0 | 1 |
+| `tests/projects.test.ts` | 4 | 0 | 0 | 0 |
 | `tests/python_sdk.py` | 3 | 26 | 29 | 2 |
-| `tests/schedule-api.test.ts` | 0 | 0 | 1 | 2 |
-| `tests/sdk-lazy-connections.test.ts` | 2 | 0 | 2 | 0 |
+| `tests/schedule-api.test.ts` | 1 | 0 | 0 | 2 |
+| `tests/sdk-lazy-connections.test.ts` | 1 | 0 | 3 | 0 |
 | `tests/sdk-multi-agent.test.ts` | 0 | 0 | 1 | 0 |
 | `tests/sdk-portable.test.ts` | 0 | 10 | 0 | 0 |
 | `tests/sdk-server.test.ts` | 0 | 8 | 1 | 0 |
 | `tests/service-api.test.ts` | 0 | 0 | 0 | 4 |
 | `tests/speech-api.test.ts` | 0 | 0 | 0 | 2 |
-| `tests/transcription-api.test.ts` | 0 | 0 | 0 | 3 |
-| `tests/transcription-sdk.test.ts` | 0 | 0 | 0 | 1 |
+| `tests/transcription-api.test.ts` | 0 | 0 | 3 | 0 |
+| `tests/transcription-sdk.test.ts` | 0 | 0 | 1 | 0 |
 | `tests/ui-ai-sdk.test.ts` | 0 | 0 | 5 | 0 |
 | `tests/voice-api.test.ts` | 0 | 0 | 0 | 6 |
 <!-- /SCORECARD -->
@@ -203,8 +208,9 @@ Python runner imports `tests/python_sdk.py` and redirects its Node server
 subprocess to a local Workers host. It does not rewrite expected outcomes. Tests
 which directly construct Node services, inspect the Node schema generator, or
 invoke their own ECS fixture cannot target a base URL unchanged; their rows
-explain that harness limitation. Voice/audio cases are outside the requested
-scope.
+explain that harness limitation. Voice-session cases are outside scope. Standalone speech uses a direct Node
+fixture, so it is N/A in this unchanged-assertion harness; transcription cases
+are attempted.
 
 The final pass also attempted the image-generation API/SDK, UI SDK, and the
 HTTP-only schedule case through that shared fixture. Their original test bodies
@@ -214,18 +220,17 @@ Supplied fixture token hashes are seeded into local tenants, and loopback
 streaming-provider URLs are honored. The adapter does not reproduce every Node
 tenant-policy setting, so failure details can also expose fixture limitations.
 
-The remaining gaps include attached SDK/MCP tools, remote MCP/OpenAPI source
-management, definitions, stateless runs, fork/import/export, structured output,
-complete model options, public computer-provider APIs and complete file/archive
-semantics. Channels and voice are deliberately excluded.
+The remaining agent gaps include attached SDK/MCP tools, remote MCP/OpenAPI
+source management, definitions, stateless runs, fork/import/export, structured
+output and complete model options. Channels and voice sessions are deliberately
+excluded.
 
 The [money track](MONEY.md) adds source account/authentication, key/secret,
 credit-hold, model-attempt, subject/workspace, Stripe test-mode and outbox policy.
-Its independent money scorecard and explicit remaining gaps are in that report.
-The original compatibility total above is unchanged: billing adjustments now
-pass, but the four image cases still fail at the upload/generation route. The
-five UI cases receive no assembled assistant message. Full paid-runtime parity
-is not established by these narrower passing service tests.
+The [platform track](PLATFORM.md) adds public computer providers, file/archive/mount
+operations, standalone media, scheduled email and negotiated WebSockets. Each
+report lists its measured tests and remaining gates. Full paid-runtime parity is
+not established by these narrower passing service tests.
 
 ## Platform choices
 
@@ -236,8 +241,8 @@ is not established by these narrower passing service tests.
 | R2 and Images                 | Immutable contents, snapshots/backups and bounded stored image derivatives                                                                                            |
 | Queues and Cron               | Delivery plus repair of the SQL-to-Queue publication gap and periodic expiry                                                                                          |
 | Containers / Sandbox SDK      | Optional Linux exec, files, parsing and persistence tests                                                                                                             |
-| Hibernatable WebSockets / SSE | Native WebSocket API is available; SDK compatibility uses SSE, which remains active while open                                                                        |
-| Analytics Engine              | Optional observation, never financial authority; local plumbing only, not a queried production dashboard                                                              |
+| Hibernatable WebSockets / SSE | SDKs negotiate hibernatable WebSockets; existing Node servers explicitly select compatible SSE                                                                        |
+| Analytics Engine              | Structured source metric names; real duration probe; alert evaluator exists, query/delivery service remains missing                                                              |
 | Rate Limiting binding         | Optional fast HTTP throttle hook; durable tenant admission remains authoritative; no real cloud binding is provisioned                                                |
 | Secrets Store                 | No real credentials are needed locally. No Secrets Store resource is created; production secret distribution and rotation remain work                                 |
 | Workflows                     | Not used: the tested wake, tool and delivery operations fit Pi/Lifecycle, alarms and Queues. A cross-service account export/deletion job may justify a Workflow later |
@@ -287,18 +292,18 @@ state/recovery scan them. This backend caps history materialization and fails
 explicitly beyond its bound; it does not yet provide the complete large-history
 paging/export implementation.
 
-**Idle SSE is not hibernation.** Native hibernatable WebSockets can avoid idle
-DO duration, but existing SDKs use SSE. Those open streams can retain an active
-object. See
-[Cloudflare's WebSocket guidance](https://developers.cloudflare.com/durable-objects/best-practices/websockets/).
-Do not multiply a hibernating-agent price by an SSE-heavy workload. Lazy SDK
-handles and reconnect semantics matter at least as much as dropping the
-supervisor.
+**Transport selection changes idle duration.** Both SDKs now negotiate
+hibernatable WebSockets and preserve Node SSE compatibility. In a paired
+180-second real Worker probe the WebSocket retained its connection across an
+instance change and recorded 0.0188 GB-s of setup/wake duration; the SSE control
+retained its instance and recorded 23.1044 GB-s. The raw period metrics and
+cleanup are in [PLATFORM.md](PLATFORM.md). This proves one synthetic idle path,
+not production connection limits, reconnect bursts or end-to-end cost.
 
-**Cost depends on active duration, SQL and computers.** No new cloud resources
-were deployed: new cloud spend is $0; prior experiment spend remains
-approximately $5, as supplied in the task. There are no cloud snapshots to
-retain from this run. The earlier measured marginal model was $0.00576 per
+**Cost depends on active duration, SQL and computers.** Two isolated platform probes used temporary Cloudflare resources. All were
+deleted; their combined marginal usage is estimated below $0.02, not measured
+from an invoice. Prior experiment spend remains separate. No cloud snapshots
+are retained from this track. The earlier measured marginal model was $0.00576 per
 continuously active DO-hour, from `0.128 GB * 3600 * $12.50 / 1e6`; current
 [DO pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)
 should be checked again before procurement. At those rates, an illustrative

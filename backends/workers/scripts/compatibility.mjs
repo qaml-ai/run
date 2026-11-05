@@ -5,8 +5,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 const here = fileURLToPath(new URL("../", import.meta.url)),
   root = path.resolve(here, "../..");
+// These suites exercise the public platform APIs through the same runtime()
+// fixture as the API/SDK suites. Direct Node service tests below stay excluded.
+const platformFiles = new Set(["projects.test.ts", "files.test.ts"]);
 const candidates = (await readdir(path.join(root, "tests")))
-  .filter((f) => /(api|sdk).*\.test\.ts$/.test(f))
+  .filter((f) => /(api|sdk).*\.test\.ts$/.test(f) || platformFiles.has(f))
   .sort();
 const only = process.env.COMPAT_ONLY?.split(",");
 const runSet = new Set([
@@ -20,8 +23,11 @@ const runSet = new Set([
   "openapi-sources.test.ts",
   "image-generation-api.test.ts",
   "image-generation-sdk.test.ts",
+  "transcription-api.test.ts",
+  "transcription-sdk.test.ts",
   "ui-ai-sdk.test.ts",
   "schedule-api.test.ts",
+  ...platformFiles,
 ]);
 const caseExclusions = {
   "schedule-api.test.ts": new Map([
@@ -32,6 +38,12 @@ const caseExclusions = {
     [
       "a calendar wake-up tells the model its fixed local edition date",
       "Mutates the Node Postgres schedule table to trigger its scheduler; Workers schedules live in DO SQLite",
+    ],
+  ]),
+  "files.test.ts": new Map([
+    [
+      "an upload streams to storage a chunk at a time: the source is never more than a few chunks ahead of storage",
+      "Includes direct Node VolumeService/storage instrumentation; cannot target a base URL unchanged",
     ],
   ]),
 };
@@ -85,9 +97,16 @@ for (const file of candidates) {
     ts.forEachChild(node, (child) => scan(child, env));
   };
   scan(ast);
+  // Do not count original Node-only file unit tests as evidence for Workers.
+  // The remaining cases still run every original assertion unchanged.
+  const excluded = new Map(caseExclusions[file]);
+  if (platformFiles.has(file)) {
+    for (const name of names) if (kinds.get(name) !== "worker")
+      excluded.set(name, "Direct Node service/unit test; cannot target a base URL unchanged");
+  }
   let reason;
-  if (/^(voice|speech|transcription)/.test(file))
-    reason = "Voice/audio excluded by requested scope";
+  if (/^voice/.test(file))
+    reason = "Voice sessions excluded by requested scope";
   else if (!runSet.has(file))
     reason = /openapi\.test/.test(file)
       ? "Source-generated Node API schema test; does not accept a base URL"
@@ -104,7 +123,7 @@ for (const file of candidates) {
     continue;
   }
   const log = [];
-  const eligible = names.filter((name) => !caseExclusions[file]?.has(name));
+  const eligible = names.filter((name) => !excluded.has(name));
   const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const args = [
     "--import",
@@ -145,18 +164,18 @@ for (const file of candidates) {
       child.stderr.on("data", (x) => log.push(x.toString()));
       child.on("exit", (code, signal) => resolve({ code, signal }));
     });
-  const output = reused ?? log.join("");
+  const output = (reused ?? log.join("")).replace(/[ \t]+$/gm, "");
   await writeFile(
     path.join(here, "measurements", `compat-${file}.tap`),
     output,
   );
   for (const test of names) {
-    if (caseExclusions[file]?.has(test)) {
+    if (excluded.has(test)) {
       rows.push({
         file: `tests/${file}`,
         test,
         status: "not-applicable",
-        reason: caseExclusions[file].get(test),
+        reason: excluded.get(test),
       });
       continue;
     }

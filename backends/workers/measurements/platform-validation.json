@@ -1,0 +1,73 @@
+{
+  "status": "verified subset; full compatibility remains incomplete",
+  "unit": {
+    "command": "npm test",
+    "pass": 18,
+    "fail": 0
+  },
+  "integration": {
+    "command": "npm run test:integration",
+    "finalLog": "platform-integration.tap",
+    "pass": 39,
+    "fail": 0,
+    "durationMs": 137851.429209
+  },
+  "sdkTransport": {
+    "typescript": 6,
+    "python": 4,
+    "nodeSdkAndWatch": 20,
+    "nodeWatchAfterFinalCleanupFix": 16,
+    "pythonAgainstNode": 5
+  },
+  "typechecks": [
+    "backends/workers",
+    "sdk"
+  ],
+  "sourceDriftChecks": [
+    "reuse-sql",
+    "reuse-media",
+    "reuse-schedules",
+    "reuse-computers",
+    "reuse-admin",
+    "reuse-volume-policy"
+  ],
+  "docs": {
+    "build": true,
+    "llmsTests": 2
+  },
+  "build": "Both Wrangler dry-run bundles passed",
+  "compatibility": {
+    "total": 162,
+    "pass": 59,
+    "fail": 61,
+    "notApplicable": 42,
+    "workerPass": 14,
+    "baseline": {
+      "total": 146,
+      "pass": 50,
+      "fail": 57,
+      "notApplicable": 39
+    },
+    "scopeChanges": [
+      "16 file/project inventory cases added: 6 pass, 3 fail, 7 N/A",
+      "4 standalone transcription cases changed from N/A to attempted/fail"
+    ],
+    "originalComputerCases": {
+      "pass": 3,
+      "total": 7
+    }
+  },
+  "cloud": {
+    "evidence": [
+      "platform-files-cloud.json",
+      "platform-hibernation-summary.json",
+      "platform-hibernation-cleanup.json"
+    ],
+    "estimatedMarginalUsdLessThan": 0.02,
+    "allTemporaryResourcesDeleted": true,
+    "realAwsOrModelProviderCalls": false
+  },
+  "limitations": "PLATFORM.md",
+  "backendSourceCommit": "3582067a",
+  "finalizedAt": "2026-11-05T18:52:38.028Z"
+}

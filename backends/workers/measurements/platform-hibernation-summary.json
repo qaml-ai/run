@@ -1,0 +1,32 @@
+{
+  "source": "measurements/platform-hibernation-duration-final.json",
+  "window": {
+    "from": "2026-11-05T18:37:00Z",
+    "through": "2026-11-05T18:42:00Z"
+  },
+  "idleTargetSeconds": 180,
+  "results": {
+    "websocket": {
+      "objectId": "aeddd390650f56e6463e8056c3b4c2151969be9032516abd3c32a57405e956be",
+      "billedDurationGBSeconds": 0.018834176,
+      "activeSeconds": 0.147142,
+      "metricMinutes": [
+        "2026-11-05T18:37:00Z",
+        "2026-11-05T18:40:00Z"
+      ]
+    },
+    "sse": {
+      "objectId": "bfac2e1f73d018b2cc3821e50849621415676218c5533d1278d12b896ee18305",
+      "billedDurationGBSeconds": 23.10440768,
+      "activeSeconds": 180.503185,
+      "metricMinutes": [
+        "2026-11-05T18:37:00Z",
+        "2026-11-05T18:38:00Z",
+        "2026-11-05T18:39:00Z",
+        "2026-11-05T18:40:00Z"
+      ]
+    }
+  },
+  "interpretation": "The WebSocket stayed open and its instance changed. Only setup/wake duration was recorded; the SSE control retained its instance and recorded continuous duration. A short synthetic experiment, not a production workload estimate.",
+  "cleanup": "platform-hibernation-cleanup.json"
+}

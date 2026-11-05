@@ -1,0 +1,14 @@
+{
+  "queriedAt": "2026-11-05T18:32:45.330Z",
+  "query": "{ viewer { accounts(filter:{accountTag:\"85bbd288051330fb51ee1c86031a299b\"}) { durableObjectsPeriodicGroups(limit:100,filter:{datetime_geq:\"2026-11-05T18:24:00Z\",datetime_leq:\"2026-11-05T18:30:00Z\",objectId:\"aeddd390650f56e6463e8056c3b4c2151969be9032516abd3c32a57405e956be\"},orderBy:[datetimeMinute_ASC]) { dimensions {datetimeMinute objectId namespaceId} sum {duration activeTime cpuTime inboundWebsocketMsgCount outboundWebsocketMsgCount}} } } }",
+  "data": {
+    "viewer": {
+      "accounts": [
+        {
+          "durableObjectsPeriodicGroups": []
+        }
+      ]
+    }
+  },
+  "errors": null
+}

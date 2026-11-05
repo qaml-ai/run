@@ -1,0 +1,124 @@
+
+> @camelai/run-workers-experiment@0.0.0 test
+> node --import ./test/sdk-deps.mjs --experimental-strip-types --test --test-concurrency=1 test/*.test.ts
+
+TAP version 13
+# {"type":"admin_viewed","viewer":"administrator","path":"/api/me"}
+# {"type":"admin_viewed","viewer":"administrator","path":"/api/me"}
+# Subtest: admin API is disabled by default and scoped keys cannot read it
+ok 1 - admin API is disabled by default and scoped keys cannot read it
+  ---
+  duration_ms: 9.801459
+  type: 'test'
+  ...
+# Subtest: admin path is bounded and does not shadow the public API
+ok 2 - admin path is bounded and does not shadow the public API
+  ---
+  duration_ms: 0.36025
+  type: 'test'
+  ...
+# Subtest: platform alarm periods, thresholds, names and comparisons match Terraform
+ok 3 - platform alarm periods, thresholds, names and comparisons match Terraform
+  ---
+  duration_ms: 5.28625
+  type: 'test'
+  ...
+# Subtest: turn failure alarm uses two complete windows, minimum traffic and a strict 40 percent threshold
+ok 4 - turn failure alarm uses two complete windows, minimum traffic and a strict 40 percent threshold
+  ---
+  duration_ms: 0.417791
+  type: 'test'
+  ...
+# Subtest: webhook lag uses the maximum and missing instrumentation cannot report healthy
+ok 5 - webhook lag uses the maximum and missing instrumentation cannot report healthy
+  ---
+  duration_ms: 0.08675
+  type: 'test'
+  ...
+# Subtest: unwired policy can be tested with synthetic signals without claiming production instrumentation
+ok 6 - unwired policy can be tested with synthetic signals without claiming production instrumentation
+  ---
+  duration_ms: 0.200167
+  type: 'test'
+  ...
+# Subtest: computer connection credentials, provider limits and managed admission match the API contract
+ok 7 - computer connection credentials, provider limits and managed admission match the API contract
+  ---
+  duration_ms: 3.124583
+  type: 'test'
+  ...
+# Subtest: Lambda API signs every operation for lambda, bounds replies, and rejects unsafe fake endpoints
+ok 8 - Lambda API signs every operation for lambda, bounds replies, and rejects unsafe fake endpoints
+  ---
+  duration_ms: 19.608875
+  type: 'test'
+  ...
+# Subtest: managed Lambda fake endpoint executes lifecycle and stable command receipt without using AWS
+ok 9 - managed Lambda fake endpoint executes lifecycle and stable command receipt without using AWS
+  ---
+  duration_ms: 5.178875
+  type: 'test'
+  ...
+# Subtest: native Sprites and Tunnel adapters bound output and use the source provider protocols
+ok 10 - native Sprites and Tunnel adapters bound output and use the source provider protocols
+  ---
+  duration_ms: 1.19875
+  type: 'test'
+  ...
+# Subtest: MicroVM state accounting reuses active and suspended intervals from the Node runtime
+ok 11 - MicroVM state accounting reuses active and suspended intervals from the Node runtime
+  ---
+  duration_ms: 0.125208
+  type: 'test'
+  ...
+# Subtest: Daytona REST transport waits for readiness and confirms deletion
+ok 12 - Daytona REST transport waits for readiness and confirms deletion
+  ---
+  duration_ms: 0.416125
+  type: 'test'
+  ...
+# Subtest: native lifecycle blocks egress; snapshots survive reopen; failed capture preserves prior handle
+ok 13 - native lifecycle blocks egress; snapshots survive reopen; failed capture preserves prior handle
+  ---
+  duration_ms: 2.854125
+  type: 'test'
+  ...
+# Subtest: native output is bounded and the process is killed on overflow
+ok 14 - native output is bounded and the process is killed on overflow
+  ---
+  duration_ms: 0.243416
+  type: 'test'
+  ...
+# Subtest: SDK provider restores a durable R2 record and delegates files through the SDK interface
+ok 15 - SDK provider restores a durable R2 record and delegates files through the SDK interface
+  ---
+  duration_ms: 10.398041
+  type: 'test'
+  ...
+# Subtest: invalid paths, snapshot names and commands are refused before starting a VM
+ok 16 - invalid paths, snapshot names and commands are refused before starting a VM
+  ---
+  duration_ms: 0.369708
+  type: 'test'
+  ...
+# Subtest: registry bridge authenticates before checking ownership and rejects browsers
+ok 17 - registry bridge authenticates before checking ownership and rejects browsers
+  ---
+  duration_ms: 11.900583
+  type: 'test'
+  ...
+# Subtest: registry lists, inspects supported configuration, and forwards durable requests
+ok 18 - registry lists, inspects supported configuration, and forwards durable requests
+  ---
+  duration_ms: 2.4665
+  type: 'test'
+  ...
+1..18
+# tests 18
+# suites 0
+# pass 18
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 567.341375
