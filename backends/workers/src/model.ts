@@ -1,3 +1,4 @@
+import "./model-bedrock.ts";
 import {
   createAssistantMessageEventStream,
   type AssistantMessage,
@@ -106,7 +107,8 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
     const prepared = {
       [PREPARED_MODEL_CREDENTIALS]: credential,
       modelCallKind: callKind,
-      ...options, ...(toolChoice !== undefined ? { toolChoice: toolChoice as SimpleStreamOptions["toolChoice"] } : {}), ...callSettings(model, config, config.thinkingLevel),
+      ...options,
+      ...(model.api === "openai-codex-responses" ? { sessionId: await hooks.agentId?.() ?? options.sessionId } : {}), ...(toolChoice !== undefined ? { toolChoice: toolChoice as SimpleStreamOptions["toolChoice"] } : {}), ...callSettings(model, config, config.thinkingLevel),
       ...(reasoning ? { reasoning } : {}),
       ...(fallback || virtualNext ? { supersede: (message: AssistantMessage) => fallback && isContentFilterBlock(message) ? "content_filter" as const : virtualNext && !message.content.length && isModelUnavailable(message) ? "unavailable" as const : undefined } : {}),
       ...(credential ? { apiKey: credential.bearer ? "runtime-bearer" : credential.apiKey ?? "keyless" } : {}),
