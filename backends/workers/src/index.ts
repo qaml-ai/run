@@ -16,6 +16,7 @@ import {
 } from "./control.ts";
 import { ApiError, agentToken, configuration } from "./api-contract.ts";
 import { upsertAgent } from "./agent-upsert.ts";
+import { configurationModelError } from "./default-model.ts";
 import { authorized, agentId, BadRequest, body } from "./validation.ts";
 import { HttpError, errorCode, errorStatus } from "./errors.ts";
 import { handleAdminRequest } from "./admin-api.ts";
@@ -423,6 +424,10 @@ const worker = {
         if (!next || typeof next !== "object" || Array.isArray(next))
           throw new BadRequest("Expected configuration object");
         if (!auth) scopedConfiguration(next);
+        const patched = configuration({ ...entry.config, ...next }, entry.config.model ?? env.MODEL).config;
+        const modelError = (Object.hasOwn(next, "model") || Object.hasOwn(next, "keyScope"))
+          ? await configurationModelError(env, entry.tenantId, patched) : undefined;
+        if (modelError) throw new ApiError(400, modelError);
         return forward(new Request(request.url, {
           method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify({ id: crypto.randomUUID(), method: "configure", params: next }),
