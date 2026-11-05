@@ -9,7 +9,7 @@ import { Workspaces } from './workspaces.ts';
 import { HttpError } from './errors.ts';
 import { modelAttempts } from './model-metering.ts';
 import { EndUserCredits } from './end-user-credits.ts';
-import { modelEndUserRoutes } from './model-end-user-routes.ts';
+import { endUserRoutes } from './end-user-routes.ts';
 import type { AuthContext } from './control.ts';
 import { sweepAdmission } from './admission.ts';
 import { withMoneyIdempotency, expireMoneyIdempotency } from './money-idempotency.ts';
@@ -67,7 +67,7 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
   }
   const billed = await billingRoutes(request, env, auth, s.billing);
   if (billed) return billed;
-  const endUser = await modelEndUserRoutes(request, new EndUserCredits(s.keys.accounts.db), tenant);
+  const endUser = await endUserRoutes(request, tenant, new EndUserCredits(s.keys.accounts.db));
   if (endUser) return endUser;
   const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
   const setter = principal.tokenId ? `token:${principal.tokenId}` : principal.via === 'oauth' ? `oauth:${'grantId' in principal ? principal.grantId : undefined}` : principal.via;
