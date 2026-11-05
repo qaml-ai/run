@@ -75,6 +75,9 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       // invents EmailTags, ConfigurationSetName, or sender formatting for it.
       ...(env.AWS_ENDPOINT_URL_SESV2 && !env.MAIL_TEST_URL ? { MAIL_TEST_URL: new URL("/v2/email/outbound-emails", env.AWS_ENDPOINT_URL_SESV2).href } : {}),
       TEST_MODE: "1", TEST_MODEL: "1", MODEL: modelReference(configuredModel(env)),
+      // An explicitly supplied gateway speaks the configured provider API.
+      // The default fake responder speaks OpenAI completions for every model.
+      TEST_MODEL_API: options.env?.AGENT_BASE_URL ? configuredModel(env).api : "openai-completions",
     },
   });
   cleanups.push(() => server.stop());

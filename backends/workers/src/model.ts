@@ -1,6 +1,7 @@
 import {
   createAssistantMessageEventStream,
   type AssistantMessage,
+  type AssistantMessageEvent,
   type Model,
   type Api,
   type SimpleStreamOptions,
@@ -44,6 +45,7 @@ export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Re
 export type ModelHooks = {
   agentId?: () => Promise<string>;
   beforeRequest?: () => Promise<void>;
+  onStreamEvent?: (event: AssistantMessageEvent) => void | Promise<void>;
   onStall?: (stall: Stall & { provider: string; model: string }) => void | Promise<void>;
   wrapProvider?: (provider: Provider) => Provider;
   settings?: () => Promise<ModelRequestSettings>;
@@ -163,6 +165,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTimeoutEn
           }
           if (routing && event.type === "error") routing.failed = prepared.model;
           if (routing && event.type === "done") { routing.previous = prepared.model; routing.failed = undefined; }
+          await hooks.onStreamEvent?.(event);
           output.push(event);
         }
         const result = await stream.result();
@@ -213,6 +216,7 @@ export function modelRuntime(
     MODEL: string;
     TEST_MODEL?: string;
     TEST_MODEL_BASE_URL?: string;
+    TEST_MODEL_API?: Api;
     TEST_MODE?: string;
   } & ImageBindings & ModelTimeoutEnv & { VOLUMES?: FileBindings["VOLUMES"] },
   getTenant: () => Promise<string>,
@@ -295,7 +299,7 @@ export function modelRuntime(
       if (models.getProvider(providerId)) return;
       const serve = (target: Model<Api>, simple: boolean, context: TranscriptContext, options?: StreamOptions) =>
         target.baseUrl === endpoint.href
-          ? streamApi({ ...target, api: "openai-completions" }, simple, context, options)
+          ? streamApi({ ...target, api: env.TEST_MODEL_API ?? "openai-completions" }, simple, context, options)
           : streamApi(target, simple, context, options);
       models.setProvider(decorate({
         id: providerId, name: "Local compatibility fixture", baseUrl: endpoint.href,
@@ -312,7 +316,7 @@ export function modelRuntime(
         ? { ...model, provider: name.split("/")[0], id: name.slice(name.indexOf("/") + 1) }
         : resolvedModel ?? resolveModel(name, hooks.endpoints, custom);
       const ownTransport = custom?.[selected.provider] || hooks.endpoints?.[selected.provider];
-      const transported = { ...selected, runtimeApi: selected.api, ...(!ownTransport ? { api: "openai-completions" as const } : {}), baseUrl: ownTransport ? selected.baseUrl : endpoint.href };
+      const transported = { ...selected, runtimeApi: selected.api, ...(!ownTransport ? { api: env.TEST_MODEL_API ?? "openai-completions" as const } : {}), baseUrl: ownTransport ? selected.baseUrl : endpoint.href };
       catalog.set(name, transported);
       install(transported.provider);
       return bounded(transported, contextTokens);
