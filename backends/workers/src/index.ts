@@ -257,7 +257,7 @@ const worker = {
             async () => ({ tenant: auth!.tenantId }),
           );
           const response = await decisionRoute(request, decisions);
-          if (response) return response;
+          if (response) { ctx.waitUntil(sendMoneyWebhooks(env)); return response; }
         }
         const control = await controlRoutes(request, env, auth);
         if (control) return control;

@@ -732,8 +732,8 @@ export class CamelAgent extends DurableObject<Env> {
   private async enabledTools(config: AgentConfiguration) {
     const names = await this.computerNames();
     const disabled = new Set([
-      HOST_EXECUTION_TOOL,
-      ...(config.codeMode === false ? ["computer", "exec", "codemode"] : []),
+      HOST_EXECUTION_TOOL, "computer", "exec",
+      ...(config.codeMode === false ? ["codemode"] : []),
       ...(!config.builtins?.includes("ask_user") ? ["ask_user"] : []),
       ...(!config.builtins?.includes("ask_human") ? ["ask_human"] : []),
     ]);
