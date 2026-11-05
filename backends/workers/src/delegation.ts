@@ -7,13 +7,19 @@ import type { NoticeRequest, RuntimeNotice } from './delegation-notifications.ts
 
 type Configuration = { model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
 export type ParentRun = { id: string; params?: { spendLimit?: { usd: number } }; metadata?: Record<string, string> };
-export type ChildRun = { state: string; status?: string; error?: string; outcome?: { result?: { reply?: string; output?: unknown; usage?: { costUsd?: number; subagentCostUsd?: number } }; error?: string } };
+export type ChildUsage = { costUsd?: number; subagentCostUsd?: number; imageCostUsd?: number; decisionCostUsd?: number; webCostUsd?: number };
+export type ChildRun = { state: string; status?: string; error?: string; outcome?: { result?: { reply?: string; output?: unknown; usage?: ChildUsage }; error?: string } };
+export function childUsageCost(usage?: ChildUsage) {
+  return (usage?.costUsd ?? 0) + (usage?.subagentCostUsd ?? 0) + (usage?.imageCostUsd ?? 0) + (usage?.decisionCostUsd ?? 0) + (usage?.webCostUsd ?? 0);
+}
 export type ChildProgressReport = { agentId: string; requestId: string; text: string; callId: string };
 export type DelegatedChild = { id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; task: string; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
 export interface DelegationHost {
   storage: DurableObjectStorage;
   secret: string;
   context(): Promise<{ id: string; config: Configuration; run: ParentRun }>;
+  /** Authoritative remaining spend after completed work, before active child shares. */
+  remainingBudget?(background: boolean): Promise<number | undefined>;
   create(config: Configuration, key: string): Promise<{ id: string }>;
   target(ref: { agent?: string; definition?: string }): Promise<{ id?: string; config: Configuration }>;
   fetch(id: string, request: Request): Promise<Response>;
@@ -49,6 +55,7 @@ export class Delegation {
   constructor(host: DelegationHost) { this.host = host; }
   async children() { return [...(await this.host.storage.list<DelegatedChild>({ prefix })).values()].sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key)); }
   async cost(requestId: string) { return (await this.children()).filter(child => child.parentRequestId === requestId).reduce((sum, child) => sum + (child.spent ?? 0), 0); }
+  async costSince(startedAt: number) { return (await this.children()).filter(child => child.createdAt >= startedAt).reduce((sum, child) => sum + (child.spent ?? 0), 0); }
   private async lineage(id: string, run: ParentRun) {
     const metadata = run.metadata ?? {}, depth = metadata[PARENT_KEYS.depth], max = metadata[PARENT_KEYS.maxDepth], chain = metadata[PARENT_KEYS.chain] ?? '';
     if (depth === undefined || max === undefined || metadata[PARENT_KEYS.signature] !== await signature(this.host.secret, id, run.id, depth, max, chain)) return;
@@ -84,17 +91,24 @@ export class Delegation {
     // Slot and budget reservation are one SQLite transaction. No model call can race them.
     for (;;) {
       signal.throwIfAborted();
+      const available = this.host.remainingBudget
+        ? await this.host.remainingBudget(background)
+        : finiteBudget(run.params?.spendLimit?.usd) ?? finiteBudget(config.spendLimit?.usd);
       const admitted = await this.host.storage.transaction(async tx => {
-        const children = [...(await tx.list<DelegatedChild>({ prefix })).values()].filter(child => child.parentRequestId === run.id);
-        const running = children.filter(child => child.status === 'running');
+        const all = [...(await tx.list<DelegatedChild>({ prefix })).values()];
+        const children = all.filter(child => child.parentRequestId === run.id);
+        const scope = background ? all.filter(child => child.background) : children;
+        const running = scope.filter(child => child.status === 'running');
         if (running.length >= maxParallel) {
           if (background) throw new HttpError(400, `${running.length} sub-agents are running, this agent's most at once: wait for one to finish (wait_agent) before starting another`);
           return false;
         }
         if (args.name && running.some(child => child.name === args.name)) throw new HttpError(400, 'A sub-agent with this name is already running');
-        const budget = finiteBudget(run.params?.spendLimit?.usd) ?? finiteBudget(config.spendLimit?.usd);
-        if (budget !== undefined) {
-          const remaining = budget - children.reduce((sum, child) => sum + (child.spent ?? child.held ?? 0), 0);
+        if (available !== undefined) {
+          const reserved = this.host.remainingBudget
+            ? all.filter(child => child.status === 'running').reduce((sum, child) => sum + (child.held ?? 0), 0)
+            : children.reduce((sum, child) => sum + (child.spent ?? child.held ?? 0), 0);
+          const remaining = available - reserved;
           if (remaining <= 0) throw new HttpError(402, 'This run has no budget left for a sub-agent', 'SPEND_LIMIT');
           held = remaining / (maxParallel - running.length);
         }
@@ -193,7 +207,7 @@ export class Delegation {
           const current = await tx.get<DelegatedChild>(prefix + child.key) ?? child;
           if (current.status !== 'running') return { child: current, changed: false };
           const usage = record.outcome?.result?.usage;
-          const value = { ...current, status: record.status ?? (record.outcome?.error ? 'failed' : 'completed'), endedAt: Date.now(), outcome: record.outcome, error: record.error ?? record.outcome?.error, spent: (usage?.costUsd ?? 0) + (usage?.subagentCostUsd ?? 0), held: undefined };
+          const value = { ...current, status: record.status ?? (record.outcome?.error ? 'failed' : 'completed'), endedAt: Date.now(), outcome: record.outcome, error: record.error ?? record.outcome?.error, spent: childUsageCost(usage), held: undefined };
           await tx.put(prefix + child.key, value);
           return { child: value, changed: true };
         });

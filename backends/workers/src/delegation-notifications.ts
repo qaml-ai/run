@@ -1,5 +1,5 @@
 import { childNotice, MULTI_AGENT_LIMITS } from './multi-agent-policy.ts';
-import type { DelegatedChild } from './delegation.ts';
+import { childUsageCost, type DelegatedChild } from './delegation.ts';
 import type { MessageSource } from './sender.ts';
 
 export type RuntimeNotice = { source: MessageSource; root: string; costUsd: number; metadata: Record<string, unknown> };
@@ -47,6 +47,7 @@ export class DelegationNotifications {
     const key = prefix + child.key;
     if (!await this.host.storage.get(key)) {
       const { text, notice } = childNotice({ agentId: child.id, name: child.name, root: child.root ?? child.id }, child);
+      notice.costUsd = child.spent ?? childUsageCost(child.outcome?.result?.usage);
       await this.host.storage.put(key, { request: { id: `child_${child.requestId}`, method: 'prompt', params: { text, allowDisconnected: true, whileRunning: 'followUp' } }, notice, childKey: child.key } satisfies PendingNotice);
     }
     return this.send(key);

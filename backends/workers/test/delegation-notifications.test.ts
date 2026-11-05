@@ -49,6 +49,11 @@ test('child completion is persisted before delivery and drains once after evicti
   assert.deepEqual(f.submissions[0].delivery, { run: true });
   assert.equal((f.rootStore.values.get('delegation-wakes') as { requests: string[] }).requests.length, 1);
 });
+test('completion notice carries the complete durable child cost', async () => {
+  const f = fixture();
+  await f.notifications.deliver({ ...child, spent: 0.15 });
+  assert.equal(f.submissions[0].notice.costUsd, 0.15);
+});
 
 test('crash after admission repeats the identical request without another wake', async () => {
   const f = fixture(), put = f.host.storage.put.bind(f.host.storage);

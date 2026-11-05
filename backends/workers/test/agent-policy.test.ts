@@ -67,6 +67,25 @@ test('delegation persists idempotent child, budget and result events', async () 
   assert.equal(f.events.filter(event => event.event.type === 'subagent_end').length, 1);
   await Promise.all(f.tasks);
 });
+test('child spending includes decisions, web tools, images and its own children', async () => {
+  const f = fixture(), fetch = f.host.fetch;
+  f.host.fetch = async (id, request) => request.method === 'GET' && new URL(request.url).pathname.startsWith('/requests/')
+    ? Response.json({ state: 'completed', status: 'completed', outcome: { result: { usage: { costUsd: 0.01, subagentCostUsd: 0.02, imageCostUsd: 0.03, decisionCostUsd: 0.04, webCostUsd: 0.05 } } } })
+    : fetch(id, request);
+  const child = await f.delegation.start({ instructions: 'helper', task: 'help' }, 'all-costs', signal());
+  const done = await f.delegation.wait(child);
+  assert.ok(Math.abs(done.spent! - 0.15) < 1e-12);
+  assert.ok(Math.abs(await f.delegation.costSince(child.createdAt) - 0.15) < 1e-12);
+  await Promise.all(f.tasks);
+});
+test('authoritative remaining budget reserves shares held by background children from earlier runs', async () => {
+  const f = fixture();
+  f.host.remainingBudget = async background => { assert.equal(background, true); return 0.04; };
+  f.values.set('delegation:earlier', { id: 'earlier', key: 'earlier', requestId: 'earlier', parentRequestId: 'old-run', status: 'running', background: true, held: 0.03 });
+  await f.delegation.start({ instructions: 'helper', task: 'help' }, 'remaining', signal(), true);
+  assert.ok(Math.abs(f.submitted[0].params.spendLimit.usd - 0.01) < 1e-12);
+  await Promise.all(f.tasks);
+});
 test('unsigned metadata cannot raise depth; genuine child metadata keeps the ceiling', async () => {
   const f = fixture();
   f.setRun({ id: 'parent-run', metadata: { delegationDepth: '99', delegationMaxDepth: '99', delegationChain: 'parent' } });

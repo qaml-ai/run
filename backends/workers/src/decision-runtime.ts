@@ -79,9 +79,14 @@ export class DecisionRuntime {
   }
   tool(): ToolRegistration {
     return defineTool({ name: DECIDE.name, description: DECIDE.description, parameters: DECIDE.parameters as never, structuredOutputSchema: {}, replay: 'unsafe', execute: async (args: Record<string, unknown>, api, context) => {
-      const result = await this.run(args, context.abortSignal ?? new AbortController().signal, { callId: api.callId, startedAt: Date.now() });
-      const text = JSON.stringify(result);
-      return { output: [{ type: 'text', text }], structuredOutput: JSON.parse(text) };
+      try {
+        const result = await this.run(args, context.abortSignal ?? new AbortController().signal, { callId: api.callId, startedAt: Date.now() });
+        const text = JSON.stringify(result);
+        return { output: [{ type: 'text', text }], structuredOutput: JSON.parse(text) };
+      } catch (error) {
+        if (!(error instanceof HttpError) || context.abortSignal?.aborted) throw error;
+        return { isError: true, output: [{ type: 'text', text: error.message }] };
+      }
     } });
   }
 }
