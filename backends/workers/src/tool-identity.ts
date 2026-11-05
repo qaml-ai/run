@@ -25,7 +25,7 @@ function signer(env: IdentityEnv, fallback: string) {
 }
 
 export async function runtimeJwks(env: IdentityEnv) {
-  return (await signer(env, env.PUBLIC_URL ?? "https://localhost")).jwks();
+  return (await signer(env, env.PUBLIC_URL || "https://localhost")).jwks();
 }
 
 export async function signRuntimeIdentity(env: IdentityEnv, issuer: string, audience: string, identity: RuntimeIdentity) {
