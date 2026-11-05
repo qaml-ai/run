@@ -187,7 +187,6 @@ const worker = {
         throw new ApiError(401, "An agent token is required", "UNAUTHORIZED");
       if (match) {
         const idOrKey = agentId(decodeURIComponent(match[2]));
-        if (browser && browser.agent !== idOrKey) throw new ApiError(403, "This browser token grants access to its agent only", "FORBIDDEN");
         if (auth) entry = await new Directory(env, auth.tenantId).get(idOrKey);
         else if (browser && browser.agent === idOrKey)
           entry = await new Directory(env, browser.tenant).get(idOrKey);
