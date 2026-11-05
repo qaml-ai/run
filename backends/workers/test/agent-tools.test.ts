@@ -67,6 +67,19 @@ test("takeover drains calls on the previous connection before retiring it", asyn
   attached.close();
 });
 
+test("attachment admission refuses a live owner before opening a replacement stream", async () => {
+  const attached = new AttachedTools();
+  const owner = attached.attach(frame => {
+    const message = (frame as any).message;
+    if (message.id) queueMicrotask(() => attached.receive({ id: message.id, result: {} }, owner.id));
+  });
+  owner.start(); await attached.waitUntilReady();
+  await assert.rejects(attached.prepareAttach(), { code: "APPLICATION_CONNECTED" });
+  await attached.prepareAttach(owner.id);
+  await attached.prepareAttach(undefined, true);
+  attached.close();
+});
+
 test("source validation seals definition credentials and rejects inline secrets/private URLs", async () => {
   const env = { API_TOKEN: "unit-test-key-with-32-characters-long", AGENT_SECRETS_KEY: "22".repeat(32), TEST_MODE: "1" };
   const sources = await prepareSources(env, "tenant", "definition", "mcpServers", [{ name: "shop", url: "https://example.com/mcp", auth: { type: "bearer", token: "test-value" } }]);

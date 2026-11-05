@@ -2,26 +2,29 @@
   "date": "2026-11-05",
   "track": "agents: tools and code mode",
   "local": {
-    "agent-tools.test.ts": { "passed": 9, "failed": 0 },
+    "agent-tools.test.ts": { "passed": 12, "failed": 0 },
     "host-execution.test.ts": { "passed": 3, "failed": 0 },
     "source-exchange.integration.ts": { "passed": 1, "failed": 0, "runtime": "local workerd, local PostgreSQL, local fake MCP and credential exchange" },
-    "unchanged_sdk-server.test.ts": { "passed": 9, "failed": 0, "durationMs": 5338, "runtime": "local workerd, local PostgreSQL, fake model" },
+    "source-refresh.integration.ts": { "passed": 1, "failed": 0, "runtime": "local workerd, local PostgreSQL, local fake MCP" },
+    "unchanged_sdk-server.test.ts": { "passed": 9, "failed": 0, "runtime": "local workerd, local PostgreSQL, fake model" },
     "unchanged_openapi-sources.test.ts": { "passed": 2, "failed": 0 },
+    "unchanged_python_tool_recovery": { "passed": 4, "failed": 0, "cases": ["test_a_deploy_loses_no_tool_call_close_finishes_the_calls_running", "test_a_tool_process_that_dies_mid_run_the_restarted_one_serves_its_calls_and_the_same_key_fetches_it", "test_connecting_with_changed_tools_declares_them_and_a_run_needs_them_served", "test_parity_history_configure_tools_and_wait_for_request"] },
     "policyDriftChecks": ["reuse-fs-shim", "reuse-inputs", "reuse-openapi", "reuse-exchange-policy"]
   },
   "remoteEvidence": "agents-codemode-cloud.json",
   "limits": {
     "memoryMiBPerVm": 24,
     "vmsPerSession": 3,
-    "ordinary": { "calls": 256, "concurrentCalls": 32, "argumentBytes": 131072, "aggregateResultBytes": 8388608, "timeoutMs": 120000 },
+    "ordinary": { "calls": 256, "concurrentCalls": 32, "argumentBytes": 131072, "aggregateResultBytes": 8388608, "defaultTimeoutMs": 30000, "maxTimeoutMs": 120000 },
     "workflow": { "calls": 8192, "concurrentCalls": 64, "argumentBytes": 1048576, "aggregateResultBytes": 134217728, "timeoutMs": 3600000 },
     "resultBytesPerCall": 1047552,
     "printedBytes": 128000,
-    "printEvents": 1024
+    "printEvents": 1024,
+    "images": 16,
+    "imageBase64Bytes": 8388608
   },
   "limitations": [
     "CPU is bounded by Pi's native QuickJS interrupt-poll budget. It is not a measured two-second operating-system CPU quota as in v8-exec.",
-    "OpenAPI binary and multipart request bodies still require the platform file-transport integration.",
-    "Remote source discovery failures are isolated from the other tools and visible as an unavailable catalog entry; refresh depends on the agent configuration/source refresh integration."
+    "OpenAPI binary and multipart request bodies still require the platform file-transport integration."
   ]
 }

@@ -37,6 +37,7 @@ test("host execution uses Pi's durable task, returns raw output and deduplicates
 test("host execution bounds output and validates supplied limits", () => {
   assert.throws(() => executionParams({ code: "", maxOutputCharacters: 128_001 }));
   assert.equal(executionParams({ code: "", timeoutMs: 999_999 }).timeoutMs, 120_000);
+  assert.equal(executionParams({ code: "" }).timeoutMs, 30_000);
   assert.deepEqual(executionOutput({ ok: true, output: [{ type: "text", text: "1234" }], value: "5678", calls: [], storeWrites: { set: {}, delete: [] } }, 6), { output: ["1234", "56"], truncated: true });
 });
 

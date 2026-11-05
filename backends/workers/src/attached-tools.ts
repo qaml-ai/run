@@ -28,6 +28,16 @@ export class AttachedTools {
     return this.current === connection && connection.initialized && !connection.draining;
   }
 
+  /** A lost HTTP stream may be noticed late by a Worker. Prove its owner still answers before refusing a new process. */
+  async prepareAttach(previous?: string, takeover = false) {
+    const connection = this.current;
+    if (!connection || connection.draining || takeover || previous === connection.id) return;
+    try { await this.request(connection, "ping", {}, 2_000); }
+    catch { this.close(connection.id); return; }
+    if (this.current === connection && !connection.draining)
+      throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools", "APPLICATION_CONNECTED");
+  }
+
   attach(send: (event: unknown) => void, previous?: string, takeover = false, retired?: () => void) {
     if (this.connected && !takeover && previous !== this.current?.id)
       throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools", "APPLICATION_CONNECTED");

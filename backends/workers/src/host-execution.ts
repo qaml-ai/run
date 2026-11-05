@@ -6,6 +6,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { createCodemodeTool } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandboxBase, type CodemodeResult, type CodemodeRunOptions } from "@earendil-works/pi-codemode/portable";
+import { SANDBOX_LIMITS } from "../../../src/limits.ts";
 
 export const HOST_EXECUTION_TOOL = "host_execute";
 export type ExecutionParams = { code: string; timeoutMs?: number; maxOutputCharacters?: number };
@@ -25,10 +26,10 @@ export function executionParams(value: unknown): Required<ExecutionParams> {
   const input = value as Record<string, unknown>;
   if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["code", "timeoutMs", "maxOutputCharacters"].includes(key))) throw new Error("Invalid execute parameters");
   if (typeof input.code !== "string" || input.code.length > 1_000_000) throw new Error("code must be a string of at most 1000000 characters");
-  const timeoutMs = input.timeoutMs ?? 120_000, maxOutputCharacters = input.maxOutputCharacters ?? 32_000;
+  const timeoutMs = input.timeoutMs ?? SANDBOX_LIMITS.timeoutMs, maxOutputCharacters = input.maxOutputCharacters ?? SANDBOX_LIMITS.outputCharacters;
   if (!Number.isInteger(timeoutMs) || Number(timeoutMs) < 1) throw new Error("timeoutMs must be a positive integer");
   if (!Number.isInteger(maxOutputCharacters) || Number(maxOutputCharacters) < 1 || Number(maxOutputCharacters) > 128_000) throw new Error("maxOutputCharacters must be between 1 and 128000");
-  return { code: input.code, timeoutMs: Math.min(Number(timeoutMs), 120_000), maxOutputCharacters: Number(maxOutputCharacters) };
+  return { code: input.code, timeoutMs: Math.min(Number(timeoutMs), SANDBOX_LIMITS.maxTimeoutMs), maxOutputCharacters: Number(maxOutputCharacters) };
 }
 
 export function executionOutput(raw: CodemodeResult, max: number): ExecutionResult {
