@@ -19,7 +19,8 @@ else await writeFile(path, output);
 
 const api = await readFile(new URL('../../../packages/cli/src/api.ts', import.meta.url), 'utf8');
 const ops = await readFile(new URL('../../../packages/cli/src/ops.ts', import.meta.url), 'utf8');
-const apiText = '// Generated from packages/cli/src/{api,ops}.ts by scripts/reuse-agent-mcp.mjs.\n' + api.replaceAll('globalThis.crypto', 'crypto') + ops.slice(ops.indexOf('export interface RunSummary'), ops.indexOf('/** Wait up to'));
+const version = JSON.parse(await readFile(new URL('../../../packages/cli/package.json', import.meta.url), 'utf8')).version;
+const apiText = 'export const VERSION = ' + JSON.stringify(version) + ';\n' + '// Generated from packages/cli/src/{api,ops}.ts by scripts/reuse-agent-mcp.mjs.\n' + api.replaceAll('globalThis.crypto', 'crypto') + ops.slice(ops.indexOf('export interface RunSummary'), ops.indexOf('/** Wait up to'));
 const apiPath = new URL('../src/agent-mcp-api.ts', import.meta.url);
 if (process.argv.includes('--check')) { if (await readFile(apiPath, 'utf8') !== apiText) throw new Error('Agent MCP REST adapter drifted'); }
 else await writeFile(apiPath, apiText);
