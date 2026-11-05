@@ -46,7 +46,12 @@ export async function authenticateMoney(request: Request, env: MoneyEnv): Promis
 export async function moneyRoutes(request: Request, env: MoneyEnv, auth: AuthContext, ctx: ExecutionContext): Promise<Response | undefined> {
   const path = new URL(request.url).pathname;
   if (!/^\/v1\/(?:me|limits|billing|providers|key-scopes|api-keys|tokens|tenants|sessions|oauth|account|usage|webhooks|usage-webhook|workspaces|workspace-memberships|end-user-settings|end-users)/.test(path)) return;
-  return withMoneyIdempotency(request, env, auth.tenantId, request => routeMoney(request, env, auth, ctx));
+  try { return await withMoneyIdempotency(request, env, auth.tenantId, request => routeMoney(request, env, auth, ctx)); }
+  finally {
+    // The source mail worker notices outbox rows after mutations. Keep delivery
+    // alive after the HTTP response; Cron still repairs interrupted publication.
+    ctx.waitUntil(services(env, request).then(s => pumpBillingMail(env, s.billing.alerts)));
+  }
 }
 async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ctx: ExecutionContext): Promise<Response | undefined> {
   const path = new URL(request.url).pathname;
