@@ -2,13 +2,6 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "camelrun-proto-workers-native",
   "main": "src/index.ts",
-  "assets": {
-    "directory": "../../docs",
-    "binding": "DOCS",
-    "run_worker_first": true,
-    "html_handling": "none",
-    "not_found_handling": "none"
-  },
   "compatibility_date": "2026-11-05",
   "compatibility_flags": [
     "nodejs_compat",

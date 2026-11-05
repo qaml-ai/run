@@ -1,9 +1,9 @@
 import openapi from "../../../openapi.json";
+import { publicDocs } from "./public-docs.ts";
 
 type PublicEnv = { AGENT_PUBLIC_URL?: string; PUBLIC_ASSETS?: Fetcher };
 const docsOrigin = "https://run.camelai.com";
 const browserPages = /^(?:\/$|\/console(?:\/|$)|\/oauth\/authorize$)/;
-const documentPath = /^(?:\/(?:SKILL\.md|skill\.md|llms\.txt|llms-full\.txt)|\/docs(?:\/|$)|\/r(?:\/|$))/;
 
 export function publicPageHeaders(request: Request, response: Response): Response {
   if (!browserPages.test(new URL(request.url).pathname)) return response;
@@ -23,23 +23,30 @@ export function authenticationHint(request: Request, origin: string): string {
 
 /** Public documents are exact asset lookups; they never fall through to authentication. */
 export async function publicRoutes(request: Request, env: PublicEnv): Promise<Response | undefined> {
+  const assets = env.PUBLIC_ASSETS;
+  const document = await publicDocs(request, {
+    AGENT_PUBLIC_URL: env.AGENT_PUBLIC_URL,
+    DOCS: assets ? { fetch: (input, init) => {
+      const assetRequest = new Request(input, init);
+      const assetUrl = new URL(assetRequest.url);
+      assetUrl.pathname = `/docs${assetUrl.pathname}`;
+      return assets.fetch(new Request(assetUrl, assetRequest));
+    } } : undefined,
+  });
+  if (document) return document;
   const url = new URL(request.url), path = url.pathname;
   const origin = env.AGENT_PUBLIC_URL || url.origin;
   const read = request.method === "GET" || request.method === "HEAD";
   const content = (body: string, type: string, headers: Record<string, string> = {}) => new Response(request.method === "HEAD" ? null : body, { headers: { "Content-Type": type, ...headers } });
-  if (read && path === "/robots.txt") return content("User-agent: *\nAllow: /\n", "text/plain; charset=utf-8", { "Cache-Control": "public, max-age=3600" });
   if (read && path === "/v1/openapi.json") return content(JSON.stringify(openapi), "application/json; charset=utf-8");
-  if (read && (path === "/docs" || path === "/docs/")) return Response.redirect("https://camelai.com/docs/camelrun/overview", 302);
-  if (documentPath.test(path)) {
-    const registry = path === "/r" || path.startsWith("/r/");
-    const eligible = registry ? /^\/r\/[^/]+\.json$/.test(path) : /\.md$/.test(path) || path === "/llms.txt" || path === "/llms-full.txt";
+  if (path === "/r" || path.startsWith("/r/")) {
+    const eligible = /^\/r\/[^/]+\.json$/.test(path);
     const asset = read && eligible && env.PUBLIC_ASSETS ? await env.PUBLIC_ASSETS.fetch(new Request(url, { method: "GET" })) : undefined;
     if (!asset?.ok) return Response.json({ type: "error", error: `Unknown document. The docs' index: ${origin}/llms.txt`, code: "NOT_FOUND" }, { status: 404, headers: { "Access-Control-Allow-Origin": "*" } });
     const text = (await asset.text()).replaceAll(docsOrigin, origin);
-    return content(text, registry ? "application/json; charset=utf-8" : path.endsWith(".txt") ? "text/plain; charset=utf-8" : "text/markdown; charset=utf-8", {
-      "Cache-Control": path === "/SKILL.md" || path === "/skill.md" ? "no-cache" : "public, max-age=300",
+    return content(text, "application/json; charset=utf-8", {
+      "Cache-Control": "public, max-age=300",
       "Access-Control-Allow-Origin": "*",
-      ...(registry ? {} : { "X-Robots-Tag": "noindex" }),
     });
   }
   if (read && path === "/") return Response.redirect(`${url.origin}/console`, 302);
