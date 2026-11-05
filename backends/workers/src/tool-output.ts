@@ -16,7 +16,7 @@ export function toolOutputExtension(env: FileBindings, scope: (api: HookApi, cal
     async afterTool(call, result, api) {
       if (call.name === 'codemode') return;
       const current = await scope(api, call.id);
-      const materialized = await saveToolImages(result.output ?? [], await toolResultFiles(env, { ...current, tool: call.name, call: api.taskId }));
+      const materialized = await saveToolImages(result.output ?? [], await toolResultFiles(env, { ...current, tool: call.name, call: String(api.taskId) }));
       if (call.parent) return { ...result, output: materialized };
       const own = await workspaceId(current.agent);
       const mount = current.fileTools !== false || current.codeMode !== false
