@@ -104,7 +104,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
       ...(reasoning ? { reasoning } : {}),
       ...(credential ? { apiKey: credential.bearer ? "runtime-bearer" : credential.apiKey ?? "keyless" } : {}),
       ...(credential?.identity ? { endpointIdentity: true } : {}),
-      ...(deployment ? { azureDeployment: deployment, env: { AZURE_OPENAI_BASE_URL: credential!.baseUrl, AZURE_OPENAI_API_VERSION: "v1", AZURE_OPENAI_DEPLOYMENT_NAME_MAP: `${model.id}=${deployment}` } } : {}),
+      ...(deployment ? { azureDeployment: deployment, env: { AZURE_OPENAI_BASE_URL: credential!.baseUrl!, AZURE_OPENAI_API_VERSION: "v1", AZURE_OPENAI_DEPLOYMENT_NAME_MAP: `${model.id}=${deployment}` } } : {}),
       ...(tenantFetch ? { fetch:tenantFetch } : {}),
       ...(model.api === "bedrock-converse-stream" ? { bearerToken: credential?.apiKey ?? options.apiKey, region: credential?.region } : {}),
       headers: { ...credential?.headers, ...options.headers, ...config.modelHeaders, ...(credential?.identity ? { "X-Agent-Runtime-Identity": credential.apiKey } : {}), ...(credential?.bearer && credential.apiKey ? { Authorization: `Bearer ${credential.apiKey}`, "x-api-key": null } : {}) },
