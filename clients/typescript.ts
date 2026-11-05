@@ -7,6 +7,7 @@ export { Type as schema };
 export type { RequestRecord, SessionCredentials, SessionState };
 import type { ImportMessages } from "./history-formats.ts";
 import { Projects } from "./projects.ts";
+import { openEventStream } from "./event-transport.ts";
 export type * from "./types.ts";
 
 /**
@@ -1815,7 +1816,7 @@ export class AgentRuntime {
       options.signal?.throwIfAborted();
       let response: Response;
       try {
-        response = await this.transport.fetcher(`${this.transport.base}/v1/runs/${encodeURIComponent(id)}/events`, {
+        response = await openEventStream(this.transport.fetcher, `${this.transport.base}/v1/runs/${encodeURIComponent(id)}/events`, {
           headers: { Authorization: `Bearer ${this.operator()}`, Accept: "text/event-stream", ...(cursor ? { "Last-Event-ID": String(cursor) } : {}) }, redirect: "manual", ...(options.signal ? { signal: options.signal } : {}),
         });
       } catch (error) {
@@ -2152,18 +2153,21 @@ export class AgentClient {
       // The runtime closed the stream on purpose (its node is leaving, or the agent moved): reconnect at once.
       let hinted = false;
       let watchdog: ReturnType<typeof setTimeout> | undefined;
-      const touch = () => { clearTimeout(watchdog); watchdog = setTimeout(() => this.stream?.abort(), 20_000); };
+      let hibernatable = false;
+      const touch = () => { clearTimeout(watchdog); if (!hibernatable) watchdog = setTimeout(() => this.stream?.abort(), 20_000); };
       touch();
       try {
         // One application serves an agent's tools at a time: a reconnect names the connection it held; `takeover` replaces another's, once.
         const mode = (!this.attaching ? "&watch=1" : this.options.takeover && !this.connection ? "&takeover=true" : "") + (this.options.subagents ? "&subagents=1" : "");
-        const response = await this.transport.fetcher(this.transport.base + this.path(`/events?snapshot=1${mode}`), {
+        const response = await openEventStream(this.transport.fetcher, this.transport.base + this.path(`/events?snapshot=1${mode}`), {
           headers: {
             Authorization: `Bearer ${this.session.token}`, Accept: "text/event-stream", "Last-Event-ID": String(this.cursor),
             ...(this.attaching && this.connection ? { "X-Agent-Connection": this.connection } : {}),
           },
           signal: this.stream.signal, redirect: "manual",
         });
+        hibernatable = response.headers.get("x-agent-transport") === "websocket";
+        if (hibernatable) clearTimeout(watchdog);
         await rejectRedirect(response);
         if (response.status === 409) {
           const refusal = await response.json().catch(() => ({})) as { error?: string; code?: string };
