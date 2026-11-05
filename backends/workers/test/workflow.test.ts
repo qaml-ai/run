@@ -56,7 +56,7 @@ return { out, missing, args };`;
     assert.equal(result.state.outcome.status, 'completed');
     const history = await root.entries({}, 10, undefined, context);
     const message = history.items.flatMap(entry => entry.model ?? []).find(message => message.role === 'toolResult') as any;
-    assert.equal(message.isError, undefined, JSON.stringify(message));
+    assert.equal(!!message.isError, false, JSON.stringify(message));
     const value = JSON.parse(message.content[0].text);
     assert.deepEqual(value.value, { out: ['a', 'b'], missing: null, args: { exact: true } });
     assert.equal(value.agents.length, 4);
