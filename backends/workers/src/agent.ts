@@ -2006,6 +2006,10 @@ export class CamelAgent extends DurableObject<Env> {
       const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
       const tool = this.availableTools.find(tool => tool.name === HOST_EXECUTION_TOOL)!;
       const { code, timeoutMs, maxOutputCharacters } = saved.params!;
+      if (saved.began === undefined) {
+        saved.began = Date.now();
+        await this.ctx.storage.put(reqKey(saved.id), saved);
+      }
       return Number(await startHostExecution(pi, root, saved.id, { code, timeoutMs, maxOutputCharacters }, tool));
     });
     this.track(record.id);
