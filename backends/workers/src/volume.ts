@@ -801,6 +801,16 @@ export class Volume extends DurableObject<VolumeBindings> {
     )
       await this.ctx.storage.setAlarm(Date.now() + DAY);
   }
+  /** Erase metadata after account deletion has removed the volume's live files. */
+  async purgeAccountData(tenant: string) {
+    const owner = this.meta("tenant");
+    if (!this.meta("deleted") || owner && owner !== tenant)
+      throw new FileError("Account purge requires the owned, deleted volume", 403);
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+    this.sql().exec("CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    this.sql().exec("INSERT OR REPLACE INTO metadata VALUES('deleted',?)", String(Date.now()));
+  }
   async delete() {
     this.ctx.storage.transactionSync(() => {
       this.sql().exec(

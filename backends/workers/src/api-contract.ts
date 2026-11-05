@@ -102,7 +102,7 @@ export function configuration(input: unknown, defaultModel: string): { config: A
   const config: AgentConfiguration = { model: defaultModel };
   Object.assign(config, identityInput(fields));
   if (fields.bucket !== undefined && fields.bucket !== null) config.bucket = bucketInput(fields.bucket);
-  if (fields.keyScope !== undefined) config.keyScope = checkScope(fields.keyScope);
+  if (fields.keyScope !== undefined && fields.keyScope !== null) config.keyScope = checkScope(fields.keyScope);
   if (fields.workspaceId !== undefined) {
     if (fields.workspaceId !== null && typeof fields.workspaceId !== "string") throw new BadRequest("Invalid workspaceId");
     config.workspaceId = fields.workspaceId as string | null;

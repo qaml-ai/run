@@ -11,9 +11,11 @@ export class AgentHistory {
   private line: Promise<void> = Promise.resolve();
   private sql: SqlStorage;
   private readonly atomic: <T>(write: () => T) => T;
-  constructor(sql: SqlStorage, atomic: <T>(write: () => T) => T) {
+  private readonly visible: (message: unknown) => boolean | Promise<boolean>;
+  constructor(sql: SqlStorage, atomic: <T>(write: () => T) => T, visible: (message: unknown) => boolean | Promise<boolean> = () => true) {
     this.sql=sql;
     this.atomic=atomic;
+    this.visible=visible;
     sql.exec("CREATE TABLE IF NOT EXISTS camel_history (ordinal INTEGER PRIMARY KEY, entry INTEGER NOT NULL, message TEXT NOT NULL, bytes INTEGER NOT NULL, turn INTEGER NOT NULL)");
     sql.exec("CREATE TABLE IF NOT EXISTS camel_history_cursor (id INTEGER PRIMARY KEY CHECK(id=1), entry INTEGER NOT NULL)");
   }
@@ -25,11 +27,12 @@ export class AgentHistory {
       do {
         const page = await root.entries({ order: "ascending", minEntryId }, 128, cursor, BACKGROUND_CONTEXT);
         for (const entry of page.items) {
+          const visible = await Promise.all((entry.model ?? []).map(message => this.visible(message)));
           this.atomic(() => {
             let ordinal = this.total();
             const data = entry.data as { requestId?: string; metadata?: unknown; from?: unknown } | undefined;
             // Context replacement is not a new public message or a rewrite of the history index.
-            const messages = ["pi.reset", "camel.context"].includes(entry.kind) ? [] : entry.model ?? [];
+            const messages = ["pi.reset", "camel.context"].includes(entry.kind) ? [] : (entry.model ?? []).filter((_, index) => visible[index]);
             for (const original of messages) {
               if (original.role === "system") continue;
               const projected = attachmentMessage(original);

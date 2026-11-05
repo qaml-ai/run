@@ -21,6 +21,8 @@ import { keyServices, type KeyEnv } from "./security-services.ts";
 import { defaultModelFor, validateAgentModel } from "./default-model.ts";
 import { resolveAgentKey } from "./agent-key.ts";
 import { createAdmission } from "./admission.ts";
+import { reserveAgentCreation } from "./agent-capacity.ts";
+import type { RateLimitState } from "./admission.ts";
 import { applyUsageRows } from "./accounts.ts";
 import { applyWorkspaceUsage, Workspaces } from "./workspaces.ts";
 import { activeCharge } from "../../../src/pricing.ts";
@@ -77,6 +79,8 @@ export interface DirectoryEntry {
   /** Returned for an upsert of an existing agent; never persisted in its header. */
   reconfigured?: true;
 }
+const creationRates = new WeakMap<DirectoryEntry, RateLimitState>();
+export const creationRate = (entry: DirectoryEntry) => creationRates.get(entry);
 export interface DirectoryFailure {
   failed: true;
   status: number;
@@ -172,7 +176,12 @@ export class Directory {
     if (owner?.revoked) throw new ApiError(410,'Agent is deleted','AGENT_GONE');
     const previousEntry = await this.get(id), previousConfig = previousEntry?.config;
     if (fields.model === undefined && previousConfig?.model) config.model = previousConfig.model;
-    const resolvedModel = await validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel });
+    const resolvedModel = await validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel, defaultModel: fields.model === undefined });
+    const release = config.type !== "run" && !previousEntry?.initialized
+      ? await reserveAgentCreation(this.env as import("./agent.ts").Env, this.tenantId, id)
+      : async () => {};
+    let rate: RateLimitState | undefined;
+    try {
     const requested=(input as {mounts?:unknown;remount?:boolean}).mounts;
     const before = requested === undefined ? await this.get(id) : undefined;
     // Volume initialization uses its own SQL and DO calls. Keep those outside
@@ -209,7 +218,7 @@ export class Directory {
       const configHash=await digest(JSON.stringify(config));
       const sameModel = JSON.stringify(old?.resolvedModel) === JSON.stringify(resolvedModel);
       if (config.type !== "run")
-        await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
+        rate = await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
       if (old?.initialized && old.configHash === configHash && sameModel) return old;
       const next: DirectoryEntry = {
         id,
@@ -297,7 +306,10 @@ export class Directory {
       const inherited = await workspaces.current(this.tenantId, "definition", config.definition);
       if (inherited) await workspaces.assign(this.tenantId, "agent", id, inherited.workspace, true);
     }
-    return createdHere ? entry : { ...entry, reconfigured: true };
+    const result: DirectoryEntry = createdHere ? entry : { ...entry, reconfigured: true };
+    if (rate) creationRates.set(result, rate);
+    return result;
+    } finally { await release(); }
   }
   async remove(id: string): Promise<boolean | DirectoryFailure> {
     const entry = await this.get(id);
@@ -438,7 +450,7 @@ export async function settleTurn(
     // src/ permits a running response's bounded overdraft; expiry never drops its charge.
     const charged = receipt.modelMetered ? activeCharge(billing.pricing, receipt.activeMs ?? 0) : receipt.costMicros;
     if (charged > 0 && prepaid) await accrueUsage(sql, [{ tenant: receipt.tenantId, amount: charged,
-      metadata: receipt.modelMetered ? { activeMs: receipt.activeMs ?? 0 } : { responses: receipt.responses ?? 1, inputTokens: receipt.inputTokens ?? 0, outputTokens: receipt.outputTokens ?? 0 } }]);
+      metadata: receipt.modelMetered ? { tokens: 0, activeMs: receipt.activeMs ?? 0 } : { responses: receipt.responses ?? 1, inputTokens: receipt.inputTokens ?? 0, outputTokens: receipt.outputTokens ?? 0 } }]);
     if (!receipt.modelMetered) {
       const totals = { tenant: receipt.tenantId, day: utcDay(receipt.startedAt ?? Date.now()), model: receipt.model ?? "local/fake",
         responses: receipt.responses ?? 1, input: receipt.inputTokens ?? 0, output: receipt.outputTokens ?? 0, cacheRead: 0, cacheWrite: 0,

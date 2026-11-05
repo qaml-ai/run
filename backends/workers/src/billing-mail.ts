@@ -14,7 +14,7 @@ export async function pumpBillingMail(env: MailEnv & { PUBLIC_URL?: string; AGEN
         origin, token: row.token, unsubscribeToken: await alerts.unsubscribeToken(row.tenant, row.recipient),
         payment: row.payload.data, balance: row.payload.data?.balance, threshold: row.payload.data?.threshold });
       if (!await alerts.deliverable(row.id, row.lease)) { await alerts.retry(row.id, row.lease); return; }
-      const sent = await sendEmail(env, { ...mail, to: row.email, delivery: row.id }, AbortSignal.timeout(15_000));
+      const sent = await sendEmail(env, { ...mail, to: row.email, delivery: row.id, kind: "billing", tags: [{ Name: "product", Value: "camelrun-billing" }, { Name: "kind", Value: row.kind }] }, AbortSignal.timeout(15_000));
       await alerts.sent(row.id, row.lease, sent.messageId);
     } catch {
       console.error(JSON.stringify({ type: "billing_mail_send_failed", delivery: row.id, attempt: row.attempts }));

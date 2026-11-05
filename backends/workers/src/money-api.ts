@@ -1,3 +1,4 @@
+import { accountLifecycleRoutes, accountDeletions, type AccountLifecycleEnv } from "./account-lifecycle.ts";
 import { keyServices, type KeyEnv } from './security-services.ts';
 import { keyRoutes } from './key-routes.ts';
 import { accountServices, publicAccountRoutes, accountPrincipal, accountManagementRoutes, oauthAllows, type AccountEnv } from './account-services.ts';
@@ -9,7 +10,7 @@ import { Workspaces } from './workspaces.ts';
 import { HttpError } from './errors.ts';
 import { modelAttempts } from './model-metering.ts';
 import { EndUserCredits } from './end-user-credits.ts';
-import { modelEndUserRoutes } from './model-end-user-routes.ts';
+import { endUserRoutes } from './end-user-routes.ts';
 import type { AuthContext } from './control.ts';
 import { sweepAdmission } from './admission.ts';
 import { withMoneyIdempotency, expireMoneyIdempotency } from './money-idempotency.ts';
@@ -23,7 +24,7 @@ async function services(env: MoneyEnv, request?: Request) {
   const account = accountServices(env, keys.accounts, request ? new URL(request.url).origin : env.PUBLIC_URL ?? 'https://localhost');
   const alerts = new BillingAlerts(keys.accounts.db, keys.accounts);
   const namespace = (env as MoneyEnv & { TENANTS?: { getByName(name: string): {status(): Promise<{active: unknown}>} } }).TENANTS;
-  const billing = { billing: keys.accounts.billing, alerts, emailEnabled: !!account.mail, rateLimits: account.limits, exists: (tenant: string) => keys.accounts.exists(tenant),
+  const billing = { billing: keys.accounts.billing, alerts, emailEnabled: !!((env.EMAIL || (env.TEST_MODE === '1' && env.MAIL_TEST_URL)) && (env.AGENT_BILLING_EMAIL_FROM || env.EMAIL_FROM)), rateLimits: account.limits, exists: (tenant: string) => keys.accounts.exists(tenant),
     ...(namespace ? { busy: async (tenant: string) => Number((await namespace.getByName(tenant).status()).active) } : {}) };
   const webhooks = new Webhooks({ db: keys.accounts.db, accounts: keys.accounts, outbound: keys.outbound });
   return { keys, account, billing, webhooks };
@@ -46,7 +47,12 @@ export async function authenticateMoney(request: Request, env: MoneyEnv): Promis
 export async function moneyRoutes(request: Request, env: MoneyEnv, auth: AuthContext, ctx: ExecutionContext): Promise<Response | undefined> {
   const path = new URL(request.url).pathname;
   if (!/^\/v1\/(?:me|limits|billing|providers|key-scopes|api-keys|tokens|tenants|sessions|oauth|account|usage|webhooks|usage-webhook|workspaces|workspace-memberships|end-user-settings|end-users)/.test(path)) return;
-  return withMoneyIdempotency(request, env, auth.tenantId, request => routeMoney(request, env, auth, ctx));
+  try { return await withMoneyIdempotency(request, env, auth.tenantId, request => routeMoney(request, env, auth, ctx)); }
+  finally {
+    // The source mail worker notices outbox rows after mutations. Keep delivery
+    // alive after the HTTP response; Cron still repairs interrupted publication.
+    ctx.waitUntil(services(env, request).then(s => pumpBillingMail(env, s.billing.alerts)));
+  }
 }
 async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ctx: ExecutionContext): Promise<Response | undefined> {
   const path = new URL(request.url).pathname;
@@ -54,6 +60,8 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
   if (auth.kind === 'oauth' && !oauthAllows(request.method, path)) throw new HttpError(403, 'An OAuth access token works with agents only: use an API token or the console');
   const principal = auth.principal ?? { tenant, via: auth.kind === 'operator' ? 'operator' as const : 'token' as const };
   try {
+    const lifecycle = await accountLifecycleRoutes(request, env as unknown as AccountLifecycleEnv, s.account, principal, s.webhooks, ctx);
+    if (lifecycle) return lifecycle;
     const managed = await accountManagementRoutes(request, s.account, principal, s.webhooks);
     if (managed) return managed;
   } finally { if (s.account.mail) ctx.waitUntil(s.account.mail.stop()); }
@@ -67,7 +75,7 @@ async function routeMoney(request: Request, env: MoneyEnv, auth: AuthContext, ct
   }
   const billed = await billingRoutes(request, env, auth, s.billing);
   if (billed) return billed;
-  const endUser = await modelEndUserRoutes(request, new EndUserCredits(s.keys.accounts.db), tenant);
+  const endUser = await endUserRoutes(request, tenant, new EndUserCredits(s.keys.accounts.db));
   if (endUser) return endUser;
   const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
   const setter = principal.tokenId ? `token:${principal.tokenId}` : principal.via === 'oauth' ? `oauth:${'grantId' in principal ? principal.grantId : undefined}` : principal.via;
@@ -144,4 +152,5 @@ export async function moneyMaintenance(env: MoneyEnv) {
   await new EndUserCredits(s.keys.accounts.db).expireDue();
   await s.webhooks.send();
   await pumpBillingMail(env, s.billing.alerts);
+  await accountDeletions(env as unknown as AccountLifecycleEnv, s.account).kick();
 }

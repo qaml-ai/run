@@ -1,0 +1,231 @@
+// Source account export with Workers history, schedules and configuration adapters.
+
+import type { Accounts } from "./accounts.ts";
+interface ClientSessions {
+  historyPageFor(id: string, tenant: string, query: { before?: string; limit?: string }): Promise<{ total: number; entries: { index: number }[]; next: number | string | null }>;
+  schedulesFor(id: string, tenant: string): Promise<unknown[]>;
+}
+interface Channels { list(tenant: string): Promise<unknown[]> }
+interface Definitions { list(tenant: string): Promise<unknown[]> }
+import { HttpError } from "./errors.ts";
+import { journeyKept } from "./account-journey-state.ts";
+import type { Journey } from "../../../src/core/journey.ts";
+import type { OAuth } from "./account-oauth.ts";
+interface VolumeService {
+  list(tenant: string): Promise<{ id: string }[]>;
+  call(id: string, tenant: string, action: string, query?: unknown): Promise<unknown>;
+  stream(tenant: string, file: unknown): AsyncIterable<Uint8Array>;
+}
+import type { Webhooks } from "./webhook-policy.ts";
+import { ZipWriter } from "../../../src/zip.ts";
+import { sourceView as mcpServerView } from "./tool-sources.ts";
+
+/**
+ * A tenant's data as one zip (GET /v1/account/export), written as it is read: each agent's
+ * configuration and whole history (a page of turns at a time), its definitions, channels and
+ * webhooks (secrets left out, as the API shows them), every volume's files, and its credit ledger
+ * and usage. Nothing is held beyond the page, file chunk or ledger page being written.
+ */
+export interface ExportOptions {
+  accounts: Accounts;
+  clients: ClientSessions;
+  volumes?: VolumeService;
+  definitions?: Definitions;
+  channels?: Channels;
+  webhooks?: Webhooks;
+  oauth?: OAuth;
+  /** Journey events (src/journey.ts), where the operator configured them: the store is asked for what it holds of the account. */
+  journey?: Pick<Journey, "stored">;
+}
+
+const README = `This archive holds everything camelRun stores for your account, as of the time it was made.
+
+account.json               your account: its id, the identity you sign in with, and where you came from when you signed up
+agents/<id>/agent.json     each agent's configuration and schedules
+agents/<id>/history/*.json each agent's history, a page of whole turns per file, named by its first message's index
+workspaces.json            workspaces, including archived ones
+workspace-assignments.json workspace assignment history
+schedule-deliveries.json  scheduled email delivery status
+workspace-usage.json       daily model and tool usage attributed to each workspace
+definitions.json           your agent definitions (secrets left out)
+channels.json              your channels (credentials masked)
+webhooks.json              your webhook endpoints (signing secrets left out)
+tokens.json                your API tokens' names and prefixes (never the tokens)
+keys.json                  which provider keys are set (the last four characters, never the keys)
+oauth-grants.json          the applications you let act for your account
+discord.json               managed Discord server bindings and pending setup metadata (never credentials or session/state hashes)
+volumes/<id>/volume.json   each volume's name and size
+volumes/<id>/files/...     each volume's files
+billing/ledger.jsonl       your credit ledger, one entry per line, newest first
+billing/usage.json         model usage per day and model
+billing/attempts.jsonl     durable model attempts and settlement state (no key fingerprints)
+end-users/settings.json    how you meter your own users' credit
+end-users/end-users.jsonl  each of your users' balance and overrides
+end-users/ledger.jsonl     their credit ledger: your grants, refunds and adjustments, and each call's usage
+analytics/account.json     only if this service measures how its website and console are used: the ids your account is known by there, and what was noted of it here
+analytics/summary.json     what the operator's analytics store says of how your account came to be
+analytics/events-*.json    the events it holds of your account, oldest first
+analytics/touches-*.json   where your browser came from, as it holds it
+analytics/google-copies-*.json  what it prepared or sent to Google Analytics of those events, and whether it did
+`;
+
+const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
+
+export async function* exportAccount(options: ExportOptions, tenant: string): AsyncGenerator<Uint8Array> {
+  const { accounts, clients } = options;
+  const historyPage = (id: string, tenant: string, query: { before?: string; limit?: string }) => clients.historyPageFor(id, tenant, query);
+  const zip = new ZipWriter();
+  const { created_at: created, signup_source: signupSource } = (await accounts.db.query("select created_at, signup_source from tenants where id = $1", [tenant])).rows[0] ?? {};
+  yield* zip.file("README.txt", README);
+  const email = (await accounts.db.query("select email from tenant_passwords where tenant = $1", [tenant])).rows[0]?.email ?? null;
+  yield* zip.file("account.json", json({ tenant, login: await accounts.identity(tenant) ?? null, email, createdAt: created === undefined ? null : Number(created), signupSource: signupSource ?? null, exportedAt: new Date().toISOString() }));
+
+  yield* zip.file("computers.json", json((await accounts.db.query("select id, agent, provider, lease_seconds, daily_seconds, created_at from computer_connections where tenant=$1", [tenant])).rows));
+  yield* zip.file("computer-sessions.json", json((await accounts.db.query("select id, agent, workspace, provider, state, created_at, expires_at, closed_at, error from computer_leases where tenant=$1 order by sequence", [tenant])).rows));
+
+  yield* zip.file("workspaces.json", json((await accounts.db.query("select id, name, archived, created_at, updated_at from workspaces where tenant = $1 order by created_at, id", [tenant])).rows));
+  yield* zip.file("workspace-assignments.json", json((await accounts.db.query("select kind, resource, workspace, assigned_at from workspace_assignments where tenant = $1 order by sequence", [tenant])).rows));
+
+  yield* zip.file("workspace-usage.json", json((await accounts.db.query("select workspace, day, model, responses, input, output, cache_read, cache_write, cost, platform_responses, platform_cost from workspace_usage where tenant = $1 order by day, workspace, model", [tenant])).rows));
+
+  yield* zip.file("schedule-deliveries.json", json((await accounts.db.query("select * from schedule_deliveries where tenant = $1 order by created_at, id", [tenant])).rows));
+
+  for (let after = ""; ;) {
+    const { rows } = await accounts.db.query(`
+      select id, header from agents where tenant = $1 and id > $2 and not revoked and purged_at is null and (expires_at is null or expires_at > $3)
+      order by id limit 100`, [tenant, after, Date.now()]);
+    for (const { id, header } of rows) {
+      const schedules = await clients.schedulesFor(id, tenant);
+      yield* zip.file(`agents/${id}/agent.json`, json({ ...agentView(header), schedules }));
+      // Every message from the newest back to the first, or the export fails: a history cut short is never exported as whole.
+      let total: number | undefined, read = 0, deleted = false;
+      for (let before: string | undefined; ;) {
+        const page = await historyPage(id, tenant, { limit: "500", ...(before !== undefined ? { before } : {}) }).catch(error => {
+          // Deleted while the export ran: it has no history left to give.
+          if ((error as HttpError).status === 404) return undefined;
+          throw error;
+        });
+        if (!page) { deleted = true; break; }
+        total ??= page.total;
+        read += page.entries.length;
+        if (page.entries.length) yield* zip.file(`agents/${id}/history/${String(page.entries[0].index).padStart(9, "0")}.json`, json(page.entries));
+        if (page.next === null) break;
+        before = String(page.next);
+      }
+      if (!deleted && read !== total) throw new Error(`Agent ${id}'s history read ${read} of its ${total} messages; the export is incomplete`);
+    }
+    if (rows.length < 100) break;
+    after = rows.at(-1)!.id;
+  }
+
+  if (options.definitions) yield* zip.file("definitions.json", json(await options.definitions.list(tenant)));
+  if (options.channels) yield* zip.file("channels.json", json(await options.channels.list(tenant)));
+  if (options.webhooks) yield* zip.file("webhooks.json", json(await options.webhooks.list(tenant)));
+  yield* zip.file("tokens.json", json(await accounts.listTokens(tenant)));
+  yield* zip.file("keys.json", json(await accounts.keyStatus(tenant)));
+  if (options.oauth) yield* zip.file("oauth-grants.json", json(await options.oauth.grants(tenant)));
+  const [bindings, attempts] = await Promise.all([
+    accounts.db.query(`select b.id, b.application_id, b.guild_id, b.channel_id, b.state,
+      b.allowed_channel_ids, b.administrator_id, b.created_at, b.updated_at,
+      i.name guild_name, i.state installation_state
+      from discord_server_bindings b join discord_installations i using (application_id, guild_id)
+      where b.tenant = $1 order by b.created_at, b.id`, [tenant]),
+    accounts.db.query("select guild_id, expires_at from discord_setup_attempts where tenant = $1 order by expires_at, guild_id", [tenant]),
+  ]);
+  yield* zip.file("discord.json", json({
+    serverBindings: bindings.rows.map(row => ({
+      id: row.id, applicationId: row.application_id, guildId: row.guild_id, guildName: row.guild_name,
+      channelId: row.channel_id, state: row.state, installationState: row.installation_state,
+      allowedChannelIds: row.allowed_channel_ids, administratorId: row.administrator_id,
+      createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
+    })),
+    setupAttempts: attempts.rows.map(row => ({ guildId: row.guild_id, expiresAt: Number(row.expires_at) })),
+  }));
+
+  const volumes = options.volumes;
+  if (volumes) {
+    for (const { id } of await volumes.list(tenant)) {
+      yield* zip.file(`volumes/${id}/volume.json`, json(await volumes.call(id, tenant, "info")));
+      for (let after: string | undefined; ;) {
+        const { files, next } = await volumes.call(id, tenant, "list", { path: "/", ...(after !== undefined ? { after } : {}) }) as { files: { path: string; size: number; chunks: string[]; updatedAt: number }[]; next?: string };
+        for (const file of files) yield* zip.file(`volumes/${id}/files${file.path}`, volumes.stream(tenant, file), new Date(file.updatedAt));
+        if (!next) break;
+        after = next;
+      }
+    }
+  }
+
+  yield* zip.file("billing/ledger.jsonl", (async function* () {
+    for (let before: number | undefined; ;) {
+      const { entries, next } = await accounts.billing.ledger(tenant, { limit: 200, ...(before !== undefined ? { before } : {}) });
+      if (entries.length) yield Buffer.from(entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+      if (next === undefined) return;
+      before = next;
+    }
+  })());
+  yield* zip.file("billing/usage.json", json(await accounts.usage(tenant, 0)));
+  yield* zip.file("billing/attempts.jsonl", (async function* () {
+    for (let after = "00000000-0000-0000-0000-000000000000"; ;) {
+      const { rows } = await accounts.db.query("select id,agent,provider,model,kind,platform,context,generation_id,state,started_at,updated_at,totals,charge,revision,last_error from model_attempts where tenant=$1 and id>$2 order by id limit 200", [tenant, after]);
+      if (!rows.length) return;
+      yield Buffer.from(rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+      after = rows.at(-1)!.id;
+    }
+  })());
+
+  // The tenant's own users' credit (end-user-credits.ts): its settings, each user's balance and overrides, and their ledger.
+  yield* zip.file("end-users/settings.json", json((await accounts.db.query("select enabled, allowances, bucket_limits, daily_limit, markup_bps, low_balance, updated_at from end_user_settings where tenant=$1", [tenant])).rows[0] ?? null));
+  yield* zip.file("end-users/end-users.jsonl", (async function* () {
+    for (let after = ""; ;) {
+      const { rows } = await accounts.db.query("select id, balance, allowances, bucket_limits, daily_limit, created_at, updated_at from end_users where tenant=$1 and id>$2 order by id limit 200", [tenant, after]);
+      if (!rows.length) return;
+      yield Buffer.from(rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+      after = rows.at(-1)!.id;
+    }
+  })());
+  yield* zip.file("end-users/ledger.jsonl", (async function* () {
+    for (let after = 0; ;) {
+      const { rows } = await accounts.db.query("select id, end_user, kind, amount, raw, allowance, bucket, idempotency_key, reference, metadata, balance_after, created_at from end_user_ledger where tenant=$1 and id>$2 order by id limit 200", [tenant, after]);
+      if (!rows.length) return;
+      yield Buffer.from(rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+      after = Number(rows.at(-1)!.id);
+    }
+  })());
+
+  // Journey events, where this runtime ever sent any of the account: what it keeps itself, then what the operator's store holds.
+  const kept = await journeyKept(accounts.db, tenant);
+  if (kept) {
+    const journey = options.journey;
+    yield* zip.file("analytics/account.json", json({ ...kept, store: journey ? "asked: see summary.json, events-*.json and touches-*.json" : "not configured on this runtime now: what it holds is not in this archive" }));
+    if (journey) {
+      let summary: { status: string; account: unknown; consent: unknown } | undefined;
+      for (const kind of ["events", "touches"] as const) {
+        let page = 0, copies = 0;
+        for await (const { status, account, consent, records, googleCopies } of journey.stored(kept.accountRef, kind)) {
+          summary ??= { status, account, consent };
+          if (records.length) yield* zip.file(`analytics/${kind}-${String(++page).padStart(5, "0")}.json`, json(records));
+          if (googleCopies.length) yield* zip.file(`analytics/google-copies-${String(++copies).padStart(5, "0")}.json`, json(googleCopies));
+        }
+      }
+      yield* zip.file("analytics/summary.json", json(summary));
+    }
+  }
+  yield* zip.end();
+}
+
+/** An agent's configuration from its stored header, as GET /v1/agents/:id shows it, without its sealed tool-source secrets or model header values. */
+function agentView(header: any) {
+  const config = header.config ?? {};
+  return {
+    id: header.id, key: header.key ?? null, name: config.name ?? header.metadata?.name ?? null, type: config.type ?? header.metadata?.type ?? "general", metadata: header.metadata ?? {},
+    model: config.model ?? null, systemPrompt: config.systemPrompt ?? "",
+    ...(config.systemPromptAppend ? { systemPromptAppend: config.systemPromptAppend } : {}), ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
+    ...(config.maxOutputTokens != null ? { maxOutputTokens: config.maxOutputTokens } : {}), ...(config.temperature != null ? { temperature: config.temperature } : {}), ...(config.dataCollection != null ? { dataCollection: config.dataCollection } : {}), ...(config.language != null ? { language: config.language } : {}),
+    tools: config.mcp?.tools ?? [], mounts: config.mounts ?? [], definition: config.definition ?? null, keyScope: config.keyScope ?? null,
+    identity: config.subject !== undefined || config.context !== undefined
+      ? { ...(config.subject !== undefined ? { subject: config.subject } : {}), ...(config.context !== undefined ? { context: config.context } : {}) }
+      : null,
+    builtins: config.builtins ?? [], mcpServers: (config.mcpServers ?? []).map(mcpServerView), expiresAt: header.expiresAt,
+    ...(config.modelHeaders ? { modelHeaders: Object.keys(config.modelHeaders) } : {}),
+  };
+}

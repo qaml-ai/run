@@ -1,0 +1,1366 @@
+{
+  "group": "accounts-money",
+  "baseRevision": "0a96eb16970a2017cef6c379615f212bc3bad685",
+  "implementationRevision": "8441ff745bad47c1522e311b14acb743d11e0db4",
+  "integrationBase": "4f7e12be5447d8ad791a243a791bf1d74d398ee5",
+  "suiteHash": "704d3d9423cffc5a6de072ef713fc0b855dbe8996a06c3f25aefc235a69e3fc1",
+  "environment": "Fly Sprites; local workerd; isolated local Postgres; fake providers",
+  "node": {
+    "pass": 88,
+    "fail": 0
+  },
+  "before": {
+    "fail": 62,
+    "pass": 26
+  },
+  "after": {
+    "pass": 86,
+    "fail": 2
+  },
+  "movedFailToPass": 60,
+  "regressions": 0,
+  "runs": [
+    {
+      "area": "billing,credits,accounts,auth,oauth,ops,quotas,keys,access",
+      "suiteHash": "704d3d9423cffc5a6de072ef713fc0b855dbe8996a06c3f25aefc235a69e3fc1",
+      "recordedAt": "2026-11-05T23:07:18.532Z",
+      "expectedCases": 88,
+      "runtime": {
+        "node": "v24.22.1",
+        "platform": "linux",
+        "arch": "x64"
+      },
+      "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+      "shards": [
+        {
+          "index": 1,
+          "total": 6,
+          "durationMs": 79380.289298
+        },
+        {
+          "index": 2,
+          "total": 6,
+          "durationMs": 67787.462257
+        },
+        {
+          "index": 3,
+          "total": 6,
+          "durationMs": 82981.18794700001
+        },
+        {
+          "index": 4,
+          "total": 6,
+          "durationMs": 74860.010901
+        },
+        {
+          "index": 5,
+          "total": 6,
+          "durationMs": 62501.723726
+        },
+        {
+          "index": 6,
+          "total": 6,
+          "durationMs": 90988.43147899999
+        }
+      ],
+      "durationMs": 90988.43147899999,
+      "revision": "8441ff745bad47c1522e311b14acb743d11e0db4",
+      "result": {
+        "pass": 86,
+        "fail": 2
+      }
+    }
+  ],
+  "behaviorDifferences": [
+    "The two Postgres recovery fault-injection cases remain failures: Workers uses Durable Object journals, not versioned Postgres runtime headers or pending_runs. A comparable Durable Object recovery/fault-injection contract remains to be implemented.",
+    "Deployed account mail uses Cloudflare EMAIL. The local fixture sends the source SES envelope to MAIL_TEST_URL. SES configuration sets/tags and signed SNS bounce/complaint feedback are not implemented for the deployed Cloudflare transport.",
+    "Deployed outbox, deletion and other maintenance retries use the existing five-minute Cron instead of the Node process pollers. Mutating account routes start mail delivery immediately. Local mail fixtures drive the real scheduled handler every second. The local fixture uses waitUntil, coalesces overlapping tenant reloads, and retries transient closed connections up to three attempts; it retains no settled configuration cache.",
+    "Account deletion retains the source ledger, payment and anti-abuse SQL and explicitly purges active Durable Object/R2 data after pending settlements. Export adapts history/configuration/schedules to Durable Objects. Cloudflare retained backups/PITR are outside the tested active-data purge; configured Journey store data is included in export and source Journey SQL erasure is retained; out-of-scope channel data has no Workers adapter. Ordinary agent deletion/expiry still retains the revoked Durable Object journal until account-level purge; this change does not add the Node general revoked-agent purge sweep.",
+    "Admin Access authorization and statistics work, but the existing Workers admin API omits channel/voice and ECS diagnostics; admin static pages and report-store serving remain absent. The console shell is available only when ASSETS is bound. Invalid admin email allowlist entries and a pathless admin URL equal to the runtime hostname are not rejected at startup; the source admin read queue bound and per-tab audit names are also not implemented.",
+    "Native file quotas count retained R2 file bodies plus source storage_usage totals. Native files do not have source content-addressed deduplication or volume-metadata accounting; their bytes are not yet fed into the daily source storage-billing meter. Quota reads list the tenant R2 prefix.",
+    "Event subscriber counters are Worker-isolate local, comparable to Node process-local counters. The current WebSocket wrapper releases its subscriber slot at the 101 response, so a long-lived negotiated agent-token WebSocket does not retain that cap; SSE and polling are covered.",
+    "Creation reservations expire after 60 seconds in the Tenant Durable Object. Busy-limit refusals currently use the Workers generic message instead of the source tier-specific explanation and busyAgents detail object.",
+    "The limits response uses the Workers decision-concurrency bound of 64; its decider does not consume AGENT_DECISION_NODE_CONCURRENCY. Provider gateway checks perform DNS preflight but Workers fetch does not pin the checked DNS result.",
+    "Active time is settled through immutable per-request receipts at completion, whereas Node also flushes active time once a minute. Rounding occurs per receipt instead of the Node flush batch. Host execution starts its timer after admission/preparation; periodic live active-time billing remains a separate parity gap.",
+    "Builtin web usage is posted with its auxiliary idempotency receipt, tenant debit and end-user debit in one transaction before the tool returns; Node queues the end-user debit asynchronously with retry. Source allowance, markup, lot-expiry and write-off rules are reused unchanged.",
+    "During a PostgreSQL outage, first terminal publication can precede retrying a durable billing receipt or releasing its busy slot. Completed-record reads explicitly retry settlement. The receipt remains replay-safe; completion and ledger visibility are not a single distributed transaction."
+  ],
+  "cases": [
+    {
+      "area": "access",
+      "source": "tests/browser-tokens.test.ts:119",
+      "name": "a snapshot shows a token's reader only what its scopes and event list let it read",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 7260.134462,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "access",
+      "source": "tests/browser-tokens.test.ts:15",
+      "name": "a browser token reads its one agent's events, state, history and inputs, and nothing else",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 12864.259216,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "access",
+      "source": "tests/browser-tokens.test.ts:154",
+      "name": "a token that redacts usage.cost reads no cost anywhere: the catalog's or the provider's, in events, snapshots, state, history and inputs",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8314.134959,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "access",
+      "source": "tests/browser-tokens.test.ts:75",
+      "name": "a browser token's scopes, event list and redaction limit what it reads; a forged or expired one reads nothing",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 14821.730979,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "access",
+      "source": "tests/outbound-origins.test.ts:5",
+      "name": "an allowed origin serves a custom provider over http, while web_fetch still cannot reach it",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8956.029085,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:117",
+      "name": "an agent with work left that cannot be loaded is tried again with capped backoff, never for good, and says so",
+      "status": "fail",
+      "reason": "Unsupported fixture state: Workers agents do not resume from versioned Postgres agent headers",
+      "durationMs": 8370.967211,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:144",
+      "name": "a request whose open-work mark could not be written is not taken, and its retry runs",
+      "status": "fail",
+      "reason": "Unsupported fixture state: Workers request admission does not update Postgres pending_runs",
+      "durationMs": 4368.73719,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:44",
+      "name": "?request= keeps a stream or poll to one request's events and response",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 5668.876267,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:6",
+      "name": "a tenant reads its agent's events, state, history and inputs with its own token, and no other tenant can",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8311.52524,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:60",
+      "name": "a subscriber that goes away before its stream opens gives its place back",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 16234.030343,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:82",
+      "name": "a tenant's own watcher bound, from the tenants file, replaces the default",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 4996.420314,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "access",
+      "source": "tests/tenant-reads.test.ts:95",
+      "name": "an idle agent's history, state and inputs are read without loading it",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8190.889108,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "accounts",
+      "source": "tests/account.test.ts",
+      "name": "an account exports everything it stores, then deletes it all but the ledger, and its identity signs up afresh without new credit",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 12570.374208,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "accounts",
+      "source": "tests/operator-tenants.test.ts",
+      "name": "the platform operator makes a prepaid tenant like a sign-up's, with an API token, credits it and deletes it",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 11177.015425,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:261",
+      "name": "console sessions require same-origin mutations; an email and password an operator set sign in",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 11409.139788,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:306",
+      "name": "password sign-in: a person's session; unknown addresses fail like wrong passwords; setting, changing or clearing a password ends its sessions; token sign-in is gone",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 13249.112229,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:390",
+      "name": "failed password sign-ins are limited per address and per source; a success still counts nothing",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8715.231499,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:411",
+      "name": "sign-ups per address per day: behind Cloudflare, a new account past the limit waits a day; existing accounts still sign in",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 6326.198547,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:434",
+      "name": "GitHub sign-in admits active org members, links admin tenants, and creates new tenants",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 7507.551624,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:468",
+      "name": "Google sign-in verifies the ID token, creates separate tenants, and returns to the consent page",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 9360.780374,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/api.test.ts:562",
+      "name": "console routes serve the app shell as HTML, never as a download",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 5334.897722,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "adding a password: a Google account's own address at once, any other address through a link confirmed with the password",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 7930.598531,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "an address a Google account signed up with is not joined, taken over or given a second account: its owner is told to use Google",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 5298.408915,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "email sign-up: a link to finish it with the chosen password makes the tenant and signs in; nothing before that",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 10413.720896,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "mailing a link is limited per source and per address, whether or not the address has an account",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8605.193338,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "password reset: the same answer for any address; the link sets a new password once and ends every password session",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8788.007734,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "sign-up links: tampered, expired and used links fail alike; a second sign-up for an address with an account gets the same answer and a different mail",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 7774.931833,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "the MCP consent page: sign up there, follow the link, and come back signed in to consent",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 6151.138795,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "auth",
+      "source": "tests/email-signup.test.ts",
+      "name": "without account mail, or with sign-up closed, the forms are not offered and their routes refuse",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 11367.521924,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/auto-topup.test.ts",
+      "name": "auto top-up REST requires the exact quote version and explicit consent",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 7324.211616,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing-mail.test.ts",
+      "name": "billing recipient API, scanner-safe confirmation, and SES delivery work together",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 9080.329598,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing-mail.test.ts",
+      "name": "disabled email is explicit and never queues a recipient",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 5376.939419,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing-payments.test.ts",
+      "name": "billing REST routes bind portal ownership to authentication and reject caller-supplied redirects",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 6895.360621,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "a prepaid tenant pays the catalog fallback plus funding when actual cost is absent; spent credit stops runs",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 14641.995712,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "credit is bought through Stripe Checkout with the fee on top, added once the webhook reports payment, and refunds take it back",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 10589.850249,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "disabled card credit is absent from billing and its start endpoint refuses while GitHub grants remain",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 6061.576212,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "free credit brings fewer busy agents (its usage tier) and an hourly spend limit, both lifted by the first purchase",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 12672.798873,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "only a billing-admin operator can issue the one-time support grant",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 6565.331874,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "open sign-up admits any GitHub account; starting credit is once per account id and uses the configured signup policy; a renamed login keeps its tenant",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 7847.651465,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "responses on the tenant's own key cost no credit for tokens, but time in turns is charged",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 7659.922013,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "signup retries an incomplete profile before creating an account, and does not block an existing login",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 5525.115436,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts",
+      "name": "streamed OpenRouter actual cost reaches the credit ledger instead of the catalog estimate",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8771.12326,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/billing.test.ts:623",
+      "name": "without Stripe, checkout answers 503 and the webhook 404",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 5183.391929,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/credit-holds.test.ts:114",
+      "name": "a run on a tenant with too little credit stops before any call, as a spend limit; a small balance caps the call's max_tokens",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 12497.393665,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/pi-durable-accounting.test.ts:48",
+      "name": "imported usage and forks are free; the next real turn is billed once (inline)",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 10653.608397,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "billing",
+      "source": "tests/pi-durable-accounting.test.ts:48",
+      "name": "imported usage and forks are free; the next real turn is billed once (process)",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 9353.788218,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-balance-events.test.ts",
+      "name": "the API: a person's lowBalance, and the end users under their threshold",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8139.180907,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-credits.test.ts:145",
+      "name": "the end-user API: settings, entries, an end user and their ledger, for the tenant only",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 7575.323334,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-history.test.ts",
+      "name": "the history API and the TypeScript SDK: ledger filters and per-day totals, for the tenant only",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8354.770682,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-lots.test.ts",
+      "name": "the lots API and the TypeScript SDK: expiring grants, lots on the end user, marking, refunds by lot, for the tenant only",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 7188.111686,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for a bucket limit above 0 carries end_user_credit and bucket_limit: its record, request and run.failed",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 6546.251212,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for a bucket limit of 0 carries end_user_credit and bucket_limit: its record, request and run.failed",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 6595.485678,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for no balance carries end_user_credit and balance: its record, request and run.failed",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 6512.381047,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for the agent's spend limit carries spend_limit and which limit",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 6655.852905,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "a queued run refused as it starts for the daily limit carries end_user_credit and daily_limit: its record, request and run.failed",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 6516.929638,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-reasons.test.ts",
+      "name": "the TypeScript SDK: a queued run refused as it starts is a failed run with code end_user_credit and its reason, not runtime_error",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 7591.934491,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "a long reply stops at the end of its end user's credit, mid-stream, and is not retried",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8162.460087,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "a run's own bucket is what its start is checked against, and the runs after it that name none (the runtime's own too) inherit it, never \"default\"",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 10536.891478,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "a run's own bucket, the agent's bucket and a stateless run's each spend their own allowance",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 11514.469772,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "an end user's allowance pays first, then their balance; out of both, the turn stops and their next run is refused",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 11049.818612,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "concurrent replies for one end user share their credit: their holds never add up to more than it",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 11723.001475,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-runs.test.ts",
+      "name": "the TypeScript SDK: endUsers configure, grant, get and ledger; an agent's bucket; a run out of credit fails with code end_user_credit",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 11007.485138,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-usage.test.ts:96",
+      "name": "usage API and TypeScript SDK parse times, group usage and isolate tenants",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 7356.784015,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "credits",
+      "source": "tests/end-user-webhooks.test.ts",
+      "name": "end-user events reach an endpoint that selected them, signed",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8823.058548,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "keys",
+      "source": "tests/api.test.ts:132",
+      "name": "tenants set provider keys over REST; keys are never returned by public endpoints",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 9594.08503,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "keys",
+      "source": "tests/api.test.ts:238",
+      "name": "tenants mint and revoke their own API tokens",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 6509.859931,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "keys",
+      "source": "tests/credential-exchange.test.ts",
+      "name": "through the API: saving lists the server with a credential for the definition, agents get their own, and nothing shows the credential",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 14761.601402,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "keys",
+      "source": "tests/key-scopes.test.ts",
+      "name": "Bedrock's region comes from the entry or its regional endpoint",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 5193.83654,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "keys",
+      "source": "tests/key-scopes.test.ts",
+      "name": "a scope's baseUrl is a public address the runtime may call, checked when saved and at every call",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 14293.38144,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "keys",
+      "source": "tests/key-scopes.test.ts",
+      "name": "a scope's baseUrl replaces the provider's root, a keyless entry sends only its gateway's headers, and an agent's modelHeaders come after them",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8815.19695,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "keys",
+      "source": "tests/key-scopes.test.ts",
+      "name": "a scope's model provider need not be the tenant's: an agent may be created on it, and Bedrock takes its key as a bearer token",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 6962.625781,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "keys",
+      "source": "tests/key-scopes.test.ts:10",
+      "name": "key scopes store sealed entries, and an agent's calls use its scope's current key, gateway and headers, else the tenant's",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 13212.184178,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "oauth",
+      "source": "tests/chatgpt-plugin.test.ts:16",
+      "name": "the plugin's path works end to end, with the issuer on another origin than the MCP endpoint and sign-in pages: discovery, registration, email and password sign-in, consent, /v1/me, the review cases' tools, refresh, revocation",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 10705.186474,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "oauth",
+      "source": "tests/chatgpt-plugin.test.ts:16",
+      "name": "the plugin's path works end to end: discovery, registration, email and password sign-in, consent, /v1/me, the review cases' tools, refresh, revocation",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 11952.924916,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "ops",
+      "source": "tests/admin-site.test.ts:25",
+      "name": "the admin site answers only on its hostname, to people Cloudflare Access signed in, with every tenant's stats",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 9190.142464,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "ops",
+      "source": "tests/ops-mcp.test.ts:38",
+      "name": "the operations endpoint names its own protected resource, and answers nobody who is not signed in",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 6274.457478,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "ops",
+      "source": "tests/ops-mcp.test.ts:59",
+      "name": "only the tenants on AGENT_OPS_ADMINS connect: anyone else is refused at consent, and /mcp is untouched",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 5964.716055,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "ops",
+      "source": "tests/ops-mcp.test.ts:86",
+      "name": "the tools: read-only rows a dashboard charts, and a token that works here works nowhere else",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 9448.794029,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/api.test.ts:584",
+      "name": "a tenant at its agent quota gets 429 with Retry-After and nothing half-created; the same key succeeds once a slot frees",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 23135.054935,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/api.test.ts:615",
+      "name": "a tenant's own maxAgents replaces the default limit, and a change applies at the next tenants reload without a restart",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 8340.656271,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/api.test.ts:656",
+      "name": "a tenant's monthly spend cap ends a turn after the response that crosses it, refuses new runs, and a reload raising it lets the turn continue",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 7911.21856,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/rate-limits.test.ts",
+      "name": "an admin tenant's traffic (camelAI's servers behind a few Cloudflare egress addresses, its users' browser tokens) is never rate limited",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 15756.663108,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/rate-limits.test.ts",
+      "name": "creates and runs answer with X-RateLimit-* headers; an upsert that changes nothing is not a create, and gives the same configHash",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 16299.239583,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/rate-limits.test.ts",
+      "name": "the server answers 429 RATE_LIMITED with Retry-After and the limit: per address behind Cloudflare, per tenant for creates and runs",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 13307.112965,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/rate-limits.test.ts",
+      "name": "without AGENT_TRUST_CF_CONNECTING_IP, CF-Connecting-IP is ignored and the load balancer's X-Forwarded-For entry counts",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 4936.178643,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/spend-limits.test.ts",
+      "name": "a run's own spend limit ends that run once it crosses it, and leaves the agent's limit and later runs alone",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 7382.210999,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/spend-limits.test.ts",
+      "name": "an agent's spend limit ends the turn that crosses it and refuses new prompts until a new limit, which counts from zero",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 9794.634414,
+      "backend": "workers",
+      "before": "pass",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    },
+    {
+      "area": "quotas",
+      "source": "tests/storage-limits.test.ts",
+      "name": "over the API: uploads need credit, stop at the free limit with STORAGE_LIMIT, and the operator can raise a tenant's limit",
+      "status": "pass",
+      "reason": "",
+      "durationMs": 9555.181912,
+      "backend": "workers",
+      "before": "fail",
+      "verifiedRevision": "8441ff745bad47c1522e311b14acb743d11e0db4"
+    }
+  ],
+  "cachedNodeBaseline": {
+    "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+    "revision": "6b072bbeab6b198f654fc70889adb31c7b8c1002",
+    "recordedAt": "2026-11-05T22:58:09.270Z",
+    "runtime": {
+      "node": "v24.22.1",
+      "platform": "linux",
+      "arch": "x64"
+    },
+    "selectedPass": 88,
+    "selectedFail": 0
+  },
+  "verificationMethod": "Sprite shard runner with cached Node baseline; official sourceKeys, greenFor, and mergeReports used for local assembly",
+  "supplementalValidation": [
+    {
+      "revision": "8441ff745bad47c1522e311b14acb743d11e0db4",
+      "base_integration": "4f7e12be",
+      "sprite": "rt-pool-22",
+      "commands": [
+        "npm ci --prefix backends/workers --no-audit --no-fund",
+        "npm run typecheck",
+        "npm run typecheck --prefix backends/workers",
+        "node backends/workers/scripts/reuse-sql.mjs --check",
+        "sha256sum openapi.json",
+        "npm run openapi",
+        "sha256sum openapi.json; assert before == after",
+        "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/billing-core.test.ts",
+        "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/credit-holds.test.ts",
+        "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/run-limits.test.ts",
+        "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/host-execution.test.ts",
+        "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/host-execution-billing.integration.ts",
+        "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/account-routes.integration.ts",
+        "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/auxiliary-usage.test.ts",
+        "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/agent-builtins.integration.ts"
+      ],
+      "checks": {
+        "root_typecheck": "pass",
+        "workers_typecheck": "pass",
+        "reuse_sql": "pass",
+        "openapi_regeneration": "pass"
+      },
+      "openapi": {
+        "before_sha256": "ebb53acc32ef15496fe5ed40c7f3298eb6a7a55bfce35681ea1de2e6ecc3f3db",
+        "after_sha256": "ebb53acc32ef15496fe5ed40c7f3298eb6a7a55bfce35681ea1de2e6ecc3f3db",
+        "unchanged": true
+      },
+      "files": [
+        {
+          "file": "backends/workers/test/billing-core.test.ts",
+          "counts": {
+            "tests": 13,
+            "pass": 13,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0
+          },
+          "exit": 0,
+          "command": "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/billing-core.test.ts"
+        },
+        {
+          "file": "backends/workers/test/credit-holds.test.ts",
+          "counts": {
+            "tests": 10,
+            "pass": 10,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0
+          },
+          "exit": 0,
+          "command": "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/credit-holds.test.ts"
+        },
+        {
+          "file": "backends/workers/test/run-limits.test.ts",
+          "counts": {
+            "tests": 3,
+            "pass": 3,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0
+          },
+          "exit": 0,
+          "command": "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/run-limits.test.ts"
+        },
+        {
+          "file": "backends/workers/test/host-execution.test.ts",
+          "counts": {
+            "tests": 5,
+            "pass": 5,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0
+          },
+          "exit": 0,
+          "command": "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/host-execution.test.ts"
+        },
+        {
+          "file": "backends/workers/test/host-execution-billing.integration.ts",
+          "counts": {
+            "tests": 2,
+            "pass": 2,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0
+          },
+          "exit": 0,
+          "command": "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/host-execution-billing.integration.ts"
+        },
+        {
+          "file": "backends/workers/test/account-routes.integration.ts",
+          "counts": {
+            "tests": 5,
+            "pass": 5,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0
+          },
+          "exit": 0,
+          "command": "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/account-routes.integration.ts"
+        },
+        {
+          "file": "backends/workers/test/auxiliary-usage.test.ts",
+          "counts": {
+            "tests": 1,
+            "pass": 1,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0
+          },
+          "exit": 0,
+          "command": "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/auxiliary-usage.test.ts"
+        },
+        {
+          "file": "backends/workers/test/agent-builtins.integration.ts",
+          "counts": {
+            "tests": 2,
+            "pass": 2,
+            "fail": 0,
+            "cancelled": 0,
+            "skipped": 0,
+            "todo": 0
+          },
+          "exit": 0,
+          "command": "cd backends/workers && node --import ./test/sdk-deps.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-reporter=spec --test-concurrency=1 test/agent-builtins.integration.ts"
+        }
+      ],
+      "total": {
+        "tests": 41,
+        "pass": 41,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "command_exit": 0,
+      "sprite_wrapper_exit": 0,
+      "log": "/tmp/accounts-money-final-financial-8441ff74.log",
+      "remote_log": "~/runs/20261105-170529-88612-1.log",
+      "verified_money_regressions": [
+        "Host recovery excludes downtime using persisted finish time",
+        "Lost host acceptance followed by cancellation posts one exact charge",
+        "Web calls charge the configured end user and chosen run bucket on tenant-owned keys",
+        "Web charges preserve allowance-first payment, markup, lot expiry and exact agent/request/provider attribution",
+        "Repeated auxiliary receipts change neither tenant usage nor end-user ledger/balance",
+        "A child cost stops its parent before another model request"
+      ],
+      "prior_attempts": [
+        {
+          "revision": "95735fc9",
+          "log": "/tmp/accounts-money-final-financial-95735fc9.log",
+          "exit": 1,
+          "reason": "26tests and compile/SQL/OpenAPI checks passed, then host test import reached new Workers-only tool-files module under Node strip-only mode"
+        },
+        {
+          "revision": "95735fc9",
+          "log": "/tmp/accounts-money-final-financial-95735fc9-remaining.log",
+          "exit": 1,
+          "reason": "Type transformation passed syntax but module still imported cloudflare:workers"
+        },
+        {
+          "revision": "8441ff74",
+          "log": "/tmp/accounts-money-extraction-8441ff74.log",
+          "exit": 0,
+          "pass": 10,
+          "reason": "Moved unchanged savedContent helper into host-neutral module, verified body byte-for-byte; normal strip-only host/builtin tests pass"
+        }
+      ],
+      "behavior_note": "Workers commits web tenant usage, auxiliary idempotency identity and end-user charge in one transaction before returning the tool result. Node schedules the end-user charge asynchronously. The same source settlement policy defines amounts, holds, lots, markup and write-offs."
+    }
+  ],
+  "journeyValidation": {
+    "revision": "972a47cf1b3bd8ddf69d77b3db8b52d6f7dffb6f",
+    "implementationRevision": "4bdac270",
+    "sprite": "rt-pool-1",
+    "typecheckExitCode": 0,
+    "integration": {
+      "exitCode": 0,
+      "tests": 5,
+      "pass": 5,
+      "fail": 0,
+      "topLevelCases": 2,
+      "subtests": 3,
+      "log": "/tmp/accounts-money-journey-integration.log",
+      "deletionAssertions": [
+        "Agent spend-limit row removed",
+        "Credit ledger and balance retained",
+        "Journey account, lost signup, milestones and prior outbox removed",
+        "One anonymous run_account_deleted notification retained while Journey disabled",
+        "Repeated deletion preserves same notification and ledger"
+      ]
+    },
+    "sourcePolicy": {
+      "deleteJourneyAccount": "Body matches src/core/journey.ts after whitespace normalization",
+      "journeyKept": "Body matches src/core/journey.ts after whitespace normalization",
+      "emptyExport": "Unchanged contract proves an account Journey never knew has no analytics files"
+    },
+    "commandExitCode": 0,
+    "commands": [
+      "npm ci --prefix backends/workers --no-audit --no-fund",
+      "npm run typecheck --prefix backends/workers",
+      "cd backends/workers && node --import ./test/compat-register.mjs --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-concurrency=1 test/account-routes.integration.ts",
+      "CONTRACT_ON_SPRITE=1 CONTRACT_CONCURRENCY=2 CONTRACT_REVISION=972a47cf1b3bd8ddf69d77b3db8b52d6f7dffb6f npm run parity -- --local --files=account.ported.test.ts,journey.public.contract.test.ts --output-dir=/home/sprite/runs/accounts-journey-972a47cf"
+    ],
+    "reports": {
+      "node": {
+        "path": "/tmp/accounts-money-journey-node.json",
+        "revision": "972a47cf1b3bd8ddf69d77b3db8b52d6f7dffb6f",
+        "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+        "suiteHash": "3b654ebde4da01b468bd599652bd89b319e0111d624444a0c3add25538325f47",
+        "expectedCases": 6,
+        "pass": 6,
+        "fail": 0
+      },
+      "workers": {
+        "path": "/tmp/accounts-money-journey-workers.json",
+        "revision": "972a47cf1b3bd8ddf69d77b3db8b52d6f7dffb6f",
+        "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+        "suiteHash": "3b654ebde4da01b468bd599652bd89b319e0111d624444a0c3add25538325f47",
+        "expectedCases": 6,
+        "pass": 6,
+        "fail": 0
+      }
+    },
+    "commandLog": "/tmp/accounts-money-journey-command.log",
+    "remoteDirectory": "/home/sprite/runs/accounts-journey-972a47cf",
+    "remoteFullLog": "/home/sprite/runs/20261105-165841-76768-1.log"
+  },
+  "freshNodeValidation": {
+    "backend": "node",
+    "area": "billing,credits,accounts,auth,oauth,ops,quotas,keys,access",
+    "nodeKey": "1ff65be69bdb97687bb551ad863a1ab48c42d7c4726928e25ab5efd896fabdfc",
+    "suiteHash": "6141fce703b90a28e0c9c73b2a8963f902f7d758a3f799522ce9d77590eb999b",
+    "revision": "6b072bbeab6b198f654fc70889adb31c7b8c1002",
+    "durationMs": 76606.576471,
+    "runtime": {
+      "node": "v24.22.1",
+      "platform": "linux",
+      "arch": "x64"
+    },
+    "recordedAt": "2026-11-05T22:58:09.270Z",
+    "expectedCases": 88,
+    "shards": [
+      {
+        "index": 1,
+        "total": 6,
+        "durationMs": 27879.097999999998
+      },
+      {
+        "index": 2,
+        "total": 6,
+        "durationMs": 27340.254751
+      },
+      {
+        "index": 3,
+        "total": 6,
+        "durationMs": 76606.576471
+      },
+      {
+        "index": 4,
+        "total": 6,
+        "durationMs": 20612.445602
+      },
+      {
+        "index": 5,
+        "total": 6,
+        "durationMs": 21999.391699
+      },
+      {
+        "index": 6,
+        "total": 6,
+        "durationMs": 24313.786025
+      }
+    ]
+  },
+  "focusedValidation": {
+    "revision": "8441ff745bad47c1522e311b14acb743d11e0db4",
+    "rootTypecheck": "pass",
+    "workersTypecheck": "pass",
+    "sourceSqlReuse": "pass",
+    "openapiUnchanged": true,
+    "pass": 41,
+    "fail": 0
+  }
+}

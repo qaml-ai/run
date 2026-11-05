@@ -14,6 +14,7 @@ import {
   authenticate,
   controlRoutes,
   maintenance,
+  creationRate,
   type DirectoryEntry,
   type DirectoryFailure,
 } from "./control.ts";
@@ -23,6 +24,7 @@ import { configurationModelError } from "./default-model.ts";
 import { authorized, agentId, BadRequest, body } from "./validation.ts";
 import { HttpError, errorCode, errorStatus } from "./errors.ts";
 import { handleAdminRequest } from "./admin-api.ts";
+import { publicAdminSite } from "./admin-site.ts";
 import { handleServiceRequest } from "./service-api.ts";
 import { handleMediaRequest } from "./media-api.ts";
 import { handleComputerRequest } from "./computers/api.ts";
@@ -38,12 +40,13 @@ import {
 import { handleFileRequest, handleSignedFileRequest } from "./files.ts";
 import { publicMoneyRoutes, authenticateMoney, moneyRoutes, moneyMaintenance, sendMoneyWebhooks } from "./money-api.ts";
 import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
-import { apiRequest, admissionError, errorFields, errorHeaders } from "./admission.ts";
+import { apiRequest, createAdmission, admissionError, admissionHeaders, errorFields, errorHeaders } from "./admission.ts";
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
 import { browserResponse } from "./browser-response.ts";
 import { browserUrl } from "./selfhost-policy.ts";
 import { createJourney, sendJourney } from "./journey.ts";
 import { keyServices } from "./security-services.ts";
+import { eventRead } from "./event-reads.ts";
 import { decisionService, type DecisionEnv } from "./decision-service.ts";
 import { decisionRoute } from "./decision-runtime.ts";
 import {
@@ -155,6 +158,8 @@ const worker = {
       if (signed) return signed;
       const url = new URL(request.url),
         path = url.pathname;
+      const adminSite = await publicAdminSite(request, env);
+      if (adminSite) return adminSite;
       if (path === "/.well-known/openai-apps-challenge" && request.method === "GET") {
         const challenge = (env as Env & { AGENT_OPENAI_APPS_CHALLENGE?: string }).AGENT_OPENAI_APPS_CHALLENGE?.trim();
         return new Response(challenge || null, { status: challenge ? 200 : 404, headers: { "Content-Type": "text/plain; charset=UTF-8", "Cache-Control": "no-store" } });
@@ -169,12 +174,19 @@ const worker = {
       if (docs) return docs;
       const publicMoney = await publicMoneyRoutes(request, env, ctx);
       if (publicMoney) return publicMoney;
+      if (path === "/console" || path.startsWith("/console/")) {
+        return new Response("The console is not built on this host", { status: 404, headers: { "Content-Type": "text/plain; charset=UTF-8" } });
+      }
+      if (path.startsWith("/api/"))
+        return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=UTF-8" } });
       await apiRequest(request, env);
       const bearer = request.headers.get("authorization") ?? undefined;
       const browserTokens = new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN);
       let browser: BrowserClaims | undefined;
       if (BrowserTokens.carries(bearer)) {
         browser = browserTokens.verify(bearer!);
+        if (path.startsWith("/clients/") || path.startsWith("/registry/"))
+          throw new ApiError(401, "An agent token is required", "UNAUTHORIZED");
         const scope = path.slice(path.lastIndexOf("/") + 1);
         if (request.method !== "GET" || !BROWSER_READS.test(path) || !browser.scopes.includes(scope as never) || request.headers.get("upgrade"))
           throw new ApiError(403, "This browser token does not grant this read", "FORBIDDEN");
@@ -211,6 +223,7 @@ const worker = {
           entry = candidate;
         }
         else if (
+          (match[1] !== "v1/agents" || match[3] === "/mcp") &&
           /^client_[a-f0-9]{40}$/.test(idOrKey) &&
           (await authorized(request, await agentToken(env.API_TOKEN, idOrKey)))
         ) {
@@ -334,12 +347,13 @@ const worker = {
                 env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,
               );
             const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id)), ...(upsert.reconfigured ? { reconfigured: upsert.reconfigured } : {}), ...await builtinWarnings(env, auth.tenantId, created.config) };
-            if (!first) return json(answer, 201);
+            const headers = admissionHeaders(creationRate(created) ?? await createAdmission(env, auth.tenantId, false));
+            if (!first) return Response.json(answer, { status: 201, headers });
             const submitted = await env.AGENTS.getByName(created.id).fetch(new Request("https://agent/requests", {
               method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(first),
             }));
             const sent = await submitted.json() as { error?: string; code?: string };
-            return json({ ...answer, prompt: submitted.ok ? sent : { error: { status: submitted.status, code: sent.code ?? "INVALID_REQUEST", message: sent.error } } }, 201);
+            return Response.json({ ...answer, prompt: submitted.ok ? sent : { error: { status: submitted.status, code: sent.code ?? "INVALID_REQUEST", message: sent.error } } }, { status: 201, headers });
           }
         }
         throw new ApiError(404, "Unknown API route", "NOT_FOUND");
@@ -354,7 +368,7 @@ const worker = {
         throw new ApiError(404, "Not found", "NOT_FOUND");
       const directory = new Directory(env, entry.tenantId);
       if (entry.deleted) {
-        if (["/", "/credentials"].includes(tail) && request.method === "GET")
+        if ((auth || browser || ["/", "/credentials"].includes(tail)) && request.method === "GET")
           throw new ApiError(404, "Unknown agent", "AGENT_NOT_FOUND");
         if (auth && tail === "/" && request.method === "DELETE") {
           result(await directory.remove(entry.id));
@@ -497,9 +511,14 @@ const worker = {
         ? await agentLifecycleRoutes(request, env, entry, tail, auth?.kind !== "oauth")
         : undefined;
       if (lifecycle) return lifecycle;
-      if (!auth && tail === "/requests" && request.method === "POST") {
-        const input = (await request.clone().json()) as { method?: string; params?: unknown };
-        if (input.method === "configure") scopedConfiguration(input.params);
+      if (tail === "/requests" && request.method === "POST") {
+        const input = (await request.clone().json()) as { method?: string; params?: Record<string, unknown> };
+        if (!auth && input.method === "configure") scopedConfiguration(input.params);
+        if (input.method !== "configure" && input.params?.bucket !== undefined &&
+          (!auth || !["prompt", "continue"].includes(input.method ?? "")))
+          throw new HttpError(auth ? 400 : 403, auth
+            ? "bucket is for a model run (prompt, continue)"
+            : "Only the tenant can choose a run's bucket");
       }
       // Browser grants retain Node's read-only SSE policy. The internal agent
       // endpoint also negotiates transports, so strip the WebSocket offer here.
@@ -519,7 +538,9 @@ const worker = {
         if (match[1] === "v1/agents" || browser) eventUrl.searchParams.set("watch", "1");
         request = new Request(eventUrl, { method: request.method, headers, signal: request.signal });
       }
-      const response = await forward(request, env, entry.id, tail);
+      const response = tail === "/events"
+        ? await eventRead(request, env, entry.tenantId, entry.id, request => forward(request, env, entry!.id, tail))
+        : await forward(request, env, entry.id, tail);
       return browser ? browserResponse(response, browser, tail) : response;
     } catch (error) {
       const limited = admissionError(error);

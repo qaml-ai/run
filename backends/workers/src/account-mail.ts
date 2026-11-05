@@ -6,6 +6,10 @@ export interface MailEnv {
   EMAIL_FROM?: string;
   AGENT_ACCOUNT_EMAIL_FROM?: string;
   AGENT_ACCOUNT_EMAIL_NAME?: string;
+  AGENT_ACCOUNT_EMAIL_CONFIGURATION_SET?: string;
+  AGENT_BILLING_EMAIL_FROM?: string;
+  AGENT_BILLING_EMAIL_NAME?: string;
+  AGENT_BILLING_EMAIL_CONFIGURATION_SET?: string;
   TEST_MODE?: string;
   MAIL_TEST_URL?: string;
 }
@@ -16,13 +20,16 @@ export interface MailMessage {
   text: string;
   headers?: { Name: string; Value: string }[];
   delivery?: string;
+  tags?: { Name: string; Value: string }[];
+  kind?: "account" | "billing";
 }
 
 /** Cloudflare Email Sending needs a binding and verified sending domain, not AWS keys. */
 export async function sendEmail(env: MailEnv, mail: MailMessage, signal?: AbortSignal) {
-  const from = env.AGENT_ACCOUNT_EMAIL_FROM ?? env.EMAIL_FROM;
+  const billing = mail.kind === "billing";
+  const from = (billing ? env.AGENT_BILLING_EMAIL_FROM : env.AGENT_ACCOUNT_EMAIL_FROM) ?? env.EMAIL_FROM;
   if (!from || !z.email().safeParse(from).success) throw new Error("A valid email sender is required");
-  const displayName = env.AGENT_ACCOUNT_EMAIL_NAME ?? "camelRun";
+  const displayName = billing ? env.AGENT_BILLING_EMAIL_NAME ?? "camelRun Billing" : env.AGENT_ACCOUNT_EMAIL_NAME ?? "camelRun";
   if (!displayName.trim() || displayName.length > 80 || /[\r\n]/.test(displayName)) throw new Error("AGENT_ACCOUNT_EMAIL_NAME must be a single display name, at most 80 characters");
   const message: EmailMessageBuilder = {
     from: { email: from, name: displayName },
@@ -33,9 +40,21 @@ export async function sendEmail(env: MailEnv, mail: MailMessage, signal?: AbortS
   if (env.TEST_MODE === "1" && env.MAIL_TEST_URL) {
     const url = new URL(env.MAIL_TEST_URL);
     if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new Error("Mail fake must be loopback");
-    const response = await fetch(url, { method: "POST", body: JSON.stringify(message), headers: { "Content-Type": "application/json" }, signal });
+    // The local SES sink exercises the source mail contract while the deployed
+    // transport uses Cloudflare Email Sending. Keep sender, tags and headers intact.
+    const envelope = {
+      FromEmailAddress: `=?UTF-8?B?${Buffer.from(displayName).toString("base64")}?= <${from}>`,
+      Destination: { ToAddresses: [mail.to] },
+      ConfigurationSetName: billing ? env.AGENT_BILLING_EMAIL_CONFIGURATION_SET : env.AGENT_ACCOUNT_EMAIL_CONFIGURATION_SET,
+      EmailTags: mail.tags,
+      Content: { Simple: { Subject: { Data: mail.subject, Charset: "UTF-8" }, Headers: mail.headers, Body: {
+        Html: { Data: mail.html, Charset: "UTF-8" }, Text: { Data: mail.text, Charset: "UTF-8" },
+      } } },
+    };
+    const response = await fetch(url, { method: "POST", body: JSON.stringify(envelope), headers: { "Content-Type": "application/json" }, signal });
     if (!response.ok) throw new Error("Mail fake refused delivery");
-    return { messageId: "local-fake" };
+    const result = await response.json() as { MessageId?: string };
+    return { messageId: result.MessageId };
   }
   if (!env.EMAIL) throw new Error("Email Sending is not configured");
   signal?.throwIfAborted();
@@ -58,7 +77,7 @@ export class AccountMail {
   }
   send(kind: AccountEmailKind, to: string, link?: string) {
     const mail = accountEmail(kind, this.config.origin, link);
-    const sent = sendEmail(this.env, { to, ...mail }, AbortSignal.timeout(15_000))
+    const sent = sendEmail(this.env, { to, ...mail, kind: "account", tags: [{ Name: "product", Value: "camelrun-account" }, { Name: "kind", Value: kind }] }, AbortSignal.timeout(15_000))
       .then(() => {}, () => console.error(JSON.stringify({ type: "account_mail_failed", kind })))
       .finally(() => this.sending.delete(sent));
     this.sending.add(sent);

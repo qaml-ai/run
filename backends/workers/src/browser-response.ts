@@ -5,7 +5,7 @@ export async function browserResponse(response: Response, claims: BrowserClaims,
   if (!response.ok) return response;
   const headers = new Headers(response.headers);
   headers.delete("content-length");
-  if (path === "/events" && response.body) {
+  if (path === "/events" && response.body && response.headers.get("content-type")?.includes("text/event-stream")) {
     const reader = response.body.getReader(), decoder = new TextDecoder(), encoder = new TextEncoder();
     let timer: ReturnType<typeof setTimeout>, closed = false;
     const stream = new ReadableStream<Uint8Array>({
@@ -44,7 +44,11 @@ export async function browserResponse(response: Response, claims: BrowserClaims,
     return new Response(stream, { status: response.status, headers });
   }
   const value: any = await response.json();
-  const visible = path === "/state" ? { ...value, requests: value.requests.map(readableRequest) }
-    : path === "/history" ? readableMessage(claims, value) : value;
+  const visible = path === "/events" ? { ...value, events: value.events.flatMap((event: { data: unknown }) => {
+    const data = readableFrame(claims, event.data);
+    return data === undefined ? [] : [{ ...event, data }];
+  }) }
+    : path === "/state" ? readableMessage(claims, { ...value, requests: value.requests.map(readableRequest) })
+    : readableMessage(claims, value);
   return Response.json(visible, { status: response.status, headers });
 }

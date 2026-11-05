@@ -4,6 +4,7 @@ import { keyServices, type KeyEnv } from "./security-services.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { ApiError } from "./api-contract.ts";
 import { withOpenRouterDetails } from "./openrouter-details.ts";
+import { getModel } from "./model-catalog.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
 export type DefaultModelEnv = KeyEnv & { MODEL: string; AGENT_MODEL_FALLBACKS?: string; AGENT_OPENROUTER_API_URL?: string };
@@ -39,12 +40,20 @@ export async function configurationModelError(env: DefaultModelEnv, tenant: stri
 }
 
 /** Refuse invalid declarations before creating agent rows or private volumes. */
-export async function validateAgentModel(env: DefaultModelEnv, tenant: string, config: AgentConfiguration, previous?: { reference?: string; model?: Model<Api> }): Promise<Model<Api> | undefined> {
+export async function validateAgentModel(env: DefaultModelEnv, tenant: string, config: AgentConfiguration, previous?: { reference?: string; model?: Model<Api>; defaultModel?: boolean }): Promise<Model<Api> | undefined> {
   const reference = config.model ?? env.MODEL;
   if (reference.startsWith("test/") || reference.startsWith("camel-test/") || reference.startsWith("cloudflare/") || reference.startsWith("@cf/")) return;
   const services = await keyServices(env);
   try {
-    const resolved = resolveModel(reference, services.tenants.modelEndpoints(tenant), await services.modelProviders.resolvable(tenant, config.keyScope));
+    let resolved = resolveModel(reference, services.tenants.modelEndpoints(tenant), await services.modelProviders.resolvable(tenant, config.keyScope));
+    // src/model.ts takes the configured default directly from the catalog.
+    // Explicit model names go through resolveModel's provider API selection.
+    if (reference === env.MODEL && previous?.reference === reference && previous.model) {
+      resolved = previous.model;
+    } else if (previous?.defaultModel && reference === env.MODEL) {
+      const configured = getModel(resolved.provider, resolved.id);
+      if (configured) resolved = { ...resolved, api: configured.api };
+    }
     const model = (resolved as { passthrough?: true }).passthrough && previous?.reference === reference && previous.model
       ? previous.model
       : await withOpenRouterDetails(resolved, env.AGENT_OPENROUTER_API_URL, (input, init) => services.outbound.fetch(String(input), { ...init, timeoutMs: 5000, maxBytes: 1024 * 1024 }));

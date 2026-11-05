@@ -163,6 +163,12 @@ export class LocalWorker {
     }
     await listenerClosed;
   }
+  /** Invoke Wrangler's local Cron Trigger; the real scheduled handler does the work. */
+  async scheduled() {
+    const response = await fetch(`${this.url}/cdn-cgi/local/scheduled`, { signal: AbortSignal.timeout(30_000) });
+    if (!response.ok) throw new Error(`Local scheduled handler failed: ${response.status}`);
+    await response.arrayBuffer();
+  }
   async heap() {
     const targets = (await (
       await fetch(`http://127.0.0.1:${this.inspectorPort}/json/list`)

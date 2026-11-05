@@ -1,5 +1,6 @@
 import { ATTACHMENT_MARKER } from './attachment-markers.ts';
-import { savedContent, type ToolFiles } from './tool-files.ts';
+import { savedContent } from './tool-content.ts';
+import type { ToolFiles } from './tool-files.ts';
 import type { ToolRegistration, ToolExecutionResult, ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import { HttpError } from "./errors.ts";

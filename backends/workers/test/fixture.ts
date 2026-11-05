@@ -81,10 +81,14 @@ export async function startFixture(
   let startingWorker: LocalWorker | undefined;
   let finishStartup!: () => void;
   const startupDone = new Promise<void>(resolve => { finishStartup = resolve; });
+  let stopScheduled: (() => Promise<void>) | undefined;
   let stopPromise: Promise<void> | undefined;
   const stop = () => stopPromise ??= (async () => {
     stopped = true;
     const failures: unknown[] = [];
+    // An admitted Cron request needs the Worker until it finishes. Preserve a
+    // failure from that request, but still stop the processes and database.
+    if (stopScheduled) try { await stopScheduled(); } catch (error) { failures.push(error); }
     // Stop owned processes immediately, but let an in-flight CREATE DATABASE
     // finish registering its cleanup before closing the admin connection.
     const workerStopped = startingWorker?.stop();
@@ -135,7 +139,11 @@ export async function startFixture(
       ],
     );
   }
-  const port = await unusedPort();
+  // Public OAuth discovery tests select the listening port before building
+  // their issuer and callback origins, as the Node fixture does.
+  const requestedPort = options.vars?.PORT;
+  const port = requestedPort === undefined ? await unusedPort() : Number(requestedPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("Invalid fixture PORT");
   const config = JSON.parse(
     await readFile(join(root, options.config ?? "wrangler.test.jsonc"), "utf8"),
   );
@@ -174,6 +182,20 @@ export async function startFixture(
   cleanups.push(() => worker.stop());
   await worker.start();
   finishStartup();
+  if (config.vars.MAIL_TEST_URL && !stopped) {
+    // Wrangler does not advance Cron Triggers itself. Tick the production job
+    // for local mail fixtures, including notifications enqueued directly by SQL.
+    let pending: Promise<void> | undefined;
+    let failed: unknown;
+    const timer = setInterval(() => {
+      if (!pending) pending = worker.scheduled().catch(error => { failed = error; }).finally(() => { pending = undefined; });
+    }, 1000).unref();
+    stopScheduled = async () => {
+      clearInterval(timer);
+      await pending;
+      if (failed) throw failed;
+    };
+  }
   return { url: worker.url, databaseUrl, db, worker, token, stop,
     async restart(vars: Record<string, string> = {}, crash = false) {
       await worker.stop(crash);

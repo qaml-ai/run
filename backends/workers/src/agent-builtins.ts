@@ -16,7 +16,7 @@ import type { KeyEnv } from './security-services.ts';
 import { toolResult } from './attached-tools.ts';
 import type { WebhookEnv } from './webhooks.ts';
 
-export type BuiltinScope = { tenant: string; agent: string; requestId?: string; spendLimit?: number; callId?: string; startedAt?: number; builtins?: string[]; webSearch?: { providers: string[] }; keyScope?: string; files?: WebFiles };
+export type BuiltinScope = { tenant: string; agent: string; requestId?: string; spendLimit?: number; callId?: string; startedAt?: number; builtins?: string[]; webSearch?: { providers: string[] }; keyScope?: string; identity?: { subject?: string; context?: Record<string, unknown> }; actor?: string; bucket?: string; files?: WebFiles };
 export type BuiltinEnv = ProviderKeyEnv & KeyEnv & WebhookEnv & { TEST_MODEL?: string; AGENT_OUTBOUND_ALLOW_HTTP?: string; AGENT_OUTBOUND_ALLOW_CIDRS?: string; AGENT_OUTBOUND_BLOCK_CIDRS?: string; AGENT_EXA_SEARCH_URL?: string; AGENT_BRAVE_SEARCH_URL?: string; AGENT_PARALLEL_SEARCH_URL?: string; AGENT_WEB_SEARCH_PROVIDERS?: string; AGENT_XAI_RESPONSES_URL?: string; AGENT_X_SEARCH_URL?: string; AGENT_FIRECRAWL_SCRAPE_URL?: string };
 export type BuiltinHost = { outbound?: Outbound; key?: (scope: BuiltinScope, provider: string) => Promise<{ key: string; platform: boolean } | undefined>; admit?: (scope: BuiltinScope, platform: boolean) => Promise<void>; record?: (scope: BuiltinScope, usage: UsageRecord) => Promise<void>; schedules?: ScheduleToolsHost };
 

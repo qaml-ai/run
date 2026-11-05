@@ -26,6 +26,7 @@ export type SecurityEnv = BillingEnv & PricingEnv & ModelAzureEnv & FederationEn
   AGENT_OUTBOUND_ALLOW_HTTP?: string;
   AGENT_OUTBOUND_ALLOW_CIDRS?: string;
   AGENT_OUTBOUND_BLOCK_CIDRS?: string;
+  AGENT_OUTBOUND_ALLOW_ORIGINS?: string;
 };
 export type KeyEnv = SecurityEnv;
 /** Operator configuration is a Worker secret, never a local file or an AWS lookup. */
@@ -51,6 +52,7 @@ export async function keyServices(env: SecurityEnv) {
     allowHttp: env.TEST_MODE === "1" && env.AGENT_OUTBOUND_ALLOW_HTTP === "true",
     allow: env.TEST_MODE === "1" ? split(env.AGENT_OUTBOUND_ALLOW_CIDRS) : undefined,
     block: split(env.AGENT_OUTBOUND_BLOCK_CIDRS),
+    origins: split(env.AGENT_OUTBOUND_ALLOW_ORIGINS),
   });
   const keyScopes = new KeyScopes({ accounts, db, outbound });
   const modelProviders = new ModelProviders({ accounts, db, outbound });
@@ -70,5 +72,5 @@ export async function providerCredentials(services: KeyServices, tenant: string,
   if (scoped) return { ...custom, ...scoped, source: "tenant" as const, platform: false };
   if (custom) return { ...custom, source: "tenant" as const, platform: false };
   const key = await services.accounts.providerKey(tenant, provider);
-  return key && { apiKey: key.key, source: key.source, platform: key.source === "platform", ...(key.region ? { region: key.region } : {}), ...(key.bearer ? { bearer: key.bearer } : {}) };
+  return key && { apiKey: key.key, source: key.source, platform: key.source !== "tenant", ...(key.region ? { region: key.region } : {}), ...(key.bearer ? { bearer: key.bearer } : {}) };
 }

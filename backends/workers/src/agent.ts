@@ -134,7 +134,11 @@ import {
 } from "./model-metering.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import type { AccountEnv } from "./account-services.ts";
-import { runAdmission } from "./admission.ts";
+import { runAdmission, admissionHeaders, admissionError, errorFields, type RateLimitState } from "./admission.ts";
+import { billingRunStop, isUnbilledLimitMessage } from "./billing-run-stop.ts";
+import { enqueueRunWebhook } from "./run-webhooks.ts";
+import { sendMoneyWebhooks } from "./money-api.ts";
+import { usageCost } from "./webhook-policy.ts";
 import { PromptPreparations } from "./prompt-admission.ts";
 import { actorInput, bucketInput } from "./security-policy.ts";
 import { MessageProjection } from "./message-projection.ts";
@@ -169,6 +173,7 @@ import {
   admitHostExecution,
   waitHostExecution,
   abortHostExecution,
+  hostExecutionTask,
   executionParams,
   HOST_EXECUTION_TOOL,
 } from "./host-execution.ts";
@@ -187,6 +192,7 @@ import { senderExtension } from "./sender-extension.ts";
 import { metadataInput, senderInput } from "./sender.ts";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { AgentRunLimits, type RuntimeLimit } from "./run-limits.ts";
+import { EndUserCredits, creditError } from "./end-user-credits.ts";
 import {
   DurableEventLog,
   runEventStream,
@@ -305,9 +311,28 @@ type Child = {
 const reqKey = (id: string) => `request:${id}`;
 
 export class CamelAgent extends DurableObject<Env> {
+  /** Erase a revoked account's journal only after the normal shutdown completed. */
+  async purgeAccountData(tenant: string, id: string) {
+    await this.admission;
+    const config = await this.ctx.storage.get<Config>("configuration");
+    const deleted = await this.ctx.storage.get<boolean>("deleted");
+    if (!deleted || config && (config.tenantId !== tenant || config.id !== id))
+      throw new Error("Account purge requires the owned, deleted agent");
+    await Promise.all(this.pendingWaits.values());
+    await this.eventsProcessed;
+    for (;;) {
+      const pending = await Promise.all(["billing:", "model-billing:", "image-billing:", "transcription-billing:"].map(prefix => this.ctx.storage.list({ prefix, limit: 1 })));
+      if (pending.every(rows => rows.size === 0)) break;
+      await this.flushBilling(true);
+    }
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+    await this.ctx.storage.put("deleted", true);
+  }
   private instanceId = crypto.randomUUID();
   private historyIndex = new AgentHistory(this.ctx.storage.sql, (fn) =>
     this.ctx.storage.transactionSync(fn),
+    async message => !await isUnbilledLimitMessage(this.ctx.storage, message),
   );
   private eventLog = new DurableEventLog(this.ctx.storage.sql);
   private recentEvents = new RecentEvents(this.ctx.storage.sql);
@@ -493,6 +518,12 @@ export class CamelAgent extends DurableObject<Env> {
       childCost: await this.delegation.cost(run.id),
       most: await tenantRunCaps(this.env, conf.tenantId),
     };
+  }, async () => {
+    const conf = await this.config(), run = await this.currentRun();
+    const { accounts } = await keyServices(this.env);
+    const refusal = await accounts.runLimit(conf.tenantId);
+    if (typeof refusal === "string") return { error: refusal, code: "spend_limit", stopped: "spend_limit", limit: "tenant" };
+    return billingRunStop(refusal ?? await this.endUserLimit(conf, "params" in run ? run.params?.bucket as string | undefined : undefined));
   });
   private async currentRun(api?: ToolExecutionApi) {
     if (api) {
@@ -579,6 +610,8 @@ export class CamelAgent extends DurableObject<Env> {
   private async admitRequest(conf: Config, id: string) {
     let acquired = false;
     try {
+      const rate = await runAdmission(this.env, conf.tenantId);
+      if (rate) this.runRates.set(id, rate);
       const refusal = agentSpendRefusal(conf.id, await this.agentSpend(conf));
       if (refusal)
         throw Object.assign(new Error(refusal.error), {
@@ -604,7 +637,6 @@ export class CamelAgent extends DurableObject<Env> {
           status: 429,
           code: "BUSY_AGENT_LIMIT",
         });
-      await runAdmission(this.env, conf.tenantId);
       await reserveTurn(this.env, conf.tenantId, conf.id, id);
     } catch (error) {
       if (acquired)
@@ -612,10 +644,31 @@ export class CamelAgent extends DurableObject<Env> {
           `${conf.id}:${id}`,
         );
       await this.ctx.storage.delete(reqKey(id));
+      this.runRates.delete(id);
       throw error;
     }
   }
   private toolFileBudgets = new Map<string, { left: number }>();
+  private runRates = new Map<string, RateLimitState>();
+  private replayedRequests = new WeakSet<RequestRecord>();
+  private replayedRequest(record: RequestRecord) {
+    this.replayedRequests.add(record);
+    return record;
+  }
+  private requestResponse(record: RequestRecord) {
+    const headers = admissionHeaders(this.runRates.get(record.id));
+    this.runRates.delete(record.id);
+    return requestView(record).then(value => Response.json(value, { status: this.replayedRequests.has(record) ? 200 : 202, headers }));
+  }
+  private async endUserLimit(conf: Config, bucket?: string) {
+    if (!conf.config.subject) return;
+    const { accounts } = await keyServices(this.env);
+    const refusal = await new EndUserCredits(accounts.db).refusal(
+      conf.tenantId, conf.config.subject,
+      bucket ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
+    );
+    return refusal ? creditError(refusal) : undefined;
+  }
   private async sourceIdentity(api?: ToolExecutionApi) {
     const conf = await this.config(),
       run = await this.currentRun(api),
@@ -740,13 +793,11 @@ export class CamelAgent extends DurableObject<Env> {
             await applyModelReceipt(this.env, receipt);
             await this.ctx.storage.delete(key);
           },
-          async (refused) => {
-            const { id } = await this.currentRun();
-            const limit: RuntimeLimit = refused.endUser
-              ? { stopped: "spend_limit", error: refused.message, code: "end_user_credit", limit: "end_user", reason: refused.reason, bucket: refused.bucket, endUser: refused.endUser }
-              : { stopped: "spend_limit", error: refused.message, code: "spend_limit", limit: "credit" };
-            await this.ctx.storage.put(`run-limit:${id}`, limit);
-            await this.emit({ type: "event", requestId: id, event: { type: "spend_limit_reached", message: refused.message } });
+          async (context, stop) => {
+            if (context.requestId) {
+              await this.ctx.storage.put(`run-limit:${context.requestId}`, stop);
+              await this.emit({ type: "event", requestId: context.requestId, event: { type: "spend_limit_reached", message: stop.error } });
+            }
           },
         ),
       settings: async () => {
@@ -971,6 +1022,9 @@ export class CamelAgent extends DurableObject<Env> {
             builtins: conf.config.builtins,
             webSearch: conf.config.webSearch,
             keyScope: conf.config.keyScope,
+            identity: { subject: conf.config.subject, context: conf.config.context },
+            actor: ("actor" in run ? run.actor : undefined) ?? params?.actor as string | undefined,
+            bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
             files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
           };
         }, { schedules: this.scheduleTools() }),
@@ -1067,7 +1121,7 @@ export class CamelAgent extends DurableObject<Env> {
   private active?: string;
   private serial: Promise<unknown> = Promise.resolve();
   private readonly initialCursor = Date.now() * 1000;
-  private pendingWaits = new Set<string>();
+  private pendingWaits = new Map<string, Promise<void>>();
   private admission: Promise<unknown> = Promise.resolve();
   private configurationTargets = new ConfigurationTargets(this.ctx.storage, {
     busy: async () => this.harness.session().busy(),
@@ -1147,8 +1201,18 @@ export class CamelAgent extends DurableObject<Env> {
       prefix: TERMINAL_EVENTS_PREFIX,
       limit: 100,
     }))
-      for (let index = pending.next; index < pending.events.length; index++)
+      for (let index = pending.next; index < pending.events.length; index++) {
+        const event = pending.events[index] as { type?: string; id?: string };
+        if (event.type === "response" && event.id) {
+          const record = await this.ctx.storage.get<RequestRecord>(reqKey(event.id));
+          if (record) {
+            const conf = await this.config();
+            await enqueueRunWebhook(this.env, conf.tenantId, conf.id, record);
+            this.ctx.waitUntil(sendMoneyWebhooks(this.env));
+          }
+        }
         await this.emit(pending.events[index], { key, index });
+      }
   }
   private lastEntry = 0;
   private messageProjection = new MessageProjection();
@@ -1278,6 +1342,7 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private async projectMessage(id: string, message: Message, ended: boolean) {
     if (message.role === "system") return;
+    if (await isUnbilledLimitMessage(this.ctx.storage, message)) return;
     message = attachmentMessage(message);
     if (message.role === "user") {
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
@@ -1518,40 +1583,62 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private track(id: string) {
     if (this.pendingWaits.has(id)) return;
-    this.pendingWaits.add(id);
-    this.ctx.waitUntil(
-      this.settle(id, 0)
-        .catch(() => {})
-        .finally(() => {
-          this.pendingWaits.delete(id);
-          this.ctx.waitUntil(this.configurationTargets.drain());
-        }),
-    );
+    const settled = this.settle(id, 0)
+      .then(() => {})
+      .catch(() => {})
+      .finally(() => {
+        this.pendingWaits.delete(id);
+        this.ctx.waitUntil(this.configurationTargets.drain());
+      });
+    this.pendingWaits.set(id, settled);
+    this.ctx.waitUntil(settled);
   }
   private async settle(id: string, waitMs: number): Promise<RequestRecord> {
     const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
     if (!record)
       throw Object.assign(new Error("Unknown request"), { status: 404 });
-    if (record.state === "completed" || !record.accepted) return record;
+    if (record.state === "completed") {
+      // Completion and its receipt commit together. A concurrent observer must
+      // also wait for settlement to release the tenant's busy-agent slot.
+      await this.flushBilling(true);
+      return record;
+    }
+    if (!record.accepted) return record;
     if (record.method === "execute") {
       const signal = waitMs ? AbortSignal.timeout(waitMs) : undefined;
-      let result;
+      let finished;
       try {
-        result = await waitHostExecution(
+        finished = await waitHostExecution(
           await this.harness.pi(), record.task as never,
           signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT,
         );
       } catch (error) {
-        if (signal?.aborted) return (await this.ctx.storage.get<RequestRecord>(reqKey(id))) ?? record;
+        if (signal?.aborted) {
+          const latest = (await this.ctx.storage.get<RequestRecord>(reqKey(id))) ?? record;
+          if (latest.state === "completed") await this.flushBilling(true);
+          return latest;
+        }
         throw error;
       }
+      const { endedAt, ...result } = finished;
+      if (this.env.TEST_MODEL === "1") {
+        if (await this.ctx.storage.get("test:crash-host-settlement")) {
+          await this.ctx.storage.put("test:host-finished-at", endedAt);
+          await this.ctx.storage.put("test:host-stop-owner", this.instanceId);
+          await this.ctx.storage.delete("test:crash-host-settlement");
+        }
+        if (await this.ctx.storage.get("test:host-stop-owner") === this.instanceId) return record;
+      }
       const current = await this.ctx.storage.get<RequestRecord>(reqKey(id));
-      if (current?.state === "completed") return current;
+      if (current?.state === "completed") {
+        await this.flushBilling(true);
+        return current;
+      }
       const completed: RequestRecord = {
         ...record,
         state: "completed",
         status: result.error ? "failed" : "completed",
-        endedAt: Date.now(),
+        endedAt,
         outcome: result.error
           ? {
               error: result.error.message,
@@ -1563,13 +1650,20 @@ export class CamelAgent extends DurableObject<Env> {
             }
           : { result: { ...result, ...(await fileOutputs(this.ctx.storage, id)) } },
       };
+      const conf = await this.config();
       const terminal = await this.ctx.storage.transaction(async (tx) => {
         const latest = await tx.get<RequestRecord>(reqKey(id));
         if (latest?.state === "completed") return latest;
         await tx.put(reqKey(id), completed);
+        await tx.put(`billing:${id}`, {
+          tenantId: conf.tenantId, agentId: conf.id, requestId: id,
+          modelMetered: true, costMicros: 0, activeMs: Math.max(0, completed.endedAt! - (record.began ?? record.startedAt)),
+          startedAt: record.startedAt, responses: 0,
+        } satisfies BillingReceipt);
         await enqueueTerminalEvents(tx, id, completed.outcome, false);
         return completed;
       });
+      await this.flushBilling();
       await this.flushTerminalEvents();
       this.toolFileBudgets.delete(id);
       return terminal;
@@ -1598,7 +1692,10 @@ export class CamelAgent extends DurableObject<Env> {
         }
       }
       const current = await this.ctx.storage.get<RequestRecord>(reqKey(id));
-      if (current?.state === "completed") return current;
+      if (current?.state === "completed") {
+        await this.flushBilling(true);
+        return current;
+      }
       if (await this.ctx.storage.get(`cancelled-request:${id}`)) await this.delegation.settleStopped(id);
       const usage = await this.usageForRequest(record.piId ?? id);
       const stored = await this.ctx.storage.get<Config>("configuration");
@@ -1889,9 +1986,25 @@ export class CamelAgent extends DurableObject<Env> {
         await this.ctx.storage.put(`cancelled-request:${record.id}`, true);
   }
   private async cancelHostIntent(record: RequestRecord) {
+    // Pi may have committed the task before the adapter's acceptance write was
+    // interrupted. Cancel that real work through its normal receipt path.
+    const pi = await this.harness.pi(), task = await hostExecutionTask(pi, record.id);
+    if (task !== undefined) {
+      const latest = (await this.ctx.storage.get<RequestRecord>(reqKey(record.id))) ?? record;
+      if (latest.state === "completed") return;
+      await this.ctx.storage.put(reqKey(record.id), { ...latest, task: Number(task), accepted: true, state: "running" });
+      await abortHostExecution(pi, record.id);
+      await this.settle(record.id, 0);
+      return;
+    }
     const completed = { ...record, state: "completed" as const, status: "failed", endedAt: Date.now(),
       outcome: { error: "Execution aborted", result: { code: "aborted" } } };
     await this.ctx.storage.put(reqKey(record.id), completed);
+    if (record.admitted) {
+      const conf = await this.config();
+      await releaseTurn(this.env, conf.tenantId, conf.id, record.id);
+      await this.env.TENANTS.getByName(conf.tenantId).release(`${conf.id}:${record.id}`);
+    }
     await this.emit({ type: "response", id: record.id, outcome: completed.outcome });
   }
   private async cancelHumanInputs(requestId?: string) {
@@ -1917,11 +2030,37 @@ export class CamelAgent extends DurableObject<Env> {
       await this.cancelHostIntent(intent);
       return (await this.ctx.storage.get<RequestRecord>(reqKey(intent.id)))!;
     }
+    if (!intent.accepted) {
+      const conf = await this.config();
+      const { accounts } = await keyServices(this.env);
+      const limit = await accounts.runLimit(conf.tenantId);
+      if (limit) throw typeof limit === "string" ? Object.assign(new Error(limit), { status: 402, code: "SPEND_LIMIT" }) : limit;
+      if (!intent.admitted) {
+        await this.admitRequest(conf, intent.id);
+        intent.admitted = true;
+        await this.ctx.storage.put(reqKey(intent.id), intent);
+      }
+    }
+    if (await this.ctx.storage.get(`cancelled-request:${intent.id}`)) {
+      await abortHostExecution(await this.harness.pi(), intent.id);
+      await this.cancelHostIntent(intent);
+      return (await this.ctx.storage.get<RequestRecord>(reqKey(intent.id)))!;
+    }
     const record = await admitHostExecution(this.ctx.storage, reqKey(intent.id), intent, async saved => {
       const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
       const tool = this.availableTools.find(tool => tool.name === HOST_EXECUTION_TOOL)!;
       const { code, timeoutMs, maxOutputCharacters } = saved.params!;
-      return Number(await startHostExecution(pi, root, saved.id, { code, timeoutMs, maxOutputCharacters }, tool));
+      if (saved.began === undefined) {
+        saved.began = Date.now();
+        await this.ctx.storage.put(reqKey(saved.id), saved);
+      }
+      const task = await startHostExecution(pi, root, saved.id, { code, timeoutMs, maxOutputCharacters }, tool);
+      if (this.env.TEST_MODEL === "1" && await this.ctx.storage.get("test:crash-host-acceptance")) {
+        await this.ctx.storage.delete("test:crash-host-acceptance");
+        await this.ctx.storage.put("test:host-unaccepted-task", Number(task));
+        throw Object.assign(new Error("Injected interruption after native host admission"), { status: 503 });
+      }
+      return Number(task);
     });
     this.track(record.id);
     return record;
@@ -1942,6 +2081,10 @@ export class CamelAgent extends DurableObject<Env> {
     const params = request.params as Record<string, unknown>;
     if (!replace && !Object.keys(params).length) throw new BadRequest("Give at least one configuration field");
     const conf = await this.config();
+    // Identity cannot change even while a valid configuration waits for a turn.
+    // Match Directory.upsert before acknowledging a queued target.
+    if (params.subject !== undefined && params.subject !== conf.config.subject)
+      throw Object.assign(new Error("An agent's subject cannot change"), { status: 409 });
     const patched = replace ? configuration(params, conf.config.model ?? this.env.MODEL).config : await configurationPatch(this.env, conf.tenantId, conf.config, params);
     configuration(patched, conf.config.model ?? this.env.MODEL);
     if (params.model !== undefined || params.keyScope !== undefined) {
@@ -2014,7 +2157,7 @@ export class CamelAgent extends DurableObject<Env> {
           new Error("Request id reused with different input"),
           { status: 409 },
         );
-      if (old) return old.accepted || old.state === "completed" ? old : this.startHostRequest(old);
+      if (old) return old.accepted || old.state === "completed" ? this.replayedRequest(old) : this.startHostRequest(old);
       await this.requireApplication(allowDisconnected);
       await refreshIdleLifetime(this.env, this.ctx.storage, await this.config());
       const record: RequestRecord = {
@@ -2182,10 +2325,13 @@ export class CamelAgent extends DurableObject<Env> {
       throw Object.assign(new Error("Request id reused with different input"), {
         status: 409,
       });
-    if (old?.state === "completed") return old;
+    if (old?.state === "completed" || old?.accepted) return this.replayedRequest(old);
     if (!old && request.method !== "steer" && (await this.records()).filter(record => record.state !== "completed").length >= MAX_OPEN_REQUESTS)
       throw Object.assign(new Error("Too many requests queued for this agent"), { status: 429 });
     const conf = await this.config();
+    const requestedBucket = params.bucket as string | undefined;
+    const effectiveBucket = requestedBucket ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default";
+    params.bucket = effectiveBucket;
     if (!old) await refreshIdleLifetime(this.env, this.ctx.storage, conf);
     if (conf.config.spendLimit) await this.flushBilling(true);
     if (notice) await this.delegation.landNotice(id, notice.costUsd);
@@ -2196,6 +2342,8 @@ export class CamelAgent extends DurableObject<Env> {
         status: 402,
         code: "SPEND_LIMIT",
       });
+    const endUserRefusal = await this.endUserLimit(conf, effectiveBucket);
+    if (endUserRefusal) throw endUserRefusal;
     const pending = (await this.harness.pending()).find(
       (item) => item.status === "running",
     );
@@ -2399,6 +2547,7 @@ export class CamelAgent extends DurableObject<Env> {
       const latest = (await tx.get<RequestRecord>(reqKey(id))) ?? record;
       const accepted = { ...latest, accepted: true };
       await tx.put(reqKey(id), accepted);
+      if (requestedBucket !== undefined) await tx.put("run-bucket", requestedBucket);
       return accepted;
     });
     this.track(id);
@@ -2659,6 +2808,9 @@ export class CamelAgent extends DurableObject<Env> {
                 builtins: conf.config.builtins,
                 webSearch: conf.config.webSearch,
                 keyScope: conf.config.keyScope,
+                identity: { subject: conf.config.subject, context: conf.config.context },
+                actor: ("actor" in run ? run.actor : undefined) ?? params?.actor as string | undefined,
+                bucket: (params?.bucket as string | undefined) ?? conf.config.bucket ?? await this.ctx.storage.get<string>("run-bucket") ?? "default",
                 files: (await this.sourceIdentity(api)).toolFiles('web_fetch'),
               };
             }, { schedules: this.scheduleTools() }),
@@ -2722,10 +2874,19 @@ export class CamelAgent extends DurableObject<Env> {
             await this.serializeComputer(() =>
               new ComputerService(this.env, conf.tenantId).removeAgent(conf.id),
             );
-          await this.ctx.storage.put("deleted", true);
           await this.delegation.destroy();
           await this.harness.session().abort();
           await this.cancelHumanInputs();
+          // Settling still reads configuration and writes durable charge receipts.
+          // Keep it available until every accepted operation has drained.
+          for (const record of await this.records())
+            if (record.accepted && record.state !== "completed") this.track(record.id);
+          await Promise.all(this.pendingWaits.values());
+          await this.eventsProcessed;
+          if ((await this.records()).some(record => record.accepted && record.state !== "completed"))
+            throw new Error("Agent shutdown is still settling accepted operations");
+          await this.flushBilling(true);
+          await this.ctx.storage.put("deleted", true);
           if (conf)
             await releasePresentedFiles(
               this.ctx.storage,
@@ -2802,9 +2963,12 @@ export class CamelAgent extends DurableObject<Env> {
         this.env.TEST_MODEL === "1" &&
         request.method === "GET"
       ) {
+        const unaccepted = await this.ctx.storage.get<number>("test:host-unaccepted-task");
         return json({
           crashReached: !!(await this.ctx.storage.get("test:crash-reached")),
           pending: (await this.ctx.storage.list({ prefix: "billing:" })).size,
+          hostFinishedAt: await this.ctx.storage.get<number>("test:host-finished-at"),
+          unacceptedFinishedAt: unaccepted === undefined ? undefined : (await waitHostExecution(await this.harness.pi(), unaccepted as never)).endedAt,
         });
       }
       if (
@@ -2814,9 +2978,21 @@ export class CamelAgent extends DurableObject<Env> {
       ) {
         await this.ctx.storage.delete("test:crash-reached");
         await this.ctx.storage.delete("test:crash-owner");
+        const input = (await body(request)) as { events?: boolean; beforeReceipt?: boolean; beforeAcceptance?: boolean };
+        if (input.beforeAcceptance === true) {
+          await this.ctx.storage.delete("test:host-unaccepted-task");
+          await this.ctx.storage.put("test:crash-host-acceptance", true);
+          return json({ armed: true });
+        }
+        if (input.beforeReceipt === true) {
+          await this.ctx.storage.delete("test:host-finished-at");
+          await this.ctx.storage.delete("test:host-stop-owner");
+          await this.ctx.storage.put("test:crash-host-settlement", true);
+          return json({ armed: true });
+        }
         await this.ctx.storage.put(
           "test:crash-events",
-          ((await body(request)) as { events?: boolean }).events === true,
+          input.events === true,
         );
         await this.ctx.storage.put("test:crash-settlement", true);
         return json({ armed: true });
@@ -2870,21 +3046,19 @@ export class CamelAgent extends DurableObject<Env> {
           "output",
           "spendLimit",
           "runLimits",
+          "bucket",
           "actor",
           "images",
           "attachments",
           "files",
         ]);
         const { idempotencyKey, requestId, ...params } = input;
-        return json(
-          await requestView(
+        return this.requestResponse(
             await this.submit({
               id: requestId ?? idempotencyKey ?? crypto.randomUUID(),
               method: "prompt",
               params,
             }),
-          ),
-          202,
         );
       }
       if (path === "/configuration" && request.method === "GET")
@@ -2930,12 +3104,7 @@ export class CamelAgent extends DurableObject<Env> {
       if (path === "/state" && request.method === "GET")
         return json(await this.state());
       if (path === "/requests" && request.method === "POST")
-        return json(
-          await requestView(
-            await this.submit(await body(request, 6 * 1024 * 1024)),
-          ),
-          202,
-        );
+        return this.requestResponse(await this.submit(await body(request, 6 * 1024 * 1024)));
       if (path.startsWith("/requests/") && request.method === "GET") {
         const seconds = Number(url.searchParams.get("wait") ?? 0);
         if (!Number.isFinite(seconds) || seconds < 0) throw new BadRequest("wait is a number of seconds");
@@ -3110,6 +3279,8 @@ export class CamelAgent extends DurableObject<Env> {
       }
       return json({ error: "Unsupported backend operation" }, 404);
     } catch (error) {
+      const limited = admissionError(error);
+      if (limited) return limited;
       const status =
         error instanceof BadRequest
           ? 400
@@ -3117,6 +3288,7 @@ export class CamelAgent extends DurableObject<Env> {
             ((error as { code?: string }).code === "ENOENT" ? 404 : 500));
       return json(
         {
+          ...errorFields(error),
           ...(typeof (error as { code?: unknown }).code === "string"
             ? { code: (error as { code: string }).code }
             : {}),
@@ -3191,12 +3363,13 @@ export class CamelAgent extends DurableObject<Env> {
         for (const message of entry.model ?? [])
           if (message.role === "assistant") {
             last = message;
+            if (message.stopReason === "error" && !(message.usage as { billingAttemptId?: string }).billingAttemptId) continue;
             responses++;
             inputTokens += message.usage.input;
             cacheRead += message.usage.cacheRead;
             cacheWrite += message.usage.cacheWrite;
             outputTokens += message.usage.output;
-            cost += message.usage.cost.total;
+            cost += usageCost(message.usage).usd;
           }
       }
       cursor = page.next;
@@ -3462,7 +3635,9 @@ export class CamelAgent extends DurableObject<Env> {
     this.admission = expire.catch(() => {});
     await expire;
     await this.restoreHostAdmissions();
-    if (await this.limits.check()) await this.harness.session().abort();
+    // A call's live credit hold reserves its funds. Only check available credit
+    // between calls; checking here could abort work that already reserved it.
+    if (await this.limits.check(Date.now(), false)) await this.harness.session().abort();
     await this.delegation.recover();
     await this.notifications.drain();
     for (const record of await this.records()) {

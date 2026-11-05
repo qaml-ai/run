@@ -1,4 +1,6 @@
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
+import { createHash } from "node:crypto";
+import { canonical } from "../../../shared/durable-json.ts";
 import { signRuntimeIdentity, type IdentityEnv, type RuntimeIdentity } from "./tool-identity.ts";
 import { EXCHANGE_LIMITS, TOKEN, describe, reasonGiven } from "./exchange-policy.ts";
 
@@ -10,12 +12,23 @@ export class CredentialExchangeError extends Error {
 }
 export type ExchangeAuth = { type: "exchange"; url: string; audience?: string };
 type FetchExchange = (url: string, init: RequestInit, max: number) => Promise<{ response: Response; text: string }>;
+type CachedCredential = { token: string; refreshAt: number; usedAt: number };
+// An agent's registry is rebuilt on configuration and explicit refresh. Like
+// src/CredentialExchange, credentials outlive those listings and individual turns.
+const credentials = new Map<string, CachedCredential>();
+const fetching = new Map<string, Promise<CachedCredential>>();
+function trim() {
+  if (credentials.size <= EXCHANGE_LIMITS.entries) return;
+  for (const [key, value] of credentials) if (value.refreshAt <= Date.now()) credentials.delete(key);
+  const oldest = [...credentials].sort((a, b) => a[1].usedAt - b[1].usedAt);
+  for (const [key] of oldest.slice(0, Math.max(0, credentials.size - EXCHANGE_LIMITS.entries))) credentials.delete(key);
+}
 
 /** Credentials are cached for this source of this agent only, never for a user or another agent. */
 export function credentialExchange(env: IdentityEnv, source: { name: string; url: string; auth: ExchangeAuth }, identity: (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity }>, fetcher: FetchExchange) {
-  let cached: { token: string; refreshAt: number } | undefined, pending: Promise<{ token: string; refreshAt: number }> | undefined;
-  const load = async (api?: ToolExecutionApi) => {
-    const { issuer, claims } = await identity(api), where = `MCP server ${source.name}'s credential exchange (${describe(source.auth.url)})`;
+  let last: { key: string; token: string } | undefined;
+  const load = async ({ issuer, claims }: { issuer: string; claims: RuntimeIdentity }) => {
+    const where = `MCP server ${source.name}'s credential exchange (${describe(source.auth.url)})`;
     const token = await signRuntimeIdentity(env, issuer, source.auth.audience ?? source.auth.url, {
       tenant: claims.tenant, agent: claims.agent, ...(claims.definition ? { definition: claims.definition } : {}),
       ...(claims.sub ? { sub: claims.sub } : {}), ...(claims.ctx ? { ctx: claims.ctx } : {}), exchange: { server: source.name, url: source.url },
@@ -50,12 +63,33 @@ export function credentialExchange(env: IdentityEnv, source: { name: string; url
   };
   return {
     async headers(api?: ToolExecutionApi) {
+      const caller = await identity(api), { issuer, claims } = caller;
+      const key = createHash("sha256").update(canonical({
+        database: env.HYPERDRIVE.connectionString, issuer,
+        tenant: claims.tenant, agent: claims.agent, definition: claims.definition ?? "",
+        subject: claims.sub ?? "", context: claims.ctx ?? {}, name: source.name,
+        url: source.url, exchange: source.auth.url, audience: source.auth.audience ?? source.auth.url,
+      })).digest("hex");
+      let cached = credentials.get(key);
       if (!cached || cached.refreshAt <= Date.now()) {
-        pending ??= load(api).finally(() => { pending = undefined; });
+        let pending = fetching.get(key);
+        if (!pending) {
+          pending = load(caller).then(value => {
+            const entry = { ...value, usedAt: Date.now() };
+            credentials.set(key, entry);
+            trim();
+            return entry;
+          }).finally(() => fetching.delete(key));
+          fetching.set(key, pending);
+        }
         cached = await pending;
       }
+      cached.usedAt = Date.now();
+      last = { key, token: cached.token };
       return { Authorization: `Bearer ${cached.token}` };
     },
-    refused() { cached = undefined; },
+    refused() {
+      if (last && credentials.get(last.key)?.token === last.token) credentials.delete(last.key);
+    },
   };
 }

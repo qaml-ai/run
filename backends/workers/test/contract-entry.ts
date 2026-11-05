@@ -3,7 +3,7 @@ import application from "../src/index.ts";
 import { CamelAgent as RuntimeAgent } from "../src/agent.ts";
 import type { Env } from "../src/agent.ts";
 import type { DelegatedChild } from "../src/delegation.ts";
-import { withSql } from "../src/postgres.ts";
+import { databaseUnavailable, withSql } from "../src/postgres.ts";
 export * from "../src/index.ts";
 
 const resizeFailureKey = "contract-fixture/image-resize-failures";
@@ -37,12 +37,35 @@ function imageFailureEnvironment(env: Env): Env {
   }) };
 }
 
-async function fixtureConfiguration(env: Env): Promise<string> {
-  const config = await withSql(env, (sql) => sql.query(
-    "select configuration from contract_fixture_configuration where singleton=true",
-  ));
-  if (!config.rows[0]) throw new Error("Missing contract fixture configuration");
-  return JSON.stringify(config.rows[0].configuration);
+const configurationReads = new Map<string, Promise<string>>();
+function fixtureConfiguration(env: Env): Promise<string> {
+  const key = env.HYPERDRIVE.connectionString;
+  let pending = configurationReads.get(key);
+  if (!pending) {
+    pending = readFixtureConfiguration(env).finally(() => {
+      if (configurationReads.get(key) === pending) configurationReads.delete(key);
+    });
+    configurationReads.set(key, pending);
+  }
+  return pending;
+}
+
+async function readFixtureConfiguration(env: Env): Promise<string> {
+  // A burst of disconnected readers must not fan out fixture-only reloads or
+  // poison the next request with a closed socket. Retain no settled result:
+  // the next request still observes changes made through the fixture database.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const config = await withSql(env, (sql) => sql.query(
+        "select configuration from contract_fixture_configuration where singleton=true",
+      ));
+      if (!config.rows[0]) throw new Error("Missing contract fixture configuration");
+      return JSON.stringify(config.rows[0].configuration);
+    } catch (error) {
+      if (attempt >= 2 || !databaseUnavailable(error)) throw error;
+      await new Promise(resolve => setTimeout(resolve, 10 * (attempt + 1)));
+    }
+  }
 }
 
 /** Clock preparation only: execution still runs through the original DO alarm/job. */
@@ -60,7 +83,11 @@ export class CamelAgent extends RuntimeAgent {
   }
 
   async fetch(request: Request) {
-    this.env.AGENT_TENANTS_JSON = await fixtureConfiguration(this.env);
+    const configuration = fixtureConfiguration(this.env);
+    // A disconnected request must not interrupt the fixture's tenant reload
+    // before the real runtime receives its aborted signal.
+    this.ctx.waitUntil(configuration.catch(() => {}));
+    this.env.AGENT_TENANTS_JSON = await configuration;
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-legacy-model" && request.method === "POST") {
       const { model } = await request.json() as { model: { provider: string; id: string } };
       if (!model || typeof model.provider !== "string" || typeof model.id !== "string") return Response.json({ error: "Invalid legacy model fixture input" }, { status: 400 });
@@ -108,8 +135,10 @@ export default {
     if (new URL(request.url).pathname === "/__test/image-resize-failures")
       return Response.json({ count: await env.BUCKET.head(resizeFailureKey) ? 1 : 0 });
     if (new URL(request.url).pathname === "/healthz") return application.fetch(request, env, context);
+    const configuration = fixtureConfiguration(env);
+    context.waitUntil(configuration.catch(() => {}));
     return application.fetch(request, {
-      ...env, AGENT_TENANTS_JSON: await fixtureConfiguration(env),
+      ...env, AGENT_TENANTS_JSON: await configuration,
     }, context);
   },
 };
