@@ -1,0 +1,2081 @@
+{
+  "startedAt": "2026-11-05T17:41:25.050Z",
+  "smoke": true,
+  "account": "85bbd288051330fb51ee1c86031a299b",
+  "resources": [
+    "camelrun-proto-image-streaming",
+    "camelrun-proto-image-proxy",
+    "camelrun-proto-image-provider"
+  ],
+  "fixture": {
+    "count": 1,
+    "distinctContents": 1,
+    "width": 1600,
+    "height": 1200,
+    "minBytes": 4876189,
+    "maxBytes": 4876189,
+    "totalBytes": 4876189,
+    "images": [
+      {
+        "index": 0,
+        "originalBytes": 4876189,
+        "originalSha256": "e455c2a7e831d2645c4edade377239f7f239ed175d00ac8fe91b5e514f1a1cbe",
+        "ref": {
+          "key": "derivative-v1/d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf.png",
+          "size": 4690697,
+          "mimeType": "image/png",
+          "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf"
+        }
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "a-1-openai-completions",
+      "mode": "A",
+      "count": 1,
+      "api": "openai-completions",
+      "seed": {
+        "startedAt": "2026-11-05T17:41:47.842Z",
+        "endedAt": "2026-11-05T17:41:49.016Z",
+        "latencyMs": 1174.190416999998,
+        "status": 200,
+        "data": {
+          "constructorId": "2216b5ae-57d4-4efd-ae42-9e9ef9a2850f",
+          "objectId": "2aa3b0c58067f4ce24e6959b7749cac22c49d952925b9859b8cc1f2fb88b994e",
+          "mode": "A",
+          "databaseBytes": 6389760,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900508714,
+          "inlineBytes": 4690697
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:41:49.017Z",
+        "endedAt": "2026-11-05T17:41:49.282Z",
+        "latencyMs": 265.06429200000275,
+        "status": 200,
+        "data": {
+          "constructorId": "2216b5ae-57d4-4efd-ae42-9e9ef9a2850f",
+          "objectId": "2aa3b0c58067f4ce24e6959b7749cac22c49d952925b9859b8cc1f2fb88b994e",
+          "mode": "A",
+          "databaseBytes": 6389760,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900508987,
+          "calls": 1,
+          "elapsedMs": 39,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254509,
+            "imageCount": 1,
+            "contentLength": 6254509,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:41:49.283Z",
+        "endedAt": "2026-11-05T17:41:49.426Z",
+        "latencyMs": 143.64258400000108,
+        "status": 200,
+        "data": {
+          "constructorId": "2216b5ae-57d4-4efd-ae42-9e9ef9a2850f",
+          "objectId": "2aa3b0c58067f4ce24e6959b7749cac22c49d952925b9859b8cc1f2fb88b994e",
+          "mode": "A",
+          "databaseBytes": 6389760,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900509194
+        }
+      }
+    },
+    {
+      "id": "b-1-openai-completions",
+      "mode": "B",
+      "count": 1,
+      "api": "openai-completions",
+      "seed": {
+        "startedAt": "2026-11-05T17:41:49.427Z",
+        "endedAt": "2026-11-05T17:41:49.991Z",
+        "latencyMs": 564.0384579999991,
+        "status": 200,
+        "data": {
+          "constructorId": "40505529-d0b5-46aa-866d-629a1cac925f",
+          "objectId": "820b3309e18cb6ec24713742bd095af2bd514ea394952e3be42757bbe0c12f2f",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900509909,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:41:49.992Z",
+        "endedAt": "2026-11-05T17:41:51.057Z",
+        "latencyMs": 1064.5935419999987,
+        "status": 200,
+        "data": {
+          "constructorId": "40505529-d0b5-46aa-866d-629a1cac925f",
+          "objectId": "820b3309e18cb6ec24713742bd095af2bd514ea394952e3be42757bbe0c12f2f",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900510386,
+          "calls": 1,
+          "elapsedMs": 314,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254509,
+            "imageCount": 1,
+            "contentLength": 6254509,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:41:51.058Z",
+        "endedAt": "2026-11-05T17:41:51.174Z",
+        "latencyMs": 116.4350830000003,
+        "status": 200,
+        "data": {
+          "constructorId": "40505529-d0b5-46aa-866d-629a1cac925f",
+          "objectId": "820b3309e18cb6ec24713742bd095af2bd514ea394952e3be42757bbe0c12f2f",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900510722
+        }
+      }
+    },
+    {
+      "id": "c-1-openai-completions",
+      "mode": "C",
+      "count": 1,
+      "api": "openai-completions",
+      "seed": {
+        "startedAt": "2026-11-05T17:41:51.175Z",
+        "endedAt": "2026-11-05T17:41:51.656Z",
+        "latencyMs": 480.77245799999946,
+        "status": 200,
+        "data": {
+          "constructorId": "d4055b17-7f26-4721-8850-7b80d96bcfa6",
+          "objectId": "c434a0fa11bd9a14fedbc5171b2e0fbd54cd120d870d7c73951dddc2578a6b08",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900511588,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:41:51.657Z",
+        "endedAt": "2026-11-05T17:41:52.621Z",
+        "latencyMs": 964.4015409999993,
+        "status": 200,
+        "data": {
+          "constructorId": "d4055b17-7f26-4721-8850-7b80d96bcfa6",
+          "objectId": "c434a0fa11bd9a14fedbc5171b2e0fbd54cd120d870d7c73951dddc2578a6b08",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900511912,
+          "calls": 1,
+          "elapsedMs": 255,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254509,
+            "imageCount": 1,
+            "contentLength": 6254509,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:41:52.622Z",
+        "endedAt": "2026-11-05T17:41:52.856Z",
+        "latencyMs": 234.3814170000005,
+        "status": 200,
+        "data": {
+          "constructorId": "d4055b17-7f26-4721-8850-7b80d96bcfa6",
+          "objectId": "c434a0fa11bd9a14fedbc5171b2e0fbd54cd120d870d7c73951dddc2578a6b08",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900512349
+        }
+      }
+    },
+    {
+      "id": "d-1-openai-completions",
+      "mode": "D",
+      "count": 1,
+      "api": "openai-completions",
+      "seed": {
+        "startedAt": "2026-11-05T17:41:52.857Z",
+        "endedAt": "2026-11-05T17:41:53.379Z",
+        "latencyMs": 521.856917000001,
+        "status": 200,
+        "data": {
+          "constructorId": "6e6d7ee8-5449-420b-a872-3f6630df3a97",
+          "objectId": "8e451bcc1dd9346469dabd2be7556b0d141d475ec16db7bfda53f96c9cd56c2a",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900513283,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:41:53.379Z",
+        "endedAt": "2026-11-05T17:41:53.454Z",
+        "latencyMs": 75.12541700000293,
+        "status": 200,
+        "data": {
+          "constructorId": "6e6d7ee8-5449-420b-a872-3f6630df3a97",
+          "objectId": "8e451bcc1dd9346469dabd2be7556b0d141d475ec16db7bfda53f96c9cd56c2a",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900513397,
+          "calls": 1,
+          "elapsedMs": 22,
+          "stopReason": "error",
+          "error": "400: {\"message\":\"Invalid redirect value, must be one of \\\"follow\\\" or \\\"manual\\\" (\\\"error\\\" won't be implemented since it does not make sense at the edge; use \\\"manual\\\" and check the response status code).\",\"type\":\"invalid_request_error\"}"
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:41:53.455Z",
+        "endedAt": "2026-11-05T17:41:53.494Z",
+        "latencyMs": 39.5022919999974,
+        "status": 200,
+        "data": {
+          "constructorId": "6e6d7ee8-5449-420b-a872-3f6630df3a97",
+          "objectId": "8e451bcc1dd9346469dabd2be7556b0d141d475ec16db7bfda53f96c9cd56c2a",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900513439
+        }
+      }
+    },
+    {
+      "id": "a-1-openai-responses",
+      "mode": "A",
+      "count": 1,
+      "api": "openai-responses",
+      "seed": {
+        "startedAt": "2026-11-05T17:41:53.495Z",
+        "endedAt": "2026-11-05T17:41:54.508Z",
+        "latencyMs": 1013.0357499999991,
+        "status": 200,
+        "data": {
+          "constructorId": "5e801093-2d6b-4f9e-99f1-4705408c4836",
+          "objectId": "bff1d3311c595df2a51668bb459f6a0e1cd1e5b8eac731fbe65f1c765469693a",
+          "mode": "A",
+          "databaseBytes": 6389760,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900513987,
+          "inlineBytes": 4690697
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:41:54.509Z",
+        "endedAt": "2026-11-05T17:41:55.017Z",
+        "latencyMs": 507.6150830000006,
+        "status": 200,
+        "data": {
+          "constructorId": "5e801093-2d6b-4f9e-99f1-4705408c4836",
+          "objectId": "bff1d3311c595df2a51668bb459f6a0e1cd1e5b8eac731fbe65f1c765469693a",
+          "mode": "A",
+          "databaseBytes": 6389760,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900514460,
+          "calls": 1,
+          "elapsedMs": 36,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254482,
+            "imageCount": 1,
+            "contentLength": 6254482,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:41:55.018Z",
+        "endedAt": "2026-11-05T17:41:55.172Z",
+        "latencyMs": 153.643084000003,
+        "status": 200,
+        "data": {
+          "constructorId": "5e801093-2d6b-4f9e-99f1-4705408c4836",
+          "objectId": "bff1d3311c595df2a51668bb459f6a0e1cd1e5b8eac731fbe65f1c765469693a",
+          "mode": "A",
+          "databaseBytes": 6389760,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900514861
+        }
+      }
+    },
+    {
+      "id": "a-1-anthropic-messages",
+      "mode": "A",
+      "count": 1,
+      "api": "anthropic-messages",
+      "seed": {
+        "startedAt": "2026-11-05T17:41:55.173Z",
+        "endedAt": "2026-11-05T17:41:56.299Z",
+        "latencyMs": 1125.6235830000005,
+        "status": 200,
+        "data": {
+          "constructorId": "8d10aa34-21c2-4971-828a-09f9203cd18d",
+          "objectId": "623ad53d37b11fc4526c5f5fa3da3125625f4094025b101ef96ccc100a047d48",
+          "mode": "A",
+          "databaseBytes": 6389760,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900516028,
+          "inlineBytes": 4690697
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:41:56.300Z",
+        "endedAt": "2026-11-05T17:41:56.595Z",
+        "latencyMs": 294.47495900000285,
+        "status": 200,
+        "data": {
+          "constructorId": "8d10aa34-21c2-4971-828a-09f9203cd18d",
+          "objectId": "623ad53d37b11fc4526c5f5fa3da3125625f4094025b101ef96ccc100a047d48",
+          "mode": "A",
+          "databaseBytes": 6389760,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900516288,
+          "calls": 1,
+          "elapsedMs": 27,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254523,
+            "imageCount": 1,
+            "contentLength": 6254523,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:41:56.596Z",
+        "endedAt": "2026-11-05T17:41:56.730Z",
+        "latencyMs": 134.0449579999986,
+        "status": 200,
+        "data": {
+          "constructorId": "8d10aa34-21c2-4971-828a-09f9203cd18d",
+          "objectId": "623ad53d37b11fc4526c5f5fa3da3125625f4094025b101ef96ccc100a047d48",
+          "mode": "A",
+          "databaseBytes": 6389760,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900516495
+        }
+      }
+    },
+    {
+      "id": "b-1-openai-responses",
+      "mode": "B",
+      "count": 1,
+      "api": "openai-responses",
+      "seed": {
+        "startedAt": "2026-11-05T17:41:56.731Z",
+        "endedAt": "2026-11-05T17:41:57.338Z",
+        "latencyMs": 606.9791670000013,
+        "status": 200,
+        "data": {
+          "constructorId": "8a5242db-d332-4514-a70f-542cd9fc4bdc",
+          "objectId": "f743a46f5979621f5f29485e9999ec0cced6f77733754dd9977b71374da75414",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900517264,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:41:57.340Z",
+        "endedAt": "2026-11-05T17:41:58.304Z",
+        "latencyMs": 963.6966659999962,
+        "status": 200,
+        "data": {
+          "constructorId": "8a5242db-d332-4514-a70f-542cd9fc4bdc",
+          "objectId": "f743a46f5979621f5f29485e9999ec0cced6f77733754dd9977b71374da75414",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900517619,
+          "calls": 1,
+          "elapsedMs": 270,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254482,
+            "imageCount": 1,
+            "contentLength": 6254482,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:41:58.306Z",
+        "endedAt": "2026-11-05T17:41:58.349Z",
+        "latencyMs": 43.16241699999955,
+        "status": 200,
+        "data": {
+          "constructorId": "8a5242db-d332-4514-a70f-542cd9fc4bdc",
+          "objectId": "f743a46f5979621f5f29485e9999ec0cced6f77733754dd9977b71374da75414",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900517859
+        }
+      }
+    },
+    {
+      "id": "b-1-anthropic-messages",
+      "mode": "B",
+      "count": 1,
+      "api": "anthropic-messages",
+      "seed": {
+        "startedAt": "2026-11-05T17:41:58.351Z",
+        "endedAt": "2026-11-05T17:41:59.145Z",
+        "latencyMs": 794.0454170000012,
+        "status": 200,
+        "data": {
+          "constructorId": "e0bc824a-6ee9-4154-a5bf-dcae8e70f90b",
+          "objectId": "e4fa3c5ef3549cad424c75b8c426288c41c1fd1c6de808e6976a0459308bcbf3",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900518961,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:41:59.146Z",
+        "endedAt": "2026-11-05T17:42:00.198Z",
+        "latencyMs": 1051.767749999999,
+        "status": 200,
+        "data": {
+          "constructorId": "e0bc824a-6ee9-4154-a5bf-dcae8e70f90b",
+          "objectId": "e4fa3c5ef3549cad424c75b8c426288c41c1fd1c6de808e6976a0459308bcbf3",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900519447,
+          "calls": 1,
+          "elapsedMs": 295,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254523,
+            "imageCount": 1,
+            "contentLength": 6254523,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:00.199Z",
+        "endedAt": "2026-11-05T17:42:00.246Z",
+        "latencyMs": 47.00195800000074,
+        "status": 200,
+        "data": {
+          "constructorId": "e0bc824a-6ee9-4154-a5bf-dcae8e70f90b",
+          "objectId": "e4fa3c5ef3549cad424c75b8c426288c41c1fd1c6de808e6976a0459308bcbf3",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900519782
+        }
+      }
+    },
+    {
+      "id": "c-1-openai-responses",
+      "mode": "C",
+      "count": 1,
+      "api": "openai-responses",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:00.248Z",
+        "endedAt": "2026-11-05T17:42:00.881Z",
+        "latencyMs": 632.7707919999957,
+        "status": 200,
+        "data": {
+          "constructorId": "2301365b-d3dd-43e1-a974-37d7195a7967",
+          "objectId": "4f201f235a6918e29195cf3b458a55dada07ac4bb5e4a93ea6cf65f44557ec82",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900520794,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:00.882Z",
+        "endedAt": "2026-11-05T17:42:02.461Z",
+        "latencyMs": 1579.1974169999958,
+        "status": 200,
+        "data": {
+          "constructorId": "2301365b-d3dd-43e1-a974-37d7195a7967",
+          "objectId": "4f201f235a6918e29195cf3b458a55dada07ac4bb5e4a93ea6cf65f44557ec82",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900521274,
+          "calls": 1,
+          "elapsedMs": 296,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254482,
+            "imageCount": 1,
+            "contentLength": 6254482,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:02.461Z",
+        "endedAt": "2026-11-05T17:42:02.505Z",
+        "latencyMs": 43.78795900000114,
+        "status": 200,
+        "data": {
+          "constructorId": "2301365b-d3dd-43e1-a974-37d7195a7967",
+          "objectId": "4f201f235a6918e29195cf3b458a55dada07ac4bb5e4a93ea6cf65f44557ec82",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900521729
+        }
+      }
+    },
+    {
+      "id": "c-1-anthropic-messages",
+      "mode": "C",
+      "count": 1,
+      "api": "anthropic-messages",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:02.506Z",
+        "endedAt": "2026-11-05T17:42:03.007Z",
+        "latencyMs": 500.8439999999973,
+        "status": 200,
+        "data": {
+          "constructorId": "d5fa82f1-fd68-4c24-b20f-b99095f8b5ec",
+          "objectId": "b35fbe9f7dfba8200e7c5ed2a5d8ac08db43190c579ceb806edf6d356214e3b4",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900522891,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:03.009Z",
+        "endedAt": "2026-11-05T17:42:03.983Z",
+        "latencyMs": 973.747500000005,
+        "status": 200,
+        "data": {
+          "constructorId": "d5fa82f1-fd68-4c24-b20f-b99095f8b5ec",
+          "objectId": "b35fbe9f7dfba8200e7c5ed2a5d8ac08db43190c579ceb806edf6d356214e3b4",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900523385,
+          "calls": 1,
+          "elapsedMs": 371,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254523,
+            "imageCount": 1,
+            "contentLength": 6254523,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:03.983Z",
+        "endedAt": "2026-11-05T17:42:04.020Z",
+        "latencyMs": 37.14849999999569,
+        "status": 200,
+        "data": {
+          "constructorId": "d5fa82f1-fd68-4c24-b20f-b99095f8b5ec",
+          "objectId": "b35fbe9f7dfba8200e7c5ed2a5d8ac08db43190c579ceb806edf6d356214e3b4",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900523503
+        }
+      }
+    },
+    {
+      "id": "d-1-openai-responses",
+      "mode": "D",
+      "count": 1,
+      "api": "openai-responses",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:04.021Z",
+        "endedAt": "2026-11-05T17:42:04.617Z",
+        "latencyMs": 596.3407920000027,
+        "status": 200,
+        "data": {
+          "constructorId": "143a5949-624e-44e3-84e3-d942a8369d8b",
+          "objectId": "445c7eda80271715c2fb21fc1503ec6cab9f16c8baf8a5590b00d6cac474f7b9",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900524503,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:04.618Z",
+        "endedAt": "2026-11-05T17:42:04.711Z",
+        "latencyMs": 93.08575000000565,
+        "status": 200,
+        "data": {
+          "constructorId": "143a5949-624e-44e3-84e3-d942a8369d8b",
+          "objectId": "445c7eda80271715c2fb21fc1503ec6cab9f16c8baf8a5590b00d6cac474f7b9",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900524660,
+          "calls": 1,
+          "elapsedMs": 36,
+          "stopReason": "error",
+          "error": "experiment API error (400): {\"message\":\"Invalid redirect value, must be one of \\\"follow\\\" or \\\"manual\\\" (\\\"error\\\" won't be implemented since it does not make sense at the edge; use \\\"manual\\\" and check the response status code).\",\"type\":\"invalid_request_error\"}"
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:04.712Z",
+        "endedAt": "2026-11-05T17:42:04.759Z",
+        "latencyMs": 47.14495799999713,
+        "status": 200,
+        "data": {
+          "constructorId": "143a5949-624e-44e3-84e3-d942a8369d8b",
+          "objectId": "445c7eda80271715c2fb21fc1503ec6cab9f16c8baf8a5590b00d6cac474f7b9",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900524710
+        }
+      }
+    },
+    {
+      "id": "d-1-anthropic-messages",
+      "mode": "D",
+      "count": 1,
+      "api": "anthropic-messages",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:04.759Z",
+        "endedAt": "2026-11-05T17:42:05.290Z",
+        "latencyMs": 531.0160830000023,
+        "status": 200,
+        "data": {
+          "constructorId": "a28d1af3-2b9f-4bf3-bd37-b79973249d83",
+          "objectId": "6b4518cc495448cafd36096b483c2db91f125b2e05df39af8b92beecf95cd674",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900525182,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:05.291Z",
+        "endedAt": "2026-11-05T17:42:05.441Z",
+        "latencyMs": 149.9623750000028,
+        "status": 200,
+        "data": {
+          "constructorId": "a28d1af3-2b9f-4bf3-bd37-b79973249d83",
+          "objectId": "6b4518cc495448cafd36096b483c2db91f125b2e05df39af8b92beecf95cd674",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900525307,
+          "calls": 1,
+          "elapsedMs": 18,
+          "stopReason": "error",
+          "error": "400 {\"error\":{\"message\":\"Invalid redirect value, must be one of \\\"follow\\\" or \\\"manual\\\" (\\\"error\\\" won't be implemented since it does not make sense at the edge; use \\\"manual\\\" and check the response status code).\",\"type\":\"invalid_request_error\"}}"
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:05.442Z",
+        "endedAt": "2026-11-05T17:42:05.501Z",
+        "latencyMs": 58.93029199999728,
+        "status": 200,
+        "data": {
+          "constructorId": "a28d1af3-2b9f-4bf3-bd37-b79973249d83",
+          "objectId": "6b4518cc495448cafd36096b483c2db91f125b2e05df39af8b92beecf95cd674",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900525408
+        }
+      }
+    }
+  ],
+  "concurrency": [],
+  "events": [
+    {
+      "command": "deploy -c wrangler.provider.jsonc",
+      "at": "2026-11-05T17:41:30.963Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\nTotal Upload: 15.41 KiB / gzip: 4.44 KiB\nWorker Startup Time: 7 ms\nYour Worker has access to the following bindings:\nBinding                                                                    Resource                  \nenv.ALLOWED_IMAGE_ORIGIN (\"https://camelrun-proto-image-streamin...\")      Environment Variable      \n\nUploaded camelrun-proto-image-provider (1.25 sec)\nDeployed camelrun-proto-image-provider triggers (0.87 sec)\n  https://camelrun-proto-image-provider.miguel-85b.workers.dev\nCurrent Version ID: efb73007-cfbd-4537-8e5e-292dffc5ec80\n"
+    },
+    {
+      "command": "secret put EXPERIMENT_TOKEN -c wrangler.provider.jsonc",
+      "at": "2026-11-05T17:41:32.102Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\n🌀 Creating the secret for the Worker \"camelrun-proto-image-provider\"\n✨ Success! Uploaded secret EXPERIMENT_TOKEN\n"
+    },
+    {
+      "command": "deploy -c wrangler.proxy.jsonc",
+      "at": "2026-11-05T17:41:35.381Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\nTotal Upload: 14.28 KiB / gzip: 4.58 KiB\nWorker Startup Time: 7 ms\nYour Worker has access to the following bindings:\nBinding                                            Resource       \nenv.BUCKET (camelrun-proto-image-streaming)        R2 Bucket      \nenv.PROVIDER (camelrun-proto-image-provider)       Worker         \n\nUploaded camelrun-proto-image-proxy (1.34 sec)\nDeployed camelrun-proto-image-proxy triggers (0.86 sec)\n  https://camelrun-proto-image-proxy.miguel-85b.workers.dev\nCurrent Version ID: 2888747d-38a9-418b-a8c5-fea5d3bad065\n"
+    },
+    {
+      "command": "secret put EXPERIMENT_TOKEN -c wrangler.proxy.jsonc",
+      "at": "2026-11-05T17:41:36.338Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\n🌀 Creating the secret for the Worker \"camelrun-proto-image-proxy\"\n✨ Success! Uploaded secret EXPERIMENT_TOKEN\n"
+    },
+    {
+      "command": "deploy -c wrangler.jsonc",
+      "at": "2026-11-05T17:41:42.038Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\nTotal Upload: 3105.13 KiB / gzip: 787.82 KiB\nWorker Startup Time: 20 ms\nYour Worker has access to the following bindings:\nBinding                                                             Resource                  \nenv.CASES (ImageAgent)                                              Durable Object            \nenv.BUCKET (camelrun-proto-image-streaming)                         R2 Bucket                 \nenv.PROVIDER (camelrun-proto-image-provider)                        Worker                    \nenv.PROXY (camelrun-proto-image-proxy)                              Worker                    \nenv.IMAGES                                                          Images                    \nenv.AI                                                              AI                        \nenv.PUBLIC_ORIGIN (\"https://camelrun-proto-image-streamin...\")      Environment Variable      \n\nUploaded camelrun-proto-image-streaming (3.70 sec)\nDeployed camelrun-proto-image-streaming triggers (0.66 sec)\n  https://camelrun-proto-image-streaming.miguel-85b.workers.dev\nCurrent Version ID: 972201b7-1ca8-43ab-9b21-82aa4bd49015\n"
+    },
+    {
+      "command": "secret put EXPERIMENT_TOKEN -c wrangler.jsonc",
+      "at": "2026-11-05T17:41:42.939Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\n🌀 Creating the secret for the Worker \"camelrun-proto-image-streaming\"\n✨ Success! Uploaded secret EXPERIMENT_TOKEN\n"
+    },
+    {
+      "command": "deploy -c /Users/miguelsalinas/agent-runtime-wt/image-streaming/backends/image-streaming/.cloud-state-UNuWL7/delete.json",
+      "at": "2026-11-05T17:42:41.115Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\nTotal Upload: 0.17 KiB / gzip: 0.15 KiB\nWorker Startup Time: 3 ms\nYour Worker has access to the following bindings:\nBinding                                                             Resource                  \nenv.PUBLIC_ORIGIN (\"https://camelrun-proto-image-streamin...\")      Environment Variable      \n\nUploaded camelrun-proto-image-streaming (1.68 sec)\nDeployed camelrun-proto-image-streaming triggers (0.53 sec)\n  https://camelrun-proto-image-streaming.miguel-85b.workers.dev\nCurrent Version ID: 8388e759-1bc9-4513-b0be-ca70bed3e313\n"
+    }
+  ],
+  "telemetry": [
+    {
+      "label": "during-0",
+      "at": "2026-11-05T17:41:43.769Z",
+      "status": 200,
+      "errors": null,
+      "rows": []
+    },
+    {
+      "label": "during-1",
+      "at": "2026-11-05T17:42:29.154Z",
+      "status": 200,
+      "errors": null,
+      "rows": []
+    },
+    {
+      "label": "final-0",
+      "at": "2026-11-05T17:42:35.087Z",
+      "status": 200,
+      "errors": null,
+      "rows": []
+    }
+  ],
+  "cleanup": {
+    "objects": {
+      "startedAt": "2026-11-05T17:42:35.989Z",
+      "endedAt": "2026-11-05T17:42:36.794Z",
+      "latencyMs": 805.2100409999985,
+      "status": 200,
+      "data": {
+        "deleted": 5
+      }
+    },
+    "namespacesRemaining": [],
+    "workersRemaining": [],
+    "bucketsRemaining": [],
+    "endpointStatuses": [
+      {
+        "name": "camelrun-proto-image-streaming",
+        "status": 404
+      },
+      {
+        "name": "camelrun-proto-image-proxy",
+        "status": 404
+      },
+      {
+        "name": "camelrun-proto-image-provider",
+        "status": 404
+      }
+    ],
+    "errors": [],
+    "at": "2026-11-05T17:42:45.413Z"
+  },
+  "baseline": {
+    "workers": [],
+    "namespaces": []
+  },
+  "namespace": {
+    "id": "aacaba8fe5d944819d3001f598a26a90",
+    "name": "camelrun-proto-image-streaming_ImageAgent",
+    "script": "camelrun-proto-image-streaming",
+    "class": "ImageAgent",
+    "use_sqlite": true
+  },
+  "fixtureAttempts": [
+    {
+      "index": 0,
+      "attempt": 0,
+      "at": "2026-11-05T17:41:46.893Z",
+      "status": 200,
+      "latencyMs": 2989.1597919999986
+    }
+  ],
+  "manifest": {
+    "startedAt": "2026-11-05T17:41:46.895Z",
+    "endedAt": "2026-11-05T17:41:47.840Z",
+    "latencyMs": 945.0878330000014,
+    "status": 200,
+    "data": {
+      "refs": [
+        {
+          "key": "derivative-v1/d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf.png",
+          "size": 4690697,
+          "mimeType": "image/png",
+          "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf"
+        }
+      ]
+    }
+  },
+  "faults": [
+    {
+      "mode": "B",
+      "fault": "retry",
+      "id": "fault-b-retry",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:05.504Z",
+        "endedAt": "2026-11-05T17:42:06.024Z",
+        "latencyMs": 519.437665999998,
+        "status": 200,
+        "data": {
+          "constructorId": "792cb6df-50fc-4693-97e0-f0c6dfb5320a",
+          "objectId": "830a7ea9d9e4689b8c1545f0d5a272d7bc20dd26ed23d0a5f68b26b3e8b57bec",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900525947,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:06.024Z",
+        "endedAt": "2026-11-05T17:42:07.594Z",
+        "latencyMs": 1570.4056249999994,
+        "status": 200,
+        "data": {
+          "constructorId": "792cb6df-50fc-4693-97e0-f0c6dfb5320a",
+          "objectId": "830a7ea9d9e4689b8c1545f0d5a272d7bc20dd26ed23d0a5f68b26b3e8b57bec",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900526882,
+          "calls": 2,
+          "elapsedMs": 870,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254509,
+            "imageCount": 1,
+            "contentLength": 6254509,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "recovery": {
+        "startedAt": "2026-11-05T17:42:07.595Z",
+        "endedAt": "2026-11-05T17:42:08.854Z",
+        "latencyMs": 1259.0845410000038,
+        "status": 200,
+        "data": {
+          "constructorId": "792cb6df-50fc-4693-97e0-f0c6dfb5320a",
+          "objectId": "830a7ea9d9e4689b8c1545f0d5a272d7bc20dd26ed23d0a5f68b26b3e8b57bec",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900527432,
+          "calls": 1,
+          "elapsedMs": 302,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254509,
+            "imageCount": 1,
+            "contentLength": 6254509,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:08.854Z",
+        "endedAt": "2026-11-05T17:42:08.892Z",
+        "latencyMs": 37.91520900000614,
+        "status": 200,
+        "data": {
+          "constructorId": "792cb6df-50fc-4693-97e0-f0c6dfb5320a",
+          "objectId": "830a7ea9d9e4689b8c1545f0d5a272d7bc20dd26ed23d0a5f68b26b3e8b57bec",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900527928
+        }
+      }
+    },
+    {
+      "mode": "B",
+      "fault": "abort",
+      "id": "fault-b-abort",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:08.893Z",
+        "endedAt": "2026-11-05T17:42:09.634Z",
+        "latencyMs": 741.7322080000013,
+        "status": 200,
+        "data": {
+          "constructorId": "d9a83f2f-3f27-40ed-b44e-da3531365fc6",
+          "objectId": "37fcf18e9206dbd0e77fb29c8a20fb3ec395d1ec030c49c9ff510fc3b5b9453b",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900529501,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:09.634Z",
+        "endedAt": "2026-11-05T17:42:09.827Z",
+        "latencyMs": 192.49612499999785,
+        "status": 200,
+        "data": {
+          "constructorId": "d9a83f2f-3f27-40ed-b44e-da3531365fc6",
+          "objectId": "37fcf18e9206dbd0e77fb29c8a20fb3ec395d1ec030c49c9ff510fc3b5b9453b",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900529758,
+          "calls": 1,
+          "elapsedMs": 137,
+          "stopReason": "aborted",
+          "error": "Request aborted"
+        }
+      },
+      "recovery": {
+        "startedAt": "2026-11-05T17:42:09.828Z",
+        "endedAt": "2026-11-05T17:42:11.209Z",
+        "latencyMs": 1381.4747080000016,
+        "status": 200,
+        "data": {
+          "constructorId": "d9a83f2f-3f27-40ed-b44e-da3531365fc6",
+          "objectId": "37fcf18e9206dbd0e77fb29c8a20fb3ec395d1ec030c49c9ff510fc3b5b9453b",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900530030,
+          "calls": 1,
+          "elapsedMs": 232,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254509,
+            "imageCount": 1,
+            "contentLength": 6254509,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:11.209Z",
+        "endedAt": "2026-11-05T17:42:11.252Z",
+        "latencyMs": 42.85199999999895,
+        "status": 200,
+        "data": {
+          "constructorId": "d9a83f2f-3f27-40ed-b44e-da3531365fc6",
+          "objectId": "37fcf18e9206dbd0e77fb29c8a20fb3ec395d1ec030c49c9ff510fc3b5b9453b",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900530571
+        }
+      }
+    },
+    {
+      "mode": "B",
+      "fault": "missing",
+      "id": "fault-b-missing",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:11.254Z",
+        "endedAt": "2026-11-05T17:42:11.741Z",
+        "latencyMs": 486.84275000000343,
+        "status": 200,
+        "data": {
+          "constructorId": "ae172f6d-e354-4172-a4cc-19a6f72e2434",
+          "objectId": "00f4989b9e864b09b49491bacafd7a527504ca89b94d23bb184c41e241c816f8",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900531638,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:11.741Z",
+        "endedAt": "2026-11-05T17:42:11.919Z",
+        "latencyMs": 178.49558299999626,
+        "status": 200,
+        "data": {
+          "constructorId": "ae172f6d-e354-4172-a4cc-19a6f72e2434",
+          "objectId": "00f4989b9e864b09b49491bacafd7a527504ca89b94d23bb184c41e241c816f8",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900531861,
+          "calls": 1,
+          "elapsedMs": 112,
+          "stopReason": "error",
+          "error": "Missing image rejected"
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:11.921Z",
+        "endedAt": "2026-11-05T17:42:12.041Z",
+        "latencyMs": 120.07612499999959,
+        "status": 200,
+        "data": {
+          "constructorId": "ae172f6d-e354-4172-a4cc-19a6f72e2434",
+          "objectId": "00f4989b9e864b09b49491bacafd7a527504ca89b94d23bb184c41e241c816f8",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900531916
+        }
+      }
+    },
+    {
+      "mode": "C",
+      "fault": "retry",
+      "id": "fault-c-retry",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:12.043Z",
+        "endedAt": "2026-11-05T17:42:12.687Z",
+        "latencyMs": 644.4199579999986,
+        "status": 200,
+        "data": {
+          "constructorId": "934f073c-c8db-4970-9dde-ee5653e42fbb",
+          "objectId": "04ddff52cbeb51511ce9f2eaaf82be39ed264871b6ab5b19ce820b4e799c556c",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900532580,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:12.687Z",
+        "endedAt": "2026-11-05T17:42:15.069Z",
+        "latencyMs": 2381.5150829999984,
+        "status": 200,
+        "data": {
+          "constructorId": "934f073c-c8db-4970-9dde-ee5653e42fbb",
+          "objectId": "04ddff52cbeb51511ce9f2eaaf82be39ed264871b6ab5b19ce820b4e799c556c",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900533841,
+          "calls": 2,
+          "elapsedMs": 1105,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254509,
+            "imageCount": 1,
+            "contentLength": 6254509,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "recovery": {
+        "startedAt": "2026-11-05T17:42:15.071Z",
+        "endedAt": "2026-11-05T17:42:16.976Z",
+        "latencyMs": 1904.8967499999999,
+        "status": 200,
+        "data": {
+          "constructorId": "934f073c-c8db-4970-9dde-ee5653e42fbb",
+          "objectId": "04ddff52cbeb51511ce9f2eaaf82be39ed264871b6ab5b19ce820b4e799c556c",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900534885,
+          "calls": 1,
+          "elapsedMs": 357,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254509,
+            "imageCount": 1,
+            "contentLength": 6254509,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:16.976Z",
+        "endedAt": "2026-11-05T17:42:17.034Z",
+        "latencyMs": 57.72362499999872,
+        "status": 200,
+        "data": {
+          "constructorId": "934f073c-c8db-4970-9dde-ee5653e42fbb",
+          "objectId": "04ddff52cbeb51511ce9f2eaaf82be39ed264871b6ab5b19ce820b4e799c556c",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900536128
+        }
+      }
+    },
+    {
+      "mode": "C",
+      "fault": "abort",
+      "id": "fault-c-abort",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:17.036Z",
+        "endedAt": "2026-11-05T17:42:17.535Z",
+        "latencyMs": 499.1381249999977,
+        "status": 200,
+        "data": {
+          "constructorId": "fb16a906-fad5-4444-b697-c74d4ae28bc1",
+          "objectId": "e23a81178fb57b0b9a98313827bade2be8dc4655533b5f44c70eda9f3f1cd668",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900537465,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:17.535Z",
+        "endedAt": "2026-11-05T17:42:17.608Z",
+        "latencyMs": 73.29616600000008,
+        "status": 200,
+        "data": {
+          "constructorId": "fb16a906-fad5-4444-b697-c74d4ae28bc1",
+          "objectId": "e23a81178fb57b0b9a98313827bade2be8dc4655533b5f44c70eda9f3f1cd668",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900537561,
+          "calls": 1,
+          "elapsedMs": 20,
+          "stopReason": "aborted",
+          "error": "Request aborted"
+        }
+      },
+      "recovery": {
+        "startedAt": "2026-11-05T17:42:17.609Z",
+        "endedAt": "2026-11-05T17:42:18.547Z",
+        "latencyMs": 938.0166669999962,
+        "status": 200,
+        "data": {
+          "constructorId": "fb16a906-fad5-4444-b697-c74d4ae28bc1",
+          "objectId": "e23a81178fb57b0b9a98313827bade2be8dc4655533b5f44c70eda9f3f1cd668",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900537807,
+          "calls": 1,
+          "elapsedMs": 210,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254509,
+            "imageCount": 1,
+            "contentLength": 6254509,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:18.547Z",
+        "endedAt": "2026-11-05T17:42:18.603Z",
+        "latencyMs": 55.8794160000034,
+        "status": 200,
+        "data": {
+          "constructorId": "fb16a906-fad5-4444-b697-c74d4ae28bc1",
+          "objectId": "e23a81178fb57b0b9a98313827bade2be8dc4655533b5f44c70eda9f3f1cd668",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900538091
+        }
+      }
+    },
+    {
+      "mode": "C",
+      "fault": "missing",
+      "id": "fault-c-missing",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:18.607Z",
+        "endedAt": "2026-11-05T17:42:19.259Z",
+        "latencyMs": 651.6368329999968,
+        "status": 200,
+        "data": {
+          "constructorId": "7b592dce-0874-4c1c-b4c1-68816bc3fb55",
+          "objectId": "7feab93e40ca6308fc961a84b7f4a0f50da412093f6731a63f58d2dc6ea60a89",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900539191,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:19.259Z",
+        "endedAt": "2026-11-05T17:42:19.596Z",
+        "latencyMs": 336.98137499999575,
+        "status": 200,
+        "data": {
+          "constructorId": "7b592dce-0874-4c1c-b4c1-68816bc3fb55",
+          "objectId": "7feab93e40ca6308fc961a84b7f4a0f50da412093f6731a63f58d2dc6ea60a89",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900539506,
+          "calls": 1,
+          "elapsedMs": 141,
+          "stopReason": "error",
+          "error": "Missing image rejected"
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:19.597Z",
+        "endedAt": "2026-11-05T17:42:19.641Z",
+        "latencyMs": 43.82816699999967,
+        "status": 200,
+        "data": {
+          "constructorId": "7b592dce-0874-4c1c-b4c1-68816bc3fb55",
+          "objectId": "7feab93e40ca6308fc961a84b7f4a0f50da412093f6731a63f58d2dc6ea60a89",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900539588
+        }
+      }
+    },
+    {
+      "mode": "D",
+      "fault": "retry",
+      "id": "fault-d-retry",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:19.644Z",
+        "endedAt": "2026-11-05T17:42:20.151Z",
+        "latencyMs": 507.0376669999969,
+        "status": 200,
+        "data": {
+          "constructorId": "3fe674ce-1fe6-4cd9-a928-033020e4eb1d",
+          "objectId": "5a8edf845f879162f5eec69179cc4649f0bde4de544bda8b27f0bb995a0405b5",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900540080,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:20.151Z",
+        "endedAt": "2026-11-05T17:42:20.290Z",
+        "latencyMs": 138.60683300000528,
+        "status": 200,
+        "data": {
+          "constructorId": "3fe674ce-1fe6-4cd9-a928-033020e4eb1d",
+          "objectId": "5a8edf845f879162f5eec69179cc4649f0bde4de544bda8b27f0bb995a0405b5",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900540236,
+          "calls": 1,
+          "elapsedMs": 85,
+          "stopReason": "error",
+          "error": "400: {\"message\":\"Invalid redirect value, must be one of \\\"follow\\\" or \\\"manual\\\" (\\\"error\\\" won't be implemented since it does not make sense at the edge; use \\\"manual\\\" and check the response status code).\",\"type\":\"invalid_request_error\"}"
+        }
+      },
+      "recovery": {
+        "startedAt": "2026-11-05T17:42:20.292Z",
+        "endedAt": "2026-11-05T17:42:20.363Z",
+        "latencyMs": 70.26287500000035,
+        "status": 200,
+        "data": {
+          "constructorId": "3fe674ce-1fe6-4cd9-a928-033020e4eb1d",
+          "objectId": "5a8edf845f879162f5eec69179cc4649f0bde4de544bda8b27f0bb995a0405b5",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900540305,
+          "calls": 1,
+          "elapsedMs": 0,
+          "stopReason": "error",
+          "error": "400: {\"message\":\"Invalid redirect value, must be one of \\\"follow\\\" or \\\"manual\\\" (\\\"error\\\" won't be implemented since it does not make sense at the edge; use \\\"manual\\\" and check the response status code).\",\"type\":\"invalid_request_error\"}"
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:20.363Z",
+        "endedAt": "2026-11-05T17:42:20.416Z",
+        "latencyMs": 53.39304099999572,
+        "status": 200,
+        "data": {
+          "constructorId": "3fe674ce-1fe6-4cd9-a928-033020e4eb1d",
+          "objectId": "5a8edf845f879162f5eec69179cc4649f0bde4de544bda8b27f0bb995a0405b5",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900540365
+        }
+      }
+    },
+    {
+      "mode": "D",
+      "fault": "abort",
+      "id": "fault-d-abort",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:20.418Z",
+        "endedAt": "2026-11-05T17:42:20.912Z",
+        "latencyMs": 494.500457999995,
+        "status": 200,
+        "data": {
+          "constructorId": "7ff746de-f6fb-4486-936c-c259fdb6a88d",
+          "objectId": "722dc063732524b36ed2ccc3caceca655fded222bb098da5e0d4e107de142668",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900540849,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:20.912Z",
+        "endedAt": "2026-11-05T17:42:20.989Z",
+        "latencyMs": 76.45358300000225,
+        "status": 200,
+        "data": {
+          "constructorId": "7ff746de-f6fb-4486-936c-c259fdb6a88d",
+          "objectId": "722dc063732524b36ed2ccc3caceca655fded222bb098da5e0d4e107de142668",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900540939,
+          "calls": 1,
+          "elapsedMs": 21,
+          "stopReason": "aborted",
+          "error": "Request aborted"
+        }
+      },
+      "recovery": {
+        "startedAt": "2026-11-05T17:42:20.991Z",
+        "endedAt": "2026-11-05T17:42:21.031Z",
+        "latencyMs": 39.873625000000175,
+        "status": 200,
+        "data": {
+          "constructorId": "7ff746de-f6fb-4486-936c-c259fdb6a88d",
+          "objectId": "722dc063732524b36ed2ccc3caceca655fded222bb098da5e0d4e107de142668",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900540978,
+          "calls": 1,
+          "elapsedMs": 0,
+          "stopReason": "error",
+          "error": "400: {\"message\":\"Invalid redirect value, must be one of \\\"follow\\\" or \\\"manual\\\" (\\\"error\\\" won't be implemented since it does not make sense at the edge; use \\\"manual\\\" and check the response status code).\",\"type\":\"invalid_request_error\"}"
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:21.031Z",
+        "endedAt": "2026-11-05T17:42:21.076Z",
+        "latencyMs": 44.452166999995825,
+        "status": 200,
+        "data": {
+          "constructorId": "7ff746de-f6fb-4486-936c-c259fdb6a88d",
+          "objectId": "722dc063732524b36ed2ccc3caceca655fded222bb098da5e0d4e107de142668",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900541024
+        }
+      }
+    },
+    {
+      "mode": "D",
+      "fault": "missing",
+      "id": "fault-d-missing",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:21.078Z",
+        "endedAt": "2026-11-05T17:42:21.800Z",
+        "latencyMs": 721.7714170000036,
+        "status": 200,
+        "data": {
+          "constructorId": "7d198e9a-8904-44a5-ac67-af578d58e57d",
+          "objectId": "d2cf2bb74e74da7bc765cdfa6592228f3e55c68808735693edee7d611697b3e5",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900541662,
+          "inlineBytes": 0
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:21.800Z",
+        "endedAt": "2026-11-05T17:42:21.881Z",
+        "latencyMs": 80.80783299999894,
+        "status": 200,
+        "data": {
+          "constructorId": "7d198e9a-8904-44a5-ac67-af578d58e57d",
+          "objectId": "d2cf2bb74e74da7bc765cdfa6592228f3e55c68808735693edee7d611697b3e5",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900541825,
+          "calls": 1,
+          "elapsedMs": 21,
+          "stopReason": "error",
+          "error": "Missing image rejected"
+        }
+      },
+      "status": {
+        "startedAt": "2026-11-05T17:42:21.882Z",
+        "endedAt": "2026-11-05T17:42:21.937Z",
+        "latencyMs": 54.75933400000213,
+        "status": 200,
+        "data": {
+          "constructorId": "7d198e9a-8904-44a5-ac67-af578d58e57d",
+          "objectId": "d2cf2bb74e74da7bc765cdfa6592228f3e55c68808735693edee7d611697b3e5",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900541879
+        }
+      }
+    }
+  ],
+  "replay": [
+    {
+      "mode": "B",
+      "id": "replay-b",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:21.939Z",
+        "endedAt": "2026-11-05T17:42:22.412Z",
+        "latencyMs": 473.1535839999997,
+        "status": 200,
+        "data": {
+          "constructorId": "cdc4d8d7-99c7-438a-8855-540737cb17a4",
+          "objectId": "bf239be8ceed428c4d928b4207334d2f456c9f8cd03fc5e832c448a413c24521",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900542329,
+          "inlineBytes": 0
+        }
+      },
+      "before": {
+        "startedAt": "2026-11-05T17:42:22.412Z",
+        "endedAt": "2026-11-05T17:42:22.457Z",
+        "latencyMs": 44.33112499999697,
+        "status": 200,
+        "data": {
+          "constructorId": "cdc4d8d7-99c7-438a-8855-540737cb17a4",
+          "objectId": "bf239be8ceed428c4d928b4207334d2f456c9f8cd03fc5e832c448a413c24521",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900542413
+        }
+      },
+      "evict": {
+        "startedAt": "2026-11-05T17:42:22.457Z",
+        "endedAt": "2026-11-05T17:42:22.502Z",
+        "latencyMs": 45.23404099999607,
+        "status": 200,
+        "data": {
+          "evicted": true
+        }
+      },
+      "after": {
+        "startedAt": "2026-11-05T17:42:22.502Z",
+        "endedAt": "2026-11-05T17:42:22.803Z",
+        "latencyMs": 301.12329099999624,
+        "status": 200,
+        "data": {
+          "constructorId": "c1fe5459-d18b-4e4c-b652-aa21432a5779",
+          "objectId": "bf239be8ceed428c4d928b4207334d2f456c9f8cd03fc5e832c448a413c24521",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 0,
+          "images": 0,
+          "at": 1793900542789
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:22.803Z",
+        "endedAt": "2026-11-05T17:42:24.314Z",
+        "latencyMs": 1510.6370830000014,
+        "status": 200,
+        "data": {
+          "constructorId": "c1fe5459-d18b-4e4c-b652-aa21432a5779",
+          "objectId": "bf239be8ceed428c4d928b4207334d2f456c9f8cd03fc5e832c448a413c24521",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900543108,
+          "calls": 1,
+          "elapsedMs": 281,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254523,
+            "imageCount": 1,
+            "contentLength": 6254523,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "probe": {
+        "startedAt": "2026-11-05T17:42:24.314Z",
+        "endedAt": "2026-11-05T17:42:25.599Z",
+        "latencyMs": 1285.8102500000023,
+        "status": 200,
+        "data": {
+          "prefix": "probe_22ef1e7f77a9480b8a07fd771a43b4e9_",
+          "userInputMarkerAccepted": true,
+          "journalEntries": 3,
+          "replayPreserved": true,
+          "replayKind": "Harness close/reopen over the same live DO SQLite storage; process eviction tested separately",
+          "forkPreserved": true,
+          "afterToolCalls": 2,
+          "markedImages": 1,
+          "codeImageAccepted": true,
+          "codeSucceeded": true,
+          "codeDiagnostics": "Script completed\nWall time 0.7 seconds\nOutput:\n\n[Image (image/png, 318 bytes) could not be saved: no execution environment]\ncode-image-ok",
+          "codeOutputSavedMarkerCaveat": "No execution filesystem: Pi could not save an artifact; output image remained marked",
+          "compaction": {
+            "status": "terminal",
+            "outcome": {
+              "status": "completed",
+              "result": {
+                "submissionId": 33
+              }
+            }
+          },
+          "compactContextMessages": 2,
+          "compactionAddedEntries": 1,
+          "historicalMarkers": 2,
+          "tokenEstimateOriginal": 1372,
+          "tokenEstimateMarker": 1372,
+          "plainReferenceRejected": true,
+          "malformedBase64Rejected": true,
+          "validPngMarkerAccepted": true,
+          "markerBase64Chars": 424,
+          "providerCalls": 4,
+          "requestImages": [
+            1,
+            1,
+            2,
+            0
+          ],
+          "reports": []
+        }
+      }
+    },
+    {
+      "mode": "C",
+      "id": "replay-c",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:25.600Z",
+        "endedAt": "2026-11-05T17:42:26.086Z",
+        "latencyMs": 486.1728340000045,
+        "status": 200,
+        "data": {
+          "constructorId": "e8d4bf40-c673-456d-a765-f76c92c63b86",
+          "objectId": "da3b92da7bc4af1ce956b1f025f24919d52c8e038132d9750602a62e9d2f09f1",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900546002,
+          "inlineBytes": 0
+        }
+      },
+      "before": {
+        "startedAt": "2026-11-05T17:42:26.086Z",
+        "endedAt": "2026-11-05T17:42:26.125Z",
+        "latencyMs": 38.700041000003694,
+        "status": 200,
+        "data": {
+          "constructorId": "e8d4bf40-c673-456d-a765-f76c92c63b86",
+          "objectId": "da3b92da7bc4af1ce956b1f025f24919d52c8e038132d9750602a62e9d2f09f1",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900546067
+        }
+      },
+      "evict": {
+        "startedAt": "2026-11-05T17:42:26.125Z",
+        "endedAt": "2026-11-05T17:42:26.160Z",
+        "latencyMs": 34.388792000005196,
+        "status": 200,
+        "data": {
+          "evicted": true
+        }
+      },
+      "after": {
+        "startedAt": "2026-11-05T17:42:26.160Z",
+        "endedAt": "2026-11-05T17:42:26.440Z",
+        "latencyMs": 280.35383300000103,
+        "status": 200,
+        "data": {
+          "constructorId": "ef74144c-b082-43b1-8d7d-6e0f668e465f",
+          "objectId": "da3b92da7bc4af1ce956b1f025f24919d52c8e038132d9750602a62e9d2f09f1",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 0,
+          "images": 0,
+          "at": 1793900546431
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:26.440Z",
+        "endedAt": "2026-11-05T17:42:27.460Z",
+        "latencyMs": 1020.0237500000003,
+        "status": 200,
+        "data": {
+          "constructorId": "ef74144c-b082-43b1-8d7d-6e0f668e465f",
+          "objectId": "da3b92da7bc4af1ce956b1f025f24919d52c8e038132d9750602a62e9d2f09f1",
+          "mode": "C",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900546734,
+          "calls": 1,
+          "elapsedMs": 263,
+          "match": true,
+          "summary": {
+            "images": [
+              {
+                "sha256": "d4842be64603bdd8da7d5fdbeb623993d126a0b20f582eaf5a683f243c8cadbf",
+                "bytes": 4690697,
+                "source": "base64"
+              }
+            ],
+            "bytesRead": 6254523,
+            "imageCount": 1,
+            "contentLength": 6254523,
+            "contentLengthMatches": true,
+            "transferEncoding": null
+          }
+        }
+      },
+      "probe": {
+        "startedAt": "2026-11-05T17:42:27.460Z",
+        "endedAt": "2026-11-05T17:42:28.649Z",
+        "latencyMs": 1188.5207919999957,
+        "status": 200,
+        "data": {
+          "prefix": "probe_b32d28ec9ed4407abf8b2c94481f3777_",
+          "userInputMarkerAccepted": true,
+          "journalEntries": 3,
+          "replayPreserved": true,
+          "replayKind": "Harness close/reopen over the same live DO SQLite storage; process eviction tested separately",
+          "forkPreserved": true,
+          "afterToolCalls": 2,
+          "markedImages": 1,
+          "codeImageAccepted": true,
+          "codeSucceeded": true,
+          "codeDiagnostics": "Script completed\nWall time 0.6 seconds\nOutput:\n\n[Image (image/png, 318 bytes) could not be saved: no execution environment]\ncode-image-ok",
+          "codeOutputSavedMarkerCaveat": "No execution filesystem: Pi could not save an artifact; output image remained marked",
+          "compaction": {
+            "status": "terminal",
+            "outcome": {
+              "status": "completed",
+              "result": {
+                "submissionId": 33
+              }
+            }
+          },
+          "compactContextMessages": 2,
+          "compactionAddedEntries": 1,
+          "historicalMarkers": 2,
+          "tokenEstimateOriginal": 1372,
+          "tokenEstimateMarker": 1372,
+          "plainReferenceRejected": true,
+          "malformedBase64Rejected": true,
+          "validPngMarkerAccepted": true,
+          "markerBase64Chars": 424,
+          "providerCalls": 4,
+          "requestImages": [
+            1,
+            1,
+            2,
+            0
+          ],
+          "reports": []
+        }
+      }
+    },
+    {
+      "mode": "D",
+      "id": "replay-d",
+      "seed": {
+        "startedAt": "2026-11-05T17:42:28.649Z",
+        "endedAt": "2026-11-05T17:42:29.171Z",
+        "latencyMs": 522.1575000000012,
+        "status": 200,
+        "data": {
+          "constructorId": "df9a6e97-7fec-477c-887b-4518f77a4c65",
+          "objectId": "e3b208e2b92a87a4cd5c965ea8db1c84b1104f49ba2ea3f8cbcb3df47e981fe2",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900549093,
+          "inlineBytes": 0
+        }
+      },
+      "before": {
+        "startedAt": "2026-11-05T17:42:29.171Z",
+        "endedAt": "2026-11-05T17:42:29.216Z",
+        "latencyMs": 44.371291999996174,
+        "status": 200,
+        "data": {
+          "constructorId": "df9a6e97-7fec-477c-887b-4518f77a4c65",
+          "objectId": "e3b208e2b92a87a4cd5c965ea8db1c84b1104f49ba2ea3f8cbcb3df47e981fe2",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900549181
+        }
+      },
+      "evict": {
+        "startedAt": "2026-11-05T17:42:29.216Z",
+        "endedAt": "2026-11-05T17:42:29.261Z",
+        "latencyMs": 45.238250000002154,
+        "status": 200,
+        "data": {
+          "evicted": true
+        }
+      },
+      "after": {
+        "startedAt": "2026-11-05T17:42:29.261Z",
+        "endedAt": "2026-11-05T17:42:29.559Z",
+        "latencyMs": 298.0257500000007,
+        "status": 200,
+        "data": {
+          "constructorId": "da031ebe-b89a-41ae-9391-46023150c101",
+          "objectId": "e3b208e2b92a87a4cd5c965ea8db1c84b1104f49ba2ea3f8cbcb3df47e981fe2",
+          "mode": "B",
+          "databaseBytes": 126976,
+          "messages": 0,
+          "images": 0,
+          "at": 1793900549500
+        }
+      },
+      "request": {
+        "startedAt": "2026-11-05T17:42:29.559Z",
+        "endedAt": "2026-11-05T17:42:29.649Z",
+        "latencyMs": 89.72412500000064,
+        "status": 200,
+        "data": {
+          "constructorId": "da031ebe-b89a-41ae-9391-46023150c101",
+          "objectId": "e3b208e2b92a87a4cd5c965ea8db1c84b1104f49ba2ea3f8cbcb3df47e981fe2",
+          "mode": "D",
+          "databaseBytes": 126976,
+          "messages": 1,
+          "images": 1,
+          "at": 1793900549617,
+          "calls": 1,
+          "elapsedMs": 28,
+          "stopReason": "error",
+          "error": "400 {\"error\":{\"message\":\"Invalid redirect value, must be one of \\\"follow\\\" or \\\"manual\\\" (\\\"error\\\" won't be implemented since it does not make sense at the edge; use \\\"manual\\\" and check the response status code).\",\"type\":\"invalid_request_error\"}}"
+        }
+      },
+      "probe": {
+        "startedAt": "2026-11-05T17:42:29.649Z",
+        "endedAt": "2026-11-05T17:42:30.827Z",
+        "latencyMs": 1178.0071670000034,
+        "status": 200,
+        "data": {
+          "prefix": "probe_cc453562b2f34e629f5f057898aeada6_",
+          "userInputMarkerAccepted": true,
+          "journalEntries": 3,
+          "replayPreserved": true,
+          "replayKind": "Harness close/reopen over the same live DO SQLite storage; process eviction tested separately",
+          "forkPreserved": true,
+          "afterToolCalls": 2,
+          "markedImages": 1,
+          "codeImageAccepted": true,
+          "codeSucceeded": true,
+          "codeDiagnostics": "Script completed\nWall time 0.6 seconds\nOutput:\n\n[Image (image/png, 318 bytes) could not be saved: no execution environment]\ncode-image-ok",
+          "codeOutputSavedMarkerCaveat": "No execution filesystem: Pi could not save an artifact; output image remained marked",
+          "compaction": {
+            "status": "terminal",
+            "outcome": {
+              "status": "completed",
+              "result": {
+                "submissionId": 33
+              }
+            }
+          },
+          "compactContextMessages": 2,
+          "compactionAddedEntries": 1,
+          "historicalMarkers": 2,
+          "tokenEstimateOriginal": 1372,
+          "tokenEstimateMarker": 1372,
+          "plainReferenceRejected": true,
+          "malformedBase64Rejected": true,
+          "validPngMarkerAccepted": true,
+          "markerBase64Chars": 424,
+          "providerCalls": 4,
+          "requestImages": [
+            1,
+            1,
+            2,
+            0
+          ],
+          "reports": []
+        }
+      }
+    }
+  ],
+  "finishedMeasurementsAt": "2026-11-05T17:42:30.828Z",
+  "statelessTelemetry": {
+    "at": "2026-11-05T17:42:35.421Z",
+    "status": 200,
+    "errors": null,
+    "rows": [
+      {
+        "dimensions": {
+          "scriptName": "__unknown__",
+          "usageModel": "standard"
+        },
+        "quantiles": {
+          "cpuTimeP50": 1410,
+          "cpuTimeP95": 3489,
+          "cpuTimeP99": 219608,
+          "memoryUsageBytesP50": 27318140,
+          "memoryUsageBytesP95": 27321120,
+          "memoryUsageBytesP99": 27583692,
+          "wallTimeP50": 268262,
+          "wallTimeP95": 1148370,
+          "wallTimeP99": 2646742,
+          "wasmMemoryBytesP50": 0,
+          "wasmMemoryBytesP95": 0,
+          "wasmMemoryBytesP99": 0
+        },
+        "sum": {
+          "cpuTimeUs": 254479,
+          "duration": 1.5149517499999998,
+          "errors": 0,
+          "requests": 24,
+          "subrequests": 23
+        }
+      }
+    ]
+  }
+}

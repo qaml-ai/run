@@ -1,0 +1,1128 @@
+{
+  "output": "/Users/miguelsalinas/agent-runtime-wt/image-streaming/backends/image-streaming/measurements/comparison.json",
+  "runs": [
+    {
+      "source": "cloud-2026-11-05T17-46-30-212Z.json.gz",
+      "cases": [
+        {
+          "id": "a-1-openai-completions",
+          "mode": "A",
+          "count": 1,
+          "api": "openai-completions",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 1,
+          "serverLatencyMs": 38,
+          "clientLatencyMs": 30031.267208000005,
+          "calls": 1,
+          "databaseBytes": 6389760,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 42.566908836364746,
+            "cpuMs": 245.111,
+            "durationGBSeconds": 3.9507648,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 373,
+            "rowsWritten": 113,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "a-20-openai-completions",
+          "mode": "A",
+          "count": 20,
+          "api": "openai-completions",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": null,
+          "imagesReceived": null,
+          "serverLatencyMs": null,
+          "clientLatencyMs": 2373.2317500000354,
+          "calls": null,
+          "databaseBytes": 125501440,
+          "constructorChanged": true,
+          "error": "Error: Durable Object's isolate exceeded its memory limit and was reset.",
+          "telemetry": {
+            "available": true,
+            "rows": 3,
+            "memoryMaxMiB": 367.62770080566406,
+            "cpuMs": 3829.019,
+            "durationGBSeconds": 1.9878099200000001,
+            "memoryErrorObservations": 3,
+            "cpuErrorObservations": 0,
+            "rowsRead": 543,
+            "rowsWritten": 189,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "a-100-openai-completions",
+          "mode": "A",
+          "count": 100,
+          "api": "openai-completions",
+          "seedStatus": 500,
+          "seedSuccess": false,
+          "match": null,
+          "imagesReceived": null,
+          "serverLatencyMs": null,
+          "clientLatencyMs": null,
+          "calls": null,
+          "databaseBytes": null,
+          "constructorChanged": null,
+          "error": "Error: Durable Object's isolate exceeded its memory limit and was reset.",
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 266.54176330566406,
+            "cpuMs": 6759.258,
+            "durationGBSeconds": 6.919405312,
+            "memoryErrorObservations": 1,
+            "cpuErrorObservations": 0,
+            "rowsRead": 966,
+            "rowsWritten": 509,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "b-1-openai-completions",
+          "mode": "B",
+          "count": 1,
+          "api": "openai-completions",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 1,
+          "serverLatencyMs": 259,
+          "clientLatencyMs": 30408.986999999965,
+          "calls": 1,
+          "databaseBytes": 126976,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 21.915624618530273,
+            "cpuMs": 385.564,
+            "durationGBSeconds": 3.895611264,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 373,
+            "rowsWritten": 113,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "b-20-openai-completions",
+          "mode": "B",
+          "count": 20,
+          "api": "openai-completions",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 20,
+          "serverLatencyMs": 17175,
+          "clientLatencyMs": 47192.580625,
+          "calls": 1,
+          "databaseBytes": 147456,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 40.14477825164795,
+            "cpuMs": 7745.174,
+            "durationGBSeconds": 6.076802688,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 506,
+            "rowsWritten": 189,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "b-100-openai-completions",
+          "mode": "B",
+          "count": 100,
+          "api": "openai-completions",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 100,
+          "serverLatencyMs": 69562,
+          "clientLatencyMs": 99712.7575,
+          "calls": 1,
+          "databaseBytes": 217088,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 2,
+            "memoryMaxMiB": 55.287034034729004,
+            "cpuMs": 27883.108,
+            "durationGBSeconds": 12.790852864000001,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 1066,
+            "rowsWritten": 509,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "c-1-openai-completions",
+          "mode": "C",
+          "count": 1,
+          "api": "openai-completions",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 1,
+          "serverLatencyMs": 305,
+          "clientLatencyMs": 30275.959458000027,
+          "calls": 1,
+          "databaseBytes": 126976,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 11.743753433227539,
+            "cpuMs": 112.904,
+            "durationGBSeconds": 3.903095424,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 373,
+            "rowsWritten": 113,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "c-20-openai-completions",
+          "mode": "C",
+          "count": 20,
+          "api": "openai-completions",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 20,
+          "serverLatencyMs": 28953,
+          "clientLatencyMs": 59009.873124999925,
+          "calls": 1,
+          "databaseBytes": 147456,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 2,
+            "memoryMaxMiB": 13.261877059936523,
+            "cpuMs": 60.949,
+            "durationGBSeconds": 7.582340608,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 506,
+            "rowsWritten": 189,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "c-100-openai-completions",
+          "mode": "C",
+          "count": 100,
+          "api": "openai-completions",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 100,
+          "serverLatencyMs": 130532,
+          "clientLatencyMs": 160396.17879200005,
+          "calls": 1,
+          "databaseBytes": 217088,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 3,
+            "memoryMaxMiB": 14.569879531860352,
+            "cpuMs": 233.818,
+            "durationGBSeconds": 20.604782592,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 1066,
+            "rowsWritten": 509,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "d-1-openai-completions",
+          "mode": "D",
+          "count": 1,
+          "api": "openai-completions",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 1,
+          "serverLatencyMs": 482,
+          "clientLatencyMs": 30555.834957999992,
+          "calls": 1,
+          "databaseBytes": 126976,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 11.744307518005371,
+            "cpuMs": 47.784,
+            "durationGBSeconds": 3.929389568,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 373,
+            "rowsWritten": 113,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "d-20-openai-completions",
+          "mode": "D",
+          "count": 20,
+          "api": "openai-completions",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 20,
+          "serverLatencyMs": 5102,
+          "clientLatencyMs": 35104.71454200009,
+          "calls": 1,
+          "databaseBytes": 147456,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 13.773387908935547,
+            "cpuMs": 71.813,
+            "durationGBSeconds": 4.53180096,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 506,
+            "rowsWritten": 189,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "d-100-openai-completions",
+          "mode": "D",
+          "count": 100,
+          "api": "openai-completions",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 100,
+          "serverLatencyMs": 34606,
+          "clientLatencyMs": 64502.44441600004,
+          "calls": 1,
+          "databaseBytes": 217088,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 2,
+            "memoryMaxMiB": 14.832841873168945,
+            "cpuMs": 239.061,
+            "durationGBSeconds": 8.304493568,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 1066,
+            "rowsWritten": 509,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "a-1-openai-responses",
+          "mode": "A",
+          "count": 1,
+          "api": "openai-responses",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 1,
+          "serverLatencyMs": 25,
+          "clientLatencyMs": 30046.043249999988,
+          "calls": 1,
+          "databaseBytes": 6389760,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 42.57333183288574,
+            "cpuMs": 198.607,
+            "durationGBSeconds": 3.9000032,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 373,
+            "rowsWritten": 113,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "a-1-anthropic-messages",
+          "mode": "A",
+          "count": 1,
+          "api": "anthropic-messages",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 1,
+          "serverLatencyMs": 33,
+          "clientLatencyMs": 30073.15733399999,
+          "calls": 1,
+          "databaseBytes": 6389760,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 36.60426330566406,
+            "cpuMs": 169.233,
+            "durationGBSeconds": 3.928992896,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 373,
+            "rowsWritten": 113,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "b-1-openai-responses",
+          "mode": "B",
+          "count": 1,
+          "api": "openai-responses",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 1,
+          "serverLatencyMs": 209,
+          "clientLatencyMs": 30295.563749999972,
+          "calls": 1,
+          "databaseBytes": 126976,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 21.922008514404297,
+            "cpuMs": 400.676,
+            "durationGBSeconds": 3.887346304,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 373,
+            "rowsWritten": 113,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "b-1-anthropic-messages",
+          "mode": "B",
+          "count": 1,
+          "api": "anthropic-messages",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 1,
+          "serverLatencyMs": 225,
+          "clientLatencyMs": 30281.41525000008,
+          "calls": 1,
+          "databaseBytes": 126976,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 21.549335479736328,
+            "cpuMs": 508.477,
+            "durationGBSeconds": 3.889861376,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 373,
+            "rowsWritten": 113,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "c-1-openai-responses",
+          "mode": "C",
+          "count": 1,
+          "api": "openai-responses",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 1,
+          "serverLatencyMs": 222,
+          "clientLatencyMs": 30294.339959000004,
+          "calls": 1,
+          "databaseBytes": 126976,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 11.750176429748535,
+            "cpuMs": 43.206,
+            "durationGBSeconds": 3.887882496,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 373,
+            "rowsWritten": 113,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "c-1-anthropic-messages",
+          "mode": "C",
+          "count": 1,
+          "api": "anthropic-messages",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 1,
+          "serverLatencyMs": 260,
+          "clientLatencyMs": 30339.488374999957,
+          "calls": 1,
+          "databaseBytes": 126976,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 11.745951652526855,
+            "cpuMs": 39.789,
+            "durationGBSeconds": 3.904564608,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 373,
+            "rowsWritten": 113,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "d-1-openai-responses",
+          "mode": "D",
+          "count": 1,
+          "api": "openai-responses",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 1,
+          "serverLatencyMs": 301,
+          "clientLatencyMs": 30376.64166600001,
+          "calls": 1,
+          "databaseBytes": 126976,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 11.750699043273926,
+            "cpuMs": 52.325,
+            "durationGBSeconds": 3.898022656,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 373,
+            "rowsWritten": 113,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "id": "d-1-anthropic-messages",
+          "mode": "D",
+          "count": 1,
+          "api": "anthropic-messages",
+          "seedStatus": 200,
+          "seedSuccess": true,
+          "match": true,
+          "imagesReceived": 1,
+          "serverLatencyMs": 651,
+          "clientLatencyMs": 30667.4968330001,
+          "calls": 1,
+          "databaseBytes": 126976,
+          "constructorChanged": false,
+          "error": null,
+          "telemetry": {
+            "available": true,
+            "rows": 1,
+            "memoryMaxMiB": 11.746537208557129,
+            "cpuMs": 74.614,
+            "durationGBSeconds": 3.956163456,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 373,
+            "rowsWritten": 113,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        }
+      ],
+      "concurrency": [
+        {
+          "mode": "A",
+          "count": 1,
+          "agents": 50,
+          "attemptedAgents": 50,
+          "requestAttempts": 50,
+          "seedSuccesses": 50,
+          "matches": 50,
+          "serverLatencySamples": 50,
+          "successfulServerLatencySamples": 50,
+          "serverLatencyMsP50": 24,
+          "serverLatencyMsP95": 57,
+          "successfulServerLatencyMsP50": 24,
+          "successfulServerLatencyMsP95": 57,
+          "clientLatencyMsP50": 332.4053750000894,
+          "clientLatencyMsP95": 524.9116249999497,
+          "groupWallMs": 1980,
+          "telemetry": {
+            "available": true,
+            "rows": 50,
+            "memoryMaxMiB": 266.74488830566406,
+            "cpuMs": 9560.225,
+            "durationGBSeconds": 5.8187489280000015,
+            "memoryErrorObservations": 8,
+            "cpuErrorObservations": 0,
+            "rowsRead": 18650,
+            "rowsWritten": 5650,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "mode": "A",
+          "count": 20,
+          "agents": 50,
+          "attemptedAgents": 50,
+          "requestAttempts": 46,
+          "seedSuccesses": 46,
+          "matches": 0,
+          "serverLatencySamples": 0,
+          "successfulServerLatencySamples": 0,
+          "serverLatencyMsP50": null,
+          "serverLatencyMsP95": null,
+          "successfulServerLatencyMsP50": null,
+          "successfulServerLatencyMsP95": null,
+          "clientLatencyMsP50": 1482.6819579999428,
+          "clientLatencyMsP95": 3000.216084000189,
+          "groupWallMs": 29637,
+          "telemetry": {
+            "available": true,
+            "rows": 106,
+            "memoryMaxMiB": 367.62770080566406,
+            "cpuMs": 169378.421,
+            "durationGBSeconds": 53.53763520000001,
+            "memoryErrorObservations": 145,
+            "cpuErrorObservations": 0,
+            "rowsRead": 26921,
+            "rowsWritten": 9438,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "mode": "A",
+          "count": 100,
+          "agents": 50,
+          "attemptedAgents": 50,
+          "requestAttempts": 0,
+          "seedSuccesses": 0,
+          "matches": 0,
+          "serverLatencySamples": 0,
+          "successfulServerLatencySamples": 0,
+          "serverLatencyMsP50": null,
+          "serverLatencyMsP95": null,
+          "successfulServerLatencyMsP50": null,
+          "successfulServerLatencyMsP95": null,
+          "clientLatencyMsP50": null,
+          "clientLatencyMsP95": null,
+          "groupWallMs": 48586,
+          "telemetry": {
+            "available": true,
+            "rows": 50,
+            "memoryMaxMiB": 266.79957580566406,
+            "cpuMs": 499082.217,
+            "durationGBSeconds": 200.15476569599997,
+            "memoryErrorObservations": 50,
+            "cpuErrorObservations": 0,
+            "rowsRead": 48243,
+            "rowsWritten": 25414,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "mode": "B",
+          "count": 1,
+          "agents": 50,
+          "attemptedAgents": 50,
+          "requestAttempts": 50,
+          "seedSuccesses": 50,
+          "matches": 50,
+          "serverLatencySamples": 50,
+          "successfulServerLatencySamples": 50,
+          "serverLatencyMsP50": 217,
+          "serverLatencyMsP95": 363,
+          "successfulServerLatencyMsP50": 217,
+          "successfulServerLatencyMsP95": 363,
+          "clientLatencyMsP50": 1002.8497500000522,
+          "clientLatencyMsP95": 1895.596334000118,
+          "groupWallMs": 3006,
+          "telemetry": {
+            "available": true,
+            "rows": 50,
+            "memoryMaxMiB": 47.23110389709473,
+            "cpuMs": 22886.47,
+            "durationGBSeconds": 8.323337599999999,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 18650,
+            "rowsWritten": 5650,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "mode": "B",
+          "count": 20,
+          "agents": 50,
+          "attemptedAgents": 50,
+          "requestAttempts": 50,
+          "seedSuccesses": 50,
+          "matches": 50,
+          "serverLatencySamples": 50,
+          "successfulServerLatencySamples": 50,
+          "serverLatencyMsP50": 16239,
+          "serverLatencyMsP95": 29984,
+          "successfulServerLatencyMsP50": 16239,
+          "successfulServerLatencyMsP95": 29984,
+          "clientLatencyMsP50": 17649.82133400021,
+          "clientLatencyMsP95": 31332.539749999996,
+          "groupWallMs": 57968,
+          "telemetry": {
+            "available": true,
+            "rows": 52,
+            "memoryMaxMiB": 48.38957500457764,
+            "cpuMs": 413860.128,
+            "durationGBSeconds": 140.431035008,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 25300,
+            "rowsWritten": 9450,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "mode": "B",
+          "count": 100,
+          "agents": 50,
+          "attemptedAgents": 50,
+          "requestAttempts": 50,
+          "seedSuccesses": 50,
+          "matches": 50,
+          "serverLatencySamples": 50,
+          "successfulServerLatencySamples": 50,
+          "serverLatencyMsP50": 83611,
+          "serverLatencyMsP95": 135540,
+          "successfulServerLatencyMsP50": 83611,
+          "successfulServerLatencyMsP95": 135540,
+          "clientLatencyMsP50": 85482.2582080001,
+          "clientLatencyMsP95": 137548.8994169999,
+          "groupWallMs": 149841,
+          "telemetry": {
+            "available": true,
+            "rows": 117,
+            "memoryMaxMiB": 76.72818088531494,
+            "cpuMs": 1979433.61,
+            "durationGBSeconds": 633.2626713599999,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 53300,
+            "rowsWritten": 25450,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "mode": "C",
+          "count": 1,
+          "agents": 50,
+          "attemptedAgents": 50,
+          "requestAttempts": 50,
+          "seedSuccesses": 50,
+          "matches": 50,
+          "serverLatencySamples": 50,
+          "successfulServerLatencySamples": 50,
+          "serverLatencyMsP50": 238,
+          "serverLatencyMsP95": 687,
+          "successfulServerLatencyMsP50": 238,
+          "successfulServerLatencyMsP95": 687,
+          "clientLatencyMsP50": 1064.1156669999473,
+          "clientLatencyMsP95": 1754.2997079999186,
+          "groupWallMs": 3433,
+          "telemetry": {
+            "available": true,
+            "rows": 50,
+            "memoryMaxMiB": 13.51499080657959,
+            "cpuMs": 2718.586,
+            "durationGBSeconds": 9.050569215999998,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 18650,
+            "rowsWritten": 5650,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "mode": "C",
+          "count": 20,
+          "agents": 50,
+          "attemptedAgents": 50,
+          "requestAttempts": 50,
+          "seedSuccesses": 50,
+          "matches": 50,
+          "serverLatencySamples": 50,
+          "successfulServerLatencySamples": 50,
+          "serverLatencyMsP50": 15375,
+          "serverLatencyMsP95": 27234,
+          "successfulServerLatencyMsP50": 15375,
+          "successfulServerLatencyMsP95": 27234,
+          "clientLatencyMsP50": 17295.132875000127,
+          "clientLatencyMsP95": 28936.86049999995,
+          "groupWallMs": 41506,
+          "telemetry": {
+            "available": true,
+            "rows": 50,
+            "memoryMaxMiB": 14.843908309936523,
+            "cpuMs": 3720.409,
+            "durationGBSeconds": 133.483670656,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 25300,
+            "rowsWritten": 9450,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "mode": "C",
+          "count": 100,
+          "agents": 50,
+          "attemptedAgents": 50,
+          "requestAttempts": 50,
+          "seedSuccesses": 50,
+          "matches": 50,
+          "serverLatencySamples": 50,
+          "successfulServerLatencySamples": 50,
+          "serverLatencyMsP50": 83670,
+          "serverLatencyMsP95": 134154,
+          "successfulServerLatencyMsP50": 83670,
+          "successfulServerLatencyMsP95": 134154,
+          "clientLatencyMsP50": 85231.10525000002,
+          "clientLatencyMsP95": 136695.13474999997,
+          "groupWallMs": 140652,
+          "telemetry": {
+            "available": true,
+            "rows": 115,
+            "memoryMaxMiB": 15.147533416748047,
+            "cpuMs": 6916.995,
+            "durationGBSeconds": 613.950350592,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 53300,
+            "rowsWritten": 25450,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "mode": "D",
+          "count": 1,
+          "agents": 50,
+          "attemptedAgents": 50,
+          "requestAttempts": 50,
+          "seedSuccesses": 50,
+          "matches": 50,
+          "serverLatencySamples": 50,
+          "successfulServerLatencySamples": 50,
+          "serverLatencyMsP50": 299,
+          "serverLatencyMsP95": 609,
+          "successfulServerLatencyMsP50": 299,
+          "successfulServerLatencyMsP95": 609,
+          "clientLatencyMsP50": 521.2638750001788,
+          "clientLatencyMsP95": 801.1953330000397,
+          "groupWallMs": 1800,
+          "telemetry": {
+            "available": true,
+            "rows": 50,
+            "memoryMaxMiB": 14.767667770385742,
+            "cpuMs": 2521.007,
+            "durationGBSeconds": 4.082579967999998,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 18650,
+            "rowsWritten": 5650,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "mode": "D",
+          "count": 20,
+          "agents": 50,
+          "attemptedAgents": 50,
+          "requestAttempts": 50,
+          "seedSuccesses": 50,
+          "matches": 50,
+          "serverLatencySamples": 50,
+          "successfulServerLatencySamples": 50,
+          "serverLatencyMsP50": 4089,
+          "serverLatencyMsP95": 8819,
+          "successfulServerLatencyMsP50": 4089,
+          "successfulServerLatencyMsP95": 8819,
+          "clientLatencyMsP50": 4544.980292000109,
+          "clientLatencyMsP95": 9240.109540999867,
+          "groupWallMs": 11577,
+          "telemetry": {
+            "available": true,
+            "rows": 50,
+            "memoryMaxMiB": 15.790919303894043,
+            "cpuMs": 3972.839,
+            "durationGBSeconds": 34.267654144000005,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 25300,
+            "rowsWritten": 9450,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        },
+        {
+          "mode": "D",
+          "count": 100,
+          "agents": 50,
+          "attemptedAgents": 50,
+          "requestAttempts": 50,
+          "seedSuccesses": 50,
+          "matches": 50,
+          "serverLatencySamples": 50,
+          "successfulServerLatencySamples": 50,
+          "serverLatencyMsP50": 21134,
+          "serverLatencyMsP95": 30723,
+          "successfulServerLatencyMsP50": 21134,
+          "successfulServerLatencyMsP95": 30723,
+          "clientLatencyMsP50": 21497.298375000013,
+          "clientLatencyMsP95": 31034.661208000034,
+          "groupWallMs": 47376,
+          "telemetry": {
+            "available": true,
+            "rows": 50,
+            "memoryMaxMiB": 17.659870147705078,
+            "cpuMs": 7112.624,
+            "durationGBSeconds": 150.06948889600002,
+            "memoryErrorObservations": 0,
+            "cpuErrorObservations": 0,
+            "rowsRead": 53300,
+            "rowsWritten": 25450,
+            "sampleIntervals": [
+              1
+            ]
+          }
+        }
+      ],
+      "telemetry": {
+        "polls": 51,
+        "emptyPolls": 14,
+        "errors": [],
+        "uniqueRows": 830,
+        "aggregate": {
+          "available": true,
+          "rows": 830,
+          "memoryMaxMiB": 367.62770080566406,
+          "cpuMs": 3200850.283,
+          "durationGBSeconds": 2125.1809648640015,
+          "memoryErrorObservations": 207,
+          "cpuErrorObservations": 0,
+          "rowsRead": 406114,
+          "rowsWritten": 170170,
+          "sampleIntervals": [
+            1
+          ]
+        },
+        "stateless": {
+          "at": "2026-11-05T18:24:03.403Z",
+          "queries": [
+            {
+              "requestedScript": "camelrun-proto-image-streaming",
+              "status": 200,
+              "errors": null,
+              "rows": [
+                {
+                  "dimensions": {
+                    "scriptName": "camelrun-proto-image-streaming",
+                    "usageModel": "standard"
+                  },
+                  "quantiles": {
+                    "cpuTimeP50": 890,
+                    "cpuTimeP95": 1994,
+                    "cpuTimeP99": 109211,
+                    "memoryUsageBytesP50": 11797363,
+                    "memoryUsageBytesP95": 12084532,
+                    "memoryUsageBytesP99": 24329864,
+                    "wallTimeP50": 211830,
+                    "wallTimeP95": 4905420,
+                    "wallTimeP99": 80489410,
+                    "wasmMemoryBytesP50": 0,
+                    "wasmMemoryBytesP95": 0,
+                    "wasmMemoryBytesP99": 0
+                  },
+                  "sum": {
+                    "cpuTimeUs": 20724911,
+                    "duration": 1341.4341158749996,
+                    "errors": 0,
+                    "requests": 7673,
+                    "subrequests": 1328
+                  }
+                }
+              ]
+            },
+            {
+              "requestedScript": "camelrun-proto-image-proxy",
+              "status": 200,
+              "errors": null,
+              "rows": []
+            },
+            {
+              "requestedScript": "camelrun-proto-image-provider",
+              "status": 200,
+              "errors": null,
+              "rows": []
+            }
+          ]
+        }
+      },
+      "cleanup": {
+        "objects": {
+          "startedAt": "2026-11-05T18:24:05.247Z",
+          "endedAt": "2026-11-05T18:24:09.929Z",
+          "latencyMs": 4682.328499999829,
+          "status": 200,
+          "data": {
+            "deleted": 303
+          }
+        },
+        "namespacesRemaining": [],
+        "workersRemaining": [],
+        "bucketsRemaining": [],
+        "endpointStatuses": [
+          {
+            "name": "camelrun-proto-image-streaming",
+            "status": 404
+          },
+          {
+            "name": "camelrun-proto-image-proxy",
+            "status": 404
+          },
+          {
+            "name": "camelrun-proto-image-provider",
+            "status": 404
+          }
+        ],
+        "errors": [],
+        "at": "2026-11-05T18:24:18.623Z"
+      },
+      "error": null
+    }
+  ],
+  "codeSize": {
+    "fake-provider.ts": {
+      "physicalLines": 345,
+      "bytes": 17165
+    },
+    "marker.ts": {
+      "physicalLines": 93,
+      "bytes": 4089
+    },
+    "pi-probe.ts": {
+      "physicalLines": 148,
+      "bytes": 11872
+    },
+    "proxy.ts": {
+      "physicalLines": 44,
+      "bytes": 1940
+    },
+    "signed.ts": {
+      "physicalLines": 113,
+      "bytes": 5594
+    },
+    "stream.ts": {
+      "physicalLines": 249,
+      "bytes": 10891
+    },
+    "worker.ts": {
+      "physicalLines": 239,
+      "bytes": 13488
+    }
+  }
+}

@@ -1,0 +1,194 @@
+
+> @camelai/image-streaming-experiment@0.0.0 test
+> node --experimental-strip-types --test tests/*.test.ts
+
+TAP version 13
+# Subtest: unmodified openai-completions uses custom fetch and consumes fake provider SSE
+ok 1 - unmodified openai-completions uses custom fetch and consumes fake provider SSE
+  ---
+  duration_ms: 56.360083
+  type: 'test'
+  ...
+# Subtest: unmodified openai-responses uses custom fetch and consumes fake provider SSE
+ok 2 - unmodified openai-responses uses custom fetch and consumes fake provider SSE
+  ---
+  duration_ms: 5.42575
+  type: 'test'
+  ...
+# Subtest: unmodified anthropic-messages uses custom fetch and consumes fake provider SSE
+ok 3 - unmodified anthropic-messages uses custom fetch and consumes fake provider SSE
+  ---
+  duration_ms: 28.779667
+  type: 'test'
+  ...
+# Subtest: unmodified azure-openai-responses uses custom fetch and consumes fake provider SSE
+ok 4 - unmodified azure-openai-responses uses custom fetch and consumes fake provider SSE
+  ---
+  duration_ms: 4.750583
+  type: 'test'
+  ...
+# Subtest: openrouter completions endpoint preserves image bytes through custom fetch
+ok 5 - openrouter completions endpoint preserves image bytes through custom fetch
+  ---
+  duration_ms: 1.368625
+  type: 'test'
+  ...
+# Subtest: deepseek completions endpoint preserves image bytes through custom fetch
+ok 6 - deepseek completions endpoint preserves image bytes through custom fetch
+  ---
+  duration_ms: 1.049041
+  type: 'test'
+  ...
+# Subtest: pi-ai retries after the fake provider consumes and rejects a partial request
+ok 7 - pi-ai retries after the fake provider consumes and rejects a partial request
+  ---
+  duration_ms: 440.947084
+  type: 'test'
+  ...
+# Subtest: two streamed passes reproduce a real SigV4 signature over the expanded body without AWS access
+ok 8 - two streamed passes reproduce a real SigV4 signature over the expanded body without AWS access
+  ---
+  duration_ms: 22.909416
+  type: 'test'
+  ...
+# Subtest: fake provider hashes fragmented OpenAI, Responses and Anthropic bodies
+ok 9 - fake provider hashes fragmented OpenAI, Responses and Anthropic bodies
+  ---
+  duration_ms: 15.984917
+  type: 'test'
+  ...
+# Subtest: parser handles large chunks without retaining a whole image
+ok 10 - parser handles large chunks without retaining a whole image
+  ---
+  duration_ms: 48.898125
+  type: 'test'
+  ...
+# Subtest: fake provider verifies many images and preserves order
+ok 11 - fake provider verifies many images and preserves order
+  ---
+  duration_ms: 48.639083
+  type: 'test'
+  ...
+# Subtest: base64-only rejects URLs, malformed base64, missing data and excess images
+ok 12 - base64-only rejects URLs, malformed base64, missing data and excess images
+  ---
+  duration_ms: 2.181167
+  type: 'test'
+  ...
+# Subtest: URL mode streams and hashes allowed fetch response
+ok 13 - URL mode streams and hashes allowed fetch response
+  ---
+  duration_ms: 1.042125
+  type: 'test'
+  ...
+# Subtest: injected failure cancels incoming stream and retries can read fresh stream
+ok 14 - injected failure cancels incoming stream and retries can read fresh stream
+  ---
+  duration_ms: 0.814541
+  type: 'test'
+  ...
+# Subtest: authenticated fake handler returns usable SSE, denies unauthorized calls
+ok 15 - authenticated fake handler returns usable SSE, denies unauthorized calls
+  ---
+  duration_ms: 1.03625
+  type: 'test'
+  ...
+# Subtest: signed image fetch rejects redirects without following or exposing capability URLs
+ok 16 - signed image fetch rejects redirects without following or exposing capability URLs
+  ---
+  duration_ms: 0.373708
+  type: 'test'
+  ...
+# Subtest: URL-mode failure interrupts image download, cancels its source and allows a fresh retry
+ok 17 - URL-mode failure interrupts image download, cancels its source and allows a fresh retry
+  ---
+  duration_ms: 6.7765
+  type: 'test'
+  ...
+# Subtest: proxy expands only image slots and forwards exact Content-Length
+ok 18 - proxy expands only image slots and forwards exact Content-Length
+  ---
+  duration_ms: 13.69
+  type: 'test'
+  ...
+# Subtest: proxy denies missing images before provider and bounds marker request size
+ok 19 - proxy denies missing images before provider and bounds marker request size
+  ---
+  duration_ms: 1.558125
+  type: 'test'
+  ...
+# Subtest: signed image grants expire and bind exact key/path
+ok 20 - signed image grants expire and bind exact key/path
+  ---
+  duration_ms: 16.647
+  type: 'test'
+  ...
+# Subtest: substitution covers provider image fields and leaves marker-looking text alone
+ok 21 - substitution covers provider image fields and leaves marker-looking text alone
+  ---
+  duration_ms: 2.333125
+  type: 'test'
+  ...
+# Subtest: marker is canonical base64 and invalid arbitrary strings are not references
+ok 22 - marker is canonical base64 and invalid arbitrary strings are not references
+  ---
+  duration_ms: 1.375666
+  type: 'test'
+  ...
+# Subtest: marker is a decodable 1x1 transparent PNG and rejects corrupted metadata
+ok 23 - marker is a decodable 1x1 transparent PNG and rejects corrupted metadata
+  ---
+  duration_ms: 0.562167
+  type: 'test'
+  ...
+# Subtest: base64 carry and final padding survive every length and small R2 chunk boundary
+ok 24 - base64 carry and final padding survive every length and small R2 chunk boundary
+  ---
+  duration_ms: 4379.805834
+  type: 'test'
+  ...
+# Subtest: provider image shapes expand while identical marker text stays untouched
+ok 25 - provider image shapes expand while identical marker text stays untouched
+  ---
+  duration_ms: 1.62575
+  type: 'test'
+  ...
+# Subtest: missing and changed objects fail before any body read; scope is checked first
+ok 26 - missing and changed objects fail before any body read; scope is checked first
+  ---
+  duration_ms: 0.361333
+  type: 'test'
+  ...
+# Subtest: retry after mid-stream failure reopens R2 and never reuses a consumed request
+ok 27 - retry after mid-stream failure reopens R2 and never reuses a consumed request
+  ---
+  duration_ms: 9.005417
+  type: 'test'
+  ...
+# Subtest: abort interrupts an active object stream and stops subsequent images
+ok 28 - abort interrupts an active object stream and stops subsequent images
+  ---
+  duration_ms: 0.661459
+  type: 'test'
+  ...
+# Subtest: early HTTP 503 stops upload and next attempt opens a fresh stream
+ok 29 - early HTTP 503 stops upload and next attempt opens a fresh stream
+  ---
+  duration_ms: 16.277375
+  type: 'test'
+  ...
+# Subtest: an already signed AWS request is rejected rather than silently invalidated
+ok 30 - an already signed AWS request is rejected rather than silently invalidated
+  ---
+  duration_ms: 0.270125
+  type: 'test'
+  ...
+1..30
+# tests 30
+# suites 0
+# pass 30
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4485.635625

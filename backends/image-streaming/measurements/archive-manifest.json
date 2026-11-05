@@ -1,0 +1,9 @@
+{
+  "archive": "cloud-2026-11-05T17-46-30-212Z.json.gz",
+  "archiveBytes": 1046182,
+  "archiveSha256": "f2c04f11831cab6fb0536c4472be68a2b80240b73a7545e091b398023612d45b",
+  "original": "cloud-2026-11-05T17-46-30-212Z.json",
+  "originalBytes": 15007140,
+  "originalSha256": "23e11d048911e42e94c8b5aadb26ca7ba8b800d3e53f8a9c8861e7d6cef0c0b4",
+  "losslessRoundTripVerified": true
+}

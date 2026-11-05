@@ -1,0 +1,19 @@
+{
+  "source": "/Users/miguelsalinas/agent-runtime-wt/image-streaming/backends/image-streaming/measurements/cloud-2026-11-05T17-46-30-212Z.json.gz",
+  "smoke": false,
+  "checks": 41050,
+  "passed": 41050,
+  "failed": 0,
+  "failures": [],
+  "notes": [
+    "A/20/openai-completions: baseline failure retained as an expected experiment outcome",
+    "A/100/openai-completions: baseline failure retained as an expected experiment outcome",
+    "B/replay/probe: No execution filesystem: Pi could not save an artifact; output image remained marked",
+    "C/replay/probe: No execution filesystem: Pi could not save an artifact; output image remained marked",
+    "D/replay/probe: No execution filesystem: Pi could not save an artifact; output image remained marked",
+    "A/1: baseline concurrent outcomes retained; successful requests still have hashes checked",
+    "A/20: baseline concurrent outcomes retained; successful requests still have hashes checked",
+    "A/100: baseline concurrent outcomes retained; successful requests still have hashes checked",
+    "Optional Workers AI real-model check failed; this is not a fake-provider correctness failure"
+  ]
+}

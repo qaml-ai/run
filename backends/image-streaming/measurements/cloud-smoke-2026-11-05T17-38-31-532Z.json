@@ -1,0 +1,129 @@
+{
+  "startedAt": "2026-11-05T17:38:31.533Z",
+  "smoke": true,
+  "account": "85bbd288051330fb51ee1c86031a299b",
+  "resources": [
+    "camelrun-proto-image-streaming",
+    "camelrun-proto-image-proxy",
+    "camelrun-proto-image-provider"
+  ],
+  "fixture": {
+    "count": 1,
+    "distinctContents": 1,
+    "width": 1600,
+    "height": 1200,
+    "minBytes": 4209202,
+    "maxBytes": 4209202,
+    "totalBytes": 4209202,
+    "images": [
+      {
+        "index": 0,
+        "originalBytes": 4209202,
+        "originalSha256": "736fa90367a0ba650909337365f57aec4faaea8b5b1272bcf0ca375f4a047271",
+        "ref": {
+          "key": "derivative-v1/ff1f2da902cbb4da42bc7ec212022b8c101588c100b933137561a23ae1600f3a.png",
+          "size": 1565095,
+          "mimeType": "image/png",
+          "sha256": "ff1f2da902cbb4da42bc7ec212022b8c101588c100b933137561a23ae1600f3a"
+        }
+      }
+    ]
+  },
+  "cases": [],
+  "concurrency": [],
+  "events": [
+    {
+      "command": "deploy -c wrangler.provider.jsonc",
+      "at": "2026-11-05T17:38:37.491Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\nTotal Upload: 15.41 KiB / gzip: 4.44 KiB\nWorker Startup Time: 5 ms\nYour Worker has access to the following bindings:\nBinding                                                                    Resource                  \nenv.ALLOWED_IMAGE_ORIGIN (\"https://camelrun-proto-image-streamin...\")      Environment Variable      \n\nUploaded camelrun-proto-image-provider (1.17 sec)\nDeployed camelrun-proto-image-provider triggers (0.69 sec)\n  https://camelrun-proto-image-provider.miguel-85b.workers.dev\nCurrent Version ID: 9723297e-3083-4d60-a3bd-24f1f1a42efa\n"
+    },
+    {
+      "command": "secret put EXPERIMENT_TOKEN -c wrangler.provider.jsonc",
+      "at": "2026-11-05T17:38:38.477Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\n🌀 Creating the secret for the Worker \"camelrun-proto-image-provider\"\n✨ Success! Uploaded secret EXPERIMENT_TOKEN\n"
+    },
+    {
+      "command": "deploy -c wrangler.proxy.jsonc",
+      "at": "2026-11-05T17:38:41.718Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\nTotal Upload: 13.94 KiB / gzip: 4.50 KiB\nWorker Startup Time: 6 ms\nYour Worker has access to the following bindings:\nBinding                                            Resource       \nenv.BUCKET (camelrun-proto-image-streaming)        R2 Bucket      \nenv.PROVIDER (camelrun-proto-image-provider)       Worker         \n\nUploaded camelrun-proto-image-proxy (1.52 sec)\nDeployed camelrun-proto-image-proxy triggers (0.58 sec)\n  https://camelrun-proto-image-proxy.miguel-85b.workers.dev\nCurrent Version ID: b4b3cd6a-c959-44f0-85bb-b14689b28c11\n"
+    },
+    {
+      "command": "secret put EXPERIMENT_TOKEN -c wrangler.proxy.jsonc",
+      "at": "2026-11-05T17:38:42.866Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\n🌀 Creating the secret for the Worker \"camelrun-proto-image-proxy\"\n✨ Success! Uploaded secret EXPERIMENT_TOKEN\n"
+    },
+    {
+      "command": "deploy -c wrangler.jsonc",
+      "at": "2026-11-05T17:38:48.325Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\nTotal Upload: 3103.24 KiB / gzip: 787.36 KiB\nWorker Startup Time: 23 ms\nYour Worker has access to the following bindings:\nBinding                                                             Resource                  \nenv.CASES (ImageAgent)                                              Durable Object            \nenv.BUCKET (camelrun-proto-image-streaming)                         R2 Bucket                 \nenv.PROVIDER (camelrun-proto-image-provider)                        Worker                    \nenv.PROXY (camelrun-proto-image-proxy)                              Worker                    \nenv.IMAGES                                                          Images                    \nenv.AI                                                              AI                        \nenv.PUBLIC_ORIGIN (\"https://camelrun-proto-image-streamin...\")      Environment Variable      \n\nUploaded camelrun-proto-image-streaming (3.50 sec)\nDeployed camelrun-proto-image-streaming triggers (0.82 sec)\n  https://camelrun-proto-image-streaming.miguel-85b.workers.dev\nCurrent Version ID: 45ecdc2d-ec28-40cb-b2d7-044b4a062e36\n"
+    },
+    {
+      "command": "secret put EXPERIMENT_TOKEN -c wrangler.jsonc",
+      "at": "2026-11-05T17:38:49.418Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\n🌀 Creating the secret for the Worker \"camelrun-proto-image-streaming\"\n✨ Success! Uploaded secret EXPERIMENT_TOKEN\n"
+    },
+    {
+      "command": "deploy -c /Users/miguelsalinas/agent-runtime-wt/image-streaming/backends/image-streaming/.cloud-state-8AH1ym/delete.json",
+      "at": "2026-11-05T17:39:00.413Z",
+      "exitCode": 0,
+      "output": "\n ⛅️ wrangler 4.157.0 (update available 4.158.0)\n───────────────────────────────────────────────\nTotal Upload: 0.17 KiB / gzip: 0.15 KiB\nWorker Startup Time: 2 ms\nYour Worker has access to the following bindings:\nBinding                                                             Resource                  \nenv.PUBLIC_ORIGIN (\"https://camelrun-proto-image-streamin...\")      Environment Variable      \n\nUploaded camelrun-proto-image-streaming (1.36 sec)\nDeployed camelrun-proto-image-streaming triggers (0.45 sec)\n  https://camelrun-proto-image-streaming.miguel-85b.workers.dev\nCurrent Version ID: d685eaea-8537-488e-8312-77cc26adb628\n"
+    }
+  ],
+  "telemetry": [
+    {
+      "label": "during-0",
+      "at": "2026-11-05T17:38:50.279Z",
+      "status": 200,
+      "errors": null,
+      "rows": []
+    }
+  ],
+  "cleanup": {
+    "objects": {
+      "startedAt": "2026-11-05T17:38:56.169Z",
+      "endedAt": "2026-11-05T17:38:56.714Z",
+      "latencyMs": 544.9077499999985,
+      "status": 200,
+      "data": {
+        "deleted": 3
+      }
+    },
+    "namespacesRemaining": [],
+    "workersRemaining": [],
+    "bucketsRemaining": [],
+    "endpointStatuses": [
+      {
+        "name": "camelrun-proto-image-streaming",
+        "status": 404
+      },
+      {
+        "name": "camelrun-proto-image-proxy",
+        "status": 404
+      },
+      {
+        "name": "camelrun-proto-image-provider",
+        "status": 404
+      }
+    ],
+    "errors": [],
+    "at": "2026-11-05T17:39:04.880Z"
+  },
+  "baseline": {
+    "workers": [],
+    "namespaces": []
+  },
+  "namespace": {
+    "id": "a9562005972042a09d1661fba3e2131d",
+    "name": "camelrun-proto-image-streaming_ImageAgent",
+    "script": "camelrun-proto-image-streaming",
+    "class": "ImageAgent",
+    "use_sqlite": true
+  },
+  "error": "Error: Derivative below required 2 MiB; adjust fixture before measuring"
+}
