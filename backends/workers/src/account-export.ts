@@ -222,7 +222,10 @@ function agentView(header: any) {
     ...(config.systemPromptAppend ? { systemPromptAppend: config.systemPromptAppend } : {}), ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
     ...(config.maxOutputTokens != null ? { maxOutputTokens: config.maxOutputTokens } : {}), ...(config.temperature != null ? { temperature: config.temperature } : {}), ...(config.dataCollection != null ? { dataCollection: config.dataCollection } : {}), ...(config.language != null ? { language: config.language } : {}),
     tools: config.mcp?.tools ?? [], mounts: config.mounts ?? [], definition: config.definition ?? null, keyScope: config.keyScope ?? null,
-    identity: config.identity ?? null, builtins: config.builtins ?? [], mcpServers: (config.mcpServers ?? []).map(mcpServerView), expiresAt: header.expiresAt,
+    identity: config.subject !== undefined || config.context !== undefined
+      ? { ...(config.subject !== undefined ? { subject: config.subject } : {}), ...(config.context !== undefined ? { context: config.context } : {}) }
+      : null,
+    builtins: config.builtins ?? [], mcpServers: (config.mcpServers ?? []).map(mcpServerView), expiresAt: header.expiresAt,
     ...(config.modelHeaders ? { modelHeaders: Object.keys(config.modelHeaders) } : {}),
   };
 }
