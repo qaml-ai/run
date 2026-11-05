@@ -5,6 +5,7 @@ export function withCompactionPrompt(registry: RegistryReader, policy: (fixedTok
   const wrap = (task: AnyTask, phase: string): AnyTask => {
     const definition = task.definition;
     const original = definition.phases[phase];
+    if (typeof original !== "function") throw new Error(`Missing native model phase: ${definition.name}.${phase}`);
     return { definition: { ...definition, phases: { ...definition.phases, [phase]: async (record: any, runtime: any, context: any) => {
       const view = await runtime.context(runtime.conversationId, context);
       const system = view.messages.findLast((message: { role: string }) => message.role === "system");
