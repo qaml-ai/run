@@ -1,5 +1,5 @@
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
-import { signRuntimeIdentity, type IdentityEnv, type RuntimeIdentity } from "./runtime-identity.ts";
+import { signRuntimeIdentity, type IdentityEnv, type RuntimeIdentity } from "./tool-identity.ts";
 import { EXCHANGE_LIMITS, TOKEN } from "./exchange-policy.ts";
 
 export class CredentialExchangeError extends Error {

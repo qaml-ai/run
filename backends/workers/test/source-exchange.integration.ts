@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { startFixture } from "./fixture.ts";
 import { prepareSources, sourceTools } from "../src/tool-sources.ts";
-import { runtimeJwks } from "../src/runtime-identity.ts";
+import { runtimeJwks } from "../src/tool-identity.ts";
 import { verifyRuntimeToken } from "../../../clients/server.ts";
 
 test("MCP exchanges verify runtime identity, cache per agent and refresh once on refusal", async t => {

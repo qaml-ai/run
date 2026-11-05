@@ -2,7 +2,7 @@ import type { ToolRegistration, ToolExecutionResult, ToolExecutionApi } from "@e
 import type { Context } from "@earendil-works/chord";
 import { HttpError } from "./errors.ts";
 import { withToolInputs, type ToolInputReply } from "./mcp-inputs.ts";
-import type { RuntimeIdentity } from "./runtime-identity.ts";
+import type { RuntimeIdentity } from "./tool-identity.ts";
 
 export type ToolDefinition = {
   name: string; description?: string; inputSchema?: Record<string, unknown>;

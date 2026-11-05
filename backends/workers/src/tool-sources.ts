@@ -5,7 +5,7 @@ import { checkDocument, operations, formEncode, type Operation } from "./openapi
 import { HttpError } from "./errors.ts";
 import { waitForHuman } from "./human.ts";
 import { parse as parseYaml } from "yaml";
-import { signRuntimeIdentity, type IdentityEnv, type RuntimeIdentity } from "./runtime-identity.ts";
+import { signRuntimeIdentity, type IdentityEnv, type RuntimeIdentity } from "./tool-identity.ts";
 import { withToolInputs, type ToolInputReply } from "./mcp-inputs.ts";
 import { openProviderSecret } from "./model-credentials.ts";
 import { credentialExchange, type ExchangeAuth } from "./exchange-auth.ts";

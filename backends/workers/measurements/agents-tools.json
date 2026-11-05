@@ -2,9 +2,10 @@
   "date": "2026-11-05",
   "track": "agents: tools and code mode",
   "local": {
-    "agent-tools.test.ts": { "passed": 12, "failed": 0 },
+    "agent-tools.test.ts": { "passed": 13, "failed": 0 },
     "host-execution.test.ts": { "passed": 3, "failed": 0 },
     "source-exchange.integration.ts": { "passed": 1, "failed": 0, "runtime": "local workerd, local PostgreSQL, local fake MCP and credential exchange" },
+    "runtime-identity.integration.ts": { "passed": 1, "failed": 0, "runtime": "shared source RuntimeSigner in Node and local workerd, compact tool claims verified against the same JWKS" },
     "source-refresh.integration.ts": { "passed": 1, "failed": 0, "runtime": "local workerd, local PostgreSQL, local fake MCP" },
     "unchanged_sdk-server.test.ts": { "passed": 9, "failed": 0, "runtime": "local workerd, local PostgreSQL, fake model" },
     "unchanged_openapi-sources.test.ts": { "passed": 2, "failed": 0 },
