@@ -19,9 +19,12 @@ type Run = {
 type Usage = { responses: number; costUsd: number };
 export type RuntimeLimit = {
   error: string;
-  code: "turn_limit" | "spend_limit";
+  code: "turn_limit" | "spend_limit" | "end_user_credit";
   stopped: "turn_limit" | "spend_limit";
-  limit?: "run" | "agent";
+  limit?: "run" | "agent" | "credit" | "end_user";
+  reason?: string;
+  endUser?: string;
+  bucket?: string;
 };
 const defaults = RUN_LIMITS;
 

@@ -15,6 +15,8 @@ import {
   type DirectoryFailure,
 } from "./control.ts";
 import { ApiError, agentToken, configuration } from "./api-contract.ts";
+import { upsertAgent } from "./agent-upsert.ts";
+import { configurationModelError } from "./default-model.ts";
 import { authorized, agentId, BadRequest, body } from "./validation.ts";
 import { HttpError, errorCode, errorStatus } from "./errors.ts";
 import { handleAdminRequest } from "./admin-api.ts";
@@ -300,12 +302,13 @@ const worker = {
             );
             configuration(input, env.MODEL);
             const key = request.headers.get("Idempotency-Key") ?? undefined;
-            const created = result(await directory.upsert(input, key, url.origin));
+            const upsert = await upsertAgent(env, auth.tenantId, input, key, url.origin);
+            const created = result(upsert.entry);
             if (Object.hasOwn(raw, "spendLimit"))
               await setAgentSpendLimit(
                 env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,
               );
-            const answer = credentials(created, await agentToken(env.API_TOKEN, created.id));
+            const answer = { ...credentials(created, await agentToken(env.API_TOKEN, created.id)), ...(upsert.reconfigured ? { reconfigured: upsert.reconfigured } : {}) };
             if (!first) return json(answer, 201);
             const submitted = await env.AGENTS.getByName(created.id).fetch(new Request("https://agent/requests", {
               method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(first),
@@ -421,6 +424,10 @@ const worker = {
         if (!next || typeof next !== "object" || Array.isArray(next))
           throw new BadRequest("Expected configuration object");
         if (!auth) scopedConfiguration(next);
+        const patched = configuration({ ...entry.config, ...next }, entry.config.model ?? env.MODEL).config;
+        const modelError = (Object.hasOwn(next, "model") || Object.hasOwn(next, "keyScope"))
+          ? await configurationModelError(env, entry.tenantId, patched) : undefined;
+        if (modelError) throw new ApiError(400, modelError);
         return forward(new Request(request.url, {
           method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify({ id: crypto.randomUUID(), method: "configure", params: next }),

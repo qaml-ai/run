@@ -16,6 +16,7 @@
     "parity": "node ../../tests/contract/run.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "3.1127.0",
     "@cloudflare/computer": "0.9.0",
     "@cloudflare/sandbox": "1.0.3",
     "@earendil-works/chord": "1.5.0",
