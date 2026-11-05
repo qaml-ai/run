@@ -150,7 +150,7 @@ import { recordAgentActivity } from "./agent-activity.ts";
 import { ConfigurationQueue } from "./configuration-queue.ts";
 import { replacementConfiguration } from "./replacement-configuration.ts";
 import { digest, configuration } from "./api-contract.ts";
-import { configurationModelError } from "./default-model.ts";
+import { configurationModelError, validateAgentModel } from "./default-model.ts";
 import { journeyRunEnded } from "./journey.ts";
 import { MAX_OPEN_REQUESTS } from "./access-policy.ts";
 import { follow as followLiveTurn, replay as replayEvents, type LiveTurn } from "./live-event-policy.ts";
@@ -2137,6 +2137,7 @@ export class CamelAgent extends DurableObject<Env> {
       throw Object.assign(new Error("An agent's subject cannot change"), { status: 409 });
     const patched = replacement ? configuration(params, conf.config.model ?? this.env.MODEL).config : await configurationPatch(this.env, conf.tenantId, conf.config, params);
     configuration(patched, conf.config.model ?? this.env.MODEL);
+    await validateAgentModel(this.env, conf.tenantId, patched, { reference: conf.config.model, model: conf.resolvedModel });
     if (params.model !== undefined || params.keyScope !== undefined) {
       try {
         const error = await configurationModelError(this.env, conf.tenantId, patched);
