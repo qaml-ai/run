@@ -650,10 +650,15 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private toolFileBudgets = new Map<string, { left: number }>();
   private runRates = new Map<string, RateLimitState>();
+  private replayedRequests = new WeakSet<RequestRecord>();
+  private replayedRequest(record: RequestRecord) {
+    this.replayedRequests.add(record);
+    return record;
+  }
   private requestResponse(record: RequestRecord) {
     const headers = admissionHeaders(this.runRates.get(record.id));
     this.runRates.delete(record.id);
-    return requestView(record).then(value => Response.json(value, { status: 202, headers }));
+    return requestView(record).then(value => Response.json(value, { status: this.replayedRequests.has(record) ? 200 : 202, headers }));
   }
   private async endUserLimit(conf: Config, bucket?: string) {
     if (!conf.config.subject) return;
@@ -2103,7 +2108,7 @@ export class CamelAgent extends DurableObject<Env> {
           new Error("Request id reused with different input"),
           { status: 409 },
         );
-      if (old) return old.accepted || old.state === "completed" ? old : this.startHostRequest(old);
+      if (old) return old.accepted || old.state === "completed" ? this.replayedRequest(old) : this.startHostRequest(old);
       await this.requireApplication(allowDisconnected);
       await refreshIdleLifetime(this.env, this.ctx.storage, await this.config());
       const record: RequestRecord = {
@@ -2271,7 +2276,7 @@ export class CamelAgent extends DurableObject<Env> {
       throw Object.assign(new Error("Request id reused with different input"), {
         status: 409,
       });
-    if (old?.state === "completed" || old?.accepted) return old;
+    if (old?.state === "completed" || old?.accepted) return this.replayedRequest(old);
     if (!old && request.method !== "steer" && (await this.records()).filter(record => record.state !== "completed").length >= MAX_OPEN_REQUESTS)
       throw Object.assign(new Error("Too many requests queued for this agent"), { status: 429 });
     const conf = await this.config();
