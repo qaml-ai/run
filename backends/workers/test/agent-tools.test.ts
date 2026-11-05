@@ -43,12 +43,37 @@ test("closing an attached connection fails in-flight calls without retrying them
   assert.equal(calls, 1);
 });
 
+test("takeover drains calls on the previous connection before retiring it", async () => {
+  const attached = new AttachedTools(), oldCalls: any[] = [];
+  let retired = false;
+  const old = attached.attach(frame => {
+    const message = (frame as any).message;
+    if (message.method === "initialize") queueMicrotask(() => attached.receive({ id: message.id, result: {} }, old.id));
+    else if (message.method === "tools/call") oldCalls.push(message);
+  }, undefined, false, () => { retired = true; });
+  old.start(); await attached.waitUntilReady();
+  const slow = attached.call("slow", {});
+  await Promise.resolve();
+  const replacement = attached.attach(frame => {
+    const message = (frame as any).message;
+    if (message.id) queueMicrotask(() => attached.receive({ id: message.id, result: message.method === "initialize" ? {} : { content: [{ type: "text", text: "new" }] } }, replacement.id));
+  }, undefined, true);
+  replacement.start(); await attached.waitUntilReady();
+  assert.equal(retired, false);
+  attached.receive({ id: oldCalls[0].id, result: { content: [{ type: "text", text: "old" }] } }, old.id);
+  assert.deepEqual(await slow, { content: [{ type: "text", text: "old" }] });
+  assert.equal(retired, true);
+  assert.deepEqual(await attached.call("slow", {}), { content: [{ type: "text", text: "new" }] });
+  attached.close();
+});
+
 test("source validation seals definition credentials and rejects inline secrets/private URLs", async () => {
   const env = { API_TOKEN: "unit-test-key-with-32-characters-long", AGENT_SECRETS_KEY: "22".repeat(32), TEST_MODE: "1" };
   const sources = await prepareSources(env, "tenant", "definition", "mcpServers", [{ name: "shop", url: "https://example.com/mcp", auth: { type: "bearer", token: "test-value" } }]);
   assert.ok(sources[0].sealed);
   assert.equal(JSON.stringify(sources).includes("test-value"), false);
   assert.equal("sealed" in sourceView(sources[0]), false);
+  assert.deepEqual(sourceView({ name: "legacy", url: "https://example.com/mcp", auth: { type: "bearer", token: "raw-secret" }, headers: { Authorization: "raw-secret" }, unknown: "raw-secret" } as never), { name: "legacy", url: "https://example.com/mcp", auth: { type: "bearer" } });
   const kept = await prepareSources(env, "tenant", "definition", "mcpServers", [{ name: "shop", url: "https://example.com/mcp", allowTools: ["read"] }], sources);
   assert.deepEqual(kept[0].sealed, sources[0].sealed);
   const moved = await prepareSources(env, "tenant", "definition", "mcpServers", [{ name: "shop", url: "https://other.example/mcp" }], sources);
@@ -116,6 +141,17 @@ test("remote code limits reject excessive calls and arguments and bound each res
   assert.deepEqual(await counted([{ type: "call", target: "tool", id: 257, name: "echo", args: "{}" }]), { type: "stop" });
   const workflow = boundedExchange(async messages => messages[0]?.type === "call" ? { type: "result", id: messages[0].id, ok: true, payload: "null" } : null, true);
   for (let i = 1; i <= 257; i++) assert.equal((await workflow([{ type: "call", target: "tool", id: i, name: "delegate", args: "{}" }]))?.type, "result");
+});
+
+test("remote output preserves bounded UTF-8 text and limits image output", async () => {
+  const seen: any[] = [], limited = boundedExchange(async messages => { seen.push(...messages); return null; });
+  await limited([{ type: "output", item: { type: "text", text: "a".repeat(127999) + "€" } }]);
+  assert.equal(seen[0].item.text, "a".repeat(127999));
+  assert.match(seen[1].item.text, /Output stops here/);
+  assert.equal(seen[0].item.text.includes("�"), false);
+  await limited(Array.from({ length: 17 }, () => ({ type: "output" as const, item: { type: "image" as const, data: "AAAA", mimeType: "image/png" } })));
+  assert.equal(seen.filter(message => message.item.type === "image").length, 16);
+  assert.equal(seen.filter(message => /Images past/.test(message.item.text ?? "")).length, 1);
 });
 
 test("ask_user validates answers against the same question policy as src", () => {

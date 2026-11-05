@@ -7,7 +7,7 @@ export function boundedExchange(exchange: CodemodeRemoteExchange, workflow = fal
   const maxConcurrent = workflow ? SANDBOX_LIMITS.workflowConcurrentTools : SANDBOX_LIMITS.concurrentTools;
   const maxArgs = workflow ? SANDBOX_LIMITS.workflowArgumentBytes : SANDBOX_LIMITS.argumentBytes;
   const maxResultBytes = workflow ? SANDBOX_LIMITS.workflowToolBytes : SANDBOX_LIMITS.totalToolBytes;
-  let calls = 0, pending = 0, totalResults = 0, textBytes = 0, outputEvents = 0, cut = false, failed = false;
+  let calls = 0, pending = 0, totalResults = 0, textBytes = 0, outputEvents = 0, cut = false, failed = false, images = 0, imageBytes = 0, imageCut = false;
   const size = (text: string | undefined) => text === undefined ? 0 : new TextEncoder().encode(text).byteLength;
   return async messages => {
     if (failed) return { type: "stop" };
@@ -25,8 +25,19 @@ export function boundedExchange(exchange: CodemodeRemoteExchange, workflow = fal
     }
     const kept: CodemodeRemoteMessage[] = [];
     for (const message of messages) {
+      if (message.type === "output" && message.item.type === "image") {
+        if (images >= SANDBOX_LIMITS.outputImages || imageBytes + message.item.data.length > SANDBOX_LIMITS.outputImageBytes) {
+          if (!imageCut) kept.push({ type: "output", item: { type: "text", text: "[Images past 16, or past 8 MiB in all, were left out.]" } });
+          imageCut = true; continue;
+        }
+        images++; imageBytes += message.item.data.length;
+      }
       if (message.type === "output" && message.item.type === "text") {
         if (++outputEvents > SANDBOX_LIMITS.outputEvents || textBytes + size(message.item.text) > SANDBOX_LIMITS.maxOutputCharacters) {
+          if (!cut && outputEvents <= SANDBOX_LIMITS.outputEvents) {
+            const prefix = new TextDecoder().decode(new TextEncoder().encode(message.item.text).subarray(0, SANDBOX_LIMITS.maxOutputCharacters - textBytes), { stream: true });
+            if (prefix) kept.push({ ...message, item: { ...message.item, text: prefix } });
+          }
           if (!cut) kept.push({ type: "output", item: { type: "text", text: "[Output stops here: a script prints at most 1,024 times and 128,000 bytes. Return or write what you need instead.]" } });
           cut = true;
           continue;

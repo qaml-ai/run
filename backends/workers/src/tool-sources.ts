@@ -196,8 +196,16 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
 }
 
 export function sourceView(source: RemoteSource) {
-  const { sealed: _sealed, operations, ...view } = source;
-  return { ...view, ...(operations ? { tools: operations.map(operation => operation.name) } : {}) };
+  // The allowlist also protects callers reading an older, unvalidated record.
+  const { name, url, baseUrl, spec, headerNames, audience, allowTools, denyTools, timeoutMs, exposure, approval, operations } = source;
+  const auth = source.auth?.type === "runtime" || source.auth?.type === "bearer" ? { type: source.auth.type }
+    : source.auth?.type === "exchange" ? { type: "exchange", url: source.auth.url, ...(source.auth.audience ? { audience: source.auth.audience } : {}) }
+    : undefined;
+  return { name, ...(url ? { url } : {}), ...(baseUrl ? { baseUrl } : {}), ...(spec ? { spec } : {}),
+    ...(headerNames ? { headerNames } : {}), ...(auth ? { auth } : {}), ...(audience ? { audience } : {}),
+    ...(allowTools ? { allowTools } : {}), ...(denyTools ? { denyTools } : {}), ...(timeoutMs ? { timeoutMs } : {}),
+    ...(exposure ? { exposure } : {}), ...(approval ? { approval } : {}),
+    ...(operations ? { tools: operations.map(operation => operation.name) } : {}) };
 }
 
 /** Public catalog from the installed tools, with no credentials or executable callbacks. */

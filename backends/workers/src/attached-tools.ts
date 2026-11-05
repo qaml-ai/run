@@ -12,11 +12,12 @@ export type ToolDefinition = {
 };
 export type McpResult = { content?: unknown[]; structuredContent?: unknown; isError?: boolean; inputRequests?: unknown; resultType?: string; requestState?: string; [key: string]: unknown };
 type Pending = { resolve: (result: unknown) => void; reject: (error: Error) => void };
-type Connection = { id: string; send: (event: unknown) => void; pending: Map<string, Pending>; ready: Promise<unknown>; initialized: boolean; draining: boolean };
+type Connection = { id: string; send: (event: unknown) => void; pending: Map<string, Pending>; ready: Promise<unknown>; initialized: boolean; draining: boolean; retired?: () => void };
 
 /** Attached MCP runs over the SDK's SSE stream, with replies on /mcp. */
 export class AttachedTools {
   private current?: Connection;
+  private readonly connections = new Map<string, Connection>();
 
   get connected() { return !!this.current?.initialized && !this.current.draining; }
 
@@ -27,12 +28,14 @@ export class AttachedTools {
     return this.current === connection && connection.initialized && !connection.draining;
   }
 
-  attach(send: (event: unknown) => void, previous?: string, takeover = false) {
+  attach(send: (event: unknown) => void, previous?: string, takeover = false, retired?: () => void) {
     if (this.connected && !takeover && previous !== this.current?.id)
       throw new HttpError(409, "APPLICATION_CONNECTED: another connection serves this agent's tools", "APPLICATION_CONNECTED");
-    this.close();
-    const connection: Connection = { id: crypto.randomUUID(), send, pending: new Map(), ready: Promise.resolve(), initialized: false, draining: false };
+    const old = this.current;
+    const connection: Connection = { id: crypto.randomUUID(), send, pending: new Map(), ready: Promise.resolve(), initialized: false, draining: false, retired };
     this.current = connection;
+    this.connections.set(connection.id, connection);
+    if (old) { old.draining = true; this.retireIfIdle(old); }
     // Start after the ready frame so SDK replies can name the connection.
     const start = () => {
       connection.ready = this.request(connection, "initialize", {
@@ -42,16 +45,17 @@ export class AttachedTools {
         connection.initialized = true;
         connection.send({ type: "mcp", message: { jsonrpc: "2.0", method: "notifications/initialized" } });
       });
-      void connection.ready.catch(() => { if (this.current === connection) this.close(); });
+      void connection.ready.catch(() => this.close(connection.id));
     };
-    return { id: connection.id, start, close: () => { if (this.current === connection) this.close(); } };
+    return { id: connection.id, start, close: () => this.close(connection.id) };
   }
 
   receive(value: unknown, id: string | null) {
-    const connection = this.current;
-    if (!connection || id !== connection.id)
+    const connection = id ? this.connections.get(id) : undefined;
+    if (!connection)
       throw new HttpError(409, "APPLICATION_REPLACED: this connection no longer serves tools", "APPLICATION_REPLACED");
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "Expected an MCP message");
+    if (Array.isArray(value)) { for (const message of value) this.receive(message, id); return; }
+    if (!value || typeof value !== "object") throw new HttpError(400, "Expected an MCP message");
     const message = value as Record<string, unknown>;
     if (message.method === "notifications/camelrun/draining" || message.method === "notifications/agent-runtime/draining") connection.draining = true;
     if (message.id === undefined) return;
@@ -60,15 +64,24 @@ export class AttachedTools {
     connection.pending.delete(key);
     if (message.error) pending.reject(new Error(String((message.error as { message?: unknown }).message ?? "MCP request failed")));
     else pending.resolve(message.result);
+    this.retireIfIdle(connection);
   }
 
-  close() {
-    const connection = this.current;
-    this.current = undefined;
-    if (!connection) return;
-    for (const pending of connection.pending.values())
-      pending.reject(Object.assign(new Error("Application connection lost; tool outcome may be unknown"), { code: "connection_lost", outcomeUnknown: true }));
-    connection.pending.clear();
+  private retireIfIdle(connection: Connection) {
+    if (connection !== this.current && !connection.pending.size) {
+      this.connections.delete(connection.id);
+      connection.retired?.();
+    }
+  }
+
+  close(id?: string) {
+    for (const connection of id ? [this.connections.get(id)].filter((value): value is Connection => !!value) : this.connections.values()) {
+      if (this.current === connection) this.current = undefined;
+      this.connections.delete(connection.id);
+      for (const pending of connection.pending.values())
+        pending.reject(Object.assign(new Error("Application connection lost; tool outcome may be unknown"), { code: "connection_lost", outcomeUnknown: true }));
+      connection.pending.clear();
+    }
   }
 
   private request(connection: Connection, method: string, params: unknown, timeoutMs: number, signal?: AbortSignal) {
@@ -80,11 +93,13 @@ export class AttachedTools {
         connection.pending.delete(id);
         connection.send({ type: "mcp", message: { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "Tool cancelled" } } });
         pending?.reject(new Error("Attached tool cancelled; its outcome may be unknown"));
+        this.retireIfIdle(connection);
       };
       const timeout = setTimeout(() => {
         connection.send({ type: "mcp", message: { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "Tool timeout" } } });
         connection.pending.get(id)?.reject(Object.assign(new Error(`Attached tool timed out after ${timeoutMs}ms; its outcome may be unknown`), { code: "timeout", outcomeUnknown: true }));
         connection.pending.delete(id);
+        this.retireIfIdle(connection);
       }, timeoutMs);
       signal?.addEventListener("abort", cancelled, { once: true });
       const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener("abort", cancelled); };
@@ -109,13 +124,18 @@ export class AttachedTools {
       if (!api) return this.call(definition.name, args, definition.timeoutMs, context?.abortSignal);
       const claims = (await identity?.(api))?.claims;
       const idempotencyKey = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${claims?.agent ?? api.conversationId}:${api.taskId}:${api.callId}`)))).map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 32);
-      return withToolInputs(reply => this.call(definition.name, args, definition.timeoutMs, context?.abortSignal, { ...reply, meta: {
+      try { return await withToolInputs(reply => this.call(definition.name, args, definition.timeoutMs, context?.abortSignal, { ...reply, meta: {
         "agent-runtime/toolCallId": api.callId, "agent-runtime/idempotencyKey": idempotencyKey,
         ...(claims ? { "agent-runtime/identity": { ...claims, ...(reply.approval ? { approval: reply.approval } : {}) } } : {}),
         ...(claims?.origin ? { "agent-runtime/origin": claims.origin } : {}),
         ...(claims?.act ? { "agent-runtime/actor": claims.act } : {}),
         ...(reply.approval ? { "agent-runtime/approval": reply.approval } : {}),
-      } }), api, context, { name: definition.name, args });
+      } }), api, context, { name: definition.name, args }); }
+      catch (error) {
+        const failure = error as { code?: string; message?: string; outcomeUnknown?: boolean };
+        if (!failure.code) throw error;
+        return { isError: true, content: [{ type: "text", text: JSON.stringify({ code: failure.code, message: failure.message ?? String(error), ...(failure.outcomeUnknown ? { outcomeUnknown: true } : {}) }) }] };
+      }
     }));
   }
 }
