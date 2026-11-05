@@ -192,7 +192,7 @@ export class Directory {
       if (fields.mounts !== undefined && fields.remount !== true) {
         const mounts = await (await import('./file-mounts.ts')).prepareMounts(this.env, this.tenantId, id, fields.mounts);
         if (mountIdentity(mounts) !== mountIdentity(previousEntry.config.mounts))
-          throw new ApiError(409, 'Agent mounts differ; set remount: true to change them');
+          throw new ApiError(409, `An existing agent's mounts cannot change; delete it (DELETE /v1/agents/${id}) or use another idempotency key, or send remount: true to change its mounts`);
       }
       const target: Record<string, unknown> = { ...config };
       // Resolve omitted fields when this target reaches the head of the queue.
