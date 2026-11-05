@@ -130,3 +130,31 @@ test('queued upserts preserve omitted model and language from the preceding conf
   await fixture.prompt(agent.id, 'after');
   assert.equal(fixture.model.bodies.at(-1).model, 'openai/gpt-4.1');
 });
+
+test('a refused configuration waiter releases its attachment admission', { timeout: 90_000 }, async t => {
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  const fixture = await createWorkersFixture(t, {
+    env: { TENANT_MAX_ACTIVE: '1' },
+    respond: body => ({ role: 'assistant', content: 'ok', ...(lastUser(body) === 'hold' ? { wait: gate.promise } : {}) }),
+  });
+  const agent = (await fixture.call('/v1/agents', { body: {} })).json;
+  const path = `/v1/agents/${agent.id}`;
+  assert.equal((await fixture.call(`${path}/prompt`, { body: { text: 'hold' } })).status, 202);
+  await until(() => fixture.model.bodies.length === 1, 'held turn');
+  assert.equal((await fixture.call(`${path}/configuration`, { method: 'PATCH', body: { systemPrompt: 'queued configuration' } })).status, 202);
+  const waiter = await fixture.call(`${path}/prompt`, { body: {
+    text: 'must not run', requestId: 'refused-file', files: [{ name: 'queued.txt', data: Buffer.from('queued attachment').toString('base64') }],
+  } });
+  assert.equal(waiter.status, 202, waiter.text);
+  assert.equal((await fixture.call(`${path}/configuration`, { method: 'PATCH', body: { spendLimit: { usd: 0 } } })).status, 202);
+  gate.resolve();
+  const refused = await until(async () => {
+    const record = (await fixture.call(`${path}/requests/refused-file`)).json;
+    return record.state === 'completed' && record;
+  }, 'refused deferred prompt');
+  assert.match(refused.error, /spend limit/);
+  const other = (await fixture.call('/v1/agents', { body: {} })).json;
+  await fixture.prompt(other.id, 'other');
+  assert.deepEqual(fixture.model.bodies.map(lastUser), ['hold', 'other']);
+});
