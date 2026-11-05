@@ -1,8 +1,6 @@
 import { portedTest } from "../ported.ts";
 const test = portedTest("transport", "tests/ui-chat.test.ts");
 import assert from "node:assert/strict";
-import { build } from "esbuild";
-import { fileURLToPath } from "node:url";
 import { answerValue, createAgentChat, projectMessages, type AssistantChatMessage, type ChatInput, type ChatSnapshot, type ProjectInput, type ProjectMemo, type ToolPart } from "../../../clients/chat.ts";
 import { createAgentHandler } from "../../../clients/handler.ts";
 import { listen, OPERATOR, runtime, sleep, until } from "../support.ts";
@@ -139,13 +137,7 @@ test("answerValue turns plain values into answers", () => {
   assert.throws(() => answerValue({ kind: "question", detail: { questions: [{ question: "A", options: [], multiSelect: false, allowOther: true }, { question: "B", options: [], multiSelect: false, allowOther: true }] } }, "x"));
 });
 
-test("the chat store is browser code: it bundles for a browser with nothing from Node, and small", async () => {
-  const result = await build({ entryPoints: [fileURLToPath(new URL("../../../clients/chat.ts", import.meta.url))], bundle: true, minify: true, platform: "browser", format: "esm", write: false, logLevel: "silent" });
-  assert.equal(result.errors.length, 0);
-  const { gzipSync } = await import("node:zlib");
-  const gzipped = gzipSync(result.outputFiles[0].contents).length;
-  assert.ok(gzipped < 9 * 1024, `the store and watcher are ${gzipped} bytes gzipped`);
-});
+// The browser bundle-size build check stays in tests/ui-chat.test.ts.
 
 // ---------------------------------------------------------------------------------------------
 // The store, through the handler, against a runtime

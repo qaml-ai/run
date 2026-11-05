@@ -91,7 +91,7 @@ checking the same sequence number, so fixture teardown does not wait for a socke
 | `identity-tokens.test.ts` | 2 |
 | `registry.test.ts` | 1 |
 | `revocation.test.ts` | 3 |
-| `ui-chat.test.ts` | 12 |
+| `ui-chat.test.ts` | 11 |
 | `ui-handler.test.ts` | 15 |
 | `ui-proxy.test.ts` | 6 |
 | `watch.test.ts` | 16 |
@@ -138,6 +138,13 @@ These cover lazy connections, direct SDK calls, portability, client/server tool
 protocols, token rotation, watch/reconnect behavior, CORS and UI transports. Some
 cases are pure client/library behavior and are explicitly reported as `sdk-unit`.
 They do not establish that either runtime served a request.
+
+The browser bundle-size check in `ui-chat.test.ts:141` stays in the original
+build suite; it does not exercise runtime or SDK protocol behavior. The integrated
+WebSocket transport currently produces 9,720 gzipped bytes against its unchanged
+9 KiB limit (9,216 bytes), verified by running the original source test. This
+pre-existing build regression is separate from the backend contract results.
+The other eleven chat projection/runtime cases are shared.
 
 ## Python SDK coverage
 
