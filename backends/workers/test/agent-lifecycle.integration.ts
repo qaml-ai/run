@@ -42,7 +42,7 @@ test("definition revisions, imported history, forks and hidden stateless session
   assert.match(run.id, /^run_/);
   assert.equal((await request("/v1/runs", {input:"once",wait:true}, "POST", {"Idempotency-Key":"once"})).id, run.id);
   assert.equal((await request(`/v1/runs/${run.id}`)).text, run.text);
-  assert.deepEqual((await request(`/v1/runs/${run.id}/messages`)).map((message:any) => message.role), ["user","assistant"]);
+  assert.deepEqual((await request(`/v1/runs/${run.id}/messages`)).messages.map((message:any) => message.role), ["user","assistant"]);
   assert.equal((await request("/v1/agents")).some((entry:any) => entry.type === "run"), false);
   const conflict = await fetch(fixture.url + "/v1/runs", {method:"POST",headers:{Authorization:`Bearer ${fixture.token}`,"content-type":"application/json","Idempotency-Key":"once"},body:JSON.stringify({input:"different"})});
   assert.equal(conflict.status,409);

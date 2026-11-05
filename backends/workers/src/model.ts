@@ -29,6 +29,7 @@ import { boundedModel } from "./model-context.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { sourceUrl } from "./tool-sources.ts";
 import { listModels } from "./catalog-policy.ts";
+import { streamTimeouts, watchedStream, isStalled } from "./model-stream.ts";
 
 export type ModelRequestSettings = AgentConfiguration & { output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
 export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true };
@@ -88,16 +89,20 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
         return await onPayload?.(adjusted, target) ?? adjusted;
       },
     };
-    return { model: credential?.baseUrl ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, transportError: () => transportError };
+    return { model: credential?.baseUrl ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, transportError: () => transportError };
   };
   const wrap = (simple: boolean) => (model: Model<Api>, context: TranscriptContext, options?: StreamOptions) => {
     const output = createAssistantMessageEventStream();
     void (async () => {
       try {
         const prepared = await prepare(model, context, options);
-        const stream = simple ? provider.streamSimple(prepared.model, prepared.context, prepared.options as SimpleStreamOptions) : provider.stream(prepared.model, prepared.context, prepared.options);
+        const stream = watchedStream(prepared.model, (signal, activity) => {
+          const onProviderStreamEvent = prepared.options.onProviderStreamEvent;
+          const options = { ...prepared.options, signal, onProviderStreamEvent: (event: unknown) => { activity(event); onProviderStreamEvent?.(event, prepared.model); } };
+          return simple ? provider.streamSimple(prepared.model, prepared.context, options as SimpleStreamOptions) : provider.stream(prepared.model, prepared.context, options);
+        }, streamTimeouts(prepared.model, prepared.config.thinkingLevel, prepared.config.runLimits), options?.signal);
         for await (const event of stream) {
-          if (event.type === "error" && prepared.transportError()) event.error.errorMessage = prepared.transportError();
+          if (event.type === "error" && event.reason !== "aborted" && !isStalled(event.error.errorMessage) && prepared.transportError()) event.error.errorMessage = prepared.transportError();
           if (routing && event.type === "error") routing.failed = prepared.model;
           if (routing && event.type === "done") { routing.previous = prepared.model; routing.failed = undefined; }
           output.push(event);

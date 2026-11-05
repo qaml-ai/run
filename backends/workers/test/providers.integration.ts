@@ -128,3 +128,33 @@ test("custom Responses and Anthropic APIs preserve native protocols and authenti
   assert.equal(provider.requests.at(-1)!.headers.authorization,undefined);
   assert.equal(provider.requests.at(-1)!.headers["x-api-key"],"fixture-provider-key");
 });
+
+test("first-token and idle stream timeouts terminate stalled providers", {timeout:180000}, async t => {
+  let mode:"first"|"idle"="first", calls=0;
+  const server=createServer(async(req,res)=>{
+    for await(const _chunk of req){};
+    calls++;
+    if(mode==="idle"){
+      res.writeHead(200,{"Content-Type":"text/event-stream"});
+      res.write(`data: ${JSON.stringify({id:"stalled",object:"chat.completion.chunk",created:1,model:"house",choices:[{index:0,delta:{role:"assistant",content:"partial"},finish_reason:null}]})}\n\n`);
+    }
+    // Deliberately leave both the response and model output unfinished.
+  });
+  await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
+  t.after(()=>new Promise<void>(resolve=>{server.closeAllConnections();server.close(()=>resolve());}));
+  const fixture=await startFixture({vars:{TEST_MODEL:"0",MODEL:"openai/gpt-4o-mini"}});
+  t.after(()=>fixture.stop());
+  const configured=await fetch(`${fixture.url}/v1/providers/stalled`,{method:"PUT",headers:{Authorization:`Bearer ${fixture.token}`,"Content-Type":"application/json"},body:JSON.stringify({type:"openai-completions",baseUrl:`http://127.0.0.1:${(server.address() as {port:number}).port}/v1`,models:[{id:"house",contextWindow:32768}]})});
+  assert.equal(configured.status,200);
+  const agents=new Agents({url:fixture.url,apiKey:fixture.token,connection:"lazy",pollMs:10});
+  t.after(()=>agents.close());
+  const agent=await agents.upsert("stalled",{model:"stalled/house",codeMode:false,fileTools:false,runLimits:{firstTokenSeconds:1,idleSeconds:1}});
+  const first=await agent.run("no headers",{timeoutMs:20000,throwOnError:false});
+  assert.equal(first.error?.code,"model_stream_stalled");
+  assert.match(first.error?.message??"",/before its first token/);
+  assert.ok(calls>=1);
+  mode="idle";
+  const idle=await agent.run("stops mid-answer",{timeoutMs:20000,throwOnError:false});
+  assert.equal(idle.error?.code,"model_stream_stalled");
+  assert.match(idle.error?.message??"",/mid-response/);
+});

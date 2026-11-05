@@ -35,6 +35,10 @@ type AgentMessage = Message | { role: 'compactionSummary'; summary: string; [key
 const validFileRef = (part: Record<string, unknown>) => part.type === 'file' && typeof part.path === 'string';
 ` + history.slice(history.indexOf('/** An imported compaction'), history.indexOf('export function validateUserMessages')));
 outputs.set('deepseek-policy.ts', banner + await source('src/deepseek-replay.ts'));
+outputs.set('model-stream.ts', banner + (await source('src/model-stream.ts'))
+ .replace('import { buggify } from "./buggify.ts";', 'const buggify = (_name: string) => false;')
+ .replace('import { reachable } from "./assert.ts";', 'const reachable = (_name: string) => {};')
+ .replace(' timer.unref?.();', ''));
 outputs.set('history-formats.ts', banner + (await source('clients/history-formats.ts')).replace('import type { Message } from \"./types.ts\";', 'import type { Message } from \"@earendil-works/pi-ai\";'));
 const prompt = await source('src/system-prompt.ts');
 outputs.set('output-policy.ts', banner + await source('src/tool-choice.ts') + '\n' + prompt.slice(prompt.indexOf('export const OUTPUT_TOOL'), prompt.indexOf('export function applicationInstructions')));
