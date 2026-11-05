@@ -69,6 +69,9 @@ export class PromptAttachments {
     private storage: DurableObjectStorage,
     private env: AttachmentEnv,
   ) {}
+  async reference(identity: Identity, path: string): Promise<AttachedFile> {
+    return (await this.stage(identity, [{ path }]))[0];
+  }
   async attach(identity: Identity, inputs: unknown): Promise<AttachedFile[]> {
     const fingerprint = await digest(JSON.stringify(inputs));
     const key = `prompt-attachments:${identity.requestId}`;
@@ -250,7 +253,7 @@ export class PromptAttachments {
                   size: entry.size,
                   version: 1,
                 }
-              : await storeImage(this.env, identity.tenant, bytes);
+              : undefined;
         }
       } else if (entry.contentType === "application/pdf")
         ref.media = {
@@ -276,7 +279,7 @@ export function withAttachmentReferences<A extends Api>(
     const documents = new Set<string>();
     for (let m = context.messages.length - 1; m >= 0; m--) {
       const message = context.messages[m];
-      if (message.role !== "user" || !Array.isArray(message.content)) continue;
+      if (!Array.isArray(message.content)) continue;
       for (let p = message.content.length - 1; p >= 0; p--) {
         const part = message.content[p];
         if (part.type !== "text" || !part.text.startsWith(MARKER)) continue;
@@ -295,7 +298,7 @@ export function withAttachmentReferences<A extends Api>(
     }
     const messages = [];
     for (const [m, message] of context.messages.entries()) {
-      if (message.role !== "user" || !Array.isArray(message.content)) {
+      if (!Array.isArray(message.content)) {
         messages.push(message);
         continue;
       }
@@ -359,12 +362,15 @@ export function withAttachmentReferences<A extends Api>(
               : undefined;
           if (!image) {
             const object = await env.BUCKET.get(ref.key);
-            if (object)
-              image = await storeImage(
+            if (object) {
+              try { image = await storeImage(
                 env,
                 tenant,
                 await boundedBytes(object.body, FILE_LIMITS.imageBytes),
-              );
+              ); } catch {
+                content.push({ type: "text", text: `[image omitted: ${ref.media.width}×${ref.media.height} px, could not be resized]` });
+              }
+            }
           }
         }
         if (image && model.input.includes("image"))
