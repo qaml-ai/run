@@ -22,7 +22,7 @@ export function billingRunStop(error: unknown): BillingRunStop | undefined {
   if (!value?.message) return;
   // The source host also stops the current turn at the free-credit hourly
   // ceiling; only admission exposes that ceiling as HTTP 429.
-  if (value.status === 429 && value.code === undefined)
+  if (value.status === 429)
     return { error: value.message, stopped: "spend_limit", code: "spend_limit", limit: "credit" };
   if (value.status !== 402) return;
   if (value.code === "END_USER_CREDIT") {
