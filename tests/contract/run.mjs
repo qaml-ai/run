@@ -22,7 +22,11 @@ suiteFiles.push("package.json", "package-lock.json", "backends/workers/package-l
 const hash = createHash("sha256");
 for (const file of suiteFiles.sort()) hash.update(file).update(await readFile(path.join(root, file)));
 const suiteHash = hash.digest("hex");
-const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+let revision = process.env.CONTRACT_REVISION;
+if (!revision) {
+  try { revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); }
+  catch { revision = "archive (identified by suiteHash)"; } // Sprites receives a git archive, without .git.
+}
 await mkdir(output, { recursive: true });
 const suffix = area ? `-${area.replace(/[^a-z0-9-]/gi, "_")}` : "";
 const reportPath = backend => path.join(output, `parity-${backend}${suffix}.json`);

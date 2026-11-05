@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import signal
 from pathlib import Path
 import tempfile
 import time
@@ -41,14 +42,14 @@ async def cleanup(self):
                 setattr(self, name, asyncio.create_task(stream.read()))
         if host.returncode is None:
             try:
-                host.terminate()
+                os.killpg(host.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
             try:
                 await asyncio.wait_for(host.wait(), 20)
             except asyncio.TimeoutError:
                 try:
-                    host.kill()
+                    os.killpg(host.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
                 try:
@@ -100,7 +101,7 @@ async def setup(self):
     self.host = await asyncio.create_subprocess_exec(
         "node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--test", "--test-reporter=spec", str(ROOT / "tests/contract/python-host.ts"),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "CONTRACT_FIXTURE_OPTIONS": json.dumps(options)}, cwd=ROOT,
+        env={**os.environ, "CONTRACT_FIXTURE_OPTIONS": json.dumps(options)}, cwd=ROOT, start_new_session=True,
     )
     self.host_errors = asyncio.create_task(self.host.stderr.read())
     while True:
