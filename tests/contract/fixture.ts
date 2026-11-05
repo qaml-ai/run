@@ -1,5 +1,5 @@
 import type { T } from "./http.ts";
-import { evidence } from "./evidence.ts";
+import { observeBackend } from "./evidence.ts";
 
 export type ModelReply = (body: any, index: number) => object;
 export type CallOptions = { method?: string; body?: unknown; headers?: Record<string, string>; token?: string | null };
@@ -32,6 +32,9 @@ export interface ContractFixture {
   countOAuthRefreshTokens(): Promise<number>;
   ageUsedOAuthRefreshToken(token: string, milliseconds: number): Promise<void>;
   revokeOAuthGrants(): Promise<void>;
+  seedOAuthAccessToken(grant: { grantId: string; tenant: string; clientId: string; clientName: string; login: string; scope: string; resource: string; token: string; expiresAt: number }): Promise<void>;
+  expireAccountEmailLinks(): Promise<void>;
+  seedConsoleIdentity(tenant: string, identity: { method: "google" | "github"; subject: string | number; email?: string; login: string }): Promise<string>;
   seedEndUserUsage(usage: { tenant: string; endUser: string; bucket: string; amount: number; key: string; metadata?: Record<string, unknown>; at: number }): Promise<void>;
   seedStripeCustomer(tenant: string, customer: { customer: string; legacyCustomer?: string }): Promise<void>;
   waitForAgentIdle(agent: string): Promise<void>;
@@ -51,13 +54,13 @@ export async function createFixture(t: T, options: FixtureOptions = {}): Promise
   if (backend === "node") {
     const { createNodeFixture } = await import("./fixtures/node.ts");
     const fixture = await createNodeFixture(t, { ...options, env });
-    if (evidence.getStore()) evidence.getStore()!.backend = backend;
+    t.after(observeBackend(fixture.base, backend));
     return fixture;
   }
   if (backend === "workers") {
     const { createWorkersFixture } = await import("./fixtures/workers.ts");
     const fixture = await createWorkersFixture(t, { ...options, env });
-    if (evidence.getStore()) evidence.getStore()!.backend = backend;
+    t.after(observeBackend(fixture.base, backend));
     return fixture;
   }
   throw new Error(`Unknown CONTRACT_BACKEND: ${backend}`);

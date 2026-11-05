@@ -34,6 +34,7 @@ small backend fixture interface.
 | `end-user-runs.test.ts` | 4 | Run attribution, budgets and public accounting |
 | `end-user-usage.test.ts` | 1 | Public usage summaries |
 | `end-user-webhooks.test.ts` | 1 | End-user webhook payloads |
+| `email-signup.test.ts` | 8 | Email signup, delivery, verification and admission policy |
 | `file-arguments.test.ts` | 1 | File arguments across the public tool boundary |
 | `files.test.ts` | 3 | Safe response headers, signed links and SDK attachments |
 | `image-generation-api.test.ts` | 3 | Image generation API results, errors, usage and webhook observations |
@@ -56,8 +57,8 @@ small backend fixture interface.
 | `workspaces.test.ts` | 1 | Public workspace lifecycle |
 | `x-search.test.ts` | 1 | Agent/stateless/codemode search, tenant/platform keys, exact charges and exhausted credit |
 
-`node tests/contract/check-product-assertions.mjs` checks 15 product cases against
-225 original public assertion expressions. Added setup assertions are allowed;
+`node tests/contract/check-product-assertions.mjs` checks 23 product cases against
+317 original public assertion expressions. Added setup assertions are allowed;
 source assertions must remain in order. Its explicit exclusions are original
 private-row checks and the account test's deliberately out-of-scope Discord
 section. This audit is a subset of the whole product suite, not its pass count.
@@ -90,6 +91,15 @@ checking the same sequence number, so fixture teardown does not wait for a socke
 | `ui-handler.test.ts` | 15 |
 | `ui-proxy.test.ts` | 6 |
 | `watch.test.ts` | 16 |
+| `webmcp.test.ts` | 2 |
+
+The public documentation cases (`docs.test.ts:11`, `:49`, `:69`, `:104`)
+cover anonymous Markdown/skill routes, redirects, crawler headers, traversal
+rejection and helpful 401/404 responses. The three `ops-mcp.test.ts` cases cover
+OAuth metadata, admin admission, token separation and read-only reporting tools.
+`admin-site.test.ts:25` covers hostname isolation, Access JWT verification and
+cross-tenant reporting with a local signing-key server. These ten cases retain
+all 135 original assertion expressions.
 
 These cover lazy connections, direct SDK calls, portability, client/server tool
 protocols, token rotation, watch/reconnect behavior, CORS and UI transports. Some
@@ -107,25 +117,29 @@ key scopes, usage webhooks, rotated credentials, tools and connection lifecycle.
 The library cases include synchronous/asynchronous tool servers, token validation,
 webhook signatures, retry hints, portable origins and version metadata.
 
-## Remaining public gaps
+## Exact source boundaries from the final HTTP audit
 
-Coverage here must not be read as complete coverage of every API-visible source
-assertion. The existing tests still contain public observations that have not yet
-been adapted, including:
+This is not a claim that every observable assertion in the repository has a
+shared case. The final audit distinguishes the following concrete boundaries;
+none is silently treated as a backend pass or as a channels/voice exclusion.
 
-- Additional auto-top-up recovery, refunds, payment fulfillment and invoice races;
-  mail suppression/retry/quiet periods and signed SES feedback.
-- Storage garbage-collection behavior after deleting or cloning agents, and some
-  file/image argument paths whose setup depends on local files or a launcher.
-- Direct-service search validation, provider timeout/failure fallbacks, redaction
-  and cancellation cases beyond the public search flows listed above.
-- Runtime deploy/drain and process-restart behavior, metrics emission, context
-  corruption/reclaim recovery, admin-site/operations surfaces and some provider
-  catalog/routing cases. These are distinct from the channels/voice exclusion.
-- Public documentation/error landing routes, WebMCP browser registration and
-  email signup deployment policy. No pass is inferred for unregistered cases.
+| Source | Shared coverage and remaining source-only observations |
+| --- | --- |
+| `auto-topup.test.ts:215`, `billing-payments.test.ts:170`, `billing-mail.test.ts:31,98`, `billing-alerts.test.ts:238` | Every existing HTTP/runtime case is shared. Remaining cases construct billing services directly, including reconciliation, refunds, retry/quiet periods and payment races. |
+| `billing-refunds.test.ts`, `billing-disputes.test.ts`, `card-credit.test.ts`, `starting-credit.test.ts` | Respectively 5, 4, 6 and 8 direct service/SQL policy, concurrency and failure-injection cases. They contain no runtime HTTP case to copy. |
+| `storage-limits.test.ts:105`, `web-search.test.ts:103,273,305,319,368`, `web-render.test.ts:47`, `x-search.test.ts:115` | Every existing HTTP/runtime case is shared. Other cases call storage/search providers or policy functions directly. |
+| `storage-gc.test.ts:113,192` | Two runtime cases remain unported. They inspect local object/chunk garbage collection after delete/clone/pinning and need equivalent storage-observation fixture controls. Public lifecycle tests do not establish that physical cleanup occurred. |
+| `email-signup.test.ts:233,251,264` | Private logging, pure configuration and startup rejection remain source-only; the eight public runtime cases are shared. |
+| `docs.test.ts:130,148,158,167,180,190` | Packaging, generated-file/link freshness, release Compose pin, documented prices, identity-token examples and release-note assembly are repository/build checks. The four runtime HTTP cases are shared. |
+| `webmcp.test.ts:24,78` | Schema annotations and absence of a browser model context are pure helpers. Both runtime-backed browser tool cases are shared. |
+| `admin-mcp.test.ts:13,28,63,70,92` | Classification, registration metadata, attribution and report aggregation call functions/SQL directly. Admin-site and operations-MCP HTTP cases are shared, but do not duplicate all those report algorithms. |
+| `request-images.test.ts:12,27,38,57` | Four pure request-transform tests cover provider caps, unchanged input identity, newest-image selection and PDF exclusion. HTTP image cases do not independently prove those exact 40/90-image budget boundaries. |
+| `log-tail.test.ts` | All 15 cases construct log/owner/storage services. `:348` also uses an SDK against its hand-built session server; its prompt/history observations overlap shared tool/history cases, while storage-write counts, tail rows and ownership fencing remain implementation tests. |
+| `compaction.test.ts` | All 21 cases construct supervisors/sessions or call model helpers directly. Shared model/data-collection/history cases exercise compaction, but the source's exact 60-image cap (`:638`), learned-window restart (`:603`), legacy journal and storage-row assertions remain source-only. |
 
-The separate agent inventory below identifies further source-only observations.
+The agent inventory below identifies other copied public portions and the
+implementation assertions retained in their original tests. A related shared
+endpoint case does not imply an unlisted source assertion passed.
 
 ## Agent, model, tools and history assertion audit
 
@@ -137,6 +151,7 @@ original suite.
 
 | Source under `tests/` | Copied / original cases |
 | --- | ---: |
+| `admin-site.test.ts` | 1 / 1 |
 | `agent-fork.test.ts` | 11 / 11 |
 | `agent-language.test.ts` | 3 / 4 |
 | `agent-lifetime.test.ts` | 7 / 7 |
@@ -159,6 +174,7 @@ original suite.
 | `decisions-api.test.ts` | 5 / 5 |
 | `definitions.test.ts` | 10 / 16 |
 | `default-model.test.ts` | 3 / 5 |
+| `docs.test.ts` | 4 / 10 |
 | `end-user-usage.test.ts` | 1 / 5 |
 | `errors.test.ts` | 1 / 1 |
 | `history-formats.test.ts` | 1 / 5 |
@@ -174,6 +190,7 @@ original suite.
 | `model-pricing-trust.test.ts` | 3 / 5 |
 | `model-settings.test.ts` | 3 / 4 |
 | `multi-agent.test.ts` | 9 / 10 |
+| `ops-mcp.test.ts` | 3 / 3 |
 | `prompt-options.test.ts` | 5 / 5 |
 | `reasoning.test.ts` | 2 / 3 |
 | `request-wait.test.ts` | 2 / 2 |
@@ -193,6 +210,7 @@ original suite.
 | `tool-spawn.test.ts` | 2 / 2 |
 | `tool-streaming.test.ts` | 1 / 4 |
 | `virtual-models.test.ts` | 4 / 10 |
+| `webmcp.test.ts` | 2 / 4 |
 | `workflows.test.ts` | 5 / 5 |
 
 ## What stays in the original suites
@@ -236,7 +254,8 @@ cases assert the HTTP, SDK, model-provider and webhook observations. In particul
   fixture controls. Tests still use the production scheduler and API handlers.
 - The orphaned-child case resets the original settlement fields through a fixture
   control, then observes the parent's public `spendLimit.spent`, including the
-  original $0.60 assertion. A backend lacking settlement state reports a fixture
+  original $0.60 assertion. It waits for the idle owner to release before reading
+  the durable settlement, because Node caches the owner's spend. A backend lacking settlement state reports a fixture
   failure; the control never simulates successful product behavior.
 - The concurrent child case retains public spawn, limit validation and SDK
   expectations. Its exact reservation-row amounts remain an internal SQL check.

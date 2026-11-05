@@ -30,7 +30,7 @@ const updates = (frames: { data: any }[]) => frames.filter(frame => frame.data.t
 
 const deltaText = (frames: { data: any }[]) => updates(frames).filter(event => event.assistantMessageEvent.type === "text_delta").map(event => event.assistantMessageEvent.delta).join("");
 
-contractTest("streaming", "tests/stream-deltas.test.ts:29", "message_update carries its delta alone; a subscriber that asks gets a snapshot of the running turn where it cannot replay, and one that does not a replay gap", async (t, _f)=>{
+contractTest("streaming", "tests/stream-deltas.test.ts:29", "message_update carries its delta alone; a subscriber that asks gets a snapshot of the running turn where it cannot replay, and one that does not a replay gap", async (t)=>{
   const words = Array.from({ length: 12 }, (_, index) => `w${index} `);
   const model = await streamingModel(t, words, 6);
   const r = await runtime(t, () => ({}), { AGENT_BASE_URL: model.url });
@@ -92,7 +92,7 @@ contractTest("streaming", "tests/stream-deltas.test.ts:29", "message_update carr
   assert.equal(after.events[0].data.turn, null);
 });
 
-contractTest("streaming", "tests/stream-deltas.test.ts:91", "the SDK's events carry no partial message, and it starts from a snapshot", async (t, _f)=>{
+contractTest("streaming", "tests/stream-deltas.test.ts:91", "the SDK's events carry no partial message, and it starts from a snapshot", async (t)=>{
   const words = ["one ", "two ", "three"];
   const model = await streamingModel(t, words, words.length);
   model.release();
@@ -111,7 +111,7 @@ contractTest("streaming", "tests/stream-deltas.test.ts:91", "the SDK's events ca
   assert.equal(streamed.filter(event => event.assistantMessageEvent.type === "text_delta").map(event => event.assistantMessageEvent.delta).join(""), words.join(""));
 });
 
-contractTest("streaming", "tests/stream-deltas.test.ts:110", "a snapshot too large for one frame drops the turn's finished messages first, keeping the message still streaming", async (t, _f)=>{
+contractTest("streaming", "tests/stream-deltas.test.ts:110", "a snapshot too large for one frame drops the turn's finished messages first, keeping the message still streaming", async (t)=>{
   const words = Array.from({ length: 30 }, (_, index) => `${String(index).padStart(2, "0")}${"y".repeat(998)}`);
   const model = await streamingModel(t, words, 15);
   // Frames of 20 KB (a megabyte in production): a 12 KB prompt and 15 KB streamed so far are together past one, apart each fits.

@@ -30,10 +30,17 @@ contractTest("keys", "tests/api.test.ts:132","tenants set provider keys over RES
     assert.match((await call("/v1/providers/amazon-bedrock/key", { method: "PUT", token: alice, body })).json.error, /needs its region/, JSON.stringify(body));
   }
   assert.match((await call("/v1/providers/anthropic/key", { method: "PUT", token: alice, body: { apiKey: "x", region: "us-west-2" } })).json.error, /only for amazon-bedrock/);
+  const beforeSet = await r.now();
   const bedrock = await call("/v1/providers/amazon-bedrock/key", { method: "PUT", token: alice, body: { apiKey: "bedrock-api-key-wxyz", region: "eu-west-3" } });
+  const afterSet = await r.now();
   assert.equal(bedrock.status, 200, JSON.stringify(bedrock.json));
   assert.deepEqual([bedrock.json.last4, bedrock.json.region, bedrock.json.verification.status], ["wxyz", "eu-west-3", "unverified"]);
-  assert.deepEqual((await call("/v1/providers", { token: alice })).json.find((provider: any) => provider.id === "amazon-bedrock").key, { provider: "amazon-bedrock", source: "tenant", last4: "wxyz", setAt: bedrock.json.setAt, region: "eu-west-3" });
+  // PUT does not return a timestamp. The public listing must expose the time
+  // this write happened and retain it across reads; the source also compares SQL.
+  const stored = (await call("/v1/providers", { token: alice })).json.find((provider: any) => provider.id === "amazon-bedrock").key;
+  assert.ok(Number.isSafeInteger(stored.setAt) && stored.setAt >= beforeSet && stored.setAt <= afterSet);
+  assert.deepEqual(stored, { provider: "amazon-bedrock", source: "tenant", last4: "wxyz", setAt: stored.setAt, region: "eu-west-3" });
+  assert.equal((await call("/v1/providers", { token: alice })).json.find((provider: any) => provider.id === "amazon-bedrock").key.setAt, stored.setAt);
   assert.ok((await call("/v1/models?provider=amazon-bedrock&available=true", { token: alice })).json.some((model: any) => model.id === "amazon-bedrock/global.anthropic.claude-sonnet-5" && model.available));
   assert.equal((await call("/v1/providers/amazon-bedrock/key", { method: "DELETE", token: alice })).status, 200);
 

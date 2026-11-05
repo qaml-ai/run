@@ -14,12 +14,14 @@ if (!["node", "workers", "both"].includes(backend)) throw new Error("--backend m
 const files = (await readdir(path.join(root, "tests/contract/areas"))).filter(file => file.endsWith(".test.ts")).sort();
 async function walk(directory) {
   const entries = (await readdir(path.join(root, directory), { withFileTypes: true }))
-    .filter(entry => !["node_modules", "dist", ".wrangler", ".git"].includes(entry.name));
+    .filter(entry => !["node_modules", "dist", "target", ".wrangler", ".git", "__pycache__", ".venv"].includes(entry.name));
   return (await Promise.all(entries.map(entry => entry.isDirectory() ? walk(`${directory}/${entry.name}`) : [`${directory}/${entry.name}`]))).flat();
 }
-const suiteFiles = [...await walk("src"), ...await walk("clients"), ...await walk("tests"), ...await walk("packages"), ...await walk("migrations"), ...await walk("backends/workers/src"), ...await walk("backends/workers/codemode")]
-  .filter(file => /\.(ts|mjs|py|sql)$/.test(file));
-suiteFiles.push("package.json", "package-lock.json", "backends/workers/package-lock.json", "backends/workers/test/fixture.ts", "backends/workers/test/local-worker.ts", "backends/workers/test/contract-entry.ts", "backends/workers/wrangler.test.jsonc", "backends/workers/codemode/wrangler.jsonc");
+// Runtime data and embedded JavaScript are inputs too. Hash every source-tree
+// file, excluding build/cache directories, so a changed fixture cannot reuse a
+// green baseline just because its extension differs from the test sources.
+const suiteFiles = [...await walk("src"), ...await walk("shared"), ...await walk("clients"), ...await walk("tests"), ...await walk("packages"), ...await walk("migrations"), ...await walk("sandbox"), ...await walk("backends/workers/src"), ...await walk("backends/workers/codemode")];
+suiteFiles.push("package.json", "package-lock.json", "backends/workers/package.json", "backends/workers/package-lock.json", "backends/workers/test/fixture.ts", "backends/workers/test/local-worker.ts", "backends/workers/test/contract-entry.ts", "backends/workers/wrangler.test.jsonc", "backends/workers/codemode/wrangler.jsonc");
 const hash = createHash("sha256");
 for (const file of suiteFiles.sort()) hash.update(file).update(await readFile(path.join(root, file)));
 const suiteHash = hash.digest("hex");
@@ -124,7 +126,7 @@ async function run(which) {
 let node;
 if (backend !== "workers") node = await run("node");
 else node = JSON.parse(await readFile(reportPath("node"), "utf8").catch(() => { throw new Error("Run the Node baseline first with the same --area; no baseline report exists"); }));
-const nodeGreen = node.suiteHash === suiteHash && node.expectedCases === manifest.length && node.rows.length === manifest.length && manifest.every(row => node.rows.some(result => key(row) === key(result))) && !node.rows.some(row => row.status === "fail");
+const nodeGreen = node.suiteHash === suiteHash && node.expectedCases === manifest.length && node.rows.length === manifest.length && manifest.every(row => node.rows.some(result => key(row) === key(result) && result.status === (row.status === "out-of-scope" ? "out-of-scope" : "pass")));
 if (backend !== "node" && !nodeGreen) throw new Error("Node baseline is not green for this exact suite. Fix the contract or Node fixture before running Workers.");
 let workers;
 if (backend !== "node") workers = await run("workers");

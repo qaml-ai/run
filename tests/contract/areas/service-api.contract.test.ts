@@ -28,7 +28,7 @@ contractTest('agents', 'tests/service-api.test.ts:43', 'operator provisioning im
 
 contractTest('agents', 'tests/service-api.test.ts:62', 'scoped configuration persists allowed fields and rejects provider credentials or endpoints', async(t,r)=>{
   const f = await fixture(r);
-  const response = await f.post('/v1/agents', { model: 'openrouter/deepseek/deepseek-v4.1-flash-1017' });
+  const response = await f.post('/v1/agents', {});
   const session = await response.json() as any;
   const path = `/clients/${session.id}`;
   for (const params of [{ model: configuredModel({ AGENT_PROVIDER: "openrouter" }) }, { apiKey: 'secret' }, { initialMessages: [] }]) {
@@ -53,7 +53,7 @@ contractTest('agents', 'tests/service-api.test.ts:62', 'scoped configuration per
   assert.equal(r.model.bodies.at(-1).reasoning?.effort, 'high');
   assert.deepEqual(saved.tools, [{ name: 'inspect', description: 'Inspect a fixture', parameters: inspect.inputSchema, exposure: 'direct' }]);
 
-});
+}, {env:{AGENT_MODEL:'deepseek/deepseek-v4.1-flash-1017'}});
 
 contractTest('agents', 'tests/service-api.test.ts:88', 'provisioning takes models by name only, never an endpoint or credentials', async(t,r)=>{
   const f = await fixture(r);

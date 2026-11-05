@@ -238,7 +238,7 @@ contractTest("delegation","tests/multi-agent.test.ts:232","a delegate child whos
     const usage = { prompt_tokens: 5000, completion_tokens: 0 };
     if (roleText(body).includes("WORKER")) return { role: "assistant", content: "done", usage };
     return { ...toolResults(body).length ? { role: "assistant", content: "after" } : toolCall("delegate", { instructions: "You are a WORKER.", task: "work" }, "call_d"), usage };
-  }, { AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_CHILD_SWEEP_MS: "300" });
+  }, { AGENT_MODEL: "openai/gpt-5.5-pro", AGENT_CHILD_SWEEP_MS: "300", AGENT_IDLE_MS: "1000" });
   const parent = (await r.call("/v1/agents", { body: { builtins: ["delegate"], delegate: { instructions: true }, spendLimit: { usd: 10 } } })).json.id;
   const record = await r.prompt(parent, "go");
   assert.equal(record.outcome.result.usage.subagentCostUsd.toFixed(2), "0.15", JSON.stringify(record.outcome));
@@ -249,6 +249,9 @@ contractTest("delegation","tests/multi-agent.test.ts:232","a delegate child whos
 
   // As if the node that ran the call was lost before it took the answer, and the run then ended without it.
   await r.resetChildSettlement(parent);
+  // The HTTP detail reads the owner's spend cache. Let the idle owner release so
+  // that the late settlement is read from durable state, as the source SQL does.
+  await r.waitForAgentIdle(parent);
   await until(async () => (await spent()) >= 0.60 - 1e-9, "the sweep landed it");
   assert.equal((await spent()).toFixed(2), "0.60", "what the child spent is charged to the parent's spend limit");
 });

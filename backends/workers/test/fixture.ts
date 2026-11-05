@@ -110,6 +110,7 @@ export async function startFixture(
     for (const image of Object.values(container.images ?? {}) as { dockerfile?: string }[])
       if (image.dockerfile) image.dockerfile = join(root, image.dockerfile);
   config.hyperdrive[0].localConnectionString = databaseUrl;
+  const port = await unusedPort();
   config.vars = {
     ...config.vars,
     API_TOKEN: token,
@@ -118,12 +119,13 @@ export async function startFixture(
     AGENT_OUTBOUND_ALLOW_HTTP: "true",
     AGENT_OUTBOUND_ALLOW_CIDRS: "127.0.0.0/8,::1/128",
     ...options.vars,
+    ...(options.vars?.AGENT_PUBLIC_URL === "" ? { AGENT_PUBLIC_URL: `http://127.0.0.1:${port}`, PUBLIC_URL: `http://127.0.0.1:${port}` } : {}),
     ...(options.modelURL ? { TEST_MODEL_BASE_URL: options.modelURL } : {}),
   };
   const configPath = join(storage, "wrangler.json");
   await writeFile(configPath, JSON.stringify(config));
   const worker = new LocalWorker(
-    await unusedPort(),
+    port,
     storage,
     configPath,
     token,

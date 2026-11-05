@@ -10,7 +10,7 @@ const lookup = { name: "lookup", description: "Look something up", parameters: {
 
 const systemText = (body: any) => body.messages.find((message: any) => message.role === "system" || message.role === "developer")?.content as string;
 
-contractTest("definitions", "tests/definitions.test.ts:17", "definitions are the tenant's own, validated, and revised", async (t, _f) => {
+contractTest("definitions", "tests/definitions.test.ts:17", "definitions are the tenant's own, validated, and revised", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const created = await r.call("/v1/definitions", { body: { name: "Support", systemPrompt: "You are support.", builtins: ["web_fetch"], limits: { ttlSeconds: 3600 } } });
   assert.equal(created.status, 201, created.text);
@@ -46,7 +46,7 @@ contractTest("definitions", "tests/definitions.test.ts:17", "definitions are the
   assert.equal((await r.call("/v1/definitions")).json.length, 1);
 });
 
-contractTest("definitions", "tests/definitions.test.ts:53", "a definition's key upserts it: the same key is the same definition, revised only when it changes", async (t, _f) => {
+contractTest("definitions", "tests/definitions.test.ts:53", "a definition's key upserts it: the same key is the same definition, revised only when it changes", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const key = { "Idempotency-Key": "researcher" };
   const first = await r.call("/v1/definitions", { body: { name: "Researcher", builtins: ["web_search"], systemPrompt: "Research." }, headers: key });
@@ -68,7 +68,7 @@ contractTest("definitions", "tests/definitions.test.ts:53", "a definition's key 
   assert.deepEqual(limited.runLimits, { maxResponses: 20, maxSeconds: 600 });
 });
 
-contractTest("definitions", "tests/definitions.test.ts:75", "a definition's idle lifetime applies, and a lifetime given with the agent replaces it", async (t, _f) => {
+contractTest("definitions", "tests/definitions.test.ts:75", "a definition's idle lifetime applies, and a lifetime given with the agent replaces it", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const definition = (await r.call("/v1/definitions", { body: { name: "Support", systemPrompt: "You are support.", limits: { ttlSeconds: 3600 } } })).json;
   const idle = (await r.call("/v1/agents", { body: { definition: definition.id, idleTtlSeconds: 600 } })).json;
@@ -78,7 +78,7 @@ contractTest("definitions", "tests/definitions.test.ts:75", "a definition's idle
   assert.equal((await r.call("/v1/definitions", { body: { name: "x", limits: { ttlSeconds: 3600, idleTtlSeconds: 900 } } })).status, 400);
 });
 
-contractTest("definitions", "tests/definitions.test.ts:85", "agents are made from a definition, record its revision, and take a new one when it is applied", async (t, _f) => {
+contractTest("definitions", "tests/definitions.test.ts:85", "agents are made from a definition, record its revision, and take a new one when it is applied", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const definition = (await r.call("/v1/definitions", { body: { name: "Support", systemPrompt: "You are support v1.", limits: { ttlSeconds: 3600 } } })).json;
   const created = await r.call("/v1/agents", { body: { definition: definition.id }, headers: { "Idempotency-Key": "first" } });
@@ -130,7 +130,7 @@ contractTest("definitions", "tests/definitions.test.ts:85", "agents are made fro
   assert.equal((await r.prompt(first, "still here")).outcome.result.reply, "ok");
 });
 
-contractTest("definitions", "tests/definitions.test.ts:137", "a definition with applyOnUpdate reaches its live agents on every save that revises it, upserts included", async (t, _f) => {
+contractTest("definitions", "tests/definitions.test.ts:137", "a definition with applyOnUpdate reaches its live agents on every save that revises it, upserts included", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const key = { "Idempotency-Key": "builder" };
   const save = (systemPrompt: string, extra: object = {}) => r.call("/v1/definitions", { body: { name: "Builder", systemPrompt, applyOnUpdate: true, ...extra }, headers: key });
@@ -170,7 +170,7 @@ contractTest("definitions", "tests/definitions.test.ts:137", "a definition with 
   assert.equal((await r.call("/v1/definitions", { body: { name: "x", applyOnUpdate: "yes" } })).status, 400);
 });
 
-contractTest("definitions", "tests/definitions.test.ts:177", "an agent's own model, thinking level and prompt addition survive applying its definition", async (t, _f) => {
+contractTest("definitions", "tests/definitions.test.ts:177", "an agent's own model, thinking level and prompt addition survive applying its definition", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const definition = (await r.call("/v1/definitions", { body: { name: "Threads", systemPrompt: "You are camel v1.", thinkingLevel: "high" } })).json;
   const created = await r.call("/v1/agents", { body: { definition: definition.id, thinkingLevel: "off", systemPromptAppend: "Thread: thr_1" } });
@@ -209,7 +209,7 @@ contractTest("definitions", "tests/definitions.test.ts:177", "an agent's own mod
   // Node-only stored thinking-level assertion remains in the source suite.
 });
 
-contractTest("definitions", "tests/definitions.test.ts:217", "fileTools: false leaves the model present_file, and the file tools to code", async (t, _f) => {
+contractTest("definitions", "tests/definitions.test.ts:217", "fileTools: false leaves the model present_file, and the file tools to code", async (t) => {
   const r = await runtime(t, (_body, index) => [
     toolCall("codemode", { code: "await tools.write({ path: '/workspace/notes.md', content: 'hi' }); return (await tools.read({ path: '/workspace/notes.md' })).content;" }),
   ][index] ?? { role: "assistant", content: "ok" });
@@ -236,7 +236,7 @@ contractTest("definitions", "tests/definitions.test.ts:217", "fileTools: false l
   assert.deepEqual(direct(r.model.bodies.at(-1)), ["codemode", "decide", "present_file"]);
 });
 
-contractTest("definitions", "tests/definitions.test.ts:244", "the SDK makes an agent from a definition with its attached server's tools, which survive an apply", async (t, _f) => {
+contractTest("definitions", "tests/definitions.test.ts:244", "the SDK makes an agent from a definition with its attached server's tools, which survive an apply", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const definition = (await r.call("/v1/definitions", { body: { name: "Desk", systemPrompt: "v1" } })).json;
   const runtimeClient = new AgentRuntime({ url: r.base, apiKey: "fixture-operator-token-at-least-24-chars" });
@@ -252,7 +252,7 @@ contractTest("definitions", "tests/definitions.test.ts:244", "the SDK makes an a
   assert.deepEqual(await names(), [["lookup", "App's lookup"], ["extra", "Something else"]]);
 });
 
-contractTest("definitions", "tests/definitions.test.ts:328", "public configuration waits between turns, preserves history, and reports validation and outcome", async (t, _f) => {
+contractTest("definitions", "tests/definitions.test.ts:328", "public configuration waits between turns, preserves history, and reports validation and outcome", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok", delayMs: 500 }));
   const agent = (await r.call("/v1/agents", { body: { systemPrompt: "Before" } })).json.id;
   const path = `/v1/agents/${agent}/configuration`;
@@ -288,7 +288,7 @@ contractTest("definitions", "tests/definitions.test.ts:328", "public configurati
   assert.deepEqual((await r.call(`/v1/agents/${agent}/history`)).json, history);
 });
 
-contractTest("definitions", "tests/definitions.test.ts:390", "a tenant's definitions are capped by its limit (409 DEFINITIONS_LIMIT), and the ones no agent uses can be listed to delete", async (t, _f) => {
+contractTest("definitions", "tests/definitions.test.ts:390", "a tenant's definitions are capped by its limit (409 DEFINITIONS_LIMIT), and the ones no agent uses can be listed to delete", async (t) => {
   // alice (of the tenants file) at AGENT_MAX_DEFINITIONS_PER_TENANT=3.
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }), { AGENT_MAX_DEFINITIONS_PER_TENANT: "3" });
   const ids: string[] = [];

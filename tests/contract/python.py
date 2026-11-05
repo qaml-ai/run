@@ -14,11 +14,55 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from urllib.parse import urlsplit
+
+import httpx
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("contract_original_python_sdk", ROOT / "tests/python_sdk.py")
 original = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(original)
+
+# unittest runs one case at a time, while a case's synchronous SDK calls may
+# run in a thread. Capture the owner before sending so a late response cannot
+# be attributed to the next case. Instrument both clients, including ones the
+# SDK constructs internally, without changing requests or response bodies.
+active_case = None
+
+
+def observe_response(test, response):
+    if test is None or not isinstance(test, original.PythonSDKTest) or not getattr(test, "url", None):
+        return
+    target, base = urlsplit(str(response.request.url)), urlsplit(test.url)
+    if (target.scheme, target.netloc) != (base.scheme, base.netloc):
+        return
+    if target.path == "/healthz" or "__test" in target.path.split("/"):
+        return
+    test._contract_http_response = True
+
+
+async_send = httpx.AsyncClient.send
+sync_send = httpx.Client.send
+
+
+@functools.wraps(async_send)
+async def observed_async_send(client, request, *args, **kwargs):
+    owner = active_case
+    response = await async_send(client, request, *args, **kwargs)
+    observe_response(owner, response)
+    return response
+
+
+@functools.wraps(sync_send)
+def observed_sync_send(client, request, *args, **kwargs):
+    owner = active_case
+    response = sync_send(client, request, *args, **kwargs)
+    observe_response(owner, response)
+    return response
+
+
+httpx.AsyncClient.send = observed_async_send
+httpx.Client.send = observed_sync_send
 
 
 async def cleanup(self):
@@ -43,7 +87,9 @@ async def cleanup(self):
                 setattr(self, name, asyncio.create_task(stream.read()))
         if host.returncode is None:
             try:
-                os.killpg(host.pid, signal.SIGTERM)
+                # The fixture host owns backend teardown. Signal it alone so
+                # children finish through its registered cleanup hooks.
+                host.terminate()
             except ProcessLookupError:
                 pass
             try:
@@ -57,13 +103,17 @@ async def cleanup(self):
                     await asyncio.wait_for(host.wait(), 5)
                 except Exception as error:
                     errors.append(error)
+        host_output = []
         for name in ("logs", "host_errors"):
             task = getattr(self, name, None)
             if task is not None:
                 try:
-                    await asyncio.wait_for(task, 5)
+                    host_output.append(await asyncio.wait_for(task, 5))
                 except Exception as error:
                     errors.append(error)
+        if host.returncode != 0:
+            detail = b"\n".join(host_output).decode(errors="replace")[-4000:]
+            errors.append(RuntimeError(f"Fixture host exited with {host.returncode}: {detail}"))
     for name in ("model", "transcriber"):
         server = getattr(self, name, None)
         if server is not None:
@@ -79,7 +129,8 @@ async def cleanup(self):
         except Exception as error:
             errors.append(error)
     if errors:
-        raise RuntimeError(f"Python fixture cleanup failed ({len(errors)} resources)") from errors[0]
+        details = "; ".join(str(error) for error in errors)
+        raise RuntimeError(f"Python fixture cleanup failed ({len(errors)} resources): {details}") from errors[0]
 
 
 async def setup(self):
@@ -101,7 +152,7 @@ async def setup(self):
         },
     }
     self.host = await asyncio.create_subprocess_exec(
-        "node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--test", "--test-reporter=spec", str(ROOT / "tests/contract/python-host.ts"),
+        "node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--test-reporter=spec", str(ROOT / "tests/contract/python-host.ts"),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         env={**os.environ, "CONTRACT_FIXTURE_OPTIONS": json.dumps(options)}, cwd=ROOT, start_new_session=True,
     )
@@ -150,7 +201,13 @@ for name in dir(original.PythonSDKTest):
     if name.startswith("test_") and asyncio.iscoroutinefunction(method):
         setattr(original.PythonSDKTest, name, bounded_case(method))
 
-# Transport scope is explicit; these are never reported as failures or passes.
+# Transport scope is explicit; no other skipped test can become a backend pass.
+OUT_OF_SCOPE = {
+    ("PythonSDKTest", "test_voice_sessions_need_the_runtime_to_hold_calls"),
+    ("PythonSDKTest", "test_audio_is_transcribed_in_messages_runs_and_on_its_own"),
+    ("VoiceLibraryTest", "test_get_async_and_sync"),
+    ("VoiceLibraryTest", "test_search_async_and_sync"),
+}
 for name in ("test_voice_sessions_need_the_runtime_to_hold_calls", "test_audio_is_transcribed_in_messages_runs_and_on_its_own"):
     setattr(original.PythonSDKTest, name, unittest.skip("Voice/audio is out of scope")(getattr(original.PythonSDKTest, name)))
 for name in dir(original.VoiceLibraryTest):
@@ -160,14 +217,34 @@ for name in dir(original.VoiceLibraryTest):
 
 class Result(unittest.TextTestResult):
     def startTest(self, test):
+        global active_case
+        active_case = test
+        test._contract_http_response = False
         self.started = time.monotonic()
+        self.case_status = None
+        self.case_reasons = []
+        self.case_errors = []
         super().startTest(test)
 
     def record(self, test, status, reason="", error=None):
+        if self.case_status != "fail":
+            self.case_status = status
+        if reason:
+            self.case_reasons.append(" ".join(reason.split()))
+        if error:
+            self.case_errors.append(error)
+
+    def stopTest(self, test):
+        global active_case
+        super().stopTest(test)
+        status = self.case_status or "fail"
+        if self.case_status is None:
+            self.case_reasons.append("Test ended without a supported result")
         row = {"area": "python", "source": "tests/python_sdk.py", "name": f"{test.__class__.__name__}.{test._testMethodName}",
-               "status": status, "backend": os.environ.get("CONTRACT_BACKEND", "node") if isinstance(test, original.PythonSDKTest) else "sdk-unit",
-               "durationMs": (time.monotonic() - self.started) * 1000, "reason": " ".join(reason.split()), "error": error}
+               "status": status, "backend": os.environ.get("CONTRACT_BACKEND", "node") if test._contract_http_response else "sdk-unit",
+               "durationMs": (time.monotonic() - self.started) * 1000, "reason": "; ".join(self.case_reasons), "error": "\n".join(self.case_errors) or None}
         print("@@CONTRACT_RESULT@@" + json.dumps(row), flush=True)
+        active_case = None
 
     def addSuccess(self, test):
         super().addSuccess(test)
@@ -182,6 +259,10 @@ class Result(unittest.TextTestResult):
         self.record(test, "fail", str(err[1]), self._exc_info_to_string(err, test))
 
     def addSkip(self, test, reason):
+        if (test.__class__.__name__, test._testMethodName) not in OUT_OF_SCOPE:
+            error = AssertionError(f"Unexpected skipped contract: {reason}")
+            self.addFailure(test, (AssertionError, error, None))
+            return
         super().addSkip(test, reason)
         self.record(test, "out-of-scope", reason)
 
@@ -195,7 +276,9 @@ if "--list" in __import__("sys").argv:
         else:
             yield value
     for case in cases(suite):
-        print("@@CONTRACT_CASE@@" + json.dumps({"area": "python", "source": "tests/python_sdk.py", "name": f"{case.__class__.__name__}.{case._testMethodName}", "file": "tests/contract/python.py"}))
+        scoped = (case.__class__.__name__, case._testMethodName) in OUT_OF_SCOPE
+        print("@@CONTRACT_CASE@@" + json.dumps({"area": "python", "source": "tests/python_sdk.py", "name": f"{case.__class__.__name__}.{case._testMethodName}", "file": "tests/contract/python.py",
+            **({"status": "out-of-scope", "reason": "Voice/audio is out of scope"} if scoped else {})}))
     raise SystemExit(0)
 result = unittest.TextTestRunner(verbosity=1, resultclass=Result).run(suite)
 raise SystemExit(0 if result.wasSuccessful() else 1)

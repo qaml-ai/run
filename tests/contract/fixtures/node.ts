@@ -135,6 +135,18 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
       if (result.rowCount !== 1) throw new Error("Fixture refresh token not found");
     },
     async revokeOAuthGrants() { await db.query("delete from oauth_grants"); },
+    async seedOAuthAccessToken(grant) {
+      await db.query("insert into oauth_grants(id,tenant,client_id,client_name,login,scope,resource,created_at) values($1,$2,$3,$4,$5,$6,$7,$8)", [grant.grantId, grant.tenant, grant.clientId, grant.clientName, grant.login, grant.scope, grant.resource, Date.now()]);
+      await db.query("insert into oauth_tokens(sha256,kind,grant_id,expires_at) values($1,'access',$2,$3)", [hash(grant.token), grant.grantId, grant.expiresAt]);
+    },
+    async expireAccountEmailLinks() { await db.query("update account_email_links set expires_at=$1", [Date.now() - 1]); },
+    async seedConsoleIdentity(tenant, identity) {
+      const now = Date.now(), raw = randomBytes(32).toString("base64url");
+      if (identity.method === "google") await db.query("insert into tenants(id,google_sub,google_email,created_at) values($1,$2,$3,$4)", [tenant, identity.subject, identity.email ?? null, now]);
+      else await db.query("insert into tenants(id,github,github_id,created_at) values($1,$2,$3,$4)", [tenant, identity.login, identity.subject, now]);
+      await db.query("insert into console_sessions(sha256,tenant,login,method,created_at,expires_at) values($1,$2,$3,$4,$5,$6)", [hash(raw), tenant, identity.login, identity.method, now, now + 3_600_000]);
+      return `ar_session=${raw}`;
+    },
     async seedEndUserUsage({ tenant, endUser, bucket, amount, key, metadata, at }) {
       await new EndUserCredits(db).charge(tenant, endUser, bucket, amount, key, metadata, at);
     },

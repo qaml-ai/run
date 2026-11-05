@@ -1,6 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { EndUserCredits } from "../../../src/end-user-credits.ts";
+import { configuredModel } from "../../../src/model.ts";
+import { modelReference } from "../../../src/virtual-models.ts";
 import { fakeModel, OPERATOR, OTHER_OPERATOR, until, type T } from "../http.ts";
 import type { ContractFixture, FixtureOptions, TenantSeed } from "../fixture.ts";
 
@@ -25,9 +27,19 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
   // Dynamic import keeps workerd's binding types out of the Node TypeScript project.
   const fixtureModule = new URL("../../../backends/workers/test/fixture.ts", import.meta.url).href;
   const { startFixture } = await import(fixtureModule);
-  const env = options.env ?? {};
-  // This implementation-level operator is private to the fixture wrapper. Only
-  // explicitly seeded credentials may reach it; OPERATOR is not a hidden key.
+  const env: Record<string, string> = {
+    AGENT_SESSION_SECRET: "server-test-session-secret-with-32-chars",
+    AGENT_SECRETS_KEY: randomBytes(32).toString("hex"),
+    AGENT_PUBLIC_URL: "https://agents.example.test",
+    AGENT_PROVIDER: "openrouter", AGENT_MODEL: "openai/gpt-4o-mini", AGENT_BASE_URL: model.url,
+    ...options.env,
+  };
+  const tenants: any = structuredClone(options.tenants ?? { tenants: {
+    alice: { tokenSha256: createHash("sha256").update(OPERATOR).digest("hex"), apiKeys: { openrouter: "fixture-model-key" } },
+    bob: { tokenSha256: createHash("sha256").update(OTHER_OPERATOR).digest("hex"), apiKeys: { openrouter: "fixture-model-key" } },
+  } });
+  // This private implementation token signs agent-scoped credentials. Public
+  // requests retain their original bearer token and use the real auth service.
   const internalOperator = `contract-internal-${randomUUID()}`;
   const server = await startFixture({
     token: internalOperator,
@@ -38,39 +50,43 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     vars: {
       ...env,
       API_TOKEN: internalOperator,
-      TEST_MODE: "1", TEST_MODEL: "1", MODEL: env.AGENT_MODEL ?? "openai/gpt-4o-mini",
+      AGENT_TENANTS_JSON: JSON.stringify(tenants),
+      ...(env.AGENT_GITHUB_WEB_URL ? { TEST_GITHUB_WEB_URL: env.AGENT_GITHUB_WEB_URL } : {}),
+      ...(env.AGENT_GITHUB_API_URL ? { TEST_GITHUB_API_URL: env.AGENT_GITHUB_API_URL } : {}),
+      ...(env.AGENT_GOOGLE_ISSUER ? { TEST_GOOGLE_ISSUER: env.AGENT_GOOGLE_ISSUER } : {}),
+      // Point the real Worker mail transport at the same local sink. Its raw
+      // EmailMessageBuilder payload is not an SES envelope: no fixture code
+      // invents EmailTags, ConfigurationSetName, or sender formatting for it.
+      ...(env.AWS_ENDPOINT_URL_SESV2 && !env.MAIL_TEST_URL ? { MAIL_TEST_URL: new URL("/v2/email/outbound-emails", env.AWS_ENDPOINT_URL_SESV2).href } : {}),
+      TEST_MODE: "1", TEST_MODEL: "1", MODEL: modelReference(configuredModel(env)),
     },
   });
   cleanups.push(() => server.stop());
-  // Operator credentials are not API keys. Keep them outside api_tokens so list,
-  // revoke and key-count assertions observe the same initial state as Node.
-  await server.db.query("create table contract_fixture_operators (sha256 text primary key, tenant text not null unique)");
+  // The local wrapper reads the complete config on each request, corresponding
+  // to Node's tenant-file reload. It never substitutes the credential or policy.
+  await server.db.query("create table contract_fixture_configuration (singleton boolean primary key check(singleton), configuration jsonb not null)");
+  await server.db.query("insert into contract_fixture_configuration values(true,$1)", [JSON.stringify(tenants)]);
 
-  async function seedTenant(id: string, seed: TenantSeed = {}) {
+  async function seedTenant(id: string, seed: TenantSeed = {}, initial = false) {
     if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(id)) throw new Error("Invalid fixture tenant id");
     const token = seed.token ?? (seed.operator === false ? `art_${randomBytes(32).toString("hex")}` : `contract-operator-${id}-${randomUUID()}`);
-    const config = seed.config ?? {};
+    const config: Record<string, any> = initial ? seed.config ?? {} : {
+      ...tenants.tenants[id], tokenSha256: createHash("sha256").update(token).digest("hex"),
+      apiKeys: { openrouter: "fixture-model-key" }, ...seed.config,
+      ...(seed.billingMode ? { billing: seed.billingMode } : {}),
+    };
     const billing = seed.billingMode ?? config.billing ?? (seed.operator === false ? "prepaid" : "none");
     if (billing !== "none" && billing !== "prepaid") throw new Error("Invalid fixture billing mode");
-    const credits = seed.credits ?? 0;
-    if (!Number.isSafeInteger(credits) || credits < 0) throw new Error("Fixture credit must be nonnegative integer micro-USD");
-    const { tokenSha256, apiKeys, github, githubId, billing: _billing, ...limits } = config;
-    const hash = tokenSha256 ?? createHash("sha256").update(token).digest("hex");
-    await server.db.query(
-      "insert into tenants(id,created_at,billing,limits,github,github_id) values($1,$2,$3,$4,$5,$6) on conflict(id) do update set billing=excluded.billing,limits=excluded.limits,github=excluded.github,github_id=excluded.github_id",
-      [id, Date.now(), billing, JSON.stringify(limits), github ?? null, githubId ?? null],
-    );
+    const hash = createHash("sha256").update(token).digest("hex");
     if (seed.operator === false) {
-      await server.db.query("delete from contract_fixture_operators where tenant=$1", [id]);
+      await server.db.query("insert into tenants(id,created_at,billing) values($1,$2,$3) on conflict(id) do nothing", [id, Date.now(), seed.billingMode ?? "prepaid"]);
       await server.db.query(
-        "insert into api_tokens(sha256,id,tenant,name,prefix,created_at) values($1,$2,$3,'fixture','fixture',$4) on conflict(sha256) do update set tenant=excluded.tenant",
+        "insert into api_tokens(sha256,id,tenant,name,prefix,created_at) values($1,$2,$3,'contract','fixture',$4) on conflict(sha256) do nothing",
         [hash, randomUUID(), id, Date.now()],
       );
     } else {
-      await server.db.query(
-        "insert into contract_fixture_operators(sha256,tenant) values($1,$2) on conflict(tenant) do update set sha256=excluded.sha256",
-        [hash, id],
-      );
+      tenants.tenants[id] = config;
+      await server.db.query("update contract_fixture_configuration set configuration=$1 where singleton=true", [JSON.stringify(tenants)]);
     }
     if (seed.email) {
       const email = seed.email.trim().toLowerCase();
@@ -83,11 +99,12 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
         [createHash("sha256").update(email).digest("hex"), Date.now()],
       );
     }
-    await server.db.query("insert into credit_accounts(tenant,balance,purchased) values($1,0,0) on conflict do nothing", [id]);
-    if (credits) {
-      await server.db.query(
-        "with entry as (insert into credit_ledger(tenant,kind,amount,idempotency_key,created_at) values($1,'purchase',$2,$3,$4) returning tenant,amount) update credit_accounts a set balance=a.balance+entry.amount,purchased=a.purchased+entry.amount from entry where a.tenant=entry.tenant",
-        [id, credits, `contract:seed:${randomUUID()}`, Date.now()],
+    if (seed.credits !== undefined) {
+      if (!Number.isSafeInteger(seed.credits) || seed.credits < 0) throw new Error("Fixture credits must be nonnegative integer micro-USD");
+      await server.db.query("insert into tenants(id,created_at,billing) values($1,$2,$3) on conflict(id) do update set billing=excluded.billing", [id, Date.now(), billing]);
+      if (seed.credits) await server.db.query(
+        "with input as (insert into credit_ledger(tenant,kind,amount,idempotency_key,created_at) values($1,'purchase',$2,$3,$4) returning tenant,amount) insert into credit_accounts(tenant,balance,purchased) select tenant,amount,amount from input on conflict(tenant) do update set balance=credit_accounts.balance+excluded.balance,purchased=credit_accounts.purchased+excluded.purchased",
+        [id, seed.credits, `contract:${randomUUID()}`, Date.now()],
       );
     }
     // Provider configuration is part of the tested implementation. The fake provider
@@ -95,12 +112,8 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
     return { id, token };
   }
 
-  const seeds = (options.tenants as { tenants?: Record<string, Record<string, any>> } | undefined)?.tenants ?? {
-    alice: { tokenSha256: createHash("sha256").update(OPERATOR).digest("hex") },
-    bob: { tokenSha256: createHash("sha256").update(OTHER_OPERATOR).digest("hex") },
-  };
-  for (const [id, config] of Object.entries(seeds)) {
-    await seedTenant(id, { token: id === "alice" ? OPERATOR : id === "bob" ? OTHER_OPERATOR : undefined, config });
+  for (const [id, config] of Object.entries(tenants.tenants) as [string, Record<string, unknown>][]) {
+    await seedTenant(id, { token: id === "alice" ? OPERATOR : id === "bob" ? OTHER_OPERATOR : undefined, config }, true);
   }
 
   const call: ContractFixture["call"] = async (path, init = {}) => {
@@ -153,6 +166,18 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       if (result.rowCount !== 1) throw new Error("Fixture refresh token not found");
     },
     async revokeOAuthGrants() { await server.db.query("delete from oauth_grants"); },
+    async seedOAuthAccessToken(grant) {
+      await server.db.query("insert into oauth_grants(id,tenant,client_id,client_name,login,scope,resource,created_at) values($1,$2,$3,$4,$5,$6,$7,$8)", [grant.grantId, grant.tenant, grant.clientId, grant.clientName, grant.login, grant.scope, grant.resource, Date.now()]);
+      await server.db.query("insert into oauth_tokens(sha256,kind,grant_id,expires_at) values($1,'access',$2,$3)", [createHash("sha256").update(grant.token).digest("hex"), grant.grantId, grant.expiresAt]);
+    },
+    async expireAccountEmailLinks() { await server.db.query("update account_email_links set expires_at=$1", [Date.now() - 1]); },
+    async seedConsoleIdentity(tenant, identity) {
+      const now = Date.now(), raw = randomBytes(32).toString("base64url");
+      if (identity.method === "google") await server.db.query("insert into tenants(id,google_sub,google_email,created_at) values($1,$2,$3,$4)", [tenant, identity.subject, identity.email ?? null, now]);
+      else await server.db.query("insert into tenants(id,github,github_id,created_at) values($1,$2,$3,$4)", [tenant, identity.login, identity.subject, now]);
+      await server.db.query("insert into console_sessions(sha256,tenant,login,method,created_at,expires_at) values($1,$2,$3,$4,$5,$6)", [createHash("sha256").update(raw).digest("hex"), tenant, identity.login, identity.method, now, now + 3_600_000]);
+      return `ar_session=${raw}`;
+    },
     async seedEndUserUsage({ tenant, endUser, bucket, amount, key, metadata, at }) {
       await new EndUserCredits(server.db).charge(tenant, endUser, bucket, amount, key, metadata, at);
     },

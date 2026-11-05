@@ -6,6 +6,21 @@ import { fileURLToPath } from "node:url";
 import { parsePartialJson, watchAgent, type AgentView } from "../../../clients/watch.ts";
 import { listen, OPERATOR, runtime, sleep, until } from "../support.ts";
 
+/** A mock response obeys fetch cancellation too, so closing a watcher releases its reader. */
+function abortableStream(signal: AbortSignal | null | undefined, start: (controller: ReadableStreamDefaultController<Uint8Array>) => void, cancel?: () => Promise<void> | void) {
+  let controller: ReadableStreamDefaultController<Uint8Array>;
+  let finished = false;
+  const abort = () => { if (!finished) { finished = true; controller.close(); } };
+  return new ReadableStream<Uint8Array>({
+    start(value) {
+      controller = value;
+      if (signal?.aborted) abort();
+      else { signal?.addEventListener("abort", abort, { once: true }); start(value); }
+    },
+    cancel() { finished = true; signal?.removeEventListener("abort", abort); return cancel?.(); },
+  });
+}
+
 test("partial JSON parses as far as it goes", () => {
   assert.deepEqual(parsePartialJson(""), {});
   assert.deepEqual(parsePartialJson('{"code": "return a'), { code: "return a" });
@@ -179,7 +194,7 @@ test("a watcher whose streams deliver nothing (a proxy that buffers them) falls 
   const buffering = (async (input: RequestInfo | URL, init?: RequestInit) => {
     if (String(input).includes("/events") && !String(input).includes("poll=1")) {
       const response = await fetch(input, init);
-      return new Response(new ReadableStream({ cancel: () => response.body?.cancel() }), { status: 200, headers: response.headers });
+      return new Response(abortableStream(init?.signal, () => {}, () => response.body?.cancel()), { status: 200, headers: response.headers });
     }
     return fetch(input, init);
   }) as typeof fetch;
@@ -244,13 +259,13 @@ test("a snapshot's history is read before whether a turn runs, so a message neve
   // The run begins between the watcher's two reads: once history has the message, the run has begun.
   let begun = false;
   const encoder = new TextEncoder();
-  const fetch: typeof globalThis.fetch = async input => {
+  const fetch: typeof globalThis.fetch = async (input, init) => {
     const path = new URL(String(input)).pathname + new URL(String(input)).search;
     if (path.includes("/inputs")) return Response.json([]);
-    if (path.includes("/events")) return new Response(new ReadableStream({ start(controller) {
+    if (path.includes("/events")) return new Response(abortableStream(init?.signal, controller => {
       controller.enqueue(encoder.encode("event: ready\ndata: {}\n\n"));
       controller.enqueue(encoder.encode(`id: 5\ndata: ${JSON.stringify({ type: "snapshot", turn: null })}\n\n`));
-    } }), { headers: { "Content-Type": "text/event-stream" } });
+    }), { headers: { "Content-Type": "text/event-stream" } });
     // Whichever of the two reads comes second sees the run begun: the message in history, and the request running.
     const was = begun;
     if (path.includes("/history")) {
@@ -320,16 +335,16 @@ test("a watcher reads pending inputs beside the stream, and history and state to
     together.push([...open]);
     setTimeout(() => { open.delete(path); resolve(Response.json(value)); }, 30);
   });
-  const fetch: typeof globalThis.fetch = async input => {
+  const fetch: typeof globalThis.fetch = async (input, init) => {
     const path = new URL(String(input)).pathname.split("/").pop()!;
     if (path === "inputs") return later(path, [{ id: "in_1", toolCallId: "call_1" }]);
     if (path === "events") {
       open.add(path);
       together.push([...open]);
-      return new Response(new ReadableStream({ start(controller) {
+      return new Response(abortableStream(init?.signal, controller => {
         controller.enqueue(encoder.encode("event: ready\ndata: {}\n\n"));
         controller.enqueue(encoder.encode(`id: 5\ndata: ${JSON.stringify({ type: "snapshot", turn: null })}\n\n`));
-      } }), { headers: { "Content-Type": "text/event-stream" } });
+      }), { headers: { "Content-Type": "text/event-stream" } });
     }
     if (path === "history") return later(path, { entries: [{ index: 0, message: { role: "user", content: "hi", timestamp: 1 } }, { index: 1, message: { role: "assistant", content: [{ type: "text", text: "hello" }], timestamp: 2 } }], next: null });
     if (path === "state") return later(path, { requests: [] });

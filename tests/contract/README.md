@@ -17,11 +17,14 @@ npm run parity -- --backend=node --area=history
 npm run parity -- --backend=workers --area=history
 npm run parity -- --list
 node tests/contract/check-assertions.mjs
+node tests/contract/check-product-assertions.mjs
 ```
 
 `AGENT_TEST_DATABASE_URL` selects Postgres. Node defaults to port 55432 and
 Workers to 55434. Set it explicitly when comparing backends. `CONTRACT_CONCURRENCY`
 controls parallel test files (Node defaults to two, Workers to one).
+The Sprite validation script uses four files at a time. Install Python test
+dependencies with `python3 -m pip install -r clients/python/requirements.txt`.
 `CONTRACT_TIMEOUT_MS` controls case timeouts; the default is 90 seconds. A case
 which needs more time keeps its explicit original timeout.
 

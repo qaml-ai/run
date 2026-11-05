@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 
 import { AgentRuntime } from "../../../clients/typescript.ts";
 
-contractTest("messages", "tests/request-wait.test.ts:6", "a request read with ?wait answers as soon as it settles, or when the wait ends, still running", async (t, _f) => {
+contractTest("messages", "tests/request-wait.test.ts:6", "a request read with ?wait answers as soon as it settles, or when the wait ends, still running", async (t) => {
   const r = await runtime(t, (body, index) => ({ role: "assistant", content: `reply ${index}`, delayMs: index === 0 ? 1_500 : 6_000 }));
   const created = (await r.call("/v1/agents", { body: {} })).json;
   const accepted = await r.call(`/v1/agents/${created.id}/prompt`, { body: { text: "hi" } });
@@ -36,7 +36,7 @@ contractTest("messages", "tests/request-wait.test.ts:6", "a request read with ?w
   assert.equal((await r.call(`/v1/agents/${created.id}/requests/nope?wait=1`)).status, 404);
 });
 
-contractTest("messages", "tests/request-wait.test.ts:36", "the SDK's requestStatus takes wait: one call that waits for a request sent without waiting", async (t, _f) => {
+contractTest("messages", "tests/request-wait.test.ts:36", "the SDK's requestStatus takes wait: one call that waits for a request sent without waiting", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "late", delayMs: 1_000 }));
   const client = await new AgentRuntime({ url: r.base, apiKey: OPERATOR }).createAgent({});
   t.after(() => client.close());

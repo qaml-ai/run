@@ -85,7 +85,7 @@ return { flagged, failed };`;
 
 const offered = (r: { model: { bodies: any[] } }) => (r.model.bodies.at(-1)?.tools ?? []).map((tool: any) => tool.function.name);
 
-contractTest("decisions", "tests/decisions-api.test.ts:60", "POST /v1/decisions answers one state or a batch on the platform's OpenRouter key, bills what OpenRouter charged, and logs no state", async (t, _f)=>{
+contractTest("decisions", "tests/decisions-api.test.ts:60", "POST /v1/decisions answers one state or a batch on the platform's OpenRouter key, bills what OpenRouter charged, and logs no state", async (t)=>{
   const { r, openrouter, webhook, deliveries } = await start(t);
   assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 1_000_000, reason: "test" }, token: OPS })).status, 201);
   assert.equal((await r.call("/v1/webhooks", { body: { url: webhook + "/usage", events: ["usage.recorded"] }, token: PAYG })).status, 201);
@@ -128,14 +128,14 @@ contractTest("decisions", "tests/decisions-api.test.ts:60", "POST /v1/decisions 
   // Server log format/privacy assertions stay in the original Node implementation test.
 });
 
-contractTest("decisions", "tests/decisions-api.test.ts:104", "a tenant's own OpenRouter key answers its decisions, and is not charged", async (t, _f)=>{
+contractTest("decisions", "tests/decisions-api.test.ts:104", "a tenant's own OpenRouter key answers its decisions, and is not charged", async (t)=>{
   const { r, openrouter } = await start(t);
   const answered = await r.call("/v1/decisions", { body: { state: "hello", questions: { is_support: QUESTIONS.is_support } }, token: OWN });
   assert.equal(answered.status, 200, answered.text);
   assert.equal(openrouter.requests.at(-1)!.key, "Bearer own-openrouter-key");
 });
 
-contractTest("decisions", "tests/decisions-api.test.ts:130", "the decide builtin answers from codemode in batches and directly, billed to the run and the agent", async (t, _f)=>{
+contractTest("decisions", "tests/decisions-api.test.ts:130", "the decide builtin answers from codemode in batches and directly, billed to the run and the agent", async (t)=>{
   const { r, openrouter } = await start(t, decider, 0.001);
   assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 10_000_000, reason: "test" }, token: OPS })).status, 201);
   // No builtins: decide is every agent's.
@@ -156,7 +156,7 @@ contractTest("decisions", "tests/decisions-api.test.ts:130", "the decide builtin
   assert.equal(openrouter.requests.length, 151);
 });
 
-contractTest("decisions", "tests/decisions-api.test.ts:151", "an agent that denies data collection has decide by default, its calls sent with that data policy", async (t, _f)=>{
+contractTest("decisions", "tests/decisions-api.test.ts:151", "an agent that denies data collection has decide by default, its calls sent with that data policy", async (t)=>{
   const { r, openrouter } = await start(t, body => toolResults(body).length ? { role: "assistant", content: `result: ${toolResults(body).at(-1)}` } : toolCall("decide", { state: "private", questions: QUESTIONS }, "call_private"), 0.001);
   assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 1_000_000, reason: "test" }, token: OPS })).status, 201);
   const agent = (await r.call("/v1/agents", { body: { dataCollection: "deny" }, token: PAYG })).json.id;
@@ -166,7 +166,7 @@ contractTest("decisions", "tests/decisions-api.test.ts:151", "an agent that deni
   assert.deepEqual(openrouter.requests[0]!.provider, { data_collection: "deny" });
 });
 
-contractTest("decisions", "tests/decisions-api.test.ts:164", "decide is every agent's by default, and opts out with decide: false on the agent, its update or its definition; a toolless run and a tenant without an OpenRouter key have none", async (t, _f)=>{
+contractTest("decisions", "tests/decisions-api.test.ts:164", "decide is every agent's by default, and opts out with decide: false on the agent, its update or its definition; a toolless run and a tenant without an OpenRouter key have none", async (t)=>{
   const { r } = await start(t);
   assert.equal((await r.call("/v1/billing/adjustments", { body: { tenant: "payg", amount: 1_000_000, reason: "test" }, token: OPS })).status, 201);
   const view = async (id: string, token = PAYG) => (await r.call(`/v1/agents/${id}`, { token })).json;

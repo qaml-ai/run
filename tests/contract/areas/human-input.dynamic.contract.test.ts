@@ -44,7 +44,7 @@ async function asker(r: Awaited<ReturnType<typeof runtime>>, humanInput?: object
 const request = (r: ContractFixture, agent: string, id: string) =>
   until(async () => { const record = (await r.call(`/v1/agents/${agent}/requests/${id}`)).json; return record.state === "completed" && record; }, `request ${id}`);
 
-contractTest("human-input", "tests/human-input.test.ts:135", "an approval policy asks before a gated tool runs: the approved call runs once, with proof; a declined one never runs", async (t, _f)=>{
+contractTest("human-input", "tests/human-input.test.ts:135", "an approval policy asks before a gated tool runs: the approved call runs once, with proof; a declined one never runs", async (t)=>{
   const text = (value: string) => ({ content: [{ type: "text", text: value }] });
   const shop = await rawMcp(t, {
     read_item: { annotations: { readOnlyHint: true }, call: args => text(`item ${args.id}`) },
@@ -94,7 +94,7 @@ contractTest("human-input", "tests/human-input.test.ts:135", "an approval policy
   assert.equal(shop.calls.length, 1);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:223", "an agent with no one to ask does not tell servers it can elicit", async (t, _f)=>{
+contractTest("human-input", "tests/human-input.test.ts:223", "an agent with no one to ask does not tell servers it can elicit", async (t)=>{
   const server = await rawMcp(t, { plain: { call: () => ({ content: [{ type: "text", text: "ok" }] }) } });
   const r = await runtime(t, (_body, index) => index === 0 ? toolCall("tools__plain", {}) : { role: "assistant", content: "done" }, LOCAL);
   const definition = (await r.call("/v1/definitions", { body: { name: "Headless", mcpServers: [{ name: "tools", url: server.url, exposure: "direct" }] } })).json;
@@ -102,7 +102,7 @@ contractTest("human-input", "tests/human-input.test.ts:223", "an agent with no o
   assert.equal(server.calls[0].params._meta?.["io.modelcontextprotocol/clientCapabilities"], undefined);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:231", "an attached tool asks with ctx.confirm and ctx.ask: the call runs again with the answers, everything before an ask included", async (t, _f)=>{
+contractTest("human-input", "tests/human-input.test.ts:231", "an attached tool asks with ctx.confirm and ctx.ask: the call runs again with the answers, everything before an ask included", async (t)=>{
   const r = await runtime(t, (body, index) => index === 0 ? toolCall("delete_app", { app: "shop" }, "call_delete") : { role: "assistant", content: toolResults(body).at(-1) });
   let runs = 0;
   const deleted: string[] = [];
@@ -133,7 +133,7 @@ contractTest("human-input", "tests/human-input.test.ts:231", "an attached tool a
   assert.equal(runs, 3, "the code before each ask ran again on every retry");
 });
 
-contractTest("human-input", "tests/human-input.test.ts:262", "inputs from parallel calls are one suspension: answered together, all or none, and listed in the tenant's inbox", async (t, _f)=>{
+contractTest("human-input", "tests/human-input.test.ts:262", "inputs from parallel calls are one suspension: answered together, all or none, and listed in the tenant's inbox", async (t)=>{
   const call = (id: string, question: string, index: number) => ({ index, id, type: "function", function: { name: "ask_user", arguments: JSON.stringify({ questions: [{ question, header: "Q", options: [{ label: "A" }, { label: "B" }] }] }) } });
   const r = await runtime(t, (body, index) => index === 0 ? { role: "assistant", tool_calls: [call("call_1", "First?", 0), call("call_2", "Second?", 1)] }
     : { role: "assistant", content: toolResults(body).map((result: string) => Object.values(JSON.parse(result).answers)[0]).join("+") });
@@ -157,7 +157,7 @@ contractTest("human-input", "tests/human-input.test.ts:262", "inputs from parall
   assert.deepEqual((await r.call("/v1/inputs?state=pending")).json, []);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:286", "an application answers with onInput, from its SDK", async (t, _f)=>{
+contractTest("human-input", "tests/human-input.test.ts:286", "an application answers with onInput, from its SDK", async (t)=>{
   const r = await runtime(t, (body, index) => index === 0 ? toolCall("wipe", { disk: "d1" }) : { role: "assistant", content: toolResults(body).at(-1) });
   const wiped: string[] = [];
   const seen: any[] = [];
@@ -174,7 +174,7 @@ contractTest("human-input", "tests/human-input.test.ts:286", "an application ans
   assert.deepEqual((await agent.inputs())[0].answer?.by, { via: "agent", actor: "ops" });
 });
 
-contractTest("human-input", "tests/human-input.test.ts:303", "a remote MCP tool sets its own exposure in _meta, over its source's; approval keeps its exposure", async (t, _f)=>{
+contractTest("human-input", "tests/human-input.test.ts:303", "a remote MCP tool sets its own exposure in _meta, over its source's; approval keeps its exposure", async (t)=>{
   const plain = { call: () => ({ content: [{ type: "text", text: "ok" }] }) };
   const exposure = (value: string) => ({ ...plain, _meta: { "agent-runtime/exposure": value } });
   const server = await rawMcp(t, { key: exposure("direct"), hidden: exposure("codemode"), gated: exposure("codemode"), plain });
@@ -185,7 +185,7 @@ contractTest("human-input", "tests/human-input.test.ts:303", "a remote MCP tool 
   assert.deepEqual(tools, { s__key: "direct", s__hidden: "codemode", s__gated: "codemode", s__plain: "codemode" });
 });
 
-contractTest("human-input", "tests/human-input.test.ts:314", "an input for particular people must be answered naming who answers", async (t, _f)=>{
+contractTest("human-input", "tests/human-input.test.ts:314", "an input for particular people must be answered naming who answers", async (t)=>{
   const r = await runtime(t, (body, index) => index === 0 ? toolCall("ask_user", ASK, "call_ask") : { role: "assistant", content: "ok" });
   const agent = await asker(r);
   const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "Deploy it", from: { id: "u1" } } });
@@ -200,7 +200,7 @@ contractTest("human-input", "tests/human-input.test.ts:314", "an input for parti
   assert.equal((await r.call(`/v1/agents/${agent}/inputs/${input.id}`, { body: { ...answer, from: { id: "u1" } } })).status, 202);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:330", "approval tools stay searchable in code and refuse before asking or executing", async (t, _f)=>{
+contractTest("human-input", "tests/human-input.test.ts:330", "approval tools stay searchable in code and refuse before asking or executing", async (t)=>{
   const server = await rawMcp(t, { wipe: { call: () => ({ content: [{ type: "text", text: "wiped" }] }) } });
   const r = await runtime(t, (body, index) => index === 0 ? toolCall("codemode", { code: `const found = await searchTools("wipe"); if (!found.some(tool => tool.name === "s__wipe")) throw new Error("not searchable"); return await tools.s__wipe({});` }, "code") : { role: "assistant", content: toolResults(body).at(-1) }, LOCAL);
   const definition = (await r.call("/v1/definitions", { body: { name: "Code approval", mcpServers: [{ name: "s", url: server.url, exposure: "codemode", approval: { default: "always" } }] } })).json;
@@ -211,7 +211,7 @@ contractTest("human-input", "tests/human-input.test.ts:330", "approval tools sta
   assert.equal(result.outcome.result.stopped, undefined);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:102", "abort cancels waiting inputs and closes the turn without the model; expiry does the same", async (t, _f)=>{
+contractTest("human-input", "tests/human-input.test.ts:102", "abort cancels waiting inputs and closes the turn without the model; expiry does the same", async (t)=>{
   const r = await runtime(t, () => toolCall("ask_user", ASK));
   const agent = await asker(r, { expiresInSeconds: 60 });
   await r.prompt(agent, "Deploy it");
@@ -230,7 +230,7 @@ contractTest("human-input", "tests/human-input.test.ts:102", "abort cancels wait
   assert.equal(r.model.bodies.length, 2);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:121", "only whoever started the turn, or an approver, may answer", async (t, _f)=>{
+contractTest("human-input", "tests/human-input.test.ts:121", "only whoever started the turn, or an approver, may answer", async (t)=>{
   const r = await runtime(t, (_body, index) => index === 0 ? toolCall("ask_user", ASK) : { role: "assistant", content: "done" });
   const agent = await asker(r, { approvers: ["boss"] });
   const accepted = await r.call(`/v1/agents/${agent}/prompt`, { body: { text: "Deploy", from: { id: "alice" } } });
@@ -243,7 +243,7 @@ contractTest("human-input", "tests/human-input.test.ts:121", "only whoever start
   assert.equal((await answer({ id: "alice" })).status, 202);
 });
 
-contractTest("human-input", "tests/human-input.test.ts:185", "an MCP server's input_required (form and url, and the older -32042) suspends the call; the retry carries the answers and its state", async (t, _f)=>{
+contractTest("human-input", "tests/human-input.test.ts:185", "an MCP server's input_required (form and url, and the older -32042) suspends the call; the retry carries the answers and its state", async (t)=>{
   const text = (value: string) => ({ content: [{ type: "text", text: value }] });
   const form = { mode: "form", message: "New name?", requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } };
   const server = await rawMcp(t, {

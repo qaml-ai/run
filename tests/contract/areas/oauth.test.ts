@@ -148,7 +148,7 @@ githubTest("tests/api.test.ts:434","GitHub sign-in admits active org members, li
 });
 
 googleTest("tests/api.test.ts:468","Google sign-in verifies the ID token, creates separate tenants, and returns to the consent page", async (t, r, google) => {
-  const call = anonymous(r), base = r.base;
+  const call = anonymous(r);
   assert.deepEqual((await call("/console/auth/methods")).json, { github: false, google: true, password: true });
   const signIn = async (claims: Record<string, unknown>, options: { next?: string; spoil?: Parameters<typeof google.nextSignIn>[2]; state?: string } = {}) => {
     const start = await call(`/console/auth/google${options.next ? `?next=${encodeURIComponent(options.next)}` : ""}`);
@@ -180,7 +180,10 @@ googleTest("tests/api.test.ts:468","Google sign-in verifies the ID token, create
   assert.equal((await call("/v1/me", { headers: { Cookie: admin.session! } })).json.tenant, neutral("1003"));
   // The MCP consent page offers Google, and sign-in started there returns there, signed in.
   const client = (await call("/oauth/register", { body: { client_name: "Test Agent", redirect_uris: ["http://127.0.0.1:43210/cb"], token_endpoint_auth_method: "none" } })).json;
-  const consent = `/oauth/authorize?${new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: "http://127.0.0.1:43210/cb", code_challenge: "x".repeat(43), code_challenge_method: "S256", state: "s-1", resource: `${base}/mcp` })}`;
+  // The neutral fixture can expose a distinct public origin; clients discover
+  // its protected resource instead of treating the private listening URL as it.
+  const resource = (await call("/.well-known/oauth-protected-resource")).json.resource;
+  const consent = `/oauth/authorize?${new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: "http://127.0.0.1:43210/cb", code_challenge: "x".repeat(43), code_challenge_method: "S256", state: "s-1", resource })}`;
   assert.ok(String((await call(consent)).json).includes(`href="/console/auth/google?next=${encodeURIComponent(consent)}"`));
   assert.match(String((await call(consent)).json), /<form method="post" action="\/oauth\/password">/, "and email and password sign-in");
   assert.doesNotMatch(String((await call(consent)).json), /API token/);

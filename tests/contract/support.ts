@@ -14,10 +14,12 @@ export function contractTest(area: string, source: string, name: string,
   body: (t: TestContext, fixture: ContractFixture) => Promise<void> | void, options: FixtureOptions = {}) {
   if (describeCase(area, source, name)) return;
   test(`[${area}] ${source} :: ${name}`, { timeout: Number(process.env.CONTRACT_TIMEOUT_MS ?? 90_000) }, async t => evidence.run({ backend: null }, async () => {
-    let fixture: ContractFixture;
-    try { fixture = await createFixture(t, options); }
+    // Copied cases with a one-argument callback start their own fixture after
+    // constructing local providers. Do not start an unused second runtime.
+    let fixture: ContractFixture | undefined;
+    try { if (body.length > 1) fixture = await createFixture(t, options); }
     catch (error) { throw new Error(`Fixture setup failed: ${(error as Error).message}`, { cause: error }); }
-    try { await body(t, fixture); }
+    try { await body(t, fixture!); }
     finally { t.diagnostic(`contract-backend:${JSON.stringify({ name: t.name, backend: evidence.getStore()!.backend ?? "sdk-unit" })}`); }
   }));
 }

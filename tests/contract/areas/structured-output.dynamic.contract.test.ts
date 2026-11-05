@@ -29,7 +29,7 @@ async function agent(r: Awaited<ReturnType<typeof runtime>>) {
 
 const forced = { type: "function", function: { name: "final_output" } };
 
-contractTest("models", "tests/structured-output.test.ts:166", "a provider that refuses a forced tool_choice is asked again without it; forcing stops after three requests", async (t, _f)=>{
+contractTest("models", "tests/structured-output.test.ts:166", "a provider that refuses a forced tool_choice is asked again without it; forcing stops after three requests", async (t)=>{
   const r = await runtime(t, body => {
     if (body.tool_choice) return { httpStatus: 400, message: "tool_choice is not supported" };
     return toolCall("final_output", { sentiment: "neutral", score: 0 });

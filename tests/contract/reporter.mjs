@@ -20,8 +20,9 @@ export default async function* reporter(events) {
     }
     const error = data.details?.error;
     const cause = error?.cause ?? error;
-    const reason = type === "test:pass" ? "" : String(cause?.message ?? error?.message ?? "Test failed").replace(/\s+/g, " ").trim();
-    const row = { area: match[1], source: match[2], name: match[3], status: type === "test:pass" ? "pass" : "fail", durationMs: data.details?.duration_ms, reason, error: error ? { message: error.message, stack: cause?.stack, expected: cause?.expected, actual: cause?.actual, operator: cause?.operator } : undefined };
+    const passed = type === "test:pass" && !data.todo;
+    const reason = passed ? "" : data.todo ? `Contract is TODO: ${data.todo}` : String(cause?.message ?? error?.message ?? "Test failed").replace(/\s+/g, " ").trim();
+    const row = { area: match[1], source: match[2], name: match[3], status: passed ? "pass" : "fail", durationMs: data.details?.duration_ms, reason, error: error ? { message: error.message, stack: cause?.stack, expected: cause?.expected, actual: cause?.actual, operator: cause?.operator } : undefined };
     if (evidence.has(data.name)) yield `@@CONTRACT_RESULT@@${JSON.stringify({ ...row, backend: evidence.get(data.name) })}\n`;
     else records.set(data.name, row);
     yield `${row.status.toUpperCase()} [${row.area}] ${row.name}${reason ? `: ${reason}` : ""}\n`;

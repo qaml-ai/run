@@ -3,12 +3,32 @@ import application from "../src/index.ts";
 import { CamelAgent as RuntimeAgent } from "../src/agent.ts";
 import type { Env } from "../src/agent.ts";
 import { withSql } from "../src/postgres.ts";
-import { digest } from "../src/api-contract.ts";
 export * from "../src/index.ts";
+
+async function fixtureConfiguration(env: Env): Promise<string> {
+  const config = await withSql(env, (sql) => sql.query(
+    "select configuration from contract_fixture_configuration where singleton=true",
+  ));
+  if (!config.rows[0]) throw new Error("Missing contract fixture configuration");
+  return JSON.stringify(config.rows[0].configuration);
+}
 
 /** Clock preparation only: execution still runs through the original DO alarm/job. */
 export class CamelAgent extends RuntimeAgent {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, { ...env });
+    // Lifecycle installs its alarm handler during super(). Wrap that installed
+    // handler, preserving Pi's job dispatch and re-arm behavior unchanged.
+    const alarm = this.alarm?.bind(this);
+    if (!alarm) throw new Error("Contract fixture requires the runtime alarm handler");
+    Object.defineProperty(this, "alarm", { configurable: true, value: async (...args: Parameters<NonNullable<typeof alarm>>) => {
+      this.env.AGENT_TENANTS_JSON = await fixtureConfiguration(this.env);
+      return alarm(...args);
+    } });
+  }
+
   async fetch(request: Request) {
+    this.env.AGENT_TENANTS_JSON = await fixtureConfiguration(this.env);
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-schedule-due" && request.method === "POST") {
       const { id, dueAt, history } = await request.json() as { id: string; dueAt: number; history?: "none" };
       if (typeof id !== "string" || !Number.isSafeInteger(dueAt) || (history !== undefined && history !== "none")) return Response.json({ error: "Invalid schedule fixture input" }, { status: 400 });
@@ -30,23 +50,8 @@ export default {
   async fetch(request: Request, env: Env, context: ExecutionContext) {
     if (env.TEST_MODE !== "1") return new Response("Test fixture disabled", { status: 404 });
     if (new URL(request.url).pathname === "/healthz") return application.fetch(request, env, context);
-    const token = request.headers.get("authorization")?.match(/^Bearer (.+)$/)?.[1];
-    if (token) {
-      const hash = await digest(token);
-      const found = await withSql(env, (sql) => sql.query(
-        "select tenant from contract_fixture_operators where sha256=$1",
-        [hash],
-      ));
-      if (found.rows[0]) {
-        // The production entrypoint has one configured operator. Tests can seed several,
-        // as Node's tenants file does, without changing any public authentication route.
-        const headers = new Headers(request.headers);
-        headers.set("authorization", `Bearer ${env.API_TOKEN}`);
-        return application.fetch(new Request(request, { headers }), {
-          ...env, DEFAULT_TENANT: found.rows[0].tenant,
-        }, context);
-      }
-    }
-    return application.fetch(request, env, context);
+    return application.fetch(request, {
+      ...env, AGENT_TENANTS_JSON: await fixtureConfiguration(env),
+    }, context);
   },
 };

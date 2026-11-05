@@ -39,7 +39,7 @@ async function frames(base: string, runId: string, options: { lastEventId?: numb
   return got;
 }
 
-contractTest("runs", "tests/runs.test.ts:38", "a stateless run takes its configuration and input and answers with its result, in one call; it is no agent", async (t, _f) => {
+contractTest("runs", "tests/runs.test.ts:38", "a stateless run takes its configuration and input and answers with its result, in one call; it is no agent", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "yes", usage: { prompt_tokens: 10, completion_tokens: 2 } }));
   const created = await r.call("/v1/runs", { body: { input: "Should we ship?", systemPrompt: "You vote yes or no.", metadata: { voter: "7" }, wait: true } });
   assert.equal(created.status, 200, created.text);
@@ -72,7 +72,7 @@ contractTest("runs", "tests/runs.test.ts:38", "a stateless run takes its configu
   assert.equal((await r.call("/v1/runs/run_nope")).status, 404);
 });
 
-contractTest("runs", "tests/runs.test.ts:76", "a run a model call failed says how in its error, beside code and message, and in its events", async (t, _f) => {
+contractTest("runs", "tests/runs.test.ts:76", "a run a model call failed says how in its error, beside code and message, and in its events", async (t) => {
   // Held back a moment, so the run's event stream is read as it happens.
   const r = await runtime(t, () => ({ httpStatus: 402, message: "This request requires more credits, or fewer max_tokens", delayMs: 500 }));
   const created = (await r.call("/v1/runs", { body: { input: "Hello" } })).json;
@@ -94,7 +94,7 @@ contractTest("runs", "tests/runs.test.ts:76", "a run a model call failed says ho
     ["model_error", "billing", 402, false, "openrouter/openai/gpt-4o-mini", "openrouter/openai/gpt-4o-mini"]);
 });
 
-contractTest("runs", "tests/runs.test.ts:98", "without wait a run answers 202 at once; GET with wait has it end", async (t, _f) => {
+contractTest("runs", "tests/runs.test.ts:98", "without wait a run answers 202 at once; GET with wait has it end", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "later", delayMs: 600 }));
   const created = await r.call("/v1/runs", { body: { input: "Take your time" } });
   assert.equal(created.status, 202, created.text);
@@ -105,7 +105,7 @@ contractTest("runs", "tests/runs.test.ts:98", "without wait a run answers 202 at
   assert.equal(ended.json.text, "later");
 });
 
-contractTest("runs", "tests/runs.test.ts:109", "two runs with the same configuration share nothing: each model call has only its own input", async (t, _f) => {
+contractTest("runs", "tests/runs.test.ts:109", "two runs with the same configuration share nothing: each model call has only its own input", async (t) => {
   const r = await runtime(t, body => ({ role: "assistant", content: `vote on: ${userMessages(body).map((message: any) => typeof message.content === "string" ? message.content : message.content[0].text).join("|")}` }));
   const config = { systemPrompt: "Vote.", thinkingLevel: "off", wait: true };
   const first = (await r.call("/v1/runs", { body: { ...config, input: "question one" } })).json;
@@ -117,7 +117,7 @@ contractTest("runs", "tests/runs.test.ts:109", "two runs with the same configura
   for (const body of r.model.bodies) assert.equal(userMessages(body).length, 1);
 });
 
-contractTest("runs", "tests/runs.test.ts:121", "a run with output answers with an object that fits its schema", async (t, _f) => {
+contractTest("runs", "tests/runs.test.ts:121", "a run with output answers with an object that fits its schema", async (t) => {
   const schema = { type: "object", properties: { vote: { type: "string", enum: ["yes", "no"] }, confidence: { type: "number" } }, required: ["vote", "confidence"], additionalProperties: false };
   const r = await runtime(t, () => toolCall("final_output", { vote: "no", confidence: 0.75 }));
   const run = (await r.call("/v1/runs", { body: { input: "Ship on Friday?", output: { schema }, wait: true } })).json;
@@ -126,7 +126,7 @@ contractTest("runs", "tests/runs.test.ts:121", "a run with output answers with a
   assert.deepEqual(r.model.bodies[0].tools.find((tool: any) => tool.function.name === "final_output").function.parameters, schema);
 });
 
-contractTest("runs", "tests/runs.test.ts:130", "an Idempotency-Key names one run: again with the same body it is that run, with another body a 409", async (t, _f) => {
+contractTest("runs", "tests/runs.test.ts:130", "an Idempotency-Key names one run: again with the same body it is that run, with another body a 409", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "once" }));
   const body = { input: "count me once", wait: true };
   const first = await r.call("/v1/runs", { body, headers: { "Idempotency-Key": "vote-42" } });
@@ -147,7 +147,7 @@ contractTest("runs", "tests/runs.test.ts:130", "an Idempotency-Key names one run
   assert.notEqual(other.json.id, first.json.id);
 });
 
-contractTest("runs", "tests/runs.test.ts:151", "abort ends a running run as failed, code aborted", async (t, _f) => {
+contractTest("runs", "tests/runs.test.ts:151", "abort ends a running run as failed, code aborted", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "too late", delayMs: 20_000 }));
   const created = (await r.call("/v1/runs", { body: { input: "think hard" } })).json;
   await until(() => r.model.bodies.length === 1, "the model call");
@@ -157,7 +157,7 @@ contractTest("runs", "tests/runs.test.ts:151", "abort ends a running run as fail
   assert.equal(ended.error.code, "aborted", JSON.stringify(ended));
 });
 
-contractTest("runs", "tests/runs.test.ts:161", "runs count against busy agents and runs per minute, as agent runs do, and not against agent creates", async (t, _f) => {
+contractTest("runs", "tests/runs.test.ts:161", "runs count against busy agents and runs per minute, as agent runs do, and not against agent creates", async (t) => {
   const tenants = { tenants: {
     alice: { tokenSha256: sha(OPERATOR), apiKeys: { openrouter: "fixture-model-key" }, maxAgents: 1, maxRunsPerMinute: 3, maxAgentCreatesPerMinute: 1 },
   } };
@@ -191,7 +191,7 @@ contractTest("runs", "tests/runs.test.ts:161", "runs count against busy agents a
   assert.equal((await r.call("/v1/agents", { body: {} })).status, 201, "the create budget is untouched");
 });
 
-contractTest("runs", "tests/runs.test.ts:195", "a run's event stream follows it to its end, and picks up after Last-Event-ID without a gap or a repeat", async (t, _f) => {
+contractTest("runs", "tests/runs.test.ts:195", "a run's event stream follows it to its end, and picks up after Last-Event-ID without a gap or a repeat", async (t) => {
   const r = await runtime(t, (_body, index) => index === 0 ? { ...toolCall("codemode", { code: "return 6 * 7" }), delayMs: 300 } : { role: "assistant", content: "it is 42", delayMs: 800 });
   const created = (await r.call("/v1/runs", { body: { input: "compute", codeMode: true } })).json;
   // Read until the first tool call ends, then drop the connection.
@@ -212,7 +212,7 @@ contractTest("runs", "tests/runs.test.ts:195", "a run's event stream follows it 
   assert.equal(after.at(-1)!.data.outcome.result.reply, "it is 42");
 });
 
-contractTest("runs", "tests/runs.test.ts:216", "an ended run is kept for its retention, then everything it stored is deleted", async (t, _f) => {
+contractTest("runs", "tests/runs.test.ts:216", "an ended run is kept for its retention, then everything it stored is deleted", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "short-lived" }), { AGENT_RUN_RETENTION_SECONDS: "2", AGENT_IDLE_MS: "1000", AGENT_PURGE_INTERVAL_MS: "1000" });
   const run = (await r.call("/v1/runs", { body: { input: "remember nothing", wait: true } })).json;
   assert.equal(run.status, "completed", JSON.stringify(run));
@@ -225,7 +225,7 @@ contractTest("runs", "tests/runs.test.ts:216", "an ended run is kept for its ret
   // Tombstone and filesystem cleanup assertions remain in the source suite.
 });
 
-contractTest("runs", "tests/runs.test.ts:236", "a run's configuration is checked before anything is made", async (t, _f) => {
+contractTest("runs", "tests/runs.test.ts:236", "a run's configuration is checked before anything is made", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "unused" }));
   for (const [body, message] of [
     [{}, /input/],
@@ -243,7 +243,7 @@ contractTest("runs", "tests/runs.test.ts:236", "a run's configuration is checked
   assert.equal(r.model.bodies.length, 0);
 });
 
-contractTest("runs", "tests/runs.test.ts:254", "the TypeScript SDK: agents.run in one call, runs.stream as it happens, runs.get, abort and messages", async (t, _f) => {
+contractTest("runs", "tests/runs.test.ts:254", "the TypeScript SDK: agents.run in one call, runs.stream as it happens, runs.get, abort and messages", async (t) => {
   const r = await runtime(t, body => /slow/.test(JSON.stringify(body.messages)) ? { role: "assistant", content: "never", delayMs: 8_000 }
     : /vote/.test(JSON.stringify(body.messages)) ? toolCall("final_output", { vote: "yes" }) : body.messages.some((message: any) => message.role === "tool") ? { role: "assistant", content: "two" } : toolCall("codemode", { code: "return 1 + 1" }));
   const agents = new Agents({ url: r.base, apiKey: OPERATOR });
@@ -279,7 +279,7 @@ contractTest("runs", "tests/runs.test.ts:254", "the TypeScript SDK: agents.run i
   assert.deepEqual(await agents.runtime.listAgents(), [], "no agents were made");
 });
 
-contractTest("runs", "tests/runs.test.ts:290", "a run with no tools gets none: no codemode and no file tools, only its instructions; one with tools, or that asks, has codemode", async (t, _f) => {
+contractTest("runs", "tests/runs.test.ts:290", "a run with no tools gets none: no codemode and no file tools, only its instructions; one with tools, or that asks, has codemode", async (t) => {
   const r = await runtime(t, () => ({ role: "assistant", content: "ok" }));
   const names = (body: any) => (body.tools ?? []).map((tool: any) => tool.function.name);
   const system = (body: any) => body.messages.filter((message: any) => message.role === "system" || message.role === "developer").map((message: any) => typeof message.content === "string" ? message.content : message.content.map((part: any) => part.text ?? "").join("")).join("\n");

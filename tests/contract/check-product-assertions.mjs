@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { parse } from '@babel/parser';
 
 const sources = [
-  'account', 'auto-topup', 'billing-alerts', 'billing-mail', 'billing-payments',
+  'account', 'auto-topup', 'billing-alerts', 'billing-mail', 'billing-payments', 'email-signup',
   'operator-tenants', 'storage-limits', 'web-render', 'web-search', 'x-search',
 ];
 const ast = text => parse(text, { sourceType: 'module', plugins: ['typescript'] });
@@ -20,6 +20,7 @@ function assertions(node, text, found = []) {
 function privateOrChannel(source, assertion) {
   if (source === 'operator-tenants') return /kept(?:\.length|\[0\]\.body)/.test(assertion);
   if (source === 'billing-mail') return assertion.includes('r.db.query(');
+  if (source === 'email-signup') return ['r.db.query(', 'stored.map(', 'stored[0].hash', 'stats.signups.', 'r.logs.some('].some(value => assertion.includes(value));
   if (source === 'account') return [
     'JSON.parse(text("discord.json"))', 'archiveText.includes(secret)', 'await count(',
     'assert.deepEqual(tombstone,', 'existsSync(',
