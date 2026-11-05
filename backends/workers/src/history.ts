@@ -8,7 +8,9 @@ const PAGE_BYTES = 4_000_000;
 
 /** Durable ordinal index: normal reads touch only new journal entries and the requested page. */
 export class AgentHistory {
-  private line: Promise<void> = Promise.resolve();
+  private pending?: Promise<void>;
+  private generation = 0;
+  private syncedGeneration = -1;
   private sql: SqlStorage;
   private readonly atomic: <T>(write: () => T) => T;
   private readonly visible: (message: unknown) => boolean | Promise<boolean>;
@@ -19,8 +21,12 @@ export class AgentHistory {
     sql.exec("CREATE TABLE IF NOT EXISTS camel_history (ordinal INTEGER PRIMARY KEY, entry INTEGER NOT NULL, message TEXT NOT NULL, bytes INTEGER NOT NULL, turn INTEGER NOT NULL)");
     sql.exec("CREATE TABLE IF NOT EXISTS camel_history_cursor (id INTEGER PRIMARY KEY CHECK(id=1), entry INTEGER NOT NULL)");
   }
+  changed() { this.generation++; }
   sync(root: Conversation): Promise<void> {
-    const next = this.line.then(async () => {
+    if (this.pending) return this.pending.then(() =>
+      this.syncedGeneration === this.generation ? undefined : this.sync(root));
+    const generation = this.generation;
+    const next = (async () => {
       let last = this.sql.exec<{entry:number}>("SELECT entry FROM camel_history_cursor WHERE id=1").toArray()[0]?.entry ?? 0;
       const minEntryId = (last + 1) as never;
       let cursor;
@@ -49,9 +55,11 @@ export class AgentHistory {
         }
         cursor = page.next;
       } while (cursor !== undefined);
-    });
-    this.line = next.catch(() => {});
-    return next;
+      this.syncedGeneration = generation;
+    })();
+    const pending = next.finally(() => { if (this.pending === pending) this.pending = undefined; });
+    this.pending = pending;
+    return pending;
   }
   messageIndex(entry: number) { return this.sql.exec<{ordinal:number}>("SELECT ordinal FROM camel_history WHERE entry=? ORDER BY ordinal LIMIT 1", entry).toArray()[0]?.ordinal; }
   cursorAt(ordinal: number) { return this.sql.exec<{entry:number}>("SELECT entry FROM camel_history WHERE ordinal=?", ordinal).toArray()[0]; }

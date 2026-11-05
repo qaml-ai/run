@@ -9,6 +9,7 @@ export async function requestView<
     configurationOrder: _configurationOrder,
     configurationOrigin: _configurationOrigin,
     configurationWait: _configurationWait,
+    configurationWaitSequence: _configurationWaitSequence,
     replaceConfiguration: _replaceConfiguration,
     billing: _billing,
     task: _task,

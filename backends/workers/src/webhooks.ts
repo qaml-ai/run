@@ -21,6 +21,26 @@ export type WebhookEnv = PostgresEnv & {
   WEBHOOK_ALLOWED_HOSTS?: string;
   METRICS?: AnalyticsEngineDataset;
 };
+const deliveryBoots = new WeakMap<Queue<DeliveryMessage>, Promise<void>>();
+
+/** Repair a missing queue wake-up once per isolate. Postgres owns the retry time. */
+export function resumeWebhookDeliveries(env: WebhookEnv): Promise<void> | undefined {
+  const queue = env.WEBHOOKS;
+  if (!queue || deliveryBoots.has(queue)) return;
+  const boot = withSql(env, sql => sql.query(
+    "select id,due from (select id,due from webhook_deliveries union all select id,due from usage_webhook_outbox) pending order by due limit 1",
+  )).then(async ({ rows }) => {
+    if (!rows.length) return;
+    await queue.send({ id: rows[0].id }, {
+      delaySeconds: Math.min(43_200, Math.max(0, Math.ceil((Number(rows[0].due) - Date.now()) / 1000))),
+    });
+  }).catch(error => {
+    deliveryBoots.delete(queue);
+    throw error;
+  });
+  deliveryBoots.set(queue, boot);
+  return boot;
+}
 export async function stableUuid(value: string): Promise<string> {
   const h = await digest(value);
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;

@@ -243,6 +243,7 @@ type RequestRecord = {
   configurationOrder?: number;
   configurationOrigin?: string;
   configurationWait?: number;
+  configurationWaitSequence?: number;
   replaceConfiguration?: boolean;
   piId?: string;
   task?: number;
@@ -1357,6 +1358,7 @@ export class CamelAgent extends DurableObject<Env> {
   private async projectMessage(id: string, message: Message, ended: boolean) {
     if (message.role === "system") return;
     if (await isUnbilledLimitMessage(this.ctx.storage, message)) return;
+    if (ended) this.historyIndex.changed();
     message = attachmentMessage(message);
     if (message.role === "user") {
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
@@ -2088,7 +2090,8 @@ export class CamelAgent extends DurableObject<Env> {
         await this.startHostRequest(record);
   }
   private async releaseConfigurationWaiters(order: number) {
-    for (const record of await this.records()) {
+    const pending = (await this.records()).sort((a, b) => (a.configurationWaitSequence ?? 0) - (b.configurationWaitSequence ?? 0));
+    for (const record of pending) {
       if (record.state === 'completed' || record.configurationWait === undefined || record.configurationWait > order) continue;
       try { await this.submit({ id: record.id, method: record.method, params: record.params }); }
       catch (error) {
@@ -2552,11 +2555,19 @@ export class CamelAgent extends DurableObject<Env> {
       if (preparing) { record.admitted = true; await this.promptPreparations.finish(id); }
       record.configurationWait = configurationWait;
       record.state = 'queued';
-      await this.ctx.storage.put(reqKey(id), record);
+      await this.ctx.storage.transaction(async tx => {
+        if (record.configurationWaitSequence === undefined) {
+          record.configurationWaitSequence = (await tx.get<RequestRecord>(reqKey(id)))?.configurationWaitSequence
+            ?? (await tx.get<number>('configuration-wait-order') ?? 0) + 1;
+          await tx.put('configuration-wait-order', record.configurationWaitSequence);
+        }
+        await tx.put(reqKey(id), record);
+      });
       await this.arm(Date.now() + 1000);
       return record;
     }
     delete record.configurationWait;
+    delete record.configurationWaitSequence;
     record.state = running ? 'queued' : 'running';
     if (preparing) record.admitted = true;
     await this.ctx.storage.put(reqKey(id), record);

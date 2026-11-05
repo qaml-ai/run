@@ -41,6 +41,7 @@ import { withSql } from "./postgres.ts";
 import {
   consumeWebhooks,
   publishPending,
+  resumeWebhookDeliveries,
   type DeliveryMessage,
 } from "./webhooks.ts";
 import { handleFileRequest, handleSignedFileRequest } from "./files.ts";
@@ -167,6 +168,8 @@ function httpFailure(error: unknown, env: Env): Response {
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const recovery = resumeWebhookDeliveries(env);
+    if (recovery) ctx.waitUntil(recovery.catch(error => failure(env, "webhook_recovery_failed", error)));
     try {
       if (request.method === 'POST' && request.headers.has('idempotency-key') && !skipMoneyIdempotency(new URL(request.url).pathname)) {
         const auth = await authenticateMoney(request, env) ?? await authenticate(request, env);
@@ -598,10 +601,13 @@ const worker = {
       catch { message.retry({ delaySeconds: 30 }); }
     }
     await consumeWebhooks({ ...batch, messages: batch.messages.filter(message => message.body.kind === "email") } as MessageBatch<DeliveryMessage>, env);
-    for (const message of batch.messages) if (message.body.kind !== "email" && message.body.kind !== "schedule") {
-      if (webhookRetry === undefined) message.ack();
-      else message.retry({ delaySeconds: webhookRetry });
+    const webhookMessages = batch.messages.filter(message => message.body.kind !== "email" && message.body.kind !== "schedule");
+    // The outbox owns backoff and expiry. Queue delivery retries must not cap it.
+    if (webhookRetry !== undefined && webhookMessages.length) {
+      if (!env.WEBHOOKS) throw new Error("Webhook queue is not configured");
+      await env.WEBHOOKS.send(webhookMessages[0].body, { delaySeconds: Math.min(43_200, webhookRetry) });
     }
+    for (const message of webhookMessages) message.ack();
     });
   },
   async scheduled(_controller: ScheduledController, env: Env) {
