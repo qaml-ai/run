@@ -9,6 +9,14 @@ outputs.set('azure-policy.ts', banner + (await source('src/azure-openai.ts')).re
 const session = await source('src/session-config.ts');
 const virtual = (await source('src/virtual-models.ts')).replace(/import[^\n]+\n/g, '');
 const pass = await source('src/openrouter-model.ts');
+outputs.set('openrouter-details.ts', banner + pass
+ .replace('import { HttpError } from "./http-error.ts";', 'import { HttpError } from "./errors.ts";')
+ .replace('import { safeError } from "./metrics.ts";\n', '')
+ .replace('import { network } from "./node-context.ts";\n', '')
+ .replace('withOpenRouterDetails<T extends Passthrough>(model: T)', 'withOpenRouterDetails<T extends Passthrough>(model: T, root: string = COMPLETIONS_URL, fetcher: typeof fetch = fetch)')
+ .replace('  const root = process.env.AGENT_OPENROUTER_API_URL ?? COMPLETIONS_URL;\n', '')
+ .replace('await network().fetch(', 'await fetcher(')
+ .replace('    console.error(JSON.stringify({ type: "openrouter_model_lookup_failed", model: model.id, error: safeError(error) }));\n', ''));
 const catalog = await source('src/catalog.ts');
 const defaults = await source('src/model.ts');
 outputs.set('default-model-policy.ts', banner + defaults.slice(0, defaults.indexOf('/**\n * Models whose provider'))

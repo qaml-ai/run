@@ -13,6 +13,7 @@ import { checkScope } from "./key-scopes.ts";
 import { VOLUME_LIMITS } from "./volume-policy.ts";
 import { attachmentMessages } from "./attachment-markers.ts";
 import { humanInputSettings, type HumanInputSettings } from "./input-policy.ts";
+import { workflowSettings, type WorkflowSettings } from "./workflow-policy.ts";
 
 export interface AgentConfiguration {
   model?: string;
@@ -33,7 +34,7 @@ export interface AgentConfiguration {
   builtins?: string[];
   webSearch?: { providers: string[] };
   delegate?: DelegateSettings;
-  workflow?: Record<string, unknown>;
+  workflow?: WorkflowSettings;
   decide?: boolean;
   mcp?: { tools: ToolDefinition[] };
   mcpServers?: Record<string, unknown>[];
@@ -150,7 +151,8 @@ export function configuration(input: unknown, defaultModel: string): { config: A
     config[field] = fields[field] as Record<string, unknown>[];
   }
   if (fields.humanInput !== undefined) config.humanInput = humanInputSettings(fields.humanInput);
-  for (const field of ["workflow", "subagents"] as const) if (fields[field] !== undefined) {
+  if (fields.workflow !== undefined) config.workflow = workflowSettings(config.builtins, fields.workflow);
+  for (const field of ["subagents"] as const) if (fields[field] !== undefined) {
     if (!fields[field] || typeof fields[field] !== "object" || Array.isArray(fields[field])) throw new BadRequest(`${field} must be an object`);
     config[field] = fields[field] as Record<string, unknown>;
   }

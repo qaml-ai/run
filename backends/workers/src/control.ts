@@ -62,6 +62,7 @@ export interface DirectoryEntry {
   tenantId: string;
   key: string | null;
   config: AgentConfiguration;
+  resolvedModel?: import("@earendil-works/pi-ai").Model<import("@earendil-works/pi-ai").Api>;
   configHash: string;
   createdAt: number;
   expiresAt: number | null;
@@ -157,9 +158,9 @@ export class Directory {
     const owner=(await withSql(this.env,sql=>sql.query('select tenant,revoked from agents where id=$1',[id]))).rows[0];
     if (owner && owner.tenant!==this.tenantId) throw new ApiError(403,'Agent belongs to another account','FORBIDDEN');
     if (owner?.revoked) throw new ApiError(410,'Agent is deleted','AGENT_GONE');
-    const previousConfig = (await this.get(id))?.config;
+    const previousEntry = await this.get(id), previousConfig = previousEntry?.config;
     if (fields.model === undefined && previousConfig?.model) config.model = previousConfig.model;
-    await validateAgentModel(this.env, this.tenantId, config);
+    const resolvedModel = await validateAgentModel(this.env, this.tenantId, config, { reference: previousConfig?.model, model: previousEntry?.resolvedModel });
     const requested=(input as {mounts?:unknown;remount?:boolean}).mounts;
     const before = requested === undefined ? await this.get(id) : undefined;
     // Volume initialization uses its own SQL and DO calls. Keep those outside
@@ -196,6 +197,7 @@ export class Directory {
         tenantId: this.tenantId,
         key,
         config,
+        ...(resolvedModel ? { resolvedModel } : {}),
         configHash,
         createdAt: old?.createdAt ?? Date.now(),
         expiresAt:
@@ -236,6 +238,7 @@ export class Directory {
             id,
             tenantId: this.tenantId,
             config:entry.config,
+            resolvedModel:entry.resolvedModel,
             revision: entry.revision,
             expiresAt: entry.expiresAt,
             runtimeOrigin,

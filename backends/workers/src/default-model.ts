@@ -3,8 +3,10 @@ import { modelReference, resolveModel, modelSettingsRefusal } from "./model-poli
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import { ApiError } from "./api-contract.ts";
+import { withOpenRouterDetails } from "./openrouter-details.ts";
+import type { Api, Model } from "@earendil-works/pi-ai";
 
-export type DefaultModelEnv = KeyEnv & { MODEL: string; AGENT_MODEL_FALLBACKS?: string };
+export type DefaultModelEnv = KeyEnv & { MODEL: string; AGENT_MODEL_FALLBACKS?: string; AGENT_OPENROUTER_API_URL?: string };
 
 /** Prefer a tenant's own credentials before borrowing any platform model key. */
 export async function defaultModelFor(env: DefaultModelEnv, tenant: string, keyScope?: string) {
@@ -21,13 +23,17 @@ export async function defaultModelFor(env: DefaultModelEnv, tenant: string, keyS
 }
 
 /** Refuse invalid declarations before creating agent rows or private volumes. */
-export async function validateAgentModel(env: DefaultModelEnv, tenant: string, config: AgentConfiguration) {
+export async function validateAgentModel(env: DefaultModelEnv, tenant: string, config: AgentConfiguration, previous?: { reference?: string; model?: Model<Api> }): Promise<Model<Api> | undefined> {
   const reference = config.model ?? env.MODEL;
   if (reference.startsWith("test/") || reference.startsWith("camel-test/") || reference.startsWith("cloudflare/") || reference.startsWith("@cf/")) return;
   const services = await keyServices(env);
   try {
-    const model = resolveModel(reference, services.tenants.modelEndpoints(tenant), await services.modelProviders.resolvable(tenant, config.keyScope));
+    const resolved = resolveModel(reference, services.tenants.modelEndpoints(tenant), await services.modelProviders.resolvable(tenant, config.keyScope));
+    const model = previous?.reference === reference && previous.model
+      ? previous.model
+      : await withOpenRouterDetails(resolved, env.AGENT_OPENROUTER_API_URL, (input, init) => services.outbound.fetch(String(input), { ...init, timeoutMs: 5000, maxBytes: 1024 * 1024 }));
     const refusal = modelSettingsRefusal(model, config);
     if (refusal) throw new Error(refusal);
+    return model;
   } catch (error) { throw new ApiError(400, (error as Error).message); }
 }

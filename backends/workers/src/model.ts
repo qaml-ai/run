@@ -23,7 +23,7 @@ import { stream as streamAnthropic, streamSimple as simpleAnthropic } from "@ear
 import { stream as streamGoogle, streamSimple as simpleGoogle } from "@earendil-works/pi-ai/api/google-generative-ai";
 import { stream as streamBedrock, streamSimple as simpleBedrock } from "@earendil-works/pi-ai/api/bedrock-converse-stream";
 import { stream as streamCodex, streamSimple as simpleCodex } from "@earendil-works/pi-ai/api/openai-codex-responses";
-import { getModels, callSettings, withOpenRouterHosts } from "./model-catalog.ts";
+import { getModels, callSettings, withOpenRouterHosts, reasoningFloor } from "./model-catalog.ts";
 import { resolveModel, virtualChain, routeModel, virtualModelReferences, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
 import { deepseekContext } from "./deepseek-policy.ts";
 import { forcedToolChoice, OUTPUT_INSTRUCTIONS } from "./output-policy.ts";
@@ -34,10 +34,11 @@ import { sourceUrl } from "./tool-sources.ts";
 import { listModels } from "./catalog-policy.ts";
 import { streamTimeouts, watchedStream, isStalled } from "./model-stream.ts";
 
-export type ModelRequestSettings = AgentConfiguration & { output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
+export type ModelRequestSettings = AgentConfiguration & { requestId?: string; output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
 export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true };
 export type ModelHooks = {
   agentId?: () => Promise<string>;
+  beforeRequest?: () => Promise<void>;
   wrapProvider?: (provider: Provider) => Provider;
   settings?: () => Promise<ModelRequestSettings>;
   credentials?: (provider: string) => Promise<ModelCredentials | undefined>;
@@ -47,7 +48,9 @@ export type ModelHooks = {
 
 function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: string; TEST_MODEL?: string }): Provider {
   let routing: { user: number; previous?: Model<Api>; failed?: Model<Api> } | undefined;
+  let forcing: { request: string; count: number; refused: boolean } | undefined;
   const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}) => {
+    await hooks.beforeRequest?.();
     const config = await hooks.settings?.() ?? {};
     if (config.model?.startsWith("camelrun/")) {
       const user = [...context.messages].reverse().find(message => message.role === "user")?.timestamp ?? 0;
@@ -57,12 +60,16 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
       model = { ...boundedModel(selected, config.runLimits?.contextTokens), ...(env.TEST_MODEL === "1" ? { baseUrl: model.baseUrl } : {}) };
     }
     const outputSchema = config.output?.schema;
+    const request = config.requestId ?? String(context.messages.find(message => message.role === "user")?.timestamp ?? 0);
+    if (!forcing || forcing.request !== request) forcing = { request, count: 0, refused: false };
     const currentTools = getCurrentTools(context.messages).filter(tool => tool.name !== "final_output");
     let toolChoice: unknown;
     if (outputSchema) {
       const finalTool = { name: "final_output", description: "Give the final answer as the arguments of this tool. The turn ends when the answer is accepted.", parameters: outputSchema };
       context = normalizeContext({ messages: [...context.messages, { role: "system", content: "", sections: { structured_output: OUTPUT_INSTRUCTIONS }, toolsAdded: [finalTool], timestamp: Date.now() }] });
-      if (!currentTools.length) toolChoice = forcedToolChoice(model, "final_output", { sole: true, thinking: (config.thinkingLevel ?? "off") !== "off" });
+      const reminded = context.messages.some(message => message.role === "user" && JSON.stringify(message.content).includes("<structured_output_reminder>"));
+      if ((!currentTools.length || reminded) && !forcing.refused && forcing.count < 3) toolChoice = forcedToolChoice(model, "final_output", { sole: !currentTools.length, thinking: (config.thinkingLevel ?? "off") !== "off" });
+      if (toolChoice !== undefined) forcing.count++;
     } else {
       context = normalizeContext({ messages: [...context.messages, { role: "system", content: "", toolsRemoved: [{ name: "final_output" }], timestamp: Date.now() }] });
     }
@@ -72,6 +79,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
     if (model.provider === "amazon-bedrock" && !credential?.apiKey && !options.apiKey)
       throw Object.assign(new Error("Bedrock requires an API key"), { code: "model_key_missing" });
     const onPayload = options.onPayload;
+    const reasoning = (options as SimpleStreamOptions).reasoning || reasoningFloor(model);
     let transportError: string | undefined;
     const tenantFetch: typeof fetch | undefined = credential?.baseUrl ? async (input, init) => {
       try {
@@ -87,6 +95,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
     } : undefined;
     const prepared = {
       ...options, ...(toolChoice !== undefined ? { toolChoice: toolChoice as SimpleStreamOptions["toolChoice"] } : {}), ...callSettings(model, config, config.thinkingLevel),
+      ...(reasoning ? { reasoning } : {}),
       ...(credential ? { apiKey: credential.bearer ? "runtime-bearer" : credential.apiKey ?? "keyless" } : {}),
       ...(credential?.identity ? { endpointIdentity: true } : {}),
       ...(tenantFetch ? { fetch:tenantFetch } : {}),
@@ -104,6 +113,9 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
     void (async () => {
       try {
         const prepared = await prepare(model, context, options);
+        let retry = false;
+        do {
+        retry = false;
         const stream = watchedStream(prepared.model, (signal, activity) => {
           const onProviderStreamEvent = prepared.options.onProviderStreamEvent;
           const options = { ...prepared.options, signal, onProviderStreamEvent: (event: unknown) => { activity(event); onProviderStreamEvent?.(event, prepared.model); } };
@@ -111,11 +123,20 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
         }, streamTimeouts(prepared.model, prepared.config.thinkingLevel, prepared.config.runLimits), options?.signal);
         for await (const event of stream) {
           if (event.type === "error" && event.reason !== "aborted" && !isStalled(event.error.errorMessage) && prepared.transportError()) event.error.errorMessage = prepared.transportError();
+          if (event.type === "error" && prepared.options.toolChoice !== undefined && /400/.test(event.error.errorMessage ?? "") && /tool.?choice|forced.*tool/i.test(event.error.errorMessage ?? "")) {
+            forcing!.refused = true;
+            delete prepared.options.toolChoice;
+            retry = true;
+            continue;
+          }
           if (routing && event.type === "error") routing.failed = prepared.model;
           if (routing && event.type === "done") { routing.previous = prepared.model; routing.failed = undefined; }
           output.push(event);
         }
-        output.end(await stream.result());
+        const result = await stream.result();
+        if (retry) await hooks.beforeRequest?.();
+        else output.end(result);
+        } while (retry);
       } catch (error) {
         const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [], stopReason: "error", errorMessage: error instanceof Error ? error.message : String(error), timestamp: Date.now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
         output.push({ type: "error", reason: "error", error: message }); output.end(message);
@@ -203,13 +224,13 @@ export function modelRuntime(
       };
       models.setProvider(decorate(provider));
     };
-    const resolve = (name = env.MODEL, contextTokens?: number, customProviders?: CustomProviders, endpoints?: ModelEndpoints): Model<Api> => {
+    const resolve = (name = env.MODEL, contextTokens?: number, customProviders?: CustomProviders, endpoints?: ModelEndpoints, resolvedModel?: Model<Api>): Model<Api> => {
       if (endpoints) hooks.endpoints = endpoints;
       if (name.startsWith("cloudflare/") || name.startsWith("@cf/")) {
         if (!ai) throw new Error("Workers AI is not configured");
         return bounded(ai(name.replace(/^cloudflare\//, "")), contextTokens);
       }
-      const selected = resolveModel(name, hooks.endpoints, customProviders ?? hooks.customProviders);
+      const selected = resolvedModel ?? resolveModel(name, hooks.endpoints, customProviders ?? hooks.customProviders);
       for (const target of virtualChain(name) ?? [selected]) { install(target.provider); catalog.get(target.provider)!.set(target.id, target); }
       return bounded(selected, contextTokens);
     };
@@ -249,13 +270,14 @@ export function modelRuntime(
         streamSimple: (target, context, options) => serve(target, true, context, options),
       }));
     };
-    const resolve = (name = "test/echo", contextTokens?: number, customProviders?: CustomProviders, endpoints?: ModelEndpoints) => {
+    const resolve = (name = "test/echo", contextTokens?: number, customProviders?: CustomProviders, endpoints?: ModelEndpoints, resolvedModel?: Model<Api>) => {
       if (endpoints) hooks.endpoints = endpoints;
       const custom = customProviders ?? hooks.customProviders;
       const selected = name.startsWith("test/") || name.startsWith("camel-test/")
         ? { ...model, provider: name.split("/")[0], id: name.slice(name.indexOf("/") + 1) }
-        : resolveModel(name, hooks.endpoints, custom);
-      const transported = { ...selected, baseUrl: custom?.[selected.provider] || hooks.endpoints?.[selected.provider] ? selected.baseUrl : endpoint.href };
+        : resolvedModel ?? resolveModel(name, hooks.endpoints, custom);
+      const ownTransport = custom?.[selected.provider] || hooks.endpoints?.[selected.provider];
+      const transported = { ...selected, ...(!ownTransport ? { api: "openai-completions" as const } : {}), baseUrl: ownTransport ? selected.baseUrl : endpoint.href };
       catalog.set(name, transported);
       install(transported.provider);
       return bounded(transported, contextTokens);
@@ -424,7 +446,7 @@ export function modelRuntime(
   return {
     models,
     model,
-    resolve: (name?: string, contextTokens?: number, _customProviders?: CustomProviders, _endpoints?: ModelEndpoints) => {
+    resolve: (name?: string, contextTokens?: number, _customProviders?: CustomProviders, _endpoints?: ModelEndpoints, _resolvedModel?: Model<Api>) => {
       if (name && !["test/echo", "camel-test/deterministic"].includes(name))
         throw Object.assign(new Error("Unsupported test model"), {
           status: 400,
