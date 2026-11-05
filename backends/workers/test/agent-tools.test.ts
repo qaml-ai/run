@@ -1,3 +1,4 @@
+import { Outbound } from "../src/security-outbound.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
@@ -125,7 +126,9 @@ test("source validation seals definition credentials and rejects inline secrets/
   const moved = await prepareSources(env, "tenant", "definition", "mcpServers", [{ name: "shop", url: "https://other.example/mcp" }], sources);
   assert.equal(moved[0].sealed, undefined);
   await assert.rejects(prepareSources(env, "tenant", undefined, "mcpServers", [{ name: "shop", url: "https://example.com/mcp", headers: { Authorization: "secret" } }]), /no credentials/);
-  for (const url of ["http://example.com", "https://127.0.0.1", "https://metadata.internal", "https://name:secret@example.com"]) assert.throws(() => sourceUrl(url, {}));
+  for (const url of ["http://example.com", "https://127.0.0.1", "https://name:secret@example.com"]) assert.throws(() => sourceUrl(url, {}));
+  const outbound = new Outbound({ resolve: async () => [{ address: "127.0.0.1", family: 4 }] });
+  await assert.rejects(outbound.reachable(sourceUrl("https://metadata.internal", {})), /resolves to.*private, local or reserved/);
 });
 
 test("MCP sources page tool discovery and call only allowed names", async t => {
