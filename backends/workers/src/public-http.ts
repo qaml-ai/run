@@ -50,9 +50,10 @@ export async function publicRoutes(request: Request, env: PublicEnv): Promise<Re
     });
   }
   if (read && path === "/") return Response.redirect(`${url.origin}/console`, 302);
-  if (read && /^\/console(?:\/|$)/.test(path) && !/^\/console\/auth(?:\/|$)/.test(path) && env.PUBLIC_ASSETS) {
-    const asset = await env.PUBLIC_ASSETS.fetch(new Request(new URL("/console/index.html", url)));
-    if (asset.ok) return content(await asset.text(), "text/html; charset=utf-8");
+  if (read && /^\/console(?:\/|$)/.test(path) && !/^\/console\/auth(?:\/|$)/.test(path)) {
+    const asset = await assets?.fetch(new Request(new URL("/console/index.html", url)));
+    if (asset?.ok) return content(await asset.text(), "text/html; charset=utf-8");
+    return new Response(request.method === "HEAD" ? null : "The console is not built on this host", { status: 404, headers: { "Content-Type": "text/plain" } });
   }
   // Unknown non-API URLs carry the same useful 404 even without credentials.
   if (!/^\/(?:v1(?:\/|$)|clients(?:\/|$)|experimental(?:\/|$)|registry(?:\/|$)|console(?:\/|$)|oauth(?:\/|$)|\.well-known(?:\/|$)|mcp$|healthz$|__test(?:\/|$))/.test(path)) return unknownRoute(origin);
