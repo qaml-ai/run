@@ -2,6 +2,9 @@ import {
   createAssistantMessageEventStream,
   type AssistantMessage,
   type Model,
+  type Api,
+  type SimpleStreamOptions,
+  type StreamOptions,
   type TranscriptContext,
   type ToolCall,
 } from "@earendil-works/pi-ai";
@@ -13,6 +16,75 @@ import {
 import { withImageReferences, type ImageBindings } from "./images.ts";
 import { createAI } from "agents/models/pi-ai";
 
+import { stream as streamResponses, streamSimple as simpleResponses } from "@earendil-works/pi-ai/api/openai-responses";
+import { stream as streamAnthropic, streamSimple as simpleAnthropic } from "@earendil-works/pi-ai/api/anthropic-messages";
+import { stream as streamGoogle, streamSimple as simpleGoogle } from "@earendil-works/pi-ai/api/google-generative-ai";
+import { stream as streamBedrock, streamSimple as simpleBedrock } from "@earendil-works/pi-ai/api/bedrock-converse-stream";
+import { getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
+import { getModels, callSettings, withOpenRouterHosts } from "./model-catalog.ts";
+import { resolveModel, virtualChain, routeModel, virtualModelReferences, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
+import { deepseekContext } from "./deepseek-policy.ts";
+import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
+import type { AgentConfiguration } from "./api-contract.ts";
+
+export type ModelRequestSettings = AgentConfiguration & { output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
+export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string };
+export type ModelHooks = {
+  settings?: () => Promise<ModelRequestSettings>;
+  credentials?: (provider: string) => Promise<ModelCredentials | undefined>;
+  endpoints?: ModelEndpoints;
+  customProviders?: CustomProviders;
+};
+
+function withSettings(provider: Provider, hooks: ModelHooks): Provider {
+  let routing: { user: number; previous?: Model<Api>; failed?: Model<Api> } | undefined;
+  const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}) => {
+    const config = await hooks.settings?.() ?? {};
+    if (config.model?.startsWith("camelrun/")) {
+      const user = [...context.messages].reverse().find(message => message.role === "user")?.timestamp ?? 0;
+      if (!routing || routing.user !== user) routing = { user };
+      const selected = routeModel(resolveModel(config.model), { reason: routing.failed ? "retry" : routing.previous ? "continuation" : "user", failed: routing.failed, previous: routing.previous });
+      if (!selected) throw new Error("Virtual model fallback chain is exhausted");
+      model = selected;
+    }
+    const credential = await hooks.credentials?.(model.provider);
+    if (model.provider === "amazon-bedrock" && !credential?.apiKey && !options.apiKey)
+      throw Object.assign(new Error("Bedrock requires an API key"), { code: "model_key_missing" });
+    const onPayload = options.onPayload;
+    const prepared = {
+      ...options, ...callSettings(model, config, config.thinkingLevel),
+      ...(credential?.apiKey ? { apiKey: credential.apiKey } : {}),
+      ...(model.provider === "amazon-bedrock" ? { bearerToken: credential?.apiKey ?? options.apiKey, region: credential?.region } : {}),
+      headers: { ...credential?.headers, ...options.headers, ...config.modelHeaders },
+      onPayload: async (payload: unknown, target: Model<Api>) => {
+        const adjusted = withOpenRouterHosts(target, payload, config.dataCollection ?? undefined);
+        return await onPayload?.(adjusted, target) ?? adjusted;
+      },
+    };
+    return { model: credential?.baseUrl ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared };
+  };
+  const wrap = (simple: boolean) => (model: Model<Api>, context: TranscriptContext, options?: StreamOptions) => {
+    const output = createAssistantMessageEventStream();
+    void (async () => {
+      try {
+        const prepared = await prepare(model, context, options);
+        const stream = simple ? provider.streamSimple(prepared.model, prepared.context, prepared.options as SimpleStreamOptions) : provider.stream(prepared.model, prepared.context, prepared.options);
+        for await (const event of stream) {
+          if (routing && event.type === "error") routing.failed = prepared.model;
+          if (routing && event.type === "done") { routing.previous = prepared.model; routing.failed = undefined; }
+          output.push(event);
+        }
+        output.end(await stream.result());
+      } catch (error) {
+        const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [], stopReason: "error", errorMessage: error instanceof Error ? error.message : String(error), timestamp: Date.now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+        output.push({ type: "error", reason: "error", error: message }); output.end(message);
+      }
+    })();
+    return output;
+  };
+  return { ...provider, stream: wrap(false), streamSimple: wrap(true) };
+}
+
 /** The deterministic provider is opt-in deployment configuration, never a request field. */
 export function modelRuntime(
   env: {
@@ -22,27 +94,44 @@ export function modelRuntime(
     TEST_MODEL_BASE_URL?: string;
   } & ImageBindings,
   getTenant: () => Promise<string>,
-  wrapProvider: (provider: Provider<any>) => Provider<any> = provider => provider,
+  hooks: ModelHooks = {},
 ) {
   const models = createModels();
   if (env.TEST_MODEL !== "1") {
     const ai = createAI({ binding: env.AI });
-    models.setProvider(wrapProvider(withImageReferences(ai.provider, env, getTenant)));
-    const resolve = (name = env.MODEL) => {
-      const target = name.startsWith("cloudflare/")
-        ? name.slice("cloudflare/".length)
-        : name;
-      if (!target.startsWith("@cf/"))
-        throw Object.assign(
-          new Error("Only Cloudflare Workers AI models are supported"),
-          { status: 400 },
-        );
-      const model = ai(target);
-      if (!models.getModel(model.provider, model.id))
-        throw Object.assign(new Error("Unknown Workers AI model"), {
-          status: 400,
-        });
-      return model;
+    models.setProvider(withSettings(withImageReferences(ai.provider, env, getTenant), hooks));
+    const catalog = new Map<string, Map<string, Model<Api>>>();
+    const api = (model: Model<Api>, simple: boolean, context: TranscriptContext, options: StreamOptions | undefined) => {
+      switch (model.api) {
+        case "openai-completions": { const target = model as Model<"openai-completions">; return simple ? streamOpenAISimple(target, context, options as SimpleStreamOptions) : streamOpenAI(target, context, options); }
+        case "openai-responses": { const target = model as Model<"openai-responses">; return simple ? simpleResponses(target, context, options as SimpleStreamOptions) : streamResponses(target, context, options); }
+        case "anthropic-messages": { const target = model as Model<"anthropic-messages">; return simple ? simpleAnthropic(target, context, options as SimpleStreamOptions) : streamAnthropic(target, context, options); }
+        case "google-generative-ai": { const target = model as Model<"google-generative-ai">; return simple ? simpleGoogle(target, context, options as SimpleStreamOptions) : streamGoogle(target, context, options); }
+        case "bedrock-converse-stream": { const target = model as Model<"bedrock-converse-stream">; return simple ? simpleBedrock(target, context, options as SimpleStreamOptions) : streamBedrock(target, context, options); }
+        default: throw new Error(`Unsupported provider API ${model.api}`);
+      }
+    };
+    const install = (providerId: string) => {
+      if (catalog.has(providerId)) return;
+      const entries = new Map(getModels(providerId).map(model => [model.id, model]));
+      catalog.set(providerId, entries);
+      const provider: Provider = {
+        id: providerId, name: providerId,
+        auth: { apiKey: { name: providerId, resolve: async () => {
+          const credential = await hooks.credentials?.(providerId);
+          return credential ? { auth: { apiKey: credential.apiKey, baseUrl: credential.baseUrl, headers: credential.headers } } : { auth: {} };
+        } } },
+        getModels: () => [...entries.values()],
+        stream: (model, context, options) => api(model, false, context, options),
+        streamSimple: (model, context, options) => api(model, true, context, options),
+      };
+      models.setProvider(withSettings(withImageReferences(provider, env, getTenant), hooks));
+    };
+    const resolve = (name = env.MODEL): Model<Api> => {
+      if (name.startsWith("cloudflare/") || name.startsWith("@cf/")) return ai(name.replace(/^cloudflare\//, ""));
+      const selected = resolveModel(name, hooks.endpoints, hooks.customProviders);
+      for (const target of virtualChain(name) ?? [selected]) { install(target.provider); catalog.get(target.provider)!.set(target.id, target); }
+      return selected;
     };
     return { models, model: resolve(), resolve };
   }
@@ -88,7 +177,7 @@ export function modelRuntime(
       stream: streamOpenAI,
       streamSimple: streamOpenAISimple,
     };
-    models.setProvider(wrapProvider(withImageReferences(provider, env, getTenant)));
+    models.setProvider(withSettings(withImageReferences(provider, env, getTenant), hooks));
     return { models, model: resolve(env.MODEL), resolve };
   }
   const stream = (
@@ -249,7 +338,7 @@ export function modelRuntime(
     stream,
     streamSimple: stream,
   };
-  models.setProvider(wrapProvider(withImageReferences(provider, env, getTenant)));
+  models.setProvider(withSettings(withImageReferences(provider, env, getTenant), hooks));
   return {
     models,
     model,
@@ -261,4 +350,12 @@ export function modelRuntime(
       return model;
     },
   };
+}
+
+/** The same model metadata as ECS; credentials are resolved only when a request executes. */
+export function modelCatalog(env: { MODEL: string; TEST_MODEL?: string }, provider?: string) {
+  if (env.TEST_MODEL === "1") return [{ id: env.MODEL, modelId: env.MODEL, name: env.MODEL, provider: "fixture", input: ["text", "image"], contextWindow: 32768, maxTokens: 2048 }];
+  const physical = (provider ? [provider] : getBuiltinProviders()).flatMap(name => getModels(name));
+  const virtual = !provider || provider === "camelrun" ? virtualModelReferences().map(ref => resolveModel(ref)) : [];
+  return [...virtual, ...physical].map(model => ({ id: "virtual" in model ? model.virtual : `${model.provider}/${model.id}`, provider: "virtual" in model ? "camelrun" : model.provider, modelId: model.id, name: model.name, api: model.api, reasoning: model.reasoning, input: model.input, contextWindow: model.contextWindow, maxTokens: model.maxTokens, cost: model.cost }));
 }
