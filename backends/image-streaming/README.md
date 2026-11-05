@@ -17,6 +17,11 @@ npm run build
 npm run cloud -- --smoke
 # Full corpus, faults, replay, telemetry and 50 simultaneous agents per case.
 npm run cloud
+# Replace the filename with the report printed by the runner.
+node scripts/verify-results.mjs measurements/cloud-YYYY-MM-DDTHH-MM-SS-mmmZ.json
+node scripts/report.mjs measurements/cloud-YYYY-MM-DDTHH-MM-SS-mmmZ.json
+# Optional delayed, read-only CPU/memory queries for each measurement window.
+node scripts/phase-telemetry.mjs measurements/cloud-YYYY-MM-DDTHH-MM-SS-mmmZ.json
 # Reduce the retained cloud observations into comparison.json; no network access.
 node scripts/report.mjs
 ```
@@ -48,7 +53,7 @@ each original and derivative. Expected provider hashes refer to derivatives.
 
 Each single case uses a separate named Durable Object. The full matrix includes
 A/B/C/D at 1, 20 and 100 images, OpenAI Chat/Responses and Anthropic adapter
-shapes, injected disconnect/abort/missing-object failures, eviction and replay,
+shapes, partial-transfer rejection, abort and missing-object failures, eviction and replay,
 and 50 simultaneous agents for every mode/count pair. Baseline failures are
 recorded; a reset is not treated as a successful measurement. The streaming
 receiver decodes and hashes image bytes without accumulating the request body.
@@ -85,3 +90,6 @@ invoice to itself.
 | `src/worker.ts` | Actual Pi/SQLite Durable Object, ingestion and experiment routes |
 | `scripts/cloud.mjs` | Deployment, corpus, matrix, telemetry and cleanup owner |
 | `scripts/fixture.mjs` | Shared deterministic corpus generator |
+| `scripts/verify-results.mjs` | Independent completed-run correctness and cleanup checks |
+| `scripts/report.mjs` | Deduplicated comparison tables without filling telemetry gaps |
+| `scripts/phase-telemetry.mjs` | Read-only per-phase Worker telemetry for proxy/server overhead |

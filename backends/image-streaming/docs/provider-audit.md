@@ -107,5 +107,6 @@ again; provider fetches must finish inside their validity period.
 
 A marker is not an authorization grant. Production must resolve it through a
 tenant-owned immutable image record and retention lease before signing or
-streaming. The experiment restricts keys to its private derivative prefix and
-authenticated harness, which does not implement cross-tenant authorization.
+streaming. The authenticated harness uses only its private fixture bucket.
+D also restricts keys to its derivative prefix; B/C expose an `allowKey` hook
+but do not configure tenant ownership. None implements cross-tenant authorization.
