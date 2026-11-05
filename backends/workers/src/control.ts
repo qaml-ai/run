@@ -19,7 +19,6 @@ import { EndUserCredits, lastCallMin, settleUsage, utcDay } from "./end-user-cre
 import { CreditHolds } from "./credit-holds.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
 import { createAdmission } from "./admission.ts";
-import { setAgentSpendLimit } from "./agent-spend.ts";
 import { applyUsageRows } from "./accounts.ts";
 import { applyWorkspaceUsage, Workspaces } from "./workspaces.ts";
 import { activeCharge } from "../../../src/pricing.ts";
@@ -138,6 +137,7 @@ export class Directory {
   async upsert(
     input: unknown,
     suppliedKey?: string,
+    runtimeOrigin?: string,
   ): Promise<DirectoryEntry | DirectoryFailure> {
     const { config, ttlSeconds } = configuration(input, this.env.MODEL);
     const workspaces = new Workspaces(database(this.env));
@@ -210,8 +210,6 @@ export class Directory {
       );
       if (!written.rowCount)
         throw new ApiError(403, "Agent belongs to another tenant", "FORBIDDEN");
-      if (input && typeof input === 'object' && Object.hasOwn(input, 'spendLimit'))
-        await setAgentSpendLimit(sql, id, config.spendLimit ?? null);
       return next;
     });
     if (!entry.initialized) {
@@ -225,6 +223,7 @@ export class Directory {
             config:entry.config,
             revision: entry.revision,
             expiresAt: entry.expiresAt,
+            runtimeOrigin,
           }),
         }),
       );

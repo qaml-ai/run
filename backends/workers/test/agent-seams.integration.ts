@@ -31,36 +31,28 @@ test(
     const f = await startFixture({ vars: { TENANT_MAX_ACTIVE: "1" } });
     t.after(() => f.stop());
     const call = client(f);
-    const a = (await call("/v1/agents", {
-        model: "test/echo",
-        builtins: ["ask_human"],
-      })).body.id,
+    const a = (
+        await call("/v1/agents", {
+          model: "test/echo",
+        })
+      ).body.id,
       b = (await call("/v1/agents", { model: "test/echo" })).body.id;
     assert.equal(
       (
         await call(`/v1/agents/${a}/requests`, {
           id: "blocking",
           method: "prompt",
-          params: { text: "ask:release me" },
+          params: { text: "slow:2500:release me" },
         })
       ).status,
       202,
     );
-    let pending: any[] = [];
-    for (let i = 0; i < 100 && !pending.length; i++) {
-      pending = (await call(`/v1/agents/${a}/inputs`)).body;
-      await delay(20);
-    }
-    assert.equal(pending.length, 1);
     const denied = await call(`/v1/agents/${b}/requests`, {
       id: "denied",
       method: "prompt",
       params: { text: "must wait for retry" },
     });
     assert.equal(denied.status, 429);
-    await call(`/v1/agents/${a}/inputs/${pending[0].id}`, {
-      answer: "released",
-    });
     for (let i = 0; i < 100; i++) {
       const r = await call(`/v1/agents/${a}/requests/blocking?wait=1`);
       if (r.body.state === "completed") break;
@@ -87,6 +79,99 @@ test(
       if (r.body.state === "completed") break;
       await delay(20);
     }
+  },
+);
+
+test(
+  "human pauses release admission and account each resumed segment once",
+  { timeout: 60000 },
+  async (t) => {
+    const f = await startFixture({ vars: { TENANT_MAX_ACTIVE: "1" } });
+    t.after(() => f.stop());
+    const call = client(f);
+    const a = (
+      await call("/v1/agents", { model: "test/echo", builtins: ["ask_human"] })
+    ).body.id;
+    const b = (await call("/v1/agents", { model: "test/echo" })).body.id;
+    await call(`/v1/agents/${a}/requests`, {
+      id: "pause",
+      method: "prompt",
+      params: { text: "ask:continue?" },
+    });
+    let inputs: any[] = [];
+    for (let n = 0; n < 100 && !inputs.length; n++) {
+      inputs = (await call(`/v1/agents/${a}/inputs`)).body;
+      await delay(20);
+    }
+    assert.equal(inputs.length, 1);
+    for (let n = 0; n < 100; n++) {
+      const receipts = await f.db.query(
+        "select count(*)::int n from idempotency_keys where tenant=$1 and key like 'workers:receipt:%'",
+        ["camelrun-proto-local"],
+      );
+      if (receipts.rows[0].n) break;
+      await delay(20);
+    }
+    assert.equal(
+      (
+        await call(`/v1/agents/${b}/requests`, {
+          id: "while-paused",
+          method: "prompt",
+          params: { text: "hello" },
+        })
+      ).status,
+      202,
+    );
+    for (let n = 0; n < 100; n++) {
+      if (
+        (await call(`/v1/agents/${b}/requests/while-paused?wait=1`)).body
+          .state === "completed"
+      )
+        break;
+    }
+    const before = Number(
+      (
+        await f.db.query(
+          "select count(*) n from idempotency_keys where tenant=$1 and key like 'workers:receipt:%'",
+          ["camelrun-proto-local"],
+        )
+      ).rows[0].n,
+    );
+    const answered = await call(`/v1/agents/${a}/inputs/${inputs[0].id}`, {
+      answer: "yes",
+    });
+    assert.equal(answered.status, 200);
+    const resumed = answered.body.request.id;
+    let result: any;
+    for (let n = 0; n < 100; n++) {
+      result = (await call(`/v1/agents/${a}/requests/${resumed}?wait=1`)).body;
+      if (result.state === "completed") break;
+    }
+    assert.equal(result.status, "completed");
+    assert.match(result.outcome.result.reply, /yes/);
+    const after = Number(
+      (
+        await f.db.query(
+          "select count(*) n from idempotency_keys where tenant=$1 and key like 'workers:receipt:%'",
+          ["camelrun-proto-local"],
+        )
+      ).rows[0].n,
+    );
+    assert.equal(
+      after,
+      before + 1,
+      "resume uses its own immutable active-time receipt",
+    );
+    const attempts = (
+      await f.db.query(
+        "select context from model_attempts where agent=$1 order by started_at",
+        [a],
+      )
+    ).rows;
+    assert.deepEqual(
+      attempts.map((row) => row.context.requestId),
+      ["pause", resumed],
+    );
   },
 );
 
@@ -184,9 +269,18 @@ test(
       ),
       0,
     );
-    const ledger = await f.db.query("select sum(amount)::bigint total from credit_ledger where tenant=$1", ["camelrun-proto-local"]);
-    const balance = await f.db.query("select balance from credit_accounts where tenant=$1", ["camelrun-proto-local"]);
+    const ledger = await f.db.query(
+      "select sum(amount)::bigint total from credit_ledger where tenant=$1",
+      ["camelrun-proto-local"],
+    );
+    const balance = await f.db.query(
+      "select balance from credit_accounts where tenant=$1",
+      ["camelrun-proto-local"],
+    );
     assert.equal(Number(balance.rows[0].balance), Number(ledger.rows[0].total));
-    assert.ok(Number(balance.rows[0].balance) <= 100000000, "source-priced active time is charged");
+    assert.ok(
+      Number(balance.rows[0].balance) <= 100000000,
+      "source-priced active time is charged",
+    );
   },
 );

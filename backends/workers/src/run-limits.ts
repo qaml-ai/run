@@ -4,11 +4,7 @@ import {
   type Extension,
 } from "@earendil-works/pi-durable";
 import type { AgentConfiguration } from "./api-contract.ts";
-import {
-  agentSpendRefusal,
-  pendingAgentSpend,
-  type SpendLimit,
-} from "./agent-spend.ts";
+import { agentSpendRefusal, type SpendLimit } from "./agent-spend.ts";
 
 type Run = {
   id: string;
@@ -91,13 +87,7 @@ export class AgentRunLimits {
     };
     const stopped =
       runLimit(config, run, usage, now) ??
-      (agentId
-        ? agentSpendRefusal(
-            agentId,
-            spend ?? null,
-            pendingAgentSpend(spend ?? null, run.agentSpendAt, usage.costUsd),
-          )
-        : undefined);
+      (agentId ? agentSpendRefusal(agentId, spend ?? null) : undefined);
     if (stopped) await this.storage.put(`run-limit:${run.id}`, stopped);
     return stopped;
   }

@@ -47,6 +47,7 @@ import {
   settleTurn,
   releaseTurn,
   type ControlEnv,
+  type TurnReceipt,
 } from "./control.ts";
 import {
   volumeTools,
@@ -71,6 +72,15 @@ import { newSchedule, scheduleDeliveries, queueScheduleEmail, publishScheduleEma
 import { nextOccurrence, retryable, RETRY_DELAYS_MS } from "./schedule-policy.ts";
 import { metric, safeError, errorClass } from "./observability.ts";
 import { modelRuntime } from "./model.ts";
+import {
+  meterProvider,
+  applyModelReceipt,
+  type ModelReceipt,
+} from "./model-metering.ts";
+import { keyServices, type KeyEnv } from "./security-services.ts";
+import type { AccountEnv } from "./account-services.ts";
+import { runAdmission } from "./admission.ts";
+import { actorInput, bucketInput } from "./security-policy.ts";
 import { MessageProjection } from "./message-projection.ts";
 import { OUTPUT_REMINDER } from "./output-policy.ts";
 import { runtimePromptSections } from "./prompt-sections.ts";
@@ -89,6 +99,7 @@ import {
   resolveCustomProviders,
 } from "./model-credentials.ts";
 import { decisionService, recordDecision } from "./decision-service.ts";
+import { offersDecisions } from "./decision-runtime.ts";
 import {
   hostExecutionTool,
   startHostExecution,
@@ -112,15 +123,26 @@ import { senderExtension } from "./sender-extension.ts";
 import { metadataInput, senderInput } from "./sender.ts";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { AgentRunLimits, type RuntimeLimit } from "./run-limits.ts";
-import { DurableEventLog, runEventStream } from "./event-log.ts";
+import {
+  DurableEventLog,
+  runEventStream,
+  enqueueTerminalEvents,
+  acknowledgeTerminalEvent,
+  TERMINAL_EVENTS_PREFIX,
+  type TerminalEvents,
+  type TerminalDelivery,
+} from "./event-log.ts";
 import { agentBuiltins } from "./agent-builtins.ts";
+import { auxiliaryRunCosts } from "./auxiliary-usage.ts";
 import { resetContext } from "./context-reset.ts";
 import {
   readAgentSpendLimit,
   setAgentSpendLimit,
   agentSpendRefusal,
   spendInput,
+  runSpend,
 } from "./agent-spend.ts";
+import { withSql } from "./postgres.ts";
 
 type Config = {
   id: string;
@@ -147,11 +169,17 @@ type RequestRecord = {
   endedAt?: number;
   began?: number;
   accepted?: boolean;
+  admitted?: boolean;
   outcome?: { result?: unknown; error?: string };
   status?: string;
   error?: string;
 };
-export interface Env extends ComputerBindings, ControlEnv, FileBindings {
+export interface Env
+  extends ComputerBindings,
+    ControlEnv,
+    FileBindings,
+    KeyEnv,
+    AccountEnv {
   TENANTS: DurableObjectNamespace<TenantAdmission>;
   RATE_LIMITER?: RateLimit;
   CODEMODE_SANDBOX: DurableObjectNamespace<CodemodeSandboxDurableObject>;
@@ -183,17 +211,7 @@ const canonical = (value: unknown): string =>
           )
       : value,
   );
-type BillingReceipt = {
-  tenantId: string;
-  agentId: string;
-  requestId: string;
-  costMicros: number;
-  inputTokens: number;
-  outputTokens: number;
-  model?: string;
-  agentSpendAt?: number | null;
-  agentCostUsd?: number;
-};
+type BillingReceipt = TurnReceipt;
 type Schedule = {
   id: string;
   text: string;
@@ -253,13 +271,33 @@ export class CamelAgent extends DurableObject<Env> {
     },
     retry: (at) => this.arm(at),
   });
-  private delegation = new Delegation({
+  private delegation: Delegation = new Delegation({
     storage: this.ctx.storage,
     secret: this.env.API_TOKEN,
     context: async () => {
       const conf = await this.config();
       const run = await this.currentRun();
       return { id: conf.id, config: conf.config as never, run: run as never };
+    },
+    remainingBudget: async (background): Promise<number | undefined> => {
+      const conf = await this.config(),
+        run = await this.currentRun();
+      const spend = await this.agentSpend(conf);
+      let left = spend ? spend.usd - spend.spent : Infinity;
+      const perRun =
+        "params" in run
+          ? (run.params?.spendLimit as { usd?: number } | undefined)?.usd
+          : undefined;
+      if (!background && perRun !== undefined) {
+        const used = await withSql(this.env, (sql) =>
+          runSpend(sql, conf.tenantId, conf.id, run.id),
+        );
+        left = Math.min(
+          left,
+          perRun - used - (await this.delegation.cost(run.id)),
+        );
+      }
+      return Number.isFinite(left) ? Math.max(0, left) : undefined;
     },
     create: async (config, key) => {
       const conf = await this.config();
@@ -300,8 +338,18 @@ export class CamelAgent extends DurableObject<Env> {
     this.env,
     async () => {
       const conf = await this.config();
+      const run = await this.currentRun();
+      const params = "params" in run ? run.params : undefined;
       return {
         tenant: conf.tenantId,
+        agent: conf.id,
+        requestId: run.id === "background" ? undefined : run.id,
+        spendLimit: (params?.spendLimit as { usd?: number } | undefined)?.usd,
+        actor: params?.actor as string | undefined,
+        identity: {
+          subject: conf.config.subject,
+          context: conf.config.context,
+        },
         keyScope: conf.config.keyScope,
         dataCollection: conf.config.dataCollection,
       };
@@ -317,9 +365,7 @@ export class CamelAgent extends DurableObject<Env> {
       config: conf.config,
       run: await this.currentRun(),
       agentId: conf.id,
-      spend: conf.config.spendLimit
-        ? await readAgentSpendLimit(this.env, conf.tenantId, conf.id)
-        : null,
+      spend: await this.agentSpend(conf),
     };
   });
   private async currentRun() {
@@ -332,11 +378,60 @@ export class CamelAgent extends DurableObject<Env> {
       }
     );
   }
+  private async agentSpend(conf: Config) {
+    const spend = conf.config.spendLimit
+      ? await readAgentSpendLimit(this.env, conf.tenantId, conf.id)
+      : null;
+    return spend
+      ? {
+          ...spend,
+          spent: spend.spent + (await this.delegation.costSince(spend.setAt)),
+        }
+      : null;
+  }
+  private async admitRequest(conf: Config, id: string) {
+    let acquired = false;
+    try {
+      const refusal = agentSpendRefusal(conf.id, await this.agentSpend(conf));
+      if (refusal)
+        throw Object.assign(new Error(refusal.error), {
+          status: 402,
+          code: refusal.code,
+        });
+      const { accounts } = await keyServices(this.env);
+      const limited = await accounts.runLimit(conf.tenantId);
+      if (limited)
+        throw typeof limited === "string"
+          ? Object.assign(new Error(limited), { status: 402 })
+          : limited;
+      const { limit } = await accounts.billing.busyLimit(conf.tenantId);
+      await runAdmission(this.env, conf.tenantId);
+      acquired = await this.env.TENANTS.getByName(conf.tenantId).acquire(
+        `${conf.id}:${id}`,
+        Math.min(
+          limit,
+          Number(this.env.TENANT_MAX_ACTIVE ?? Number.MAX_SAFE_INTEGER),
+        ),
+      );
+      if (!acquired)
+        throw Object.assign(new Error("Tenant concurrency limit"), {
+          status: 429,
+        });
+      await reserveTurn(this.env, conf.tenantId, conf.id, id);
+    } catch (error) {
+      if (acquired)
+        await this.env.TENANTS.getByName(conf.tenantId).release(
+          `${conf.id}:${id}`,
+        );
+      await this.ctx.storage.delete(reqKey(id));
+      throw error;
+    }
+  }
   private async sourceIdentity(api?: ToolExecutionApi) {
     const conf = await this.config(),
       run = await this.currentRun(),
       params = "params" in run ? run.params : undefined;
-    const issuer = this.env.AGENT_PUBLIC_URL ?? conf.runtimeOrigin;
+    const issuer = this.env.AGENT_PUBLIC_URL || conf.runtimeOrigin;
     if (!issuer) throw new Error("Runtime public URL is not configured");
     return {
       issuer,
@@ -359,6 +454,36 @@ export class CamelAgent extends DurableObject<Env> {
     this.env,
     async () => (await this.config()).tenantId,
     {
+      wrapProvider: (provider) =>
+        meterProvider(
+          provider,
+          this.env,
+          async () => {
+            const conf = await this.config(),
+              run = await this.currentRun();
+            const params = "params" in run ? run.params : undefined;
+            return {
+              tenant: conf.tenantId,
+              agent: conf.id,
+              requestId: run.id === "background" ? undefined : run.id,
+              subject: conf.config.subject,
+              context: conf.config.context,
+              bucket:
+                (params?.bucket as string | undefined) ?? conf.config.bucket,
+              actor: params?.actor as string | undefined,
+              keyScope: conf.config.keyScope,
+              spendLimit: (params?.spendLimit as { usd?: number } | undefined)
+                ?.usd,
+              platform: this.env.TEST_MODEL !== "1",
+            };
+          },
+          async (receipt) => {
+            const key = `model-billing:${receipt.event.id}`;
+            await this.ctx.storage.put(key, receipt);
+            await applyModelReceipt(this.env, receipt);
+            await this.ctx.storage.delete(key);
+          },
+        ),
       settings: async () => {
         const conf = await this.config();
         const run = await this.currentRun();
@@ -497,9 +622,14 @@ export class CamelAgent extends DurableObject<Env> {
         name: "camel.web",
         tools: await agentBuiltins(this.env, async () => {
           const conf = await this.config();
+          const run = await this.currentRun();
+          const params = "params" in run ? run.params : undefined;
           return {
             tenant: conf.tenantId,
             agent: conf.id,
+            requestId: run.id === "background" ? undefined : run.id,
+            spendLimit: (params?.spendLimit as { usd?: number } | undefined)
+              ?.usd,
             builtins: conf.config.builtins,
             webSearch: conf.config.webSearch,
             keyScope: conf.config.keyScope,
@@ -509,7 +639,7 @@ export class CamelAgent extends DurableObject<Env> {
       registry.install({
         name: "camel.decisions",
         tools:
-          conf.config.decide !== false && (await this.decisions.available())
+          offersDecisions(conf.config) && (await this.decisions.available())
             ? [this.decisions.tool()]
             : [],
       });
@@ -634,11 +764,17 @@ export class CamelAgent extends DurableObject<Env> {
       throw Object.assign(new Error("Agent expired"), { status: 410 });
     return config;
   }
-  private async emit(event: unknown) {
+  private async emit(event: unknown, delivery?: TerminalDelivery) {
     const work = this.serial.then(async () => {
-      const cursor = ((await this.ctx.storage.get<number>("cursor")) ?? 1) + 1;
-      await this.ctx.storage.put("cursor", cursor);
-      this.eventLog.append(cursor, event);
+      const cursor = await this.ctx.storage.transaction(async (tx) => {
+        if (delivery && !(await acknowledgeTerminalEvent(tx, delivery)))
+          return undefined;
+        const next = ((await tx.get<number>("cursor")) ?? 1) + 1;
+        await tx.put("cursor", next);
+        this.eventLog.append(next, event);
+        return next;
+      });
+      if (cursor === undefined) return;
       for (const listener of this.listeners) listener(cursor, event);
       for (const socket of this.ctx.getWebSockets()) {
         try {
@@ -650,6 +786,20 @@ export class CamelAgent extends DurableObject<Env> {
     });
     this.serial = work.catch(() => {});
     await work;
+  }
+  private async flushTerminalEvents() {
+    if (
+      this.env.TEST_MODEL === "1" &&
+      (await this.ctx.storage.get("test:crash-events")) &&
+      (await this.ctx.storage.get("test:crash-owner")) === this.instanceId
+    )
+      return;
+    for (const [key, pending] of await this.ctx.storage.list<TerminalEvents>({
+      prefix: TERMINAL_EVENTS_PREFIX,
+      limit: 100,
+    }))
+      for (let index = pending.next; index < pending.events.length; index++)
+        await this.emit(pending.events[index], { key, index });
   }
   private lastEntry = 0;
   private messageProjection = new MessageProjection();
@@ -761,6 +911,16 @@ export class CamelAgent extends DurableObject<Env> {
     if (ended) this.nextMessage++;
   }
   private async onView(view: ConversationView) {
+    // A paused Pi turn keeps its original input ID. New output belongs to its
+    // admitted resume alias, including snapshots delivered just after answer().
+    if (this.active)
+      this.active =
+        (await this.ctx.storage.get<string>(`resume-for:${this.active}`)) ??
+        this.active;
+    else
+      this.active = (await this.records()).find(
+        (record) => record.method === "resume" && record.state === "running",
+      )?.id;
     // Input labels retain attribution when several turns share one callback.
     for (const entry of view.entries) {
       if (Number(entry.id) <= this.lastEntry) continue;
@@ -769,7 +929,10 @@ export class CamelAgent extends DurableObject<Env> {
         continue;
       }
       if (entry.kind === "camel.prompt") {
-        this.active = (entry.data as { requestId: string }).requestId;
+        const original = (entry.data as { requestId: string }).requestId;
+        this.active =
+          (await this.ctx.storage.get<string>(`resume-for:${original}`)) ??
+          original;
         await this.markBegan(this.active);
       }
       if (entry.kind === "camel.steer") {
@@ -807,7 +970,13 @@ export class CamelAgent extends DurableObject<Env> {
       this.active = id;
       await this.markBegan(id);
       if (this.partial) await this.projectMessage(id, this.partial, false);
-    } else this.active = undefined;
+    } else if (this.active) {
+      const record = await this.ctx.storage.get<RequestRecord>(
+        reqKey(this.active),
+      );
+      if (record?.state === "completed" && record.status !== "input_required")
+        this.active = undefined;
+    }
   }
   private async onHuman(doc: { requests: Record<string, HumanInput> }) {
     const id = this.active ?? (await this.currentRun()).id;
@@ -830,14 +999,36 @@ export class CamelAgent extends DurableObject<Env> {
         }
       const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
       if (record?.state === "running") {
+        const conf = await this.config();
         record.state = "completed";
         record.status = "input_required";
         record.endedAt = Date.now();
         record.outcome = {
           result: { stopped: "input_required", inputs, reply: "" },
         };
-        await this.ctx.storage.put(reqKey(id), record);
-        await this.emit({ type: "response", id, outcome: record.outcome });
+        await this.ctx.storage.transaction(async (tx) => {
+          await tx.put(reqKey(id), record);
+          await tx.put(`billing:${id}`, {
+            tenantId: conf.tenantId,
+            agentId: conf.id,
+            requestId: id,
+            modelMetered: true,
+            costMicros: 0,
+            activeMs: Math.max(
+              0,
+              record.endedAt! - (record.began ?? record.endedAt!),
+            ),
+            startedAt: record.startedAt,
+            subject: conf.config.subject,
+            bucket:
+              (record.params?.bucket as string | undefined) ??
+              conf.config.bucket,
+            responses: 0,
+          } satisfies BillingReceipt);
+          await enqueueTerminalEvents(tx, id, record.outcome, false);
+        });
+        await this.flushBilling();
+        await this.flushTerminalEvents();
       }
     }
   }
@@ -866,11 +1057,26 @@ export class CamelAgent extends DurableObject<Env> {
         ...record,
         state: "completed",
         endedAt: Date.now(),
-        outcome: result.error ? {error:result.error.message,...(/may or may not have taken effect|connection lost|outcome may be unknown/i.test(result.error.message)?{code:"connection_lost",uncertain:true}:{code:result.error.kind})} : { result },
+        outcome: result.error
+          ? {
+              error: result.error.message,
+              ...(/may or may not have taken effect|connection lost|outcome may be unknown/i.test(
+                result.error.message,
+              )
+                ? { code: "connection_lost", uncertain: true }
+                : { code: result.error.kind }),
+            }
+          : { result },
       };
-      await this.ctx.storage.put(reqKey(id), completed);
-      await this.emit({ type: "response", id, outcome: completed.outcome });
-      return completed;
+      const terminal = await this.ctx.storage.transaction(async (tx) => {
+        const latest = await tx.get<RequestRecord>(reqKey(id));
+        if (latest?.state === "completed") return latest;
+        await tx.put(reqKey(id), completed);
+        await enqueueTerminalEvents(tx, id, completed.outcome, false);
+        return completed;
+      });
+      await this.flushTerminalEvents();
+      return terminal;
     }
     try {
       let result = await this.harness.wait(
@@ -916,8 +1122,19 @@ export class CamelAgent extends DurableObject<Env> {
                   cacheRead: usage.cacheRead,
                   cacheWrite: usage.cacheWrite,
                   costUsd: usage.costMicros / 1_000_000,
+                  ...(usage.decisionCostUsd > 0
+                    ? { decisionCostUsd: usage.decisionCostUsd }
+                    : {}),
+                  ...(usage.webCostUsd > 0
+                    ? { webCostUsd: usage.webCostUsd }
+                    : {}),
+                  ...(usage.subagentCostUsd > 0
+                    ? { subagentCostUsd: usage.subagentCostUsd }
+                    : {}),
                 },
-                servedModel: record.billing?.model ?? stored?.config.model,
+                servedModel: usage.last
+                  ? `${usage.last.provider}/${usage.last.model}`
+                  : (record.billing?.model ?? stored?.config.model),
                 toolCalls: usage.toolCalls ?? [],
                 toolErrors: usage.toolErrors ?? [],
                 replyIndex: usage.replyIndex,
@@ -968,39 +1185,32 @@ export class CamelAgent extends DurableObject<Env> {
           await tx.put(`billing:${id}`, {
             tenantId: record.billing?.tenantId ?? conf.tenantId,
             agentId: record.billing?.agentId ?? conf.id,
-            requestId: record.piId ?? id,
-            costMicros:
-              this.env.TEST_MODEL === "1"
-                ? result.status === "done"
-                  ? Number(this.env.TEST_TURN_COST_MICROS ?? 7000)
-                  : 0
-                : usage.costMicros,
+            requestId: id,
+            costMicros: 0,
+            modelMetered: true,
+            activeMs: Math.max(
+              0,
+              Date.now() - (latest?.began ?? record.began ?? Date.now()),
+            ),
+            startedAt: record.startedAt,
+            responses: usage.responses,
+            subject: conf.config.subject,
+            bucket:
+              (record.params?.bucket as string | undefined) ??
+              conf.config.bucket,
             inputTokens: usage.inputTokens,
             outputTokens: usage.outputTokens,
             model: record.billing?.model ?? conf.config.model,
-            agentSpendAt: record.agentSpendAt,
-            agentCostUsd:
-              this.env.TEST_MODEL === "1"
-                ? result.status === "done"
-                  ? Number(this.env.TEST_TURN_COST_MICROS ?? 7000) / 1e6
-                  : 0
-                : usage.costUsd,
           } satisfies BillingReceipt);
         await tx.put(reqKey(id), completed);
+        await enqueueTerminalEvents(tx, id, outcome);
         changed = true;
         return completed;
       });
       // Receipt and terminal state commit together. A lost PG acknowledgement
       // only replays this immutable receipt; money remains one PG transaction.
       await this.flushBilling();
-      if (changed) {
-        await this.emit({
-          type: "event",
-          requestId: id,
-          event: { type: "agent_end", messages: [] },
-        });
-        await this.emit({ type: "response", id, outcome });
-      }
+      if (changed) await this.flushTerminalEvents();
       return terminal;
     } catch (error) {
       if (
@@ -1267,6 +1477,7 @@ export class CamelAgent extends DurableObject<Env> {
       "spendLimit",
       "runLimits",
       "actor",
+      "bucket",
     ]);
     const text =
       request.method === "continue"
@@ -1281,6 +1492,9 @@ export class CamelAgent extends DurableObject<Env> {
       if (params.from !== undefined) params.from = senderInput(params.from);
     }
     try {
+      if (params.actor !== undefined) params.actor = actorInput(params.actor);
+      if (params.bucket !== undefined)
+        params.bucket = bucketInput(params.bucket);
       if (params.output !== undefined)
         params.output = outputInput(params.output);
       if (params.spendLimit !== undefined) {
@@ -1331,9 +1545,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (old?.state === "completed") return old;
     const conf = await this.config();
     if (conf.config.spendLimit) await this.flushBilling(true);
-    const spend = conf.config.spendLimit
-      ? await readAgentSpendLimit(this.env, conf.tenantId, conf.id)
-      : null;
+    const spend = await this.agentSpend(conf);
     const refusal = agentSpendRefusal(conf.id, spend);
     if (refusal)
       throw Object.assign(new Error(refusal.error), {
@@ -1404,32 +1616,9 @@ export class CamelAgent extends DurableObject<Env> {
       return record;
     }
     await this.arm(Date.now() + 1000);
-    if (!old?.accepted) {
-      if (
-        !(await this.env.TENANTS.getByName(conf.tenantId).acquire(
-          `${conf.id}:${id}`,
-          Number(this.env.TENANT_MAX_ACTIVE ?? 1000),
-        ))
-      ) {
-        await this.ctx.storage.delete(reqKey(id));
-        throw Object.assign(new Error("Tenant concurrency limit"), {
-          status: 429,
-        });
-      }
-      try {
-        await reserveTurn(this.env, conf.tenantId, conf.id, id, 10000);
-      } catch (error) {
-        await this.env.TENANTS.getByName(conf.tenantId).release(
-          `${conf.id}:${id}`,
-        );
-        if (
-          [400, 402, 403, 404, 409].includes(
-            (error as { status?: number }).status ?? 0,
-          )
-        )
-          await this.ctx.storage.delete(reqKey(id));
-        throw error;
-      }
+    if (!old?.admitted) {
+      await this.admitRequest(conf, id);
+      record.admitted = true;
     }
     await this.ctx.storage.put(reqKey(id), record);
     await this.observe();
@@ -1466,10 +1655,14 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private async state() {
     const records = await this.records();
-    for(const record of records) if(record.method==="execute" && record.state!=="completed") this.track(record.id);
+    for (const record of records)
+      if (record.method === "execute" && record.state !== "completed")
+        this.track(record.id);
     await Promise.all(
       records
-        .filter((record) => record.state === "running" && record.method!=="execute")
+        .filter(
+          (record) => record.state === "running" && record.method !== "execute",
+        )
         .slice(0, 100)
         .map((record) => this.settle(record.id, 1)),
     );
@@ -1568,14 +1761,27 @@ export class CamelAgent extends DurableObject<Env> {
             name: "camel.web",
             tools: await agentBuiltins(this.env, async () => {
               const conf = await this.config();
+              const run = await this.currentRun();
+              const params = "params" in run ? run.params : undefined;
               return {
                 tenant: conf.tenantId,
                 agent: conf.id,
+                requestId: run.id === "background" ? undefined : run.id,
+                spendLimit: (params?.spendLimit as { usd?: number } | undefined)
+                  ?.usd,
                 builtins: conf.config.builtins,
                 webSearch: conf.config.webSearch,
                 keyScope: conf.config.keyScope,
               };
             }),
+          });
+          this.registry.install({
+            name: "camel.decisions",
+            tools:
+              offersDecisions(incoming.config) &&
+              (await this.decisions.available())
+                ? [this.decisions.tool()]
+                : [],
           });
           this.availableTools = this.registry
             .snapshot()
@@ -1689,6 +1895,11 @@ export class CamelAgent extends DurableObject<Env> {
         request.method === "POST"
       ) {
         await this.ctx.storage.delete("test:crash-reached");
+        await this.ctx.storage.delete("test:crash-owner");
+        await this.ctx.storage.put(
+          "test:crash-events",
+          ((await body(request)) as { events?: boolean }).events === true,
+        );
         await this.ctx.storage.put("test:crash-settlement", true);
         return json({ armed: true });
       }
@@ -1837,69 +2048,113 @@ export class CamelAgent extends DurableObject<Env> {
         return json(values);
       }
       if (path.startsWith("/inputs/") && request.method === "POST") {
-        const id = decodeURIComponent(path.slice(8)),
-          input = await body(request);
-        const pi = await this.harness.pi(),
-          root = await pi.root(BACKGROUND_CONTEXT),
-          conf = await this.config();
-        let item!: HumanInput;
-        await root.commit(async (tx) => {
-          const doc = await tx.doc(HumanInputs),
-            pending = doc.requests[id];
+        // Answering a native Pi document can resume the tool immediately. Hold
+        // projection until its durable resume alias exists, so its result is
+        // streamed to the resumed request even when the remote tool is fast.
+        let releaseProjection!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          releaseProjection = resolve;
+        });
+        const before = this.eventsProcessed;
+        this.eventsProcessed = before.then(() => gate);
+        await before;
+        try {
+          const id = decodeURIComponent(path.slice(8)),
+            input = await body(request);
+          const pi = await this.harness.pi(),
+            root = await pi.root(BACKGROUND_CONTEXT),
+            conf = await this.config();
+          const snapshot = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
+          const pending = snapshot?.requests[id];
           if (!pending)
             throw Object.assign(new Error("Unknown input"), { status: 404 });
           const answer = answerHuman(pending, input);
           if (pending.answer !== undefined && pending.answer !== answer.answer)
             throw Object.assign(new Error("Already answered"), { status: 409 });
-          Object.assign(pending, answer);
-          item = JSON.parse(JSON.stringify(pending));
-        }, BACKGROUND_CONTEXT);
-        const owner =
-          (await this.ctx.storage.get<string>(`input-owner:${id}`)) ??
-          this.active;
-        await this.emit({
-          type: "event",
-          requestId: owner,
-          event: { type: "input_resolved", id },
-        });
-        const doc = await pi.snapshot(HumanInputs, BACKGROUND_CONTEXT);
-        let resume: RequestRecord | undefined;
-        if (
-          owner &&
-          !Object.values(doc?.requests ?? {}).some(
-            (input) => input.answer === undefined,
-          )
-        ) {
-          const old = (await this.ctx.storage.get<RequestRecord>(
-            reqKey(owner),
-          ))!;
-          const piId = old.piId ?? owner;
-          const resumeId = `resume-${id}`.slice(0, 80);
-          resume = await this.ctx.storage.get<RequestRecord>(reqKey(resumeId));
-          if (!resume) {
-            resume = {
-              ...old,
-              id: resumeId,
-              piId,
-              method: "resume",
-              state: "running",
-              status: undefined,
-              outcome: undefined,
-              startedAt: Date.now(),
-              began: Date.now(),
-              endedAt: undefined,
-            };
-            await this.ctx.storage.put(reqKey(resumeId), resume);
-            await this.ctx.storage.put(`resume-for:${piId}`, resumeId);
+          const owner =
+            (await this.ctx.storage.get<string>(`input-owner:${id}`)) ??
+            this.active;
+          let resume: RequestRecord | undefined;
+          let created = false;
+          if (
+            owner &&
+            !Object.entries(snapshot?.requests ?? {}).some(
+              ([key, input]) => key !== id && input.answer === undefined,
+            )
+          ) {
+            const old = (await this.ctx.storage.get<RequestRecord>(
+              reqKey(owner),
+            ))!;
+            const piId = old.piId ?? owner;
+            const resumeId = `resume-${id}`.slice(0, 80);
+            resume = await this.ctx.storage.get<RequestRecord>(
+              reqKey(resumeId),
+            );
+            if (!resume) {
+              await this.flushBilling(true);
+              await this.admitRequest(conf, resumeId);
+              resume = {
+                ...old,
+                id: resumeId,
+                piId,
+                method: "resume",
+                state: "running",
+                status: undefined,
+                outcome: undefined,
+                startedAt: Date.now(),
+                began: Date.now(),
+                endedAt: undefined,
+              };
+              await this.ctx.storage.put(reqKey(resumeId), resume);
+              await this.ctx.storage.put(`resume-for:${piId}`, resumeId);
+              created = true;
+            }
             this.active = resumeId;
-            this.track(resumeId);
           }
+          let item!: HumanInput;
+          try {
+            await root.commit(async (tx) => {
+              const doc = await tx.doc(HumanInputs),
+                current = doc.requests[id];
+              if (
+                current.answer !== undefined &&
+                current.answer !== answer.answer
+              )
+                throw Object.assign(new Error("Already answered"), {
+                  status: 409,
+                });
+              Object.assign(current, answer);
+              item = JSON.parse(JSON.stringify(current));
+            }, BACKGROUND_CONTEXT);
+          } catch (error) {
+            if (created && resume) {
+              await this.ctx.storage.delete(reqKey(resume.id));
+              await this.ctx.storage.delete(`resume-for:${resume.piId}`);
+              await releaseTurn(this.env, conf.tenantId, conf.id, resume.id);
+              await this.env.TENANTS.getByName(conf.tenantId).release(
+                `${conf.id}:${resume.id}`,
+              );
+              this.active = owner;
+            }
+            throw error;
+          }
+          await this.emit({
+            type: "event",
+            requestId: owner,
+            event: { type: "input_resolved", id },
+          });
+          if (resume) {
+            this.track(resume.id);
+            await this.arm();
+          }
+          return json({
+            answered: true,
+            input: humanInputView(id, item, conf.id, owner),
+            request: resume ?? null,
+          });
+        } finally {
+          releaseProjection();
         }
-        return json({
-          answered: true,
-          input: humanInputView(id, item, conf.id, owner),
-          request: resume ?? null,
-        });
       }
       if (path === "/abort" && request.method === "POST") {
         const stopped = await this.abortRequests();
@@ -1999,6 +2254,11 @@ export class CamelAgent extends DurableObject<Env> {
   private async usageForRequest(id: string) {
     const pi = await this.harness.pi(),
       root = await pi.root(BACKGROUND_CONTEXT);
+    const conf = await this.config();
+    const [auxiliary, subagentCostUsd] = await Promise.all([
+      auxiliaryRunCosts(this.env, conf.tenantId, conf.id, id),
+      this.delegation.cost(id),
+    ]);
     const projection = new RunProjection(id);
     let cursor,
       active: string | undefined,
@@ -2044,9 +2304,22 @@ export class CamelAgent extends DurableObject<Env> {
       responses,
       costUsd: cost,
       costMicros: Math.max(0, Math.round(cost * 1_000_000)),
+      ...auxiliary,
+      subagentCostUsd,
     };
   }
   private async flushBilling(propagate = false) {
+    for (const [key, receipt] of await this.ctx.storage.list<ModelReceipt>({
+      prefix: "model-billing:",
+    })) {
+      try {
+        await applyModelReceipt(this.env, receipt);
+        await this.ctx.storage.delete(key);
+      } catch (error) {
+        await this.arm(Date.now() + 1000);
+        if (propagate) throw error;
+      }
+    }
     for (const [key, receipt] of await this.ctx.storage.list<BillingReceipt>({
       prefix: "billing:",
       limit: 100,
@@ -2057,7 +2330,12 @@ export class CamelAgent extends DurableObject<Env> {
           await this.ctx.storage.transaction(async (tx) => {
             await tx.delete("test:crash-settlement");
             await tx.put("test:crash-reached", true);
+            await tx.put("test:crash-owner", this.instanceId);
           });
+        }
+        if (
+          (await this.ctx.storage.get("test:crash-owner")) === this.instanceId
+        ) {
           throw new Error(
             "Injected crash after PostgreSQL commit before DO acknowledgement",
           );
@@ -2142,8 +2420,12 @@ export class CamelAgent extends DurableObject<Env> {
       prefix: "schedule:",
       limit: 100,
     });
-    const pendingBilling = (
-      await this.ctx.storage.list({ prefix: "billing:", limit: 1 })
+    const pendingBilling =
+      (await this.ctx.storage.list({ prefix: "billing:", limit: 1 })).size ||
+      (await this.ctx.storage.list({ prefix: "model-billing:", limit: 1 }))
+        .size;
+    const pendingEvents = (
+      await this.ctx.storage.list({ prefix: TERMINAL_EVENTS_PREFIX, limit: 1 })
     ).size;
     const config = await this.ctx.storage.get<Config>("configuration");
     const pendingRun = (await this.records()).some(
@@ -2155,6 +2437,7 @@ export class CamelAgent extends DurableObject<Env> {
       ...[...schedules.values()].map((item) => item.retryAt ?? item.dueAt),
       retry ?? Infinity,
       pendingBilling ? Date.now() + 5000 : Infinity,
+      pendingEvents ? Date.now() + 1000 : Infinity,
       pendingRun ? Date.now() + 1000 : Infinity,
       await this.limits.deadline(),
     );
@@ -2173,8 +2456,12 @@ export class CamelAgent extends DurableObject<Env> {
     for (const record of await this.records())
       if (record.accepted && record.state !== "completed")
         this.track(record.id);
-    if ((await this.ctx.storage.list({ prefix: "billing:", limit: 1 })).size)
+    if (
+      (await this.ctx.storage.list({ prefix: "billing:", limit: 1 })).size ||
+      (await this.ctx.storage.list({ prefix: "model-billing:", limit: 1 })).size
+    )
       this.ctx.waitUntil(this.flushBilling());
+    this.ctx.waitUntil(this.flushTerminalEvents());
   }
   async onJob(context: { job: { fn: string } }) {
     return withMoneyMetrics(this.env, async () => {
@@ -2193,6 +2480,7 @@ export class CamelAgent extends DurableObject<Env> {
       return;
     }
     await this.flushBilling();
+    await this.flushTerminalEvents();
     if (await this.limits.check()) await this.harness.session().abort();
     await this.delegation.recover();
     await this.notifications.drain();
