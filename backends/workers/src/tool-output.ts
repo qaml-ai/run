@@ -1,3 +1,4 @@
+import { hasFileArgument } from './tool-file-schema.ts';
 import { Buffer } from 'node:buffer';
 import { hook, ToolTask, type Extension, type HookApi, type ToolExecutionResult } from '@earendil-works/pi-durable';
 import { FILE_LIMITS } from '../../../src/limits.ts';
@@ -8,7 +9,7 @@ import { toolOutputPolicy } from './tool-output-policy.ts';
 import type { ToolCallSite } from './tool-call-context.ts';
 import { saveToolImages, toolResultFiles } from './tool-output-files.ts';
 
-type Scope = { tenant: string; agent: string; mounts: Mount[]; fileTools?: boolean; codeMode?: boolean; call: ToolCallSite };
+type Scope = { tenant: string; agent: string; mounts: Mount[]; fileTools?: boolean; codeMode?: boolean; fileArguments?: Record<string, boolean>; call: ToolCallSite };
 
 /** Cap only model-facing results; nested scripts keep Pi's bounded structured values. */
 export function toolOutputExtension(env: FileBindings, scope: (api: HookApi, callId: string) => Promise<Scope>): Extension {
@@ -16,6 +17,10 @@ export function toolOutputExtension(env: FileBindings, scope: (api: HookApi, cal
     async afterTool(call, result, api) {
       if (call.name === 'codemode') return;
       const current = await scope(api, call.id);
+      const prefix = call.name.split('__')[0];
+      if (current.fileArguments?.[prefix] === false && hasFileArgument(call.args) && result.isError) {
+        return { ...result, output: [{ type: 'text', text: `${call.name} is not sent files: file arguments ({"$file": path}) are off for this tool. Pass what it needs in its own parameters (text, or a URL it can fetch), or use a tool that takes files` }] };
+      }
       const materialized = await saveToolImages(result.output ?? [], await toolResultFiles(env, { ...current, tool: call.name, call: String(api.taskId) }));
       if (call.parent) return { ...result, output: materialized };
       const own = await workspaceId(current.agent);

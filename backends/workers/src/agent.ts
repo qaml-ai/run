@@ -1,6 +1,9 @@
 import { retriesModelError } from "./model-errors.ts";
 import { modelCompactionSettings } from "./model-context.ts";
 import { withCompactionPrompt } from "./model-compaction.ts";
+import { takesFiles } from './tool-file-schema.ts';
+import { ToolFiles } from './tool-files.ts';
+import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
 import { toolOutputExtension } from "./tool-output.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
@@ -584,6 +587,7 @@ export class CamelAgent extends DurableObject<Env> {
       throw error;
     }
   }
+  private toolFileBudgets = new Map<string, { left: number }>();
   private async sourceIdentity(api?: ToolExecutionApi) {
     const conf = await this.config(),
       run = await this.currentRun(api),
@@ -599,6 +603,16 @@ export class CamelAgent extends DurableObject<Env> {
     }
     return {
       issuer,
+      toolFiles: (tool: string, refuse?: string) => {
+        let budget = this.toolFileBudgets.get(run.id);
+        if (!budget) { budget = { left: TOOL_FILE_LIMITS.runBytes }; this.toolFileBudgets.set(run.id, budget); }
+        const requestId = run.id;
+        const scope = { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], requestId };
+        return new ToolFiles(this.env, { ...scope, tool, call: call?.toolCallId ?? String(api?.taskId ?? run.id), origin: issuer, refuse, budget,
+          reference: path => new PromptAttachments(this.ctx.storage, this.env).reference(scope, path),
+          onWrite: file => writtenFile(this.ctx.storage, requestId, file),
+        });
+      },
       ...(call ? { call } : {}),
       spawn: (tool: string, directive: unknown, currentApi: import('@earendil-works/pi-durable').ToolExecutionApi, context: import('@earendil-works/chord').Context) => this.delegation.toolSpawn(tool, directive, currentApi, context),
       progress: async (event: unknown) => {
@@ -818,7 +832,7 @@ export class CamelAgent extends DurableObject<Env> {
           await this.historyIndex.sync(await pi.root(BACKGROUND_CONTEXT));
           site.messageIndex = this.historyIndex.messageIndex(site.assistant);
         }
-        return { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, call: site };
+        return { tenant: conf.tenantId, agent: conf.id, mounts: (conf.config.mounts ?? []) as Mount[], fileTools: conf.config.fileTools, codeMode: conf.config.codeMode, fileArguments: Object.fromEntries([...(conf.config.mcpServers ?? []), ...(conf.config.openApi ?? [])].map(source => [source.name, takesFiles(source)])), call: site };
       }));
       registry.install(this.limits.extension());
       registry.install(contextRangeExtension(

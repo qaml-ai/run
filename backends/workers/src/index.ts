@@ -1,5 +1,7 @@
+import { serveToolFile } from './tool-files.ts';
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { firstPrompt } from "./first-prompt.ts";
+import { builtinWarnings } from "./builtin-warnings.ts";
 import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
 import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
@@ -144,6 +146,8 @@ const worker = {
       if (request.method === "OPTIONS" && (/^\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(new URL(request.url).pathname) || new URL(request.url).pathname === "/mcp")) return agentMcpPreflight();
       const preflight = corsPreflight(request);
       if (preflight) return preflight;
+      const callFile = await serveToolFile(request, env);
+      if (callFile) return callFile;
       const signed = await handleSignedFileRequest(request, env);
       if (signed) return signed;
       const url = new URL(request.url),
@@ -312,7 +316,7 @@ const worker = {
               await setAgentSpendLimit(
                 env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,
               );
-            const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id)), ...(upsert.reconfigured ? { reconfigured: upsert.reconfigured } : {}) };
+            const answer = { ...credentials(created, auth.kind === "oauth" ? undefined : await agentToken(env.API_TOKEN, created.id)), ...(upsert.reconfigured ? { reconfigured: upsert.reconfigured } : {}), ...await builtinWarnings(env, auth.tenantId, created.config) };
             if (!first) return json(answer, 201);
             const submitted = await env.AGENTS.getByName(created.id).fetch(new Request("https://agent/requests", {
               method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(first),

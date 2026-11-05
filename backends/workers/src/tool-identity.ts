@@ -13,7 +13,7 @@ export type RuntimeIdentity = {
 const signers = new WeakMap<IdentityEnv, { issuer: string; signer: Promise<RuntimeSigner> }>();
 
 /** Compact transport claims use the same signer, key envelope and issuer policy as account and file tokens. */
-function signer(env: IdentityEnv, fallback: string) {
+export function runtimeSigner(env: IdentityEnv, fallback: string) {
   const issuer = publicOrigins(env as unknown as NodeJS.ProcessEnv, fallback).issuer;
   let entry = signers.get(env);
   if (!entry || entry.issuer !== issuer) {
@@ -25,7 +25,7 @@ function signer(env: IdentityEnv, fallback: string) {
 }
 
 export async function runtimeJwks(env: IdentityEnv) {
-  return (await signer(env, env.PUBLIC_URL || "https://localhost")).jwks();
+  return (await runtimeSigner(env, env.PUBLIC_URL || "https://localhost")).jwks();
 }
 
 export async function signRuntimeIdentity(env: IdentityEnv, issuer: string, audience: string, identity: RuntimeIdentity) {
@@ -35,5 +35,5 @@ export async function signRuntimeIdentity(env: IdentityEnv, issuer: string, audi
     origin: identity.origin, request: identity.req, toolCall: identity.tcid,
     parent: identity.par, root: identity.root, approval: identity.approval, exchange: identity.exchange,
   };
-  return (await signer(env, issuer)).token(audience, claims);
+  return (await runtimeSigner(env, issuer)).token(audience, claims);
 }
