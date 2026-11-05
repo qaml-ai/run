@@ -6,6 +6,7 @@ import { transaction, type Db } from "./postgres.ts";
 import { readText } from "./account-http.ts";
 import { safeError } from "./metrics-policy.ts";
 import { signedHeaders } from "./webhook-policy.ts";
+import { network } from "./account-network.ts";
 
 export type JourneyEnv = {
   AGENT_JOURNEY_URL?: string;
@@ -26,7 +27,7 @@ export function createJourney(env: JourneyEnv, accounts: Accounts, publicUrl: st
   const config = journeyConfig(env as unknown as NodeJS.ProcessEnv, env.AGENT_JOURNEY_SECRET);
   return config && new Journey({
     ...config, db: accounts.db, publicUrl,
-    fetch: (input, init) => fetch(input, init),
+    fetch: network().fetch,
     host: { transaction: (db, work) => transaction(db as Db, work), readText, safeError, signedHeaders },
     internal: (tenant, email) => accounts.tenants.has(tenant) || emailAt(config.internalEmailDomains, email),
   });
