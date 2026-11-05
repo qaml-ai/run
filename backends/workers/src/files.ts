@@ -10,6 +10,7 @@ import {
   safeName,
 } from "./file-policy.ts";
 import { uploadFile } from "./file-upload.ts";
+import { assertStorageWrite } from "./storage-quota.ts";
 import type { FileVersions } from "./file-versions.ts";
 import { signVolumeLink, verifyVolumeLink } from "./file-links.ts";
 import { ARCHIVE_LIMITS, READ_ALL_LIMITS } from "./volume-policy.ts";
@@ -608,6 +609,7 @@ async function fileRoute(
         given = [];
         contents = [];
         for (const file of decoded) {
+          await assertStorageWrite(env, tenant, file.bytes.byteLength);
           const stored = await v.storeDetached(file.bytes, file.contentType);
           given.push({ ...stored, path: file.path, version: 0 });
           contents.push({
@@ -876,11 +878,13 @@ export function volumeTools(
         if (content === undefined && text === undefined)
           throw new FileError("content is required");
         const t = await target(path, true);
+        const bytes = encoding === "base64"
+          ? Buffer.from(content ?? text!, "base64")
+          : new TextEncoder().encode(content ?? text);
+        await assertStorageWrite(env, tenant, bytes.byteLength);
         const entry = await guard(t, () => t.v.write(
           t.path,
-          encoding === "base64"
-            ? Buffer.from(content ?? text!, "base64")
-            : new TextEncoder().encode(content ?? text),
+          bytes,
           declaredType(contentType) ??
             sniffContentType(
               new TextEncoder().encode(content ?? text).subarray(0, 512),
@@ -987,9 +991,11 @@ export function volumeTools(
             throw new FileError("oldText must occur exactly once");
           text = text.replace(edit.oldText, edit.newText);
         }
+        const edited = new TextEncoder().encode(text);
+        await assertStorageWrite(env, tenant, edited.byteLength);
         const written = await guard(t, () => t.v.write(
             t.path,
-            new TextEncoder().encode(text),
+            edited,
             file.contentType,
             file.version,
           ));
