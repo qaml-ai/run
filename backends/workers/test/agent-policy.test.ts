@@ -119,6 +119,27 @@ test('child spending includes decisions, web tools, images, transcription and it
   assert.ok(Math.abs(await f.delegation.costSince(child.createdAt) - 0.21) < 1e-12);
   await Promise.all(f.tasks);
 });
+test('sequential delegates share the same assistant response budget before either starts', async () => {
+  const f = fixture(), original = f.host.context, fetch = f.host.fetch;
+  f.host.context = async api => { const context = await original(api); return { ...context, config: { ...context.config, delegate: { instructions: true, maxParallel: 1 } } }; };
+  f.host.remainingBudget = async () => 0.1 - await f.delegation.cost('parent-run');
+  f.host.fetch = async (id, request) => request.method === 'GET' && new URL(request.url).pathname.startsWith('/requests/')
+    ? Response.json({ state: 'completed', status: 'completed', outcome: { result: { usage: { costUsd: 0.05 } } } }) : fetch(id, request);
+  const api = { taskId: 1, callId: 'first', getTask: async () => ({ input: { kind: 'model', callId: 'first', assistant: 2 } }),
+    entry: async () => ({ model: [{ role: 'assistant', content: [{ type: 'toolCall', name: 'delegate' }, { type: 'toolCall', name: 'delegate' }] }] }) } as unknown as ToolExecutionApi;
+  const first = await f.delegation.start({ instructions: 'worker', task: 'first' }, 'first', signal(), false, api);
+  await f.delegation.wait(first);
+  const second = await f.delegation.start({ instructions: 'worker', task: 'second' }, 'second', signal(), false, api);
+  await f.delegation.wait(second);
+  await Promise.all(f.tasks);
+  assert.deepEqual(f.submitted.map(request => request.params.spendLimit.usd), [0.05, 0.05]);
+});
+test('delegate tools describe their saved definition targets', async () => {
+  const f = fixture();
+  f.host.target = async () => ({ config: {}, description: 'Finds answers' });
+  const tools = await f.delegation.toolsFor({ agents: [{ name: 'researcher', definition: 'researcher' }] }, ['delegate']);
+  assert.match(tools[0].description!, /researcher: Finds answers/);
+});
 test('authoritative remaining budget reserves shares held by background children from earlier runs', async () => {
   const f = fixture();
   f.host.remainingBudget = async background => { assert.equal(background, true); return 0.04; };

@@ -44,4 +44,17 @@ const senderPath = new URL('sender.ts', output);
 if (process.argv.includes('--check')) {
   if (await readFile(senderPath, 'utf8') !== portableSender) throw new Error('sender policy drifted');
 } else await writeFile(senderPath, portableSender);
+const spend = await readFile(new URL('client-sessions/spend.ts', source), 'utf8');
+const children = await readFile(new URL('client-sessions/delegation.ts', source), 'utf8');
+const childPolicy = header + `export type DelegateResponse = { run: string; messageIndex: number; taken: number };
+export type Session = { childHeld?: Map<string, { usd: number; holders: number }>; delegateResponse?: DelegateResponse; delegating?: { active: number } };
+type SpendContext = { left?: number };
+const budgetLeft = async (ctx: SpendContext, _session: Session, _run: string) => ctx.left;
+type Mount = { volumeId: string; path: string; mode: 'ro' | 'rw'; subpath?: string; notify?: boolean };
+` + spend.slice(spend.indexOf('/**\n * The spend limit a delegate'), spend.indexOf('/**\n * A background child\'s spend')) +
+  children.slice(children.indexOf('/**\n * What a child of the model\'s own'), children.indexOf('/** A child\'s prompt:'));
+const childPath = new URL('delegation-policy.ts', output);
+if (process.argv.includes('--check')) {
+  if (await readFile(childPath, 'utf8') !== childPolicy) throw new Error('child policy drifted');
+} else await writeFile(childPath, childPolicy);
 console.log('Decision and multi-agent policy matches src/');

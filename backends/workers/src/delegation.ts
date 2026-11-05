@@ -1,12 +1,16 @@
 import { defineTool, type ToolRegistration, type ToolExecutionApi } from '@earendil-works/pi-durable';
 import { HttpError } from './errors.ts';
 import { digest } from './api-contract.ts';
-import { MULTI_AGENT_LIMITS, PARENT_KEYS, SUBAGENT_PROMPT, roleAndTask, delegateTool, agentsTools, agentMessage, agentUpdates, REPORT_PROGRESS, SEND_MESSAGE, type DelegateSettings } from './multi-agent-policy.ts';
+import { MULTI_AGENT_LIMITS, PARENT_KEYS, roleAndTask, delegateTool, agentsTools, agentMessage, agentUpdates, REPORT_PROGRESS, SEND_MESSAGE, type DelegateSettings } from './multi-agent-policy.ts';
 import type { ToolDefinition } from './policy-host.ts';
 import type { NoticeRequest, RuntimeNotice } from './delegation-notifications.ts';
+import { childConfig } from './child-config.ts';
+import { holdBudget, type DelegateResponse, type Session as BudgetSession } from './delegation-policy.ts';
+import { toolCallSite } from './tool-call-context.ts';
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 
 type Configuration = { model?: string | object; systemPrompt?: string; delegate?: DelegateSettings; builtins?: string[]; spendLimit?: { usd: number }; [key: string]: unknown };
-export type ParentRun = { id: string; params?: { spendLimit?: { usd: number } }; metadata?: Record<string, string> };
+export type ParentRun = { id: string; params?: { spendLimit?: { usd: number }; bucket?: string; actor?: string }; metadata?: Record<string, string> };
 export type ChildUsage = { costUsd?: number; subagentCostUsd?: number; imageCostUsd?: number; decisionCostUsd?: number; webCostUsd?: number; transcriptionCostUsd?: number };
 export type ChildRun = { state: string; status?: string; error?: string; outcome?: { result?: { reply?: string; output?: unknown; usage?: ChildUsage }; error?: string } };
 export function childUsageCost(usage?: ChildUsage) {
@@ -23,7 +27,7 @@ export interface DelegationHost {
   create(config: Configuration, key: string): Promise<{ id: string }>;
   /** Copy an eligible parent connection before a newly created child starts. */
   inheritComputer?(parent: string, child: string): Promise<void>;
-  target(ref: { agent?: string; definition?: string }): Promise<{ id?: string; config: Configuration }>;
+  target(ref: { agent?: string; definition?: string }): Promise<{ id?: string; config: Configuration; description?: string }>;
   fetch(id: string, request: Request): Promise<Response>;
   /** Cancel exactly this child request, including a queued request of an existing agent. */
   cancelRequest?(agentId: string, requestId: string): Promise<unknown>;
@@ -114,6 +118,16 @@ export class Delegation {
     if (stored) await this.host.storage.delete(prefix + key);
     const place = await this.place(id, run, settings);
     const maxParallel = settings.maxParallel ?? MULTI_AGENT_LIMITS.maxParallel;
+    let group: { messageIndex: number; delegates: number } | undefined;
+    if (!background && api?.getTask && api.entry) {
+      const site = await toolCallSite(api);
+      if (site.assistant !== undefined) {
+        const entry = await api.entry(site.assistant as never, BACKGROUND_CONTEXT);
+        const delegates = (entry?.model ?? []).flatMap(message => Array.isArray(message.content) ? message.content : [])
+          .filter(part => part.type === 'toolCall' && part.name === 'delegate').length;
+        group = { messageIndex: site.assistant, delegates: Math.max(1, delegates) };
+      }
+    }
     let held: number | undefined;
     // Slot and budget reservation are one SQLite transaction. No model call can race them.
     for (;;) {
@@ -137,7 +151,17 @@ export class Delegation {
             : children.reduce((sum, child) => sum + (child.spent ?? child.held ?? 0), 0);
           const remaining = available - reserved;
           if (remaining <= 0) throw new HttpError(402, 'This run has no budget left for a sub-agent', 'SPEND_LIMIT');
-          held = remaining / (maxParallel - running.length);
+          if (group) {
+            const responseKey = `delegate-response:${run.id}:${group.messageIndex}`;
+            const prior = await tx.get<DelegateResponse & { keys?: string[] }>(responseKey);
+            const state: BudgetSession = {
+              childHeld: new Map([[run.id, { usd: reserved, holders: running.length }]]),
+              delegating: { active: running.length + 1 },
+              ...(prior ? { delegateResponse: { ...prior, taken: prior.taken - (prior.keys?.includes(key) ? 1 : 0) } } : {}),
+            };
+            held = await holdBudget({ left: available }, state, run.id, group);
+            await tx.put(responseKey, { ...state.delegateResponse!, keys: [...new Set([...(prior?.keys ?? []), key])] });
+          } else held = remaining / (maxParallel - running.length);
         }
         const child: DelegatedChild = { id: '', key, requestId: `delegate_${identity.slice(0, 48)}`, parentRequestId: run.id, toolCallId: callId, task: args.instructions === undefined ? args.task as string : roleAndTask(args.instructions as string, args.task as string), name: typeof args.name === 'string' ? args.name : `${target?.name ?? 'subagent'}-${children.length + 1}`, depth: place.depth, maxDepth: place.maxDepth, chain: place.chain, root: place.chain[0], background, createdAt: Date.now(), status: 'running', made: target?.agent === undefined, ...(held !== undefined ? { held } : {}) };
         await tx.put(prefix + key, child);
@@ -148,7 +172,7 @@ export class Delegation {
           await this.checkCancellation(admitted, signal);
           const resolved = target ? await this.host.target(target) : undefined;
           if (resolved?.id && place.chain.includes(resolved.id)) throw new HttpError(400, 'This agent is already working on the delegation chain');
-          const made = resolved?.id ? resolved : await this.host.create({ ...(resolved?.config ?? config), ...(target ? {} : { systemPrompt: SUBAGENT_PROMPT }), name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key);
+          const made = resolved?.id ? resolved : await this.host.create({ ...childConfig(config, resolved?.config, run.params), name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key);
           Object.assign(admitted, await this.update(admitted, { id: made.id! }));
           if (!resolved?.id) await this.host.inheritComputer?.(id, admitted.id);
           await this.checkCancellation(admitted, signal);
@@ -158,7 +182,7 @@ export class Delegation {
           const relay = await this.relay(admitted);
           try { await this.checkCancellation(admitted, signal); }
           catch (error) { relay.abort(); throw error; }
-          const response = await this.host.fetch(admitted.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: admitted.requestId, method: 'prompt', params: { text: admitted.task, metadata: signed, ...(held !== undefined ? { spendLimit: { usd: held } } : {}), ...(args.output !== undefined ? { output: args.output } : {}) } }) }));
+          const response = await this.host.fetch(admitted.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: admitted.requestId, method: 'prompt', params: { text: admitted.task, metadata: signed, ...(run.params?.actor ? { actor: run.params.actor } : {}), ...(held !== undefined ? { spendLimit: { usd: held } } : {}), ...(args.output !== undefined ? { output: args.output } : {}) } }) }));
           if (!response.ok) { relay.abort(); throw new HttpError(response.status, 'Child submission failed'); }
           Object.assign(admitted, await this.update(admitted, { accepted: true }));
           this.follow(admitted, relay);
@@ -366,8 +390,16 @@ export class Delegation {
       if (child.accepted) this.follow(child);
     }
   }
-  tools(settings: DelegateSettings, builtins: readonly string[], subagent = false): ToolRegistration[] {
-    const definitions: ToolDefinition[] = [...(builtins.includes('delegate') ? [delegateTool(settings, () => undefined)] : []), ...(builtins.includes('agents') ? agentsTools(settings, () => undefined) : [])];
+  async toolsFor(settings: DelegateSettings, builtins: readonly string[], subagent = false): Promise<ToolRegistration[]> {
+    const descriptions = new Map<string, string>();
+    await Promise.all((settings.agents ?? []).filter(target => target.definition && !target.description).map(async target => {
+      const resolved = await this.host.target(target).catch(() => undefined);
+      if (resolved?.description) descriptions.set(target.definition!, resolved.description);
+    }));
+    return this.tools(settings, builtins, subagent, target => target.definition ? descriptions.get(target.definition) : undefined);
+  }
+  tools(settings: DelegateSettings, builtins: readonly string[], subagent = false, describe: Parameters<typeof delegateTool>[1] = () => undefined): ToolRegistration[] {
+    const definitions: ToolDefinition[] = [...(builtins.includes('delegate') ? [delegateTool(settings, describe)] : []), ...(builtins.includes('agents') ? agentsTools(settings, describe) : [])];
     if (subagent) definitions.push(REPORT_PROGRESS, ...(!definitions.some(tool => tool.name === 'send_message') ? [SEND_MESSAGE] : []));
     return definitions.map(definition => defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, replay: 'safe', execute: async (args: Record<string, unknown>, api, context) => {
       const signal = context.abortSignal ?? new AbortController().signal;

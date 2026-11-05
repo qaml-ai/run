@@ -200,3 +200,8 @@ export const answerList = (body: any) => {
   if (!Array.isArray(body?.answers) || !body.answers.every(valid)) throw new HttpError(400, "Send { answers: [{ id, action, content?, from?, actor? }] }");
   return body.answers.map(({ id, ...answer }: any) => ({ id: String(id), body: answer }));
 };
+
+/** Who approved a call, as tools are told: ids only, never names a person chose. */
+export function approver(by: Responder) {
+  return { ...(by.via ? { via: by.via } : {}), ...(by.from ? { from: by.from.id } : {}), ...(by.actor ? { actor: by.actor } : {}) };
+}
