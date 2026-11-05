@@ -158,6 +158,9 @@ export class PromptAttachments {
             },
           });
         }
+        // Upload keys use the volume's durable tenant/id metadata. A new private
+        // workspace may not have had a file operation yet.
+        await volume(this.env, identity.tenant, scratch.volumeId);
         await uploadFile(
           this.env,
           identity.tenant,
