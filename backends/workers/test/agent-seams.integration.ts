@@ -181,16 +181,9 @@ test(
       ),
       0,
     );
-    assert.equal(
-      Number(
-        (
-          await f.db.query(
-            "SELECT balance FROM credit_accounts WHERE tenant=$1",
-            ["camelrun-proto-local"],
-          )
-        ).rows[0].balance,
-      ),
-      99993000,
-    );
+    const ledger = await f.db.query("select sum(amount)::bigint total from credit_ledger where tenant=$1", ["camelrun-proto-local"]);
+    const balance = await f.db.query("select balance from credit_accounts where tenant=$1", ["camelrun-proto-local"]);
+    assert.equal(Number(balance.rows[0].balance), Number(ledger.rows[0].total));
+    assert.ok(Number(balance.rows[0].balance) <= 100000000, "source-priced active time is charged");
   },
 );

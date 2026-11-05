@@ -1,6 +1,14 @@
 import { BadRequest, object } from "./validation.ts";
+import { identityInput, bucketInput, spendInput } from "./security-policy.ts";
+import { checkScope } from "./key-scopes.ts";
 
 export interface AgentConfiguration {
+  subject?: string;
+  context?: Record<string, unknown>;
+  bucket?: string;
+  keyScope?: string;
+  spendLimit?: number;
+  workspaceId?: string | null;
   model?: string;
   systemPrompt?: string;
   fileTools?: boolean;
@@ -58,6 +66,7 @@ export function configuration(
   defaultModel: string,
 ): { config: AgentConfiguration; ttlSeconds?: number | null } {
   const fields = object(input, [
+    "subject", "context", "bucket", "keyScope", "spendLimit", "workspaceId",
     "model",
     "systemPrompt",
     "fileTools",
@@ -81,6 +90,17 @@ export function configuration(
       );
   }
   const config: AgentConfiguration = { model: defaultModel };
+  Object.assign(config, identityInput(fields));
+  if (fields.bucket !== undefined && fields.bucket !== null) config.bucket = bucketInput(fields.bucket);
+  if (fields.keyScope !== undefined) config.keyScope = checkScope(fields.keyScope);
+  if (fields.spendLimit !== undefined) {
+    const spendLimit = spendInput(fields.spendLimit);
+    if (spendLimit !== null) config.spendLimit = spendLimit;
+  }
+  if (fields.workspaceId !== undefined) {
+    if (fields.workspaceId !== null && typeof fields.workspaceId !== 'string') throw new BadRequest('Invalid workspaceId');
+    config.workspaceId = fields.workspaceId as string | null;
+  }
   for (const field of [
     "model",
     "systemPrompt",

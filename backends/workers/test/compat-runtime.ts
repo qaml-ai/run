@@ -28,7 +28,7 @@ export async function compatibilityRuntime(
     tenant: "alice",
     modelURL: env.AGENT_BASE_URL ?? model.url,
     tenants,
-    vars: { MODEL: env.AGENT_MODEL ?? "openai/gpt-4o-mini" },
+    vars: { ...env, ...(tenantsFile ? { AGENT_TENANTS_JSON: JSON.stringify(tenantsFile) } : {}), MODEL: env.AGENT_MODEL ?? "openai/gpt-4o-mini" },
   });
   t.after(() => server.stop());
   const call = async (path: string, init: any = {}) => {

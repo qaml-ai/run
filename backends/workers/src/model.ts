@@ -22,11 +22,12 @@ export function modelRuntime(
     TEST_MODEL_BASE_URL?: string;
   } & ImageBindings,
   getTenant: () => Promise<string>,
+  wrapProvider: (provider: Provider<any>) => Provider<any> = provider => provider,
 ) {
   const models = createModels();
   if (env.TEST_MODEL !== "1") {
     const ai = createAI({ binding: env.AI });
-    models.setProvider(withImageReferences(ai.provider, env, getTenant));
+    models.setProvider(wrapProvider(withImageReferences(ai.provider, env, getTenant)));
     const resolve = (name = env.MODEL) => {
       const target = name.startsWith("cloudflare/")
         ? name.slice("cloudflare/".length)
@@ -87,7 +88,7 @@ export function modelRuntime(
       stream: streamOpenAI,
       streamSimple: streamOpenAISimple,
     };
-    models.setProvider(withImageReferences(provider, env, getTenant));
+    models.setProvider(wrapProvider(withImageReferences(provider, env, getTenant)));
     return { models, model: resolve(env.MODEL), resolve };
   }
   const stream = (
@@ -248,7 +249,7 @@ export function modelRuntime(
     stream,
     streamSimple: stream,
   };
-  models.setProvider(withImageReferences(provider, env, getTenant));
+  models.setProvider(wrapProvider(withImageReferences(provider, env, getTenant)));
   return {
     models,
     model,

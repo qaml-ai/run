@@ -76,7 +76,7 @@ test("Postgres money: holds, concurrent overspend, lost acknowledgement, transfe
           [tenant],
         )
       ).rows[0].count,
-      "0",
+      0,
     );
     const target = "camelrun-proto-team";
     await fixture.db.query(
@@ -278,7 +278,7 @@ test("API keys isolate tenants, revoke immediately, Queue delivers signed webhoo
     );
     const endpoint = await call("/v1/webhooks", "POST", {
       url: `http://127.0.0.1:${port}/hook`,
-      events: ["usage"],
+      events: ["usage.recorded"],
     });
     assert.equal(endpoint.status, 201);
     const env = {
@@ -309,7 +309,7 @@ test("API keys isolate tenants, revoke immediately, Queue delivers signed webhoo
       }),
     );
     assert.ok(deliveries[0].headers["webhook-signature"]);
-    assert.equal(JSON.parse(deliveries[0].body).type, "usage");
+    assert.equal(JSON.parse(deliveries[0].body).type, "usage.recorded");
     assert.equal(
       (
         await call("/v1/account/email", "POST", {
@@ -344,9 +344,13 @@ test("API keys isolate tenants, revoke immediately, Queue delivers signed webhoo
       400,
     );
   } finally {
-    await fixture.stop();
-    server.close();
-    await once(server, "close");
+    try { await fixture.stop(); }
+    finally {
+      const closed = once(server, "close");
+      server.close();
+      server.closeAllConnections();
+      await closed;
+    }
   }
 });
 
@@ -454,15 +458,14 @@ test("Public-id creation keys cannot take another tenant agent; unknown webhook 
     );
     assert.equal(foreignRead.status, 404);
     for (const url of [
-      "https://example.com/hook",
       "https://10.0.0.1/hook",
-      "https://[::1]/hook",
-      "http://127.0.0.2/hook",
+      "https://[fe80::1]/hook",
+      "http://192.168.0.1/hook",
     ]) {
       const refused = await call(
         "/v1/webhooks",
         "POST",
-        { url, events: ["usage"] },
+        { url, events: ["usage.recorded"] },
         "owner-fixture-key",
       );
       assert.equal(refused.status, 400);

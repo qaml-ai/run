@@ -1,3 +1,6 @@
+import { errorCode } from "./http-error-policy.ts";
+export { errorCode, errorFields, errorHeaders, errorStatus } from "./http-error-policy.ts";
+
 export class HttpError extends Error {
   readonly status: number;
   readonly code: string;
@@ -5,12 +8,12 @@ export class HttpError extends Error {
   constructor(
     status: number,
     message: string,
-    code = "INVALID_REQUEST",
+    code?: string,
     details?: Record<string, unknown>,
   ) {
     super(message);
     this.status = status;
-    this.code = code;
+    this.code = errorCode({ code, message }, status);
     this.details = details;
   }
 }

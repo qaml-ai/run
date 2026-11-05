@@ -1,0 +1,119 @@
+// Ported from tests/end-user-history.test.ts. Included assertions and test bodies are unchanged.
+// Only service imports and the isolated Postgres fixture differ; see money-policy-port.json for excluded ECS fixtures.
+import { test } from "node:test";
+
+import assert from "node:assert/strict";
+
+import { dayAfter, EndUserCredits, utcDay } from "../src/end-user-credits.ts";
+
+import { testDatabase } from "./billing-database.ts";
+
+const USD = 1_000_000;
+
+const DAY = 86_400_000;
+
+async function history(credits: EndUserCredits, db: { query: (text: string, values?: unknown[]) => Promise<any> }, tenant = "a", now = Date.now()) {
+  await credits.setSettings(tenant, { enabled: true, allowances: { "bot:*": USD, builder: USD / 2 }, markupBps: 2_500 });
+  await credits.post(tenant, "p", { kind: "grant", amount: 10 * USD, key: "pi_1" });
+  const before = now - 2 * DAY, yesterday = now - DAY;
+  // Two days ago: bot:1 spends all its allowance and some of the balance; builder some of its allowance.
+  await credits.charge(tenant, "p", "bot:1", 600_000, "charge:1", {}, before);
+  await credits.charge(tenant, "p", "bot:1", 600_000, "charge:2", {}, before + 1);
+  await credits.charge(tenant, "p", "builder", 200_000, "charge:3", {}, before + 2);
+  // Yesterday: builder past its allowance.
+  await credits.charge(tenant, "p", "builder", USD, "charge:4", {}, yesterday);
+  // A refund and an adjustment two days ago, the grant today.
+  await credits.post(tenant, "p", { kind: "refund", amount: USD, key: "re_1" });
+  await credits.post(tenant, "p", { kind: "adjustment", amount: -250_000, key: "adj_1" });
+  await db.query("update end_user_ledger set created_at = $2 where tenant = $1 and idempotency_key in ('entry:re_1', 'entry:adj_1')", [tenant, before + 3]);
+  return { before: utcDay(before), yesterday: utcDay(yesterday), today: utcDay(now) };
+}
+
+test("the ledger narrows by kind, time, bucket and moved, and pages with its filters", async () => {
+  const { db } = await testDatabase();
+  const credits = new EndUserCredits(db);
+  const now = Date.now();
+  await history(credits, db, "a", now);
+  const all = (await credits.ledger("a", "p", { limit: 200 })).entries;
+  assert.equal(all.length, 7);
+
+  const credit = await credits.ledger("a", "p", { kinds: ["grant", "refund", "adjustment"] });
+  assert.deepEqual(credit.entries.map(entry => entry.key), ["adj_1", "re_1", "pi_1"], "the credit history, without usage");
+  const paged = await credits.ledger("a", "p", { kinds: ["grant", "refund", "adjustment"], limit: 2 });
+  assert.deepEqual([paged.entries.map(entry => entry.key), paged.next], [["adj_1", "re_1"], paged.entries[1].id]);
+  const rest = await credits.ledger("a", "p", { kinds: ["grant", "refund", "adjustment"], limit: 2, before: paged.next });
+  assert.deepEqual([rest.entries.map(entry => entry.key), rest.next], [["pi_1"], undefined], "before pages within the filter");
+
+  const moved = await credits.ledger("a", "p", { moved: true, kinds: ["usage"] });
+  assert.deepEqual(moved.entries.map(entry => entry.key), ["charge:4", "charge:2"], "usage the allowance paid for in full is left out");
+  assert.ok(moved.entries.every(entry => entry.amount < 0));
+
+  const bot = await credits.ledger("a", "p", { bucket: "bot:1" });
+  assert.deepEqual(bot.entries.map(entry => entry.key), ["charge:2", "charge:1"]);
+
+  const yesterday = Date.parse(`${utcDay(now - DAY)}T00:00:00Z`);
+  const ranged = await credits.ledger("a", "p", { from: yesterday, to: yesterday + DAY });
+  assert.deepEqual(ranged.entries.map(entry => entry.key), ["charge:4"], "from is inclusive and to exclusive, on createdAt");
+
+  await assert.rejects(credits.ledger("a", "p", { kinds: ["gift" as never] }), (error: any) => error.status === 400);
+  assert.deepEqual((await credits.ledger("b", "p", { kinds: ["grant"] })).entries, [], "another tenant's are its own");
+});
+
+test("a credit history among much usage is read from the entries index, not the usage", async () => {
+  const { db } = await testDatabase();
+  const credits = new EndUserCredits(db);
+  await db.query(`insert into end_user_ledger (tenant, end_user, kind, amount, bucket, idempotency_key, balance_after, created_at)
+    select 'a', 'p', 'usage', 0, 'bot:1', 'charge:' || n, 0, n from generate_series(1, 10000) n`);
+  for (const key of ["pi_1", "pi_2", "pi_3"]) await credits.post("a", "p", { kind: "grant", amount: USD, key });
+  await db.query("analyze end_user_ledger");
+  assert.deepEqual((await credits.ledger("a", "p", { kinds: ["grant", "refund", "adjustment"] })).entries.map(entry => entry.key), ["pi_3", "pi_2", "pi_1"]);
+  // The statement ledger() makes for that read, and days()' entries part.
+  const plans = await Promise.all([
+    "select * from end_user_ledger where tenant = 'a' and end_user = 'p' and kind = any('{grant,refund,adjustment}'::text[]) and kind <> 'usage' order by id desc limit 51",
+    "select count(*) from end_user_ledger where tenant = 'a' and end_user = 'p' and kind <> 'usage' and created_at >= 0 and created_at < 9999999999999",
+  ].map(async query => (await db.query(`explain ${query}`)).rows.map(row => row["QUERY PLAN"]).join("\n")));
+  for (const plan of plans) assert.match(plan, /end_user_ledger_entries/, plan);
+});
+
+test("per-day totals equal the day's usage rows by bucket, with the tenant's entries, newest first and paged", async () => {
+  const { db } = await testDatabase();
+  const credits = new EndUserCredits(db);
+  const now = Date.now();
+  const days = await history(credits, db, "a", now);
+
+  const { days: read, next } = await credits.days("a", "p", {}, now);
+  assert.equal(next, undefined);
+  assert.deepEqual(read.map(day => day.day), [days.today, days.yesterday, days.before], "newest first");
+  // What each bucket's day says is what its usage rows say: the allowance's part (raw) and what the balance paid (charged).
+  const usage = (await credits.ledger("a", "p", { kinds: ["usage"], limit: 200 })).entries;
+  for (const day of read) {
+    for (const bucket of day.buckets) {
+      const rows = usage.filter(entry => entry.metadata.day === day.day && entry.bucket === bucket.bucket);
+      assert.deepEqual([bucket.freeRaw, bucket.paidCharged], [rows.reduce((sum, row) => sum + row.allowance, 0), rows.reduce((sum, row) => sum - row.amount, 0)], `${day.day} ${bucket.bucket}`);
+    }
+  }
+  const [today, yesterday, before] = read;
+  assert.deepEqual(today, { day: days.today, freeRaw: 0, paidCharged: 0, writtenOff: 0, granted: 10 * USD, refunded: 0, adjusted: 0, spent: 0, expired: 0, entries: 1, buckets: [] }, "a day with only an entry");
+  // builder: USD / 2 from its allowance, the other USD / 2 paid at +25%.
+  assert.deepEqual(yesterday, { day: days.yesterday, freeRaw: USD / 2, paidCharged: 625_000, writtenOff: 0, granted: 0, refunded: 0, adjusted: 0, spent: 0, expired: 0, entries: 0, buckets: [{ bucket: "builder", freeRaw: USD / 2, paidCharged: 625_000, writtenOff: 0 }] });
+  assert.deepEqual(before.buckets, [{ bucket: "bot:1", freeRaw: USD, paidCharged: 250_000, writtenOff: 0 }, { bucket: "builder", freeRaw: 200_000, paidCharged: 0, writtenOff: 0 }]);
+  assert.deepEqual([before.freeRaw, before.paidCharged, before.granted, before.refunded, before.adjusted, before.entries], [1_200_000, 250_000, 0, USD, -250_000, 2]);
+
+  // A page at a time: next is passed as to.
+  const first = await credits.days("a", "p", { limit: 2 }, now);
+  assert.deepEqual([first.days.map(day => day.day), first.next], [[days.today, days.yesterday], days.yesterday]);
+  const second = await credits.days("a", "p", { limit: 2, to: first.next }, now);
+  assert.deepEqual([second.days.map(day => day.day), second.next], [[days.before], undefined]);
+
+  // One bucket: its spend alone, no entries.
+  const builder = await credits.days("a", "p", { bucket: "builder" }, now);
+  assert.deepEqual(builder.days.map(day => [day.day, day.buckets.map(bucket => bucket.bucket), day.entries]), [[days.yesterday, ["builder"], 0], [days.before, ["builder"], 0]]);
+  // A range: from inclusive, to exclusive.
+  assert.deepEqual((await credits.days("a", "p", { from: days.yesterday, to: days.today }, now)).days.map(day => day.day), [days.yesterday]);
+
+  for (const bad of [{ from: "2026-13-01" }, { to: "yesterday" }, { from: days.today, to: days.today }, { from: "2020-01-01", to: "2026-01-01" }, { bucket: "bad bucket!" }]) {
+    await assert.rejects(credits.days("a", "p", bad, now), (error: any) => error.status === 400, JSON.stringify(bad));
+  }
+  assert.deepEqual((await credits.days("b", "p", {}, now)).days, [], "another tenant's are its own");
+  assert.equal(dayAfter("2026-02-28", 1), "2026-03-01");
+});
