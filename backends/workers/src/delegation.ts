@@ -124,8 +124,9 @@ export class Delegation {
       const site = await toolCallSite(api);
       if (site.assistant !== undefined) {
         const entry = await api.commit(tx => tx.entry(site.assistant as never), BACKGROUND_CONTEXT);
-        const delegates = (entry?.model ?? []).flatMap(message => Array.isArray(message.content) ? message.content : [])
-          .filter(part => part.type === 'toolCall' && part.name === 'delegate').length;
+        let delegates = 0;
+        for (const message of entry?.model ?? []) if (message.role === 'assistant')
+          for (const part of message.content) if (part.type === 'toolCall' && part.name === 'delegate') delegates++;
         group = { messageIndex: site.assistant, delegates: Math.max(1, delegates) };
       }
     }
