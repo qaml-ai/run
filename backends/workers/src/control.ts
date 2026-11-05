@@ -248,7 +248,7 @@ export class Directory {
       const record = await response.json() as { id: string; method: string; state: string; error?: string };
       if (!response.ok) return { failed: true, status: response.status, error: record.error ?? "Agent configuration was refused", code: "CONFIGURATION_FAILED" };
       const { targetConfig, ...current } = entry;
-      return { ...current, reconfigured: record };
+      return { ...current, configHash: await digest(JSON.stringify(targetConfig)), reconfigured: record };
     }
     if (!entry.initialized) {
       const response = await this.env.AGENTS.getByName(id).fetch(
