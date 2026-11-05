@@ -82,7 +82,7 @@ export function meterProvider<P extends Provider<any>>(
           signal: options.signal ? AbortSignal.any([options.signal, halt]) : halt,
           ...(affordable !== undefined && affordable < (options.maxTokens ?? model.maxTokens) ? { maxTokens: affordable } : {}),
           ...(FETCH_APIS.includes(model.api) ? { fetch: callFetch(sink, { ...(options.fetch ? { base: options.fetch } : {}) }) } : {}),
-        }), estimate, undefined, gateway);
+        }), estimate, undefined, gateway, options.supersede);
       for await (const event of source) output.push(event);
     })().catch(error => {
       output.push({ type: 'error', reason: 'error', error: { role: 'assistant', api: model.api, provider: model.provider, model: model.id,

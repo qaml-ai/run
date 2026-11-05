@@ -69,6 +69,7 @@ export async function agentSpend(sql: Sql, tenant: string, agent: string): Promi
       select coalesce(sum((attempt.totals->>'cost')::double precision),0)
       from model_attempts as attempt
       where attempt.tenant=$1 and attempt.agent=limits.agent and attempt.started_at>=limits.set_at
+        and coalesce(attempt.context->>'superseded','')=''
     ) + (
       select coalesce(sum((receipt.message->'_workersAuxiliary'->>'costUsd')::double precision),0)
       from pi_usage_receipts as receipt
@@ -93,6 +94,7 @@ export async function runSpend(sql: Sql, tenant: string, agent: string, requestI
   const row = (await sql.query(`select (
       select coalesce(sum((totals->>'cost')::double precision),0)
       from model_attempts where tenant=$1 and agent=$2 and context->>'requestId'=$3
+        and coalesce(context->>'superseded','')=''
     ) + (
       select coalesce(sum((message->'_workersAuxiliary'->>'costUsd')::double precision),0)
       from pi_usage_receipts where tenant=$1 and session_id=$2 and accounted

@@ -19,7 +19,7 @@ outputs.set('openrouter-details.ts', banner + pass
  .replace('    console.error(JSON.stringify({ type: "openrouter_model_lookup_failed", model: model.id, error: safeError(error) }));\n', ''));
 const catalog = await source('src/catalog.ts');
 const defaults = await source('src/model.ts');
-outputs.set('default-model-policy.ts', banner + defaults.slice(0, defaults.indexOf('/**\n * Models whose provider'))
+outputs.set('default-model-policy.ts', banner + defaults
  .replace('from "./pi-catalog.ts"', 'from "./model-catalog.ts"')
  .replace('from "./openrouter-model.ts"', 'from "./model-policy.ts"')
  .replace('from "./session-config.ts"', 'from "./model-policy.ts"')

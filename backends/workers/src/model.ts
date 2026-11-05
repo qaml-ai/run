@@ -34,6 +34,8 @@ import type { AgentConfiguration } from "./api-contract.ts";
 import { sourceUrl } from "./tool-sources.ts";
 import { listModels } from "./catalog-policy.ts";
 import { streamTimeouts, watchedStream, isStalled } from "./model-stream.ts";
+import { contentFilterFallbacks } from "./default-model-policy.ts";
+import { isContentFilterBlock } from "./model-errors.ts";
 
 export type ModelRequestSettings = AgentConfiguration & { requestId?: string; output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
 export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true; deployments?: Record<string, string> };
@@ -47,9 +49,10 @@ export type ModelHooks = {
   customProviders?: CustomProviders;
 };
 
-function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: string; TEST_MODEL?: string }): Provider {
+function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: string; TEST_MODEL?: string; AGENT_CONTENT_FILTER_FALLBACKS?: string }): Provider {
   let routing: { user: number; previous?: Model<Api>; failed?: Model<Api> } | undefined;
   let forcing: { request: string; count: number; refused: boolean } | undefined;
+  const filterFallbacks = contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS);
   const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {}) => {
     await hooks.beforeRequest?.();
     const config = await hooks.settings?.() ?? {};
@@ -62,6 +65,8 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
     }
     const credential = await hooks.credentials?.(model.provider);
     if (credential?.baseUrl) model = { ...model, api: (model as Model<Api> & { runtimeApi?: Api }).runtimeApi ?? getModel(model.provider, model.id)?.api ?? model.api };
+    let fallback = filterFallbacks.get(`${model.provider}/${model.id}`);
+    if (fallback && (credential?.identity || credential?.baseUrl && !credential.deployments || !(await hooks.credentials?.(fallback.provider))?.apiKey)) fallback = undefined;
     const outputSchema = config.output?.schema;
     const request = config.requestId ?? String(context.messages.find(message => message.role === "user")?.timestamp ?? 0);
     if (!forcing || forcing.request !== request) forcing = { request, count: 0, refused: false };
@@ -102,6 +107,7 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
     const prepared = {
       ...options, ...(toolChoice !== undefined ? { toolChoice: toolChoice as SimpleStreamOptions["toolChoice"] } : {}), ...callSettings(model, config, config.thinkingLevel),
       ...(reasoning ? { reasoning } : {}),
+      ...(fallback ? { supersede: (message: AssistantMessage) => isContentFilterBlock(message) ? "content_filter" as const : undefined } : {}),
       ...(credential ? { apiKey: credential.bearer ? "runtime-bearer" : credential.apiKey ?? "keyless" } : {}),
       ...(credential?.identity ? { endpointIdentity: true } : {}),
       ...(deployment ? { azureDeployment: deployment, env: { AZURE_OPENAI_BASE_URL: credential!.baseUrl!, AZURE_OPENAI_API_VERSION: "v1", AZURE_OPENAI_DEPLOYMENT_NAME_MAP: `${model.id}=${deployment}` } } : {}),
@@ -113,13 +119,13 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
         return await onPayload?.(adjusted, target) ?? adjusted;
       },
     };
-    return { model: credential?.baseUrl ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, transportError: () => transportError };
+    return { model: credential?.baseUrl ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, fallback, transportError: () => transportError };
   };
   const wrap = (simple: boolean) => (model: Model<Api>, context: TranscriptContext, options?: StreamOptions) => {
     const output = createAssistantMessageEventStream();
     void (async () => {
       try {
-        const prepared = await prepare(model, context, options);
+        let prepared = await prepare(model, context, options);
         let retry = false;
         do {
         retry = false;
@@ -130,6 +136,10 @@ function withSettings(provider: Provider, hooks: ModelHooks, env: { TEST_MODE?: 
         }, streamTimeouts(prepared.model, prepared.config.thinkingLevel, prepared.config.runLimits), options?.signal);
         for await (const event of stream) {
           if (event.type === "error" && event.reason !== "aborted" && !isStalled(event.error.errorMessage) && prepared.transportError()) event.error.errorMessage = prepared.transportError();
+          if (event.type === "error" && event.reason !== "aborted" && prepared.fallback && isContentFilterBlock(event.error) && !options?.signal?.aborted) {
+            try { prepared = await prepare(prepared.fallback, context, options); retry = true; continue; }
+            catch { /* If the fallback is unavailable, retain the provider's original refusal. */ }
+          }
           if (event.type === "error" && prepared.options.toolChoice !== undefined && /400/.test(event.error.errorMessage ?? "") && /tool.?choice|forced.*tool/i.test(event.error.errorMessage ?? "")) {
             forcing!.refused = true;
             delete prepared.options.toolChoice;
