@@ -10,6 +10,7 @@ import { searchOrder } from "./web-search-policy.ts";
 import { spendInput } from "./agent-spend-policy.ts";
 import { identityInput, bucketInput } from "./security-policy.ts";
 import { checkScope } from "./key-scopes.ts";
+import { VOLUME_LIMITS } from "./volume-policy.ts";
 
 export interface AgentConfiguration {
   model?: string;
@@ -159,12 +160,13 @@ export function configuration(input: unknown, defaultModel: string): { config: A
     } catch (error) { throw new ApiError((error as {status?: number}).status ?? 400, (error as Error).message, (error as Error).message.startsWith("HISTORY_TOO_LARGE") ? "HISTORY_TOO_LARGE" : "INVALID_HISTORY"); }
   }
   if (fields.mounts !== undefined) {
-    if (!Array.isArray(fields.mounts) || fields.mounts.length > 64) throw new BadRequest("At most 64 mounts");
+    if (!Array.isArray(fields.mounts) || fields.mounts.length > VOLUME_LIMITS.mounts) throw new BadRequest(`At most ${VOLUME_LIMITS.mounts} mounts`);
     config.mounts = fields.mounts.map(raw => {
       const mount = object(raw, ["volumeId", "path", "mode", "subpath", "workspace", "notify"]);
       if ("workspace" in mount) {
-        if (typeof mount.workspace !== "boolean") throw new BadRequest("workspace must be boolean");
+        if (typeof mount.workspace !== "boolean" || Object.keys(mount).some(key => key !== "workspace" && (mount.workspace !== true || key !== "path"))) throw new BadRequest("Invalid workspace mount");
       } else if (typeof mount.volumeId !== "string" || !["rw", "ro"].includes(String(mount.mode))) throw new BadRequest("Invalid mount");
+      if (mount.notify !== undefined && typeof mount.notify !== "boolean") throw new BadRequest("notify must be a boolean");
       if (mount.path !== undefined && (typeof mount.path !== "string" || !mount.path.startsWith("/") || mount.path.split("/").some(x => x === ".." || x === "."))) throw new BadRequest("Invalid mount path");
       return mount;
     });
