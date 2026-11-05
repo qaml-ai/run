@@ -1,5 +1,6 @@
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
+import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
 import { resolveDefinition } from "./definitions.ts";
 import { sweepComputers } from './computers/service.ts';
@@ -167,7 +168,7 @@ const worker = {
       let auth = browser ? null : await authenticateMoney(request, env)
         ?? (((env.TEST_MODE === "1" && !bearer?.startsWith("Bearer art_")) || await authorized(request, env.API_TOKEN)) ? await authenticate(request, env) : null);
       if (path === "/mcp") {
-        if (!auth) return agentMcpSignIn(request, url.origin, "");
+        if (!auth) return agentMcpSignIn(request, publicOrigins(env as unknown as NodeJS.ProcessEnv, url.origin).of(request.headers), "");
         const publicOrigin = env.AGENT_PUBLIC_URL || url.origin;
         return serveHostedMcp(request, { publicOrigin, fetch: (async (input, init) => {
           const local = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -186,9 +187,16 @@ const worker = {
         throw new ApiError(401, "An agent token is required", "UNAUTHORIZED");
       if (match) {
         const idOrKey = agentId(decodeURIComponent(match[2]));
+        if (browser && browser.agent !== idOrKey) throw new ApiError(403, "This browser token grants access to its agent only", "FORBIDDEN");
         if (auth) entry = await new Directory(env, auth.tenantId).get(idOrKey);
         else if (browser && browser.agent === idOrKey)
           entry = await new Directory(env, browser.tenant).get(idOrKey);
+        else if (browser) {
+          const candidate = await new Directory(env, browser.tenant).get(idOrKey);
+          if (!candidate || !browser.scopes.includes('children') || !await env.AGENTS.getByName(browser.agent).hasBackgroundChild(candidate.id))
+            throw new ApiError(403, 'This browser token does not grant this agent', 'FORBIDDEN');
+          entry = candidate;
+        }
         else if (
           /^client_[a-f0-9]{40}$/.test(idOrKey) &&
           (await authorized(request, await agentToken(env.API_TOKEN, idOrKey)))
@@ -344,7 +352,8 @@ const worker = {
         return json({ ...browserTokens.mint(entry.tenantId, entry.id, await body(request, 16 * 1024)), agentId: entry.id }, 201);
       }
       if (tail === "/credentials" && request.method === "GET") {
-        if (!auth) throw new ApiError(403, "Account key required", "FORBIDDEN");
+        if (!auth) throw new ApiError(401, "Account key required", "UNAUTHORIZED");
+        if (!entry.key) throw new ApiError(409, "AGENT_KEYLESS: this agent was made without a key, so its token is only what its create answered", "AGENT_KEYLESS");
         return json(
           credentials(entry, await agentToken(env.API_TOKEN, entry.id)),
         );

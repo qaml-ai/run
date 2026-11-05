@@ -224,6 +224,7 @@ type RequestRecord = {
   steer?: "queued" | "accepted";
   steeredInto?: string;
   metadata?: unknown;
+  actor?: string;
   fingerprint: string;
   billing?: { tenantId: string; agentId: string; model?: string };
   agentSpendAt?: number | null;
@@ -316,6 +317,9 @@ export class CamelAgent extends DurableObject<Env> {
   }
   async receiveAgentProgress(report: ChildProgressReport): Promise<unknown> {
     return this.delegation.recordProgress(report);
+  }
+  async hasBackgroundChild(id: string): Promise<boolean> {
+    return (await this.delegation.children()).some(child => child.background && child.id === id);
   }
   private notifications = new DelegationNotifications({
     storage: this.ctx.storage,
@@ -1166,6 +1170,7 @@ export class CamelAgent extends DurableObject<Env> {
         ...message,
         requestId: id,
         ...(record?.metadata ? { metadata: record.metadata } : {}),
+        ...(record?.params?.from ? { from: record.params.from } : {}),
       } as Message;
     }
     for (const event of this.messageProjection.events(message, ended))
@@ -2123,6 +2128,7 @@ export class CamelAgent extends DurableObject<Env> {
       params,
       agentSpendAt: spend?.setAt ?? null,
       ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
+      ...((params.actor ?? (params.from as { id?: string } | undefined)?.id) ? { actor: String(params.actor ?? (params.from as { id: string }).id) } : {}),
       fingerprint,
       state: running ? "queued" : "running",
       ...(params.whileRunning === "steer"
@@ -2750,10 +2756,9 @@ export class CamelAgent extends DurableObject<Env> {
           202,
         );
       if (path.startsWith("/requests/") && request.method === "GET") {
-        const wait = Math.max(
-          1,
-          Math.min(25000, Number(url.searchParams.get("wait") ?? 0) * 1000),
-        );
+        const seconds = Number(url.searchParams.get("wait") ?? 0);
+        if (!Number.isFinite(seconds) || seconds < 0) throw new BadRequest("wait is a number of seconds");
+        const wait = Math.max(1, Math.min(25000, seconds * 1000));
         return json(
           await requestView(
             await this.settle(decodeURIComponent(path.slice(10)), wait),
@@ -3497,7 +3502,9 @@ export class CamelAgent extends DurableObject<Env> {
     const state = await this.state();
     let replay = await this.replayEvents(request);
     if (new URL(request.url).searchParams.get("poll") === "1") {
-      const wait = Math.min(25_000, Math.max(0, Number(new URL(request.url).searchParams.get("wait") ?? 0) * 1000));
+      const seconds = Number(new URL(request.url).searchParams.get("wait") ?? 0);
+      if (!Number.isFinite(seconds) || seconds < 0) throw new BadRequest("wait is a number of seconds");
+      const wait = Math.min(25_000, seconds * 1000);
       if (!replay.snapshot && !replay.events.length && wait) {
         await new Promise<void>(resolve => {
           const wake = () => { clearTimeout(timer); this.listeners.delete(wake); request.signal.removeEventListener("abort", wake); resolve(); };
@@ -3507,7 +3514,7 @@ export class CamelAgent extends DurableObject<Env> {
         });
         replay = await this.replayEvents(request);
       }
-      return json({ cursor: replay.cursor, events: [...(replay.snapshot ? [{ id: replay.snapshot.cursor, data: replay.snapshot }] : []), ...replay.events] });
+      return json({ cursor: replay.events.at(-1)?.id ?? (replay.cursor || state.cursor), events: [...(replay.snapshot ? [{ id: replay.snapshot.cursor, data: replay.snapshot }] : []), ...replay.events] });
     }
     const encoder = new TextEncoder();
     const conf = await this.config();
