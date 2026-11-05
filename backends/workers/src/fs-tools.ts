@@ -20,7 +20,7 @@ export function compatibleFileTools(tools: ToolRegistration[], request: FileRequ
         // File APIs cap stored files at 32 MiB; each tool result remains 128 KiB.
         const bytes = new Uint8Array(await response.arrayBuffer()), part = bytes.subarray(offset, offset + length);
         const data = encoding === "base64" ? encodeBase64(part) : new TextDecoder().decode(part);
-        const value = { path, data, encoding, ...(offset + length < bytes.length ? { nextOffset: offset + length } : {}) };
+        const value = { path, data, content: data, encoding, ...(offset + length < bytes.length ? { nextOffset: offset + length } : {}) };
         return { ...text(value), structuredOutput: value };
       },
     };

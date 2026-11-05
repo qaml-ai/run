@@ -8,16 +8,15 @@ export type HumanInput = {
   kind?: "question" | "approval" | "form" | "url";
   detail?: Record<string, any>; createdAt?: number; expiresAt?: number;
   state?: "pending" | "answered" | "declined" | "cancelled" | "expired";
+  answerDetail?: { action: "accept" | "decline" | "cancel"; content?: any; by: Record<string, any>; at: number };
 };
 
 export const HumanInputs = defineDoc<{
   requests: Record<string, HumanInput>;
 }>({
-  kind: "camel.human-input",
+  kind: "camel.human-input-session",
   version: 1,
-  scope: "conversation",
-  history: "latest",
-  fork: "initial",
+  scope: "session",
   initial: () => ({ requests: {} }),
   checkpointWhen: () => true,
 });
@@ -35,10 +34,10 @@ export const askHuman = defineTool({
 });
 
 /** Pi journals and replays the wait, including a script parked on the tool. */
-export async function waitForHuman(input: HumanInput, api: ToolExecutionApi, context: Context) {
-    const key = String(api.taskId);
+export async function waitForHuman(input: HumanInput, api: ToolExecutionApi, context: Context, requestKey?: string) {
+    const key = requestKey === undefined ? String(api.taskId) : `${api.taskId}:${requestKey}`;
     await api.commit(async (tx) => {
-      const doc = await tx.doc(HumanInputs, api.conversationId);
+      const doc = await tx.doc(HumanInputs);
       if (!doc.requests[key]) {
         if (Object.keys(doc.requests).length >= 100)
           throw new Error("Human input retention limit reached");
@@ -47,7 +46,6 @@ export async function waitForHuman(input: HumanInput, api: ToolExecutionApi, con
     }, context);
     const watch = (await api.watchDoc(
       HumanInputs,
-      api.conversationId,
       context,
     ))!;
     try {
@@ -78,19 +76,22 @@ export function humanInputView(id: string, item: HumanInput, agent: string, requ
     createdAt: item.createdAt ?? 0, expiresAt: item.expiresAt ?? 0,
     // Existing experimental clients use the unstructured question field.
     question: item.question,
+    ...(item.answerDetail ? { answer: item.answerDetail } : {}),
   };
 }
 
 export function answerHuman(item: HumanInput, body: unknown) {
   const value = body as Record<string, unknown>;
+  const by: Record<string, unknown> = { via: "agent", ...(typeof value?.actor === "string" ? { actor: value.actor } : {}), ...(value?.from && typeof value.from === "object" ? { from: value.from } : {}) };
   if (typeof value?.answer === "string") {
     if (value.answer.length > 4096) throw new Error("Answer exceeds 4096 characters");
-    return { answer: value.answer, state: "answered" as const };
+    return { answer: value.answer, state: "answered" as const, answerDetail: { action: "accept" as const, content: value.answer, by, at: Date.now() } };
   }
   const checked = answerInput({ kind: item.kind ?? "question", detail: item.detail ?? {} }, body);
   return {
     answer: JSON.stringify(checked.action === "accept" ? checked.content ?? { approved: true } : { action: checked.action }),
     state: checked.action === "accept" ? "answered" as const : checked.action === "decline" ? "declined" as const : "cancelled" as const,
+    answerDetail: { ...checked, by, at: Date.now() },
   };
 }
 

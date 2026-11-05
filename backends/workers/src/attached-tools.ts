@@ -1,6 +1,8 @@
 import type { ToolRegistration, ToolExecutionResult, ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import { HttpError } from "./errors.ts";
+import { withToolInputs, type ToolInputReply } from "./mcp-inputs.ts";
+import type { RuntimeIdentity } from "./runtime-identity.ts";
 
 export type ToolDefinition = {
   name: string; description?: string; inputSchema?: Record<string, unknown>;
@@ -8,7 +10,7 @@ export type ToolDefinition = {
   executionMode?: "parallel" | "sequential"; exposure?: "direct" | "codemode" | "both";
   _meta?: Record<string, unknown>;
 };
-export type McpResult = { content?: unknown[]; structuredContent?: unknown; isError?: boolean; [key: string]: unknown };
+export type McpResult = { content?: unknown[]; structuredContent?: unknown; isError?: boolean; inputRequests?: unknown; resultType?: string; requestState?: string; [key: string]: unknown };
 type Pending = { resolve: (result: unknown) => void; reject: (error: Error) => void };
 type Connection = { id: string; send: (event: unknown) => void; pending: Map<string, Pending>; ready: Promise<unknown>; initialized: boolean; draining: boolean };
 
@@ -17,6 +19,13 @@ export class AttachedTools {
   private current?: Connection;
 
   get connected() { return !!this.current?.initialized && !this.current.draining; }
+
+  async waitUntilReady() {
+    const connection = this.current;
+    if (!connection || connection.draining) return false;
+    try { await connection.ready; } catch { return false; }
+    return this.current === connection && connection.initialized && !connection.draining;
+  }
 
   attach(send: (event: unknown) => void, previous?: string, takeover = false) {
     if (this.connected && !takeover && previous !== this.current?.id)
@@ -73,9 +82,9 @@ export class AttachedTools {
         pending?.reject(new Error("Attached tool cancelled; its outcome may be unknown"));
       };
       const timeout = setTimeout(() => {
-        connection.pending.delete(id);
         connection.send({ type: "mcp", message: { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "Tool timeout" } } });
-        reject(Object.assign(new Error(`Attached tool timed out after ${timeoutMs}ms; its outcome may be unknown`), { code: "timeout", outcomeUnknown: true }));
+        connection.pending.get(id)?.reject(Object.assign(new Error(`Attached tool timed out after ${timeoutMs}ms; its outcome may be unknown`), { code: "timeout", outcomeUnknown: true }));
+        connection.pending.delete(id);
       }, timeoutMs);
       signal?.addEventListener("abort", cancelled, { once: true });
       const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener("abort", cancelled); };
@@ -85,16 +94,29 @@ export class AttachedTools {
     });
   }
 
-  async call(name: string, args: unknown, timeoutMs = 300_000, signal?: AbortSignal): Promise<McpResult> {
+  async call(name: string, args: unknown, timeoutMs = 300_000, signal?: AbortSignal, options: ToolInputReply & { meta?: Record<string, unknown> } = {}): Promise<McpResult> {
     const connection = this.current;
     if (!connection || connection.draining) throw Object.assign(new Error("No application is connected to answer this tool call; it did not run"), { code: "not_connected" });
     await connection.ready;
     if (this.current !== connection) throw new Error("Application connection replaced");
-    return await this.request(connection, "tools/call", { name, arguments: args }, timeoutMs, signal) as McpResult;
+    const { meta, approval: _approval, ...params } = options;
+    return await this.request(connection, "tools/call", { name, arguments: args, ...params, ...(meta ? { _meta: meta } : {}) }, timeoutMs, signal) as McpResult;
   }
 
-  tools(definitions: ToolDefinition[]): ToolRegistration[] {
-    return definitions.map(definition => registration(definition, (args, _api, context) => this.call(definition.name, args, definition.timeoutMs, context?.abortSignal)));
+  tools(definitions: ToolDefinition[], identity?: (api: ToolExecutionApi) => Promise<{ claims: RuntimeIdentity }>): ToolRegistration[] {
+    return definitions.map(definition => registration(definition, async (args, api, context) => {
+      // Unit callers without a durable API still use the transport directly.
+      if (!api) return this.call(definition.name, args, definition.timeoutMs, context?.abortSignal);
+      const claims = (await identity?.(api))?.claims;
+      const idempotencyKey = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${claims?.agent ?? api.conversationId}:${api.taskId}:${api.callId}`)))).map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 32);
+      return withToolInputs(reply => this.call(definition.name, args, definition.timeoutMs, context?.abortSignal, { ...reply, meta: {
+        "agent-runtime/toolCallId": api.callId, "agent-runtime/idempotencyKey": idempotencyKey,
+        ...(claims ? { "agent-runtime/identity": { ...claims, ...(reply.approval ? { approval: reply.approval } : {}) } } : {}),
+        ...(claims?.origin ? { "agent-runtime/origin": claims.origin } : {}),
+        ...(claims?.act ? { "agent-runtime/actor": claims.act } : {}),
+        ...(reply.approval ? { "agent-runtime/approval": reply.approval } : {}),
+      } }), api, context, { name: definition.name, args });
+    }));
   }
 }
 

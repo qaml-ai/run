@@ -43,7 +43,7 @@ test("closing an attached connection fails in-flight calls without retrying them
 });
 
 test("source validation seals definition credentials and rejects inline secrets/private URLs", async () => {
-  const env = { API_TOKEN: "unit-test-key-with-32-characters-long", TEST_MODE: "1" };
+  const env = { API_TOKEN: "unit-test-key-with-32-characters-long", AGENT_SECRETS_KEY: "22".repeat(32), TEST_MODE: "1" };
   const sources = await prepareSources(env, "tenant", "definition", "mcpServers", [{ name: "shop", url: "https://example.com/mcp", auth: { type: "bearer", token: "test-value" } }]);
   assert.ok(sources[0].sealed);
   assert.equal(JSON.stringify(sources).includes("test-value"), false);

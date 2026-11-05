@@ -5,13 +5,16 @@ import { checkDocument, operations, formEncode, type Operation } from "./openapi
 import { HttpError } from "./errors.ts";
 import { waitForHuman } from "./human.ts";
 import { parse as parseYaml } from "yaml";
+import { signRuntimeIdentity, type IdentityEnv, type RuntimeIdentity } from "./runtime-identity.ts";
+import { withToolInputs, type ToolInputReply } from "./mcp-inputs.ts";
+import { openProviderSecret } from "./model-credentials.ts";
 
-type Env = { API_TOKEN: string; TEST_MODE?: string };
+type Env = { API_TOKEN: string; TEST_MODE?: string } & Partial<IdentityEnv>;
 type Approval = { default?: "never" | "always" | "destructive" | "judged"; tools?: Record<string, "never" | "always" | "judged">; methods?: string[] };
-type Sealed = { iv: string; data: string };
+type Sealed = { iv: string; ciphertext: string; tag: string };
 export type RemoteSource = {
   name: string; url?: string; baseUrl?: string; spec?: string; operations?: Operation[];
-  headerNames?: string[]; auth?: { type: "bearer" }; sealed?: Sealed;
+  headerNames?: string[]; auth?: { type: "bearer" | "runtime" }; sealed?: Sealed; audience?: string;
   allowTools?: string[]; denyTools?: string[]; timeoutMs?: number;
   exposure?: "direct" | "codemode" | "both"; approval?: Approval;
 };
@@ -78,20 +81,20 @@ const b64 = (bytes: Uint8Array) => {
 };
 const unb64 = (text: string) => Uint8Array.from(atob(text), c => c.charCodeAt(0));
 async function key(env: Env) {
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.API_TOKEN));
-  return crypto.subtle.importKey("raw", hash, "AES-GCM", false, ["encrypt", "decrypt"]);
+  if (!env.AGENT_SECRETS_KEY || !/^[a-f0-9]{64}$/i.test(env.AGENT_SECRETS_KEY)) throw new HttpError(503, "This runtime has no AGENT_SECRETS_KEY, so it cannot store credentials");
+  return crypto.subtle.importKey("raw", Uint8Array.from(env.AGENT_SECRETS_KEY.match(/../g)!, part => Number.parseInt(part, 16)), "AES-GCM", false, ["encrypt"]);
 }
 async function seal(env: Env, aad: string, headers: Record<string, string>): Promise<Sealed> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(aad) }, await key(env), new TextEncoder().encode(JSON.stringify(headers)));
-  return { iv: b64(iv), data: b64(new Uint8Array(data)) };
+  const bytes = new Uint8Array(data);
+  return { iv: b64(iv), ciphertext: b64(bytes.subarray(0, -16)), tag: b64(bytes.subarray(-16)) };
 }
 async function unseal(env: Env, aad: string, value?: Sealed): Promise<Record<string, string>> {
   if (!value) return {};
-  const data = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(value.iv), additionalData: new TextEncoder().encode(aad) }, await key(env), unb64(value.data));
-  return JSON.parse(new TextDecoder().decode(data));
+  return JSON.parse(await openProviderSecret(env as IdentityEnv, aad, value));
 }
-const aad = (tenant: string, definition: string, kind: string, name: string) => `${tenant}:definition:${definition}:${kind}:${name}`;
+const aad = (_tenant: string, definition: string, kind: string, name: string) => `definition:${definition}:${kind === "mcpServers" ? "mcp" : "openapi"}:${name}`;
 const names = (value: unknown, label: string) => {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length > 4096 || value.some(x => typeof x !== "string" || x.length > 200)) throw bad(`${label} must be a bounded list of names`);
@@ -108,7 +111,7 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
     const value = raw as Record<string, any>, name = value.name;
     if (typeof name !== "string" || name.length > 32 || !NAME.test(name) || used.has(name)) throw bad("Source names must be unique, 1–32 letters and digits with single underscores");
     used.add(name);
-    if (!definition && (value.headers !== undefined || value.auth !== undefined)) throw bad("An agent's or run's own MCP servers carry no credentials; put credentials in a definition");
+    if (!definition && (value.headers !== undefined || value.auth !== undefined && value.auth?.type !== "runtime")) throw bad("An agent's or run's own MCP servers carry no credentials; put credentials in a definition");
     const kept = previous.find(x => x.name === name);
     const url = kind === "mcpServers" ? sourceUrl(value.url, env).href : undefined;
     if (value.timeoutMs !== undefined && (!Number.isInteger(value.timeoutMs) || value.timeoutMs < 1000 || value.timeoutMs > 600_000)) throw bad("timeoutMs must be 1000..600000");
@@ -123,9 +126,10 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
       }
     }
     if (value.auth !== undefined) {
-      if (value.auth?.type !== "bearer" || typeof value.auth.token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(value.auth.token)) throw bad("This backend supports bearer source credentials in definitions");
+      if (value.auth?.type !== "runtime" && (value.auth?.type !== "bearer" || typeof value.auth.token !== "string" || !/^[\x21-\x7e]{1,8192}$/.test(value.auth.token))) throw bad("Source auth must be runtime or a bearer credential in a definition");
+      if (value.auth?.type === "runtime" && Object.keys(value.auth).length !== 1) throw bad("Runtime auth takes no credentials");
       if (Object.keys(headers).some(x => x.toLowerCase() === "authorization")) throw bad("Use an Authorization header or auth, not both");
-      headers.Authorization = `Bearer ${value.auth.token}`;
+      if (value.auth.type === "bearer") headers.Authorization = `Bearer ${value.auth.token}`;
     }
     const source: RemoteSource = {
       name, ...(url ? { url } : {}),
@@ -133,6 +137,7 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
       ...(value.timeoutMs ? { timeoutMs: value.timeoutMs } : {}),
       ...(value.allowTools !== undefined ? { allowTools: names(value.allowTools, "allowTools") } : {}),
       ...(value.denyTools !== undefined ? { denyTools: names(value.denyTools, "denyTools") } : {}),
+      ...(value.auth?.type === "runtime" ? { auth: { type: "runtime" as const } } : {}),
     };
     if (value.approval !== undefined) {
       const approval = value.approval;
@@ -159,14 +164,20 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
       if (spec ?? kept?.spec) source.spec = spec ?? kept?.spec;
     }
     const origin = new URL(source.url ?? source.baseUrl!).origin, keptOrigin = kept && new URL(kept.url ?? kept.baseUrl!).origin;
+    if (value.audience !== undefined) {
+      if (source.auth?.type !== "runtime" || typeof value.audience !== "string" || value.audience.length > 2048) throw bad("audience is for runtime auth");
+      if (value.audience !== `urn:camelrun:${tenant}:${name}` && sourceUrl(value.audience, env).origin !== origin) throw bad("audience must name the source's origin or its tenant-qualified urn");
+      source.audience = value.audience;
+    }
     if (Object.keys(headers).length) {
       source.sealed = await seal(env, aad(tenant, definition!, kind, name), headers);
       source.headerNames = Object.keys(headers);
-      if (value.auth !== undefined) source.auth = { type: "bearer" };
+      if (value.auth?.type === "bearer") source.auth = { type: "bearer" };
     } else if (kept && origin === keptOrigin && value.headers === undefined && value.auth === undefined) {
       if (kept.sealed) source.sealed = kept.sealed;
       if (kept.headerNames) source.headerNames = kept.headerNames;
       if (kept.auth) source.auth = kept.auth;
+      if (kept.audience && value.audience === undefined) source.audience = kept.audience;
     }
     return source;
   }));
@@ -175,6 +186,25 @@ export async function prepareSources(env: Env, tenant: string, definition: strin
 export function sourceView(source: RemoteSource) {
   const { sealed: _sealed, operations, ...view } = source;
   return { ...view, ...(operations ? { tools: operations.map(operation => operation.name) } : {}) };
+}
+
+/** Public catalog from the installed tools, with no credentials or executable callbacks. */
+export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mcpServers?: RemoteSource[]; openApi?: RemoteSource[]; fileTools?: boolean; builtins?: string[] }, tools: ToolRegistration[], connected: boolean) {
+  const view = (tool: ToolRegistration) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters, ...(tool.executionMode ? { executionMode: tool.executionMode } : {}) });
+  const result: { kind: string; name: string; status: string; tools: unknown[]; connected?: boolean; url?: string; error?: string }[] = [];
+  const fileNames = new Set(["read", "write", "edit", "ls", "find", "grep", "stat", "mkdir", "rm", "rename"]);
+  const files = tools.filter(tool => fileNames.has(tool.name));
+  if (config.fileTools !== false && files.length) result.push({ kind: "files", name: "files", status: "listed", tools: files.map(view) });
+  if (config.mcp?.tools?.length) result.push({ kind: "application", name: "application", status: "listed", connected, tools: config.mcp.tools });
+  for (const [kind, sources] of [["mcp", config.mcpServers], ["openapi", config.openApi]] as const) for (const source of sources ?? []) {
+    const installed = tools.filter(tool => tool.name.startsWith(`${source.name}__`));
+    result.push({ kind, name: source.name, url: source.url ?? source.baseUrl, status: installed.length ? "listed" : "error", tools: installed.map(view), ...(installed.length ? {} : { error: "Source unavailable or no tools selected" }) });
+  }
+  for (const name of config.builtins ?? []) {
+    const installed = tools.filter(tool => tool.name === name);
+    if (installed.length) result.push({ kind: "builtin", name, status: "listed", tools: installed.map(view) });
+  }
+  return result;
 }
 
 function rpcResult(text: string, id: string): any {
@@ -200,13 +230,14 @@ class RemoteMcp {
   private env: Env;
   private source: RemoteSource;
   private headers: Record<string, string>;
-  constructor(env: Env, source: RemoteSource, headers: Record<string, string>) {
-    this.env = env; this.source = source; this.headers = headers;
+  private runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>;
+  constructor(env: Env, source: RemoteSource, headers: Record<string, string>, runtimeHeaders: (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]) => Promise<Record<string, string>>) {
+    this.env = env; this.source = source; this.headers = headers; this.runtimeHeaders = runtimeHeaders;
   }
-  private async rpc(method: string, params: unknown, notification = false, signal?: AbortSignal): Promise<any> {
+  private async rpc(method: string, params: unknown, notification = false, signal?: AbortSignal, api?: ToolExecutionApi, approval?: ToolInputReply["approval"]): Promise<any> {
     const id = crypto.randomUUID();
     const result = await fetchSource(this.env, this.source.url!, {
-      method: "POST", headers: { ...this.headers, Accept: "application/json, text/event-stream", "Content-Type": "application/json", ...(this.session ? { "Mcp-Session-Id": this.session, "MCP-Protocol-Version": "2025-06-18" } : {}) },
+      method: "POST", headers: { ...this.headers, ...await this.runtimeHeaders(api, approval), Accept: "application/json, text/event-stream", "Content-Type": "application/json", ...(this.session ? { "Mcp-Session-Id": this.session, "MCP-Protocol-Version": "2025-06-18" } : {}) },
       body: JSON.stringify({ jsonrpc: "2.0", ...(notification ? {} : { id }), method, params }), signal: AbortSignal.any([AbortSignal.timeout(this.source.timeoutMs ?? 300_000), ...(signal ? [signal] : [])]),
     });
     if (!result.response.ok) throw new Error(`MCP source ${this.source.name} answered HTTP ${result.response.status}`);
@@ -231,19 +262,28 @@ class RemoteMcp {
     }
     throw new Error("MCP tool list exceeds 64 pages");
   }
-  async call(name: string, args: unknown, signal?: AbortSignal): Promise<McpResult> {
+  async call(name: string, args: unknown, signal?: AbortSignal, api?: ToolExecutionApi, reply: ToolInputReply = {}): Promise<McpResult> {
     await this.init();
-    return this.rpc("tools/call", { name, arguments: args }, false, signal);
+    const { approval, ...responses } = reply;
+    const key = api ? Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${api.conversationId}:${api.taskId}:${api.callId}`)))).map(byte => byte.toString(16).padStart(2, "0")).join("").slice(0, 32) : undefined;
+    return this.rpc("tools/call", { name, arguments: args, ...responses, ...(api ? { _meta: { "agent-runtime/toolCallId": api.callId, "agent-runtime/idempotencyKey": key, ...(approval ? { "agent-runtime/approval": approval } : {}) } } : {}) }, false, signal, api, approval);
   }
 }
 
 export type SourceApproval = (input: { name: string; args: unknown; kind: "approval"; message: string; detail: Record<string, unknown> }) => Promise<void>;
+export type SourceIdentity = (api?: ToolExecutionApi) => Promise<{ issuer: string; claims: RuntimeIdentity }>;
 
 /** Resolve only this agent's configured sources; credentials never enter model context. */
-export async function sourceTools(env: Env, tenant: string, definition: string | undefined, config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[] }, approve?: SourceApproval): Promise<ToolRegistration[]> {
+export async function sourceTools(env: Env, tenant: string, definition: string | undefined, config: { mcpServers?: RemoteSource[]; openApi?: RemoteSource[] }, approve?: SourceApproval, identity?: SourceIdentity): Promise<ToolRegistration[]> {
   const result: ToolRegistration[] = [];
   for (const kind of ["mcpServers", "openApi"] as const) for (const source of config[kind] ?? []) {
     const headers = await unseal(env, aad(tenant, definition ?? "", kind, source.name), source.sealed);
+    const runtimeHeaders = async (api?: ToolExecutionApi, approval?: ToolInputReply["approval"]): Promise<Record<string, string>> => {
+      if (source.auth?.type !== "runtime") return {};
+      if (!identity || !env.HYPERDRIVE) throw new Error("Runtime identity is not configured");
+      const value = await identity(api);
+      return { Authorization: `Bearer ${await signRuntimeIdentity(env as IdentityEnv, value.issuer, source.audience ?? source.url ?? source.baseUrl!, { ...value.claims, ...(approval ? { approval } : {}) })}` };
+    };
     const needsApproval = async (tool: string, args: unknown, destructive: boolean, api: ToolExecutionApi, context: Context, method?: string) => {
       const mode = source.approval?.tools?.[tool] ?? source.approval?.default ?? "never";
       if (mode === "always" || mode === "judged" || mode === "destructive" && destructive || !!method && source.approval?.methods?.includes(method)) {
@@ -257,13 +297,16 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
       }
     };
     if (kind === "mcpServers") {
-      const client = new RemoteMcp(env, source, headers);
-      for (const tool of await client.list()) {
+      const client = new RemoteMcp(env, source, headers, runtimeHeaders);
+      // An unavailable server cannot prevent loading or using the agent's other tools.
+      let listed: ToolDefinition[];
+      try { listed = await client.list(); } catch { continue; }
+      for (const tool of listed) {
         if (source.allowTools && !source.allowTools.includes(tool.name) || source.denyTools?.includes(tool.name)) continue;
         const { name } = tool;
         result.push(registration({ ...tool, name: `${source.name}__${name}`, exposure: source.exposure ?? tool.exposure }, async (args, api, context) => {
           await needsApproval(name, args, !(tool as any).annotations?.readOnlyHint, api, context);
-          return client.call(name, args, context?.abortSignal);
+          return api ? withToolInputs(reply => client.call(name, args, context?.abortSignal, api, reply), api, context, { name: `${source.name}__${name}`, args }) : client.call(name, args, context?.abortSignal);
         }));
       }
     } else {
@@ -275,7 +318,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           if (args[name] === undefined) throw new Error(`Missing path parameter ${name}`);
           return encodeURIComponent(text(args[name]));
         });
-        const url = new URL(source.baseUrl!.replace(/\/+$/, "") + path), sent: Record<string, string> = { ...headers, Accept: "application/json" };
+        const url = new URL(source.baseUrl!.replace(/\/+$/, "") + path), sent: Record<string, string> = { ...headers, ...await runtimeHeaders(api), Accept: "application/json" };
         for (const parameter of operation.parameters) {
           const value = args[parameter.name];
           if (value === undefined || value === null) continue;
