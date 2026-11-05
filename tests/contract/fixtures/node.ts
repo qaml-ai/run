@@ -10,9 +10,10 @@ import { EndUserCredits } from "../../../src/end-user-credits.ts";
 import { seedJourneyAccount } from "./journey-state.ts";
 import { runtime } from "../../runtime-server.ts";
 import { fakeLauncher } from "../../fake-launcher.ts";
-import { OPERATOR, OTHER_OPERATOR, sleep, until, type T } from "../http.ts";
+import { OPERATOR, OTHER_OPERATOR, sleep, until, untilRequestState, type T } from "../http.ts";
 import type { ContractFixture, FixtureOptions, ModelReply, TenantSeed } from "../fixture.ts";
 import { fixtureSigner } from "./signing.ts";
+import { observePollingResponse } from "../polling.ts";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -110,6 +111,7 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     const text = await response.text();
     let json: any = text;
     try { json = JSON.parse(text); } catch { /* non-JSON HTTP response */ }
+    observePollingResponse(path, response.status, json, init.method ?? (init.body === undefined ? "GET" : "POST"));
     return { status: response.status, json, text, headers: response.headers };
   };
   const stop = async (crash = false) => {
@@ -145,7 +147,12 @@ export async function createNodeFixture(t: T, options: FixtureOptions = {}): Pro
     signFileToken: (grant, expiresAt) => fixtureSigner(db, runtimeEnv.AGENT_SECRETS_KEY, r.base).fileToken(grant, expiresAt),
     signIdentityToken: (audience, claims) => fixtureSigner(db, runtimeEnv.AGENT_SECRETS_KEY, r.base).token(audience, claims),
     call,
-    prompt: (agent, text, token, extra) => r.prompt(agent, text, token, extra),
+    async prompt(agent, text, token, extra = {}) {
+      const accepted = await call(`/v1/agents/${agent}/prompt`, { body: { text, ...extra }, token });
+      if (accepted.status !== 202) throw new Error(`prompt: ${accepted.status} ${accepted.text}`);
+      return untilRequestState(async () => (await call(`/v1/agents/${agent}/requests/${accepted.json.id}`, { token })).json,
+        "completed", "the turn to end", 60_000);
+    },
     setModel(next) { respond = next; index = 0; },
     async imageResizeFailureCount() { return imageResizeFailures; },
     async restartWithLegacyModel(agent, model) {

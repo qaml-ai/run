@@ -21,3 +21,5 @@ sim-corpus/
 sim-corpus-*/
 sim-mcp/
 test-timings/
+.contract-artifacts/
+backends/workers/measurements/runs/

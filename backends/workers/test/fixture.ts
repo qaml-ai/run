@@ -7,6 +7,26 @@ import pg from "pg";
 import { LocalWorker, unusedPort } from "./local-worker.ts";
 import { migrate } from "../scripts/migrate.mjs";
 const root = fileURLToPath(new URL("../", import.meta.url));
+const activeFixtures = new Set<() => Promise<void>>();
+function stopActiveFixtures() {
+  for (const stop of activeFixtures) void stop().catch(error => {
+    console.error(`Local Worker signal cleanup failed: ${error.message}`);
+  });
+}
+function registerFixture(stop: () => Promise<void>) {
+  if (!activeFixtures.size) {
+    process.on("SIGTERM", stopActiveFixtures);
+    process.on("SIGINT", stopActiveFixtures);
+  }
+  activeFixtures.add(stop);
+  return () => {
+    activeFixtures.delete(stop);
+    if (!activeFixtures.size) {
+      process.off("SIGTERM", stopActiveFixtures);
+      process.off("SIGINT", stopActiveFixtures);
+    }
+  };
+}
 /** pg-pool removes idle clients from its count before their socket-end callback.
  * Wait for those callbacks too before DROP DATABASE can terminate the sockets. */
 async function closePool(db: pg.Pool) {
@@ -58,15 +78,29 @@ export async function startFixture(
   const storage = await mkdtemp(join(tmpdir(), "camelrun-proto-workers-test-"));
   const cleanups: Array<() => Promise<void>> = [() => rm(storage, { recursive: true, force: true })];
   let stopped = false;
-  const stop = async () => {
-    if (stopped) return;
+  let startingWorker: LocalWorker | undefined;
+  let finishStartup!: () => void;
+  const startupDone = new Promise<void>(resolve => { finishStartup = resolve; });
+  let stopPromise: Promise<void> | undefined;
+  const stop = () => stopPromise ??= (async () => {
     stopped = true;
     const failures: unknown[] = [];
-    for (const cleanup of cleanups.reverse()) {
-      try { await cleanup(); } catch (error) { failures.push(error); }
+    // Stop owned processes immediately, but let an in-flight CREATE DATABASE
+    // finish registering its cleanup before closing the admin connection.
+    const workerStopped = startingWorker?.stop();
+    await startupDone;
+    if (workerStopped) try { await workerStopped; } catch (error) { failures.push(error); }
+    try {
+      for (const cleanup of cleanups.reverse()) {
+        try { await cleanup(); } catch (error) { failures.push(error); }
+      }
+    } finally {
+      unregister();
     }
     if (failures.length) throw new AggregateError(failures, "Local Worker fixture cleanup failed");
-  };
+  })();
+  // Register before database migration or workerd startup can be interrupted.
+  const unregister = registerFixture(stop);
   const admin = new pg.Client({ connectionString: base });
   cleanups.push(() => admin.end());
   try {
@@ -128,14 +162,17 @@ export async function startFixture(
   };
   const configPath = join(storage, "wrangler.json");
   await writeFile(configPath, JSON.stringify(config));
+  if (stopped) throw new Error("Local Worker fixture startup was cancelled");
   const worker = new LocalWorker(
     port,
     storage,
     configPath,
     token,
   );
+  startingWorker = worker;
   cleanups.push(() => worker.stop());
   await worker.start();
+  finishStartup();
   return { url: worker.url, databaseUrl, db, worker, token, stop,
     async restart(vars: Record<string, string> = {}, crash = false) {
       await worker.stop(crash);
@@ -145,6 +182,7 @@ export async function startFixture(
     },
   };
   } catch (error) {
+    finishStartup();
     try { await stop(); }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], "Local Worker fixture startup and cleanup failed"); }
     throw error;

@@ -1,0 +1,587 @@
+{
+  "backend": "workers",
+  "area": "all",
+  "group": "delegation",
+  "nodeKey": "37fe8ceacf3bc0cd00210c288964a3d85119933e53516aa4392d3f40854b56dc",
+  "suiteHash": "fcaaa20fa067d1546be5e90171d1dc5d8722982cc1b5261f8bced851bbc5c7fe",
+  "revision": "38f8e794cb01e1dc4c6d4b0c2a56335b7dff4f32",
+  "durationMs": 49726.86848999999,
+  "runtime": {
+    "node": "v24.22.1",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "recordedAt": "2026-11-05T22:24:52.775Z",
+  "expectedCases": 39,
+  "rows": [
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:136",
+      "name": "a browser token with the children scope reads its agent's sub-agents, and only theirs",
+      "status": "fail",
+      "durationMs": 3917.963003,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/agent-messaging.contract.test.ts:153:3\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:156",
+      "name": "a child that waits on a person notifies its parent, and notifies again when it resumes and ends",
+      "status": "fail",
+      "durationMs": 3729.664915,
+      "reason": "{\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"} 404 !== 201",
+      "error": {
+        "message": "{\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"}\n\n404 !== 201\n",
+        "stack": "AssertionError [ERR_ASSERTION]: {\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"}\n\n404 !== 201\n\n    at file:///home/sprite/rt/tests/contract/areas/agent-messaging.contract.test.ts:180:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": 201,
+        "actual": 404,
+        "operator": "strictEqual"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:21",
+      "name": "a parent messages its finished child, which works again with its history and notifies again; a child messages its parent",
+      "status": "fail",
+      "durationMs": 9962.758778,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/agent-messaging.contract.test.ts:47:3\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:61",
+      "name": "two agents messaging each other in a loop stop at the wake cap with agent_loop_limit, and a turn sends at most 20 messages",
+      "status": "fail",
+      "durationMs": 4840.007346,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async contractTest.env.AGENT_WAKES_PER_HOUR (file:///home/sprite/rt/tests/contract/areas/agent-messaging.contract.test.ts:87:3)\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-messaging.test.ts:97",
+      "name": "interrupt_agent aborts a child; aborting the parent aborts its children unless children: keep; deleting it deletes the children it made",
+      "status": "fail",
+      "durationMs": 4276.064102,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/agent-messaging.contract.test.ts:123:3\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:109",
+      "name": "a child's message joins its busy parent's running turn at its next step, without a turn of its own",
+      "status": "fail",
+      "durationMs": 4038.48673,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/agent-progress.contract.test.ts:137:15\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:141",
+      "name": "a child's message cuts its parent's wait_agent short, and the parent reads it next",
+      "status": "fail",
+      "durationMs": 4061.43168,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/agent-progress.contract.test.ts:167:15\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:168",
+      "name": "a response that starts a sub-agent and, beside it, messages and waits for it: those calls run once it has started",
+      "status": "fail",
+      "durationMs": 4183.9973,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:16",
+      "name": "a background child's progress rides on its parent's next tool result, latest only and once, without a turn; an ending supersedes it",
+      "status": "fail",
+      "durationMs": 7932.71988,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/agent-progress.contract.test.ts:49:15\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:195",
+      "name": "a message to a sub-agent that already answered starts a turn, and wait_agent waits for that turn's answer, not the earlier one",
+      "status": "fail",
+      "durationMs": 6116.48142,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:217",
+      "name": "a sub-agent of the model's own design gets its instructions with its task, as its first message; one from a definition keeps its own prompt",
+      "status": "fail",
+      "durationMs": 4376.69152,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/agent-progress.contract.test.ts:246:3\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:244",
+      "name": "a sub-agent of the model's own design shares its parent's files at the same paths",
+      "status": "fail",
+      "durationMs": 3968.37736,
+      "reason": "The expression evaluated to a falsy value: assert.ok((await fetch(`${r.base}/v1/volumes/${workspace}/files/rows.txt`, { method: \"PUT\", headers: { Authorization: `Bearer ${OPERATOR}` }, body: \"east,1350\" })).ok)",
+      "error": {
+        "message": "The expression evaluated to a falsy value:\n\n  assert.ok((await fetch(`${r.base}/v1/volumes/${workspace}/files/rows.txt`, { method: \"PUT\", headers: { Authorization: `Bearer ${OPERATOR}` }, body: \"east,1350\" })).ok)\n",
+        "stack": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert.ok((await fetch(`${r.base}/v1/volumes/${workspace}/files/rows.txt`, { method: \"PUT\", headers: { Authorization: `Bearer ${OPERATOR}` }, body: \"east,1350\" })).ok)\n\n    at file:///home/sprite/rt/tests/contract/areas/agent-progress.contract.test.ts:268:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": true,
+        "actual": false,
+        "operator": "=="
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:265",
+      "name": "wait_agent with untilProgress returns on a report it has not seen, after its floor, so the parent can correct a sub-agent mid-run",
+      "status": "fail",
+      "durationMs": 3866.82357,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/agent-progress.contract.test.ts:295:15\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:75",
+      "name": "a delegate child's progress reaches its parent's watchers as subagent_progress and the delegate call's progress",
+      "status": "fail",
+      "durationMs": 6598.15864,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/agent-progress.contract.test.ts:94:3\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/agent-progress.test.ts:91",
+      "name": "only a sub-agent reports progress, and a report is short",
+      "status": "fail",
+      "durationMs": 4325.5224,
+      "reason": "The expression evaluated to a falsy value: assert.ok(Array.isArray(listed.toolSources))",
+      "error": {
+        "message": "The expression evaluated to a falsy value:\n\n  assert.ok(Array.isArray(listed.toolSources))\n",
+        "stack": "AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n\n  assert.ok(Array.isArray(listed.toolSources))\n\n    at file:///home/sprite/rt/tests/contract/areas/agent-progress.contract.test.ts:112:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": true,
+        "actual": false,
+        "operator": "=="
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:103",
+      "name": "spawn_agent refuses past maxParallel running children and past the depth limit",
+      "status": "fail",
+      "durationMs": 3809.82687,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/background-agents.contract.test.ts:124:18\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:131",
+      "name": "two agents waking each other through notifications stop at the wake cap with agent_loop_limit, the notification still in history",
+      "status": "fail",
+      "durationMs": 3833.485663,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/background-agents.contract.test.ts:149:3\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:154",
+      "name": "a child's spend is charged to its parent when its notification lands, and a parent at its spend limit gets no turn",
+      "status": "fail",
+      "durationMs": 4134.884137,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/background-agents.contract.test.ts:174:3\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:183",
+      "name": "aborting a parent while a child's notification waits keeps the notification: it lands without a turn",
+      "status": "fail",
+      "durationMs": 3893.94975,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/background-agents.contract.test.ts:208:3\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:20",
+      "name": "spawn_agent returns at once, and the child's ending arrives once, as a notification with its source and marker",
+      "status": "fail",
+      "durationMs": 7976.398006,
+      "reason": "Expected values to be strictly equal: 201 !== 400",
+      "error": {
+        "message": "Expected values to be strictly equal:\n\n201 !== 400\n",
+        "stack": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n201 !== 400\n\n    at file:///home/sprite/rt/tests/contract/areas/background-agents.contract.test.ts:40:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)",
+        "expected": 400,
+        "actual": 201,
+        "operator": "strictEqual"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:213",
+      "name": "children started together share what the parent may spend, and limits alone bound a tool's spawns without a tool for the model",
+      "status": "fail",
+      "durationMs": 3859.713206,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/background-agents.contract.test.ts:231:18\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/background-agents.test.ts:75",
+      "name": "wait_agent answers a child's ending in its result, so no notification follows; list_agents lists children",
+      "status": "fail",
+      "durationMs": 4293.710589,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/background-agents.contract.test.ts:95:18\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:119",
+      "name": "parallel children share what their parent's run has left, rather than each getting all of it",
+      "status": "fail",
+      "durationMs": 3657.559764,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/multi-agent.contract.test.ts:134:18\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:140",
+      "name": "children of one response share what their parent's run has left even when they run one after another",
+      "status": "fail",
+      "durationMs": 3634.700593,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/multi-agent.contract.test.ts:155:18\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:160",
+      "name": "a caller cannot move a run's place in the delegation chain with prompt metadata",
+      "status": "fail",
+      "durationMs": 3577.137633,
+      "reason": "{\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"} 404 !== 201",
+      "error": {
+        "message": "{\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"}\n\n404 !== 201\n",
+        "stack": "AssertionError [ERR_ASSERTION]: {\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"}\n\n404 !== 201\n\n    at file:///home/sprite/rt/tests/contract/areas/multi-agent.contract.test.ts:169:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": 201,
+        "actual": 404,
+        "operator": "strictEqual"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:16",
+      "name": "delegate starts a child from a definition, returns its answer, and links it to its parent",
+      "status": "fail",
+      "durationMs": 6706.176523,
+      "reason": "{\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"} 404 !== 201",
+      "error": {
+        "message": "{\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"}\n\n404 !== 201\n",
+        "stack": "AssertionError [ERR_ASSERTION]: {\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"}\n\n404 !== 201\n\n    at file:///home/sprite/rt/tests/contract/areas/multi-agent.contract.test.ts:26:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)",
+        "expected": 201,
+        "actual": 404,
+        "operator": "strictEqual"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:179",
+      "name": "aborting a parent aborts the children it waits on; the stream shows them to subscribers that ask",
+      "status": "fail",
+      "durationMs": 4005.221111,
+      "reason": "Cannot wait for subagent_start: /v1/agents/undefined/events returned HTTP 404",
+      "error": {
+        "message": "Cannot wait for subagent_start: /v1/agents/undefined/events returned HTTP 404",
+        "stack": "Error: Cannot wait for subagent_start: /v1/agents/undefined/events returned HTTP 404\n    at Object.finish (file:///home/sprite/rt/tests/contract/polling.ts:48:13)\n    at until (file:///home/sprite/rt/tests/contract/http.ts:26:27)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/multi-agent.contract.test.ts:192:17\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:203",
+      "name": "aborting a parent answers once its delegate child has ended, charges what the child spent, and deleting the parent deletes the child",
+      "status": "fail",
+      "durationMs": 5819.552044,
+      "reason": "{\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"} 404 !== 202",
+      "error": {
+        "message": "{\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n\n404 !== 202\n",
+        "stack": "AssertionError [ERR_ASSERTION]: {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n\n404 !== 202\n\n    at file:///home/sprite/rt/tests/contract/areas/multi-agent.contract.test.ts:216:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": 202,
+        "actual": 404,
+        "operator": "strictEqual"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:232",
+      "name": "a delegate child whose ending no call took, its parent's run over, is landed by the sweep and charged to the parent",
+      "status": "fail",
+      "durationMs": 4072.690103,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/multi-agent.contract.test.ts:243:18\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:57",
+      "name": "delegate calls in one response run at once, at most maxParallel together, and one with output answers in its schema",
+      "status": "fail",
+      "durationMs": 4227.595617,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/multi-agent.contract.test.ts:81:18\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/multi-agent.test.ts:86",
+      "name": "delegation stops at its depth limit, and a run's spend limit bounds its children and counts what they spent",
+      "status": "fail",
+      "durationMs": 3900.622857,
+      "reason": "{\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"} 404 !== 201",
+      "error": {
+        "message": "{\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"}\n\n404 !== 201\n",
+        "stack": "AssertionError [ERR_ASSERTION]: {\"error\":\"Unknown API route\",\"code\":\"NOT_FOUND\"}\n\n404 !== 201\n\n    at file:///home/sprite/rt/tests/contract/areas/multi-agent.contract.test.ts:100:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": 201,
+        "actual": 404,
+        "operator": "strictEqual"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/sdk-multi-agent.test.ts:13",
+      "name": "SDK: delegate settings on upsert bring their builtin; a run lists its child's id, and a stream with subagents shows it start and end",
+      "status": "fail",
+      "durationMs": 10438.940481,
+      "reason": "Unsupported field: instructions",
+      "error": {
+        "message": "Unsupported field: instructions",
+        "stack": "AgentError: Unsupported field: instructions\n    at Transport.json (file:///home/sprite/rt/clients/typescript.ts:994:47)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async AgentRuntime.upsertAgent (file:///home/sprite/rt/clients/typescript.ts:1658:20)\n    at async Agents.upsert (file:///home/sprite/rt/clients/agents.ts:338:37)\n    at async file:///home/sprite/rt/tests/contract/areas/sdk-multi-agent.contract.test.ts:25:17\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/tool-spawn.test.ts:15",
+      "name": "a trusted tool prepares a persistent worker and starts it as a background sub-agent; a busy worker queues the next task",
+      "status": "fail",
+      "durationMs": 10705.789338,
+      "reason": "Unsupported field: mcpServers",
+      "error": {
+        "message": "Unsupported field: mcpServers",
+        "stack": "AgentError: Unsupported field: mcpServers\n    at Transport.json (file:///home/sprite/rt/clients/typescript.ts:994:47)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async AgentRuntime.createAgent (file:///home/sprite/rt/clients/typescript.ts:1668:21)\n    at async file:///home/sprite/rt/tests/contract/areas/tool-spawn.contract.test.ts:58:18\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/tool-spawn.test.ts:75",
+      "name": "a spawn directive from a tool without runtime auth (an attached application's) is refused",
+      "status": "fail",
+      "durationMs": 5077.611939,
+      "reason": "Attached tools are not supported by the Cloudflare backend yet",
+      "error": {
+        "message": "Attached tools are not supported by the Cloudflare backend yet",
+        "stack": "AgentError: Attached tools are not supported by the Cloudflare backend yet\n    at Transport.json (file:///home/sprite/rt/clients/typescript.ts:994:47)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async AgentRuntime.createAgent (file:///home/sprite/rt/clients/typescript.ts:1668:21)\n    at async file:///home/sprite/rt/tests/contract/areas/tool-spawn.contract.test.ts:92:17\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/workflows.test.ts:106",
+      "name": "an agent's workflow settings reach its definition and its detail",
+      "status": "fail",
+      "durationMs": 3773.703142,
+      "reason": "workflow settings need the workflow builtin 404 !== 400",
+      "error": {
+        "message": "workflow settings need the workflow builtin\n\n404 !== 400\n",
+        "stack": "AssertionError [ERR_ASSERTION]: workflow settings need the workflow builtin\n\n404 !== 400\n\n    at file:///home/sprite/rt/tests/contract/areas/workflows.public.contract.test.ts:114:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": 400,
+        "actual": 404,
+        "operator": "strictEqual"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/workflows.test.ts:122",
+      "name": "an agent with the workflow builtin is offered run_workflow; one without never sees it",
+      "status": "fail",
+      "durationMs": 3894.290693,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async offered (file:///home/sprite/rt/tests/contract/areas/workflows.public.contract.test.ts:131:5)\n    at async file:///home/sprite/rt/tests/contract/areas/workflows.public.contract.test.ts:134:14\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/workflows.test.ts:23",
+      "name": "the SDK runs a stateless workflow with its builtin added automatically",
+      "status": "fail",
+      "durationMs": 5409.856153,
+      "reason": "Unknown API route",
+      "error": {
+        "message": "Unknown API route",
+        "stack": "AgentError: Unknown API route\n    at Transport.json (file:///home/sprite/rt/clients/typescript.ts:994:47)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async Runs.run (file:///home/sprite/rt/clients/agents.ts:446:15)\n    at async file:///home/sprite/rt/tests/contract/areas/workflows.public.contract.test.ts:37:18\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/workflows.test.ts:37",
+      "name": "run_workflow coordinates child agents from a script and returns only the script's value",
+      "status": "fail",
+      "durationMs": 5228.601873,
+      "reason": "{\"error\":\"Unsupported field: workflow\",\"code\":\"INVALID_REQUEST\"} 400 !== 201",
+      "error": {
+        "message": "{\"error\":\"Unsupported field: workflow\",\"code\":\"INVALID_REQUEST\"}\n\n400 !== 201\n",
+        "stack": "AssertionError [ERR_ASSERTION]: {\"error\":\"Unsupported field: workflow\",\"code\":\"INVALID_REQUEST\"}\n\n400 !== 201\n\n    at file:///home/sprite/rt/tests/contract/areas/workflows.public.contract.test.ts:55:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)",
+        "expected": 201,
+        "actual": 400,
+        "operator": "strictEqual"
+      },
+      "backend": "workers"
+    },
+    {
+      "area": "delegation",
+      "source": "tests/workflows.test.ts:90",
+      "name": "an agent call the settings do not allow answers null instead of failing the script",
+      "status": "fail",
+      "durationMs": 3922.294603,
+      "reason": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+      "error": {
+        "message": "prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}",
+        "stack": "Error: prompt: 404 {\"error\":\"Unknown agent\",\"code\":\"AGENT_NOT_FOUND\"}\n    at Object.prompt (file:///home/sprite/rt/tests/contract/fixtures/workers.ts:156:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async file:///home/sprite/rt/tests/contract/areas/workflows.public.contract.test.ts:103:18\n    at async file:///home/sprite/rt/tests/contract/support.ts:23:11\n    at async Test.run (node:internal/test_runner/test:1409:7)\n    at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)"
+      },
+      "backend": "workers"
+    }
+  ],
+  "shards": [
+    {
+      "index": 1,
+      "total": 6,
+      "durationMs": 39821.613599000004
+    },
+    {
+      "index": 2,
+      "total": 6,
+      "durationMs": 32300.337789999998
+    },
+    {
+      "index": 3,
+      "total": 6,
+      "durationMs": 49726.86848999999
+    },
+    {
+      "index": 4,
+      "total": 6,
+      "durationMs": 26969.767310000003
+    },
+    {
+      "index": 5,
+      "total": 6,
+      "durationMs": 22739.850394
+    },
+    {
+      "index": 6,
+      "total": 6,
+      "durationMs": 16482.05119
+    }
+  ]
+}

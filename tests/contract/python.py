@@ -8,17 +8,33 @@ import functools
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import signal
+import sys
 from pathlib import Path
 import tempfile
 import time
 import unittest
 from urllib.parse import urlsplit
 
+ROOT = Path(__file__).resolve().parents[2]
+from python_runner import OUT_OF_SCOPE, OwnedCaseSignals, inventory, run_cases
+
+manifest = inventory(ROOT / "tests/python_sdk.py")
+if "--list" in sys.argv:
+    for row in manifest:
+        print("@@CONTRACT_CASE@@" + json.dumps(row))
+    raise SystemExit(0)
+selected_case = next((arg[len("--case="):] for arg in sys.argv[1:] if arg.startswith("--case=")), None)
+if selected_case is None:
+    default_concurrency = "2" if os.environ.get("CONTRACT_BACKEND") == "workers" else "4"
+    raise SystemExit(run_cases(manifest, Path(__file__), int(os.environ.get("CONTRACT_PYTHON_CONCURRENCY", default_concurrency))))
+if selected_case not in {row["name"] for row in manifest}:
+    raise ValueError(f"Unknown Python contract case: {selected_case}")
+
 import httpx
 
-ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("contract_original_python_sdk", ROOT / "tests/python_sdk.py")
 original = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(original)
@@ -28,6 +44,7 @@ spec.loader.exec_module(original)
 # be attributed to the next case. Instrument both clients, including ones the
 # SDK constructs internally, without changing requests or response bodies.
 active_case = None
+case_signals = OwnedCaseSignals(lambda: active_case)
 
 
 def observe_response(test, response):
@@ -135,6 +152,13 @@ async def cleanup(self):
 
 async def setup(self):
     self.addAsyncCleanup(cleanup, self)
+    # Keep cancellation deferred across all preparation before the first await
+    # too: a queued cancellation must not race create_subprocess_exec.
+    self._contract_spawning = True
+    self._contract_active_task = asyncio.current_task()
+    if case_signals.requested:
+        self._contract_spawning = False
+        raise asyncio.CancelledError
     self.directory = tempfile.TemporaryDirectory(prefix="camelrun-contract-python-")
     self.token = "fixture-only-python-sdk-operator-token"
     self.bodies, self.script, self.transcribed = [], [], []
@@ -151,11 +175,15 @@ async def setup(self):
             "AGENT_IMAGES_URL": f"http://127.0.0.1:{self.transcriber.server_port}",
         },
     }
-    self.host = await asyncio.create_subprocess_exec(
-        "node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--test-reporter=spec", str(ROOT / "tests/contract/python-host.ts"),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "CONTRACT_FIXTURE_OPTIONS": json.dumps(options)}, cwd=ROOT, start_new_session=True,
-    )
+    try:
+        self.host = await asyncio.create_subprocess_exec(
+            "node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "--test-reporter=spec", str(ROOT / "tests/contract/python-host.ts"),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "CONTRACT_FIXTURE_OPTIONS": json.dumps(options)}, cwd=ROOT, start_new_session=True,
+        )
+    finally:
+        self._contract_spawning = False
+    case_signals.stop_if_requested(self)
     self.host_errors = asyncio.create_task(self.host.stderr.read())
     while True:
         line = await asyncio.wait_for(self.host.stdout.readline(), 60)
@@ -179,13 +207,31 @@ original.PythonSDKTest.asyncSetUp = setup
 original.PythonSDKTest.asyncTearDown = teardown
 
 
+def case_timeout_ms(name):
+    explicit = os.environ.get("CONTRACT_TIMEOUT_MS")
+    if explicit is not None:
+        timeout = float(explicit)
+        if not math.isfinite(timeout) or not timeout > 0:
+            raise ValueError("CONTRACT_TIMEOUT_MS must be positive")
+        return timeout
+    baseline = os.environ.get("CONTRACT_NODE_BASELINE")
+    if os.environ.get("CONTRACT_BACKEND") != "workers" or not baseline:
+        return 90000
+    for row in json.loads(Path(baseline).read_text())["rows"]:
+        if row.get("area") == "python" and row.get("source") == "tests/python_sdk.py" and row.get("name") == name and row.get("status") == "pass":
+            samples = sorted(value for value in row.get("durationSamplesMs", [row.get("durationMs")]) if isinstance(value, (int, float)) and math.isfinite(value) and value > 0)
+            if samples:
+                return max(30000, math.ceil(3 * samples[math.ceil(len(samples) * 0.99) - 1]))
+    return 90000
+
+
 def bounded_case(method):
     """Keep the source method intact, but let a missing backend feature time out."""
     @functools.wraps(method)
     async def run(self):
-        timeout_ms = int(os.environ.get("CONTRACT_TIMEOUT_MS", "90000"))
-        if timeout_ms <= 0:
-            raise ValueError("CONTRACT_TIMEOUT_MS must be positive")
+        self._contract_active_task = asyncio.current_task()
+        case_signals.stop_if_requested(self)
+        timeout_ms = case_timeout_ms(f"{self.__class__.__name__}.{method.__name__}")
         task = asyncio.create_task(method(self))
         try:
             return await asyncio.wait_for(task, timeout_ms / 1000)
@@ -202,12 +248,6 @@ for name in dir(original.PythonSDKTest):
         setattr(original.PythonSDKTest, name, bounded_case(method))
 
 # Transport scope is explicit; no other skipped test can become a backend pass.
-OUT_OF_SCOPE = {
-    ("PythonSDKTest", "test_voice_sessions_need_the_runtime_to_hold_calls"),
-    ("PythonSDKTest", "test_audio_is_transcribed_in_messages_runs_and_on_its_own"),
-    ("VoiceLibraryTest", "test_get_async_and_sync"),
-    ("VoiceLibraryTest", "test_search_async_and_sync"),
-}
 for name in ("test_voice_sessions_need_the_runtime_to_hold_calls", "test_audio_is_transcribed_in_messages_runs_and_on_its_own"):
     setattr(original.PythonSDKTest, name, unittest.skip("Voice/audio is out of scope")(getattr(original.PythonSDKTest, name)))
 for name in dir(original.VoiceLibraryTest):
@@ -268,17 +308,21 @@ class Result(unittest.TextTestResult):
 
 
 suite = unittest.defaultTestLoader.loadTestsFromModule(original)
-if "--list" in __import__("sys").argv:
-    def cases(value):
-        if isinstance(value, unittest.TestSuite):
-            for child in value:
-                yield from cases(child)
-        else:
-            yield value
-    for case in cases(suite):
-        scoped = (case.__class__.__name__, case._testMethodName) in OUT_OF_SCOPE
-        print("@@CONTRACT_CASE@@" + json.dumps({"area": "python", "source": "tests/python_sdk.py", "name": f"{case.__class__.__name__}.{case._testMethodName}", "file": "tests/contract/python.py",
-            **({"status": "out-of-scope", "reason": "Voice/audio is out of scope"} if scoped else {})}))
-    raise SystemExit(0)
-result = unittest.TextTestRunner(verbosity=1, resultclass=Result).run(suite)
+
+
+def cases(value):
+    if isinstance(value, unittest.TestSuite):
+        for child in value:
+            yield from cases(child)
+    else:
+        yield value
+
+
+discovered = {f"{case.__class__.__name__}.{case._testMethodName}": case for case in cases(suite)}
+if set(discovered) != {row["name"] for row in manifest}:
+    raise RuntimeError("Python static inventory differs from unittest discovery; update python_runner.py before running parity")
+if selected_case.startswith("PythonSDKTest."):
+    signal.signal(signal.SIGTERM, case_signals.handle)
+    signal.signal(signal.SIGINT, case_signals.handle)
+result = unittest.TextTestRunner(verbosity=1, resultclass=Result).run(unittest.TestSuite([discovered[selected_case]]))
 raise SystemExit(0 if result.wasSuccessful() else 1)
