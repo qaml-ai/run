@@ -56,10 +56,15 @@ export async function publicJourneyRoutes(request: Request, env: JourneyEnv, jou
   if (path === "/console") return new Response(null, { status: 302, headers: { location: `/console/${url.search}` } });
   if (!path.startsWith("/console/") || path.startsWith("/console/auth/")) return;
   if (!env.ASSETS) return new Response("The console is not built on this host", { status: 404 });
-  const response = await env.ASSETS.fetch(request);
+  const asset = new URL(request.url);
+  asset.pathname = path.slice('/console'.length) || '/';
+  const response = await env.ASSETS.fetch(new Request(asset, request));
   if (!response.ok || !response.headers.get("content-type")?.includes("text/html")) return response;
   const headers = new Headers(response.headers);
   headers.set("cache-control", "no-store");
+  headers.set("content-security-policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("referrer-policy", "same-origin");
   if (!journey || request.method === "HEAD") return new Response(response.body, { status: response.status, headers });
   const html = (await response.text()).replace("</head>", `${JOURNEY_META}</head>`);
   const { setCookie } = await journey.arrival(request);

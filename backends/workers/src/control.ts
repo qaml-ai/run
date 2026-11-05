@@ -169,6 +169,7 @@ export class Directory {
     // Volume initialization uses its own SQL and DO calls. Keep those outside
     // the directory transaction; preserve the latest mounts under its lock.
     config.mounts=await (await import('./file-mounts.ts')).prepareMounts(this.env,this.tenantId,id,requested===undefined?before?.config.mounts:requested);
+    let createdHere = false;
     const entry = await transaction(this.env, async (sql) => {
       // A transaction-scoped lock covers the absent row as well as concurrent creates.
       await sql.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [
@@ -185,6 +186,7 @@ export class Directory {
       if (previous?.revoked)
         throw new ApiError(410, "Agent is deleted", "AGENT_GONE");
       const old = previous?.header as DirectoryEntry | undefined;
+      createdHere = !old;
       if (old && fields.subject !== undefined && fields.subject !== old.config.subject)
         throw new ApiError(409, "An agent's subject cannot change");
       if (old?.config.subject && fields.subject === undefined) config.subject = old.config.subject;
@@ -284,7 +286,7 @@ export class Directory {
       const inherited = await workspaces.current(this.tenantId, "definition", config.definition);
       if (inherited) await workspaces.assign(this.tenantId, "agent", id, inherited.workspace, true);
     }
-    return previousEntry ? { ...entry, reconfigured: true } : entry;
+    return createdHere ? entry : { ...entry, reconfigured: true };
   }
   async remove(id: string): Promise<boolean | DirectoryFailure> {
     const entry = await this.get(id);
