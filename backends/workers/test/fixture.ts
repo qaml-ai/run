@@ -38,6 +38,8 @@ export async function startFixture(
     schema?: string;
     tenants?: { id: string; token?: string; tokenSha256?: string; billing?: 'prepaid' | 'none'; seedCredit?: boolean }[];
     vars?: Record<string, string>;
+    /** A local-test entrypoint, e.g. the backend-neutral contract fixture wrapper. */
+    entrypoint?: string;
   } = {},
 ) {
   const token =
@@ -57,6 +59,8 @@ export async function startFixture(
   const admin = new pg.Client({ connectionString: base });
   await admin.connect();
   await admin.query(`create database ${schema}`);
+  // Hyperdrive validates a password even when isolated local Postgres uses trust auth.
+  if (!parsed.password) parsed.password = "local-only-unused";
   parsed.pathname = `/${schema}`;
   parsed.search = "";
   const databaseUrl = parsed.toString(),
@@ -85,7 +89,7 @@ export async function startFixture(
   const config = JSON.parse(
     await readFile(join(root, options.config ?? "wrangler.test.jsonc"), "utf8"),
   );
-  config.main = join(root, "src/index.ts");
+  config.main = options.entrypoint ?? join(root, "src/index.ts");
   config.$schema = join(root, "node_modules/wrangler/config-schema.json");
   for (const container of config.containers ?? [])
     for (const image of Object.values(container.images ?? {}) as { dockerfile?: string }[])

@@ -31,7 +31,8 @@
     "bench:sim-hooks": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-sim-hooks.ts",
     "bench:search": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-search.ts",
     "bench:codemode": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-codemode.ts",
-    "test:studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/smoke.ts"
+    "test:studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/smoke.ts",
+    "parity": "node tests/contract/run.mjs"
   },
   "version": "0.1.0",
   "description": "Hosted agent runtime: supervisor, durable agent state, V8 codemode sandbox, SDKs, console and Studio",
