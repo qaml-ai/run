@@ -88,6 +88,15 @@ test('delegation persists idempotent child, budget and result events', async () 
   assert.equal(f.events.filter(event => event.event.type === 'subagent_end').length, 1);
   await Promise.all(f.tasks);
 });
+test('a structured child request wraps its schema and records its runtime parent', async () => {
+  const f = fixture(), schema = { type: 'object', properties: { answer: { type: 'number' } } };
+  let relation: unknown;
+  f.host.create = async (_config, _key, parent) => { relation = parent; return { id: 'structured-child' }; };
+  await f.delegation.start({ instructions: 'help', task: 'answer', output: schema }, 'structured', signal());
+  assert.deepEqual(f.submitted[0].params.output, { schema });
+  assert.deepEqual(relation, { agent: 'parent', run: 'parent-run' });
+  await Promise.all(f.tasks);
+});
 test('new child inherits the parent computer before submission, once across replay', async () => {
   const f = fixture(), inherited: string[][] = [], fetch = f.host.fetch;
   f.host.inheritComputer = async (...ids) => { inherited.push(ids); };
