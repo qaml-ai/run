@@ -142,7 +142,7 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
     } else await sql.query("insert into definitions(id,tenant,name,spec,revision,created_at,updated_at) values($1,$2,$3,$4,$5,$6,$6)", [id, auth.tenantId, name, JSON.stringify(spec), next.revision, now]);
     return next;
   });
-  const applied: { agent: string; status: string; error?: string }[] = [];
+  const applied: { agent: string; requestId: string; status: string; error?: string }[] = [];
   if (input.apply === "all" || saved.spec.applyOnUpdate && existing && !unchanged) for (const agent of (await directory.list()).filter(x => x.config.definition === saved.id)) {
     const { description, applyOnUpdate, limits, ...updates } = saved.spec;
     const own = Object.fromEntries((agent.config.definitionOverrides ?? []).map(field => [field, agent.config[field as keyof AgentConfiguration]]));
@@ -153,8 +153,14 @@ export async function definitionRoutes(request: Request, env: ControlEnv, auth: 
       const model = resolveModel(merged.model, services.tenants.modelEndpoints(auth.tenantId), await services.modelProviders.resolvable(auth.tenantId, merged.keyScope));
       if (modelSettingsRefusal(model, { ...merged, maxOutputTokens: undefined })) delete merged.temperature;
     }
-    const result = await directory.upsert(merged, agent.key ?? agent.id, url.origin);
-    applied.push({ agent: agent.id, status: typeof result === "object" && "failed" in result ? "failed" : "updated", ...(typeof result === "object" && "failed" in result ? { error: result.error } : {}) });
+    const requestId = `apply_${saved.id}_${saved.revision}`;
+    const response = await env.AGENTS.getByName(agent.id).fetch(new Request("https://agent/configuration-target", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: requestId, config: merged, origin: url.origin }),
+    }));
+    const result = await response.json() as { state?: string; outcome?: { error?: string }; error?: string };
+    const error = result.error ?? result.outcome?.error;
+    applied.push({ agent: agent.id, requestId, status: !response.ok || error ? "failed" : result.state === "completed" ? "updated" : "queued", ...(error ? { error } : {}) });
   }
   return reply({ ...view(saved), ...await builtinWarnings(env, auth.tenantId, saved.spec), ...(applied.length || input.apply === "all" ? { applied } : {}) }, request.method === "POST" ? 201 : 200);
 }

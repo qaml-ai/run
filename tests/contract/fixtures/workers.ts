@@ -178,8 +178,9 @@ export async function createWorkersFixture(t: T, options: FixtureOptions = {}): 
       const result = await call(`/v1/agents/${agent}/__test/contract-schedule-due`, { body: { id: schedule, dueAt: 0, history } });
       if (result.status !== 200) throw new Error(`Schedule fixture: ${result.status} ${result.text}`);
     },
-    async resetChildSettlement(_parent) {
-      throw new Error("Unsupported fixture state: Workers child records have no settlement or sweep state to reset");
+    async resetChildSettlement(parent) {
+      const result = await call(`/v1/agents/${parent}/__test/contract-child-settlement`, { body: {} });
+      if (result.status !== 200) throw new Error(`Child settlement fixture: ${result.status} ${result.text}`);
     },
     async countOAuthRefreshTokens() {
       return (await server.db.query("select count(*)::int as n from oauth_tokens where kind='refresh' and grant_id is not null")).rows[0].n;

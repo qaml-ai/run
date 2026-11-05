@@ -78,6 +78,7 @@ export class AgentRunLimits {
     run: Run;
     agentId?: string;
     spend?: SpendLimit | null;
+    childCost?: number;
     most?: typeof defaults;
   }>;
   constructor(
@@ -88,14 +89,14 @@ export class AgentRunLimits {
     this.current = current;
   }
   async check(now = Date.now()) {
-    const { config, run, agentId, spend, most } = await this.current();
+    const { config, run, agentId, spend, most, childCost = 0 } = await this.current();
     if (!run.state || run.state === "completed") return;
     const usage = (await this.storage.get<Usage>(`run-usage:${run.id}`)) ?? {
       responses: 0,
       costUsd: 0,
     };
     const stopped =
-      runLimit(config, run, usage, now, most) ??
+      runLimit(config, run, { ...usage, costUsd: usage.costUsd + childCost }, now, most) ??
       (agentId ? agentSpendRefusal(agentId, spend ?? null) : undefined);
     if (stopped) await this.storage.put(`run-limit:${run.id}`, stopped);
     return stopped;

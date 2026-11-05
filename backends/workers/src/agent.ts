@@ -4,6 +4,7 @@ import { withCompactionPrompt } from "./model-compaction.ts";
 import { takesFiles } from './tool-file-schema.ts';
 import { ToolFiles } from './tool-files.ts';
 import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
+import { ConfigurationTargets } from "./configuration-targets.ts";
 import { toolOutputExtension } from "./tool-output.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
@@ -241,6 +242,7 @@ type RequestRecord = {
   began?: number;
   accepted?: boolean;
   admitted?: boolean;
+  noticeQueued?: true;
   outcome?: { result?: unknown; error?: string };
   status?: string;
   error?: string;
@@ -331,10 +333,28 @@ export class CamelAgent extends DurableObject<Env> {
   private notifications = new DelegationNotifications({
     storage: this.ctx.storage,
     canLand: async () => !(await this.activity()).busy,
+    stage: async (request, notice) => {
+      if (await this.ctx.storage.get(reqKey(request.id))) return;
+      const params = { ...request.params, whileRunning: 'queue' };
+      await this.ctx.storage.put(reqKey(request.id), {
+        id: request.id, method: 'prompt', params, fingerprint: canonical({ method: 'prompt', params }),
+        state: 'running', startedAt: Date.now(), accepted: false, noticeQueued: true,
+      } satisfies RequestRecord);
+    },
+    discard: async request => {
+      const record = await this.ctx.storage.get<RequestRecord>(reqKey(request.id));
+      if (!record?.noticeQueued) return;
+      const done: RequestRecord = { ...record, state: 'completed', status: 'completed', endedAt: Date.now(),
+        outcome: { result: { error: null, skipped: 'wait_agent answered this sub-agent\'s ending already' } } };
+      await this.ctx.storage.put(reqKey(request.id), done);
+      await this.emit({ type: 'response', id: request.id, outcome: done.outcome });
+    },
     isBusy: async () => (await this.activity()).busy,
     wakeLimit: this.delegateWakeLimit ? Number(this.delegateWakeLimit) : undefined,
     submit: (request, notice, delivery) =>
-      this.submit(request, notice, delivery),
+      !delivery.run && delivery.stopped === 'aborted'
+        ? this.admit(request, notice, delivery)
+        : this.submit(request, notice, delivery),
     admitWake: (root, id) =>
       root === this.ctx.id.name
         ? this.admitDelegateWake(id)
@@ -458,11 +478,13 @@ export class CamelAgent extends DurableObject<Env> {
   );
   private limits = new AgentRunLimits(this.ctx.storage, async () => {
     const conf = await this.config();
+    const run = await this.currentRun();
     return {
       config: conf.config,
-      run: await this.currentRun(),
+      run,
       agentId: conf.id,
       spend: await this.agentSpend(conf),
+      childCost: await this.delegation.cost(run.id),
       most: await tenantRunCaps(this.env, conf.tenantId),
     };
   });
@@ -1041,6 +1063,22 @@ export class CamelAgent extends DurableObject<Env> {
   private readonly initialCursor = Date.now() * 1000;
   private pendingWaits = new Set<string>();
   private admission: Promise<unknown> = Promise.resolve();
+  private configurationTargets = new ConfigurationTargets(this.ctx.storage, {
+    busy: async () => this.harness.session().busy(),
+    apply: async target => {
+      const conf = await this.config();
+      const directory = new Directory(this.env, conf.tenantId);
+      const before = await directory.get(conf.id);
+      if (!before) throw Object.assign(new Error("Unknown agent"), { status: 404 });
+      const config = target.config ?? (target.replace ? target.params ?? {} : await configurationPatch(this.env, conf.tenantId, before.config, target.params ?? {}));
+      const updated = await directory.upsert(config, before.key ?? before.id, target.origin ?? conf.runtimeOrigin);
+      if ("failed" in updated) throw Object.assign(new Error(updated.error), { status: updated.status });
+      if (target.params && Object.hasOwn(target.params, "spendLimit"))
+        await setAgentSpendLimit(this.env, conf.tenantId, conf.id, target.params.spendLimit);
+      return { changed: before.configHash !== updated.configHash, configHash: updated.configHash };
+    },
+    emit: async record => { await this.emit({ type: "response", id: record.id, outcome: record.outcome }); },
+  });
   private eventsProcessed: Promise<void> = Promise.resolve();
 
   private async records() {
@@ -1279,6 +1317,12 @@ export class CamelAgent extends DurableObject<Env> {
           );
         }
       }
+      const stamp = entry.data as { requestId?: string; source?: RuntimeNotice['source']; metadata?: Record<string, unknown> };
+      if ((entry.kind === 'camel.prompt' || entry.kind === 'camel.steer') && stamp.source?.kind === 'agent' && stamp.metadata?.kind === 'message' && stamp.metadata.to === 'parent') {
+        const record = stamp.requestId ? await this.ctx.storage.get<RequestRecord>(reqKey(stamp.requestId)) : undefined;
+        await this.emit({ type: 'event', requestId: record?.steeredInto ?? stamp.requestId ?? this.active,
+          event: { type: 'subagent_message', agentId: stamp.source.agentId, name: stamp.source.name, text: record?.params?.text ?? '' } });
+      }
       if (this.active)
         for (const message of entry.model ?? [])
           await this.projectMessage(this.active, message, true);
@@ -1404,7 +1448,10 @@ export class CamelAgent extends DurableObject<Env> {
     this.ctx.waitUntil(
       this.settle(id, 0)
         .catch(() => {})
-        .finally(() => this.pendingWaits.delete(id)),
+        .finally(() => {
+          this.pendingWaits.delete(id);
+          this.ctx.waitUntil(this.configurationTargets.drain());
+        }),
     );
   }
   private async settle(id: string, waitMs: number): Promise<RequestRecord> {
@@ -1648,6 +1695,7 @@ export class CamelAgent extends DurableObject<Env> {
       await this.cancelHumanInputs();
       await this.abortExecutions();
       await this.harness.session().abort();
+      await this.notifications.abortPending();
     } else {
       for (const queued of pending.filter(item => item.status === 'queued')) {
         const record = await this.ctx.storage.get<RequestRecord>(reqKey(queued.operationId));
@@ -1799,78 +1847,26 @@ export class CamelAgent extends DurableObject<Env> {
   private async configureRequest(input: unknown, replace = false) {
     const request = object(input, ["id", "method", "params"]);
     const id = boundedText(request.id, "id", 80);
-    if (!/^[A-Za-z0-9_-]+$/.test(id))
-      throw new BadRequest("Invalid request id");
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new BadRequest("Invalid request id");
     if (await this.ctx.storage.get(`cancelled-request:${id}`))
-      throw Object.assign(new Error("Request cancelled"), {
-        status: 409,
-        code: "aborted",
-      });
+      throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
     if (!request.params || typeof request.params !== "object" || Array.isArray(request.params))
       throw new BadRequest("Expected configuration object");
-    const conf = await this.config();
     const params = request.params as Record<string, unknown>;
-    const patched = configuration(replace ? params : { ...conf.config, ...params }, conf.config.model ?? this.env.MODEL).config;
-    const modelError = (params.model !== undefined || params.keyScope !== undefined)
-      ? await configurationModelError(this.env, conf.tenantId, patched) : undefined;
-    const fingerprint = canonical(request);
-    const previous = await this.ctx.storage.transaction(async (tx) => {
-      const old = await tx.get<RequestRecord>(reqKey(id));
-      if (old && old.fingerprint !== fingerprint)
-        throw Object.assign(
-          new Error("Request id reused with different input"),
-          { status: 409 },
-        );
-      if (!old)
-        await tx.put(reqKey(id), {
-          id,
-          method: "configure",
-          fingerprint,
-          state: "running",
-          startedAt: Date.now(),
-        } satisfies RequestRecord);
-      return old;
-    });
-    if (previous?.state === "completed") return previous;
-    if (modelError) {
-      const failed: RequestRecord = { id, method: "configure", fingerprint, state: "completed", startedAt: previous?.startedAt ?? Date.now(), endedAt: Date.now(), outcome: { error: modelError } };
-      await this.ctx.storage.put(reqKey(id), failed);
-      await this.emit({ type: "response", id, outcome: failed.outcome });
-      return failed;
+    if (!replace && !Object.keys(params).length) throw new BadRequest("Give at least one configuration field");
+    const conf = await this.config();
+    const patched = replace ? configuration(params, conf.config.model ?? this.env.MODEL).config : await configurationPatch(this.env, conf.tenantId, conf.config, params);
+    configuration(patched, conf.config.model ?? this.env.MODEL);
+    if (params.model !== undefined || params.keyScope !== undefined) {
+      try {
+        const error = await configurationModelError(this.env, conf.tenantId, patched);
+        if (error) throw new BadRequest(error);
+      } catch (error) { throw new BadRequest(error instanceof Error ? error.message : String(error)); }
     }
-    const directory = new Directory(this.env, conf.tenantId);
-    const current = await directory.get(conf.id);
-    if (!current)
-      throw Object.assign(new Error("Unknown agent"), { status: 404 });
-    const updated = await directory.upsert(
-      replace ? params : await configurationPatch(this.env, conf.tenantId, current.config, params),
-      current.key ?? current.id,
-      conf.runtimeOrigin,
-    );
-    if ("failed" in updated)
-      throw Object.assign(new Error(updated.error), {
-        status: updated.status,
-        code: updated.code,
-      });
-    if (Object.hasOwn(params, "spendLimit"))
-      await setAgentSpendLimit(
-        this.env,
-        conf.tenantId,
-        conf.id,
-        params.spendLimit,
-      );
-    const record: RequestRecord = {
-      id,
-      method: "configure",
-      fingerprint,
-      state: "completed",
-      startedAt: previous?.startedAt ?? Date.now(),
-      endedAt: Date.now(),
-      outcome: { result: { configured: true, changed: current.configHash !== updated.configHash, configHash: updated.configHash } },
-    };
-    await this.ctx.storage.put(reqKey(id), record);
-    await this.emit({ type: "response", id, outcome: record.outcome });
-    return record;
+    const record = await this.configurationTargets.enqueue({ id, params, ...(replace ? { replace: true } : {}) });
+    await this.configurationTargets.drain();
+    await this.arm();
+    return await this.ctx.storage.get<RequestRecord>(reqKey(id)) ?? record;
   }
   private async requireApplication(allowDisconnected: unknown) {
     if (allowDisconnected !== undefined && typeof allowDisconnected !== "boolean")
@@ -1892,7 +1888,7 @@ export class CamelAgent extends DurableObject<Env> {
     const id = boundedText(request.id, "id", 80);
     if (!/^[A-Za-z0-9_-]+$/.test(id))
       throw new BadRequest("Invalid request id");
-    if (await this.ctx.storage.get(`cancelled-request:${id}`))
+    if (!(notice && delivery && !delivery.run) && await this.ctx.storage.get(`cancelled-request:${id}`))
       throw Object.assign(new Error("Request cancelled"), {
         status: 409,
         code: "aborted",
@@ -2103,13 +2099,17 @@ export class CamelAgent extends DurableObject<Env> {
     const conf = await this.config();
     if (!old) await refreshIdleLifetime(this.env, this.ctx.storage, conf);
     if (conf.config.spendLimit) await this.flushBilling(true);
+    if (notice) await this.delegation.landNotice(id, notice.costUsd);
     const spend = await this.agentSpend(conf);
     const refusal = agentSpendRefusal(conf.id, spend);
-    if (refusal)
+    if (refusal && !notice)
       throw Object.assign(new Error(refusal.error), {
         status: 402,
         code: "SPEND_LIMIT",
       });
+    const noTurn = notice
+      ? refusal ?? (delivery && !delivery.run ? { error: delivery.message, code: delivery.stopped, stopped: delivery.stopped } : undefined)
+      : undefined;
     const running = (await this.harness.pending()).find(
       (item) => item.status === "running",
     );
@@ -2147,7 +2147,7 @@ export class CamelAgent extends DurableObject<Env> {
           );
     if (request.method !== "continue" && !text.trim() && !files?.some(file => file.transcript))
       throw new BadRequest("Give the agent some text, or audio to transcribe");
-    if (await this.ctx.storage.get(`cancelled-request:${id}`))
+    if (!noTurn && await this.ctx.storage.get(`cancelled-request:${id}`))
       throw Object.assign(new Error("Request cancelled"), { status: 409, code: "aborted" });
     if (files) params.files = attachmentFiles(files);
     } catch (error) {
@@ -2156,7 +2156,7 @@ export class CamelAgent extends DurableObject<Env> {
     }
     if (request.method === "prompt" && !notice && !old?.accepted)
       await this.closeHumanInputs("superseded");
-    const record: RequestRecord = old ?? {
+    const record: RequestRecord = old && !old.noticeQueued ? old : {
       id,
       method: String(request.method),
       billing: {
@@ -2175,8 +2175,9 @@ export class CamelAgent extends DurableObject<Env> {
           ? { steer: "accepted" as const, steeredInto: running.operationId }
           : { steer: "queued" as const }
         : {}),
-      startedAt: Date.now(),
+      startedAt: old?.startedAt ?? Date.now(),
     };
+    delete record.noticeQueued;
     const prompt = files
       ? attachmentInput(text, files)
       : params.images
@@ -2200,7 +2201,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (preparing) record.admitted = true;
     await this.ctx.storage.put(reqKey(id), record);
     if (preparing) await this.promptPreparations.finish(id);
-    if (delivery && !delivery.run && notice) {
+    if (noTurn && notice) {
       const pi = await this.harness.pi(),
         root = await pi.root(BACKGROUND_CONTEXT);
       const saved = await root.submit(
@@ -2219,9 +2220,10 @@ export class CamelAgent extends DurableObject<Env> {
       );
       await saved.wait(BACKGROUND_CONTEXT);
       record.state = "completed";
+      record.status = "failed";
       record.endedAt = Date.now();
       record.outcome = {
-        result: { error: delivery.message, code: delivery.stopped },
+        result: { ...noTurn, usage: this.usageView(await this.usageForRequest(id)) },
       };
       await this.ctx.storage.put(reqKey(id), record);
       await this.emit({ type: "response", id, outcome: record.outcome });
@@ -2279,7 +2281,7 @@ export class CamelAgent extends DurableObject<Env> {
     return accepted;
   }
   private async activity() {
-    const records = (await this.records()).filter(record => ["prompt", "continue", "resume"].includes(record.method) && record.state !== "completed");
+    const records = (await this.records()).filter(record => !record.noticeQueued && ["prompt", "continue", "resume"].includes(record.method) && record.state !== "completed");
     const active = records.find(record => record.state === "running" && !record.steeredInto);
     return { busy: records.length > 0, activeRun: active?.id ?? null, queuedRuns: records.filter(record => record !== active).length };
   }
@@ -2297,10 +2299,12 @@ export class CamelAgent extends DurableObject<Env> {
         .map((record) => this.settle(record.id, 1)),
     );
     const activity = await this.activity();
+    const spend = await this.agentSpend(await this.config());
     const lastActive = Math.max(this.recentEvents.lastActivity() ?? 0, (await this.ctx.storage.get<number>("last-active")) ?? 0);
     return {
       cursor: (await this.ctx.storage.get<number>("cursor")) ?? this.initialCursor,
       connected: this.attached.connected,
+      spendLimit: spend ? { usd: spend.usd, spent: spend.spent } : null,
       ...activity,
       running: activity.busy || Date.now() - lastActive < Number((this.env as Env & { AGENT_IDLE_MS?: string }).AGENT_IDLE_MS ?? 60_000),
       events: this.recentEvents.read(),
@@ -2441,6 +2445,14 @@ export class CamelAgent extends DurableObject<Env> {
       // already-provisioned replacement for an existing keyed agent.
       if (path === "/configuration" && request.method === "POST")
         return json(await requestView(await this.configureRequest(await body(request, 17 * 1024 * 1024), true)), 202);
+      if (path === "/configuration-target" && request.method === "POST") {
+        const target = await body(request) as { id: string; config: AgentConfiguration; origin?: string };
+        configuration(target.config, this.env.MODEL);
+        const record = await this.configurationTargets.enqueue(target);
+        this.ctx.waitUntil(this.configurationTargets.drain());
+        await this.arm();
+        return json(record, 202);
+      }
       if (path === "/configuration" && request.method === "PUT") {
         const incoming = (await body(request, 17 * 1024 * 1024)) as Config;
         const mutation = this.admission.then(async () => {
@@ -2879,7 +2891,7 @@ export class CamelAgent extends DurableObject<Env> {
         return json(batch ? { inputs: answered.inputs, requests: answered.requests } : { input: answered.inputs[0], request: answered.requests[0] ?? null }, answered.status);
       }
       if (path === "/abort" && request.method === "POST") {
-        const params = object(request.body ? await body(request) : {}, ['queued', 'children']);
+        const params = object(await body(request, 32 * 1024, true), ['queued', 'children']);
         if (params.queued !== undefined && !['cancel', 'keep'].includes(String(params.queued))) throw new BadRequest('queued is cancel or keep');
         if (params.children !== undefined && !['cancel', 'keep'].includes(String(params.children))) throw new BadRequest('children is cancel or keep');
         const aborting = this.admission.then(async () => {
@@ -3249,6 +3261,7 @@ export class CamelAgent extends DurableObject<Env> {
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
       pendingRun ? Date.now() + 1000 : Infinity,
+      await this.configurationTargets.pending() ? Date.now() + 1000 : Infinity,
       await this.promptPreparations.deadline(),
       await this.ctx.storage.get<number>("human-input-deadline") ?? Infinity,
       await this.limits.deadline(),
@@ -3264,6 +3277,7 @@ export class CamelAgent extends DurableObject<Env> {
     return withMoneyMetrics(this.env, () => this.restorePending());
   }
   private async restorePending() {
+    this.ctx.waitUntil(this.configurationTargets.drain());
     await this.promptPreparations.sweep(Date.now(), true);
     await this.resumeKeptQueue();
     await this.restoreCancellations();
@@ -3292,6 +3306,7 @@ export class CamelAgent extends DurableObject<Env> {
     });
   }
   private async wake() {
+    await this.configurationTargets.drain();
     await this.promptPreparations.sweep();
     await this.resumeKeptQueue();
     await this.restoreCancellations();
@@ -3328,7 +3343,7 @@ export class CamelAgent extends DurableObject<Env> {
     for (const record of await this.records()) {
       if (record.accepted && record.state !== "completed")
         this.track(record.id);
-      if (record.method === "prompt" && !record.accepted) {
+      if (record.method === "prompt" && !record.accepted && !record.noticeQueued) {
         try {
           await this.submit({
             id: record.id,

@@ -51,8 +51,12 @@ export function workspacePath(value: string): string {
 export async function body(
   request: Request,
   maxBytes = 32 * 1024,
+  emptyObject = false,
 ): Promise<unknown> {
-  if (!request.body) throw new BadRequest("Expected a JSON body");
+  if (!request.body) {
+    if (emptyObject) return {};
+    throw new BadRequest("Expected a JSON body");
+  }
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -70,6 +74,7 @@ export async function body(
   } finally {
     reader.releaseLock();
   }
+  if (size === 0 && emptyObject) return {};
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) {

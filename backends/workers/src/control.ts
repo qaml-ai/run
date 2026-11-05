@@ -256,13 +256,15 @@ export class Directory {
           }),
         }),
       );
-      if (!response.ok)
+      if (!response.ok) {
+        const refused = await response.json() as { error?: string };
         return {
           failed: true,
           status: response.status,
-          error: "Agent configuration was refused",
+          error: refused.error ?? "Agent configuration was refused",
           code: "CONFIGURATION_FAILED",
         };
+      }
       entry.initialized = true;
       const applied = await withSql(this.env, (sql) =>
         sql.query(

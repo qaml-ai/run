@@ -405,11 +405,11 @@ const worker = {
           new Request(request.url, { headers: request.headers }), env, entry.id, "/state",
         );
         if (!stateResponse.ok) return stateResponse;
-        const state = await stateResponse.json() as { requests: { state: string }[]; cursor: number; running: boolean };
+        const state = await stateResponse.json() as { requests: { state: string }[]; cursor: number; running: boolean; spendLimit?: unknown };
         return json({
           ...summary(entry),
           ...state,
-          spendLimit: agentSpendView(
+          spendLimit: state.spendLimit ?? agentSpendView(
             await readAgentSpendLimit(env, entry.tenantId, entry.id),
           ),
           toolSources: await response.json(),
@@ -446,15 +446,22 @@ const worker = {
         const next = await body(request);
         if (!next || typeof next !== "object" || Array.isArray(next))
           throw new BadRequest("Expected configuration object");
-        const { requestId, ...changes } = next as Record<string, unknown>;
-        if (!auth) scopedConfiguration(changes);
-        const patched = configuration({ ...entry.config, ...changes }, entry.config.model ?? env.MODEL).config;
-        const modelError = (Object.hasOwn(changes, "model") || Object.hasOwn(changes, "keyScope"))
+        const { requestId, ...params } = next as Record<string, unknown>;
+        if (!auth) scopedConfiguration(params);
+        if (auth) {
+          const allowed = new Set(["model", "systemPrompt", "systemPromptAppend", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "builtins", "decide", "delegate", "workflow", "mcpServers"]);
+          const unknown = Object.keys(params).find(field => !allowed.has(field));
+          if (unknown) throw new BadRequest(`Unsupported field: ${unknown}`);
+        }
+        if (requestId !== undefined && (typeof requestId !== "string" || !requestId.length))
+          throw new BadRequest("requestId must be a nonempty string");
+        const patched = configuration({ ...entry.config, ...params }, entry.config.model ?? env.MODEL).config;
+        const modelError = (Object.hasOwn(params, "model") || Object.hasOwn(params, "keyScope"))
           ? await configurationModelError(env, entry.tenantId, patched) : undefined;
         if (modelError) throw new ApiError(400, modelError);
         return forward(new Request(request.url, {
           method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ id: requestId ?? crypto.randomUUID(), method: "configure", params: changes }),
+          body: JSON.stringify({ id: requestId ?? request.headers.get("Idempotency-Key") ?? crypto.randomUUID(), method: "configure", params }),
         }), env, entry.id, "/requests");
       }
       if (tail === "/mounts") {
