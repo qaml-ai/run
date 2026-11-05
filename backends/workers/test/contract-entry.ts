@@ -60,7 +60,11 @@ export class CamelAgent extends RuntimeAgent {
   }
 
   async fetch(request: Request) {
-    this.env.AGENT_TENANTS_JSON = await fixtureConfiguration(this.env);
+    const configuration = fixtureConfiguration(this.env);
+    // A disconnected request must not interrupt the fixture's tenant reload
+    // before the real runtime receives its aborted signal.
+    this.ctx.waitUntil(configuration.catch(() => {}));
+    this.env.AGENT_TENANTS_JSON = await configuration;
     if (this.env.TEST_MODE === "1" && new URL(request.url).pathname === "/__test/contract-legacy-model" && request.method === "POST") {
       const { model } = await request.json() as { model: { provider: string; id: string } };
       if (!model || typeof model.provider !== "string" || typeof model.id !== "string") return Response.json({ error: "Invalid legacy model fixture input" }, { status: 400 });
@@ -108,8 +112,10 @@ export default {
     if (new URL(request.url).pathname === "/__test/image-resize-failures")
       return Response.json({ count: await env.BUCKET.head(resizeFailureKey) ? 1 : 0 });
     if (new URL(request.url).pathname === "/healthz") return application.fetch(request, env, context);
+    const configuration = fixtureConfiguration(env);
+    context.waitUntil(configuration.catch(() => {}));
     return application.fetch(request, {
-      ...env, AGENT_TENANTS_JSON: await fixtureConfiguration(env),
+      ...env, AGENT_TENANTS_JSON: await configuration,
     }, context);
   },
 };
