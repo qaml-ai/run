@@ -6,12 +6,14 @@ cd "$(dirname "$0")/../../.."
 npm ci --prefix backends/workers --no-audit --no-fund
 npm run typecheck
 npm run typecheck --prefix backends/workers
+npm run docs
+node --experimental-strip-types --test --test-name-pattern="llms.txt" tests/docs.test.ts
 node tests/contract/check-assertions.mjs
 node tests/contract/check-product-assertions.mjs
 (
   cd backends/workers
   node --import ./test/sdk-deps.mjs --experimental-strip-types --test \
-    test/agent-builtins.test.ts test/agent-tools.test.ts
+    test/agent-builtins.test.ts test/agent-tools.test.ts test/public-docs.test.ts
   node --import ./test/compat-register.mjs --experimental-strip-types --test \
     test/keyed-tool-sources.integration.ts
 )

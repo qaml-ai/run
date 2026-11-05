@@ -3,6 +3,7 @@ import { firstPrompt } from "./first-prompt.ts";
 import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
 import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
+import { publicDocs } from "./public-docs.ts";
 import { resolveDefinition } from "./definitions.ts";
 import { sweepComputers } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
@@ -156,6 +157,8 @@ const worker = {
           backend: "workers-native",
           experimental: true,
         });
+      const docs = await publicDocs(request, env);
+      if (docs) return docs;
       const publicMoney = await publicMoneyRoutes(request, env, ctx);
       if (publicMoney) return publicMoney;
       await apiRequest(request, env);
