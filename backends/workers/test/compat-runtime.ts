@@ -35,21 +35,7 @@ export async function compatibilityRuntime(
     tenant: "alice",
     modelURL: env.AGENT_BASE_URL ?? model.url,
     tenants,
-    vars: {
-      ...env,
-      ...(tenantsFile ? { AGENT_TENANTS_JSON: JSON.stringify(tenantsFile) } : {}),
-      MODEL: env.AGENT_MODEL ?? "openai/gpt-4o-mini",
-      PUBLIC_BASE_URL: env.AGENT_PUBLIC_URL ?? 'https://agents.example.test',
-      ...(env.AGENT_IMAGES_URL || env.AGENT_TRANSCRIPTION_URL || env.AGENT_SPEECH_URL ? { MEDIA_BASE_URL: env.AGENT_IMAGES_URL ?? env.AGENT_TRANSCRIPTION_URL ?? env.AGENT_SPEECH_URL } : {}),
-      ...(tenantsFile?.platformKeys?.openai ? {PLATFORM_OPENAI_KEY:tenantsFile.platformKeys.openai} : {}),
-      TEST_MEDIA_TENANTS: JSON.stringify(tenantsFile ?? {}),
-      ...(env.AGENT_ACCOUNT_EMAIL_FROM ? {SCHEDULE_EMAIL_FROM:env.AGENT_ACCOUNT_EMAIL_FROM} : {}),
-      SCHEDULE_OPERATOR_TENANTS: tenants.map(t=>t.id).join(','),
-      MEDIA_PRICING: JSON.stringify({
-        ...(env.AGENT_PRICE_IMAGE_OUTPUT_USD ? {image: { textInput:Number(env.AGENT_PRICE_IMAGE_TEXT_INPUT_USD ?? 5)*1e6,imageInput:Number(env.AGENT_PRICE_IMAGE_INPUT_USD ?? 8)*1e6,output:Number(env.AGENT_PRICE_IMAGE_OUTPUT_USD)*1e6 }} : {}),
-        ...(env.AGENT_PRICE_TRANSCRIPTION_USD ? {transcription:Number(env.AGENT_PRICE_TRANSCRIPTION_USD)*1e6} : {}),
-      }),
-    },
+    vars: { ...env, ...(tenantsFile ? { AGENT_TENANTS_JSON: JSON.stringify(tenantsFile), TEST_DECISION_KEYS: JSON.stringify({ tenants: Object.fromEntries(Object.entries(tenantsFile.tenants ?? {}).map(([id, value]: [string, any]) => [id, { apiKeys: value.apiKeys, platformKeys: value.platformKeys }])), platformKeys: tenantsFile.platformKeys }) } : {}), MODEL: env.AGENT_MODEL ?? "openai/gpt-4o-mini" },
   });
   t.after(() => server.stop());
   const call = async (path: string, init: any = {}) => {
