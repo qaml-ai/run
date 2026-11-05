@@ -16,7 +16,7 @@ export function contextRangeExtension(limit: number, root: () => Promise<Convers
   return { name: "camel.context-range", hooks: [hook(GenerationTask, {
     beforeRequest: async () => {
       const range = await contextRange(await root());
-      if (range.bytes <= limit) return;
+      if (range.bytes <= limit) return undefined;
       const error = `This agent's context since its last compaction is ${range.bytes} bytes, past the ${limit} bytes a run can load; start a new agent with a summary of the history, or ask the operator to raise AGENT_CONTEXT_RANGE_MAX_BYTES.`;
       await refuse({ error, code: "context_too_large", stopped: "turn_limit" });
       throw new Error(`context_too_large: ${error}`);
