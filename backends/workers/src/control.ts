@@ -384,7 +384,10 @@ export async function settleTurn(
   const { accounts: { billing } } = await keyServices(env);
   const prepaid = await billing.mode(receipt.tenantId) === "prepaid";
   const result = await transaction(env, async (sql) => {
-    await lockAccount(sql, receipt.tenantId);
+    // Admin tenants can run on their own keys without a prepaid account row.
+    // Serialize all of their receipts too, without manufacturing a credit balance.
+    await sql.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`turn-receipts:${receipt.tenantId}`]);
+    if (prepaid) await lockAccount(sql, receipt.tenantId);
     const prior = (
       await sql.query(
         "select fingerprint from idempotency_keys where tenant=$1 and key=$2",
