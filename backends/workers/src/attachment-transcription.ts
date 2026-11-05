@@ -6,12 +6,7 @@ import {
   type Transcript,
 } from "./media/transcription.ts";
 import type { AgentIdentity, UsageRecord } from "./media/types.ts";
-import {
-  admitMedia,
-  mediaKey,
-  mediaOutbound,
-  type MediaBindings,
-} from "./media-api.ts";
+import type { MediaBindings } from "./media-api.ts";
 import { mediaAzure } from "./media-azure.ts";
 import {
   keyServices,
@@ -134,15 +129,16 @@ export async function transcribeAttachments(
     host.transcriber && host.record && host.admit && host.budget
       ? undefined
       : await keyServices(env);
+  const media = host.transcriber && host.admit ? undefined : await import("./media-api.ts");
   const transcriber =
     host.transcriber ??
     new Transcriber({
       provider: openaiTranscription({
-        outbound: mediaOutbound(env),
+        outbound: media!.mediaOutbound(env),
         baseUrl: env.MEDIA_BASE_URL,
       }),
       key: (tenant, keyScope, provider) =>
-        mediaKey(
+        media!.mediaKey(
           env,
           tenant,
           keyScope,
@@ -307,7 +303,7 @@ export async function transcribeAttachments(
         if (host.admit) await host.admit();
         else {
           await admitAuxiliaryUsage(env, scope);
-          await admitMedia(env, scope.tenant, services!);
+          await media!.admitMedia(env, scope.tenant, services!);
         }
         const bytes = await read(files[index]);
         await storage.put(cacheKey, { fingerprint, state: "pending" });
