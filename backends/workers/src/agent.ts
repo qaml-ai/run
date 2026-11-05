@@ -5,8 +5,9 @@ import { takesFiles } from './tool-file-schema.ts';
 import { ToolFiles } from './tool-files.ts';
 import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
 import { steeringJoined } from "./steering-placement.ts";
+import { MULTI_AGENT_LIMITS } from "./multi-agent-policy.ts";
 import { ConfigurationTargets } from "./configuration-targets.ts";
-import { visibleEvent } from "./event-visibility.ts";
+import { visibleEvent, visibleReplay } from "./event-visibility.ts";
 import { toolOutputExtension } from "./tool-output.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
@@ -233,6 +234,8 @@ type RequestRecord = {
   task?: number;
   steer?: "queued" | "accepted";
   steeredInto?: string;
+  /** Accepted while its logical turn was live, which may span native Pi runs. */
+  steerCommitted?: true;
   metadata?: unknown;
   actor?: string;
   fingerprint: string;
@@ -351,7 +354,6 @@ export class CamelAgent extends DurableObject<Env> {
       await this.ctx.storage.put(reqKey(request.id), done);
       await this.emit({ type: 'response', id: request.id, outcome: done.outcome });
     },
-    isBusy: async () => (await this.activity()).busy,
     wakeLimit: this.delegateWakeLimit ? Number(this.delegateWakeLimit) : undefined,
     submit: (request, notice, delivery) =>
       !delivery.run && delivery.stopped === 'aborted'
@@ -1236,6 +1238,14 @@ export class CamelAgent extends DurableObject<Env> {
       }
     }
   }
+  private async runningRequest(): Promise<string | undefined> {
+    const view = (await this.harness.session().watch()).value;
+    const live = view.docs["pi.live"] as LiveState | undefined;
+    const id = await this.requestForInputs(live?.run?.inputs ?? []);
+    if (!id) return undefined;
+    const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
+    return record && record.state !== 'completed' ? id : undefined;
+  }
   private async fileRequestId(
     conversationId?: Parameters<typeof hostExecutionRequest>[1],
   ) {
@@ -1276,13 +1286,15 @@ export class CamelAgent extends DurableObject<Env> {
     if (ended) this.nextMessage++;
   }
   private async reconcileSteering(record: RequestRecord, inputs: readonly number[]) {
+    // The Node host keeps its logical turn open while draining steers, even if
+    // the preceding native run just answered. Preserve that accepted ownership.
     if (!record.steeredInto) return;
     const parent = await this.ctx.storage.get<RequestRecord>(reqKey(record.steeredInto));
     const pi = await this.harness.pi(), root = await pi.root(BACKGROUND_CONTEXT);
     const joined = await root.commit(async tx => {
       const current = await tx.submissionByRequest(root.id, record.piId ?? record.id);
       const previous = await tx.submissionByRequest(root.id, parent?.piId ?? record.steeredInto!);
-      return steeringJoined(current, previous, inputs.map(id => ({ id })));
+      return steeringJoined(current, previous, inputs.map(id => ({ id })), record.steerCommitted);
     }, BACKGROUND_CONTEXT);
     if (joined === false) {
       delete record.steeredInto;
@@ -2150,12 +2162,22 @@ export class CamelAgent extends DurableObject<Env> {
         status: 402,
         code: "SPEND_LIMIT",
       });
+    const pending = (await this.harness.pending()).find(
+      (item) => item.status === "running",
+    );
+    // Pending operation receipts can outlive their native run. Only a live
+    // turn can take a steer; its accepted steers remain part of that logical
+    // turn when Pi drains them after a final answer.
+    const running = old?.steerCommitted ? old.steeredInto : params.whileRunning === 'steer' ? await this.runningRequest() : undefined;
+    if (notice?.metadata.kind === 'message' && !running && !refusal && (!delivery || delivery.run)) {
+      const wake = notice.root === conf.id
+        ? await this.admitDelegateWake(id)
+        : await this.env.AGENTS.getByName(notice.root).admitDelegateWake(id);
+      if (!wake.allowed) delivery = { run: false, stopped: 'agent_loop_limit', message: `This agent's chain has had ${this.delegateWakeLimit ? Number(this.delegateWakeLimit) : MULTI_AGENT_LIMITS.wakesPerHour} turns started by sub-agent notifications and messages this hour, its limit: the message is in its history, but no turn ran. Send a message to go on` };
+    }
     const noTurn = notice
       ? refusal ?? (delivery && !delivery.run ? { error: delivery.message, code: delivery.stopped, stopped: delivery.stopped } : undefined)
       : undefined;
-    const running = (await this.harness.pending()).find(
-      (item) => item.status === "running",
-    );
     await this.requireApplication(params.allowDisconnected);
     const preparing = params.files !== undefined && !old?.admitted && !(delivery && !delivery.run && notice);
     if (preparing) {
@@ -2212,10 +2234,10 @@ export class CamelAgent extends DurableObject<Env> {
       ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
       ...((params.actor ?? (params.from as { id?: string } | undefined)?.id) ? { actor: String(params.actor ?? (params.from as { id: string }).id) } : {}),
       fingerprint,
-      state: running ? "queued" : "running",
+      state: pending ? "queued" : "running",
       ...(params.whileRunning === "steer"
         ? running
-          ? { steer: "accepted" as const, steeredInto: running.operationId }
+          ? { steer: "accepted" as const, steeredInto: running, steerCommitted: true as const }
           : { steer: "queued" as const }
         : {}),
       startedAt: old?.startedAt ?? Date.now(),
@@ -2285,7 +2307,7 @@ export class CamelAgent extends DurableObject<Env> {
     if (request.method === "continue")
       await this.harness.continue({ operationId: id });
     else {
-      const held = !running ? await this.ctx.storage.list<{ id: string; prompt: typeof prompt; startedAt: number }>({ prefix: 'held-steer:' }) : new Map();
+      const held = !pending ? await this.ctx.storage.list<{ id: string; prompt: typeof prompt; startedAt: number }>({ prefix: 'held-steer:' }) : new Map();
       const submission = {
         operationId: id,
         whenBusy: params.whileRunning === "steer" ? "steer" as const : "followUp" as const,
@@ -3643,8 +3665,7 @@ export class CamelAgent extends DurableObject<Env> {
       turn: await this.ctx.storage.get<LiveTurn>("live-turn"), partial: this.partial },
       request.headers.get("Last-Event-ID") ?? "0", watch ? asked !== "0" : asked === "1",
       Number((this.env as Env & { AGENT_SNAPSHOT_BYTES?: string }).AGENT_SNAPSHOT_BYTES) || undefined);
-    return { ...replay, cursor: replay.events.at(-1)?.id ?? replay.cursor,
-      events: replay.events.filter(row => visibleEvent(row.data, new URL(request.url).searchParams.get("subagents") === "1")) };
+    return visibleReplay(replay, new URL(request.url).searchParams.get("subagents") === "1");
   }
   private async events(request: Request): Promise<Response> {
     const runId = new URL(request.url).searchParams.get("runId");
@@ -3669,7 +3690,7 @@ export class CamelAgent extends DurableObject<Env> {
         });
         replay = await this.replayEvents(request);
       }
-      return json({ cursor: replay.events.at(-1)?.id ?? (replay.cursor || state.cursor), events: [...(replay.snapshot ? [{ id: replay.snapshot.cursor, data: replay.snapshot }] : []), ...replay.events] });
+      return json({ cursor: replay.cursor || state.cursor, events: [...(replay.snapshot ? [{ id: replay.snapshot.cursor, data: replay.snapshot }] : []), ...replay.events] });
     }
     const encoder = new TextEncoder();
     const conf = await this.config();

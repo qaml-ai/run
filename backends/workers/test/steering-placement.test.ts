@@ -13,6 +13,10 @@ test('steering placed after a final response starts its own turn', () => {
   assert.equal(steeringJoined(steer, { ...old, status: 'done', answer: 8 }, [steer]), false);
 });
 
+test('a live logical turn keeps an accepted steer across native final answers', () => {
+  assert.equal(steeringJoined({ ...steer, status: 'done', answer: 9 }, { ...old, status: 'done', answer: 8 }, [], true), true);
+});
+
 test('a delayed observer uses the actual answers to recover run ownership', () => {
   assert.equal(steeringJoined({ ...steer, status: 'done', answer: 9 }, { ...old, status: 'done', answer: 8 }, []), false);
   assert.equal(steeringJoined({ ...steer, status: 'done', answer: 8 }, { ...old, status: 'done', answer: 8 }, []), true);

@@ -5,7 +5,11 @@ export function steeringJoined(
   current: Submission | undefined,
   previous: Submission | undefined,
   active: readonly { id: number }[],
+  committed = false,
 ): boolean | undefined {
+  // A steer accepted by an actually live logical turn stays in that turn when
+  // Pi drains it after an answer, just as the Node host's runInner loop does.
+  if (committed) return true;
   if (!current || !previous) return undefined;
   if (active.some(input => input.id === current.id))
     return active.some(input => input.id === previous.id);

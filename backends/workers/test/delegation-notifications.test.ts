@@ -124,7 +124,7 @@ test('an ending stays available to wait_agent until its notification can land be
   assert.equal(f.submissions.length, 0);
   assert.equal(await f.notifications.pending(), false);
 });
-test('message delivery uses the same durable root wake budget and preserves its runtime source', async () => {
+test('message delivery preserves its runtime source and is idempotent', async () => {
   const f = fixture();
   const request = { id: 'message_123', method: 'prompt' as const, params: { text: 'A question', allowDisconnected: true as const, whileRunning: 'followUp' as const } };
   const notice = { source: { kind: 'agent' as const, agentId: 'child', name: 'helper' }, root: 'root', costUsd: 0, metadata: { agentId: 'child', name: 'helper', kind: 'message', to: 'parent' } };
@@ -133,9 +133,9 @@ test('message delivery uses the same durable root wake budget and preserves its 
   assert.equal(f.submissions.length, 1);
   assert.deepEqual(f.submissions[0].notice, notice);
 });
-test('messages joining a running turn do not consume another wake', async () => {
+test('message wakes are decided at admission against the actual live turn', async () => {
   const f = fixture();
-  f.host.isBusy = async () => true;
+  f.host.admitWake = async () => { throw new Error('message admission owns the wake decision'); };
   await f.notifications.deliverMessage({ id: 'msg_steer', method: 'prompt', params: { text: 'question', allowDisconnected: true, whileRunning: 'followUp' } }, { source: { kind: 'agent', agentId: 'child', name: 'helper' }, root: 'root', costUsd: 0, metadata: { kind: 'message' } });
   assert.equal(f.submissions.length, 1);
   assert.equal(f.rootStore.values.size, 0);

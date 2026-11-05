@@ -40,7 +40,6 @@ export interface NotificationHost {
   stage?(request: NoticeRequest, notice: RuntimeNotice): Promise<void>;
   /** A wait consumed a staged ending before it reached the model. */
   discard?(request: NoticeRequest): Promise<void>;
-  isBusy?(): Promise<boolean>;
   wakeLimit?: number;
   /** Uses the agent's existing alarm, preserving any earlier work. */
   retry(at: number): Promise<void>;
@@ -96,8 +95,9 @@ export class DelegationNotifications {
         return;
       }
       if (!pending.delivery && !pending.wake) {
-        // A message steered into existing work starts no turn and takes no wake.
-        pending.wake = pending.notice.metadata.kind === 'message' && await this.host.isBusy?.()
+        // Message admission decides against the live logical turn. A pending
+        // operation receipt alone does not prove that it can still take a steer.
+        pending.wake = pending.notice.metadata.kind === 'message'
           ? { allowed: true, hour: Math.floor(Date.now() / 3_600_000) }
           : await this.host.admitWake(pending.notice.root, pending.request.id);
         await this.host.storage.put(key, pending);
