@@ -15,6 +15,7 @@ import {
   controlRoutes,
   maintenance,
   creationRate,
+  changedConfiguration,
   type DirectoryEntry,
   type DirectoryFailure,
 } from "./control.ts";
@@ -174,8 +175,20 @@ const worker = {
       if (docs) return docs;
       const publicMoney = await publicMoneyRoutes(request, env, ctx);
       if (publicMoney) return publicMoney;
-      if (path === "/console" || path.startsWith("/console/"))
+      if (path === "/console" || path.startsWith("/console/")) {
+        if (env.CONSOLE_ASSETS && ["GET", "HEAD"].includes(request.method)) {
+          const asset = new URL(request.url);
+          asset.pathname = "/index.html";
+          const response = await env.CONSOLE_ASSETS.fetch(new Request(asset, request));
+          const headers = new Headers(response.headers);
+          headers.set("Content-Type", "text/html; charset=UTF-8");
+          headers.delete("Content-Disposition");
+          return new Response(response.body, { status: response.status, headers });
+        }
         return new Response("The console is not built on this host", { status: 404, headers: { "Content-Type": "text/plain; charset=UTF-8" } });
+      }
+      if (path.startsWith("/api/"))
+        return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=UTF-8" } });
       await apiRequest(request, env);
       const bearer = request.headers.get("authorization") ?? undefined;
       const browserTokens = new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN);
@@ -506,9 +519,14 @@ const worker = {
         ? await agentLifecycleRoutes(request, env, entry, tail, auth?.kind !== "oauth")
         : undefined;
       if (lifecycle) return lifecycle;
-      if (!auth && tail === "/requests" && request.method === "POST") {
-        const input = (await request.clone().json()) as { method?: string; params?: unknown };
-        if (input.method === "configure") scopedConfiguration(input.params);
+      if (tail === "/requests" && request.method === "POST") {
+        const input = (await request.clone().json()) as { method?: string; params?: Record<string, unknown> };
+        if (!auth && input.method === "configure") scopedConfiguration(input.params);
+        if (input.method !== "configure" && input.params?.bucket !== undefined &&
+          (!auth || !["prompt", "continue"].includes(input.method ?? "")))
+          throw new HttpError(auth ? 400 : 403, auth
+            ? "bucket is for a model run (prompt, continue)"
+            : "Only the tenant can choose a run's bucket");
       }
       // Browser grants retain Node's read-only SSE policy. The internal agent
       // endpoint also negotiates transports, so strip the WebSocket offer here.
