@@ -6,7 +6,6 @@ import { attemptStream } from './model-attempt-stream.ts';
 import { callFetch, FETCH_APIS } from './model-call-fetch.ts';
 import { estimateModelAttempt } from './model-estimate.ts';
 import { modelSpendLimit } from './agent-spend.ts';
-import { attemptAck } from './model-attempt.ts';
 import { billingRunStop, creditRunStop, type BillingRunStop } from './billing-run-stop.ts';
 import type { ModelAttemptEvent, ModelAttemptHook } from './model-attempt.ts';
 import { keyServices, providerCredentials, type KeyEnv } from './security-services.ts';
@@ -87,8 +86,6 @@ export function meterProvider<P extends Provider<any>>(
             ...(identity.subject ? { endUser: { id: identity.subject, bucket: identity.bucket ?? 'default' } } : {}),
           } : event;
           const answer = await service.event(identity.tenant, identity.agent, platform, platform, attributed);
-          const refused = attemptAck(answer).refused;
-          if (refused) await stopped?.(identity, creditRunStop(refused));
           return answer;
         });
         pending = next.catch(() => {});
