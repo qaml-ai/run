@@ -1574,8 +1574,14 @@ export class CamelAgent extends DurableObject<Env> {
       .filter((item) => item.status === "queued")
       .map((item) => item.operationId);
     const running = pending.filter(item => item.status === 'running').map(item => item.operationId);
+    const keepTask = queued === 'keep'
+      ? ((await this.harness.session().watch()).value.docs['pi.live'] as LiveState | undefined)?.run?.taskId
+      : undefined;
     if (queued === 'cancel') await this.markCancelledRequests();
-    else for (const id of running) await this.ctx.storage.put(`cancelled-request:${id}`, true);
+    else await this.ctx.storage.transaction(async tx => {
+      for (const id of running) await tx.put(`cancelled-request:${id}`, 'keep-queue');
+      if (keepTask !== undefined) await tx.put('resume-kept-queue', { taskId: keepTask });
+    });
     if (queued === 'cancel') {
       await this.delegation.cancel();
       await this.cancelHumanInputs();
@@ -1594,8 +1600,7 @@ export class CamelAgent extends DurableObject<Env> {
         await this.cancelHumanInputs(id);
         await this.delegation.cancel(id);
       }
-      const live = (await this.harness.session().watch()).value.docs['pi.live'] as LiveState | undefined;
-      if (live?.run?.taskId !== undefined) await (await this.harness.pi()).abortTask(live.run.taskId, BACKGROUND_CONTEXT);
+      await this.resumeKeptQueue();
     }
     const conf = await this.config();
     for (const id of cancelled) {
@@ -1616,6 +1621,20 @@ export class CamelAgent extends DurableObject<Env> {
       await this.emit({ type: "response", id, outcome: record.outcome });
     }
     return { aborted: true, cancelled };
+  }
+  private async resumeKeptQueue() {
+    const intent = await this.ctx.storage.get<{ taskId: number }>('resume-kept-queue');
+    if (!intent) return;
+    const pi = await this.harness.pi();
+    // A generation abort preserves the inbox but does not advance it. Repeating
+    // the abort and the identified continue also finishes an interrupted stop.
+    await pi.abortTask(intent.taskId as never, BACKGROUND_CONTEXT);
+    await pi.waitForTask(intent.taskId as never, BACKGROUND_CONTEXT);
+    if ((await this.harness.pending()).some(item => item.status === 'queued')) {
+      const root = await pi.root(BACKGROUND_CONTEXT);
+      await root.submit({ type: 'continue', requestId: `kept-queue-${intent.taskId}` }, BACKGROUND_CONTEXT);
+    }
+    await this.ctx.storage.delete('resume-kept-queue');
   }
   /** Withdraw only this delegated input, including a cancellation that arrives before it. */
   async cancelRequest(id: string) {
@@ -1653,12 +1672,12 @@ export class CamelAgent extends DurableObject<Env> {
     this.ctx.waitUntil(work);
   }
   private async restoreCancellations() {
-    for (const record of await this.records())
-      if (
-        (record.state !== "completed" || record.status === "input_required") &&
-        (await this.ctx.storage.get(`cancelled-request:${record.id}`))
-      )
-        this.resumeCancellation(record);
+    for (const record of await this.records()) {
+      if (record.state === "completed" && record.status !== "input_required") continue;
+      const cancelled = await this.ctx.storage.get(`cancelled-request:${record.id}`);
+      if (cancelled === 'keep-queue') this.track(record.id);
+      else if (cancelled) this.resumeCancellation(record);
+    }
   }
   private async abortExecutions() {
     const pi = await this.harness.pi();
@@ -3116,6 +3135,7 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private async restorePending() {
     await this.promptPreparations.sweep(Date.now(), true);
+    await this.resumeKeptQueue();
     await this.restoreCancellations();
     await this.restoreHostAdmissions();
     await this.delegation.recover();
@@ -3143,6 +3163,7 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private async wake() {
     await this.promptPreparations.sweep();
+    await this.resumeKeptQueue();
     await this.restoreCancellations();
     const conf = await this.ctx.storage.get<Config>("configuration");
     if (conf)
