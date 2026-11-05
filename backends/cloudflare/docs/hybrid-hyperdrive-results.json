@@ -1,0 +1,991 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-11-05T11:46:05.749Z",
+  "scope": "local workerd DO -> Hyperdrive localConnectionString -> disposable PostgreSQL 16; no Cloudflare network pool/cache",
+  "node": "v22.21.1",
+  "cases": {
+    "sequential": {
+      "balance": "580000",
+      "ledger": "580000",
+      "holds": 0,
+      "spent": "420000"
+    },
+    "concurrent": {
+      "attempts": 20,
+      "committed": 6,
+      "refused": 14,
+      "state": {
+        "balance": "10000",
+        "ledger": "10000",
+        "holds": 0,
+        "spent": "90000"
+      },
+      "timings": [
+        {
+          "status": "committed",
+          "balance": 85000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 33,
+          "totalMs": 35,
+          "clientMs": 41.37941699999965
+        },
+        {
+          "status": "committed",
+          "balance": 70000,
+          "held": 0,
+          "connectionMs": 1,
+          "transactionAndCloseMs": 44,
+          "totalMs": 45,
+          "clientMs": 52.337625000000116
+        },
+        {
+          "status": "committed",
+          "balance": 55000,
+          "held": 0,
+          "connectionMs": 7,
+          "transactionAndCloseMs": 42,
+          "totalMs": 49,
+          "clientMs": 60.6849159999997
+        },
+        {
+          "status": "committed",
+          "balance": 25000,
+          "held": 0,
+          "connectionMs": 14,
+          "transactionAndCloseMs": 45,
+          "totalMs": 59,
+          "clientMs": 74.36545800000022
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 14,
+          "transactionAndCloseMs": 80,
+          "totalMs": 94,
+          "clientMs": 108.52408299999979
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 14,
+          "transactionAndCloseMs": 72,
+          "totalMs": 86,
+          "clientMs": 100.43112500000007
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 14,
+          "transactionAndCloseMs": 57,
+          "totalMs": 71,
+          "clientMs": 86.00112500000023
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 4,
+          "transactionAndCloseMs": 94,
+          "totalMs": 98,
+          "clientMs": 124.22554200000013
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 4,
+          "transactionAndCloseMs": 89,
+          "totalMs": 93,
+          "clientMs": 120.04279099999985
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 4,
+          "transactionAndCloseMs": 110,
+          "totalMs": 114,
+          "clientMs": 140.0172080000002
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 5,
+          "transactionAndCloseMs": 59,
+          "totalMs": 64,
+          "clientMs": 91.04424999999992
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 5,
+          "transactionAndCloseMs": 101,
+          "totalMs": 106,
+          "clientMs": 132.8531670000002
+        },
+        {
+          "status": "committed",
+          "balance": 40000,
+          "held": 0,
+          "connectionMs": 5,
+          "transactionAndCloseMs": 36,
+          "totalMs": 41,
+          "clientMs": 67.79325000000017
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 4,
+          "transactionAndCloseMs": 97,
+          "totalMs": 101,
+          "clientMs": 127.61954199999991
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 4,
+          "transactionAndCloseMs": 86,
+          "totalMs": 90,
+          "clientMs": 116.4152079999999
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 6,
+          "transactionAndCloseMs": 79,
+          "totalMs": 85,
+          "clientMs": 111.89333299999998
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 4,
+          "transactionAndCloseMs": 107,
+          "totalMs": 111,
+          "clientMs": 136.89745800000037
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 5,
+          "transactionAndCloseMs": 64,
+          "totalMs": 69,
+          "clientMs": 95.63529199999994
+        },
+        {
+          "status": "committed",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 5,
+          "transactionAndCloseMs": 50,
+          "totalMs": 55,
+          "clientMs": 82.1440419999999
+        },
+        {
+          "status": "insufficient",
+          "balance": 10000,
+          "held": 0,
+          "connectionMs": 5,
+          "transactionAndCloseMs": 73,
+          "totalMs": 78,
+          "clientMs": 103.99175000000014
+        }
+      ]
+    },
+    "duplicate": {
+      "attempts": 12,
+      "committed": 1,
+      "duplicates": 11,
+      "mismatch": {
+        "error": "idempotency payload mismatch",
+        "clientMs": 8.892457999999806
+      },
+      "reserveMismatch": {
+        "error": "idempotency payload mismatch",
+        "clientMs": 7.806583000000046
+      }
+    },
+    "rollback": {
+      "error": "injected rollback",
+      "allWritesRolledBack": true,
+      "retryCommitted": true
+    },
+    "lostAcknowledgement": {
+      "recovered": "duplicate",
+      "state": {
+        "balance": "79000",
+        "ledger": "79000",
+        "holds": 0,
+        "spent": "21000"
+      }
+    },
+    "splitReserveSettle": {
+      "idleTransactionsBetweenCalls": 0,
+      "state": {
+        "balance": "72000",
+        "ledger": "72000",
+        "holds": 0,
+        "spent": "28000"
+      }
+    },
+    "openReservation": {
+      "competingChargeRefused": true,
+      "failedSettlementPreservedHold": true,
+      "before": {
+        "balance": "20000",
+        "ledger": "20000",
+        "holds": 1,
+        "spent": "0"
+      },
+      "after": {
+        "balance": "10000",
+        "ledger": "10000",
+        "holds": 0,
+        "spent": "10000"
+      }
+    }
+  },
+  "latency": {
+    "freshDOs": {
+      "clientMs": {
+        "n": 30,
+        "min": 11.093624999999975,
+        "p50": 14.309000000000196,
+        "p95": 20.39300000000003,
+        "max": 26.92241699999977
+      },
+      "connectionMs": {
+        "n": 30,
+        "min": 1,
+        "p50": 2,
+        "p95": 3,
+        "max": 4
+      },
+      "transactionAndCloseMs": {
+        "n": 30,
+        "min": 6,
+        "p50": 9,
+        "p95": 14,
+        "max": 17
+      },
+      "totalMs": {
+        "n": 30,
+        "min": 7,
+        "p50": 11,
+        "p95": 16,
+        "max": 21
+      }
+    },
+    "sameDO": {
+      "clientMs": {
+        "n": 30,
+        "min": 10.812124999999924,
+        "p50": 12.191208000000188,
+        "p95": 15.751875000000382,
+        "max": 16.951874999999745
+      },
+      "connectionMs": {
+        "n": 30,
+        "min": 1,
+        "p50": 2,
+        "p95": 3,
+        "max": 3
+      },
+      "transactionAndCloseMs": {
+        "n": 30,
+        "min": 7,
+        "p50": 8,
+        "p95": 11,
+        "max": 12
+      },
+      "totalMs": {
+        "n": 30,
+        "min": 8,
+        "p50": 10,
+        "p95": 13,
+        "max": 15
+      }
+    },
+    "raw": {
+      "freshDOs": [
+        {
+          "status": "committed",
+          "balance": 993000,
+          "held": 0,
+          "connectionMs": 4,
+          "transactionAndCloseMs": 17,
+          "totalMs": 21,
+          "clientMs": 26.92241699999977
+        },
+        {
+          "status": "committed",
+          "balance": 986000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 14,
+          "totalMs": 16,
+          "clientMs": 20.39300000000003
+        },
+        {
+          "status": "committed",
+          "balance": 979000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 12,
+          "totalMs": 14,
+          "clientMs": 17.857708000000002
+        },
+        {
+          "status": "committed",
+          "balance": 972000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 8,
+          "totalMs": 10,
+          "clientMs": 14.587375000000065
+        },
+        {
+          "status": "committed",
+          "balance": 965000,
+          "held": 0,
+          "connectionMs": 3,
+          "transactionAndCloseMs": 9,
+          "totalMs": 12,
+          "clientMs": 15.291417000000365
+        },
+        {
+          "status": "committed",
+          "balance": 958000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 9,
+          "totalMs": 11,
+          "clientMs": 14.773499999999785
+        },
+        {
+          "status": "committed",
+          "balance": 951000,
+          "held": 0,
+          "connectionMs": 3,
+          "transactionAndCloseMs": 10,
+          "totalMs": 13,
+          "clientMs": 16.028792000000067
+        },
+        {
+          "status": "committed",
+          "balance": 944000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 9,
+          "totalMs": 11,
+          "clientMs": 14.499374999999873
+        },
+        {
+          "status": "committed",
+          "balance": 937000,
+          "held": 0,
+          "connectionMs": 3,
+          "transactionAndCloseMs": 9,
+          "totalMs": 12,
+          "clientMs": 15.703750000000127
+        },
+        {
+          "status": "committed",
+          "balance": 930000,
+          "held": 0,
+          "connectionMs": 1,
+          "transactionAndCloseMs": 10,
+          "totalMs": 11,
+          "clientMs": 15.943708000000242
+        },
+        {
+          "status": "committed",
+          "balance": 923000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 11,
+          "totalMs": 13,
+          "clientMs": 17.59695899999997
+        },
+        {
+          "status": "committed",
+          "balance": 916000,
+          "held": 0,
+          "connectionMs": 3,
+          "transactionAndCloseMs": 8,
+          "totalMs": 11,
+          "clientMs": 13.919667000000118
+        },
+        {
+          "status": "committed",
+          "balance": 909000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 9,
+          "totalMs": 11,
+          "clientMs": 13.827291999999943
+        },
+        {
+          "status": "committed",
+          "balance": 902000,
+          "held": 0,
+          "connectionMs": 1,
+          "transactionAndCloseMs": 8,
+          "totalMs": 9,
+          "clientMs": 13.178249999999935
+        },
+        {
+          "status": "committed",
+          "balance": 895000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 7,
+          "totalMs": 9,
+          "clientMs": 12.36737499999981
+        },
+        {
+          "status": "committed",
+          "balance": 888000,
+          "held": 0,
+          "connectionMs": 1,
+          "transactionAndCloseMs": 6,
+          "totalMs": 7,
+          "clientMs": 11.093624999999975
+        },
+        {
+          "status": "committed",
+          "balance": 881000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 9,
+          "totalMs": 11,
+          "clientMs": 15.127375000000029
+        },
+        {
+          "status": "committed",
+          "balance": 874000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 9,
+          "totalMs": 11,
+          "clientMs": 14.430417000000034
+        },
+        {
+          "status": "committed",
+          "balance": 867000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 7,
+          "totalMs": 9,
+          "clientMs": 13.507874999999785
+        },
+        {
+          "status": "committed",
+          "balance": 860000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 9,
+          "totalMs": 11,
+          "clientMs": 15.120167000000038
+        },
+        {
+          "status": "committed",
+          "balance": 853000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 8,
+          "totalMs": 10,
+          "clientMs": 13.637624999999844
+        },
+        {
+          "status": "committed",
+          "balance": 846000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 10,
+          "totalMs": 12,
+          "clientMs": 14.717458999999963
+        },
+        {
+          "status": "committed",
+          "balance": 839000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 7,
+          "totalMs": 9,
+          "clientMs": 11.794417000000067
+        },
+        {
+          "status": "committed",
+          "balance": 832000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 9,
+          "totalMs": 11,
+          "clientMs": 14.309000000000196
+        },
+        {
+          "status": "committed",
+          "balance": 825000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 7,
+          "totalMs": 9,
+          "clientMs": 12.733916000000136
+        },
+        {
+          "status": "committed",
+          "balance": 818000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 8,
+          "totalMs": 10,
+          "clientMs": 13.495582999999897
+        },
+        {
+          "status": "committed",
+          "balance": 811000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 8,
+          "totalMs": 10,
+          "clientMs": 12.81558300000006
+        },
+        {
+          "status": "committed",
+          "balance": 804000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 8,
+          "totalMs": 10,
+          "clientMs": 13.159375000000182
+        },
+        {
+          "status": "committed",
+          "balance": 797000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 7,
+          "totalMs": 9,
+          "clientMs": 11.661125000000084
+        },
+        {
+          "status": "committed",
+          "balance": 790000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 9,
+          "totalMs": 11,
+          "clientMs": 13.877124999999978
+        }
+      ],
+      "sameDO": [
+        {
+          "status": "committed",
+          "balance": 783000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 8,
+          "totalMs": 10,
+          "clientMs": 14.925374999999804
+        },
+        {
+          "status": "committed",
+          "balance": 776000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 7,
+          "totalMs": 9,
+          "clientMs": 11.117958000000272
+        },
+        {
+          "status": "committed",
+          "balance": 769000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 7,
+          "totalMs": 9,
+          "clientMs": 12.085958000000119
+        },
+        {
+          "status": "committed",
+          "balance": 762000,
+          "held": 0,
+          "connectionMs": 3,
+          "transactionAndCloseMs": 10,
+          "totalMs": 13,
+          "clientMs": 15.490582999999788
+        },
+        {
+          "status": "committed",
+          "balance": 755000,
+          "held": 0,
+          "connectionMs": 3,
+          "transactionAndCloseMs": 7,
+          "totalMs": 10,
+          "clientMs": 12.407583000000159
+        },
+        {
+          "status": "committed",
+          "balance": 748000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 9,
+          "totalMs": 11,
+          "clientMs": 12.548624999999902
+        },
+        {
+          "status": "committed",
+          "balance": 741000,
+          "held": 0,
+          "connectionMs": 1,
+          "transactionAndCloseMs": 9,
+          "totalMs": 10,
+          "clientMs": 12.191208000000188
+        },
+        {
+          "status": "committed",
+          "balance": 734000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 7,
+          "totalMs": 9,
+          "clientMs": 11.8618749999996
+        },
+        {
+          "status": "committed",
+          "balance": 727000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 7,
+          "totalMs": 9,
+          "clientMs": 11.693624999999884
+        },
+        {
+          "status": "committed",
+          "balance": 720000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 7,
+          "totalMs": 9,
+          "clientMs": 11.546542000000045
+        },
+        {
+          "status": "committed",
+          "balance": 713000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 7,
+          "totalMs": 9,
+          "clientMs": 11.380290999999943
+        },
+        {
+          "status": "committed",
+          "balance": 706000,
+          "held": 0,
+          "connectionMs": 3,
+          "transactionAndCloseMs": 8,
+          "totalMs": 11,
+          "clientMs": 13.00629200000003
+        },
+        {
+          "status": "committed",
+          "balance": 699000,
+          "held": 0,
+          "connectionMs": 1,
+          "transactionAndCloseMs": 11,
+          "totalMs": 12,
+          "clientMs": 14.76837499999965
+        },
+        {
+          "status": "committed",
+          "balance": 692000,
+          "held": 0,
+          "connectionMs": 3,
+          "transactionAndCloseMs": 12,
+          "totalMs": 15,
+          "clientMs": 16.951874999999745
+        },
+        {
+          "status": "committed",
+          "balance": 685000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 10,
+          "totalMs": 12,
+          "clientMs": 14.84079200000042
+        },
+        {
+          "status": "committed",
+          "balance": 678000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 7,
+          "totalMs": 9,
+          "clientMs": 11.480707999999595
+        },
+        {
+          "status": "committed",
+          "balance": 671000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 8,
+          "totalMs": 10,
+          "clientMs": 12.650458000000071
+        },
+        {
+          "status": "committed",
+          "balance": 664000,
+          "held": 0,
+          "connectionMs": 3,
+          "transactionAndCloseMs": 7,
+          "totalMs": 10,
+          "clientMs": 11.981083000000126
+        },
+        {
+          "status": "committed",
+          "balance": 657000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 7,
+          "totalMs": 9,
+          "clientMs": 10.812124999999924
+        },
+        {
+          "status": "committed",
+          "balance": 650000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 9,
+          "totalMs": 11,
+          "clientMs": 13.715666000000056
+        },
+        {
+          "status": "committed",
+          "balance": 643000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 11,
+          "totalMs": 13,
+          "clientMs": 15.13733400000001
+        },
+        {
+          "status": "committed",
+          "balance": 636000,
+          "held": 0,
+          "connectionMs": 1,
+          "transactionAndCloseMs": 9,
+          "totalMs": 10,
+          "clientMs": 12.62237499999992
+        },
+        {
+          "status": "committed",
+          "balance": 629000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 8,
+          "totalMs": 10,
+          "clientMs": 11.476000000000113
+        },
+        {
+          "status": "committed",
+          "balance": 622000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 8,
+          "totalMs": 10,
+          "clientMs": 11.873375000000124
+        },
+        {
+          "status": "committed",
+          "balance": 615000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 8,
+          "totalMs": 10,
+          "clientMs": 12.483083999999963
+        },
+        {
+          "status": "committed",
+          "balance": 608000,
+          "held": 0,
+          "connectionMs": 3,
+          "transactionAndCloseMs": 8,
+          "totalMs": 11,
+          "clientMs": 13.246292000000267
+        },
+        {
+          "status": "committed",
+          "balance": 601000,
+          "held": 0,
+          "connectionMs": 1,
+          "transactionAndCloseMs": 7,
+          "totalMs": 8,
+          "clientMs": 11.175542000000405
+        },
+        {
+          "status": "committed",
+          "balance": 594000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 8,
+          "totalMs": 10,
+          "clientMs": 12.089792000000216
+        },
+        {
+          "status": "committed",
+          "balance": 587000,
+          "held": 0,
+          "connectionMs": 2,
+          "transactionAndCloseMs": 9,
+          "totalMs": 11,
+          "clientMs": 15.751875000000382
+        },
+        {
+          "status": "committed",
+          "balance": 580000,
+          "held": 0,
+          "connectionMs": 1,
+          "transactionAndCloseMs": 7,
+          "totalMs": 8,
+          "clientMs": 11.066458000000239
+        }
+      ]
+    }
+  },
+  "cleanup": {
+    "localWorkerStopped": true,
+    "localPostgresRemoved": true,
+    "cloudResourcesCreated": 0
+  },
+  "migrations": {
+    "applied": 112,
+    "digest": "c4ace8719f913bfd90bf4839d522844fbb4be3ae827714d0791b4f478387ad24",
+    "first": "001_coordination.sql",
+    "last": "112_end_user_usage_time.sql"
+  },
+  "liveTables": [
+    "account_deletions",
+    "account_email_links",
+    "actor_owners",
+    "admin_github_bindings",
+    "agent_children",
+    "agent_inputs",
+    "agent_spend_limits",
+    "agent_wakes",
+    "agents",
+    "api_tokens",
+    "billing_alert_settings",
+    "billing_auto_attempts",
+    "billing_auto_quotes",
+    "billing_auto_settings",
+    "billing_checkout_cutover",
+    "billing_checkouts",
+    "billing_confirmation_limits",
+    "billing_disputes",
+    "billing_email_outbox",
+    "billing_email_suppressions",
+    "billing_events",
+    "billing_jobs",
+    "billing_recipients",
+    "billing_stripe_customers",
+    "billing_stripe_refunds",
+    "busy_agents",
+    "card_checks",
+    "channel_agents",
+    "channel_conversations",
+    "channel_counts",
+    "channel_items",
+    "channel_seen",
+    "channels",
+    "chunk_pins",
+    "chunk_touches",
+    "computer_blocks",
+    "computer_commands",
+    "computer_connections",
+    "computer_leases",
+    "computer_operations",
+    "console_sessions",
+    "credit_accounts",
+    "credit_holds",
+    "credit_ledger",
+    "credit_spend_minutes",
+    "definitions",
+    "discord_installations",
+    "discord_server_bindings",
+    "discord_setup_attempts",
+    "discord_setup_cooldowns",
+    "elevenlabs_voices",
+    "email_messages",
+    "email_threads",
+    "end_user_days",
+    "end_user_holds",
+    "end_user_ledger",
+    "end_user_lots",
+    "end_user_settings",
+    "end_users",
+    "gc_candidates",
+    "help_requests",
+    "idempotency_keys",
+    "journey_accounts",
+    "journey_lost_signups",
+    "journey_milestones",
+    "journey_outbox",
+    "journey_state",
+    "key_scope_providers",
+    "log_records",
+    "managed_computers",
+    "memory_retirement_guard",
+    "model_attempts",
+    "model_providers",
+    "oauth_grants",
+    "oauth_tokens",
+    "pi_durable_conversations",
+    "pi_durable_document_revisions",
+    "pi_durable_documents",
+    "pi_durable_entries",
+    "pi_durable_metadata",
+    "pi_durable_record_ids",
+    "pi_durable_submissions",
+    "pi_durable_tasks",
+    "pi_usage_receipts",
+    "provider_keys",
+    "rate_limits",
+    "runtime_nodes",
+    "schedule_deliveries",
+    "schedules",
+    "schema_migrations",
+    "signing_keys",
+    "starting_credit_decisions",
+    "storage_gc",
+    "storage_usage",
+    "tenant_passwords",
+    "tenants",
+    "usage",
+    "usage_flushes",
+    "usage_webhook_outbox",
+    "usage_webhooks",
+    "voice_recordings",
+    "voice_sessions",
+    "volume_snapshots",
+    "volume_watchers",
+    "volumes",
+    "webhook_deliveries",
+    "webhook_endpoints",
+    "workspace_assignments",
+    "workspace_usage",
+    "workspaces"
+  ],
+  "postgres": "16.15"
+}

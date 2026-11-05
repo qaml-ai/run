@@ -1,0 +1,11 @@
+{
+  "name": "camelrun-proto-hybrid-hyperdrive",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node run.mjs",
+    "typecheck": "../../node_modules/.bin/tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": { "pg": "8.16.3" },
+  "devDependencies": { "@types/pg": "8.15.6" }
+}
