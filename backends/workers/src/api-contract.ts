@@ -8,6 +8,8 @@ import { validateInitialMessages } from "./history-policy.ts";
 import type { ToolDefinition } from "./attached-tools.ts";
 import { searchOrder } from "./web-search-policy.ts";
 import { spendInput } from "./agent-spend-policy.ts";
+import { identityInput, bucketInput } from "./security-policy.ts";
+import { checkScope } from "./key-scopes.ts";
 
 export interface AgentConfiguration {
   model?: string;
@@ -41,6 +43,7 @@ export interface AgentConfiguration {
   keyScope?: string;
   bucket?: string;
   spendLimit?: { usd: number } | null;
+  workspaceId?: string | null;
   humanInput?: Record<string, unknown>;
   subagents?: Record<string, unknown>;
   mounts?: { volumeId?: string; workspace?: boolean; path?: string; mode?: "rw" | "ro"; subpath?: string; notify?: boolean }[];
@@ -85,7 +88,14 @@ const BUILTINS = ["file_link", "file_import", "web_fetch", "web_search", "x_sear
 export function configuration(input: unknown, defaultModel: string): { config: AgentConfiguration; ttlSeconds?: number | null } {
   const fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "workflow", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "runLimits", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides"]);
   const config: AgentConfiguration = { model: defaultModel };
-  for (const field of ["model", "systemPrompt", "systemPromptAppend", "name", "type", "thinkingLevel", "definition", "subject", "keyScope", "bucket"] as const) {
+  Object.assign(config, identityInput(fields));
+  if (fields.bucket !== undefined && fields.bucket !== null) config.bucket = bucketInput(fields.bucket);
+  if (fields.keyScope !== undefined) config.keyScope = checkScope(fields.keyScope);
+  if (fields.workspaceId !== undefined) {
+    if (fields.workspaceId !== null && typeof fields.workspaceId !== "string") throw new BadRequest("Invalid workspaceId");
+    config.workspaceId = fields.workspaceId as string | null;
+  }
+  for (const field of ["model", "systemPrompt", "systemPromptAppend", "name", "type", "thinkingLevel", "definition"] as const) {
     if (fields[field] === undefined) continue;
     if (typeof fields[field] !== "string" || new TextEncoder().encode(fields[field] as string).length > 100_000) throw new BadRequest(`${field} must be bounded text`);
     config[field] = fields[field] as string;
@@ -93,9 +103,13 @@ export function configuration(input: unknown, defaultModel: string): { config: A
   if (fields.definitionRevision !== undefined) config.definitionRevision = Number(fields.definitionRevision);
   if (Array.isArray(fields.definitionOverrides)) config.definitionOverrides = fields.definitionOverrides as string[];
   if (!config.model?.trim()) throw new BadRequest("model must be nonempty");
-  for (const field of ["fileTools", "codeMode", "decide"] as const) {
+  for (const field of ["fileTools", "codeMode"] as const) {
     if (fields[field] !== undefined && typeof fields[field] !== "boolean") throw new BadRequest(`${field} must be a boolean`);
     if (fields[field] !== undefined) config[field] = fields[field] as boolean;
+  }
+  if (fields.decide !== undefined && fields.decide !== null) {
+    if (typeof fields.decide !== "boolean") throw new BadRequest("decide must be true or false, or null for the default");
+    config.decide = fields.decide;
   }
   if (config.thinkingLevel !== undefined && !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(config.thinkingLevel)) throw new BadRequest("Invalid thinkingLevel");
   if (fields.maxOutputTokens !== undefined) config.maxOutputTokens = maxOutputTokensInput(fields.maxOutputTokens);
@@ -128,7 +142,7 @@ export function configuration(input: unknown, defaultModel: string): { config: A
     if (!Array.isArray(fields[field]) || fields[field].length > 64) throw new BadRequest(`${field} must be an array of at most 64 sources`);
     config[field] = fields[field] as Record<string, unknown>[];
   }
-  for (const field of ["workflow", "context", "humanInput", "subagents"] as const) if (fields[field] !== undefined) {
+  for (const field of ["workflow", "humanInput", "subagents"] as const) if (fields[field] !== undefined) {
     if (!fields[field] || typeof fields[field] !== "object" || Array.isArray(fields[field])) throw new BadRequest(`${field} must be an object`);
     config[field] = fields[field] as Record<string, unknown>;
   }

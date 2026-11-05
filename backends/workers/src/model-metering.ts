@@ -35,8 +35,16 @@ export function meterProvider<P extends Provider<any>>(
       const identity = await context();
       const service = await modelAttempts(env);
       const credentials = await providerCredentials(await keyServices(env), identity.tenant, model.provider, identity.keyScope);
+      // withSettings has already prepared provider-specific request auth. Its
+      // sentinels keep anonymous endpoints valid and bearer keys out of Pi's
+      // API-key/OAuth heuristics; accounting still fingerprints the real key.
+      const preparedKey = options.apiKey;
+      const key = credentials?.apiKey ?? (preparedKey === 'keyless' || preparedKey === 'runtime-bearer' ? '' : preparedKey);
       if (credentials) {
-        options = { ...options, apiKey: credentials.apiKey, ...('headers' in credentials && credentials.headers ? { headers: credentials.headers } : {}) };
+        options = { ...options,
+          apiKey: preparedKey === 'runtime-bearer' ? preparedKey : credentials.apiKey ?? preparedKey,
+          headers: { ...('headers' in credentials ? credentials.headers : {}), ...options.headers },
+        };
         if ('baseUrl' in credentials && credentials.baseUrl) model = { ...model, baseUrl: credentials.baseUrl };
       }
       const limit = await modelSpendLimit(service.db, identity) ?? await service.accounts.runLimit(identity.tenant);
@@ -68,7 +76,7 @@ export function meterProvider<P extends Provider<any>>(
       const gateway = !platform && (model.provider === 'cloudflare-ai-gateway' || !!credentials?.baseUrl && model.provider === 'openrouter');
       // Pi does not expose the compaction purpose at this provider boundary yet;
       // both call paths are charged, with kind=response until it does.
-      const source = await attemptStream(model, typeof options.apiKey === 'string' ? options.apiKey : '', 'response', hook,
+      const source = await attemptStream(model, typeof key === 'string' ? key : '', 'response', hook,
         (sink, halt, affordable) => stream(model, transcript, {
           ...options,
           signal: options.signal ? AbortSignal.any([options.signal, halt]) : halt,

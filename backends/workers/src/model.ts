@@ -34,6 +34,7 @@ import { streamTimeouts, watchedStream, isStalled } from "./model-stream.ts";
 export type ModelRequestSettings = AgentConfiguration & { output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
 export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true };
 export type ModelHooks = {
+  wrapProvider?: (provider: Provider) => Provider;
   settings?: () => Promise<ModelRequestSettings>;
   credentials?: (provider: string) => Promise<ModelCredentials | undefined>;
   endpoints?: ModelEndpoints;
@@ -131,6 +132,10 @@ export function modelRuntime(
   hooks: ModelHooks = {},
 ) {
   const models = createModels();
+  const decorate = (provider: Provider) => {
+    const images = withImageReferences(provider, env, getTenant);
+    return withSettings(hooks.wrapProvider ? hooks.wrapProvider(images) : images, hooks, env);
+  };
   const contextModels = new Map<string, Model<Api>>();
   const catalogModel = models.getModel.bind(models);
   models.getModel = (provider, id) => contextModels.get(`${provider}/${id}`) ?? catalogModel(provider, id);
@@ -141,7 +146,7 @@ export function modelRuntime(
   };
   if (env.TEST_MODEL !== "1") {
     const ai = env.AI ? createAI({ binding: env.AI }) : undefined;
-    if (ai) models.setProvider(withSettings(withImageReferences(ai.provider, env, getTenant), hooks, env));
+    if (ai) models.setProvider(decorate(ai.provider));
     const catalog = new Map<string, Map<string, Model<Api>>>();
     const api = (model: Model<Api>, simple: boolean, context: TranscriptContext, options: StreamOptions | undefined) => {
       switch (model.api) {
@@ -161,13 +166,13 @@ export function modelRuntime(
         id: providerId, name: providerId,
         auth: { apiKey: { name: providerId, resolve: async () => {
           const credential = await hooks.credentials?.(providerId);
-          return credential ? { auth: { apiKey: credential.apiKey, baseUrl: credential.baseUrl, headers: credential.headers } } : { auth: {} };
+          return credential ? { auth: { apiKey: credential.bearer ? "runtime-bearer" : credential.apiKey ?? "keyless", baseUrl: credential.baseUrl, headers: credential.headers } } : { auth: {} };
         } } },
         getModels: () => [...entries.values()],
         stream: (model, context, options) => api(model, false, context, options),
         streamSimple: (model, context, options) => api(model, true, context, options),
       };
-      models.setProvider(withSettings(withImageReferences(provider, env, getTenant), hooks, env));
+      models.setProvider(decorate(provider));
     };
     const resolve = (name = env.MODEL, contextTokens?: number, customProviders?: CustomProviders): Model<Api> => {
       if (name.startsWith("cloudflare/") || name.startsWith("@cf/")) {
@@ -222,7 +227,7 @@ export function modelRuntime(
       stream: streamOpenAI,
       streamSimple: streamOpenAISimple,
     };
-    models.setProvider(withSettings(withImageReferences(provider, env, getTenant), hooks, env));
+    models.setProvider(decorate(provider));
     return { models, model: resolve(env.MODEL), resolve };
   }
   const stream = (
@@ -383,7 +388,7 @@ export function modelRuntime(
     stream,
     streamSimple: stream,
   };
-  models.setProvider(withSettings(withImageReferences(provider, env, getTenant), hooks, env));
+  models.setProvider(decorate(provider));
   return {
     models,
     model,

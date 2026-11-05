@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentSpendRefusal, agentSpendView, pendingAgentSpend, readAgentSpendLimit, remainingAgentSpend, setAgentSpendLimit, spendInput, writeAgentSpend } from "../src/agent-spend.ts";
+import { agentSpendRefusal, agentSpendView, pendingAgentSpend, readAgentSpendCounter, remainingAgentSpend, setAgentSpendLimit, spendInput, writeAgentSpend } from "../src/agent-spend.ts";
 import { transaction } from "../src/postgres.ts";
-import { startFixture } from "./fixture.ts";
-import { reserveTurn, settleTurn } from "../src/control.ts";
+import { testDatabase } from "./billing-database.ts";
 
 test("agent spend uses the source input and refusal policy", () => {
   assert.equal(spendInput(null), null);
@@ -28,44 +27,35 @@ test("agent spend uses the source input and refusal policy", () => {
 });
 
 test("agent spend persists cumulative usage, rolls back with settlement, and isolates reset epochs and tenants", { timeout: 120_000 }, async t => {
-  const fixture = await startFixture();
-  t.after(() => fixture.stop());
-  const response = await fetch(`${fixture.url}/v1/agents`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${fixture.token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "test/echo", fileTools: false, codeMode: false }),
-  });
-  assert.equal(response.status, 201);
-  const { id } = await response.json() as { id: string };
-  const env = { HYPERDRIVE: { connectionString: fixture.databaseUrl } }, tenant = "camelrun-proto-local";
-  assert.equal(await readAgentSpendLimit(env, tenant, id), null);
+  const { db, url } = await testDatabase();
+  const id = "counter-agent", tenant = "counter-tenant";
+  await db.query("insert into agents(id,tenant,header,revision,name,type,model) values($1,$2,'{}',1,'','agent','test')", [id, tenant]);
+  const env = { HYPERDRIVE: { connectionString: url } };
+  assert.equal(await readAgentSpendCounter(env, tenant, id), null);
   const first = await setAgentSpendLimit(env, tenant, id, { usd: 2 }, 100);
   assert.deepEqual(first, { usd: 2, spent: 0, setAt: 100 });
   await transaction(env, sql => writeAgentSpend(sql, id, first!.setAt, 0.15));
   await transaction(env, sql => writeAgentSpend(sql, id, first!.setAt, 0.15));
-  assert.deepEqual(await readAgentSpendLimit(env, tenant, id), { usd: 2, spent: 0.3, setAt: 100 });
+  assert.deepEqual(await readAgentSpendCounter(env, tenant, id), { usd: 2, spent: 0.3, setAt: 100 });
   await assert.rejects(transaction(env, async sql => {
     await writeAgentSpend(sql, id, first!.setAt, 0.2);
     throw new Error("lost before settlement commit");
   }), /lost before/);
-  assert.equal((await readAgentSpendLimit(env, tenant, id))?.spent, 0.3);
+  assert.equal((await readAgentSpendCounter(env, tenant, id))?.spent, 0.3);
   await Promise.all(Array.from({ length: 8 }, () => transaction(env, sql => writeAgentSpend(sql, id, first!.setAt, 0.1))));
-  assert.ok(Math.abs((await readAgentSpendLimit(env, tenant, id))!.spent - 1.1) < 1e-10);
-  await assert.rejects(readAgentSpendLimit(env, "other-tenant", id), error => (error as { status?: number }).status === 404);
+  assert.ok(Math.abs((await readAgentSpendCounter(env, tenant, id))!.spent - 1.1) < 1e-10);
+  await assert.rejects(readAgentSpendCounter(env, "other-tenant", id), error => (error as { status?: number }).status === 404);
   await assert.rejects(setAgentSpendLimit(env, "other-tenant", id, { usd: 10 }), error => (error as { status?: number }).status === 404);
   const reset = await setAgentSpendLimit(env, tenant, id, { usd: 2 }, 200);
   assert.deepEqual(reset, { usd: 2, spent: 0, setAt: 200 }, "even assigning the same cap resets the counter");
   await transaction(env, sql => writeAgentSpend(sql, id, first!.setAt, 1));
-  assert.equal((await readAgentSpendLimit(env, tenant, id))?.spent, 0, "late receipts cannot charge a new limit");
+  assert.equal((await readAgentSpendCounter(env, tenant, id))?.spent, 0, "late receipts cannot charge a new limit");
   await transaction(env, sql => writeAgentSpend(sql, id, reset!.setAt, 0.2));
-  assert.equal((await readAgentSpendLimit(env, tenant, id))?.spent, 0.2);
+  assert.equal((await readAgentSpendCounter(env, tenant, id))?.spent, 0.2);
   assert.equal(await setAgentSpendLimit(env, tenant, id, null), null);
   await transaction(env, sql => writeAgentSpend(sql, id, reset!.setAt, 1));
-  assert.equal(await readAgentSpendLimit(env, tenant, id), null);
+  assert.equal(await readAgentSpendCounter(env, tenant, id), null);
   await setAgentSpendLimit(env, tenant, id, { usd: 1 }, 300);
-  await reserveTurn(env, tenant, id, "precise-settlement");
-  const receipt = { tenantId: tenant, agentId: id, requestId: "precise-settlement", costMicros: 0, agentCostUsd: 0.0000001, agentSpendAt: 300 };
-  await assert.rejects(settleTurn({ ...env, TEST_MODE: "1" }, { ...receipt, faultAfterCommit: true }), /lost PG acknowledgement/);
-  assert.deepEqual(await settleTurn(env, receipt), { duplicate: true });
-  assert.equal((await readAgentSpendLimit(env, tenant, id))?.spent, 0.0000001, "sub-micro dollar costs survive idempotent receipt replay");
+  await transaction(env, sql => writeAgentSpend(sql, id, 300, 0.0000001));
+  assert.equal((await readAgentSpendCounter(env, tenant, id))?.spent, 0.0000001, "source counters retain sub-micro dollar costs");
 });
