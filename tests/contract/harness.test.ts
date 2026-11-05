@@ -78,6 +78,20 @@ test("concurrent polls keep terminal observations separate", async () => {
   assert.equal(await healthy, true);
 });
 
+test("an immediately satisfied poll keeps the original single-await scheduling", async () => {
+  async function microtasksUntilSettled(operation: () => Promise<unknown>) {
+    let ticks = 0, running = true;
+    const tick = () => { ticks++; if (running) queueMicrotask(tick); };
+    queueMicrotask(tick);
+    await operation();
+    running = false;
+    return ticks;
+  }
+  const original = await microtasksUntilSettled(async () => { const result = await true; return result; });
+  const observed = await microtasksUntilSettled(() => until(() => true, "an immediate result"));
+  assert.equal(observed, original);
+});
+
 test("an MCP stream ending before initialization fails without waiting for the case timeout", async t => {
   const base = await listen(t, (_req, res) => res.writeHead(200, { "Content-Type": "text/event-stream" }).end());
   await assert.rejects(attach(t, base, "agent", "test-token"), /ended before initialization/);

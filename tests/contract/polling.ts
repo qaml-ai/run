@@ -36,17 +36,16 @@ export function observePollingFailure(reason: string) {
   polling.getStore()?.failures.push(reason);
 }
 
-export async function pollingAttempt<V>(check: () => V | Promise<V>, what: string, options: PollingOptions = {}): Promise<V> {
+export function pollingAttempt<V>(check: () => V | Promise<V>, what: string, options: PollingOptions = {}) {
   const observation: Observation = { failures: [], pendingResources: new Set(options.pendingResources?.map(pathname)) };
-  return polling.run(observation, async () => {
-    const value = await check();
+  return { result: polling.run(observation, check), finish(value: V) {
     // A negative-route assertion and a wait for completion remain valid: first
     // let the original predicate decide whether its expectation was satisfied.
     if (!value && observation.failures.length) {
       throw new Error(`Cannot wait for ${what}: ${observation.failures[0]}`);
     }
     return value;
-  });
+  } };
 }
 
 export function observeMissingStream(url: string, status: number, json?: unknown) {

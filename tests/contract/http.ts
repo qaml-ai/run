@@ -20,7 +20,10 @@ export async function freshWindow(windowSeconds: number, marginMs: number) {
 export async function until<V>(check: () => V | Promise<V>, what: string, timeoutMs = 15_000, options: PollingOptions = {}): Promise<Exclude<V, false | 0 | "" | null | undefined>> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const value = await pollingAttempt(check, what, options);
+    // Keep the original one-await scheduling. Extra promise continuations here
+    // can race an SDK stream's close signal against its final teardown.
+    const attempt = pollingAttempt(check, what, options);
+    const value = attempt.finish(await attempt.result);
     if (value) return value as Exclude<V, false | 0 | "" | null | undefined>;
     if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
     await sleep(25);
