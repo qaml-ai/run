@@ -5,7 +5,7 @@ import { Harness, createRegistry, type ToolRegistration } from "@earendil-works/
 import { MemoryStorage } from "@earendil-works/pi-durable/storage/memory";
 import { createModels } from "@earendil-works/pi-ai";
 import { InlineCodemodeSandbox, loadQuickJSWasm } from "@earendil-works/pi-codemode";
-import { abortHostExecution, executionOutput, executionParams, hostExecutionTool, startHostExecution, waitHostExecution } from "../src/host-execution.ts";
+import { abortHostExecution, executionOutput, executionParams, hostExecutionRequest, hostExecutionTool, startHostExecution, waitHostExecution } from "../src/host-execution.ts";
 import { AttachedTools } from "../src/attached-tools.ts";
 import { HumanInputs } from "../src/human.ts";
 
@@ -39,6 +39,29 @@ test("host execution bounds output and validates supplied limits", () => {
   assert.equal(executionParams({ code: "", timeoutMs: 999_999 }).timeoutMs, 120_000);
   assert.equal(executionParams({ code: "" }).timeoutMs, 30_000);
   assert.deepEqual(executionOutput({ ok: true, output: [{ type: "text", text: "1234" }], value: "5678", calls: [], storeWrites: { set: {}, delete: [] } }, 6), { output: ["1234", "56"], truncated: true });
+});
+
+test("nested tools identify their own concurrent host request without a model run", async () => {
+  const sandbox = new InlineCodemodeSandbox({ wasm: loadQuickJSWasm() });
+  const execute = hostExecutionTool(sandbox), registry = createRegistry();
+  let pi: Harness;
+  const identify: ToolRegistration = {
+    name: "identify", description: "Return the request owning this tool call", parameters: { type: "object" }, replay: "safe",
+    async execute(_input, api) {
+      return { output: [{ type: "text", text: await hostExecutionRequest(pi, api.conversationId) ?? "missing" }] };
+    },
+  };
+  registry.install({ name: "host", tools: [execute, identify] });
+  pi = await Harness.open(new MemoryStorage(), { registry, models: createModels() }, context);
+  try {
+    const root = await pi.root(context, { agent: { tools: [identify] } });
+    assert.equal(await hostExecutionRequest(pi, root.id), undefined);
+    const tasks = await Promise.all(["first-script", "second-script"].map(id =>
+      startHostExecution(pi, root, id, { code: 'return await tools.identify({})' }, execute)));
+    const outcomes = await Promise.all(tasks.map(task => waitHostExecution(pi, task)));
+    assert.deepEqual(outcomes.map(result => result.output), [["first-script"], ["second-script"]]);
+    assert.deepEqual((await root.entries({}, 10, undefined, context)).items, []);
+  } finally { await pi.close(context); await sandbox.close(); }
 });
 
 test("attached tools keep identity and the stable call key across a durable approval", async () => {

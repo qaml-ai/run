@@ -2,7 +2,7 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   AssistantEntry, ToolResultEntry, ToolTask, configure, defineDoc, defineDocFamily,
-  type Conversation, type Harness, type TaskId, type ToolRegistration, type ToolTaskResult,
+  type Conversation, type ConversationId, type Harness, type TaskId, type ToolRegistration, type ToolTaskResult,
 } from "@earendil-works/pi-durable";
 import { createCodemodeTool } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandboxBase, type CodemodeResult, type CodemodeRunOptions } from "@earendil-works/pi-codemode/portable";
@@ -21,6 +21,15 @@ const Executions = defineDocFamily<{ task?: number; fingerprint?: string }, null
 const CapturedOutput = defineDoc<{ result?: ExecutionResult }>({
   kind: "camel.host-output", version: 1, scope: "task", initial: () => ({}), checkpointWhen: () => false,
 });
+const HostExecutionRequest = defineDoc<{ requestId?: string }>({
+  kind: "camel.host-request", version: 1, scope: "conversation", history: "latest", fork: "initial",
+  initial: () => ({}), checkpointWhen: () => true,
+});
+
+/** Nested tool effects use the ownerless script conversation, independent of concurrent model runs. */
+export async function hostExecutionRequest(pi: Harness, conversationId: ConversationId, context: Context = BACKGROUND_CONTEXT): Promise<string | undefined> {
+  return (await pi.snapshot(HostExecutionRequest, conversationId, context))?.requestId;
+}
 
 export function executionParams(value: unknown): Required<ExecutionParams> {
   const input = value as Record<string, unknown>;
@@ -84,6 +93,7 @@ export async function startHostExecution(pi: Harness, root: Conversation, reques
     if (saved.fingerprint !== undefined && saved.fingerprint !== fingerprint) throw Object.assign(new Error("Request id reused with different input"), { status: 409 });
     if (saved.task !== undefined) return saved.task as TaskId<ToolTaskResult>;
     const conversation = await tx.createConversation({ ownership: { kind: "ownerless" } });
+    (await tx.doc(HostExecutionRequest, conversation.id)).requestId = requestId;
     await configure(tx, conversation.id, { extensions: agent.extensions, tools: [...agent.callable, tool], modelTools: [tool] });
     const callId = `execute:${requestId}`;
     const assistant = await tx.appendEntry(AssistantEntry, conversation.id, { model: [{

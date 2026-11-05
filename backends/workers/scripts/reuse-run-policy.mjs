@@ -12,6 +12,8 @@ const compaction = await read('compaction.ts');
 outputs.set('model-key-failure.ts', compaction.slice(compaction.indexOf('export function modelKeyFailure('), compaction.indexOf('/**\n * How a node\'s lease')));
 const prompt = await read('system-prompt.ts');
 outputs.set('prompt-policy.ts', `import { SENDER_INSTRUCTIONS } from './sender-markers.ts';\ntype AgentConfig = { codeMode?: boolean; tools: readonly unknown[] };\n` + prompt.slice(prompt.indexOf('const FILE_RULES ='), prompt.indexOf('/**\n * What the agent works with')) + prompt.slice(prompt.indexOf('export function runtimeRules('), prompt.indexOf('/**\n * The context\'s first system message')));
+const tools = await read('client-sessions/tools.ts');
+outputs.set('file-tool-policy.ts', `export type FileToolDefinition = { name: string; callers?: readonly ('model' | 'tools')[] };\n` + tools.slice(tools.indexOf('const fileToolsFor ='), tools.indexOf('\n\nexport async function toolset(')).replace('const fileToolsFor =', 'export const fileToolsFor =').replaceAll('ToolDefinition', 'FileToolDefinition'));
 for (const [name, content] of outputs) {
   const target = new URL('../src/' + name, import.meta.url), text = (header + content).trimEnd() + '\n';
   if (process.argv.includes('--check')) { if (await readFile(target, 'utf8') !== text) throw new Error(`${name} policy drifted`); }

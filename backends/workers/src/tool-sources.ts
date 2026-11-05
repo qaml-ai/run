@@ -10,6 +10,7 @@ import { withToolInputs, type ToolInputReply } from "./mcp-inputs.ts";
 import { openProviderSecret } from "./model-credentials.ts";
 import { credentialExchange, type ExchangeAuth } from "./exchange-auth.ts";
 import { COMPUTER_TOOLS } from "./computers/policy.ts";
+import { fileToolsFor } from "./file-tool-policy.ts";
 
 type Env = { API_TOKEN: string; TEST_MODE?: string } & Partial<IdentityEnv>;
 type Approval = { default?: "never" | "always" | "destructive" | "judged"; tools?: Record<string, "never" | "always" | "judged">; methods?: string[] };
@@ -210,12 +211,13 @@ export function sourceView(source: RemoteSource) {
 }
 
 /** Public catalog from the installed tools, with no credentials or executable callbacks. */
-export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mcpServers?: RemoteSource[]; openApi?: RemoteSource[]; fileTools?: boolean; builtins?: string[] }, tools: ToolRegistration[], connected: boolean) {
+export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mcpServers?: RemoteSource[]; openApi?: RemoteSource[]; fileTools?: boolean; codeMode?: boolean; builtins?: string[] }, tools: ToolRegistration[], connected: boolean) {
   const view = (tool: ToolRegistration) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters, ...(tool.executionMode ? { executionMode: tool.executionMode } : {}) });
   const result: { kind: string; name: string; status: string; tools: unknown[]; connected?: boolean; url?: string; error?: string }[] = [];
   const fileNames = new Set(["read", "write", "edit", "ls", "find", "glob", "grep", "stat", "mkdir", "rm", "rename", "cp", "mv", "present_file"]);
   const files = tools.filter(tool => fileNames.has(tool.name));
-  if (config.fileTools !== false && files.length) result.push({ kind: "files", name: "files", status: "listed", tools: files.map(view) });
+  const fileExposure = new Map(fileToolsFor(files, config.fileTools, config.codeMode).map(tool => [tool.name, tool.callers]));
+  if (files.length) result.push({ kind: "files", name: "files", status: "listed", tools: files.map(tool => ({ ...view(tool), exposure: fileExposure.get(tool.name)?.includes("model") === false ? "codemode" : "both" })) });
   const computers = tools.filter(tool => COMPUTER_TOOLS.has(tool.name));
   if (computers.length) result.push({ kind: "builtin", name: "computer", status: "listed", tools: computers.map(view) });
   if (config.mcp?.tools?.length) result.push({ kind: "application", name: "application", status: "listed", connected, tools: config.mcp.tools });
