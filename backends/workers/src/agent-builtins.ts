@@ -53,6 +53,9 @@ export async function agentBuiltins(env: BuiltinEnv, context: (api?: ToolExecuti
           ? await new WebSearch({ outbound, ...providers, key, price: provider => pricing.webSearch[provider], onSearch: record }).search({ ...scope, providers: scope.webSearch?.providers }, args, signal)
           : await new XSearch({ outbound, key, ...(testMode && (env.AGENT_XAI_RESPONSES_URL ?? env.AGENT_X_SEARCH_URL) ? { endpoint: env.AGENT_XAI_RESPONSES_URL ?? env.AGENT_X_SEARCH_URL } : {}), onSearch: record }).search(scope, args, signal);
         return { output: [{ type: 'text' as const, text: JSON.stringify(value) }], details: value, structuredOutput: value };
+      } catch (error) {
+        if (signal.aborted) throw error;
+        return { output: [{ type: 'text' as const, text: error instanceof Error ? error.message : String(error) }], isError: true };
       } finally {
         for (const [index, usage] of usages.entries()) await (host.record ?? ((scope, usage) => recordWebUsage(env, scope, usage)))({ ...scope, callId: `${scope.callId}:${index}` }, usage);
       }
