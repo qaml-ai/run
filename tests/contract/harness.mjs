@@ -175,7 +175,7 @@ export function mergeReports(reports, manifest, { backend, nodeKey, suiteHash })
   const rows = [], seen = new Set(), expected = new Set(manifest.map(caseKey));
   const shardIds = new Set();
   for (const report of reports) {
-    if (report.backend !== backend || report.nodeKey !== nodeKey || report.suiteHash !== suiteHash) throw new Error(`Cannot merge ${backend} reports from different source inputs`);
+    if (report.backend !== backend || report.nodeKey !== nodeKey || (backend === "workers" && report.suiteHash !== suiteHash)) throw new Error(`Cannot merge ${backend} reports from different source inputs`);
     if (!report.shard || !Number.isInteger(report.shard.index) || report.shard.index < 1 || report.shard.index > report.shard.total || shardIds.has(report.shard.index)) throw new Error("Missing, invalid or duplicate shard identity");
     shardIds.add(report.shard.index);
     if (report.expectedCases !== report.rows.filter(row => row.area !== "harness").length) throw new Error("Shard report has an incomplete inventory");

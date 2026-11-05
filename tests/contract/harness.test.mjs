@@ -118,9 +118,14 @@ test("merge preserves failures and rejects missing, duplicate, stale or extra re
   const merged = mergeReports([second, first], [a, b], context);
   assert.deepEqual(merged.rows.map(item => item.status), ["pass", "fail"]);
   assert.equal(merged.durationMs, 300);
+  const differentWorkers = { ...second, suiteHash: "different-workers" };
+  const nodeOnly = mergeReports([first, differentWorkers], [a, b], context);
+  assert.equal(nodeOnly.suiteHash, first.suiteHash, "keep the recorded hash rather than claim the current Worker was run");
+  assert.deepEqual(nodeOnly.rows, merged.rows);
   assert.throws(() => mergeReports([first], [a, b], context), /Expected 2 shard reports/);
   assert.throws(() => mergeReports([first, first], [a, b], context), /duplicate shard identity/);
   assert.throws(() => mergeReports([first, { ...second, nodeKey: "stale" }], [a, b], context), /different source inputs/);
+  assert.throws(() => mergeReports([{ ...first, backend: "workers" }, { ...differentWorkers, backend: "workers" }], [a, b], { ...context, backend: "workers" }), /different source inputs/);
   assert.throws(() => mergeReports([first, second], [a], context), /Unexpected shard case/);
   assert.throws(() => mergeReports([first, { ...second, rows: [] }], [a, b], context), /incomplete inventory/);
 });
