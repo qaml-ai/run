@@ -1,4 +1,4 @@
-import { defineTool, type ToolRegistration } from '@earendil-works/pi-durable';
+import { defineTool, type ToolRegistration, type ToolExecutionApi } from '@earendil-works/pi-durable';
 import { HttpError } from './errors.ts';
 import { digest } from './api-contract.ts';
 import { MULTI_AGENT_LIMITS, PARENT_KEYS, SUBAGENT_PROMPT, roleAndTask, delegateTool, agentsTools, agentMessage, agentUpdates, REPORT_PROGRESS, SEND_MESSAGE, type DelegateSettings } from './multi-agent-policy.ts';
@@ -13,18 +13,20 @@ export function childUsageCost(usage?: ChildUsage) {
   return (usage?.costUsd ?? 0) + (usage?.subagentCostUsd ?? 0) + (usage?.imageCostUsd ?? 0) + (usage?.decisionCostUsd ?? 0) + (usage?.webCostUsd ?? 0);
 }
 export type ChildProgressReport = { agentId: string; requestId: string; text: string; callId: string };
-export type DelegatedChild = { id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; task: string; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
+export type DelegatedChild = { id: string; key: string; requestId: string; parentRequestId: string; toolCallId: string; task: string; name: string; depth: number; maxDepth?: number; chain?: string[]; root?: string; background?: boolean; createdAt: number; endedAt?: number; status: string; made: boolean; held?: number; spent?: number; outcome?: ChildRun['outcome']; error?: string; notified?: boolean; landedBy?: 'wait' | 'notice'; accepted?: boolean; cancelRequested?: boolean; progress?: { text: string; at: number; sequence: number }; progressShown?: number; progressCalls?: string[] };
 export interface DelegationHost {
   storage: DurableObjectStorage;
   secret: string;
-  context(): Promise<{ id: string; config: Configuration; run: ParentRun }>;
+  context(api?: ToolExecutionApi): Promise<{ id: string; config: Configuration; run: ParentRun }>;
   /** Authoritative remaining spend after completed work, before active child shares. */
-  remainingBudget?(background: boolean): Promise<number | undefined>;
+  remainingBudget?(background: boolean, api?: ToolExecutionApi): Promise<number | undefined>;
   create(config: Configuration, key: string): Promise<{ id: string }>;
   /** Copy an eligible parent connection before a newly created child starts. */
   inheritComputer?(parent: string, child: string): Promise<void>;
   target(ref: { agent?: string; definition?: string }): Promise<{ id?: string; config: Configuration }>;
   fetch(id: string, request: Request): Promise<Response>;
+  /** Cancel exactly this child request, including a queued request of an existing agent. */
+  cancelRequest?(agentId: string, requestId: string): Promise<unknown>;
   emit(event: unknown): Promise<void>;
   waitUntil(promise: Promise<unknown>): void;
   /** Journal a runtime-authored child notification so recovery cannot lose it. */
@@ -58,6 +60,19 @@ export class Delegation {
   async children() { return [...(await this.host.storage.list<DelegatedChild>({ prefix })).values()].sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key)); }
   async cost(requestId: string) { return (await this.children()).filter(child => child.parentRequestId === requestId).reduce((sum, child) => sum + (child.spent ?? 0), 0); }
   async costSince(startedAt: number) { return (await this.children()).filter(child => child.createdAt >= startedAt).reduce((sum, child) => sum + (child.spent ?? 0), 0); }
+  private async update(child: DelegatedChild, patch: Partial<DelegatedChild>) {
+    return this.host.storage.transaction(async tx => {
+      const current = await tx.get<DelegatedChild>(prefix + child.key) ?? child;
+      const next = { ...current, ...patch, ...(current.cancelRequested ? { cancelRequested: true } : {}) };
+      await tx.put(prefix + child.key, next);
+      return next;
+    });
+  }
+  private async checkCancellation(child: DelegatedChild, signal: AbortSignal) {
+    signal.throwIfAborted();
+    if ((await this.host.storage.get<DelegatedChild>(prefix + child.key))?.cancelRequested)
+      throw new DOMException('Delegation cancelled', 'AbortError');
+  }
   private async lineage(id: string, run: ParentRun) {
     const metadata = run.metadata ?? {}, depth = metadata[PARENT_KEYS.depth], max = metadata[PARENT_KEYS.maxDepth], chain = metadata[PARENT_KEYS.chain] ?? '';
     if (depth === undefined || max === undefined || metadata[PARENT_KEYS.signature] !== await signature(this.host.secret, id, run.id, depth, max, chain)) return;
@@ -71,8 +86,8 @@ export class Delegation {
     if (parentDepth + 1 > maxDepth) throw new HttpError(400, `Delegation has reached its depth limit of ${maxDepth}: do this task yourself`, 'DELEGATION_DEPTH');
     return { depth: parentDepth + 1, maxDepth, chain: [...lineage?.chain ?? [], id] };
   }
-  async start(args: Record<string, unknown>, callId: string, signal: AbortSignal, background = false): Promise<DelegatedChild> {
-    const context = await this.host.context(), { id, config, run } = context;
+  async start(args: Record<string, unknown>, callId: string, signal: AbortSignal, background = false, api?: ToolExecutionApi): Promise<DelegatedChild> {
+    const context = await this.host.context(api), { id, config, run } = context;
     const settings = config.delegate;
     if (!settings) throw new HttpError(400, 'This agent has no delegation settings');
     const target = args.agent === undefined ? undefined : settings.agents?.find(target => target.name === args.agent);
@@ -84,6 +99,16 @@ export class Delegation {
     if (args.name !== undefined && (typeof args.name !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(args.name))) throw new HttpError(400, 'Invalid sub-agent name');
     const identity = await digest(`${run.id}:${callId}`), key = `delegate-${identity.slice(0, 48)}`;
     const stored = await this.host.storage.get<DelegatedChild>(prefix + key);
+    if (stored?.cancelRequested && !stored.accepted && stored.status === 'running') {
+      await this.cancelRemote(stored);
+      if (stored.id) {
+        const cancelled = await this.update(stored, { accepted: true });
+        this.follow(cancelled);
+        return cancelled;
+      }
+      const cancelled = await this.update(stored, { status: 'aborted', endedAt: Date.now(), held: undefined });
+      return cancelled;
+    }
     if (stored?.accepted || (stored && stored.status !== 'running')) { this.follow(stored); return stored; }
     // Creation and submit use deterministic keys; replay an interrupted acceptance safely.
     if (stored) await this.host.storage.delete(prefix + key);
@@ -94,7 +119,7 @@ export class Delegation {
     for (;;) {
       signal.throwIfAborted();
       const available = this.host.remainingBudget
-        ? await this.host.remainingBudget(background)
+        ? await this.host.remainingBudget(background, api)
         : finiteBudget(run.params?.spendLimit?.usd) ?? finiteBudget(config.spendLimit?.usd);
       const admitted = await this.host.storage.transaction(async tx => {
         const all = [...(await tx.list<DelegatedChild>({ prefix })).values()];
@@ -120,27 +145,36 @@ export class Delegation {
       });
       if (admitted) {
         try {
+          await this.checkCancellation(admitted, signal);
           const resolved = target ? await this.host.target(target) : undefined;
           if (resolved?.id && place.chain.includes(resolved.id)) throw new HttpError(400, 'This agent is already working on the delegation chain');
           const made = resolved?.id ? resolved : await this.host.create({ ...(resolved?.config ?? config), ...(target ? {} : { systemPrompt: SUBAGENT_PROMPT }), name: admitted.name, type: 'subagent', ttlSeconds: MULTI_AGENT_LIMITS.childTtlSeconds }, key);
-          admitted.id = made.id!;
-          await this.host.storage.put(prefix + key, admitted);
+          Object.assign(admitted, await this.update(admitted, { id: made.id! }));
           if (!resolved?.id) await this.host.inheritComputer?.(id, admitted.id);
-          signal.throwIfAborted();
+          await this.checkCancellation(admitted, signal);
           const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: callId, [PARENT_KEYS.depth]: String(place.depth), [PARENT_KEYS.maxDepth]: String(place.maxDepth), [PARENT_KEYS.chain]: place.chain.join(',') };
           const signed = { ...metadata, [PARENT_KEYS.signature]: await signature(this.host.secret, admitted.id, admitted.requestId, String(place.depth), String(place.maxDepth), place.chain.join(',')) };
           await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_start', toolCallId: callId, agentId: admitted.id, requestId: admitted.requestId, name: admitted.name, depth: admitted.depth } });
           const relay = await this.relay(admitted);
+          try { await this.checkCancellation(admitted, signal); }
+          catch (error) { relay.abort(); throw error; }
           const response = await this.host.fetch(admitted.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: admitted.requestId, method: 'prompt', params: { text: admitted.task, metadata: signed, ...(held !== undefined ? { spendLimit: { usd: held } } : {}), ...(args.output !== undefined ? { output: args.output } : {}) } }) }));
           if (!response.ok) { relay.abort(); throw new HttpError(response.status, 'Child submission failed'); }
-          admitted.accepted = true;
-          await this.host.storage.put(prefix + key, admitted);
+          Object.assign(admitted, await this.update(admitted, { accepted: true }));
           this.follow(admitted, relay);
+          if (signal.aborted || admitted.cancelRequested) {
+            await this.cancelRemote(admitted);
+            throw new DOMException('Delegation cancelled', 'AbortError');
+          }
           return admitted;
         } catch (error) {
-          admitted.status = signal.aborted ? 'aborted' : 'failed'; admitted.error = error instanceof Error ? error.message : 'Child failed'; admitted.endedAt = Date.now(); admitted.held = undefined;
-          await this.host.storage.put(prefix + key, admitted);
-          await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_end', toolCallId: callId, agentId: admitted.id, requestId: admitted.requestId, status: admitted.status, error: admitted.error } });
+          const current = await this.host.storage.get<DelegatedChild>(prefix + key) ?? admitted;
+          if (!current.accepted) {
+            const cancelled = signal.aborted || current.cancelRequested;
+            Object.assign(admitted, await this.update(current, { status: cancelled ? 'aborted' : 'failed', error: error instanceof Error ? error.message : 'Child failed', endedAt: Date.now(), held: undefined, ...(cancelled ? { cancelRequested: true } : {}) }));
+            if (cancelled && admitted.id) await this.cancelRemote(admitted);
+            await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_end', toolCallId: callId, agentId: admitted.id, requestId: admitted.requestId, status: admitted.status, error: admitted.error } });
+          }
           throw error;
         }
       }
@@ -222,16 +256,23 @@ export class Delegation {
   }
   answer(child: DelegatedChild) { return { agentId: child.id, requestId: child.requestId, status: child.status, ...(child.outcome?.result?.reply ? { text: child.outcome.result.reply } : {}), ...(child.outcome?.result?.output !== undefined ? { output: child.outcome.result.output } : {}), ...(child.error ? { error: child.error } : {}) }; }
   async cancel(requestId?: string) {
-    const children = (await this.children()).filter(child => child.id && child.status === 'running' && (!requestId || child.parentRequestId === requestId));
-    await Promise.all(children.map(async child => {
+    const children = await this.host.storage.transaction(async tx => {
+      const children = [...(await tx.list<DelegatedChild>({ prefix })).values()].filter(child => child.status === 'running' && (!requestId || child.parentRequestId === requestId));
+      for (const child of children) await tx.put(prefix + child.key, { ...child, cancelRequested: true });
+      return children;
+    });
+    await Promise.all(children.map(child => this.cancelRemote(child)));
+  }
+  private async cancelRemote(child: DelegatedChild) {
+      if (!child.id) return;
+      if (this.host.cancelRequest) { await this.host.cancelRequest(child.id, child.requestId); return; }
       if (!child.made) {
         const response = await this.host.fetch(child.id, new Request(`https://agent/requests/${child.requestId}`));
         if (!response.ok) return;
         const record = await response.json() as ChildRun & { began?: number };
         if (record.state !== 'running' || !record.began) return;
       }
-      await this.host.fetch(child.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: `abort-${child.requestId}`, method: 'abort', params: {} }) }));
-    }));
+      await this.host.fetch(child.id, new Request('https://agent/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: `abort-${child.accepted ? 'accepted-' : ''}${child.requestId}`, method: 'abort', params: {} }) }));
   }
   private async countCall(kind: string, runId: string, callId: string, limit: number) {
     await this.host.storage.transaction(async tx => {
@@ -275,10 +316,10 @@ export class Delegation {
     const reports = await this.takeProgress();
     return { output: [{ type: 'text' as const, text: JSON.stringify(value) }, ...(reports.length ? [agentUpdates(reports)] : [])] };
   }
-  private async send(args: Record<string, unknown>, callId: string) {
+  private async send(args: Record<string, unknown>, callId: string, api?: ToolExecutionApi) {
     if (!this.host.sendMessage) throw new HttpError(400, 'Agent messages are unavailable');
     if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > MULTI_AGENT_LIMITS.taskChars || typeof args.to !== 'string') throw new HttpError(400, 'Invalid message');
-    const { id, config, run } = await this.host.context(), lineage = await this.lineage(id, run);
+    const { id, config, run } = await this.host.context(api), lineage = await this.lineage(id, run);
     await this.countCall('messages', run.id, callId, MULTI_AGENT_LIMITS.messagesPerRun);
     const identity = await digest(`${id}:${run.id}:${callId}`), requestId = `message_${identity.slice(0, 48)}`;
     if (args.to === 'parent') {
@@ -303,25 +344,37 @@ export class Delegation {
     this.follow(next);
     return { agentId: child.id, sent: true };
   }
-  private async progress(args: Record<string, unknown>, callId: string) {
+  private async progress(args: Record<string, unknown>, callId: string, api?: ToolExecutionApi) {
     if (!this.host.reportProgress) throw new HttpError(400, 'Progress reports are unavailable');
     if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > MULTI_AGENT_LIMITS.progressChars) throw new HttpError(400, 'Invalid progress report');
-    const { id, run } = await this.host.context(), lineage = await this.lineage(id, run);
+    const { id, run } = await this.host.context(api), lineage = await this.lineage(id, run);
     if (!lineage?.parent) throw new HttpError(400, 'This run has no parent');
     await this.countCall('progress reports', run.id, callId, MULTI_AGENT_LIMITS.progressPerRun);
     await this.host.reportProgress(lineage.parent, { agentId: id, requestId: run.id, text: args.text.trim(), callId });
     return { reported: true };
   }
-  recover() { return this.children().then(children => { for (const child of children) if (child.accepted) this.follow(child); }); }
+  async recover() {
+    for (const child of await this.children()) {
+      if (child.cancelRequested && child.status === 'running') {
+        await this.cancelRemote(child);
+        if (!child.accepted) {
+          if (child.id) this.follow(await this.update(child, { accepted: true }));
+          else await this.update(child, { status: 'aborted', endedAt: Date.now(), held: undefined });
+          continue;
+        }
+      }
+      if (child.accepted) this.follow(child);
+    }
+  }
   tools(settings: DelegateSettings, builtins: readonly string[], subagent = false): ToolRegistration[] {
     const definitions: ToolDefinition[] = [...(builtins.includes('delegate') ? [delegateTool(settings, () => undefined)] : []), ...(builtins.includes('agents') ? agentsTools(settings, () => undefined) : [])];
     if (subagent) definitions.push(REPORT_PROGRESS, ...(!definitions.some(tool => tool.name === 'send_message') ? [SEND_MESSAGE] : []));
     return definitions.map(definition => defineTool({ name: definition.name, description: definition.description, parameters: definition.parameters as never, replay: 'safe', execute: async (args: Record<string, unknown>, api, context) => {
       const signal = context.abortSignal ?? new AbortController().signal;
-      if (definition.name === 'delegate') return this.toolResult(this.answer(await this.wait(await this.start(args, api.callId, signal), signal)));
-      if (definition.name === 'spawn_agent') return this.toolResult(this.answer(await this.start(args, api.callId, signal, true)));
-      if (definition.name === 'send_message') return this.toolResult(await this.send(args, api.callId));
-      if (definition.name === 'report_progress') return this.toolResult(await this.progress(args, api.callId));
+      if (definition.name === 'delegate') return this.toolResult(this.answer(await this.wait(await this.start(args, api.callId, signal, false, api), signal)));
+      if (definition.name === 'spawn_agent') return this.toolResult(this.answer(await this.start(args, api.callId, signal, true, api)));
+      if (definition.name === 'send_message') return this.toolResult(await this.send(args, api.callId, api));
+      if (definition.name === 'report_progress') return this.toolResult(await this.progress(args, api.callId, api));
       const children = await this.children();
       if (definition.name === 'list_agents') return this.toolResult([...new Map(children.filter(child => child.background).map(child => [child.id, child])).values()].map(child => ({ agentId: child.id, name: child.name, status: child.status, startedAt: child.createdAt, ...(child.endedAt ? { endedAt: child.endedAt } : {}), ...(child.progress ? { progress: child.progress.text, progressAt: child.progress.at } : {}) })));
       if (definition.name === 'wait_agent') {

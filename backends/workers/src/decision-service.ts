@@ -6,6 +6,7 @@ import { enqueueEvents, webhookEvent, type WebhookEnv } from './webhooks.ts';
 import { HttpError } from './errors.ts';
 import type { UsageRecord } from './policy-host.ts';
 import { admitAuxiliaryUsage, recordAuxiliaryUsage } from './auxiliary-usage.ts';
+import type { ToolExecutionApi } from '@earendil-works/pi-durable';
 export type DecisionEnv = ProviderKeyEnv & WebhookEnv & {
   TEST_MODEL?: string; TEST_MODE?: string; AGENT_DECISIONS_URL?: string;
   /** Synthetic fixture keys only, installed by the compatibility harness. */
@@ -48,7 +49,7 @@ export async function recordDecision(env: DecisionEnv, context: DecisionContext,
     await enqueueEvents(sql, [webhookEvent('usage.recorded', context.tenant, { agentId: agentId || null, requestId: requestId ?? null, subject: context.identity?.subject ?? null, actor: context.actor ?? null, context: context.identity?.context ?? null, keyScope: context.keyScope ?? null, provider: usage.provider, model: usage.model, kind: 'decision', input: usage.usage.input, output: usage.usage.output, cacheRead: 0, cacheWrite: 0, decisions: usage.decisions ?? 0, cost: { usd: usage.usage.cost.total, source: 'catalog' }, at: now })]);
   });
 }
-export function decisionService(env: DecisionEnv, context: () => Promise<DecisionContext>, record?: (context: DecisionContext, usage: UsageRecord) => Promise<void>) {
+export function decisionService(env: DecisionEnv, context: (api?: ToolExecutionApi) => Promise<DecisionContext>, record?: (context: DecisionContext, usage: UsageRecord) => Promise<void>) {
   return new DecisionRuntime({ key: (tenant, scope, provider) => key(env, tenant, scope, provider), context, record: record ?? ((context, usage) => recordDecision(env, context, usage)), testUrl: env.AGENT_DECISIONS_URL, testMode: env.TEST_MODEL === '1' && env.TEST_MODE === '1', admit: async context => {
     const credentials = await key(env, context.tenant, context.keyScope, 'openrouter');
     if (credentials?.platform && !(env.TEST_MODEL === '1' && env.TEST_MODE === '1')) throw new HttpError(503, 'Platform decision billing is not configured');

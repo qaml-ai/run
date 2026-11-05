@@ -1,4 +1,4 @@
-import { defineTool, type ToolRegistration } from '@earendil-works/pi-durable';
+import { defineTool, type ToolRegistration, type ToolExecutionApi } from '@earendil-works/pi-durable';
 import { Decider, DECIDE, decisionRequest, decisionsAnswer, type DecisionCredentials, type DecisionProvider, type Decided } from './decision-policy.ts';
 import { openrouterDecisions } from './decision-providers.ts';
 import { HttpError } from './errors.ts';
@@ -32,7 +32,7 @@ export function offersDecisions(config: {
 }
 export interface DecisionRuntimeOptions {
   key(tenant: string, keyScope: string | undefined, provider: string): Promise<(DecisionCredentials & { platform: boolean }) | undefined>;
-  context(): Promise<DecisionContext>;
+  context(api?: ToolExecutionApi): Promise<DecisionContext>;
   record?(context: DecisionContext, usage: UsageRecord): Promise<void>;
   admit?(context: DecisionContext): Promise<void>;
   provider?: DecisionProvider;
@@ -69,8 +69,8 @@ export class DecisionRuntime {
     this.decider = new Decider({ provider: provider(options), key: options.key });
   }
   async available() { const context = await this.options.context(); return this.decider.available(context.tenant, context.keyScope); }
-  async run(input: Record<string, unknown>, signal: AbortSignal, override: Partial<DecisionContext> = {}) {
-    const context = { ...await this.options.context(), ...override };
+  async run(input: Record<string, unknown>, signal: AbortSignal, override: Partial<DecisionContext> = {}, api?: ToolExecutionApi) {
+    const context = { ...await this.options.context(api), ...override };
     await this.options.admit?.(context);
     const request = decisionRequest(input);
     const decided: Decided = await this.decider.decide(context, request, signal);
@@ -80,7 +80,7 @@ export class DecisionRuntime {
   tool(): ToolRegistration {
     return defineTool({ name: DECIDE.name, description: DECIDE.description, parameters: DECIDE.parameters as never, structuredOutputSchema: {}, replay: 'unsafe', execute: async (args: Record<string, unknown>, api, context) => {
       try {
-        const result = await this.run(args, context.abortSignal ?? new AbortController().signal, { callId: api.callId, startedAt: Date.now() });
+        const result = await this.run(args, context.abortSignal ?? new AbortController().signal, { callId: api.callId, startedAt: Date.now() }, api);
         const text = JSON.stringify(result);
         return { output: [{ type: 'text', text }], structuredOutput: JSON.parse(text) };
       } catch (error) {

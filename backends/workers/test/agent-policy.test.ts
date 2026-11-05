@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { Decider, decisionRequest, decisionsAnswer, checkedAnswers } from '../src/decision-policy.ts';
 import { delegateInput, delegateSettings } from '../src/multi-agent-policy.ts';
 import { Delegation, type DelegationHost } from '../src/delegation.ts';
+import { DecisionRuntime } from '../src/decision-runtime.ts';
+import type { ToolExecutionApi } from '@earendil-works/pi-durable';
 
 const questions = { valid: { type: 'noul' as const, instructions: 'Is valid?' } };
 const signal = () => new AbortController().signal;
@@ -52,6 +54,25 @@ function fixture() {
   };
   return { delegation: new Delegation(host), host, events, submitted, tasks, setRun: (value: unknown) => { run = value; }, setId: (value: string) => { parentId = value; }, values };
 }
+test('decision and delegation tools resolve context from the executing conversation', async () => {
+  const api = { callId: 'host-call', conversationId: 42 } as ToolExecutionApi;
+  let recorded: unknown;
+  const decision = new DecisionRuntime({
+    key: async () => ({ apiKey: 'fixture', platform: false }),
+    context: async current => { assert.equal(current, api); return { tenant: 'test', requestId: 'host-request' }; },
+    provider: { id: 'fixture', async decide() { return { answers: { valid: { noul: 1 } }, inputTokens: 1, outputTokens: 1, costUsd: 0.01 }; } },
+    record: async current => { recorded = current.requestId; },
+  });
+  await decision.tool().execute({ state: 'x', questions }, api, { abortSignal: signal() } as never);
+  assert.equal(recorded, 'host-request');
+  const f = fixture(), original = f.host.context;
+  f.host.context = async current => { assert.equal(current, api); return { ...await original(), run: { id: 'host-request' } }; };
+  f.host.remainingBudget = async (_background, current) => { assert.equal(current, api); return 0.1; };
+  const delegate = f.delegation.tools({ instructions: true }, ['delegate'])[0];
+  await delegate.execute({ instructions: 'helper', task: 'help' }, api, { abortSignal: signal() } as never);
+  assert.equal(f.submitted[0].params.metadata.parentRunId, 'host-request');
+  await Promise.all(f.tasks);
+});
 test('delegation persists idempotent child, budget and result events', async () => {
   const f = fixture();
   const first = await f.delegation.start({ instructions: 'Be HELPER', task: 'help' }, 'call', signal());
@@ -161,6 +182,69 @@ test('parent cancellation aborts made children and only its actively running nam
   };
   await f.delegation.cancel('parent-run');
   assert.deepEqual(aborted.sort(), ['made', 'named']);
+});
+test('cancellation during child creation cannot submit or reopen a child', async () => {
+  const f = fixture();
+  let entered!: () => void, release!: () => void;
+  const creating = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  f.host.create = async () => { entered(); await gate; return { id: 'late-child' }; };
+  f.host.cancelRequest = async () => {};
+  const pending = f.delegation.start({ instructions: 'helper', task: 'help' }, 'late-create', signal());
+  const rejected = assert.rejects(pending, { name: 'AbortError' });
+  await creating;
+  await f.delegation.cancel('parent-run');
+  release();
+  await rejected;
+  assert.equal(f.submitted.length, 0, 'cancellation prevents the later prompt submission');
+  const [child] = await f.delegation.children();
+  assert.equal(child.status, 'aborted');
+  assert.equal(child.cancelRequested, true);
+  assert.equal((await f.delegation.start({ instructions: 'helper', task: 'help' }, 'late-create', signal())).status, 'aborted');
+});
+test('cancellation racing an accepted child is reasserted after its submit finishes', async () => {
+  const f = fixture(), originalFetch = f.host.fetch;
+  let entered!: () => void, release!: () => void;
+  const submitting = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const cancelled: string[] = [];
+  f.host.cancelRequest = async (_agent, request) => { cancelled.push(request); };
+  f.host.fetch = async (id, request) => {
+    if (request.method === 'POST') { entered(); await gate; return originalFetch(id, request); }
+    if (new URL(request.url).pathname.startsWith('/requests/')) return Response.json({ state: 'completed', status: 'aborted', outcome: { result: { reply: '', usage: { costUsd: 0.001 } } } });
+    return originalFetch(id, request);
+  };
+  const pending = f.delegation.start({ instructions: 'helper', task: 'help' }, 'late-submit', signal());
+  const rejected = assert.rejects(pending, { name: 'AbortError' });
+  await submitting;
+  await f.delegation.cancel('parent-run');
+  release();
+  await rejected;
+  await Promise.all(f.tasks);
+  assert.equal(cancelled.length, 2, 'cancel both before and after the in-flight submission');
+  assert.equal(new Set(cancelled).size, 1);
+  const [child] = await f.delegation.children();
+  assert.equal(child.cancelRequested, true);
+  assert.equal(child.status, 'aborted');
+  assert.equal(child.spent, 0.001, 'accepted cancelled work still accounts its incurred cost');
+});
+test('targeted cancellation includes queued requests of named agents and survives restart', async () => {
+  const f = fixture(), cancelled: string[] = [];
+  f.host.cancelRequest = async (_agent, request) => { cancelled.push(request); };
+  f.values.set('delegation:queued', { id: 'shared-agent', key: 'queued', requestId: 'owned-request', parentRequestId: 'parent-run', status: 'running', made: false, accepted: true });
+  await f.delegation.cancel('parent-run');
+  assert.deepEqual(cancelled, ['owned-request']);
+  await new Delegation(f.host).recover();
+  await Promise.all(f.tasks);
+  assert.deepEqual(cancelled, ['owned-request', 'owned-request']);
+});
+test('cancel recovery reads costs when eviction lost the child admission acknowledgement', async () => {
+  const f = fixture();
+  f.host.cancelRequest = async () => {};
+  f.values.set('delegation:pending', { id: 'child', key: 'pending', requestId: 'child-request', parentRequestId: 'parent-run', status: 'running', made: true, accepted: false, cancelRequested: true });
+  await f.delegation.recover();
+  await Promise.all(f.tasks);
+  assert.equal(await f.delegation.cost('parent-run'), 0.01);
 });
 async function childFixture() {
   const f = fixture(), secret = f.host.secret;
