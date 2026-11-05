@@ -6,6 +6,7 @@ import type { Context } from "@earendil-works/chord";
 import { registration, type McpResult, type ToolDefinition } from "./attached-tools.ts";
 import { checkDocument, operations, formEncode, type Operation } from "./openapi-policy.ts";
 import { HttpError } from "./errors.ts";
+import { HostExecutionRequest } from "./host-execution.ts";
 import { HumanInputs, waitForHuman } from "./human.ts";
 import { parse as parseYaml } from "yaml";
 import { signRuntimeIdentity, type IdentityEnv, type RuntimeIdentity } from "./tool-identity.ts";
@@ -387,7 +388,7 @@ export async function sourceTools(env: Env, tenant: string, definition: string |
           if (verdict.decision === "allow") return { reply: {} };
           if (verdict.decision === "deny") return { result: { isError: true, content: [{ type: "text", text: DENIED_PERMISSION(`${source.name}__${tool}`) }] } };
         }
-        if ((await toolCallSite(api, context)).innerCallId) throw new Error(`${source.name}__${tool} needs the user's approval: call ${source.name}__${tool} directly`);
+        if ((await toolCallSite(api, context)).innerCallId && !(await api.snapshot(HostExecutionRequest, api.conversationId, context))?.requestId) throw new Error(`${source.name}__${tool} needs the user's approval: call ${source.name}__${tool} directly`);
         const input = { name: `${source.name}__${tool}`, args, kind: "approval" as const, message: `Allow ${source.name}__${tool} to run?`, detail: { tool: `${source.name}__${tool}`, source: source.name, arguments: args } };
         if (approve) await approve(input);
         else {
