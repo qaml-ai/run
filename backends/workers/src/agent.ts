@@ -1,4 +1,5 @@
 import { toolOutputExtension } from "./tool-output.ts";
+import { ConfigurationTargets } from "./configuration-targets.ts";
 import { refreshIdleLifetime } from "./idle-lifetime.ts";
 import { forkSnapshot } from "./fork-snapshot.ts";
 import { seedHistory, writeModelContext } from "./history-seed.ts";
@@ -1009,6 +1010,19 @@ export class CamelAgent extends DurableObject<Env> {
   private readonly initialCursor = Date.now() * 1000;
   private pendingWaits = new Set<string>();
   private admission: Promise<unknown> = Promise.resolve();
+  private configurationTargets = new ConfigurationTargets(this.ctx.storage, {
+    busy: async () => this.harness.session().busy(),
+    apply: async target => {
+      const conf = await this.config();
+      const directory = new Directory(this.env, conf.tenantId);
+      const before = await directory.get(conf.id);
+      if (!before) throw Object.assign(new Error("Unknown agent"), { status: 404 });
+      const updated = await directory.upsert(target.config, before.key ?? before.id, target.origin ?? conf.runtimeOrigin, undefined, false, true);
+      if ("failed" in updated) throw Object.assign(new Error(updated.error), { status: updated.status });
+      return { changed: before.configHash !== updated.configHash, configHash: updated.configHash };
+    },
+    emit: async record => { await this.emit({ type: "response", id: record.id, outcome: record.outcome }); },
+  });
   private eventsProcessed: Promise<void> = Promise.resolve();
 
   private async records() {
@@ -1372,7 +1386,10 @@ export class CamelAgent extends DurableObject<Env> {
     this.ctx.waitUntil(
       this.settle(id, 0)
         .catch(() => {})
-        .finally(() => this.pendingWaits.delete(id)),
+        .finally(() => {
+          this.pendingWaits.delete(id);
+          this.ctx.waitUntil(this.configurationTargets.drain());
+        }),
     );
   }
   private async settle(id: string, waitMs: number): Promise<RequestRecord> {
@@ -2397,6 +2414,14 @@ export class CamelAgent extends DurableObject<Env> {
     try {
       const url = new URL(request.url),
         path = url.pathname;
+      if (path === "/configuration-target" && request.method === "POST") {
+        const target = await body(request) as { id: string; config: AgentConfiguration; origin?: string };
+        configuration(target.config, this.env.MODEL);
+        const record = await this.configurationTargets.enqueue(target);
+        this.ctx.waitUntil(this.configurationTargets.drain());
+        await this.arm();
+        return json(record, 202);
+      }
       if (path === "/configuration" && request.method === "PUT") {
         const incoming = (await body(request, 17 * 1024 * 1024)) as Config;
         const mutation = this.admission.then(async () => {
@@ -3183,6 +3208,7 @@ export class CamelAgent extends DurableObject<Env> {
       pendingBilling ? Date.now() + 5000 : Infinity,
       pendingEvents ? Date.now() + 1000 : Infinity,
       pendingRun ? Date.now() + 1000 : Infinity,
+      await this.configurationTargets.pending() ? Date.now() + 1000 : Infinity,
       await this.promptPreparations.deadline(),
       await this.ctx.storage.get<number>("human-input-deadline") ?? Infinity,
       await this.limits.deadline(),
@@ -3198,6 +3224,7 @@ export class CamelAgent extends DurableObject<Env> {
     return withMoneyMetrics(this.env, () => this.restorePending());
   }
   private async restorePending() {
+    this.ctx.waitUntil(this.configurationTargets.drain());
     await this.promptPreparations.sweep(Date.now(), true);
     await this.resumeKeptQueue();
     await this.restoreCancellations();
@@ -3226,6 +3253,7 @@ export class CamelAgent extends DurableObject<Env> {
     });
   }
   private async wake() {
+    await this.configurationTargets.drain();
     await this.promptPreparations.sweep();
     await this.resumeKeptQueue();
     await this.restoreCancellations();

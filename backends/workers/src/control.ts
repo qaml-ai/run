@@ -74,6 +74,7 @@ export interface DirectoryEntry {
   pendingFork?: { sourceId: string; fingerprint: string };
   parentAgentId?: string;
   parentRunId?: string;
+  reconfigured?: { id: string; method: string; state: string };
 }
 export interface DirectoryFailure {
   failed: true;
@@ -143,6 +144,8 @@ export class Directory {
     suppliedKey?: string,
     runtimeOrigin?: string,
     pendingFork?: { sourceId: string; fingerprint: string },
+    queue = false,
+    admitted = false,
   ): Promise<DirectoryEntry | DirectoryFailure> {
     const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
     const defaultModel = fields.model === undefined
@@ -183,6 +186,9 @@ export class Directory {
       if (previous?.revoked)
         throw new ApiError(410, "Agent is deleted", "AGENT_GONE");
       const old = previous?.header as DirectoryEntry | undefined;
+      if (old && fields.subject !== undefined && fields.subject !== old.config.subject)
+        throw new ApiError(409, "An agent's subject cannot change");
+      if (old?.config.subject && fields.subject === undefined) config.subject = old.config.subject;
       if (old?.config.model && fields.model === undefined) config.model = old.config.model;
       if (!pendingFork && old?.pendingFork) throw new ApiError(409, "Fork is still being copied", "FORK_IN_PROGRESS");
       if (pendingFork && old && (old.pendingFork?.sourceId !== pendingFork.sourceId || old.pendingFork?.fingerprint !== pendingFork.fingerprint))
@@ -191,8 +197,9 @@ export class Directory {
       if(old?.config.mounts&&requested!==undefined&&JSON.stringify(old.config.mounts)!==JSON.stringify(config.mounts)&&(input as {remount?:boolean}).remount!==true)
         throw new ApiError(409,"Agent mounts differ; set remount: true to change them");
       const configHash=await digest(JSON.stringify(config));
-      if (config.type !== "run")
+      if (config.type !== "run" && !admitted)
         await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
+      if (queue && old?.initialized) return { ...old, targetConfig: config };
       if (old?.initialized && old.configHash === configHash) return old;
       const next: DirectoryEntry = {
         id,
@@ -204,7 +211,7 @@ export class Directory {
         createdAt: old?.createdAt ?? Date.now(),
         expiresAt:
           old?.expiresAt ??
-          (ttlSeconds ? Date.now() + ttlSeconds * 1000 : null),
+          (ttlSeconds != null ? Date.now() + ttlSeconds * 1000 : ttlSeconds === null || key ? null : Date.now() + 86400_000),
         revision:
           old?.configHash === configHash
             ? old.revision
@@ -232,6 +239,16 @@ export class Directory {
         throw new ApiError(403, "Agent belongs to another tenant", "FORBIDDEN");
       return next;
     });
+    if ("targetConfig" in entry) {
+      const response = await this.env.AGENTS.getByName(id).fetch(new Request("https://agent/configuration-target", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: crypto.randomUUID(), config: entry.targetConfig, origin: runtimeOrigin }),
+      }));
+      const record = await response.json() as { id: string; method: string; state: string; error?: string };
+      if (!response.ok) return { failed: true, status: response.status, error: record.error ?? "Agent configuration was refused", code: "CONFIGURATION_FAILED" };
+      const { targetConfig, ...current } = entry;
+      return { ...current, reconfigured: record };
+    }
     if (!entry.initialized) {
       const response = await this.env.AGENTS.getByName(id).fetch(
         new Request("https://agent/configuration", {
@@ -262,13 +279,16 @@ export class Directory {
           [id, this.tenantId, JSON.stringify(entry), entry.revision],
         ),
       );
-      if (!applied.rowCount)
+      if (!applied.rowCount) {
+        const latest = await this.get(id);
+        if (latest?.initialized && latest.configHash === entry.configHash) return latest;
         return {
           failed: true,
           status: 409,
           error: "A newer configuration or revocation won; retry",
           code: "CONFIGURATION_CHANGED",
         };
+      }
     }
     if (config.workspaceId !== undefined) await workspaces.assign(this.tenantId, "agent", id, config.workspaceId);
     return entry;

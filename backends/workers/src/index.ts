@@ -1,4 +1,5 @@
 import { withMoneyMetrics } from "./money-metrics.ts";
+import { firstPrompt } from "./first-prompt.ts";
 import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
 import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
@@ -76,6 +77,7 @@ function credentials(entry: DirectoryEntry, token: string) {
     token,
     expiresAt: entry.expiresAt,
     configHash: entry.configHash,
+    ...(entry.reconfigured ? { reconfigured: entry.reconfigured } : {}),
   };
 }
 function summary(entry: DirectoryEntry) {
@@ -290,22 +292,27 @@ const worker = {
             const raw = await body(request, 17 * 1024 * 1024);
             if (!raw || typeof raw !== "object" || Array.isArray(raw))
               throw new BadRequest("Expected configuration object");
+            const first = firstPrompt((raw as { prompt?: unknown }).prompt);
+            const { prompt: _prompt, ...settings } = raw as Record<string, unknown>;
             const input = await provisionDefinition(
               env,
               auth.tenantId,
-              raw as Record<string, unknown>,
+              settings,
             );
             configuration(input, env.MODEL);
             const key = request.headers.get("Idempotency-Key") ?? undefined;
-            const created = result(await directory.upsert(input, key, url.origin));
+            const created = result(await directory.upsert(input, key, url.origin, undefined, true));
             if (Object.hasOwn(raw, "spendLimit"))
               await setAgentSpendLimit(
                 env, auth.tenantId, created.id, (raw as { spendLimit: unknown }).spendLimit,
               );
-            return json(
-              credentials(created, await agentToken(env.API_TOKEN, created.id)),
-              201,
-            );
+            const answer = credentials(created, await agentToken(env.API_TOKEN, created.id));
+            if (!first) return json(answer, 201);
+            const submitted = await env.AGENTS.getByName(created.id).fetch(new Request("https://agent/requests", {
+              method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(first),
+            }));
+            const sent = await submitted.json() as { error?: string; code?: string };
+            return json({ ...answer, prompt: submitted.ok ? sent : { error: { status: submitted.status, code: sent.code ?? "INVALID_REQUEST", message: sent.error } } }, 201);
           }
         }
         throw new ApiError(404, "Unknown API route", "NOT_FOUND");
