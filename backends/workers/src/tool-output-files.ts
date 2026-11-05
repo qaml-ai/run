@@ -3,7 +3,7 @@ import { TOOL_FILE_LIMITS } from '../../../src/limits.ts';
 import { digest } from './api-contract.ts';
 import { safeName } from './file-policy.ts';
 import { workspaceId } from './file-mounts.ts';
-import { handleAgentFileRequest, type FileBindings, type Mount } from './files.ts';
+import type { FileBindings, Mount } from './files.ts';
 import { scratchMount } from './media/files-policy.ts';
 import type { WebFiles } from './web-policy-host.ts';
 
@@ -31,6 +31,7 @@ export async function toolResultFiles(env: FileBindings, scope: { tenant: string
       async cancel() { await iterator.return?.(); },
     });
     const path = `${directory}/${unique}`;
+    const { handleAgentFileRequest } = await import('./files.ts');
     const response = await handleAgentFileRequest(new Request('https://agent.invalid/files', { method: 'PUT', headers: { 'Content-Type': contentType }, body }), env, scope.tenant, scope.agent, path, scope.mounts);
     const saved = await response.json() as { size: number; version: number; contentType: string; error?: string };
     if (!response.ok) throw new Error(saved.error ?? 'Tool output could not be saved');
