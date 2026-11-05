@@ -23,6 +23,9 @@ export function authenticationHint(request: Request, origin: string): string {
 
 /** Public documents are exact asset lookups; they never fall through to authentication. */
 export async function publicRoutes(request: Request, env: PublicEnv): Promise<Response | undefined> {
+  const url = new URL(request.url), path = url.pathname;
+  // Account routes own console redirects, consent, and journey collection.
+  if (/^\/console(?:\/|$)/.test(path) || path === "/api/journey/events") return;
   const assets = env.PUBLIC_ASSETS;
   const document = await publicDocs(request, {
     AGENT_PUBLIC_URL: env.AGENT_PUBLIC_URL,
@@ -34,7 +37,6 @@ export async function publicRoutes(request: Request, env: PublicEnv): Promise<Re
     } } : undefined,
   });
   if (document) return document;
-  const url = new URL(request.url), path = url.pathname;
   const origin = env.AGENT_PUBLIC_URL || url.origin;
   const read = request.method === "GET" || request.method === "HEAD";
   const content = (body: string, type: string, headers: Record<string, string> = {}) => new Response(request.method === "HEAD" ? null : body, { headers: { "Content-Type": type, ...headers } });
@@ -50,11 +52,6 @@ export async function publicRoutes(request: Request, env: PublicEnv): Promise<Re
     });
   }
   if (read && path === "/") return Response.redirect(`${url.origin}/console`, 302);
-  if (read && /^\/console(?:\/|$)/.test(path) && !/^\/console\/auth(?:\/|$)/.test(path)) {
-    const asset = await assets?.fetch(new Request(new URL("/console/index.html", url)));
-    if (asset?.ok) return content(await asset.text(), "text/html; charset=utf-8");
-    return new Response(request.method === "HEAD" ? null : "The console is not built on this host", { status: 404, headers: { "Content-Type": "text/plain" } });
-  }
   // Unknown non-API URLs carry the same useful 404 even without credentials.
   if (!/^\/(?:v1(?:\/|$)|clients(?:\/|$)|experimental(?:\/|$)|registry(?:\/|$)|console(?:\/|$)|oauth(?:\/|$)|\.well-known(?:\/|$)|mcp$|healthz$|__test(?:\/|$))/.test(path)) return unknownRoute(origin);
 }

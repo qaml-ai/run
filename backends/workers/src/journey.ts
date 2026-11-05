@@ -20,6 +20,7 @@ export type JourneyEnv = {
   AGENT_JOURNEY_RETRY_MS?: string;
   AGENT_PUBLIC_URL?: string;
   ASSETS?: Fetcher;
+  PUBLIC_ASSETS?: Fetcher;
 };
 
 /** The source owns consent, event schemas, deduplication and the durable outbox. */
@@ -57,10 +58,18 @@ export async function publicJourneyRoutes(request: Request, env: JourneyEnv, jou
   if (request.method !== "GET" && request.method !== "HEAD") return;
   if (path === "/console") return new Response(null, { status: 302, headers: { location: `/console/${url.search}` } });
   if (!path.startsWith("/console/") || path.startsWith("/console/auth/")) return;
-  if (!env.ASSETS) return new Response("The console is not built on this host", { status: 404 });
+  const missing = () => new Response(request.method === "HEAD" ? null : "The console is not built on this host", { status: 404, headers: { "Content-Type": "text/plain" } });
+  const assets = env.PUBLIC_ASSETS ?? env.ASSETS;
+  if (!assets) return missing();
   const asset = new URL(request.url);
-  asset.pathname = path.slice('/console'.length) || '/';
-  const response = await env.ASSETS.fetch(new Request(asset, request));
+  // The shared asset bundle mounts the console beside docs and registry files.
+  asset.pathname = env.PUBLIC_ASSETS ? (path.endsWith("/") ? `${path}index.html` : path) : path.slice('/console'.length) || '/';
+  let response = await assets.fetch(new Request(asset, request));
+  if (env.PUBLIC_ASSETS && response.status === 404) {
+    asset.pathname = "/console/index.html";
+    response = await assets.fetch(new Request(asset, request));
+  }
+  if (response.status === 404) return missing();
   if (!response.ok || !response.headers.get("content-type")?.includes("text/html")) return response;
   const headers = new Headers(response.headers);
   headers.set("cache-control", "no-store");
