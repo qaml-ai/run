@@ -1,51 +1,57 @@
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 
-type FileRequest = (path: string, init: RequestInit) => Promise<Response>;
 const text = (value: unknown) => ({ output: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value) }] });
+const valueOf = (result: Awaited<ReturnType<ToolRegistration["execute"]>>) => {
+  if (result.structuredOutput !== undefined) return result.structuredOutput;
+  const value = result.output?.find(part => part.type === "text")?.text ?? "";
+  try { return JSON.parse(value); } catch { return value; }
+};
 
-/** Add byte windows needed by the shared fs shim without changing the volume API. */
-export function compatibleFileTools(tools: ToolRegistration[], request: FileRequest): ToolRegistration[] {
+/** Keep native mount, version and output policies while exposing values to scripts. */
+export function compatibleFileTools(tools: ToolRegistration[]): ToolRegistration[] {
   return tools.map(tool => {
     if (tool.name === "read") return {
       ...tool,
-      parameters: { type: "object", required: ["path"], properties: { path: { type: "string" }, encoding: { enum: ["utf8", "base64"] }, offset: { type: "integer", minimum: 0 }, length: { type: "integer", minimum: 1, maximum: 131072 } }, additionalProperties: false },
-      structuredOutputSchema: { type: "object" },
-      async execute(input) {
-        const { path, encoding = "utf8", offset = 0, length = 131072 } = input as { path: string; encoding?: string; offset?: number; length?: number };
-        const response = await request(path, { method: "GET" });
-        if (!response.ok) {
-          if (response.status === 404) throw new Error(`File ${path} does not exist`);
-          throw new Error(`File read failed (${response.status})`);
+      parameters: { type: "object", required: ["path"], properties: { path: { type: "string" }, encoding: { enum: ["utf8", "base64"] }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1 }, length: { type: "integer", minimum: 1, maximum: 131072 } }, additionalProperties: false },
+      structuredOutputSchema: {},
+      async execute(input, api, context) {
+        const { path, encoding, offset = 0, length = 131072 } = input as { path: string; encoding?: string; offset?: number; length?: number };
+        let result;
+        try {
+          result = await tool.execute(encoding === undefined && !("length" in (input as object))
+            ? input : { path, encoding: "base64", offset, length }, api, context);
+        } catch (error) {
+          if ((error as { status?: number }).status === 404 || /FILE_404:/.test(String(error)))
+            throw new Error(`File ${path} does not exist`);
+          throw error;
         }
-        // File APIs cap stored files at 32 MiB; each tool result remains 128 KiB.
-        const bytes = new Uint8Array(await response.arrayBuffer()), part = bytes.subarray(offset, offset + length);
-        const data = encoding === "base64" ? encodeBase64(part) : new TextDecoder().decode(part);
-        const value = { path, data, content: data, encoding, ...(offset + length < bytes.length ? { nextOffset: offset + length } : {}) };
+        if (encoding === undefined && !("length" in (input as object)))
+          return { ...result, structuredOutput: result.output?.find(part => part.type === "text")?.text ?? "" };
+        const read = valueOf(result) as { data: string; nextOffset?: number };
+        const data = encoding === "utf8" ? new TextDecoder().decode(Uint8Array.from(atob(read.data), char => char.charCodeAt(0))) : read.data;
+        const value = { ...read, path, data, content: data, encoding: encoding ?? "base64" };
         return { ...text(value), structuredOutput: value };
       },
     };
     if (tool.name === "write") return {
       ...tool,
-      parameters: { type: "object", required: ["path"], properties: { path: { type: "string" }, content: { type: "string" }, text: { type: "string" }, encoding: { enum: ["utf8", "base64"] } }, additionalProperties: false },
-      async execute(input) {
+      structuredOutputSchema: {},
+      async execute(input, api, context) {
         const { path, content, text: contentAlias, encoding } = input as { path: string; content?: string; text?: string; encoding?: string };
         const data = content ?? contentAlias;
         if (data === undefined) throw new Error("content is required");
-        let bytes: Uint8Array;
         if (encoding === "base64") {
           if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)) throw new Error("Invalid base64 file content");
-          bytes = Uint8Array.from(atob(data), c => c.charCodeAt(0));
-        } else bytes = new TextEncoder().encode(data);
-        const response = await request(path, { method: "PUT", body: bytes, headers: { "Content-Type": encoding === "base64" ? "application/octet-stream" : "text/plain; charset=utf-8" } });
-        if (!response.ok) throw new Error(`File write failed (${response.status})`);
-        return text(await response.json());
+        }
+        const result = await tool.execute(input, api, context);
+        return { ...result, structuredOutput: valueOf(result) };
       },
     };
     if (tool.name === "ls") return {
-      ...tool, structuredOutputSchema: { type: "object" },
+      ...tool, structuredOutputSchema: {},
       async execute(args, api, context) {
         const result = await tool.execute(args, api, context);
-        const value = JSON.parse(result.output?.find(part => part.type === "text")?.text ?? "[]");
+        const value = valueOf(result);
         const path = String((args as { path?: string }).path ?? "/workspace").replace(/^\/workspace(?=\/|$)/, "").replace(/\/+$/, "");
         const entries = Array.isArray(value) ? value.map(entry => {
           const entryPath = String(entry.path).replace(/^\/workspace(?=\/|$)/, "");
@@ -56,12 +62,9 @@ export function compatibleFileTools(tools: ToolRegistration[], request: FileRequ
         return { ...text(listing), structuredOutput: listing };
       },
     };
-    return tool;
+    return { ...tool, structuredOutputSchema: {}, async execute(args, api, context) {
+      const result = await tool.execute(args, api, context);
+      return { ...result, structuredOutput: valueOf(result) };
+    } };
   });
-}
-
-function encodeBase64(bytes: Uint8Array) {
-  let text = "";
-  for (let i = 0; i < bytes.length; i += 16384) text += String.fromCharCode(...bytes.subarray(i, i + 16384));
-  return btoa(text);
 }

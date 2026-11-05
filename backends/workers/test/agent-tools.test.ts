@@ -206,15 +206,31 @@ test("sandbox routing shares the session and retains three slots until RPC compl
 
 test("shared fs shim reads UTF-8 windows and round-trips typed bytes through file tools", async () => {
   const files = new Map<string, Uint8Array>();
-  const original = [{ name: "read" }, { name: "write" }, { name: "ls", execute: async () => ({ output: [{ type: "text", text: JSON.stringify([...files.keys()].map(path => ({ path }))) }] }) }] as ToolRegistration[];
-  const wrapped = compatibleFileTools(original, async (path, init) => {
-    if (init.method === "PUT") { files.set(path, new Uint8Array(init.body as Uint8Array)); return Response.json({ path }); }
-    return files.has(path) ? new Response(files.get(path)) : new Response(null, { status: 404 });
-  });
+  let reads = 0, writes = 0;
+  const original = [
+    { name: "read", execute: async ({ path, offset = 0, length = 131072, encoding }: any) => {
+      reads++;
+      const bytes = files.get(path);
+      if (!bytes) throw Object.assign(new Error("Missing file"), { status: 404 });
+      const value = encoding === "base64" ? { data: Buffer.from(bytes.subarray(offset, offset + length)).toString("base64"), ...(offset + length < bytes.length ? { nextOffset: offset + length } : {}) } : new TextDecoder().decode(bytes);
+      return { output: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }] };
+    } },
+    { name: "write", execute: async ({ path, content, encoding }: any) => {
+      writes++;
+      files.set(path, encoding === "base64" ? Buffer.from(content, "base64") : new TextEncoder().encode(content));
+      return { output: [{ type: "text", text: JSON.stringify({ path }) }] };
+    } },
+    { name: "ls", execute: async () => ({ output: [{ type: "text", text: JSON.stringify([...files.keys()].map(path => ({ path }))) }] }) },
+  ] as ToolRegistration[];
+  const wrapped = compatibleFileTools(original);
   const tools = Object.fromEntries(wrapped.map(tool => [tool.name, async (args: unknown) => {
     const result = await tool.execute(args, undefined as never, undefined as never);
     return result.structuredOutput ?? result.output?.find(part => part.type === "text")?.text;
   }]));
   const run = new Function("tools", `return (async () => { ${FS_SHIM}\n const fs = require('node:fs'); await fs.writeFile('/workspace/unicode.txt', 'héllo'); await fs.writeFile('/workspace/bytes.bin', new Uint8Array([0,255,128])); return [await fs.readFile('/workspace/unicode.txt'), await fs.readFile('/workspace/bytes.bin','base64'), await fs.readdir('/workspace'), await fs.exists('/workspace/missing')]; })()`);
   assert.deepEqual(await run(tools), ["héllo", "AP+A", ["unicode.txt", "bytes.bin"], false]);
+  assert.equal(writes, 2, "writes retain the native version guards and output callback");
+  assert.equal(reads, 3, "reads retain the native size limit and remembered version");
+  const direct = await wrapped[0].execute({ path: "/workspace/unicode.txt" }, undefined as never, undefined as never);
+  assert.equal(direct.output?.[0]?.type === "text" && direct.output[0].text, "héllo", "direct model reads remain plain text");
 });

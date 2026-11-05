@@ -8,7 +8,7 @@ export type AuxiliaryCall = {
   requestId?: string;
   /** Pi's durable tool call ID, including the run ID if the provider reuses call IDs. */
   callId: string;
-  kind: "decision" | "web_search" | "x_search" | "web_fetch";
+  kind: "decision" | "web_search" | "x_search" | "web_fetch" | "image";
   /** Captured before the external call, so a late answer cannot charge a reset budget. */
   startedAt: number;
 };
@@ -55,7 +55,7 @@ export async function recordAuxiliaryUsage(sql: Sql, call: AuxiliaryCall, cost: 
   } };
   const id = await entryId(call);
   const inserted = await sql.query(`insert into pi_usage_receipts(session_id,entry_id,tenant,message,accounted)
-    select $1,$2,$3,$4,true where exists(select 1 from agents where id=$1 and tenant=$3 and not revoked)
+    select $1,$2,$3,$4,true where exists(select 1 from agents where id=$1 and tenant=$3)
     on conflict(session_id,entry_id) do nothing returning entry_id`, [call.agent, id, call.tenant, JSON.stringify(message)]);
   if (inserted.rowCount) return true;
   const previous = (await sql.query("select tenant,message from pi_usage_receipts where session_id=$1 and entry_id=$2", [call.agent, id])).rows[0];
@@ -73,10 +73,11 @@ export async function auxiliaryUsageCosts(env: PostgresEnv, tenant: string, agen
   return withSql(env, async sql => {
     const row = (await sql.query(`select
       coalesce(sum((message->'_workersAuxiliary'->>'costUsd')::double precision) filter(where message->'_workersAuxiliary'->>'kind'='decision'),0) as decision,
-      coalesce(sum((message->'_workersAuxiliary'->>'costUsd')::double precision) filter(where message->'_workersAuxiliary'->>'kind'<>'decision'),0) as web
+      coalesce(sum((message->'_workersAuxiliary'->>'costUsd')::double precision) filter(where message->'_workersAuxiliary'->>'kind'='image'),0) as image,
+      coalesce(sum((message->'_workersAuxiliary'->>'costUsd')::double precision) filter(where message->'_workersAuxiliary'->>'kind' in ('web_search','x_search','web_fetch')),0) as web
       from pi_usage_receipts where tenant=$1 and session_id=$2 and accounted and entry_id<0
       and message ? '_workersAuxiliary' and message->'_workersAuxiliary'->>'requestId'=$3`, [tenant, agent, requestId])).rows[0];
-    return { decisionCostUsd: Number(row.decision), webCostUsd: Number(row.web) };
+    return { decisionCostUsd: Number(row.decision), imageCostUsd: Number(row.image), webCostUsd: Number(row.web) };
   });
 }
 

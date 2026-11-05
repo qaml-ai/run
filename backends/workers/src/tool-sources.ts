@@ -9,6 +9,7 @@ import { signRuntimeIdentity, type IdentityEnv, type RuntimeIdentity } from "./t
 import { withToolInputs, type ToolInputReply } from "./mcp-inputs.ts";
 import { openProviderSecret } from "./model-credentials.ts";
 import { credentialExchange, type ExchangeAuth } from "./exchange-auth.ts";
+import { COMPUTER_TOOLS } from "./computers/policy.ts";
 
 type Env = { API_TOKEN: string; TEST_MODE?: string } & Partial<IdentityEnv>;
 type Approval = { default?: "never" | "always" | "destructive" | "judged"; tools?: Record<string, "never" | "always" | "judged">; methods?: string[] };
@@ -212,9 +213,11 @@ export function sourceView(source: RemoteSource) {
 export function toolSourceViews(config: { mcp?: { tools?: ToolDefinition[] }; mcpServers?: RemoteSource[]; openApi?: RemoteSource[]; fileTools?: boolean; builtins?: string[] }, tools: ToolRegistration[], connected: boolean) {
   const view = (tool: ToolRegistration) => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters, ...(tool.executionMode ? { executionMode: tool.executionMode } : {}) });
   const result: { kind: string; name: string; status: string; tools: unknown[]; connected?: boolean; url?: string; error?: string }[] = [];
-  const fileNames = new Set(["read", "write", "edit", "ls", "find", "grep", "stat", "mkdir", "rm", "rename"]);
+  const fileNames = new Set(["read", "write", "edit", "ls", "find", "glob", "grep", "stat", "mkdir", "rm", "rename", "cp", "mv", "present_file"]);
   const files = tools.filter(tool => fileNames.has(tool.name));
   if (config.fileTools !== false && files.length) result.push({ kind: "files", name: "files", status: "listed", tools: files.map(view) });
+  const computers = tools.filter(tool => COMPUTER_TOOLS.has(tool.name));
+  if (computers.length) result.push({ kind: "builtin", name: "computer", status: "listed", tools: computers.map(view) });
   if (config.mcp?.tools?.length) result.push({ kind: "application", name: "application", status: "listed", connected, tools: config.mcp.tools });
   for (const [kind, sources] of [["mcp", config.mcpServers], ["openapi", config.openApi]] as const) for (const source of sources ?? []) {
     const installed = tools.filter(tool => tool.name.startsWith(`${source.name}__`));

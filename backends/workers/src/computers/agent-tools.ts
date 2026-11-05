@@ -6,11 +6,12 @@ export function attachedComputerTools(env: ComputerEnv, identity: () => Promise<
     name: tool.name,
     description: tool.description.replace(' A shell computer mounts its home directory at /computer for the file tools; save results to a volume with cp before stopping.', '').replace(', after copying results to a volume with cp.', '.'),
     parameters: tool.parameters,
+    structuredOutputSchema: {},
     replay: tool.name === 'computer_status' ? 'safe' : 'unsafe',
     async execute(args, api) {
       const config = await identity();
       const value = await serialize(() => new ComputerService(env, config.tenantId).call(config.id, tool.name, args as Record<string, unknown>, api.callId));
-      return { output: [{ type: 'text' as const, text: JSON.stringify(value) }] };
+      return { output: [{ type: 'text' as const, text: JSON.stringify(value) }], structuredOutput: value };
     },
   }));
 }
