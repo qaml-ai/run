@@ -49,6 +49,8 @@ export class LocalWorker {
       ...process.env,
       CI: "1",
       WRANGLER_SEND_METRICS: "false",
+      // Production returns early refusals without waiting for the upload.
+      WRANGLER_DISABLE_REQUEST_BODY_DRAINING: "true",
       WRANGLER_LOG_PATH: join(this.storage, "logs"),
       CLOUDFLARE_DEV_REGISTRY_PATH: join(this.storage, "registry"),
     };
