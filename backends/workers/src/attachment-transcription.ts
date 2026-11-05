@@ -310,7 +310,7 @@ export async function transcribeAttachments(
     // Reserve every file before sending any. The deterministic IDs survive a
     // restart; a completed receipt owns its reservation until settleHold succeeds.
     if (credits && scope.identity?.subject)
-      for (const item of audio) {
+      for (const [position, item] of audio.entries()) {
         const hash = Array.from(
           new Uint8Array(
             await crypto.subtle.digest(
@@ -334,7 +334,7 @@ export async function transcribeAttachments(
         const reserved = await credits.reserve(scope.tenant, endUser, bucket, {
           id,
           want,
-          min: lastCallMin(want),
+          min: position === audio.length - 1 ? lastCallMin(want) : want,
         });
         if (reserved?.refused) throw creditError(reserved.refused);
         if (reserved?.hold) holds.set(item.index, { id, endUser, bucket });
