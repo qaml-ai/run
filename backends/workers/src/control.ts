@@ -197,10 +197,11 @@ export class Directory {
       if(old?.config.mounts&&requested!==undefined&&JSON.stringify(old.config.mounts)!==JSON.stringify(config.mounts)&&(input as {remount?:boolean}).remount!==true)
         throw new ApiError(409,"Agent mounts differ; set remount: true to change them");
       const configHash=await digest(JSON.stringify(config));
+      const sameModel = JSON.stringify(old?.resolvedModel) === JSON.stringify(resolvedModel);
       if (config.type !== "run" && !admitted)
         await createAdmission(this.env, this.tenantId, !(old?.initialized && old.configHash === configHash));
       if (queue && old?.initialized) return { ...old, targetConfig: config };
-      if (old?.initialized && old.configHash === configHash) return old;
+      if (old?.initialized && old.configHash === configHash && sameModel) return old;
       const next: DirectoryEntry = {
         id,
         tenantId: this.tenantId,
@@ -213,7 +214,7 @@ export class Directory {
           old?.expiresAt ??
           (ttlSeconds != null ? Date.now() + ttlSeconds * 1000 : ttlSeconds === null || key ? null : Date.now() + 86400_000),
         revision:
-          old?.configHash === configHash
+          old?.configHash === configHash && sameModel
             ? old.revision
             : (old?.revision ?? 0) + 1,
         initialized: false,

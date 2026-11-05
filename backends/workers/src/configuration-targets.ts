@@ -12,7 +12,9 @@ type Host = {
 /** A configuration target is durable before acknowledgment and applies between turns. */
 export class ConfigurationTargets {
   private draining?: Promise<void>;
-  constructor(private storage: DurableObjectStorage, private host: Host) {}
+  private storage: DurableObjectStorage;
+  private host: Host;
+  constructor(storage: DurableObjectStorage, host: Host) { this.storage = storage; this.host = host; }
   async enqueue(target: Target): Promise<Record> {
     const fingerprint = canonical(target);
     return this.storage.transaction(async tx => {
