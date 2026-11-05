@@ -39,6 +39,7 @@ import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
 import { apiRequest, admissionError, errorFields, errorHeaders } from "./admission.ts";
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
 import { browserResponse } from "./browser-response.ts";
+import { browserUrl } from "./selfhost-policy.ts";
 import { decisionService, type DecisionEnv } from "./decision-service.ts";
 import { decisionRoute } from "./decision-runtime.ts";
 import {
@@ -360,7 +361,8 @@ const worker = {
       }
       if (tail === "/browser-tokens" && request.method === "POST") {
         if (!auth || auth.kind === "oauth") throw new ApiError(403, "Account key required", "FORBIDDEN");
-        return json({ ...browserTokens.mint(entry.tenantId, entry.id, await body(request, 16 * 1024)), agentId: entry.id }, 201);
+        const publicBrowser = browserUrl(env, url.origin);
+        return json({ ...browserTokens.mint(entry.tenantId, entry.id, await body(request, 16 * 1024)), agentId: entry.id, ...(publicBrowser ? { url: publicBrowser } : {}) }, 201);
       }
       if (tail === "/credentials" && request.method === "GET") {
         if (!auth) throw new ApiError(401, "Account key required", "UNAUTHORIZED");

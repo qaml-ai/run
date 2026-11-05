@@ -6,17 +6,20 @@ import { markdownEmail } from '../../../src/markdown-email.ts';
 import { readableText } from '../../../src/html-text.ts';
 import { failure, metric } from './observability.ts';
 import type { WebhookEnv } from './webhooks.ts';
+import { createTenants } from './security-services.ts';
 
 export interface ScheduleEnv extends WebhookEnv {
   AGENTS: { getByName(id:string): {fetch(request:Request):Promise<Response>} };
   SCHEDULE_EMAIL_FROM?: string;
   SCHEDULE_OPERATOR_TENANTS?: string;
+  AGENT_ACCOUNT_EMAIL_FROM?: string;
+  AGENT_TENANTS_JSON?: string;
 }
 export type StoredSchedule = Schedule & { retryAt?: number; attempts?: number };
 /** Same recipient rules as src/node.ts, checked both when scheduling and sending. */
 export async function canScheduleEmail(env: ScheduleEnv, tenant: string, to: string) {
   const email=to.toLowerCase();
-  const operator=(env.SCHEDULE_OPERATOR_TENANTS??'').split(',').includes(tenant);
+  const operator=(env.SCHEDULE_OPERATOR_TENANTS??'').split(',').includes(tenant) || (await createTenants(env)).has(tenant);
   const allowed=operator || !!(await withSql(env,sql=>sql.query(`select 1 from tenants where id=$1 and lower(google_email)=$2
     union all select 1 from tenant_passwords where tenant=$1 and lower(email)=$2
     union all select 1 from billing_recipients where tenant=$1 and email=$2 and status='verified' limit 1`,[tenant,email]))).rowCount;
@@ -31,7 +34,7 @@ export async function newSchedule(env:ScheduleEnv,tenant:string,agent:string,raw
   if(input.everySeconds!==undefined&&(!Number.isInteger(input.everySeconds)||input.everySeconds<MIN_REPEAT_SECONDS))throw new HttpError(400,`everySeconds must be an integer of at least ${MIN_REPEAT_SECONDS}`);
   if(input.history!==undefined&&!['full','none'].includes(input.history))throw new HttpError(400,'history must be full or none');
   if(input.email) {
-    if(!env.SCHEDULE_EMAIL_FROM)throw new HttpError(400,'Scheduled email is not enabled on this runtime');
+    if(!(env.SCHEDULE_EMAIL_FROM || env.AGENT_ACCOUNT_EMAIL_FROM))throw new HttpError(400,'Scheduled email is not enabled on this runtime');
     if(input.code!==undefined)throw new HttpError(400,'Email delivery requires a text schedule');
     if(!await canScheduleEmail(env,tenant,input.email.to))throw new HttpError(403,'Use your sign-in email or a verified billing recipient for scheduled reports');
   }

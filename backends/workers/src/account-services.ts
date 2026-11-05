@@ -16,6 +16,7 @@ export { oauthAllows } from "./account-access.ts";
 export type AccountEnv = MailEnv & {
   API_TOKEN: string;
   AGENT_PUBLIC_URL?: string;
+  AGENT_BROWSER_URL?: string;
   AGENT_PUBLIC_ALIASES?: string;
   AGENT_ISSUER?: string;
   AGENT_SESSION_SECRET?: string;
