@@ -13,6 +13,7 @@ test("auxiliary costs share agent and run budgets with immutable idempotent rece
   const call = { tenant: "tenant", agent: "agent", requestId: "run", callId: "decide-1", kind: "decision" as const, startedAt: 11 };
   assert.equal(await transaction(db, sql => recordAuxiliaryUsage(sql, call, { costUsd: 0.1 })), true);
   assert.equal(await transaction(db, sql => recordAuxiliaryUsage(sql, call, { costUsd: 0.1 })), false);
+  assert.equal(await transaction(db, sql => recordAuxiliaryUsage(sql, { ...call, startedAt: 99 }, { costUsd: 0.1 })), false, "replay keeps the original durable epoch");
   await assert.rejects(transaction(db, sql => recordAuxiliaryUsage(sql, call, { costUsd: 0.2 })), /receipt changed/);
   const web = { ...call, callId: "search-1", kind: "web_search" as const };
   await assert.rejects(transaction(db, async sql => {

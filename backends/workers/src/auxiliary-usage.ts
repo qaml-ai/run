@@ -61,7 +61,9 @@ export async function recordAuxiliaryUsage(sql: Sql, call: AuxiliaryCall, cost: 
   const previous = (await sql.query("select tenant,message from pi_usage_receipts where session_id=$1 and entry_id=$2", [call.agent, id])).rows[0];
   if (!previous) throw new HttpError(404, "Agent not found", "NOT_FOUND");
   const prior = previous.message?._workersAuxiliary;
-  if (previous.tenant !== call.tenant || !prior || Object.keys(message._workersAuxiliary).some(key => prior[key] !== message._workersAuxiliary[key as keyof typeof message._workersAuxiliary]))
+  // Replayed tasks can reopen after the clock has moved; the first durable
+  // receipt keeps the original epoch. Identity and cost must still match.
+  if (previous.tenant !== call.tenant || !prior || Object.keys(message._workersAuxiliary).filter(key => key !== "startedAt").some(key => prior[key] !== message._workersAuxiliary[key as keyof typeof message._workersAuxiliary]))
     throw new HttpError(409, "Auxiliary usage receipt changed", "IDEMPOTENCY_CONFLICT");
   return false;
 }
