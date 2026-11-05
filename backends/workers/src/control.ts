@@ -18,6 +18,7 @@ import { postLedger, accrueUsage, BillingSpendable } from "./billing-sql.ts";
 import { EndUserCredits, lastCallMin, settleUsage, utcDay } from "./end-user-credits.ts";
 import { CreditHolds } from "./credit-holds.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
+import { defaultModelFor } from "./default-model.ts";
 import { createAdmission } from "./admission.ts";
 import { applyUsageRows } from "./accounts.ts";
 import { applyWorkspaceUsage, Workspaces } from "./workspaces.ts";
@@ -141,7 +142,11 @@ export class Directory {
     runtimeOrigin?: string,
     pendingFork?: { sourceId: string; fingerprint: string },
   ): Promise<DirectoryEntry | DirectoryFailure> {
-    const { config, ttlSeconds } = configuration(input, this.env.MODEL);
+    const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
+    const defaultModel = fields.model === undefined
+      ? await defaultModelFor(this.env, this.tenantId, typeof fields.keyScope === "string" ? fields.keyScope : undefined)
+      : this.env.MODEL;
+    const { config, ttlSeconds } = configuration(input, defaultModel);
     const workspaces = new Workspaces(database(this.env));
     if (config.workspaceId !== undefined) await workspaces.validate(this.tenantId, config.workspaceId);
     const key =
@@ -173,6 +178,7 @@ export class Directory {
       if (previous?.revoked)
         throw new ApiError(410, "Agent is deleted", "AGENT_GONE");
       const old = previous?.header as DirectoryEntry | undefined;
+      if (old?.config.model && fields.model === undefined) config.model = old.config.model;
       if (!pendingFork && old?.pendingFork) throw new ApiError(409, "Fork is still being copied", "FORK_IN_PROGRESS");
       if (pendingFork && old && (old.pendingFork?.sourceId !== pendingFork.sourceId || old.pendingFork?.fingerprint !== pendingFork.fingerprint))
         throw new ApiError(409, "Key belongs to another agent", "FORK_CONFLICT");

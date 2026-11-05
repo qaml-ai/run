@@ -21,6 +21,7 @@ export interface AgentConfiguration {
   fileTools?: boolean;
   codeMode?: boolean;
   name?: string;
+  idleTtlSeconds?: number | null;
   type?: string;
   thinkingLevel?: string;
   maxOutputTokens?: number | null;
@@ -103,6 +104,8 @@ export function configuration(input: unknown, defaultModel: string): { config: A
     if (typeof fields[field] !== "string" || new TextEncoder().encode(fields[field] as string).length > 100_000) throw new BadRequest(`${field} must be bounded text`);
     config[field] = fields[field] as string;
   }
+  if (config.systemPrompt !== undefined && (!config.systemPrompt.trim() || config.systemPrompt.length > 32000)) throw new BadRequest("systemPrompt must contain 1–32000 characters");
+  if (config.systemPromptAppend !== undefined && config.systemPromptAppend.length > 32000) throw new BadRequest("systemPromptAppend must be at most 32000 characters; empty removes it");
   if (fields.definitionRevision !== undefined) config.definitionRevision = Number(fields.definitionRevision);
   if (Array.isArray(fields.definitionOverrides)) config.definitionOverrides = fields.definitionOverrides as string[];
   if (!config.model?.trim()) throw new BadRequest("model must be nonempty");
@@ -177,5 +180,9 @@ export function configuration(input: unknown, defaultModel: string): { config: A
   if(fields.remount!==undefined&&typeof fields.remount!=="boolean")throw new BadRequest("remount must be a boolean");
   const ttlSeconds = fields.ttlSeconds;
   if (ttlSeconds !== undefined && ttlSeconds !== null && (!Number.isInteger(ttlSeconds) || Number(ttlSeconds) < 60 || Number(ttlSeconds) > 366 * 86400)) throw new BadRequest("ttlSeconds must be 60 to 31622400 or null");
-  return { config, ttlSeconds: ttlSeconds as number | null | undefined };
+  const idleTtlSeconds = fields.idleTtlSeconds;
+  if (idleTtlSeconds !== undefined && idleTtlSeconds !== null && (!Number.isInteger(idleTtlSeconds) || Number(idleTtlSeconds) < 60 || Number(idleTtlSeconds) > 366 * 86400)) throw new BadRequest("idleTtlSeconds must be 60 to 31622400 or null");
+  if (ttlSeconds != null && idleTtlSeconds != null) throw new BadRequest("Give ttlSeconds or idleTtlSeconds, not both");
+  if (idleTtlSeconds !== undefined) config.idleTtlSeconds = idleTtlSeconds as number | null;
+  return { config, ttlSeconds: (ttlSeconds ?? idleTtlSeconds ?? ttlSeconds) as number | null | undefined };
 }

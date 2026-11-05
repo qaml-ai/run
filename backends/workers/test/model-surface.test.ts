@@ -8,6 +8,27 @@ import { importedHistory } from "../src/history-policy.ts";
 import { providerInput, providerName } from "../src/provider-policy.ts";
 import { outputInput, schemaAccepts } from "../src/output-validation.ts";
 import { openProviderSecret, sealProviderSecret } from "../src/model-credentials.ts";
+import { configuredModel, defaultModels } from "../src/default-model-policy.ts";
+
+test("default candidates preserve virtual names and reject misspelled operator fallbacks", () => {
+  assert.equal(configuredModel({}).virtual, "camelrun/default");
+  const defaults = defaultModels(resolveModel("camelrun/default"), "anthropic/claude-sonnet-5-5");
+  assert.equal(defaults[0].virtual, "camelrun/default");
+  assert.equal(defaults[1].provider, "anthropic");
+  assert.throws(() => defaultModels(defaults[0], "openrouter/missing/no-model"), /AGENT_MODEL_FALLBACKS/);
+});
+
+test("configuration validates prompt, human input and exclusive lifetimes", () => {
+  assert.throws(() => configuration({systemPrompt:" "},"test/echo"), /1–32000/);
+  assert.throws(() => configuration({systemPromptAppend:"x".repeat(32001)},"test/echo"), /32000/);
+  assert.throws(() => configuration({humanInput:{onExpire:"silence"}},"test/echo"), /onExpire/);
+  assert.throws(() => configuration({humanInput:{expiresInSeconds:59}},"test/echo"), /expiresInSeconds/);
+  assert.throws(() => configuration({ttlSeconds:3600,idleTtlSeconds:600},"test/echo"), /not both/);
+  const idle = configuration({idleTtlSeconds:600,humanInput:{onExpire:"resume"}},"test/echo");
+  assert.equal(idle.ttlSeconds,600);
+  assert.equal(idle.config.idleTtlSeconds,600);
+  assert.deepEqual(idle.config.humanInput,{onExpire:"resume"});
+});
 
 test("configuration retains provider settings, imports history and rejects reserved headers", () => {
   const { config } = configuration({ maxOutputTokens: 300, temperature: 0.3, dataCollection: "deny", language: "pt-br", modelHeaders: { "cf-aig-metadata": "fixture" }, runLimits: { contextTokens: 24000, maxResponses: 3 }, importMessages: { format: "openai-chat", messages: [{ role: "user", content: "Remember Ada" }, { role: "assistant", content: "Hello" }] } }, "test/echo");

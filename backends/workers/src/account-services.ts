@@ -10,6 +10,7 @@ import { AccountMail, type MailEnv } from "./account-mail.ts";
 import { HttpError, readText } from "./account-http.ts";
 import type { Webhooks } from "./webhook-policy.ts";
 import { RuntimeSigner } from "./runtime-identity.ts";
+import { defaultModelFor, type DefaultModelEnv } from "./default-model.ts";
 export { oauthAllows } from "./account-access.ts";
 
 export type AccountEnv = MailEnv & {
@@ -32,6 +33,7 @@ export type AccountEnv = MailEnv & {
   TEST_GOOGLE_ISSUER?: string;
 };
 export interface AccountServices {
+  environment: DefaultModelEnv;
   accounts: Accounts;
   auth: ConsoleAuth;
   oauth: OAuth;
@@ -104,7 +106,7 @@ export function accountServices(env: AccountEnv, accounts: Accounts, fallbackOri
     return c.json({ error: "Account operation failed", code: "BACKEND_ERROR" }, 500);
   });
   const signer = new RuntimeSigner({ db: accounts.db, accounts, issuer: origins.issuer });
-  const result = { accounts, auth, oauth, passwords, mail, limits, origin, origins, signer,
+  const result = { environment: env as DefaultModelEnv, accounts, auth, oauth, passwords, mail, limits, origin, origins, signer,
     defaultModel: (env as AccountEnv & { MODEL?: string }).MODEL ?? "",
     billingAdmins: new Set((env.AGENT_BILLING_ADMINS ?? "").split(",").filter(Boolean)) };
   const originsCache = cache.get(env) ?? new Map();
@@ -155,7 +157,7 @@ export async function accountManagementRoutes(request: Request, service: Account
     const person = principal as Principal & { login?: string; name?: string; signIn?: string };
     const login = "login" in person ? person.login : await service.accounts.identity(tenant);
     return reply({ tenant, via: principal.via, ...(login ? { login } : {}), ...(person.name ? { name: person.name } : {}),
-      ...(person.signIn ? { signIn: person.signIn } : {}), canStoreKeys: service.accounts.canStoreKeys, defaultModel: service.defaultModel });
+      ...(person.signIn ? { signIn: person.signIn } : {}), canStoreKeys: service.accounts.canStoreKeys, defaultModel: await defaultModelFor(service.environment, tenant) });
   }
   if (path === "/v1/sessions" && request.method === "DELETE") return reply({ signedOut: await service.auth.endSessions(tenant) });
   if (path === "/v1/oauth/grants" && request.method === "GET") return reply(await service.oauth.grants(tenant));

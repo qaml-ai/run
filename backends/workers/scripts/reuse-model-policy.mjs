@@ -10,6 +10,12 @@ const session = await source('src/session-config.ts');
 const virtual = (await source('src/virtual-models.ts')).replace(/import[^\n]+\n/g, '');
 const pass = await source('src/openrouter-model.ts');
 const catalog = await source('src/catalog.ts');
+const defaults = await source('src/model.ts');
+outputs.set('default-model-policy.ts', banner + defaults.slice(0, defaults.indexOf('/**\n * Models whose provider'))
+ .replace('from "./pi-catalog.ts"', 'from "./model-catalog.ts"')
+ .replace('from "./openrouter-model.ts"', 'from "./model-policy.ts"')
+ .replace('from "./session-config.ts"', 'from "./model-policy.ts"')
+ .replace('from "./virtual-models.ts"', 'from "./model-policy.ts"'));
 outputs.set('catalog-policy.ts', banner + catalog
  .replace('from "./virtual-models.ts"', 'from "./model-policy.ts"')
  .replace('import { readFileSync } from "node:fs";\n', '')
