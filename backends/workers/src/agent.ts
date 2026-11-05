@@ -283,6 +283,7 @@ export interface Env
   TENANT_MAX_ACTIVE?: string;
   SCHEDULE_EMAIL_FROM?: string;
   SCHEDULE_OPERATOR_TENANTS?: string;
+  CONSOLE_ASSETS?: Fetcher;
 }
 export const json = (value: unknown, status = 200) =>
   Response.json(value, { status, headers: { "cache-control": "no-store" } });
@@ -317,6 +318,8 @@ export class CamelAgent extends DurableObject<Env> {
     const deleted = await this.ctx.storage.get<boolean>("deleted");
     if (!deleted || config && (config.tenantId !== tenant || config.id !== id))
       throw new Error("Account purge requires the owned, deleted agent");
+    await Promise.all(this.pendingWaits.values());
+    await this.eventsProcessed;
     for (;;) {
       const pending = await Promise.all(["billing:", "model-billing:", "image-billing:", "transcription-billing:"].map(prefix => this.ctx.storage.list({ prefix, limit: 1 })));
       if (pending.every(rows => rows.size === 0)) break;
@@ -1109,7 +1112,7 @@ export class CamelAgent extends DurableObject<Env> {
   private active?: string;
   private serial: Promise<unknown> = Promise.resolve();
   private readonly initialCursor = Date.now() * 1000;
-  private pendingWaits = new Set<string>();
+  private pendingWaits = new Map<string, Promise<void>>();
   private admission: Promise<unknown> = Promise.resolve();
   private configurationTargets = new ConfigurationTargets(this.ctx.storage, {
     busy: async () => this.harness.session().busy(),
@@ -1570,15 +1573,15 @@ export class CamelAgent extends DurableObject<Env> {
   }
   private track(id: string) {
     if (this.pendingWaits.has(id)) return;
-    this.pendingWaits.add(id);
-    this.ctx.waitUntil(
-      this.settle(id, 0)
-        .catch(() => {})
-        .finally(() => {
-          this.pendingWaits.delete(id);
-          this.ctx.waitUntil(this.configurationTargets.drain());
-        }),
-    );
+    const settled = this.settle(id, 0)
+      .then(() => {})
+      .catch(() => {})
+      .finally(() => {
+        this.pendingWaits.delete(id);
+        this.ctx.waitUntil(this.configurationTargets.drain());
+      });
+    this.pendingWaits.set(id, settled);
+    this.ctx.waitUntil(settled);
   }
   private async settle(id: string, waitMs: number): Promise<RequestRecord> {
     const record = await this.ctx.storage.get<RequestRecord>(reqKey(id));
@@ -2797,10 +2800,17 @@ export class CamelAgent extends DurableObject<Env> {
             await this.serializeComputer(() =>
               new ComputerService(this.env, conf.tenantId).removeAgent(conf.id),
             );
-          await this.ctx.storage.put("deleted", true);
           await this.delegation.destroy();
           await this.harness.session().abort();
           await this.cancelHumanInputs();
+          // Settling still reads configuration and writes durable charge receipts.
+          // Keep it available until every accepted operation has drained.
+          await Promise.all(this.pendingWaits.values());
+          await this.eventsProcessed;
+          if ((await this.records()).some(record => record.accepted && record.state !== "completed"))
+            throw new Error("Agent shutdown is still settling accepted operations");
+          await this.flushBilling(true);
+          await this.ctx.storage.put("deleted", true);
           if (conf)
             await releasePresentedFiles(
               this.ctx.storage,
