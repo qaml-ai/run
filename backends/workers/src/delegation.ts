@@ -154,7 +154,7 @@ export class Delegation {
           await this.checkCancellation(admitted, signal);
           const metadata = { [PARENT_KEYS.agent]: id, [PARENT_KEYS.run]: run.id, [PARENT_KEYS.toolCall]: callId, [PARENT_KEYS.depth]: String(place.depth), [PARENT_KEYS.maxDepth]: String(place.maxDepth), [PARENT_KEYS.chain]: place.chain.join(',') };
           const signed = { ...metadata, [PARENT_KEYS.signature]: await signature(this.host.secret, admitted.id, admitted.requestId, String(place.depth), String(place.maxDepth), place.chain.join(',')) };
-          await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_start', toolCallId: callId, agentId: admitted.id, requestId: admitted.requestId, name: admitted.name, depth: admitted.depth } });
+          await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_start', toolCallId: callId, agentId: admitted.id, requestId: admitted.requestId, name: admitted.name, depth: admitted.depth, ...(admitted.background ? { background: true } : {}) } });
           const relay = await this.relay(admitted);
           try { await this.checkCancellation(admitted, signal); }
           catch (error) { relay.abort(); throw error; }
@@ -173,7 +173,7 @@ export class Delegation {
             const cancelled = signal.aborted || current.cancelRequested;
             Object.assign(admitted, await this.update(current, { status: cancelled ? 'aborted' : 'failed', error: error instanceof Error ? error.message : 'Child failed', endedAt: Date.now(), held: undefined, ...(cancelled ? { cancelRequested: true } : {}) }));
             if (cancelled && admitted.id) await this.cancelRemote(admitted);
-            await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_end', toolCallId: callId, agentId: admitted.id, requestId: admitted.requestId, status: admitted.status, error: admitted.error } });
+            await this.host.emit({ type: 'event', requestId: run.id, event: { type: 'subagent_end', toolCallId: callId, agentId: admitted.id, requestId: admitted.requestId, name: admitted.name, status: admitted.status, error: admitted.error, ...(admitted.background ? { background: true } : {}) } });
           }
           throw error;
         }
@@ -248,13 +248,13 @@ export class Delegation {
           await tx.put(prefix + child.key, value);
           return { child: value, changed: true };
         });
-        if (finished.changed) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_end', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, status: finished.child.status, ...(finished.child.error ? { error: finished.child.error } : {}) } });
+        if (finished.changed) await this.host.emit({ type: 'event', requestId: child.parentRequestId, event: { type: 'subagent_end', toolCallId: child.toolCallId, agentId: child.id, requestId: child.requestId, name: child.name, status: finished.child.status, ...(child.background ? { background: true } : {}), ...(finished.child.error ? { error: finished.child.error } : {}) } });
         return finished.child;
       }
       await sleep(25, signal);
     }
   }
-  answer(child: DelegatedChild) { return { agentId: child.id, requestId: child.requestId, status: child.status, ...(child.outcome?.result?.reply ? { text: child.outcome.result.reply } : {}), ...(child.outcome?.result?.output !== undefined ? { output: child.outcome.result.output } : {}), ...(child.error ? { error: child.error } : {}) }; }
+  answer(child: DelegatedChild) { return { agentId: child.id, requestId: child.requestId, name: child.name, status: child.status, ...(child.outcome?.result?.reply ? { text: child.outcome.result.reply } : {}), ...(child.outcome?.result?.output !== undefined ? { output: child.outcome.result.output } : {}), ...(child.error ? { error: child.error } : {}) }; }
   async cancel(requestId?: string) {
     const children = await this.host.storage.transaction(async tx => {
       const children = [...(await tx.list<DelegatedChild>({ prefix })).values()].filter(child => child.status === 'running' && (!requestId || child.parentRequestId === requestId));
@@ -376,7 +376,7 @@ export class Delegation {
       if (definition.name === 'send_message') return this.toolResult(await this.send(args, api.callId, api));
       if (definition.name === 'report_progress') return this.toolResult(await this.progress(args, api.callId, api));
       const children = await this.children();
-      if (definition.name === 'list_agents') return this.toolResult([...new Map(children.filter(child => child.background).map(child => [child.id, child])).values()].map(child => ({ agentId: child.id, name: child.name, status: child.status, startedAt: child.createdAt, ...(child.endedAt ? { endedAt: child.endedAt } : {}), ...(child.progress ? { progress: child.progress.text, progressAt: child.progress.at } : {}) })));
+      if (definition.name === 'list_agents') return this.toolResult({ agents: [...new Map(children.filter(child => child.background).map(child => [child.id, child])).values()].map(child => ({ agentId: child.id, name: child.name, status: child.status, startedAt: child.createdAt, ...(child.endedAt ? { endedAt: child.endedAt } : {}), ...(child.progress ? { progress: child.progress.text, progressAt: child.progress.at } : {}) })) });
       if (definition.name === 'wait_agent') {
         if (args.agents !== undefined && (!Array.isArray(args.agents) || args.agents.some(name => typeof name !== 'string'))) throw new HttpError(400, 'agents is a list of names or agentIds');
         if (args.timeoutMs !== undefined && (!Number.isInteger(args.timeoutMs) || Number(args.timeoutMs) < 1000 || Number(args.timeoutMs) > MULTI_AGENT_LIMITS.maxWaitMs)) throw new HttpError(400, `timeoutMs is an integer from 1000 to ${MULTI_AGENT_LIMITS.maxWaitMs}`);

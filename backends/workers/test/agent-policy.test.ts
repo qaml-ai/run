@@ -170,6 +170,20 @@ test('recovery notifies completed background children but never direct delegates
   await Promise.all(f.tasks);
   assert.deepEqual(notified, ['background']);
 });
+test('background child result and lifecycle events retain their public identity', async () => {
+  const f = fixture();
+  const child = await f.delegation.start({ instructions: 'helper', task: 'help', name: 'researcher' }, 'background-call', signal(), true);
+  await f.delegation.wait(child);
+  await Promise.all(f.tasks);
+  assert.equal(f.delegation.answer(child).name, 'researcher');
+  for (const type of ['subagent_start', 'subagent_end']) {
+    const event = f.events.find(item => item.event.type === type).event;
+    assert.equal(event.background, true);
+    assert.equal(event.name, 'researcher');
+    assert.equal(event.agentId, child.id);
+    assert.equal(event.requestId, child.requestId);
+  }
+});
 test('parent cancellation aborts made children and only its actively running named child', async () => {
   const f = fixture(), aborted: string[] = [];
   const base = { requestId: 'child-run', parentRequestId: 'parent-run', toolCallId: 'call', task: 'go', name: 'helper', depth: 1, createdAt: 1, status: 'running', accepted: true };
@@ -288,6 +302,7 @@ test('progress is idempotent, shown once in tool results, and never starts a tur
   assert.equal(parent.submitted.length, 0);
   const list = parent.delegation.tools({ instructions: true }, ['agents']).find(tool => tool.name === 'list_agents')!;
   const first = await (list.execute as any)({}, { callId: 'list' }, { abortSignal: signal() });
+  assert.deepEqual(JSON.parse(first.output[0].text).agents.map((entry: any) => [entry.name, entry.status, entry.progress]), [['helper', 'running', 'Read the first source']]);
   assert.equal(first.output[1].agentUpdates, true);
   assert.match(first.output[1].text, /Read the first source/);
   const second = await (list.execute as any)({}, { callId: 'list2' }, { abortSignal: signal() });
@@ -301,7 +316,7 @@ test('wait_agent takes a background ending exactly once and excludes direct dele
   f.values.set('delegation:direct', { ...base, id: 'direct', key: 'direct', background: false });
   const wait = f.delegation.tools({ instructions: true }, ['agents']).find(tool => tool.name === 'wait_agent')!;
   const first = await (wait.execute as any)({}, { callId: 'wait' }, { abortSignal: signal() });
-  assert.deepEqual(JSON.parse(first.output[0].text).agents.map((entry: any) => entry.text), ['done']);
+  assert.deepEqual(JSON.parse(first.output[0].text).agents.map((entry: any) => [entry.name, entry.text]), [['helper', 'done']]);
   assert.equal((f.values.get('delegation:background') as any).landedBy, 'wait');
   const second = await (wait.execute as any)({}, { callId: 'again' }, { abortSignal: signal() });
   assert.deepEqual(JSON.parse(second.output[0].text).agents, []);
