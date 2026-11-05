@@ -15,18 +15,8 @@ import type { FileEntry, VolumeService } from "./volumes.ts";
  * Nothing else is reachable with it, and only for reading.
  */
 
-/** Whether a source's tools take files in their arguments: `on` or `off`, by `fileArguments`. */
-export type FileArguments = "on" | "off";
-
-/**
- * Whether a tool source is sent files: as its `fileArguments` says, else on for the tenant's own servers (auth "runtime",
- * which check who is calling) and off for any other, which a model could otherwise send the agent's files to.
- */
-export const takesFiles = (source: { auth?: { type: string }; fileArguments?: FileArguments }) =>
-  (source.fileArguments ?? (source.auth?.type === "runtime" ? "on" : "off")) === "on";
-
-/** A file as MCP SEP-2631 (draft) describes one: where to get it, its name, type and size, and its sha-256 (hex) when known. */
-export type FileValue = { uri: string; name: string; mimeType: string; size: number; digest?: { algorithm: "sha-256"; value: string } };
+export { takesFiles } from './core/file-arguments.ts';
+export type { FileArguments, FileValue } from './core/file-arguments.ts';
 
 /** A file's sha-256 (hex), read whole unless it is one chunk (whose hash it is); undefined past TOOL_FILE_LIMITS.digestBytes. */
 export async function digestOf(volumes: VolumeService, tenant: string, entry: Pick<FileEntry, "size" | "chunks">): Promise<string | undefined> {
